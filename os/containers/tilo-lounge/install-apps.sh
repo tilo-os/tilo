@@ -33,8 +33,15 @@ fi
 if [ -z "$install_bin" ]; then
   install_bin=$(command -v tilo-install 2>/dev/null || true)
 fi
-[ -n "$install_bin" ] && [ -x "$install_bin" ] \
-  || fail "no tilo-install to install $packages with (set TILO_INSTALL)"
+[ -n "$install_bin" ] || fail "no tilo-install to install $packages with (set TILO_INSTALL)"
+[ -e "$install_bin" ] || fail "$install_bin does not exist"
+[ -f "$install_bin" ] || fail "$install_bin is not a file"
+if [ ! -x "$install_bin" ]; then
+  # A copy taken from a build may arrive without its executable bit, and
+  # `--offline-store` writes the store in this process: nothing else is needed.
+  chmod +x "$install_bin" 2>/dev/null || true
+  [ -x "$install_bin" ] || fail "$install_bin is not executable, and cannot be made so"
+fi
 [ -d "$packages" ] || fail "no packages to install at $packages"
 set -- "$packages"/*.tapp
 [ -f "$1" ] || fail "$packages holds no packages"

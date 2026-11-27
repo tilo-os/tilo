@@ -204,8 +204,11 @@ timing 'phase=the stack up'
 # computer has — nothing here is special to any app.
 apps=${TILO_LOUNGE_APPS:?TILO_LOUNGE_APPS names the apps the Lounge runs}
 device=$work/device
-mkdir -p "$device/data"
-TILO_INSTALL=$apps/bin/tilo-install TILO_RUNTIME_BUNDLE_DIR=$apps/runtimes \
+mkdir -p "$device/data" "$device/bin"
+# The installer as this build made it, at a mode this run sets itself: a copy
+# taken from a build may arrive without its executable bit.
+install -m 0755 "$apps/bin/tilo-install" "$device/bin/tilo-install"
+TILO_INSTALL=$device/bin/tilo-install TILO_RUNTIME_BUNDLE_DIR=$apps/runtimes \
   sh "$lounge_dir/install-apps.sh" "$apps/packages" "$device/apps" \
   || { echo "FAIL: could not install the apps a flow's device runs" >&2; exit 1; }
 ln -sfn "$apps/runtimes" "$device/data/tilo-runtime"
