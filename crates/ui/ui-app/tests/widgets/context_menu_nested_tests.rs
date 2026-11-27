@@ -40,7 +40,6 @@ use winit::keyboard::*;
     clippy::cast_sign_loss,
     reason = "in a test these are the assertion"
 )]
-
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 
 fn cursor_at(p: Point) -> WindowEvent {

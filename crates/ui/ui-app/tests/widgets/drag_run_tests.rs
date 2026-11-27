@@ -39,7 +39,6 @@ use winit::keyboard::*;
     clippy::cast_sign_loss,
     reason = "in a test these are the assertion"
 )]
-
 fn item(key: &str, width: f32) -> RunItem {
     RunItem {
         key: key.to_owned(),

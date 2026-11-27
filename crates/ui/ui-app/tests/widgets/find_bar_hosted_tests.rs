@@ -147,8 +147,10 @@ fn hosted_accessibility_edits_the_real_find_query_and_replacement() {
             .find(|(_, node)| {
                 node.role() == accesskit::Role::TextInput && node.label() == Some(name)
             })
-            .map(|(id, _)| id)
-            .unwrap_or_else(|| panic!("missing exported find field {name}"))
+            .map_or_else(
+                || panic!("missing exported find field {name}"),
+                |(id, _)| id,
+            )
     };
     for name in [
         tr("find-bar-placeholder"),

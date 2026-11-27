@@ -40,7 +40,6 @@ use winit::keyboard::*;
     clippy::cast_sign_loss,
     reason = "in a test these are the assertion"
 )]
-
 fn find<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode> {
     if node.widget == widget {
         return Some(node);
@@ -51,13 +50,6 @@ fn find<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode
 fn rect_of(node: &InspectionNode) -> Rect {
     let [x, y, w, h] = node.rect;
     Rect::new(x, y, x + w, y + h)
-}
-
-fn hovered() -> Interaction {
-    Interaction {
-        hovered: true,
-        ..Interaction::default()
-    }
 }
 
 #[test]

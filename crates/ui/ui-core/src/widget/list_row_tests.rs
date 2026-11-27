@@ -1,9 +1,6 @@
 use super::*;
-use crate::headless::InspectionNode;
 use std::cell::Cell;
 use std::rc::Rc;
-use tilo_ui_base::widget::Element;
-use tilo_ui_base::{component::Bound, component::Described, component::Fired, component::Intent};
 use vello::Scene;
 use vello::kurbo::Affine;
 
@@ -11,18 +8,6 @@ fn geometry(face: &ListRowFace<'_>, rect: Rect) -> RowGeometry {
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
     face.geometry(rect, &RowMetrics::new(&theme), &mut text, &theme)
-}
-
-fn find<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode> {
-    if node.widget == widget {
-        return Some(node);
-    }
-    node.children.iter().find_map(|child| find(child, widget))
-}
-
-fn rect_of(node: &InspectionNode) -> Rect {
-    let [x, y, w, h] = node.rect;
-    Rect::new(x, y, x + w, y + h)
 }
 
 fn hovered() -> Interaction {
@@ -342,21 +327,6 @@ tilo_test_env::scenario! {
     }
 }
 
-fn m_icon(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.metrics.icon_control)
-}
-
-fn boxed_rect(access: &tilo_ui_base::a11y::AccessNode) -> Rect {
-    access
-        .children
-        .iter()
-        .find(|child| child.role == tilo_ui_base::a11y::Role::Checkbox)
-        .expect("the row's box is a control of its own")
-        .bounds
-        .expect("a box a reader presses says where it stands")
-        .to_rect()
-}
-
 #[test]
 fn accessibility_names_the_badge_and_reads_parts_and_actions() {
     let actions = [RowAction {
@@ -423,25 +393,6 @@ fn press_leading_checkbox(row: &mut ListRow) {
     } else {
         panic!("the row has no leading checkbox");
     }
-}
-
-fn bound_row(
-    state: &tilo_ui_base::LocalState<bool>,
-    intents: &tilo_ui_base::Intents<Fired>,
-) -> ListRow {
-    let props = ListRowProps {
-        key: "milk".to_owned(),
-        title: "Buy oat milk".to_owned(),
-        checkbox: Some(Bound {
-            state: state.clone(),
-            edits: Some(Intent::new(intents, "milk", "check")),
-            name: "Done".to_owned(),
-            path: Vec::new(),
-            identity: None,
-        }),
-        ..ListRowProps::default()
-    };
-    <ListRow as Described>::from_props("milk", props)
 }
 
 #[test]

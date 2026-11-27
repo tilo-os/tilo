@@ -39,7 +39,6 @@ use winit::keyboard::*;
     clippy::cast_sign_loss,
     reason = "in a test these are the assertion"
 )]
-
 fn driver(root: Box<dyn Widget>) -> Driver {
     let mut driver = Driver::new(tilo_ui::State::new(), root, (640, 400));
     driver.relayout();

@@ -68,49 +68,6 @@ fn fit_host(kind: usize, button: Button) -> tilo_ui_base::widget::Element {
     }
 }
 
-fn layout_fit_host(
-    host: &mut dyn Widget,
-    alignment: taffy::AlignItems,
-    theme: &Theme,
-    text: &mut TextRenderer,
-) -> Rect {
-    let mut tree = TaffyTree::new();
-    let mut map = std::collections::HashMap::new();
-    let root = host.build_layout(&mut tree, theme, &mut map);
-    let mut style = tree.style(root).unwrap().clone();
-    style.size.width = Dimension::length(600.0);
-    if style.display == taffy::Display::Grid {
-        style.justify_items = Some(alignment);
-    } else if style.flex_direction == taffy::FlexDirection::Row {
-        style.justify_content = Some(match alignment {
-            taffy::AlignItems::Center => taffy::JustifyContent::Center,
-            taffy::AlignItems::End => taffy::JustifyContent::End,
-            _ => taffy::JustifyContent::Start,
-        });
-    } else {
-        style.align_items = Some(alignment);
-    }
-    tree.set_style(root, style).unwrap();
-    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
-    unsafe {
-        bindings.rebuild(host, &tree, root, &map);
-        tilo_ui_base::widget::compute_widget_layout(
-            &mut tree,
-            root,
-            Size {
-                width: taffy::AvailableSpace::Definite(600.0),
-                height: taffy::AvailableSpace::Definite(200.0),
-            },
-            &map,
-            &bindings,
-            text,
-        )
-        .unwrap();
-    }
-    host.apply_layout(&tree, root, Point::ZERO);
-    host.children()[0].get_rect()
-}
-
 fn glyph_origins(scene: &Scene) -> Vec<[f32; 2]> {
     scene
         .encoding()

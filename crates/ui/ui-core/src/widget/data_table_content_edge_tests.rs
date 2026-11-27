@@ -4,6 +4,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 #[derive(Clone)]
+#[allow(
+    dead_code,
+    reason = "a fixture stands the whole record its table reads a part of"
+)]
 struct Item {
     name: String,
     depth: usize,

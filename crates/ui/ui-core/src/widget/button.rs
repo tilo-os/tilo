@@ -3047,7 +3047,7 @@ impl Button {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl<'a> ButtonFace<'a> {
+impl ButtonFace<'_> {
     /// The rectangle the face paints into.
     pub fn rect_for_tests(&self) -> Rect {
         self.rect

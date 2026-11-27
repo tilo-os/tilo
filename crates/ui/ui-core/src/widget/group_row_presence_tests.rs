@@ -69,24 +69,6 @@ impl crate::widget::AppWidget for Field {
     }
 }
 
-fn window(id: u64, field: &str, drawn: Rc<Cell<Rect>>) -> WindowGroup {
-    let mut group = WindowGroup::new(
-        id,
-        vec![(
-            TabDescriptor::new(id, format!("T{id}")),
-            TileContent::Stub {
-                kind: crate::widget::AppKind::Editor,
-                label: field.into(),
-            },
-        )],
-        id,
-        WindowWidth::Normal,
-    );
-    let host = group.host_for_tab_mut(id).expect("the tab has a host");
-    *host = TileHost::new(TileContent::App(Box::new(Field::new(field, drawn))));
-    group
-}
-
 fn strip(count: usize, field: &str, drawn: Rc<Cell<Rect>>) -> GroupRow {
     let mut row = strip_at(count, 390.0, 0.0, 1000);
     let tab = row.groups[1].active_tab_id();
@@ -185,15 +167,4 @@ fn a_window_replayed_through_a_pan_tells_a_reader_where_its_caret_moved_to() {
         close(told, drawn_once + vello::kurbo::Vec2::new(moved_by, 0.0)),
         "the caret is told where the drawing shows it: {told:?}, drawn {drawn_once:?} moved by {moved_by}"
     );
-}
-
-fn mark_bounds(node: &crate::headless::InspectionNode) -> Option<Rect> {
-    if node.test_id.as_deref() == Some("presence-mark") {
-        return node
-            .semantics
-            .as_ref()
-            .and_then(|semantics| semantics.bounds)
-            .map(tilo_ui_base::a11y::AccessBounds::to_rect);
-    }
-    node.children.iter().find_map(mark_bounds)
 }

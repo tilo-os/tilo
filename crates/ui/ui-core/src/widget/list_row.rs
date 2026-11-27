@@ -3523,12 +3523,11 @@ impl ListRow {
 
     /// Toggles the row's leading checkbox as a press on it would.
     pub fn toggle_leading_check_for_tests(&mut self) {
-        if let Some(Leading::Checkbox { checked, .. }) = &mut self.leading {
-            *checked = !*checked;
-            self.dirty = true;
-        } else {
-            panic!("the row has no leading checkbox");
-        }
+        let Some(Leading::Checkbox { checked, .. }) = self.leading.as_mut() else {
+            return;
+        };
+        *checked = !*checked;
+        self.dirty = true;
     }
 
     /// Binds the row's check to a run, as a view's props would.

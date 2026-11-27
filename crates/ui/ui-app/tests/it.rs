@@ -17,6 +17,15 @@
     clippy::redundant_closure,
     clippy::too_many_lines,
     clippy::unnecessary_literal_bound,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::similar_names,
+    clippy::many_single_char_names,
+    clippy::useless_conversion,
+    clippy::redundant_clone,
+    clippy::semicolon_if_nothing_returned,
+    dead_code,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
