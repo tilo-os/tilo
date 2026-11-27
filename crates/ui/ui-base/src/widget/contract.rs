@@ -1095,13 +1095,16 @@ pub trait Widget {
 
     /// Begin one bounded deferred session after explicit host consent, preserving the existing
     /// original-field fingerprint.
-    fn start_deferred_text(&mut self) -> Option<tilo_webview::text_input::Receipt> {
+    fn start_deferred_text(&mut self) -> Option<tilo_presentation::text_input::Receipt> {
         let caret = self.ime_cursor_rect()?;
         defaults::start_deferred_text(self.children_mut(), caret)
     }
 
     /// A private asynchronous final.
-    fn commit_deferred_text(&mut self, text: &str) -> Option<tilo_webview::text_input::Receipt> {
+    fn commit_deferred_text(
+        &mut self,
+        text: &str,
+    ) -> Option<tilo_presentation::text_input::Receipt> {
         let caret = self.ime_cursor_rect()?;
         defaults::commit_deferred_text(self.children_mut(), caret, text)
     }

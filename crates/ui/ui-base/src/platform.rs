@@ -157,9 +157,9 @@ impl PlatformConventions {
     /// alone (Command on macOS, Control elsewhere), for select all, copy and the page's
     /// own keys.
     #[must_use]
-    pub fn command_key_modifiers(self) -> tilo_webview::KeyModifiers {
+    pub fn command_key_modifiers(self) -> tilo_presentation::keys::KeyModifiers {
         let command = self.command_modifier();
-        tilo_webview::KeyModifiers {
+        tilo_presentation::keys::KeyModifiers {
             ctrl: command.control_key(),
             meta: command.super_key(),
             shift: false,

@@ -65,7 +65,7 @@ lazy-painter = []
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["collaboration?/local-daemons", "tilo-webview/local-daemons"]
+local-daemons = ["collaboration?/local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's
 # client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
@@ -80,17 +80,6 @@ presentation-feedback = ["dep:wgpu-hal"]
 # wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
 # for apps built on the published SDK.
 dx12-shader-cache = []
-# Brave/EasyList filter-list → WebKit content-blocker JSON compiler
-# (`webview::adblock`). Off by default: only the browser app (and any
-# other app embedding a WebView with built-in blocking) pays for the
-# adblock-rust dependency.
-webview-adblock = ["tilo-webview/webview-adblock"]
-# The compiler is not linked: `webview::adblock` opens it from
-# libtilo_adblock_engine.so the first time an app compiles lists. The engine
-# library's own build (crates/engines/loadable/adblock) turns this on, so the
-# shared runtime every app maps leaves adblock-rust out; any other build links
-# the compiler.
-lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock"]
 # Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
 # (`dmabuf_import`). Shared by the WebView's rendered pages and the video
 # decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
@@ -125,10 +114,6 @@ tilo-dialogs.workspace = true
 tilo-notify.workspace = true
 tilo-secrets.workspace = true
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
-# The web engine client the `WebView` widget displays: the Chromium helper transport,
-# the page protocol and their commands, so code that talks to a web engine links that
-# crate instead of the toolkit.
-tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
 # The part painter interface every painter set draws through (`part_paint`).
 tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The interpreter a theme's painter sets loaded from wasm run on
@@ -144,7 +129,9 @@ emoji = { package = "tilo-emoji", version = "0.1.0", path = "../emoji" }
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
-# Browser processes on one profile meet at one Chromium host (`webview::chromium`).
+# Presentation feedback, and the input vocabulary a toolkit and a web engine share: a
+# field's purpose and fingerprint, its editing history and deferred edits, and the
+# modifier keys.
 tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
 # Frames drawn by the workspace's render service instead of a GPU in the app
 # (`render_thread::remote`); its transport exists only on Linux, its vocabulary
@@ -351,8 +338,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 [build-dependencies]
 
 [dev-dependencies]
-# Its own tests drive a page without Chromium.
-tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", features = ["test-support"] }
 # The menus and materials a document editor opens, drawn as the toolkit draws them.
 tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
 # Hand-written painter modules for the wasm host's refusal and budget tests.

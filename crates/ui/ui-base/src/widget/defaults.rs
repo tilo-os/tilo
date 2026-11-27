@@ -178,7 +178,7 @@ fn typing_child<'a>(children: ChildrenMut<'a>, caret: Rect) -> Option<&'a mut (d
 pub(super) fn start_deferred_text(
     children: ChildrenMut<'_>,
     caret: Rect,
-) -> Option<tilo_webview::text_input::Receipt> {
+) -> Option<tilo_presentation::text_input::Receipt> {
     typing_child(children, caret)?.start_deferred_text()
 }
 
@@ -186,7 +186,7 @@ pub(super) fn commit_deferred_text(
     children: ChildrenMut<'_>,
     caret: Rect,
     text: &str,
-) -> Option<tilo_webview::text_input::Receipt> {
+) -> Option<tilo_presentation::text_input::Receipt> {
     typing_child(children, caret)?.commit_deferred_text(text)
 }
 

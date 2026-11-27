@@ -19252,8 +19252,11 @@ dependencies = [
 name = "tilo-presentation"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "libc",
+ "serde",
  "tilo-clock",
+ "tilo-lock",
  "tilo-wgpu",
  "tilo-winit",
  "workspace-hack",
@@ -21460,7 +21463,6 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-wasm-aot",
- "tilo-webview",
  "tilo-wgpu",
  "tilo-winit",
  "tilo-winit-x11",

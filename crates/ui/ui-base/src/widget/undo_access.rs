@@ -3,7 +3,7 @@
 //! holds them. The host drives undo itself ([`crate::undo`]).
 pub const EDIT_OPERATION: &str = "tilo.host.edit";
 
-pub use tilo_webview::{UndoRequest, UndoStatus};
+pub use tilo_presentation::text_input::{UndoRequest, UndoStatus};
 
 /// Which history verb, if any, a command-modified character key means.
 pub fn shortcut(

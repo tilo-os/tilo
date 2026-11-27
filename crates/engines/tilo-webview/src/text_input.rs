@@ -1,29 +1,7 @@
 //! Private, acknowledged edits. Neither replies nor transcripts are app events.
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-
 use tilo_clock::time::{Duration, Instant};
-use tilo_lock::MutexRecover as _;
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct Lease(String, bool);
-
-impl Lease {
-    /// The lease a reply names: 32 lowercase hex digits, single-line unless its multiline
-    /// flag says otherwise.
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        (value.len() == 32
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-        .then(|| Self(value.into(), false))
-    }
-
-    pub(crate) fn stamp(&self, key: &[u8; 32]) -> [u8; 32] {
-        crate::edit_fingerprint(&self.0, usize::from(self.1), 0, key)
-    }
-}
+pub use tilo_presentation::text_input::{Failure, Lease, Receipt, Resolver};
 
 pub enum Request {
     History {
@@ -38,94 +16,6 @@ pub enum Request {
         lease: Lease,
         text: zeroize::Zeroizing<String>,
     },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Failure {
-    Busy,
-    Retired,
-    Rejected,
-    Unknown,
-}
-
-/// A local receipt shared with the original caller, independent of widget lifetime.
-#[derive(Clone)]
-pub struct Receipt {
-    result: Arc<Mutex<Option<Result<Option<Lease>, Failure>>>>,
-    canceled: Arc<AtomicBool>,
-    history: Arc<Mutex<Option<(crate::UndoStatus, Instant)>>>,
-    deadline: Instant,
-}
-
-/// The original host's one-shot completion end. Completing it grants no input authority;
-/// the host must first bind delivery to its original field owner.
-pub struct Resolver(Receipt);
-impl Resolver {
-    pub fn complete(self, result: Result<Option<Lease>, Failure>) {
-        self.0.complete(result);
-    }
-}
-
-impl Receipt {
-    /// A bounded private host receipt and its one-shot completion end.
-    pub fn channel() -> (Self, Resolver) {
-        let receipt = Self::pending();
-        (receipt.clone(), Resolver(receipt))
-    }
-
-    /// Observe cancellation of this exact scope, including after start ACK.
-    pub fn was_canceled(&self) -> bool {
-        self.is_canceled()
-    }
-    /// A receipt nothing has completed yet.
-    #[must_use]
-    pub fn pending() -> Self {
-        Self {
-            result: Arc::new(Mutex::new(None)),
-            canceled: Arc::new(AtomicBool::new(false)),
-            history: Arc::new(Mutex::new(None)),
-            deadline: tilo_clock::now() + Duration::from_secs(10),
-        }
-    }
-
-    fn history_status(&self) -> Option<crate::UndoStatus> {
-        let history = self.history.lock().ok()?;
-        let (status, expires) = history.as_ref()?;
-        (tilo_clock::now() < *expires && !self.is_canceled()).then(|| status.clone())
-    }
-
-    pub fn failed(failure: Failure) -> Self {
-        let receipt = Self::pending();
-        receipt.complete(Err(failure));
-        receipt
-    }
-
-    pub fn poll(&self) -> Option<Result<Option<Lease>, Failure>> {
-        let mut result = self.result.lock_recover();
-        if result.is_none() && tilo_clock::now() >= self.deadline {
-            *result = Some(Err(Failure::Unknown));
-        }
-        result.clone()
-    }
-
-    /// Stop a final that has not been admitted. After admission its outcome is uncertain
-    /// until the original native reply; never synthesize an undo.
-    pub fn cancel(&self) {
-        self.canceled.store(true, Ordering::Release);
-        self.complete(Err(Failure::Unknown));
-    }
-
-    fn is_canceled(&self) -> bool {
-        self.canceled.load(Ordering::Acquire)
-    }
-
-    /// Complete a receipt once; a later completion is ignored.
-    pub fn complete(&self, value: Result<Option<Lease>, Failure>) {
-        let mut result = self.result.lock_recover();
-        if result.is_none() {
-            *result = Some(value);
-        }
-    }
 }
 
 #[derive(Default)]
@@ -177,7 +67,7 @@ impl Transactions {
             value["history_scope"] = serde_json::json!("page");
         }
         if let Some(lease) = lease {
-            value["lease"] = serde_json::json!(lease.0);
+            value["lease"] = serde_json::json!(lease.as_str());
         }
         if let Some(text) = text {
             value["text"] = serde_json::json!(&*text);
@@ -204,10 +94,10 @@ impl Transactions {
                     .as_str()
                     .and_then(Lease::parse)
                     .and_then(|mut lease| {
-                        lease.1 = match value["data"].get("multiline") {
+                        lease.set_multiline(match value["data"].get("multiline") {
                             None => false,
                             Some(policy) => policy.as_bool()?,
-                        };
+                        });
                         Some(lease)
                     })
                     .map(Some)
@@ -250,14 +140,14 @@ impl Transactions {
                 (history["can_undo"].as_bool(), history["can_redo"].as_bool())
                 && history.as_object().is_some_and(|fields| fields.len() == 2)
             {
-                *receipt.history.lock_recover() = Some((
+                receipt.record_history(
                     crate::UndoStatus {
                         can_undo,
                         can_redo,
                         ..Default::default()
                     },
                     tilo_clock::now() + Duration::from_millis(500),
-                ));
+                );
             } else {
                 result = Err(Failure::Unknown);
             }
@@ -453,7 +343,7 @@ impl Guard {
         if self
             .active_receipt
             .as_ref()
-            .is_some_and(Receipt::is_canceled)
+            .is_some_and(Receipt::was_canceled)
         {
             self.invalidate(engine);
         }
@@ -576,14 +466,14 @@ impl Guard {
         Some(self.lease.as_ref()?.stamp(key))
     }
     pub fn multiline(&self) -> bool {
-        self.ready() && self.lease.as_ref().is_some_and(|lease| lease.1)
+        self.ready() && self.lease.as_ref().is_some_and(Lease::multiline)
     }
     pub fn ready(&self) -> bool {
         self.lease.is_some()
             && self
                 .active_receipt
                 .as_ref()
-                .is_none_or(|receipt| !receipt.is_canceled())
+                .is_none_or(|receipt| !receipt.was_canceled())
             && self.final_text.is_none()
             && self
                 .activation
@@ -687,6 +577,7 @@ impl Drop for Guard {
 mod tests {
     use super::*;
     use crate::{FrameSlot, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
+    use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct Controlled {
@@ -727,7 +618,7 @@ mod tests {
                         "multiline":policy},"history":{"can_undo":false,"can_redo":false}}));
                 if let Some(expected) = policy.as_bool() {
                     let actual = receipt.poll().unwrap().unwrap().unwrap();
-                    assert_eq!(actual.1, expected);
+                    assert_eq!(actual.multiline(), expected);
                     let mut guard = leased_guard();
                     guard.lease = Some(actual.clone());
                     assert_eq!(guard.multiline(), expected);
@@ -744,7 +635,7 @@ mod tests {
             }
             let (mut guard, controlled, engine, check) = checked_guard();
             let mut changed = lease();
-            changed.1 = true;
+            changed.set_multiline(true);
             check.complete(Ok(Some(changed)));
             guard.pump(&engine, true);
             assert!(
@@ -811,7 +702,7 @@ mod tests {
             let engine: SharedEngine = controlled;
             let mut guard = leased_guard();
             guard.history = Some(receipt.clone());
-            assert_eq!(guard.history_status(), Some(observed));
+            assert_eq!(guard.history_status(), Some(observed.clone()));
             let original = guard.lease.take();
             guard.lease = Lease::parse("11111111111111111111111111111111");
             assert!(
@@ -819,7 +710,7 @@ mod tests {
                 "another field cannot inherit an observation"
             );
             guard.lease = original;
-            receipt.history.lock().unwrap().as_mut().unwrap().1 = tilo_clock::now();
+            receipt.record_history(observed.clone(), tilo_clock::now());
             assert!(
                 guard.history_status().is_none(),
                 "expired observation is unavailable"

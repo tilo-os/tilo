@@ -1,5 +1,5 @@
 //! Focused widget IME intent shared by native windows and browser input bridges.
-pub use tilo_webview::{InputPurpose, edit_fingerprint};
+pub use tilo_presentation::text_input::{InputPurpose, edit_fingerprint};
 
 /// Scope a private field stamp to its editable subtarget inside one widget.
 pub fn scoped_fingerprint(scope: &[u8], field: [u8; 32], key: &[u8; 32]) -> [u8; 32] {

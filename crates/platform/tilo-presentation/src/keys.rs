@@ -6,6 +6,22 @@
 
 use winit::keyboard::{Key, KeyLocation};
 
+/// The modifier keys held with a press, as an engine and the toolkit both read them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one flag per physical modifier key, mirroring winit's own \
+              modifiers state; a browser app constructs this by field name \
+              across the crate boundary, so reshaping it into flags is out \
+              of scope for a lint fix"
+)]
+pub struct KeyModifiers {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
 /// The key `keysym` names and where on the keyboard it sits; `None` where
 /// this build has no X11 or Wayland host, so no keysym names anything here.
 ///

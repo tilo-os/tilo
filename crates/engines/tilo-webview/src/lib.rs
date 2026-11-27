@@ -123,131 +123,7 @@ mod scroll_marker;
 
 use std::sync::{Arc, Mutex};
 
-/// What a field holds, for an input method to pick its layout: an email field gets `@`, a
-/// phone field the dial pad, a PIN the digit pad.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum InputPurpose {
-    /// Free text.
-    #[default]
-    Text,
-    /// A person's name.
-    Name,
-    Search,
-    Email,
-    Url,
-    /// A number, with sign and decimal separator.
-    Number,
-    /// A number with a fractional part.
-    Decimal,
-    Phone,
-    /// Digits only, such as a pairing passkey.
-    Pin,
-    /// A code sent to the person to confirm a sign-in.
-    OneTimeCode,
-    Password,
-    Date,
-    Time,
-    /// A terminal, whose keyboard wants the extra keys.
-    Terminal,
-}
-
-/// Keyed, ephemeral equality check for a field's text and selection. This is invalidation
-/// metadata, never a persisted text hash or insertion authority.
-#[must_use]
-pub fn edit_fingerprint(text: &str, anchor: usize, focus: usize, key: &[u8; 32]) -> [u8; 32] {
-    let mut hash = blake3::Hasher::new_keyed(key);
-    hash.update(&anchor.to_le_bytes());
-    hash.update(&focus.to_le_bytes());
-    hash.update(text.as_bytes());
-    *hash.finalize().as_bytes()
-}
-
-/// What the live editing history of a page can do right now, as its engine reports it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct UndoStatus {
-    pub can_undo: bool,
-    pub can_redo: bool,
-    pub undo_summary: Option<String>,
-    pub redo_summary: Option<String>,
-}
-
-impl UndoStatus {
-    /// The status of a history in which nothing has happened yet.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Whether the verb `which` is available.
-    #[must_use]
-    pub fn can(&self, which: UndoRequest) -> bool {
-        match which {
-            UndoRequest::Undo => self.can_undo,
-            UndoRequest::Redo => self.can_redo,
-        }
-    }
-
-    #[must_use]
-    pub fn summary(&self, which: UndoRequest) -> Option<&str> {
-        match which {
-            UndoRequest::Undo => self.undo_summary.as_deref(),
-            UndoRequest::Redo => self.redo_summary.as_deref(),
-        }
-    }
-
-    /// The sentence an assistive technology should hear as the control's *description*:
-    /// what the verb would do, or the reason it is unavailable. `"Nothing to undo"` when
-    /// unavailable — never a description of an action that is not there.
-    #[must_use]
-    pub fn description(&self, which: UndoRequest) -> String {
-        if !self.can(which) {
-            return format!("Nothing to {}", which.verb());
-        }
-        match self.summary(which) {
-            Some(s) => format!("{}: {s}", which.title()),
-            None => which.title().to_string(),
-        }
-    }
-}
-
-/// A request that the host drive an editing history. The host performs it through the one
-/// undo implementation; a control never touches the stacks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UndoRequest {
-    Undo,
-    Redo,
-}
-
-impl UndoRequest {
-    /// Lower-case verb, for composed sentences (`"Nothing to undo"`).
-    #[must_use]
-    pub fn verb(self) -> &'static str {
-        match self {
-            Self::Undo => "undo",
-            Self::Redo => "redo",
-        }
-    }
-
-    /// Title-case label, for a control's accessible name.
-    #[must_use]
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::Undo => "Undo",
-            Self::Redo => "Redo",
-        }
-    }
-
-    /// The keyboard shortcut the host binds to this verb, for a tooltip — so the control
-    /// teaches the shortcut rather than replacing it.
-    #[must_use]
-    pub fn shortcut(self) -> &'static str {
-        match self {
-            Self::Undo => "Ctrl+Z",
-            Self::Redo => "Ctrl+Shift+Z",
-        }
-    }
-}
+pub use tilo_presentation::text_input::{InputPurpose, UndoRequest, UndoStatus, edit_fingerprint};
 
 /// Opt-in native diagnostics for an engine's receipt trace: the platform's clock a frame
 /// was read on, and one complete JSON row per observation on stderr.
@@ -406,20 +282,7 @@ pub enum KeyInput {
     Named(NamedKey),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "one flag per physical modifier key, mirroring winit's own \
-              modifiers state; a browser app constructs this by field name \
-              across the crate boundary, so reshaping it into flags is out \
-              of scope for a lint fix"
-)]
-pub struct KeyModifiers {
-    pub ctrl: bool,
-    pub shift: bool,
-    pub alt: bool,
-    pub meta: bool,
-}
+pub use tilo_presentation::keys::KeyModifiers;
 
 /// A key one of extensions' commands holds (`commands` in a manifest), as Chrome names it
 /// ("Y", "9", "Comma", "Up"), with its modifiers: `meta` is Command on macOS.
