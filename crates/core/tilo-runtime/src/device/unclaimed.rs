@@ -772,12 +772,15 @@ impl DeviceOnly {
     /// Answer the founding `invocation` of `person` once this device's services run: the start
     /// that follows the making of their root founds their own workspace before it serves them
     /// ([`super::services::found_account_person`]), so the founder hears back once the person has
-    /// one.
+    /// one. The call is kept as under way meanwhile: a founder whose wait for one answer ends
+    /// first follows it by its id, and reads this call, never founds again as the person it
+    /// just became.
     fn once_serving(
         &self,
         invocation: InvocationId,
         person: String,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let _ = self.keep(invocation, InvocationUpdate::Accepted { invocation });
         let (done, answer) = tilo_actions::remote::pending();
         let answering = self.clone();
         self.0.runtime.spawn(async move {

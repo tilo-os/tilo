@@ -397,6 +397,48 @@ fn a_founding_call_follows_a_person_part_that_starts_past_one_answer() {
     drop(environment);
 }
 
+const SLOW_PLAIN_FOUNDING_TEST: &str = "device::founding_tests::a_founding_with_no_tickets_follows_a_person_part_that_starts_past_one_answer";
+
+/// A founding that asks for no tickets, as a session that signed in with no person makes: its
+/// person's part starts more than the ten seconds one answer is waited for, and the follow that
+/// comes then reads the same call, answered with the person once they serve. It is never asked
+/// again as a founding from the person the call just made, which a computer refuses.
+#[test]
+fn a_founding_with_no_tickets_follows_a_person_part_that_starts_past_one_answer() {
+    let Some(profile) = isolated_root(SLOW_PLAIN_FOUNDING_TEST) else {
+        return;
+    };
+    let mut environment = isolated_environment();
+    environment.set("TILO_TEST_HOLD_BETWEEN_PARTS_MS", "11000");
+    let keys = tilo_api::calls::device_keys();
+    reset_identity(&keys);
+    let _ = std::fs::remove_file(&keys.device_privkey);
+    let running = crate::daemon::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+    let place = tilo_api::daemon::DaemonPlace::at(
+        socket.parent().expect("the native socket's directory"),
+        &profile,
+    );
+    let began = std::time::Instant::now();
+    let answer = place
+        .found(&tilo_api::daemon::Founding::default())
+        .expect("the founding call is answered");
+    let took = began.elapsed();
+    let answer = answer.expect("the founding call answered as if this computer served a person");
+    assert!(
+        answer["person"]
+            .as_str()
+            .is_some_and(|person| person.len() == 64),
+        "the founding call answered no person: {answer}"
+    );
+    assert!(
+        took > Duration::from_secs(10),
+        "the founding was answered before its person's part served: {took:?}"
+    );
+    running.stop().unwrap();
+    drop(environment);
+}
+
 const FOLLOW_ACROSS_START_TEST: &str =
     "device::founding_tests::a_foundings_follow_is_answered_across_its_persons_part_starting";
 
