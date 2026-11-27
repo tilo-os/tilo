@@ -306,6 +306,16 @@ pub fn reading_in<T>(language: Option<&str>, read: impl FnOnce() -> T) -> T {
     read()
 }
 
+/// `future`, every word it reads read as [`reading_in`] reads them each time it runs: the work a
+/// provider goes on with after its query returned, which may wake on any thread.
+pub fn reading_while<F: std::future::Future>(
+    language: Option<String>,
+    future: F,
+) -> impl std::future::Future<Output = F::Output> {
+    let mut future = Box::pin(future);
+    std::future::poll_fn(move |cx| reading_in(language.as_deref(), || future.as_mut().poll(cx)))
+}
+
 /// Let every kind published from now on be named through `resolver`.
 ///
 /// A host installs its catalogue's lookup once per process; a later call

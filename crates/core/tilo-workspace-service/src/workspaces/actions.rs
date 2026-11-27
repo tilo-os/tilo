@@ -4336,15 +4336,18 @@ impl ActionProvider for InWorkspace {
         };
         let (caller, workspace_id, certificate) =
             (caller.clone(), self.workspace_id, self.certificate.clone());
-        self.server.spawn(async move {
-            let certificate = match certificate {
-                Some(certificate) => Some(certificate),
-                None => workspaces.callers_certificate(workspace_id, &caller).await,
-            };
-            Ok(workspaces
-                .catalogue(workspace_id, &caller, certificate.as_ref(), &query)
-                .await)
-        })
+        // Its rows are built after this returns: in the language the query asked in all the same.
+        let language = query.language.clone();
+        self.server
+            .spawn(tilo_resource::label::reading_while(language, async move {
+                let certificate = match certificate {
+                    Some(certificate) => Some(certificate),
+                    None => workspaces.callers_certificate(workspace_id, &caller).await,
+                };
+                Ok(workspaces
+                    .catalogue(workspace_id, &caller, certificate.as_ref(), &query)
+                    .await)
+            }))
     }
 
     fn invoke(

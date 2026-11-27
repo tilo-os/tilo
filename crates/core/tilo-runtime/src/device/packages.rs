@@ -37,7 +37,6 @@ pub use package_actions::PROVIDER;
 /// The device's package cache as an [`ActionProvider`].
 pub struct PackageCache {
     resource: String,
-    resources: Vec<ResourceSpec>,
     writer: Writer,
     log: Mutex<InvocationLog<Arc<Mutex<InvocationState>>>>,
 }
@@ -461,9 +460,6 @@ impl PackageCache {
     ) -> Self {
         let public = device.verifying_key().to_bytes();
         let resource = resource(&public);
-        let spec = tilo_resource::offer::<PackageReadings>(tilo_resource::offer::<PackageChanges>(
-            tilo_resource::typed_resource::<Packages>(&resource, "Packages"),
-        ));
         let rows = Arc::new(Rows {
             resource: resource.clone(),
             root: root.to_owned(),
@@ -473,7 +469,6 @@ impl PackageCache {
         });
         Self {
             resource,
-            resources: vec![spec],
             writer: Writer {
                 root: root.to_owned(),
                 device: tilo_app_package::SigningIdentity::from_signing_key(device.clone()),
@@ -868,7 +863,7 @@ impl ActionProvider for PackageCache {
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::published(
             PROVIDER,
-            &self.resources,
+            &self.resources(),
             &query,
         )))
     }
@@ -893,7 +888,7 @@ impl ActionProvider for PackageCache {
             InvokeArgument::None | InvokeArgument::Text(_) => serde_json::Map::new(),
         };
         if let Err(error) = tilo_actions::api::admit(
-            &self.resources,
+            &self.resources(),
             &request.target.address,
             &arguments,
             request.confirmation.as_ref(),
@@ -1150,6 +1145,16 @@ impl Followed {
 }
 
 impl PackageCache {
+    /// What the cache publishes, named in the language read now: built for each answer.
+    fn resources(&self) -> Vec<ResourceSpec> {
+        vec![tilo_resource::offer::<PackageReadings>(
+            tilo_resource::offer::<PackageChanges>(tilo_resource::typed_resource::<Packages>(
+                &self.resource,
+                "Packages",
+            )),
+        )]
+    }
+
     /// Install each version `workspace` names that the cache lacks, answering what it named.
     async fn keep_named(
         self: &Arc<Self>,

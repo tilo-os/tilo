@@ -285,6 +285,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     pub static PSEUDO_LOCALE: Cell<PseudoLocale> = const { Cell::new(PseudoLocale::Off) };
     pub static PSEUDO_REVISION: Cell<u64> = const { Cell::new(0) };
+    /// Whether this thread reads an answer's words in its caller's language ([`reading`]).
+    static READING_ANSWER: Cell<bool> = const { Cell::new(false) };
     /// Messages resolved without variables, under the manager and revision they were resolved at
     /// ([`I18nManager::lookup`]).
     static PLAIN_LOOKUPS: std::cell::RefCell<PlainLookups> = std::cell::RefCell::default();
@@ -743,14 +745,32 @@ pub fn install_resource_words() {
 /// This thread reading its words in `language` until the answer drops, its own words back then: a
 /// thread that keeps a window's words reads them as they are where `language` is `None`, any
 /// other the person's language ([`preferred_language`]). A language no catalogue has reads the
-/// source.
+/// source. Each language's words are kept on the thread between answers, so work that reads them
+/// each time it runs loads them once.
 #[cfg(feature = "model")]
 fn reading(language: Option<&str>) -> Box<dyn std::any::Any> {
-    struct Restored(Option<I18nManager>);
+    thread_local! {
+        static READERS: std::cell::RefCell<HashMap<String, I18nManager>> =
+            std::cell::RefCell::default();
+    }
+    struct Restored {
+        language: String,
+        own: Option<I18nManager>,
+        answering: bool,
+    }
     impl Drop for Restored {
         fn drop(&mut self) {
-            let own = self.0.take();
-            MANAGER.with(|slot| *slot.borrow_mut() = own);
+            READING_ANSWER.with(|reading| reading.set(self.answering));
+            let own = self.own.take();
+            if let Some(reader) =
+                MANAGER.with(|slot| std::mem::replace(&mut *slot.borrow_mut(), own))
+            {
+                READERS.with(|readers| {
+                    readers
+                        .borrow_mut()
+                        .insert(std::mem::take(&mut self.language), reader);
+                });
+            }
         }
     }
     let windowed = manager_id().is_some();
@@ -761,27 +781,37 @@ fn reading(language: Option<&str>) -> Box<dyn std::any::Any> {
         return Box::new(());
     };
     let locale = parse_locale_or_default(&language);
-    let own = Restored(MANAGER.with(|slot| slot.borrow_mut().take()));
-    I18nManager::replace(
-        parse_locale_or_default("en-US"),
-        locale.clone(),
-        vec![(locale.clone(), Vec::new())],
-        vec![locale.clone()],
-    );
-    // What is kept of the words read at a revision is kept for its language: one answer's
-    // words are never another language's.
-    let revision = {
-        use std::hash::{Hash as _, Hasher as _};
-        let mut hasher = std::hash::DefaultHasher::new();
-        locale.to_string().hash(&mut hasher);
-        hasher.finish() | (1 << 63)
-    };
-    MANAGER.with(|slot| {
-        if let Some(manager) = slot.borrow_mut().as_mut() {
-            manager.revision = revision;
-        }
-    });
-    Box::new(own)
+    let own = MANAGER.with(|slot| slot.borrow_mut().take());
+    let kept = READERS.with(|readers| readers.borrow_mut().remove(&language));
+    if let Some(reader) = kept {
+        MANAGER.with(|slot| *slot.borrow_mut() = Some(reader));
+    } else {
+        I18nManager::replace(
+            parse_locale_or_default("en-US"),
+            locale.clone(),
+            vec![(locale.clone(), Vec::new())],
+            vec![locale.clone()],
+        );
+        // What is kept of the words read at a revision is kept for its language: one answer's
+        // words are never another language's.
+        let revision = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::hash::DefaultHasher::new();
+            locale.to_string().hash(&mut hasher);
+            hasher.finish() | (1 << 63)
+        };
+        MANAGER.with(|slot| {
+            if let Some(manager) = slot.borrow_mut().as_mut() {
+                manager.revision = revision;
+            }
+        });
+    }
+    let answering = READING_ANSWER.with(|reading| reading.replace(true));
+    Box::new(Restored {
+        language,
+        own,
+        answering,
+    })
 }
 
 /// [`resource_label`] of a kind's noun, formatted with the count `1` (one of it) or `2` (several): the
@@ -1690,8 +1720,10 @@ impl EmbeddedCatalog {
         }
         // Only a first load pins: reading the packs again (any thread may ask
         // for that) must not undo a locale chosen since.
+        // A pin chooses a window's language, never the one an answer is read in ([`reading`]).
         if let Some(locale) = self.pinned_locale
             && !in_this_manager
+            && !READING_ANSWER.with(Cell::get)
         {
             I18nManager::set_locale(locale);
         }

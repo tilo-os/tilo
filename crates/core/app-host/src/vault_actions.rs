@@ -77,7 +77,8 @@ pub enum VaultAction {
     },
 }
 
-/// The package the vault's actions are published as, by their contracts.
+/// The package the vault's actions are published as, by their contracts, named in the language
+/// read now: built for each answer.
 fn resources() -> Vec<ResourceSpec> {
     let mut spec = tilo_resource::typed_resource::<VaultItem>(RESOURCE, PACKAGE_TITLE);
     spec.app_id = Some(PACKAGE.to_owned());
@@ -98,7 +99,6 @@ pub fn register(workspaces: &Workspaces) {
         Arc::new(VaultActions {
             workspaces: workspaces.clone(),
             runtime,
-            resources: resources(),
         }),
     );
 }
@@ -108,7 +108,6 @@ struct VaultActions {
     workspaces: Workspaces,
     /// Where a call reaches the vault: opening it reads the workspace, which is asynchronous.
     runtime: tokio::runtime::Handle,
-    resources: Vec<ResourceSpec>,
 }
 
 impl ActionProvider for VaultActions {
@@ -117,7 +116,7 @@ impl ActionProvider for VaultActions {
     }
 
     fn published(&self) -> Vec<ResourceSpec> {
-        self.resources.clone()
+        resources()
     }
 
     fn query(
@@ -125,11 +124,7 @@ impl ActionProvider for VaultActions {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        Pending::ready(Ok(CataloguePage::published(
-            PROVIDER,
-            &self.resources,
-            &query,
-        )))
+        Pending::ready(Ok(CataloguePage::published(PROVIDER, &resources(), &query)))
     }
 
     fn invoke(

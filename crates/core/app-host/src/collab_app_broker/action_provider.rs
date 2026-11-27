@@ -1942,8 +1942,10 @@ impl AppBrokerState {
             return self.query_directory(caller, &root, query);
         }
         let scope = RowScope::asked(query);
-        let (rows, providers) =
-            self.eager_catalogue_with_origin(caller, origin, scope, on_this_device);
+        // Every row is named in the language the query asks in, whichever provider builds it.
+        let (rows, providers) = tilo_resource::label::reading_in(query.language.as_deref(), || {
+            self.eager_catalogue_with_origin(caller, origin, scope, on_this_device)
+        });
         // Nothing at all may mean the workspace holds nothing, or that this
         // agent cannot reach it: only the first is an empty page.
         if rows.is_empty()

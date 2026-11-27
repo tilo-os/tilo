@@ -553,27 +553,30 @@ pub(crate) type Titles = Arc<dyn Fn(&str) -> String + Send + Sync>;
 pub(crate) struct LayoutActions {
     layouts: Arc<DeviceLayouts>,
     titles: Titles,
-    resources: Vec<ResourceSpec>,
     log: Mutex<InvocationLog<Arc<Mutex<InvocationState>>>>,
 }
 
 impl LayoutActions {
     /// The actions on the layouts of the workspaces `workspaces` keeps, naming apps by `titles`.
     pub(crate) fn new(workspaces: Arc<ServiceWorkspaces>, titles: Titles) -> Self {
-        let mut resource = tilo_resource::offer::<LayoutAction>(tilo_resource::typed_resource::<
-            LayoutRow,
-        >(RESOURCE, "Layout"));
-        resource.app_id = Some(PROVIDER.to_owned());
         Self {
             layouts: Arc::new(DeviceLayouts::new(workspaces)),
             titles,
-            resources: vec![resource],
             log: Mutex::default(),
         }
     }
 
+    /// What the layout publishes, named in the language read now: built for each answer.
+    fn resources() -> Vec<ResourceSpec> {
+        let mut resource = tilo_resource::offer::<LayoutAction>(tilo_resource::typed_resource::<
+            LayoutRow,
+        >(RESOURCE, "Layout"));
+        resource.app_id = Some(PROVIDER.to_owned());
+        vec![resource]
+    }
+
     /// What `request` asks, checked against the actions' parameters.
-    fn admit(&self, request: &InvokeRequest) -> Result<LayoutAction, ActionCallError> {
+    fn admit(request: &InvokeRequest) -> Result<LayoutAction, ActionCallError> {
         let address = &request.target.address;
         if request.target.provider != PROVIDER || address.resource != RESOURCE {
             return Err(ActionCallError::UnknownAction);
@@ -583,7 +586,7 @@ impl LayoutActions {
             InvokeArgument::None | InvokeArgument::Text(_) => Map::new(),
         };
         tilo_resource::decode::<LayoutAction>(
-            &self.resources,
+            &Self::resources(),
             RESOURCE,
             &address.action,
             &arguments,
@@ -650,7 +653,7 @@ impl ActionProvider for LayoutActions {
     }
 
     fn published(&self) -> Vec<ResourceSpec> {
-        self.resources.clone()
+        Self::resources()
     }
 
     fn query(
@@ -660,7 +663,7 @@ impl ActionProvider for LayoutActions {
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::published(
             PROVIDER,
-            &self.resources,
+            &Self::resources(),
             &query,
         )))
     }
@@ -670,7 +673,7 @@ impl ActionProvider for LayoutActions {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let action = match self.admit(&request) {
+        let action = match Self::admit(&request) {
             Ok(action) => action,
             Err(error) => return Pending::ready(Err(error)),
         };

@@ -95,7 +95,6 @@ pub enum LocationAction {
 /// This device's location as an [`ActionProvider`].
 pub struct Location {
     resource: String,
-    resources: Vec<tilo_actions::ResourceSpec>,
     locate: Arc<dyn Locate>,
     /// Whether `app` declared the `location` capability.
     declared: Arc<dyn Fn(&str) -> bool + Send + Sync>,
@@ -103,6 +102,8 @@ pub struct Location {
     switched_off: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
+/// What the location publishes on `resource`, named in the language read now: built for each
+/// answer.
 fn resources(resource: &str) -> Vec<tilo_actions::ResourceSpec> {
     let mut spec = tilo_resource::offer::<LocationAction>(tilo_resource::typed_resource::<
         LocationRow,
@@ -123,7 +124,6 @@ impl Location {
         switched_off: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Self {
         Self {
-            resources: resources(&resource),
             resource,
             locate,
             declared,
@@ -192,7 +192,7 @@ impl ActionProvider for Location {
     }
 
     fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
-        self.resources.clone()
+        resources(&self.resource)
     }
 
     fn query(
@@ -202,7 +202,7 @@ impl ActionProvider for Location {
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage::published(
             PROVIDER,
-            &self.resources,
+            &resources(&self.resource),
             &query,
         )))
     }

@@ -235,10 +235,11 @@ fn an_app_makes_changes_and_lists_environments() {
     );
 }
 
-/// A listing of the environments' verbs names each in the language its caller reads, whichever
-/// language the daemon's own process speaks: the same listing asked in German reads the German
-/// words of the declaring crate's catalogue, asked in English the English, and asked in a
-/// language no catalogue has the English source.
+/// A listing names its actions in the language its caller reads, whichever language the daemon's
+/// own process speaks, and whenever its provider builds the rows: every provider registered on
+/// the daemon, listed in German, shows no word in English that a catalogue has in German. Asked
+/// in English, the environments' rename reads the English, and asked in a language no catalogue
+/// has, the English source.
 #[test]
 fn a_listing_names_its_actions_in_the_callers_language() {
     let Some(root) = isolated_root(
@@ -250,24 +251,128 @@ fn a_listing_names_its_actions_in_the_callers_language() {
     let (tree, caller) = daemon
         .connection_tree_in(None)
         .expect("the person's own connection");
-    let rename = |language: &str| {
-        let query = tilo_actions::remote::CatalogueQuery {
-            provider: Some(environment_directory::PROVIDER.to_owned()),
+    let listed = |provider: &str, language: &str| {
+        let mut query = tilo_actions::remote::CatalogueQuery {
+            provider: Some(provider.to_owned()),
             language: Some(language.to_owned()),
             ..tilo_actions::remote::CatalogueQuery::default()
         };
-        answered(tree.query(&caller, query))
-            .expect("the listing is answered")
-            .rows
+        let mut labels = Vec::new();
+        for _ in 0..64 {
+            let Ok(page) = answered(tree.query(&caller, query.clone())) else {
+                break;
+            };
+            labels.extend(
+                page.rows
+                    .into_iter()
+                    .filter_map(|row| row.action)
+                    .map(|action| (action.address.action, action.action_label)),
+            );
+            if page.exhausted || page.next_cursor.is_empty() {
+                break;
+            }
+            query.cursor = page.next_cursor;
+            query.revision = Some(page.revision);
+        }
+        labels
+    };
+    let rename = |language: &str| {
+        listed(environment_directory::PROVIDER, language)
             .into_iter()
-            .filter_map(|row| row.action)
-            .find(|action| action.address.action == "rename")
+            .find(|(action, _)| action == "rename")
             .expect("the environments offer their rename")
-            .action_label
+            .1
     };
     assert_eq!(rename("de-DE"), "Umbenennen");
     assert_eq!(rename("en-US"), "Rename");
     assert_eq!(rename("tlh-QO"), "Rename");
+
+    // Words these actions write in English in their code, with no catalogue word of their own:
+    // they read in English in every language until they are declared, and match another
+    // crate's English only by chance.
+    let undeclared = [
+        "tilo.device-files#rename",
+        "tilo.device-files#copy-into",
+        "tilo.device-files#undo",
+        "tilo.offload#place",
+        "tilo.workspace#rename",
+        "tilo.device#info",
+        "tilo.device#logIn",
+        "tilo.device#issue",
+        "tilo.device#rename",
+    ];
+    let english = english_said_otherwise_in_german();
+    let mut in_english = Vec::new();
+    for registered in daemon.workspaces().providers().all() {
+        for (action, label) in listed(&registered.provider, "de-DE") {
+            let at = format!("{}#{action}", registered.provider);
+            if let Some(german) = english.get(&label)
+                && !undeclared.contains(&at.as_str())
+            {
+                in_english.push(format!("{at}: {label:?}, not {german:?}"));
+            }
+        }
+    }
+    assert!(in_english.is_empty(), "listed in English: {in_english:#?}");
+}
+
+/// Every catalogue's English words that its German says otherwise, with the German: a word no
+/// German catalogue uses as it is.
+fn english_said_otherwise_in_german() -> std::collections::HashMap<String, String> {
+    fn catalogues(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            if !path.is_dir() || name == "target" || name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if name == "locales" && path.join("de-DE.ftl").is_file() {
+                found.push(path);
+            } else {
+                catalogues(&path, found);
+            }
+        }
+    }
+    fn words(path: &Path) -> std::collections::HashMap<String, String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.starts_with([' ', '#', '.']))
+            .filter_map(|line| line.split_once(" = "))
+            .filter(|(_, text)| !text.contains('{') && !text.trim().is_empty())
+            .map(|(key, text)| (key.trim().to_owned(), text.trim().to_owned()))
+            .collect()
+    }
+    let mut found = Vec::new();
+    catalogues(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+        &mut found,
+    );
+    assert!(
+        found.len() > 10,
+        "the repository's catalogues are read: {found:?}"
+    );
+    let mut english = std::collections::HashMap::new();
+    let mut german_words = std::collections::HashSet::new();
+    for locales in found {
+        let (source, german) = (
+            words(&locales.join("en-US.ftl")),
+            words(&locales.join("de-DE.ftl")),
+        );
+        for (key, said) in &source {
+            if let Some(german) = german.get(key)
+                && german != said
+            {
+                english.insert(said.clone(), german.clone());
+            }
+        }
+        german_words.extend(german.into_values());
+    }
+    english.retain(|said, _| !german_words.contains(said));
+    english
 }
 
 /// This device and its person's connection: the daemon whose shell runtime is the supervisor at
