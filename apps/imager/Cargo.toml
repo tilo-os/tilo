@@ -75,7 +75,9 @@ tilo-test-env = { path = "../../tools/test-env", optional = true }
 # The host's own release, read instead of guessing from a file name.
 tilo-os-release = { version = "0.1.0", path = "../../crates/platform/os-release" }
 install-profile-model = { path = "../../crates/os/install-profile-model", features = ["model"] }
-tilo-keyboard-map = { path = "../../crates/desktop/tilo-keyboard-map" }
+# The installer's catalogue of layouts alone: the Imager runs on whatever Linux a machine has, and
+# reads no layouts installed there, so it links no libxkbcommon.
+tilo-keyboard-map = { path = "../../crates/desktop/tilo-keyboard-map", default-features = false }
 # The time zones the profile offers, as this machine reads them.
 tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["local"] }
 # The one maker of a machine's plan and its single-use token, shared with
