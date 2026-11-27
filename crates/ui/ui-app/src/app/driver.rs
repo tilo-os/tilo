@@ -3367,6 +3367,27 @@ impl Driver {
         let Some(action) = step.action() else {
             return Err(format!("{} is not an action to run", step.name()));
         };
+        if let Action::Press(press) = action {
+            // A press names what an earlier step bound as readily as a word it was written with:
+            // the row of a resource an action answered is the row this step opens.
+            let mut press = press.clone();
+            let filled = |value: &Option<String>| -> Result<Option<String>, String> {
+                let Some(value) = value else {
+                    return Ok(None);
+                };
+                match tilo_headless_schema::substitute(
+                    &serde_json::Value::String(value.clone()),
+                    bindings,
+                )? {
+                    serde_json::Value::String(found) => Ok(Some(found)),
+                    _ => Err("a press placeholder must name a string".into()),
+                }
+            };
+            press.name = filled(&press.name)?;
+            press.identity = filled(&press.identity)?;
+            press.resource = filled(&press.resource)?;
+            return self.press_control(&press);
+        }
         let Action::Invoke(invocation) = action else {
             return self.perform(action);
         };

@@ -46,4 +46,4 @@ invoke = { resource = "{{document.resources.0}}", action = "overwrite_bytes", ar
 invoke = { resource = "{{document.resources.0}}", action = "insert_bytes", args = { offset = 33, bytes = "2c 20 63 6f 66 66 65 65" } }
 
 [[situation.steps]]
-press = "notes.txt"
+press = { resource = "{{document.resources.0}}" }

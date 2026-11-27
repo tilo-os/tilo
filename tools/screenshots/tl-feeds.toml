@@ -18,7 +18,7 @@ perform = { target = "key:item:unread", action = "activate" }
 
 [[situation]]
 name = "article"
-title = "An article in a larger, sepia reader"
+title = "An article in the reader's own face, size and paper"
 scenario = "a library of feeds"
 workspace = true
 
@@ -27,6 +27,9 @@ invoke = { resource = "tl:so.tilo.feeds:root-u5mhrzrx", action = "begin_reading"
 
 [[situation.steps]]
 invoke = { resource = "{{reader.resources.0}}", action = "larger_text" }
+
+[[situation.steps]]
+invoke = { resource = "{{reader.resources.0}}", action = "set_face", args = { face = "sans" } }
 
 [[situation.steps]]
 invoke = { resource = "{{reader.resources.0}}", action = "set_paper", args = { paper = "sepia" } }

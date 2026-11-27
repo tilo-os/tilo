@@ -1,5 +1,7 @@
 # Settings: panes chosen in the window's sidebar. A pane is a row of its list,
-# which it publishes as `key:item:<pane>`.
+# which it publishes as `key:item:<pane>`; the network pane's own pages are rows
+# and buttons it answers a press on. Its Wi-Fi, VPN, modem and hotspot readings
+# are the `a connected computer` scenario's, so the panes show a person's device.
 
 [[situation]]
 name = "appearance"
@@ -81,6 +83,112 @@ perform = { target = "key:item:about", action = "activate" }
 [[situation]]
 name = "network"
 title = "Network"
+scenario = "a connected computer"
 
 [[situation.steps]]
 perform = { target = "key:item:network", action = "activate" }
+
+[[situation]]
+name = "network-all"
+title = "Network: every network in reach"
+scenario = "a connected computer"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }
+
+[[situation.steps]]
+press = "Show all networks"
+
+[[situation]]
+name = "network-known"
+title = "Network: the networks this device keeps"
+scenario = "a connected computer"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }
+
+[[situation.steps]]
+press = "Known networks"
+
+[[situation]]
+name = "network-wired"
+title = "Network: the wired link"
+scenario = "a connected computer"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }
+
+[[situation.steps]]
+press = "Wired network"
+
+[[situation]]
+name = "network-hidden"
+title = "Network: joining a network that does not say its name"
+scenario = "a connected computer"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }
+
+[[situation.steps]]
+press = "Join a hidden network"
+
+[[situation]]
+name = "network-hotspot"
+title = "Network: sharing this connection"
+scenario = "a connected computer"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }
+
+[[situation.steps]]
+press = "Hotspot"
+
+[[situation]]
+name = "network-vpn"
+title = "Network: the VPN profiles"
+scenario = "a connected computer"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }
+
+[[situation.steps]]
+press = "VPN"
+
+[[situation]]
+name = "network-vpn-profile"
+title = "Network: a WireGuard tunnel"
+scenario = "a connected computer"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }
+
+[[situation.steps]]
+press = "VPN"
+
+[[situation.steps]]
+press = "Studio"
+
+[[situation]]
+name = "network-vpn-add"
+title = "Network: adding a VPN"
+scenario = "a connected computer"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }
+
+[[situation.steps]]
+press = "VPN"
+
+[[situation.steps]]
+press = "Add a VPN"
+
+[[situation]]
+name = "network-mobile"
+title = "Network: mobile data through a modem"
+scenario = "a connected computer"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }
+
+[[situation.steps]]
+press = "Quectel RM520N"

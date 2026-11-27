@@ -1,0 +1,215 @@
+/// A computer on a home network, with a work VPN and a phone's modem beside it: the readings
+/// the network, VPN, mobile and hotspot panes show where no service runs beside the window, so
+/// a capture of the pane shows a person's device rather than an empty one.
+scenario "a connected computer" {
+    stage(
+        device.network,
+        device.Network(
+            wifi: device.Wifi(
+                available: true,
+                on: true,
+                hardware_blocked: false,
+                networks: [
+                    device.WifiNetwork(
+                        name: "Home",
+                        signal: 4,
+                        secure: true,
+                        known: true,
+                        connected: true,
+                        problem: .none,
+                    ),
+                    device.WifiNetwork(
+                        name: "Cafe Wien",
+                        signal: 3,
+                        secure: false,
+                        known: false,
+                        connected: false,
+                        problem: .none,
+                    ),
+                    device.WifiNetwork(
+                        name: "eduroam",
+                        signal: 2,
+                        secure: true,
+                        known: true,
+                        connected: false,
+                        problem: .none,
+                    ),
+                    device.WifiNetwork(
+                        name: "Studio-5G",
+                        signal: 2,
+                        secure: true,
+                        known: false,
+                        connected: false,
+                        problem: .none,
+                    ),
+                ],
+                scan_problem: .none,
+            ),
+            wired: .some(
+                device.Wired(
+                    connected: false,
+                    device: .some("enp0s31f6"),
+                    speed: .none,
+                    ipv4: .none,
+                ),
+            ),
+            mobile: device.Mobile(
+                available: true,
+                on: true,
+                profile: .some(
+                    device.MobileProfile(
+                        id: "telekom",
+                        name: "Telekom",
+                        apn: .some("internet.telekom"),
+                        roaming: false,
+                        metered: .automatic,
+                        autoconnect: true,
+                    ),
+                ),
+            ),
+            airplane_mode: false,
+            connectivity: .full,
+            link: .some(device.Link(kind: .wifi, name: .some("Home"), signal: 4)),
+            saved: [
+                device.SavedNetwork(
+                    name: "Home",
+                    profile: "uuid-home",
+                    kind: .wifi,
+                    autoconnect: true,
+                    last_used: .none,
+                    priority: 0,
+                    metered: .automatic,
+                    proxy: .none,
+                    hidden: false,
+                    open: false,
+                    ipv4: .none,
+                    wake: .none,
+                    enterprise: .none,
+                ),
+                device.SavedNetwork(
+                    name: "eduroam",
+                    profile: "uuid-eduroam",
+                    kind: .wifi,
+                    autoconnect: true,
+                    last_used: .none,
+                    priority: 0,
+                    metered: .automatic,
+                    proxy: .none,
+                    hidden: false,
+                    open: false,
+                    ipv4: .none,
+                    wake: .none,
+                    enterprise: .some(
+                        device.SavedEnterprise(
+                            identity: "ada@campus.example",
+                            ca_certificate: "/etc/pki/campus.pem",
+                        ),
+                    ),
+                ),
+            ],
+            ask_before_open_networks: false,
+            pending: [],
+            problem: .none,
+        ),
+    )
+    stage(
+        device.vpn,
+        device.Vpn(
+            profiles: [
+                device.VpnProfile(
+                    name: "Studio",
+                    id: "studio",
+                    kind: "wireguard",
+                    service: .none,
+                    connected: true,
+                    autoconnect: true,
+                    all_traffic: true,
+                    addresses: ["10.8.0.2/32"],
+                    dns: ["10.8.0.1"],
+                    mtu: .some(1420),
+                    endpoint: .some("vpn.studio.example.org:51820"),
+                    allowed_ips: ["10.8.0.0/24"],
+                    peer_public_key: .some("xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg="),
+                    keepalive: .some(25),
+                ),
+                device.VpnProfile(
+                    name: "Old office",
+                    id: "office",
+                    kind: "openvpn",
+                    service: .none,
+                    connected: false,
+                    autoconnect: false,
+                    all_traffic: false,
+                    addresses: [],
+                    dns: [],
+                    mtu: .none,
+                    endpoint: .some("vpn.office.example:1194"),
+                    allowed_ips: [],
+                    peer_public_key: .none,
+                    keepalive: .none,
+                ),
+            ],
+            plugins: [
+                device.VpnPluginKind(
+                    service: "org.freedesktop.NetworkManager.openvpn",
+                    name: "OpenVPN",
+                ),
+            ],
+            generated_key: .none,
+            pending: [],
+            problem: .none,
+        ),
+    )
+    stage(
+        device.modem,
+        device.Modem(
+            available: true,
+            modems: [
+                device.ModemUnit(
+                    path: "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2",
+                    name: "Quectel RM520N",
+                    state: .connected,
+                    failure: .none,
+                    lock: .none,
+                    retries: device.Retries(pin: .some(3), puk: .some(10)),
+                    pin_enabled: .some(true),
+                    signal: .some(72),
+                    technology: .some(.lte),
+                    operator: .some("Telekom"),
+                    operators: [],
+                    code: .none,
+                    registration: .home,
+                    network_type: .some("LTE"),
+                    network_types: ["LTE", "UMTS"],
+                    sims: [
+                        device.ModemSim(
+                            path: "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/sim1",
+                            slot: .some(1),
+                            active: true,
+                            operator: .some("Telekom"),
+                            label: "Telekom",
+                            kind: .physical,
+                        ),
+                    ],
+                    numbers: ["+49 170 0000000"],
+                    received: .none,
+                    sent: .none,
+                ),
+            ],
+            pending: [],
+            problem: .none,
+        ),
+    )
+    stage(
+        device.tethering,
+        device.Tethering(
+            available: true,
+            hotspot: false,
+            name: .some("Ada's frame.work"),
+            band: .automatic,
+            clients: [],
+            pending: [],
+            problem: .none,
+        ),
+    )
+}
