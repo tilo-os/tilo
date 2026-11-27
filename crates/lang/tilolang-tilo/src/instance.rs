@@ -648,7 +648,8 @@ impl Instance {
 
     /// Run with no window, for whoever invokes the app's actions: the root is opened for them to
     /// act on, but nobody opened it, so its `opened action` (what a person opening it does, such
-    /// as starting their window's state) never runs. Before the host starts.
+    /// as starting their window's state) does not run until a caller reads the view
+    /// ([`crate::instance::Instance::open_to_read`]). Before the host starts.
     pub fn without_window(&mut self) {
         self.windowless = true;
     }

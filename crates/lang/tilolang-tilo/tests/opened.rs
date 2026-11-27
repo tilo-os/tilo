@@ -234,9 +234,9 @@ fn a_window_opening_on_its_root_runs_what_opening_the_root_does() {
     );
 }
 
-/// An instance with no window opens no view of its own: nobody opened its root, so neither its
-/// views nor what opening the root does run. A caller that reads it opens the root for that
-/// read, and no opened action runs for a root nobody opened.
+/// An instance with no window opens no view of its own: nobody opened its root yet, so neither
+/// its views nor what opening the root does run. A caller that reads it opens the root for that
+/// read, as the person's window would, and what opening the root does runs.
 #[test]
 fn an_instance_with_no_window_opens_no_view_until_a_caller_reads_it() {
     let mut instance = windowless();
@@ -253,7 +253,7 @@ fn an_instance_with_no_window_opens_no_view_until_a_caller_reads_it() {
     );
 
     // A caller that reads it — an agent reading the window as text — opens its root for that
-    // read, and runs no opened action of it.
+    // read, and the lines it reads are what the person's window would hold.
     instance.open_to_read();
     assert!(
         !instance.shown_now().is_empty(),
@@ -261,8 +261,8 @@ fn an_instance_with_no_window_opens_no_view_until_a_caller_reads_it() {
     );
     assert_eq!(
         host.runtime().read(&inbox, "visits").unwrap(),
-        Value::Int(0),
-        "an instance with no window runs no opened action, read or not"
+        Value::Int(1),
+        "the read opened the root as the person's window does"
     );
 }
 

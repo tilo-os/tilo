@@ -68,11 +68,16 @@ impl Instance {
     /// Open the package's root view where none is open yet, so what its window would show can be
     /// read ([`Self::shown_now`]): an instance that shows nothing opens no view of its own until
     /// something reads it, and keeps it current from then on as a window's instance does.
+    ///
+    /// A caller reading the view opens it as its person's window would: what opening the root
+    /// does (a Terminal's session, Files' folder listing) runs, so the lines read are the app's
+    /// state and never a skeleton waiting for an opening that will not come.
     pub fn open_to_read(&mut self) {
         if self.root.is_none()
             && self.open_failed.is_none()
             && let Some(host) = self.host()
         {
+            self.windowless = false;
             self.open_root(&host);
         }
     }
@@ -96,7 +101,8 @@ impl Instance {
                 self.send_open(Level::Root, None);
                 // The window opening on its root is an opening too: a Terminal window's session
                 // opens its shell, as a session opened from a list does. An instance with no
-                // window is opened by nobody: what its callers open runs as they open it.
+                // window is opened by nobody, until a caller reads it
+                // ([`Self::open_to_read`]): that read is its opening, and runs what one does.
                 if !self.windowless {
                     self.run_opened(&target, 0);
                 }
@@ -300,8 +306,9 @@ impl Instance {
     /// (a search hit, an agent, a script) what it reaches outside waits for the person, as any
     /// call of theirs does. A person who may not change it opens it all the same, without the
     /// change. A past version or a scenario's capture is nobody opening anything, and changes
-    /// nothing; nor is an instance no window shows, which lays out what a call names (its root,
-    /// the record it was started on) for its callers alone. The caller commits what it planned.
+    /// nothing; nor is an instance no window shows, until a caller reads it
+    /// ([`Self::open_to_read`]), which opens it as the person's window does. The caller commits
+    /// what it planned.
     fn run_opened(&self, target: &ResourceRef, press: u64) {
         if self.mode != Mode::Live || self.windowless {
             return;
