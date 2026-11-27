@@ -23,10 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_actions::api::ActionAddress;
-use tilo_actions::remote::{
-    APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, RemoteActionTarget, workspace_provider,
-};
+use tilo_actions::remote::{Caller, InvokeArgument};
 use tilo_automation::dispatch::DocumentEvent;
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -39,8 +36,6 @@ use tilo_workspace_service::workspaces::Workspaces;
 const WORK: &str = "tl.so.tilo.tasks.Work";
 /// The app that keeps the workspace's notes.
 const NOTES: &str = "so.tilo.notes";
-/// The app that keeps the workspace's files: its one folder, the tree its members mount.
-const FILES: &str = "so.tilo.file-explorer";
 /// The longest name the folder of a task takes from its title, in characters.
 const MOST_FOLDER_TITLE_CHARS: usize = 80;
 /// How many sessions of a task may be lost in a row before Tasks begins no other.
@@ -465,6 +460,9 @@ impl TaskWork {
     /// with what its rules allow it of Files. A folder that is there is left as it is: every
     /// session asks, none makes a second one, and one its person took away is there again.
     ///
+    /// The workspace's folder is the device's action ([`tilo_action_services::device_files`]):
+    /// the device that holds the tree changes it, decided by the workspace's grants for Files.
+    ///
     /// # Errors
     /// The agent's rules refuse it Files, the path is none of the workspace, or the workspace
     /// did not take the change: why the folder is not there, in words the turn is told.
@@ -473,13 +471,7 @@ impl TaskWork {
         let mut arguments = Map::new();
         arguments.insert("parent".into(), json!(parent));
         arguments.insert("name".into(), json!(name));
-        let target = RemoteActionTarget {
-            provider: workspace_provider(&self.workspace),
-            address: ActionAddress {
-                resource: format!("{APPLICATION_RESOURCE_PREFIX}{FILES}"),
-                action: "new-folder".to_owned(),
-            },
-        };
+        let target = tilo_action_services::device_files::target("new-folder");
         let asked = InvokeArgument::Json(arguments);
         super::invoke_at(Arc::new(self.service.clone()), &self.caller, target, asked)
             .await
@@ -499,7 +491,7 @@ impl TaskWork {
         )
         .await;
         if let Err(error) = opened {
-            tracing::debug!(workspace = %self.workspace, %error, "Notes did not open for a task's note");
+            tracing::warn!(workspace = %self.workspace, %error, "Notes did not open for a task's note");
         }
         let mut arguments = Map::new();
         arguments.insert(

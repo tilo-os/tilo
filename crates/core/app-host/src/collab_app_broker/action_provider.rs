@@ -15,7 +15,8 @@ use tilo_actions::remote::{
     APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, CataloguePage, CatalogueProvider,
     CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
     InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
-    application_provider_resource, pending, provider_workspace, workspace_provider,
+    application_provider_resource, application_provider_token, pending, provider_workspace,
+    workspace_provider,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
@@ -102,6 +103,26 @@ pub(super) fn check_execution(caller: &Caller) -> Result<(), ActionCallError> {
         });
     }
     Ok(())
+}
+
+/// The workspace and application a call naming `workspace:<ws>` with an app's own address
+/// (`app.<app>#<verb>`) asks of that workspace: the app whose own action it names, when the
+/// caller works in that workspace. `None` for any other address, and for another workspace:
+/// a call is never carried into a workspace its caller is not in.
+fn workspace_app_call<'a>(
+    caller: &Caller,
+    request: &'a InvokeRequest,
+) -> Option<(&'a str, &'a str)> {
+    let workspace = provider_workspace(&request.target.provider)?;
+    if caller.workspace() != Some(workspace) {
+        return None;
+    }
+    let app_id = request
+        .target
+        .address
+        .resource
+        .strip_prefix(APPLICATION_RESOURCE_PREFIX)?;
+    (!app_id.is_empty() && !app_id.contains(':')).then_some((workspace, app_id))
 }
 
 pub(super) struct LaunchDestination {
@@ -2053,32 +2074,103 @@ impl AppBrokerState {
         if request.target.provider == tilo_action_services::own_device::PROVIDER {
             return Pending::ready(self.invoke_own_device(caller, origin, request));
         }
-        if let Some(origin) = origin {
-            if let Some(job) = self.remote_job(caller, &request.invocation) {
-                let replay = self.reserve_invocation(caller, request);
-                return Pending::ready(replay.map(|_| self.receipt_for(request.invocation, job)));
-            }
-            // Admission can sign and durably record an invocation. Keep only
-            // inert ownership on the UI turn; the broker revalidates it at dispatch.
-            let (reply, response) = pending();
-            let delivered = self.action_directory_request_queue().deliver(
-                super::ActionDirectoryBridgeRequest::InvokeEager(Box::new(
-                    super::EagerActionInvokeRequest {
-                        caller: caller.clone(),
-                        own_peer,
-                        launch: launch.cloned(),
-                        origin: origin.clone(),
-                        request: request.clone(),
-                        reply,
-                    },
-                )),
-            );
-            return match delivered {
-                Ok(()) => response,
-                Err(error) => Pending::ready(Err(bridge_error("the application", error))),
-            };
+        let answered = match origin {
+            Some(origin) => self.bridge_to_application(caller, (own_peer, launch, origin, request)),
+            None => self.invoke_eager(caller, own_peer, launch, None, request),
+        };
+        self.or_the_apps_own(caller, origin, request, answered)
+    }
+
+    /// Hand `request` to the app's live directory on this device, the answer arriving once the
+    /// directory's worker took it or refused it. Admission can sign and durably record an
+    /// invocation, so the turn keeps only inert ownership here; the broker revalidates it at
+    /// dispatch.
+    fn bridge_to_application(
+        self: &Arc<Self>,
+        caller: &Caller,
+        (own_peer, launch, origin, request): (
+            Option<u64>,
+            Option<&LaunchScope>,
+            &super::published_invocation::InvocationCaller,
+            &InvokeRequest,
+        ),
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if let Some(job) = self.remote_job(caller, &request.invocation) {
+            let replay = self.reserve_invocation(caller, request);
+            return Pending::ready(replay.map(|_| self.receipt_for(request.invocation, job)));
         }
-        self.invoke_eager(caller, own_peer, launch, None, request)
+        let (reply, response) = pending();
+        let delivered = self.action_directory_request_queue().deliver(
+            super::ActionDirectoryBridgeRequest::InvokeEager(Box::new(
+                super::EagerActionInvokeRequest {
+                    caller: caller.clone(),
+                    own_peer,
+                    launch: launch.cloned(),
+                    origin: origin.clone(),
+                    request: request.clone(),
+                    reply,
+                },
+            )),
+        );
+        match delivered {
+            Ok(()) => response,
+            Err(error) => Pending::ready(Err(bridge_error("the application", error))),
+        }
+    }
+
+    /// `answered`, unless the workspace answered nothing at all to a call naming one of its
+    /// apps' own actions (`workspace:<ws>` and `app.<app>#<verb>`): then the app that publishes
+    /// the verb answers it, by the same application dispatch any call to that app takes, with
+    /// its own grant checks. Every action is callable from anywhere — a person, an agent or a
+    /// script names the workspace it works in and the app's action, without having to know the
+    /// provider token the app's connection publishes it under.
+    ///
+    /// The workspace's own actions on an app are answered before this, never here: its open and
+    /// close, and the reads of its folder the workspace's listing offers.
+    fn or_the_apps_own(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        request: &InvokeRequest,
+        answered: Pending<Result<InvocationReceipt, ActionCallError>>,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let Some((workspace, app_id)) = workspace_app_call(caller, request) else {
+            return answered;
+        };
+        let mut to_app = request.clone();
+        to_app.target.provider = application_provider_token(workspace, app_id);
+        let state = Arc::clone(self);
+        let caller = caller.clone();
+        let origin = origin.cloned();
+        let (completer, answer) = pending();
+        answered.then(move |outcome| {
+            let unanswered = match &outcome {
+                Some(Err(error)) => *error == ActionCallError::UnknownAction,
+                Some(Ok(receipt)) => matches!(
+                    &receipt.status,
+                    ReceiptStatus::Rejected { error } if *error == ActionCallError::UnknownAction
+                ),
+                None => false,
+            };
+            if !unanswered || completer.is_abandoned() {
+                completer.complete(outcome.unwrap_or_else(|| {
+                    Err(ActionCallError::Unavailable {
+                        reason: "the workspace's dispatch dropped the call".into(),
+                    })
+                }));
+                return;
+            }
+            state
+                .invoke_application(&caller, (origin.as_ref(), None), &to_app)
+                .then(move |answered| {
+                    completer.complete(answered.unwrap_or_else(|| {
+                        Err(ActionCallError::Unavailable {
+                            reason: "the app's dispatch dropped the call".into(),
+                        })
+                    }));
+                });
+        });
+        answer
     }
 
     /// Run `request`, a call to an app, on this device: by the provider an app registered for
