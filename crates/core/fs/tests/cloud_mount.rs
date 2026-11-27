@@ -910,7 +910,7 @@ impl tilo_fs::cloud::Ask for TestAsk {
             // The daemon lists a workspace it keeps here: only those it can enter are asked
             // for their accounts.
             ("tilo.account", "list") => Ok(serde_json::json!({
-                "workspaces": [{"id": "workspace-1", "kept_here": true}]
+                "workspaces": [{"id": "workspace-1", "name": "Work", "kept_here": true}]
             })),
             ("tilo.accounts", "cloud-accounts") => Ok(serde_json::json!({
                 "accounts": state

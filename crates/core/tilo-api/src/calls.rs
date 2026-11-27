@@ -34,6 +34,11 @@ use crate::session::Provider;
 use crate::v1::answers;
 use crate::v1::errors::ApiError;
 
+/// The account's declared actions, and the records their answers read as.
+pub mod account_actions {
+    tilo_resource_macros::bindings!(provider = "tilo.account", surface = "account-surface.json");
+}
+
 /// The workspace's vault, as the service that keeps it publishes its actions.
 mod vault_actions {
     tilo_resource_macros::bindings!(
@@ -947,13 +952,20 @@ impl Calls {
             .map_or_else(|| json!({}), Value::take))
     }
 
-    /// The workspaces these calls reach, as `account/workspaces#list` lists them:
-    /// `{"workspaces": [...]}`.
+    /// The workspaces these calls reach, as `account/workspaces#list` lists them.
     ///
     /// # Errors
-    /// The listing was refused.
-    pub async fn workspaces(&self) -> Result<Value> {
-        self.account("account/workspaces", "list", &json!({})).await
+    /// The listing was refused, or answered other than its declaration says.
+    pub async fn workspaces(&self) -> Result<account_actions::AccountWorkspaces> {
+        let listed = self
+            .account(
+                account_actions::account_workspaces::RESOURCE,
+                account_actions::account_workspaces::LIST,
+                &json!({}),
+            )
+            .await?;
+        serde_json::from_value(listed)
+            .map_err(|error| anyhow!("the account's workspace list: {error}"))
     }
 
     /// The workspace `named`: an id as it is, or the workspace of that name these calls reach,
@@ -967,32 +979,20 @@ impl Calls {
             return Ok(named.to_owned());
         }
         let listed = self.workspaces().await?;
-        let workspaces = listed
-            .get("workspaces")
-            .and_then(Value::as_array)
-            .map_or(&[] as &[Value], Vec::as_slice);
         let wanted = slug(named);
-        let matched: Vec<&Value> = workspaces
+        let matched: Vec<&account_actions::Workspace> = listed
+            .workspaces
             .iter()
-            .filter(|workspace| {
-                workspace
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| slug(name) == wanted)
-            })
+            .filter(|workspace| slug(&workspace.name) == wanted)
             .collect();
         match matched.as_slice() {
-            [one] => one
-                .get("id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| anyhow!("the workspace called {named:?} has no id")),
-            [] if workspaces.is_empty() => Err(anyhow!(
+            [one] => Ok(one.id.clone()),
+            [] if listed.workspaces.is_empty() => Err(anyhow!(
                 "no workspace called {named:?}: this key reaches no workspaces"
             )),
             [] => Err(anyhow!(
                 "no workspace called {named:?}: this key reaches {}",
-                named_workspaces(workspaces)
+                named_workspaces(&listed.workspaces)
             )),
             several => Err(anyhow!(
                 "more than one workspace is called {named:?}: {}; name one by its id",
@@ -1013,9 +1013,9 @@ impl Calls {
         }
         self.workspaces()
             .await?
-            .pointer("/workspaces/0/id")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+            .workspaces
+            .first()
+            .map(|workspace| workspace.id.clone())
             .ok_or_else(|| {
                 anyhow!(
                     "This computer holds none of your workspaces. Add it from a device of yours \
@@ -1738,19 +1738,12 @@ pub fn slug(name: &str) -> String {
 
 /// The workspaces a listing names, each as `Name (id ID)`: what an error says a key reaches, so
 /// the person knows which name or id to type instead.
-fn named_workspaces<'a>(workspaces: impl IntoIterator<Item = &'a Value>) -> String {
+fn named_workspaces<'a>(
+    workspaces: impl IntoIterator<Item = &'a account_actions::Workspace>,
+) -> String {
     workspaces
         .into_iter()
-        .map(|workspace| {
-            let name = workspace
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unnamed");
-            match workspace.get("id").and_then(Value::as_str) {
-                Some(id) => format!("{name} (id {id})"),
-                None => name.to_owned(),
-            }
-        })
+        .map(|workspace| format!("{} (id {})", workspace.name, workspace.id))
         .collect::<Vec<_>>()
         .join(", ")
 }

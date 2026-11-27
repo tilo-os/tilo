@@ -76,6 +76,22 @@ struct App {
     surface: String,
 }
 
+/// A service whose actions a workspace answers, as the fleet names it: its id, the
+/// name people call it, and the surface file its own code writes beside its crate. Its actions are
+/// the workspace's, so a program of another language reaches them as it reaches an app's.
+const SERVICES: [(&str, &str, &str); 2] = [
+    (
+        "tilo.workspace",
+        "Workspace",
+        "crates/core/tilo-workspace-service/workspace-surface.json",
+    ),
+    (
+        "tilo.account",
+        "Account",
+        "crates/core/tilo-api/account-surface.json",
+    ),
+];
+
 fn main() -> Result<(), Box<dyn Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
@@ -89,7 +105,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "cargo::warning=tilo-fleet-catalogue: {} holds no apps, so this build compiles an empty fleet",
             apps_dir.display()
         );
-        return write(&render(&[], None));
+        return write(&render(&[], &[]));
     }
     let mut apps: Vec<App> = Vec::new();
     watch(&apps_dir);
@@ -115,8 +131,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let sections = root.join("crates/desktop/settings-sections/published.json");
     watch(&sections);
     let sections_surface = fs::read_to_string(&sections)?;
+    // The services whose actions are the workspace's, each from the file its own code writes.
+    let mut services: Vec<(&str, &str, String)> = SERVICES
+        .iter()
+        .map(|(id, name, file)| {
+            let path = root.join(file);
+            watch(&path);
+            Ok((*id, *name, fs::read_to_string(&path)?))
+        })
+        .collect::<Result<_, std::io::Error>>()?;
+    services.push((
+        "so.tilo.settings.sections",
+        "Settings sections",
+        sections_surface,
+    ));
     claim_each_id(&apps)?;
-    write(&render(&apps, Some(&sections_surface)))
+    write(&render(&apps, &services))
 }
 
 /// Write the fleet's module into `OUT_DIR`, where it is included from.
@@ -191,15 +221,15 @@ fn claim_each_id(apps: &[App]) -> Result<(), Box<dyn Error>> {
 }
 
 /// The fleet's Rust module: every listed app's entry, and every package's surfaced declarations.
-fn render(apps: &[App], sections: Option<&str>) -> String {
+fn render(apps: &[App], services: &[(&str, &str, String)]) -> String {
     let mut out = String::from(
         "// What every app commits about itself, gathered by this crate's build script from each\n\
          // app's `fleet.json` (`tilolang describe --fleet --write`). Not edited by hand.\n\n\
          use super::FleetApp;\n\n",
     );
     let listed: Vec<&App> = apps.iter().filter(|app| app.entry.listed).collect();
-    out.push_str(&surfaces(apps, sections));
-    out.push_str(&surface_names(apps, sections.is_some()));
+    out.push_str(&surfaces(apps, services));
+    out.push_str(&surface_names(apps, services));
     out.push_str("pub(super) const APPS: &[FleetApp] = &[\n");
     for app in &listed {
         out.push_str(&app_module(app));
@@ -209,7 +239,7 @@ fn render(apps: &[App], sections: Option<&str>) -> String {
 }
 
 /// Each package's compiled surface, as its package ships it.
-fn surfaces(apps: &[App], sections: Option<&str>) -> String {
+fn surfaces(apps: &[App], services: &[(&str, &str, String)]) -> String {
     let mut out = String::from(
         "/// Each package's compiled surface, as its package ships it: what a task's programs\n\
          /// compile against there, and what the SDK's types and the API's description describe,\n\
@@ -224,10 +254,10 @@ fn surfaces(apps: &[App], sections: Option<&str>) -> String {
             &format!("    ({}, {}),", quoted(&app.entry.id), quoted(&app.surface)),
         );
     }
-    if let Some(sections) = sections {
+    for (id, _, surface) in services {
         line(
             &mut out,
-            &format!("    (\"so.tilo.settings.sections\", {}),", quoted(sections)),
+            &format!("    ({}, {}),", quoted(id), quoted(surface)),
         );
     }
     out.push_str("];\n\n");
@@ -235,7 +265,7 @@ fn surfaces(apps: &[App], sections: Option<&str>) -> String {
 }
 
 /// The name of each package that ships a surface.
-fn surface_names(apps: &[App], sections: bool) -> String {
+fn surface_names(apps: &[App], services: &[(&str, &str, String)]) -> String {
     let mut out = String::from(
         "/// The name of each package that ships a surface (`SURFACES`), including the services\n\
          /// the fleet does not list.\n\
@@ -252,10 +282,10 @@ fn surface_names(apps: &[App], sections: bool) -> String {
             ),
         );
     }
-    if sections {
+    for (id, name, _) in services {
         line(
             &mut out,
-            "    (\"so.tilo.settings.sections\", \"Settings sections\"),",
+            &format!("    ({}, {}),", quoted(id), quoted(name)),
         );
     }
     out.push_str("];\n\n");

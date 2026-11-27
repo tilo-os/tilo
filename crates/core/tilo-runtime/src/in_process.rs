@@ -131,18 +131,16 @@ impl Device {
             .runtime
             .block_on(async { Self::calls().await?.workspaces().await })?;
         let workspaces = listed
-            .get("workspaces")
-            .and_then(Value::as_array)
+            .workspaces
             .into_iter()
-            .flatten()
-            .filter_map(|workspace| {
-                let key = workspace.get("id")?.as_str()?.to_owned();
-                let name = workspace
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&key)
-                    .to_owned();
-                Some(Workspace { key, name })
+            .map(|workspace| {
+                let key = workspace.id;
+                let name = if workspace.name.is_empty() {
+                    key.clone()
+                } else {
+                    workspace.name
+                };
+                Workspace { key, name }
             })
             .collect();
         Ok(Devices {

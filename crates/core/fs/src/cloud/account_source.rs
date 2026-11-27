@@ -26,12 +26,19 @@ use accounts::{Account, AccountId, SyncHealth};
 use cloud_source::{Credential, CredentialSource};
 use serde_json::{Map, Value};
 use tilo_action_line::LineClient;
-use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
+
+/// The person's workspaces, as the API's account publishes them.
+mod account {
+    tilo_resource_macros::bindings!(
+        provider = "tilo.account",
+        surface = "../tilo-api/account-surface.json"
+    );
+}
 
 /// The workspace's accounts, as the service that keeps them publishes their actions.
 mod workspace_accounts {
@@ -237,13 +244,19 @@ impl SessionAccounts {
 impl Inner {
     /// Ask for the accounts and keep what is told. Whether they changed since `after`.
     fn fetch(&self) -> Result<bool, Asked> {
-        let list = self.ask.invoke(
+        let listed: account::AccountWorkspaces = serde_json::from_value(self.ask.invoke(
             None,
-            account_target("account/workspaces", "list"),
+            account::account_workspaces::list(),
             Map::new(),
-        )?;
+        )?)
+        .map_err(|error| Asked::Refused(format!("the account's workspace list: {error}")))?;
         let mut accounts = Vec::new();
-        for workspace in workspaces_of(&list) {
+        for workspace in listed
+            .workspaces
+            .into_iter()
+            .filter(|workspace| workspace.kept_here)
+            .map(|workspace| workspace.id)
+        {
             let listed = match self.ask.invoke(
                 Some(&workspace),
                 workspace_accounts::accounts::cloud_accounts(),
@@ -282,43 +295,6 @@ impl Inner {
     fn workspace_of(&self, account: &AccountId) -> Option<String> {
         self.held(account, |held| held.workspace.clone())
     }
-}
-
-/// The target of `action` of `resource` under the person's account provider.
-fn account_target(resource: &str, action: &str) -> RemoteActionTarget {
-    target("tilo.account", resource, action)
-}
-
-fn target(provider: &str, resource: &str, action: &str) -> RemoteActionTarget {
-    RemoteActionTarget {
-        provider: provider.to_owned(),
-        address: ActionAddress::new(resource, action),
-    }
-}
-
-/// The workspaces the account's list names, as the daemon calls them.
-fn workspaces_of(listed: &Value) -> Vec<String> {
-    listed
-        .get("workspaces")
-        .and_then(Value::as_array)
-        .map_or_else(Vec::new, |workspaces| {
-            workspaces
-                .iter()
-                .filter(|workspace| {
-                    workspace
-                        .get("kept_here")
-                        .and_then(Value::as_bool)
-                        .unwrap_or_default()
-                })
-                .filter_map(|workspace| {
-                    workspace
-                        .get("id")
-                        .or_else(|| workspace.get("workspace"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .collect()
-        })
 }
 
 /// The file accounts `listed` holds for `workspace`.

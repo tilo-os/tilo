@@ -1527,8 +1527,10 @@ inputs = [
   "os/usr/share/tilo/fs-capabilities.json", "crates/engines/doc-fixtures/artifacts.json",
   "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
   "tools/test-assets.py", "tools/test-assets-build.rs",
-  # A mount binds its calls of the workspace's accounts to the surface their service publishes.
+  # A mount binds its calls of the workspace's accounts and of the person's workspaces to the
+  # surfaces their services publish.
   "crates/core/workspace-records/accounts-surface.json",
+  "crates/core/tilo-api/account-surface.json",
 ]
 readers = [
   "crates/core/fs/src/main.rs",

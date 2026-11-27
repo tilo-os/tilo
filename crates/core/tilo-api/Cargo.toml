@@ -39,6 +39,8 @@ tilo-action-calls = { version = "0.1.0", path = "../action-calls" }
 tilo-invocations = { version = "0.1.0", path = "../invocations" }
 # The calls of other services this crate makes, bound at build time to the surfaces they publish.
 tilo-resource-macros = { path = "../tilo-resource-macros" }
+# The account's actions are declared once as typed effects, and its surface is read from them.
+tilo-resource = { path = "../tilo-resource" }
 tilo-session-client = { path = "../session-client" }
 # The worker that decides a workspace's governance: the sessions here admit it.
 tilo-automerge-isolate.workspace = true
@@ -83,6 +85,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
+# Compiles the account's surface as `account-surface.json` carries it.
+tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 

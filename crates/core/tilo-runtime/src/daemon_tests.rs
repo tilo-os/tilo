@@ -2866,11 +2866,8 @@ fn a_client_in_the_persons_own_daemons_process_is_answered_at_once() {
             .expect("the person's account is answered")
     };
     assert!(
-        listed
-            .get("workspaces")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|listed| !listed.is_empty()),
-        "the person's workspace is listed: {listed}"
+        !listed.workspaces.is_empty(),
+        "the person's workspace is listed: {listed:?}"
     );
     assert!(
         asked.elapsed() < Duration::from_secs(10),
