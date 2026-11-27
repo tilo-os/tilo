@@ -326,17 +326,23 @@ fn a_shell_on_a_fractional_scale_display_draws_at_that_scale() {
 }
 
 /// The shell's bar sits at the top of the display at every scale: its band starts at the display's
-/// very top and covers the same logical height at 2 as at 1, rather than being a band drawn at one
-/// scale and stretched over twice the area (which puts its edge where the panel's pixels say not).
+/// very top and covers the same logical height at a fractional scale as at 1 or 2, rather than
+/// being drawn at one scale and stretched over another (which puts its edge where the panel's
+/// pixels say not). What the shell paints under the bar lands in the box its layout names, too: a
+/// scene scaled twice would put the cards' title at half the display again.
 #[test]
 fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut bands = Vec::new();
-    for (scale, pixels) in [(1.0, 1), (2.0, 2)] {
+    for (scale, width, height) in [
+        (1.0, WIDTH, HEIGHT),
+        (1.5, WIDTH * 3 / 2, HEIGHT * 3 / 2),
+        (2.0, WIDTH * 2, HEIGHT * 2),
+    ] {
         let mut session = crate::common::headless_on(
-            &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
+            &[OutputConfig::new("HEADLESS-1", width, height).with_scale(scale)],
             Options {
-                person: "Pat".to_owned(),
+                person: PERSON.to_owned(),
                 ..Options::default()
             },
         );
@@ -347,6 +353,29 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
             .compositor()
             .screenshot("HEADLESS-1")
             .expect("a frame");
+        let tree = shell_tree(&session);
+        // What the part laid out: the bar's band at the very top, and the cards' title below it.
+        let bar = tree
+            .iter()
+            .filter(|(_, node)| node.label() == Some("Top bar"))
+            .filter_map(|(_, node)| node.bounds())
+            .find(|bounds| bounds.y0 <= 0.0)
+            .unwrap_or_else(|| panic!("the tree names the top bar at the display's edge"));
+        assert!(
+            (bar.height() / scale - 40.0).abs() <= 1.0,
+            "the bar's band is 40 logical pixels tall at scale {scale}: {}",
+            bar.height() / scale
+        );
+        let title = tree
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some("Start something"))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .expect("the start cards' title is in the tree");
+        // What the frame painted: the bar's ground along the display's top, and the title's
+        // glyphs inside the box its layout names.
         let x = shot.width * 3 / 4;
         let ground = shot.pixel(x, 4).expect("a pixel of the bar");
         let (mut first, mut last) = (None, 0);
@@ -357,23 +386,67 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
             }
         }
         let first = first.unwrap_or(0);
-        bands.push((f64::from(first) / scale, f64::from(last + 1) / scale));
+        let x0 = tilo_ui_base::num::u32_of_f64(title.x0.max(0.0));
+        let y0 = tilo_ui_base::num::u32_of_f64(title.y0.max(0.0));
+        let x1 = tilo_ui_base::num::u32_of_f64(title.x1);
+        let y1 = tilo_ui_base::num::u32_of_f64(title.y1);
+        let mut bright = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if shot.pixel(x, y).is_some_and(|pixel| {
+                    u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2]) > 330
+                }) {
+                    bright += 1;
+                }
+            }
+        }
+        assert!(
+            bright > 0,
+            "the start cards' title is painted inside its box at scale {scale}: {title:?}, \
+             {bright} bright pixels"
+        );
+        bands.push((scale, f64::from(first) / scale, f64::from(last + 1) / scale));
     }
-    let (first_1, end_1) = bands[0];
-    let (first_2, end_2) = bands[1];
-    assert!(
-        (first_2 - first_1).abs() <= 0.5,
-        "the shell's bar starts at the same logical row at 1 and 2: {first_1} then {first_2}"
-    );
-    assert!(
-        (end_2 - end_1).abs() <= 1.0,
-        "the shell's bar covers the same logical height at 1 and 2: {end_1} then {end_2}"
-    );
-    assert!(
-        first_1 <= 0.0 && first_2 <= 0.0,
-        "the shell's bar ground reaches the display's very top edge, with no rule \
-         a pixel inside it: it begins at logical {first_1} at 1 and {first_2} at 2"
-    );
+    for (scale, first, end) in &bands {
+        assert!(
+            *first <= 0.0,
+            "the shell's bar ground reaches the display's very top edge at scale {scale}: it \
+             begins at logical {first}"
+        );
+        assert!(
+            (end - 40.0).abs() <= 1.0,
+            "the shell's bar covers 40 logical pixels at scale {scale}: it ends at {end}"
+        );
+    }
+}
+
+/// The tree the shell's part exports, as a screen reader reads it.
+fn shell_tree(session: &Session) -> Vec<(ui::accesskit::NodeId, Node)> {
+    windows(session)
+        .into_iter()
+        .find(|(_, name, _)| name == "Desktop shell")
+        .map(|(_, _, tree)| tree.nodes)
+        .expect("the shell's window")
+}
+
+/// Wait for the part on `output` to draw `name`: the move that put it there is the session's, not
+/// a frame's, so the shell draws the new arrangement on the passes after it. A window still
+/// starting spins, so the shell need not come to rest for this to hold.
+fn draws_on(session: &mut Session, output: &str, name: &str) {
+    crate::common::steps_within(session, Duration::from_secs(60), |session| {
+        let parts = session.shell_parts();
+        let index = parts.iter().position(|part| part.output == output)?;
+        shell_trees(session)
+            .get(index)
+            .filter(|tree| tree_says(tree, name))
+            .map(|_| ())
+    })
+    .unwrap_or_else(|| {
+        panic!(
+            "the part on {output} draws {name}: {:?}",
+            shell_trees(session)
+        )
+    });
 }
 
 /// A bar flush with the display's edges paints them in its own colour: its top row and its first
@@ -764,7 +837,10 @@ fn each_display_draws_its_own_strip_and_only_the_primary_carries_the_whole_bar()
     // Each display's part says its own strip's window and no other's, as a screen reader reads
     // each display's page. The move is the session's, not a frame's: the shell draws the new
     // arrangement on the passes after it, and what a screen reader reads is that frame.
-    until_at_rest(&mut session);
+    let first_output = output_of(&mut session, first_display);
+    let second_output = output_of(&mut session, second_display);
+    draws_on(&mut session, &first_output, &shown_first);
+    draws_on(&mut session, &second_output, &shown_second);
     part_showing(&mut session, &shown_first);
     part_showing(&mut session, &shown_second);
     let trees = shell_trees(&session);
@@ -898,9 +974,11 @@ fn a_part_made_before_a_layout_reads_it_too() {
     move_to(&mut session, second);
     // The move is the session's, not a frame's: the parts draw the arrangement it made on the
     // passes after it, and what a screen reader reads is that frame.
-    until_at_rest(&mut session);
     let shown = crate::common::drawn_name(&session, &titles[1]);
     let first_shown = crate::common::drawn_name(&session, &titles[0]);
+    let moved_display = shown_on(&session, second).expect("a display");
+    let moved_output = output_of(&mut session, moved_display);
+    draws_on(&mut session, &moved_output, &shown);
     part_showing(&mut session, &shown);
     part_showing(&mut session, &first_shown);
     let trees = shell_trees(&session);

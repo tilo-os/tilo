@@ -9,7 +9,7 @@ use tilo_session_core::surface::{
 
 use ui::headless::Driver;
 use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
-use vello::kurbo::Affine;
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, WindowEvent};
@@ -118,18 +118,20 @@ impl LiftedLayer {
         let ((x, y), (width, height)) = self.rect;
         let (x, y) = (f64::from(x), f64::from(y));
         let (width, height) = (f64::from(width), f64::from(height));
+        // The part's own scene is drawn in the frame's device pixels, at its bounds there; its
+        // pose is read from it the same way, and kept in the logical pixels a layer is posed in.
         let pose = LayerPose {
             scale: lifted.pose.scale,
             opacity: lifted.pose.opacity,
             anchor: (
-                (lifted.pose.pivot.x - x) / width,
-                (lifted.pose.pivot.y - y) / height,
+                (lifted.pose.pivot.x / scale - x) / width,
+                (lifted.pose.pivot.y / scale - y) / height,
             ),
-            offset: (lifted.pose.offset.x, lifted.pose.offset.y),
+            offset: (lifted.pose.offset.x / scale, lifted.pose.offset.y / scale),
         };
         let posed = pose != self.pose;
         self.pose = pose;
-        let to_device = Affine::scale(scale).pre_translate((-x, -y).into());
+        let to_device = Affine::translate((-x * scale, -y * scale));
         self.scene.reset();
         self.scene.append(&lifted.scene, Some(to_device));
         let size = self.frames.size();
@@ -617,7 +619,15 @@ impl WidgetSurface {
         let mut kept = Vec::with_capacity(self.host.lifted().len());
         let mut changed = false;
         for lifted in self.host.lifted() {
-            let Some(rect) = whole_pixels(lifted.bounds, size) else {
+            // The part's bounds are in the frame's device pixels; the layer is placed in the
+            // logical ones the compositor poses it in.
+            let bounds = Rect::new(
+                lifted.bounds.x0 / scale,
+                lifted.bounds.y0 / scale,
+                lifted.bounds.x1 / scale,
+                lifted.bounds.y1 / scale,
+            );
+            let Some(rect) = whole_pixels(bounds, size) else {
                 continue;
             };
             let physical = Placement {
@@ -1138,10 +1148,11 @@ impl ShellSurface for WidgetSurface {
             return false;
         }
         self.revision = self.revision.wrapping_add(1);
-        let scale = self.placement.scale;
         self.scene.reset();
-        self.scene
-            .append(self.host.scene(), Some(Affine::scale(scale)));
+        // The host painted this frame in the surface's device pixels already
+        // ([`ui::app::Driver::scene`]): it is the frame as it stands, and scaling it by the
+        // display's scale again would draw the whole tree at twice its layout on a 2× display.
+        self.scene.append(self.host.scene(), None);
         self.backdrops = self
             .host
             .backdrops()
@@ -1153,7 +1164,9 @@ impl ShellSurface for WidgetSurface {
         let key = TargetKey {
             width: size.0,
             height: size.1,
-            to_device: Affine::scale(scale),
+            // The scene is in the frame's pixels: a part's bounds in it are the pixels they
+            // take.
+            to_device: Affine::IDENTITY,
             base_color: TRANSPARENT,
             generation: self.generation,
         };
