@@ -653,6 +653,12 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
                 "the whole workspace is linted")
             return whole_workspace(members, metadata)
         seeds |= reached
+    # workspace-unify's manifest is generated from the members' manifests, and a push that
+    # regenerates it changes one of those, whose lint it gets. Its own lint compiles the whole
+    # workspace with every feature unified (for the page, every crate for wasm32 besides),
+    # which is t's clippy families' work on main, not a push's: a push adding a crate spent half
+    # an hour of every attempt on it.
+    seeds.discard(UNIFY)
     built_on = dependants(seeds, packages, root)
     return Selection(sorted(seeds | built_on), metadata, sorted(built_on))
 
@@ -1785,10 +1791,10 @@ def own_key(root: Path, push: Push, selection: Selection,
             directory = directories.get(name)
             if directory is None:
                 return None
-            # What the push writes in the package's own directory, blobs included: a rebase onto
-            # commits that leave these files alone replays the same bytes, and one whose merge
-            # changes them lints again.
-            own = subprocess.run(["git", "diff", "--no-renames", "--raw", "-z",
+            # Which files the push writes in the package's own directory, and how: what it writes
+            # in them is its patch, above. Not their blobs: a clean rebase onto main's change to
+            # a file the push also edits changes both blobs and none of the push's own change.
+            own = subprocess.run(["git", "diff", "--no-renames", "--name-status", "-z",
                                   f"{base}..{head}", "--", directory or "."],
                                  cwd=root, capture_output=True, check=False)
             if own.returncode != 0:

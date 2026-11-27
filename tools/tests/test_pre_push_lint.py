@@ -1049,6 +1049,25 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), ["t test clippy/fixture-native --json"])
 
+    def test_a_regenerated_unification_manifest_is_not_linted_itself(self):
+        # A push that changes a member's dependencies regenerates workspace-unify beside it. The
+        # member is linted; workspace-unify's own lint would build the whole workspace.
+        self.hack_dependants = True
+        for name in ("workspace-hack", "workspace-unify"):
+            self.write(f"{name}/Cargo.toml", CRATE.format(name=name)
+                       + '\n[dependencies]\nfixture-native = { path = "../native" }\n')
+            self.write(f"{name}/src/lib.rs", "pub fn nothing() {}\n")
+        self.commit("test: the unification crates build on the host crate")
+        self.base = self.head()
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=28))
+        self.write("workspace-unify/Cargo.toml", CRATE.format(name="workspace-unify")
+                   + '\n[dependencies]\nfixture-native = { path = "../native", features = ["x"] }\n')
+        self.commit("feat: answer 28")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), ["t test clippy/fixture-native --json"])
+
     def test_a_check_t_answered_before_is_answered_from_its_cache(self):
         # After a rebase onto commits that reach nothing the package's build reads, t's key is
         # the one it already answered: the push says so and waits on nothing.
@@ -1426,6 +1445,27 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(self.push().returncode, 0)
         self.assertNotEqual(self.calls(), [], "the first push is linted")
         main = self.rebase({"native/src/extra.rs": "pub fn extra() {}\n"})
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], retry.stderr)
+        self.assertIn("reusing the clippy pass for patch ", retry.stderr)
+
+    def test_a_rebase_onto_a_change_to_a_file_the_push_edits_reuses_the_pass(self):
+        # Main's change lands in another part of the file the push edits: the merged file is new,
+        # the push's own change is the one linted.
+        filler = "".join(f"// line {n}\n" for n in range(8))
+        self.write("native/src/lib.rs", LIB.format(answer=60) + filler + "pub fn tail() {}\n")
+        self.commit("test: a longer host crate")
+        self.base = self.head()
+        self.write("native/src/lib.rs", LIB.format(answer=61) + filler + "pub fn tail() {}\n")
+        self.commit("feat: answer 61")
+        self.assertEqual(self.push().returncode, 0)
+        self.assertNotEqual(self.calls(), [], "the first push is linted")
+        main = self.rebase({"native/src/lib.rs":
+                            LIB.format(answer=60) + filler + "pub fn tail() -> u8 { 1 }\n"})
+        merged = (self.root / "native/src/lib.rs").read_text()
+        self.assertIn("61", merged)
+        self.assertIn("pub fn tail() -> u8", merged)
         retry = self.push(remote_oid=main)
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(self.calls(), [], retry.stderr)

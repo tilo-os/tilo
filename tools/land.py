@@ -8,8 +8,9 @@ Everyone pushes straight to main, and the push hook lints what a push changes be
 leave (tools/ci/pre_push_lint.py). When main moves while the lint runs, the remote refuses the
 push for its old value, whatever the lint said. Each round here fetches main, rebases onto it and
 pushes again at once. The hook remembers a pass by the push's own patch, so a rebase that leaves
-the pushed change as it was is sent on that pass in seconds; one onto commits that changed the
-same files is linted again, and t answers each check whose reads main left alone from its cache.
+the pushed change as it was is sent on that pass in seconds, even when main edited the same files
+elsewhere; one whose conflict resolution changed the patch is linted again, and t answers each
+check whose reads main left alone from its cache.
 
 A round ends the landing when the push lands, when the hook refuses the change itself (its lint
 failed: fix it and land again), when the rebase meets a conflict (the rebase is aborted, and the
