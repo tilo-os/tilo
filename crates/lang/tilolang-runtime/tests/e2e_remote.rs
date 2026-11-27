@@ -395,7 +395,7 @@ mod cases {
             ]);
             assert!(why.contains("1–65535"), "{why}");
             let why = desk.refused("add_connection", &[
-                ("r", r.clone()), ("name", Value::text("Desk")), ("host", Value::text("a")),
+                ("r", r), ("name", Value::text("Desk")), ("host", Value::text("a")),
                 ("kind", desk.case("ConnectionKind", "vnc")),
                 ("auth", Value::some(desk.case("AuthMethod", "public_key"))),
             ]);
