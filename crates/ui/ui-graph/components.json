@@ -11646,6 +11646,20 @@
               ]
             }
           }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be pressed now: `None` (enabled) unless a view says otherwise.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the label does not say.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [

@@ -30,6 +30,10 @@ pub struct EnumOptionProps {
     pub icon: Option<Icon>,
     /// The tone the case reads in: what the chip is washed in.
     pub tone: Tone,
+    /// Whether it can be pressed now: `None` (enabled) unless a view says otherwise.
+    pub enabled: Option<bool>,
+    /// Why it cannot be pressed now, where the label does not say.
+    pub description: Option<String>,
     /// It was pressed: the field takes the case it names.
     #[component(event(press))]
     pub press: Event,
