@@ -245,27 +245,6 @@ pub fn backing_disks(json: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct PowerSupply {
-    pub kind: String,
-    pub online: Option<bool>,
-    pub status: Option<String>,
-    pub capacity: Option<u64>,
-}
-
-/// On battery below 50 %: no external supply online and a discharging battery under half charge.
-pub fn on_low_battery(supplies: &[PowerSupply]) -> bool {
-    let external = supplies
-        .iter()
-        .any(|s| s.kind != "Battery" && s.online == Some(true));
-    !external
-        && supplies.iter().any(|s| {
-            s.kind == "Battery"
-                && s.status.as_deref() == Some("Discharging")
-                && s.capacity.is_some_and(|c| c < 50)
-        })
-}
-
 pub fn efivar_payload(file: &[u8]) -> Result<Vec<u8>, String> {
     file.get(4..)
         .map(<[u8]>::to_vec)
@@ -399,27 +378,8 @@ mod tests {
             }
         }
 
-        phase linux_power_and_efivar_facts_parse_exactly;
+        phase linux_efivar_facts_parse_exactly;
         {
-            {
-                let bat = |status: &str, capacity| PowerSupply {
-                    kind: "Battery".into(),
-                    status: Some(status.into()),
-                    capacity: Some(capacity),
-                    ..PowerSupply::default()
-                };
-                let ac = |online| PowerSupply {
-                    kind: "Mains".into(),
-                    online: Some(online),
-                    ..PowerSupply::default()
-                };
-                assert!(on_low_battery(&[bat("Discharging", 49), ac(false)]));
-                assert!(!on_low_battery(&[bat("Discharging", 50)]));
-                assert!(!on_low_battery(&[bat("Discharging", 10), ac(true)]));
-                assert!(!on_low_battery(&[bat("Charging", 10)]));
-                assert!(!on_low_battery(&[]));
-            }
-
             {
                 let file = efivar_file(&[1, 0]);
                 assert_eq!(file, vec![7, 0, 0, 0, 1, 0]);

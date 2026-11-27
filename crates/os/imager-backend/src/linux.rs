@@ -12,10 +12,11 @@ use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tilo_clock::time::Duration;
+use tilo_power_mgmt::BatterySnapshot;
 
 use staging_handoff_model::gpt::EFI_GLOBAL_VARIABLE as GLOBAL_GUID;
 
-use super::linux_parse::{self, MountSource, PowerSupply};
+use super::linux_parse::{self, MountSource};
 use super::model::{Blocker, HostFacts};
 use super::platform::{Disk, IoResult, NewPartition, Platform, SystemVolume};
 
@@ -190,7 +191,7 @@ pub fn probe_target(target: &crate::staging::target::TargetDisk) -> Result<HostF
     {
         facts.block(Blocker::NotUefi);
     }
-    if linux_parse::on_low_battery(&power_supplies()) {
+    if on_low_battery() {
         facts.block(Blocker::OnBattery);
     }
     Ok(facts)
@@ -959,22 +960,19 @@ impl Platform for LinuxPlatform {
     }
 }
 
-fn power_supplies() -> Vec<PowerSupply> {
-    let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(Result::ok)
-        .map(|e| {
-            let p = e.path();
-            PowerSupply {
-                kind: read_trimmed(&p.join("type")).unwrap_or_default(),
-                online: read_trimmed(&p.join("online")).map(|s| s == "1"),
-                status: read_trimmed(&p.join("status")),
-                capacity: read_trimmed(&p.join("capacity")).and_then(|s| s.parse().ok()),
-            }
-        })
-        .collect()
+/// A laptop running down with under half its charge: the probe asks for the
+/// charger before anything is partitioned. The AC adapter's online flag is
+/// read beside the battery's own status because it changes the instant the
+/// cable moves, while a battery's status can lag a poll behind.
+fn on_low_battery() -> bool {
+    low_battery(
+        tilo_power_mgmt::sysfs_battery_snapshot(),
+        tilo_power_mgmt::sysfs_on_battery(),
+    )
+}
+
+fn low_battery(battery: BatterySnapshot, on_battery: bool) -> bool {
+    on_battery && battery.runs_on_battery() && battery.percent < 50
 }
 
 fn removable(disk: &Path) -> bool {
@@ -1028,8 +1026,32 @@ pub fn probe_facts() -> HostFacts {
     {
         facts.block(Blocker::NotUefi);
     }
-    if linux_parse::on_low_battery(&power_supplies()) {
+    if on_low_battery() {
         facts.block(Blocker::OnBattery);
     }
     facts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BatterySnapshot, low_battery};
+    use tilo_power_mgmt::BatteryState::{Charging, Discharging, Empty};
+
+    fn battery(percent: u8, state: tilo_power_mgmt::BatteryState) -> BatterySnapshot {
+        BatterySnapshot {
+            present: true,
+            percent,
+            state,
+        }
+    }
+
+    #[test]
+    fn a_charger_is_asked_for_only_on_a_low_discharging_battery() {
+        assert!(low_battery(battery(49, Discharging), true));
+        assert!(low_battery(battery(0, Empty), true));
+        assert!(!low_battery(battery(50, Discharging), true));
+        assert!(!low_battery(battery(10, Discharging), false));
+        assert!(!low_battery(battery(10, Charging), true));
+        assert!(!low_battery(BatterySnapshot::absent(), true));
+    }
 }

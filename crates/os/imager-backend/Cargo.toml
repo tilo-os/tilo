@@ -14,7 +14,6 @@ flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]
 # medium's profile. imager's `destination` feature enables it.
 destination = [
     "dep:tilo-connectivity-service",
-    "dep:tilo-power-mgmt",
     "dep:console-control",
     "dep:tilo-install-helpers",
     "dep:tilo-lock",
@@ -46,7 +45,6 @@ install-profile-model = { path = "../install-profile-model", features = ["model"
 # The device's connectivity, as the network step reads and changes it: the
 # system's service, before there is a person whose settings it could keep.
 tilo-connectivity-service = { path = "../connectivity-service", optional = true }
-tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
 console-control = { path = "../console-control", optional = true }
 tilo-lock = { path = "../../platform/tilo-lock", optional = true }
 
@@ -63,6 +61,8 @@ rustix = { workspace = true, features = ["process", "fs"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 block-devices = { path = "../block-devices", features = ["udisks"] }
 tilo-install-helpers = { path = "../install-helpers", optional = true }
+# The machine's battery, read the same way the session reads it.
+tilo-power-mgmt = { path = "../power", default-features = false }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 
