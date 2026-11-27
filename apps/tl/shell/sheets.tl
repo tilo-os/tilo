@@ -85,37 +85,46 @@ view peek_card(p: device.Peek) {
 /// are one thing.
 view power_sheet() {
     let m = device.power_menu
-    if m.open {
-        row(fill, align: .start, distribute: .end) {
-            ui.Popover(label: "Power", open: true, side: .below) {
-                on dismiss: device.close(m)
-                stack(gap: .tight) {
-                    ui.Text("Power", role: .caption, secondary: true)
-                    for e in m.offers {
-                        if e == "lock" {
-                            ui.Button("Lock", icon: .lock, role: .plain) {
-                                on press: device.power_lock(m)
-                            }
-                        } else if e == "log-out" {
-                            ui.Button("Log out", icon: .arrow_right, role: .plain) {
-                                on press: device.power_log_out(m)
-                            }
-                        } else if e == "switch-user" {
-                            ui.Button("Switch user", icon: .users, role: .plain) {
-                                on press: device.power_switch_user(m)
-                            }
-                        } else if e == "suspend" {
-                            ui.Button("Sleep", icon: .moon, role: .plain) {
-                                on press: device.power_suspend(m)
-                            }
-                        } else if e == "restart" {
-                            ui.Button("Restart", icon: .rotate_cw, role: .plain) {
-                                on press: device.power_restart(m)
-                            }
-                        } else if e == "shut-down" {
-                            ui.Button("Shut down", icon: .power, role: .plain) {
-                                on press: device.power_shut_down(m)
-                            }
+    // A question one of its rows asked stands where the menu stood: the menu steps aside until
+    // the person answers it, and comes back if they decline.
+    if m.open and asked_elsewhere().is_empty() {
+        // The menu stands where the session's surface stack holds it — the room the bar leaves,
+        // under its trailing end — so a press on a row is the row's, never a press outside the
+        // surface that takes the menu down.
+        let room = device.room
+        let width = 380.0.min(room.width)
+        ui.FloatingPanel(
+            label: "Power",
+            width: width,
+            x: room.x + room.width - width,
+            y: room.y,
+        ) {
+            stack(gap: .tight) {
+                ui.Text("Power", role: .caption, secondary: true)
+                for e in m.offers {
+                    if e == "lock" {
+                        ui.Button("Lock", icon: .lock, role: .plain) {
+                            on press: device.power_lock(m)
+                        }
+                    } else if e == "log-out" {
+                        ui.Button("Log out", icon: .arrow_right, role: .plain) {
+                            on press: device.power_log_out(m)
+                        }
+                    } else if e == "switch-user" {
+                        ui.Button("Switch user", icon: .users, role: .plain) {
+                            on press: device.power_switch_user(m)
+                        }
+                    } else if e == "suspend" {
+                        ui.Button("Sleep", icon: .moon, role: .plain) {
+                            on press: device.power_suspend(m)
+                        }
+                    } else if e == "restart" {
+                        ui.Button("Restart", icon: .rotate_cw, role: .plain) {
+                            on press: device.power_restart(m)
+                        }
+                    } else if e == "shut-down" {
+                        ui.Button("Shut down", icon: .power, role: .plain) {
+                            on press: device.power_shut_down(m)
                         }
                     }
                 }
