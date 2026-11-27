@@ -10,6 +10,7 @@
 )]
 
 use crate::fixtures::Sent;
+use crate::invoker::Answered as _;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -40,6 +41,11 @@ fn compiled() -> (tilolang::Compiled, Vec<tilolang::PackageMeta>) {
 }
 
 /// The app as it ships, loaded into a host.
+/// The person at the terminal's window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
+
 fn terminal() -> Host {
     let (compiled, _) = compiled();
     let host = Host::new(ada(), || None).expect("a host");
@@ -130,12 +136,18 @@ fn only(view: &ViewInstance, kind: &str) -> String {
 }
 
 /// Type `text` into the panel's one field and take the dialog's main act.
-fn submit(view: &mut ViewInstance, text: &str) {
+fn submit(host: &Host, view: &mut ViewInstance, text: &str) {
     view.edit(&only(view, "ui.TextInput"), &Value::text(text))
         .expect("the field takes it");
     view.poll_patches().expect("it draws");
-    view.fire_with(&only(view, "ui.ModalDialog"), "act_primary", None)
-        .expect("the dialog acts");
+    view.fire_with_answering(
+        host,
+        &me(),
+        &only(view, "ui.ModalDialog"),
+        "act_primary",
+        None,
+    )
+    .expect("the dialog acts");
     view.poll_patches().expect("it draws");
 }
 
@@ -181,7 +193,9 @@ fn the_menu_and_the_panel_show_the_workspaces_environments() {
         "the default environment is the menu's own first row, never listed twice"
     );
 
-    view.fire_with(
+    view.fire_with_answering(
+        &host,
+        &me(),
         &labelled(&view, "ui.MenuItem", "Manage environments…", 0),
         "choose",
         None,
@@ -208,7 +222,9 @@ fn the_panel_makes_renames_and_grants_through_the_environments_verbs() {
     let mut view = target_menu(&host);
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.fire_with(
+    view.fire_with_answering(
+        &host,
+        &me(),
         &labelled(&view, "ui.MenuItem", "Manage environments…", 0),
         "choose",
         None,
@@ -216,7 +232,7 @@ fn the_panel_makes_renames_and_grants_through_the_environments_verbs() {
     .expect("the panel opens");
     view.poll_patches().expect("it draws");
 
-    submit(&mut view, "Prose");
+    submit(&host, &mut view, "Prose");
     let (app, verb, target, args) = last(&sent);
     assert_eq!(
         (app.as_str(), verb.as_str(), target.as_str()),
@@ -225,10 +241,10 @@ fn the_panel_makes_renames_and_grants_through_the_environments_verbs() {
     assert_eq!(args, vec![("name".to_owned(), Value::text("Prose"))]);
 
     // The rows stand sorted by name: Default, then Work.
-    view.press(&labelled(&view, "ui.Button", "Rename", 1))
+    view.press_answering(&host, &me(), &labelled(&view, "ui.Button", "Rename", 1))
         .expect("renaming starts");
     view.poll_patches().expect("it draws");
-    submit(&mut view, "Writing");
+    submit(&host, &mut view, "Writing");
     let (_, verb, target, args) = last(&sent);
     assert_eq!((verb.as_str(), target.as_str()), ("rename", "environment"));
     assert_eq!(
@@ -239,10 +255,14 @@ fn the_panel_makes_renames_and_grants_through_the_environments_verbs() {
         ]
     );
 
-    view.press(&labelled(&view, "ui.Button", "Grant folder…", 1))
-        .expect("granting starts");
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(&view, "ui.Button", "Grant folder…", 1),
+    )
+    .expect("granting starts");
     view.poll_patches().expect("it draws");
-    submit(&mut view, "/home/ada/notes");
+    submit(&host, &mut view, "/home/ada/notes");
     let (_, verb, target, args) = last(&sent);
     assert_eq!(
         (verb.as_str(), target.as_str()),
@@ -266,14 +286,22 @@ fn an_unnamed_environment_is_refused_before_anything_is_asked() {
     let mut view = target_menu(&host);
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.fire_with(
+    view.fire_with_answering(
+        &host,
+        &me(),
         &labelled(&view, "ui.MenuItem", "Manage environments…", 0),
         "choose",
         None,
     )
     .expect("the panel opens");
     view.poll_patches().expect("it draws");
-    let _ = view.fire_with(&only(&view, "ui.ModalDialog"), "act_primary", None);
+    let _ = view.fire_with_answering(
+        &host,
+        &me(),
+        &only(&view, "ui.ModalDialog"),
+        "act_primary",
+        None,
+    );
     assert!(
         sent.borrow().iter().all(|asked| !matches!(
             asked,
