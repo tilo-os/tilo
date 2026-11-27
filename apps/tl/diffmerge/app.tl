@@ -1200,35 +1200,44 @@ view comparison_page(s: Session, at: State<Int>, side: State<Text>) {
                 on press: file.choose(chosen_left(s))
             }
         }
-    } else {
-        row(gap: .related, fill) {
-            if space.compact {
-                stack(gap: .tight, fill: 1.0) {
-                    ui.ToggleGroup(selected: if side == "left" { 0 } else { 1 }, fill: true) {
-                        ui.Segment("Left")
-                        ui.Segment("Right")
-                        on change(i): set(side, if i == 1 { "right" } else { "left" })
-                    }
-                    comparison_grid(
-                        s,
-                        at,
-                        if side == "left" { "left" } else { "right" },
-                        language_word(s.left_label),
-                    )
-                }
-            } else {
-                stack(gap: .tight, fill: 1.0) {
-                    row(gap: .section, fill) {
-                        ui.Text(s.left_label, role: .label, truncate: true, fill: 1.0)
-                        ui.Text(s.right_label, role: .label, truncate: true, fill: 1.0)
-                    }
-                    comparison_grid(s, at, "both", language_word(s.left_label))
-                }
+    } else if space.compact {
+        stack(gap: .tight, fill: 1.0) {
+            ui.ToggleGroup(selected: if side == "left" { 0 } else { 1 }, fill: true) {
+                ui.Segment("Left")
+                ui.Segment("Right")
+                on change(i): set(side, if i == 1 { "right" } else { "left" })
             }
-            if not space.compact and not s.blocks.is_empty() {
+            comparison_grid(
+                s,
+                at,
+                if side == "left" { "left" } else { "right" },
+                language_word(s.left_label),
+            )
+        }
+    } else if s.blocks.is_empty() {
+        comparison_sides(s, at)
+    } else {
+        // The comparison keeps the room, the changes stand beside it at the width their rows
+        // read in: a window too narrow for both stacks them, the changes under the comparison.
+        split(side: .trailing, ratio: 0.72, collapse: .stack) {
+            primary(min: 20rem) {
+                comparison_sides(s, at)
+            }
+            secondary(min: 18rem) {
                 changes_rail(s, at)
             }
         }
+    }
+}
+
+/// The two sides of a comparison: what each file is called, over the grid that aligns them.
+view comparison_sides(s: Session, at: State<Int>) {
+    stack(gap: .tight, fill: 1.0) {
+        row(gap: .section) {
+            ui.Text(s.left_label, role: .label, truncate: true, fill: 1.0)
+            ui.Text(s.right_label, role: .label, truncate: true, fill: 1.0)
+        }
+        comparison_grid(s, at, "both", language_word(s.left_label))
     }
 }
 
@@ -1290,7 +1299,7 @@ view comparison_grid(s: Session, at: State<Int>, side: Text, language: Text) {
 /// The changes as a list beside the comparison: what each one is, the lines it touches and the
 /// start of what it says.
 view changes_rail(s: Session, at: State<Int>) {
-    ui.Section("Changes") {
+    ui.Section("Changes", fill: 1.0) {
         ui.VirtualList(name: "Changes", selection_follows_focus: true) {
             on activate(b: Block): set(at, s.blocks.index_of(b) ?? 0)
             for b in s.blocks {
@@ -1354,7 +1363,7 @@ view merge_page(
                     merge_source(s, "ours", "Ours", s.ours_label)
                 }
             } else {
-                row(gap: .related, fill) {
+                row(gap: .related) {
                     merge_source(s, "base", "Base", s.base_label)
                     merge_source(s, "ours", "Ours", s.ours_label)
                     merge_source(s, "theirs", "Theirs", s.theirs_label)
@@ -1376,10 +1385,11 @@ view merge_page(
     }
 }
 
-/// One side of a merge's code, coloured as its file is written.
+/// One side of a merge's code, coloured as its file is written: its own box above the changes,
+/// so the sides and what is decided about them stand in one window whatever the merge holds.
 view merge_source(s: Session, which: Text, name: Text, label: Text) {
     let word = language_word(label)
-    stack(gap: .tight, fill: 1.0, min: 16rem) {
+    stack(gap: .tight, fill: 1.0, min: 16rem, height: 16rem) {
         source_head(name, label)
         ui.Scroll(fill: 1.0) {
             if which == "base" {
