@@ -343,13 +343,21 @@ impl AppBrokerState {
             return false;
         };
         // Decided as the sender stood when they sent it, as their send recorded the time, never
-        // later than now: a message that names no time is decided as they stand now.
-        let sent_at = tilo_failure::ignored!(
-            "a send that names no readable time is decided as its sender stands now",
-            sent.at.parse::<jiff::Timestamp>().ok()
-        )
-        .and_then(|at| u64::try_from(at.as_second()).ok())
-        .map_or(now, |at| at.min(now));
+        // later than now. A message that names no readable time shares nothing: what its sender
+        // may read now says nothing of what they could read then.
+        let sent_at = match sent.at.parse::<jiff::Timestamp>() {
+            Ok(at) => match u64::try_from(at.as_second()) {
+                Ok(at) => at.min(now),
+                Err(_) => return false,
+            },
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "a turn's read of the file its message sent was refused: the message names no readable time it was sent at"
+                );
+                return false;
+            }
+        };
         // What a message carries may be any content the workspace keeps, not only a file of its
         // folder: its sender shares it only where they could read the whole workspace.
         BrokerActor::person(sender).answer_in(

@@ -373,6 +373,13 @@ fn messages() -> Recorder {
                 turn(CONVERSATION, "before"),
                 sent(LAPSED, lapsed_at().saturating_sub(60), &[SENT]),
             ),
+            (
+                turn(CONVERSATION, "untimed"),
+                SentMessage {
+                    at: String::new(),
+                    ..sent(&owner_id(), now, &[SENT])
+                },
+            ),
         ],
     )
 }
@@ -479,8 +486,8 @@ async fn refused(fixture: &Fixture, caller: &Caller, arguments: Value, why: &str
 
 /// A file a message sends the agent is shared with the turn the message started: that one
 /// version, by its content hash, labelled as content from outside, while the turn goes. Another
-/// file, another version of the same path, a message that sends none, and a file its sender
-/// could no longer read when they sent it stay refused, as does anything once the turn ended.
+/// file, another version of the same path and a message that sends none stay refused, as does
+/// anything once the turn ended.
 #[tokio::test]
 async fn a_turn_reads_the_version_its_message_sends_and_nothing_else() {
     let fixture = fixture_with(messages(), rules);
@@ -553,30 +560,6 @@ async fn a_turn_reads_the_version_its_message_sends_and_nothing_else() {
     )
     .await;
 
-    // A file sent by someone who could no longer read it is refused; one they sent while they
-    // could is read.
-    let lapsed = agent_in(&workspace, "lapsed");
-    refused(
-        &fixture,
-        &lapsed,
-        address(SENT),
-        "a file its sender could not read when they sent it",
-    )
-    .await;
-    let before = agent_in(&workspace, "before");
-    let request = read_text(&workspace, address(SENT));
-    tilo_test_env::within(
-        "a file sent while its sender could read it is read",
-        settled(fixture.state.action_invoke(&before, None, None, &request)),
-    )
-    .await
-    .unwrap_or_else(|error| panic!("the sender could read it when they sent it: {error:?}"));
-    tilo_test_env::within(
-        "the read completes",
-        finished(&fixture.state, &before, &request),
-    )
-    .await;
-
     // Once the turn ended, the file it read is refused.
     caller
         .execution_lease()
@@ -605,6 +588,49 @@ async fn a_turn_reads_the_version_its_message_sends_and_nothing_else() {
         &outside,
         address(SENT),
         "a turn with no run of its own",
+    )
+    .await;
+}
+
+/// A file is shared as its sender stood when they sent it: one they sent while they could read
+/// the workspace is read, one sent after their read ended is refused, and one whose message names
+/// no time it was sent at is refused, whatever its sender may read now.
+#[tokio::test]
+async fn a_file_is_shared_as_its_sender_stood_when_they_sent_it() {
+    let fixture = fixture_with(messages(), rules);
+    let workspace = fixture.workspace.clone();
+
+    // A file sent by someone who could no longer read it is refused; one they sent while they
+    // could is read.
+    let lapsed = agent_in(&workspace, "lapsed");
+    refused(
+        &fixture,
+        &lapsed,
+        address(SENT),
+        "a file its sender could not read when they sent it",
+    )
+    .await;
+    // A message that names no time it was sent at shares nothing, though its sender may read
+    // the file now: what they could read when they sent it is not known.
+    let untimed = agent_in(&workspace, "untimed");
+    refused(
+        &fixture,
+        &untimed,
+        address(SENT),
+        "a file whose message names no time it was sent at",
+    )
+    .await;
+    let before = agent_in(&workspace, "before");
+    let request = read_text(&workspace, address(SENT));
+    tilo_test_env::within(
+        "a file sent while its sender could read it is read",
+        settled(fixture.state.action_invoke(&before, None, None, &request)),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the sender could read it when they sent it: {error:?}"));
+    tilo_test_env::within(
+        "the read completes",
+        finished(&fixture.state, &before, &request),
     )
     .await;
 }
