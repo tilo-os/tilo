@@ -12,6 +12,7 @@ use tilolang_tilo::host::Host;
 const APP: &str = "so.tilo.settings";
 
 use crate::fixtures::invoker::{Answered as _, Sent};
+use crate::fixtures::texts;
 
 /// The person at the settings window.
 fn me() -> Actor {
@@ -76,19 +77,6 @@ fn displays_pane(host: &Host) -> ViewInstance {
         .expect("the pane opens");
     view.poll_patches().expect("the pane draws");
     view
-}
-
-/// The lines a view shows, its text as written.
-fn texts(view: &ViewInstance) -> Vec<String> {
-    crate::fixtures::nodes(view.tree())
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The kinds of node the view draws, for a failure that says what it drew.

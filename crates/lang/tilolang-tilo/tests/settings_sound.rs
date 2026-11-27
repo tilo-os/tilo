@@ -16,6 +16,7 @@ use tilolang_tilo::host::Host;
 const APP: &str = "so.tilo.settings";
 
 use crate::fixtures::invoker::{Answered as _, Sent};
+use crate::fixtures::texts;
 
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
@@ -116,19 +117,6 @@ fn row<'a>(tree: &'a UiNode, title: &str) -> &'a UiNode {
         .into_iter()
         .find(|node| node.props.get("title") == Some(&Value::text(title)))
         .unwrap_or_else(|| panic!("a row titled {title}"))
-}
-
-/// Every text the pane shows, as written.
-fn texts(view: &ViewInstance) -> Vec<String> {
-    crate::fixtures::nodes(view.tree())
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
 }
 
 #[test]

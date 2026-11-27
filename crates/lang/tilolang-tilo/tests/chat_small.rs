@@ -2,48 +2,18 @@
 //! category's heading is kept by the category itself, a thread's chip says who replied last and
 //! when and whether the thread was set aside, and a conversation's transcript follows its end.
 
-use crate::fixtures::{Replica, Workspace, target};
+use crate::fixtures::{
+    Replica, Workspace, open_at as open, person, rows, target, texts_of as texts,
+};
 use tilolang_runtime::rich::RichValue;
-use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
+use tilolang_runtime::{InvokeOutcome, UiNode, Value, ViewInstance};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const APP: &str = "so.tilo.chat";
 
-fn person(name: &str) -> Actor {
-    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
-}
-
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     r.call(APP, action, args)
-}
-
-/// Every text a node and its children show, rich text as written.
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The transcript's rows as the list builds them.
-fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
-    view.poll_patches().unwrap();
-    let list = view
-        .tree()
-        .first_of_kind("ui.VirtualList")
-        .expect("a transcript")
-        .key
-        .clone();
-    let len = view.list_len(&list).unwrap_or(0);
-    (0..len)
-        .filter_map(|i| view.row(&list, i).unwrap().cloned())
-        .collect()
 }
 
 /// The key of the button in `node` labelled `label`.
@@ -52,25 +22,6 @@ fn button(node: &UiNode, label: &str) -> Option<String> {
         .iter()
         .find(|b| b.props.get("label") == Some(&Value::text(label)))
         .map(|b| b.key.clone())
-}
-
-/// Open `at` the way the system does: its type's `opened action` as the person, then its window.
-fn open(r: &Replica, at: &tilolang_runtime::ResourceRef) -> ViewInstance {
-    if let Some(action) = r.host.runtime().opened_action(&at.ty) {
-        match r
-            .host
-            .runtime()
-            .invoke_action(
-                &person(&r.name),
-                (action.as_str(), vec![Value::resource(at)]),
-            )
-            .unwrap()
-        {
-            InvokeOutcome::Done(_) => {}
-            other => panic!("opening {at:?}: {other:?}"),
-        }
-    }
-    r.host.open_resource(at, None).unwrap()
 }
 
 /// Type `text` into the composer of `view` and press its send button, as a person does.

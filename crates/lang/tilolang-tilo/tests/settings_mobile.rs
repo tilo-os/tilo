@@ -10,12 +10,14 @@
 
 use std::path::Path;
 
-use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
 
+use crate::fixtures::button;
 use crate::fixtures::invoker::{Answered as _, Sent};
+use crate::fixtures::row;
 
 const TETHERING: &str = r#"{"available": false, "hotspot": false, "name": null, "band": "automatic", "clients": [], "pending": [], "problem": null}"#;
 
@@ -111,43 +113,6 @@ impl Pane {
     }
 }
 
-/// Every text the node carries, whatever it is called, under `node` in order.
-fn words(node: &UiNode, into: &mut Vec<String>) {
-    into.extend(node.props.values().filter_map(|value| match value {
-        Value::Text(text) => Some(text.clone()),
-        _ => None,
-    }));
-    for child in &node.children {
-        words(child, into);
-    }
-}
-
-fn shown(view: &ViewInstance) -> Vec<String> {
-    let mut out = Vec::new();
-    words(view.tree(), &mut out);
-    out
-}
-
-/// The key of the button the pane labels `label`.
-fn button(tree: &UiNode, label: &str) -> String {
-    tree.of_kind("ui.Button")
-        .into_iter()
-        .find(|node| node.props.get("label") == Some(&Value::text(label)))
-        .unwrap_or_else(|| panic!("a button labelled {label}"))
-        .key
-        .clone()
-}
-
-/// The key of the row the pane titles `title`.
-fn row(tree: &UiNode, title: &str) -> String {
-    tree.of_kind("ui.ListRow")
-        .into_iter()
-        .find(|node| node.props.get("title") == Some(&Value::text(title)))
-        .unwrap_or_else(|| panic!("a row titled {title}"))
-        .key
-        .clone()
-}
-
 /// The code's field, as the pane lays it out.
 fn code_field(view: &ViewInstance) -> String {
     view.tree()
@@ -236,6 +201,11 @@ fn modem_asking() -> String {
 
 /// A modem's operators are listed with the one in use, and choosing one by hand, or letting the
 /// modem choose, is the modem resource's own actions.
+/// Every word the page shows.
+fn shown(view: &ViewInstance) -> Vec<String> {
+    crate::fixtures::texts_plain(view.tree())
+}
+
 #[test]
 fn the_mobile_pane_lists_the_operators_and_chooses_one() {
     let pane = Pane::new(MOBILE, MODEM_SCANNED);

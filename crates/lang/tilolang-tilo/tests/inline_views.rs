@@ -7,10 +7,11 @@ use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::fixtures::text_words as texts;
 use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::Invocation;
-use tilolang_runtime::{Actor, ModuleHash, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, ModuleHash, ResourceRef, UiNode, ViewInstance};
 use tilolang_tilo::host::Host;
 
 /// The callee: an app whose items another app's views show, with a row view of its own.
@@ -169,18 +170,6 @@ impl Workspace {
     fn finish(&self) -> String {
         anchor_id(&self.callee_meta, "finish")
     }
-}
-
-/// Every text the tree shows, in order.
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
-        .into_iter()
-        .filter(|node| node.kind == "text" || node.kind == "ui.Text")
-        .filter_map(|node| match node.props.get("value") {
-            Some(Value::Text(t)) => Some(t.clone()),
-            _ => None,
-        })
-        .collect()
 }
 
 fn kinds(node: &UiNode) -> Vec<String> {

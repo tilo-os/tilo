@@ -95,25 +95,6 @@ fn installed(reading_json: &str) -> Pane {
         .rooted("Monitor")
 }
 
-/// The words the page shows: each node's text, its title and the label a described component
-/// reads by.
-fn words(node: &UiNode, into: &mut Vec<String>) {
-    for prop in ["value", "title", "label", "text", "message", "action"] {
-        if let Some(Value::Text(text)) = node.props.get(prop) {
-            into.push(text.clone());
-        }
-    }
-    for child in &node.children {
-        words(child, into);
-    }
-}
-
-fn shown(view: &ViewInstance) -> Vec<String> {
-    let mut out = Vec::new();
-    words(view.tree(), &mut out);
-    out
-}
-
 /// The first node under `node` whose words satisfy `wanted`.
 fn find<'a>(node: &'a UiNode, wanted: &dyn Fn(&str) -> bool) -> Option<&'a UiNode> {
     let own = ["value", "title", "label", "text", "message", "action"]
@@ -155,6 +136,14 @@ fn contains(view: &ViewInstance, wanted: &str) -> bool {
 fn pick(window: &mut ViewInstance, state: &str, value: Value) {
     window.set_view_state(state, value);
     window.poll_patches().expect("the window runs again");
+}
+
+/// Every word the page shows.
+fn shown(view: &ViewInstance) -> Vec<String> {
+    crate::fixtures::texts_props(
+        view,
+        &["value", "title", "label", "text", "message", "action"],
+    )
 }
 
 #[test]

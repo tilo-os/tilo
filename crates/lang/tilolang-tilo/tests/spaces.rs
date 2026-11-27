@@ -6,6 +6,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::window_reads::told as sent;
 use tilo_render_protocol::patch::local::{End, pair};
 use tilo_render_protocol::patch::{self, Level, ToApp, ToUi, Transport as _};
 use tilolang_tilo::background::Waker;
@@ -98,15 +99,6 @@ fn window() -> (Instance, End) {
     );
     instance.sync();
     (instance, window_end)
-}
-
-/// What the window was sent since the last call.
-fn sent(window: &mut End) -> Vec<ToUi> {
-    let mut messages = Vec::new();
-    while let Ok(Some(batch)) = window.recv() {
-        messages.extend(patch::decode_batch::<ToUi>(&batch).expect("the window is sent batches"));
-    }
-    messages
 }
 
 /// What the window's page says now.

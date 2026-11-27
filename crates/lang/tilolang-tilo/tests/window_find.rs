@@ -11,7 +11,8 @@ use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{UiNode, Value};
 use tilolang_tilo::host::Host;
 
-use crate::shell_staged::{Called, SHELL, ada, staged};
+use crate::fixtures::given;
+use crate::shell_staged::{Called, desktop, staged};
 
 /// A window of Notes in front with its find expanded in the bar, the second of five matches
 /// current, as its app last answered.
@@ -19,29 +20,6 @@ const SCENARIO: &str = "a window found in";
 
 fn shell() -> (Host, Called) {
     staged(SCENARIO)
-}
-
-/// The desktop as the shell draws the person's layout.
-fn desktop(host: &Host) -> tilolang_runtime::ViewInstance {
-    let meta = &host.package(SHELL).unwrap().meta;
-    let layout = meta
-        .types
-        .iter()
-        .find(|ty| ty.name == "Layout")
-        .expect("the shell declares its layout")
-        .id
-        .clone();
-    let layout = host.root_resource(SHELL, &layout).unwrap();
-    let view = meta
-        .views
-        .iter()
-        .find(|view| view.name == "shell_view")
-        .expect("the shell draws the layout")
-        .id
-        .clone();
-    host.runtime()
-        .open_view(&ada(), &view, vec![Value::resource(&layout)])
-        .unwrap()
 }
 
 /// The bar's find controls, as the shell composed them.
@@ -83,13 +61,6 @@ fn calls(called: &Called) -> Vec<(String, Vec<(String, Value)>)> {
             )
         })
         .collect()
-}
-
-fn given(value: Option<&Value>) -> Option<&Value> {
-    match value? {
-        Value::Opt(inner) => inner.as_deref(),
-        value => Some(value),
-    }
 }
 
 tilo_test_env::scenario! {

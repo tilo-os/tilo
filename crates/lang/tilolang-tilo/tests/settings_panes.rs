@@ -13,7 +13,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use crate::fixtures::invoker::Answered as _;
-use crate::fixtures::{Sent, labelled};
+use crate::fixtures::{Sent, labelled, settings_pane as pane, texts};
 use tilo_action_policy::MemberAccess;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::host::Host;
@@ -62,15 +62,6 @@ fn settings_with(access: Option<MemberAccess>) -> (Host, tilolang::Compiled) {
     tilolang_tilo::platform::load(host.runtime(), &compiled.meta.uses);
     crate::fixtures::settings_sections(&host);
     (host, compiled)
-}
-
-/// The pane the window shows, as the app's own document holds it.
-fn pane(host: &Host) -> String {
-    let root = host.root_of(APP).expect("the app's root");
-    match host.runtime().read(&root, "pane").expect("a pane") {
-        Value::Text(text) => text,
-        other => panic!("not text: {other:?}"),
-    }
 }
 
 /// Run the app-level action `name` with `args`, as a search row does from outside the window.
@@ -129,19 +120,6 @@ fn a_setting_opens_the_pane_it_is_on_and_a_page_its_own() {
 
     invoke(&host, "open_pane", vec![Value::text("displays")]);
     assert_eq!(pane(&host), "displays");
-}
-
-/// The lines a view shows, its text as written.
-fn texts(view: &ViewInstance) -> Vec<String> {
-    crate::fixtures::nodes(view.tree())
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The pane `name` opened as its own view: the window's content area is laid out for its size,

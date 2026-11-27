@@ -318,33 +318,6 @@ impl Installed {
     }
 }
 
-/// The words the page shows: each node's text, its title and the label a described component
-/// reads by.
-fn words(node: &UiNode, into: &mut Vec<String>) {
-    for prop in [
-        "value",
-        "title",
-        "label",
-        "text",
-        "message",
-        "action",
-        "secondary",
-    ] {
-        if let Some(Value::Text(text)) = node.props.get(prop) {
-            into.push(text.clone());
-        }
-    }
-    for child in &node.children {
-        words(child, into);
-    }
-}
-
-fn shown(view: &ViewInstance) -> Vec<String> {
-    let mut out = Vec::new();
-    words(view.tree(), &mut out);
-    out
-}
-
 fn has(view: &ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text == wanted)
 }
@@ -358,6 +331,22 @@ fn pick(window: &mut ViewInstance, state: &str, value: Value) {
 
 fn contains(view: &ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text.contains(wanted))
+}
+
+/// Every word the page shows.
+fn shown(view: &ViewInstance) -> Vec<String> {
+    crate::fixtures::texts_props(
+        view,
+        &[
+            "value",
+            "title",
+            "label",
+            "text",
+            "message",
+            "action",
+            "secondary",
+        ],
+    )
 }
 
 #[test]

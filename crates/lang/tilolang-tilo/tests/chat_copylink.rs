@@ -6,6 +6,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::fixtures::target;
+use crate::window_reads::told;
 use tilo_reference::link::{Link, WebEntries, WebEntry};
 use tilo_render_protocol::patch::local::{End, pair};
 use tilo_render_protocol::patch::{self as wire, Level, ToApp, ToUi, Transport as _, Words};
@@ -118,27 +120,11 @@ fn call(instance: &Instance, app: &str, action: &str, args: Vec<Value>) -> Value
     }
 }
 
-fn target(value: &Value) -> ResourceRef {
-    match value {
-        Value::Ref(made) => (*made.target).clone(),
-        other => panic!("a resource: {other:?}"),
-    }
-}
-
 /// Tell the app what the window did, and let it answer.
 fn tell(instance: &mut Instance, far: &mut End, message: ToApp) {
     far.send(wire::encode_batch(&[message]).expect("a batch"))
         .expect("the window tells the app");
     instance.update();
-}
-
-/// What the window was told since the last call.
-fn told(far: &mut End) -> Vec<ToUi> {
-    let mut messages = Vec::new();
-    while let Ok(Some(batch)) = far.recv() {
-        messages.extend(wire::decode_batch::<ToUi>(&batch).expect("a batch"));
-    }
-    messages
 }
 
 /// The menu command labelled `label` on the node presenting `item` under `node`, by its key.

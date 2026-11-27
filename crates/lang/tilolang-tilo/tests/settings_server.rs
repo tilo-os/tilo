@@ -10,8 +10,9 @@
     reason = "test assertions"
 )]
 
+use crate::fixtures::texts;
 use serde_json::{Value as Json, json};
-use tilolang_runtime::{ResourceRef, Value, ViewInstance};
+use tilolang_runtime::{ResourceRef, ViewInstance};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::platform::platform_roots;
 
@@ -78,19 +79,6 @@ fn pane(web: Json) -> ViewInstance {
         "the pane draws, not its waiting skeleton: {:?}",
         view.tree()
     );
-}
-
-/// Every text the view shows, as written.
-fn texts(view: &ViewInstance) -> Vec<String> {
-    crate::fixtures::nodes(view.tree())
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The line saying a browser outside the workspace warns about the certificate.

@@ -8,9 +8,8 @@ use tilo_action_policy::{Answer, Grant, Grantee, MemberAccess, Role, TreePath, W
 use tilo_action_types::KindSet;
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::{Actor, InvokeOutcome, Meta, ResourceRef, UiNode, Value};
-use tilolang_tilo::runtime::ids::MemberId;
 
-use crate::fixtures::{Replica, Workspace, field_id, nodes};
+use crate::fixtures::{Replica, Workspace, field_id, nodes, person};
 /// `name`'s access in the workspace: what the app's actions reach outside for is allowed, as an
 /// install grants the effects an app declares, so these tests drive the app's own logic.
 fn access(name: &str) -> MemberAccess {
@@ -59,10 +58,6 @@ const IDS: &str = include_str!("../../../../apps/tl/tube/app.ids");
 const PLAYBACK: &str = "so.tilo.playback";
 const PLAYBACK_SOURCE: &str = include_str!("../../../../apps/tl/playback/app.tl");
 const PLAYBACK_IDS: &str = include_str!("../../../../apps/tl/playback/app.ids");
-
-fn person(name: &str) -> Actor {
-    Actor::from(MemberId::person(name))
-}
 
 fn call(replica: &Replica, meta: &Meta, action: &str, args: Vec<Value>) -> Value {
     let id = meta

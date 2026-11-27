@@ -10,7 +10,7 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::Caller;
 use tilolang_tilo::runtime::ids::MemberId;
 
-use crate::fixtures::{Replica, Workspace, action_id, target};
+use crate::fixtures::{Replica, Workspace, action_id, person, target};
 
 const DESK: &str = r#"app test.desk "Desk"
 
@@ -110,10 +110,6 @@ fn subjects(replica: &Replica, desk: &ResourceRef) -> Vec<String> {
             other => panic!("a subject is text, got {other:?}"),
         })
         .collect()
-}
-
-fn person(name: &str) -> Actor {
-    Actor::from(MemberId::person(name))
 }
 
 /// The caller Ada's agent works as, acting for `person`, through the app's published action API.

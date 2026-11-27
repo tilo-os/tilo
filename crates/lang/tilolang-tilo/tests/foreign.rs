@@ -6,6 +6,8 @@ use crate::fixtures::Sent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::fixtures::solo;
+use crate::fixtures::text_labels as texts;
 use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::Invocation;
@@ -36,14 +38,6 @@ view quiet(p: sound.Player) {
   text("held")
 }
 "#;
-
-/// The platform's authority for one person, with no workspace: the code's authorship decides.
-fn solo() -> tilolang_tilo::authority::TiloAuthority {
-    tilolang_tilo::authority::TiloAuthority::new(
-        tilolang_runtime::Actor::from(tilolang_runtime::ids::MemberId::person("me")),
-        || None,
-    )
-}
 
 const APP: &str = "sound";
 const TYPE: &str = "sound#Player";
@@ -1015,23 +1009,6 @@ view net_row(n: radio.Net) {
   text(if n.joined { "{n.name} row: joined" } else { "{n.name} row: open" })
 }
 "#;
-
-/// Every text the view shows, in order.
-fn texts(view: &ViewInstance) -> Vec<String> {
-    fn walk(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.Text"
-            && let Some(Value::Text(text)) = node.props.get("value")
-        {
-            out.push(text.clone());
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(view.tree(), &mut out);
-    out
-}
 
 /// A row of a reading is a typed handle to its resource: a new reading redraws it wherever a
 /// view drew it, and its own action goes to its own address.

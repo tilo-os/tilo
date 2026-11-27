@@ -2,17 +2,13 @@
 //! own and is played the moment it is set and again on every join, and joining leaves the
 //! microphone off.
 
-use tilolang_runtime::{Actor, CallMember, CallStep, InvokeOutcome, UiNode, Value, ViewEvent};
+use tilolang_runtime::{CallMember, CallStep, InvokeOutcome, UiNode, Value, ViewEvent};
 
-use crate::fixtures::{Replica, Workspace, target, type_id};
+use crate::fixtures::{Replica, Workspace, person, target, type_id};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const APP: &str = "so.tilo.chat";
-
-fn person(name: &str) -> Actor {
-    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
-}
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     r.call(APP, action, args)

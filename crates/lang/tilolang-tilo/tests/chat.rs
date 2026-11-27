@@ -4,11 +4,10 @@
 //! channels opens with each conversation a channel and every message still saying what it said.
 
 use crate::fixtures::Workspace;
-use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{Store as _, VersionKind};
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
-use crate::fixtures::{Replica, target};
+use crate::fixtures::{Replica, reactions, rich, target, texts_of as texts};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
@@ -16,23 +15,6 @@ const APP: &str = "so.tilo.chat";
 
 pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     r.call(APP, action, args)
-}
-
-fn rich(text: &str) -> Value {
-    Value::Rich(RichValue::from_text(text))
-}
-
-/// Every text a node and its children show, rich text as written.
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The transcript's rows as the list builds them, each with its menu: each row's node.
@@ -299,32 +281,6 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
             "the chip counts the reply: {label}"
         );
     }
-}
-
-/// Who reacted with each emoji, as the row's reactions show it.
-fn reactions(row: &UiNode) -> Vec<(String, Vec<Actor>)> {
-    let Some(node) = row.first_of_kind("ui.Reactions") else {
-        return Vec::new();
-    };
-    let Some(Value::Map(entries)) = node.props.get("reactions") else {
-        panic!("reactions as a map: {:?}", node.props);
-    };
-    entries
-        .iter()
-        .map(|(emoji, who)| {
-            let Value::List(who) = who else {
-                panic!("who reacted, as a set: {who:?}");
-            };
-            let who = who
-                .iter()
-                .map(|p| match p {
-                    Value::Actor(p) => p.clone(),
-                    other => panic!("an actor: {other:?}"),
-                })
-                .collect();
-            (emoji.as_text().unwrap_or_default().to_owned(), who)
-        })
-        .collect()
 }
 
 #[test]
@@ -1292,7 +1248,7 @@ tilo_test_env::scenario! {
         // Everyone in the workspace is a row of the people page, with their face, and the
         // conversation with them one press away.
         let root = ada.host.root_of(APP).unwrap();
-        let people_view = view_id(&ada, "people");
+        let people_view = ada.view_id(APP, "people");
         let mut page = ada.host.open_resource(&root, Some(&people_view)).unwrap();
         page.poll_patches().unwrap();
         let shown = texts(page.tree());
@@ -2311,20 +2267,6 @@ fn bridge_package_declares_its_records() {
         );
     }
 }
-/// The id of Chat's view `name`, as a window opens one.
-fn view_id(r: &Replica, name: &str) -> String {
-    r.host
-        .package(APP)
-        .unwrap()
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == name)
-        .unwrap_or_else(|| panic!("the view {name}"))
-        .id
-        .clone()
-}
-
 /// The drafts the app holds, as the person looking reads them: another member's are not here.
 fn drafts(r: &Replica) -> Vec<tilolang_runtime::ResourceRef> {
     match r.read(&r.root(APP), "drafts") {
@@ -2799,7 +2741,7 @@ fn a_carried_message_shows_its_persona_and_a_pinned_one_stands_on_pins() {
     }
 
     // The channel's pins stand on a page of their own, with what was pinned.
-    let pins_view = view_id(&ada, "pins");
+    let pins_view = ada.view_id(APP, "pins");
     let mut pins = ada
         .host
         .open_resource(&target(&design), Some(&pins_view))
@@ -2856,7 +2798,7 @@ fn the_workspaces_people_are_a_page_of_their_own() {
     );
 
     // The page lists the membership, and an agent is marked as one.
-    let people_view = view_id(&ada, "people");
+    let people_view = ada.view_id(APP, "people");
     let mut people = ada.host.open_resource(&all, Some(&people_view)).unwrap();
     people.poll_patches().unwrap();
     let shown = texts(people.tree());
@@ -3237,7 +3179,7 @@ fn a_person_is_reported_and_a_decision_is_overturned_on_the_moderators_page() {
     ));
     ada.commit();
 
-    let reports_view = view_id(&ada, "reports");
+    let reports_view = ada.view_id(APP, "reports");
     let mut page = ada.host.open_resource(&root, Some(&reports_view)).unwrap();
     page.poll_patches().unwrap();
     let shown = texts(page.tree());

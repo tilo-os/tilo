@@ -1,21 +1,17 @@
 //! An agent editing a slide text box's words through the field edit every resource publishes
 //! (`edit-text` on `body`): the box holds the words it set, and the deck's window shows them.
 
-use tilolang_runtime::{Actor, Value};
+use tilolang_runtime::Value;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::PlanRequest;
 
-use crate::fixtures::{Replica, Workspace};
+use crate::fixtures::{Replica, Workspace, person};
 
 const SLIDES: (&str, &str) = (
     include_str!("../../../../apps/tl/slides/app.tl"),
     include_str!("../../../../apps/tl/slides/app.ids"),
 );
 const APP: &str = "so.tilo.slides";
-
-fn person(name: &str) -> Actor {
-    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
-}
 
 fn read(replica: &Replica, at: &Value, field: &str) -> Value {
     let Value::Ref(at) = at else {

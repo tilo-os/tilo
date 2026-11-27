@@ -3,15 +3,12 @@
 //! among a message's reactions, which opens that person's card.
 //! The system's own words show as their ids here (`tilolang-person-moderator`): no words are given.
 
-use crate::fixtures::{Replica, Workspace, target};
-use tilo_actions::policy::Role;
+use crate::fixtures::{
+    chat_workspace, open_at as open, person, rich, rows, target, texts_of as texts,
+};
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-use tilolang_runtime::members::Member;
-use tilolang_runtime::rich::RichValue;
-use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
+use tilolang_runtime::{InvokeOutcome, UiNode, Value};
 
-const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
-const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const APP: &str = "so.tilo.chat";
 
 /// The device's content store, holding what the session kept of a report.
@@ -40,59 +37,6 @@ impl BlobHost for Device {
     }
 }
 
-fn person(name: &str) -> Actor {
-    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
-}
-
-/// Run `action` as `who`, answering what it answered.
-fn call_as(r: &Replica, who: &str, action: &str, args: Vec<Value>) -> Value {
-    let meta = r.host.package(APP).unwrap().meta;
-    match r
-        .host
-        .runtime()
-        .invoke_action(
-            &person(who),
-            (crate::fixtures::action_id(&meta, action).as_str(), args),
-        )
-        .unwrap()
-    {
-        InvokeOutcome::Done(value) => value,
-        other => panic!("{action}: {other:?}"),
-    }
-}
-
-fn rich(text: &str) -> Value {
-    Value::Rich(RichValue::from_text(text))
-}
-
-/// Every text a node and its children show.
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The transcript's rows as the list builds them.
-fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
-    view.poll_patches().unwrap();
-    let list = view
-        .tree()
-        .first_of_kind("ui.VirtualList")
-        .expect("a transcript")
-        .key
-        .clone();
-    let len = view.list_len(&list).unwrap_or(0);
-    (0..len)
-        .filter_map(|i| view.row(&list, i).unwrap().cloned())
-        .collect()
-}
-
 /// The key of the node of `kind` in `node` labelled `label`.
 fn labelled(node: &UiNode, kind: &str, label: &str) -> Option<String> {
     node.of_kind(kind)
@@ -101,47 +45,14 @@ fn labelled(node: &UiNode, kind: &str, label: &str) -> Option<String> {
         .map(|n| n.key.clone())
 }
 
-fn open(r: &Replica, at: &tilolang_runtime::ResourceRef) -> ViewInstance {
-    if let Some(action) = r.host.runtime().opened_action(&at.ty) {
-        match r
-            .host
-            .runtime()
-            .invoke_action(
-                &person(&r.name),
-                (action.as_str(), vec![Value::resource(at)]),
-            )
-            .unwrap()
-        {
-            InvokeOutcome::Done(_) => {}
-            other => panic!("opening {at:?}: {other:?}"),
-        }
-    }
-    r.host.open_resource(at, None).unwrap()
-}
-
-fn workspace() -> (Replica, tilolang_runtime::ResourceRef) {
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    crate::fixtures::stage_members(
-        &ada.host,
-        vec![
-            Member::person("ada", Role::Owner),
-            Member::person("ben", Role::Moderator),
-            Member::person("cy", Role::Editor),
-        ],
-        None,
-    );
-    let root = ada.host.root_of(APP).unwrap();
-    ada.commit();
-    (ada, root)
-}
-
 /// A report sent from the shell's box arrives as the session hands it over: the person's words,
 /// the recording of the last moments as the report's own, which its row offers to replay, and the
 /// picture of the window beside it. The files are said as the session says them, the JSON an
 /// action's arguments travel in.
 #[test]
 fn a_report_from_the_shells_box_arrives_with_its_recording_to_replay_and_its_picture() {
-    let (ada, root) = workspace();
+    let ada = chat_workspace("ada");
+    let root = ada.root(APP);
     ada.host
         .give_content(&tilolang_tilo::content::WorkspaceContent {
             file_bytes: 50 * 1_048_576,
@@ -176,9 +87,9 @@ fn a_report_from_the_shells_box_arrives_with_its_recording_to_replay_and_its_pic
         matches!(&recording, Value::Opt(Some(file)) if matches!(**file, Value::File(_))),
         "the recording is the report's own: {recording:?}"
     );
-    call_as(
-        &ada,
+    ada.call_as(
         "ben",
+        APP,
         "report_problem",
         vec![
             Value::resource(&root),
@@ -219,22 +130,23 @@ fn a_report_from_the_shells_box_arrives_with_its_recording_to_replay_and_its_pic
 /// what they are in the workspace and what Chat does with someone. Dismissing it closes it.
 #[test]
 fn choosing_a_reactors_face_opens_their_card() {
-    let (ada, root) = workspace();
-    let design = call_as(
-        &ada,
+    let ada = chat_workspace("ada");
+    let root = ada.root(APP);
+    let design = ada.call_as(
         "ada",
+        APP,
         "new_channel",
         vec![Value::resource(&root), Value::text("design")],
     );
     ada.commit();
-    let message = call_as(
-        &ada,
+    let message = ada.call_as(
         "ada",
+        APP,
         "send",
         vec![design.clone(), rich("Shipping at four.")],
     );
     ada.commit();
-    call_as(&ada, "ben", "react", vec![message, Value::text("🎉")]);
+    ada.call_as("ben", APP, "react", vec![message, Value::text("🎉")]);
     ada.commit();
 
     let mut channel = open(&ada, &target(&design));

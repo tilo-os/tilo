@@ -11,12 +11,14 @@
 use std::path::Path;
 
 use tilolang_runtime::delegate::Invocation;
-use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
 
+use crate::fixtures::button;
 use crate::fixtures::invoker::{Answered as _, Sent};
+use crate::fixtures::row;
 
 /// This device's `network` reading: two radios, a network it keeps that asks for no password,
 /// and whether it asks before joining one.
@@ -159,43 +161,6 @@ fn reading(resource: &str, name: &str) -> ResourceRef {
     ResourceRef::parse_id(resource, format!("so.tilo.device#{name}")).expect("a resource id")
 }
 
-/// Every text the node carries, whatever it is called, under `node` in order.
-fn words(node: &UiNode, into: &mut Vec<String>) {
-    into.extend(node.props.values().filter_map(|value| match value {
-        Value::Text(text) => Some(text.clone()),
-        _ => None,
-    }));
-    for child in &node.children {
-        words(child, into);
-    }
-}
-
-fn shown(view: &ViewInstance) -> Vec<String> {
-    let mut out = Vec::new();
-    words(view.tree(), &mut out);
-    out
-}
-
-/// The key of the button the pane labels `label`.
-fn button(tree: &UiNode, label: &str) -> String {
-    tree.of_kind("ui.Button")
-        .into_iter()
-        .find(|node| node.props.get("label") == Some(&Value::text(label)))
-        .unwrap_or_else(|| panic!("a button labelled {label}"))
-        .key
-        .clone()
-}
-
-/// The row the pane titles `title`.
-fn row(tree: &UiNode, title: &str) -> String {
-    tree.of_kind("ui.ListRow")
-        .into_iter()
-        .find(|node| node.props.get("title") == Some(&Value::text(title)))
-        .unwrap_or_else(|| panic!("a row titled {title}"))
-        .key
-        .clone()
-}
-
 /// Press the row `title`, which opens what it shows.
 fn open_row(view: &mut ViewInstance, title: &str) {
     let key = row(view.tree(), title);
@@ -206,6 +171,11 @@ fn open_row(view: &mut ViewInstance, title: &str) {
 
 /// This device joins the network it keeps by itself; pressing the switch asks it to ask first,
 /// on the network resource the device publishes.
+/// Every word the page shows.
+fn shown(view: &ViewInstance) -> Vec<String> {
+    crate::fixtures::texts_plain(view.tree())
+}
+
 #[test]
 fn the_pane_asks_before_joining_an_open_network() {
     let pane = Pane::new(NETWORK);

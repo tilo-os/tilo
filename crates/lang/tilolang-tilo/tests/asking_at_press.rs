@@ -4,61 +4,18 @@
 //! call that leaves the system asks the same, beside its button, and offers no Shift that would
 //! skip it.
 
+use tilolang_runtime::Value;
 use tilolang_runtime::delegate::Invocation;
-use tilolang_runtime::{UiNode, Value};
 use tilolang_tilo::host::Host;
 
-use crate::shell_staged::{Called, SHELL, ada, staged};
+use crate::fixtures::given;
+use crate::fixtures::texts_walked as texts;
+use crate::shell_staged::{Called, desktop, staged};
 
 /// The shell staged as its scenario "a press that needs a yes": Notes' Share, pressed at its
 /// button in the Notes window, waits for Ada.
 fn shell() -> (Host, Called) {
     staged("a press that needs a yes")
-}
-
-/// The desktop as the shell draws the person's layout.
-fn desktop(host: &Host) -> tilolang_runtime::ViewInstance {
-    let meta = &host.package(SHELL).unwrap().meta;
-    let layout = meta
-        .types
-        .iter()
-        .find(|ty| ty.name == "Layout")
-        .expect("the shell declares its layout")
-        .id
-        .clone();
-    let layout = host.root_resource(SHELL, &layout).unwrap();
-    let view = meta
-        .views
-        .iter()
-        .find(|view| view.name == "shell_view")
-        .expect("the shell draws the layout")
-        .id
-        .clone();
-    host.runtime()
-        .open_view(&ada(), &view, vec![Value::resource(&layout)])
-        .unwrap()
-}
-
-/// Every text the nodes under `tree` say, as their props carry it.
-fn texts(tree: &UiNode) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut at = vec![tree];
-    while let Some(node) = at.pop() {
-        out.extend(node.props.values().filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            _ => None,
-        }));
-        at.extend(node.children.iter());
-    }
-    out
-}
-
-/// `value`, out of the option it may be given in.
-fn given(value: Option<&Value>) -> Option<&Value> {
-    match value? {
-        Value::Opt(inner) => inner.as_deref(),
-        value => Some(value),
-    }
 }
 
 tilo_test_env::scenario! {

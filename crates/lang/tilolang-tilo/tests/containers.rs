@@ -7,7 +7,7 @@ use std::rc::Rc;
 use tilolang::IdsLock;
 use tilolang_runtime::files::{Entry, FileTarget, FilesHost, TrashEntry};
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
-use tilolang_runtime::{ActionRef, Actor, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{ActionRef, Actor, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 use crate::fixtures::invoker::{Sent, invoke_confirmed};
@@ -335,33 +335,23 @@ impl Installed {
     }
 }
 
-/// Every text under `node` that the window shows, in order.
-fn words(node: &UiNode, into: &mut Vec<String>) {
-    for prop in [
-        "value",
-        "title",
-        "label",
-        "message",
-        "action",
-        "description",
-    ] {
-        if let Some(Value::Text(text)) = node.props.get(prop) {
-            into.push(text.clone());
-        }
-    }
-    for child in &node.children {
-        words(child, into);
-    }
-}
-
-fn shown(view: &ViewInstance) -> Vec<String> {
-    let mut out = Vec::new();
-    words(view.tree(), &mut out);
-    out
-}
-
 fn has(view: &ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text == wanted)
+}
+
+/// Every word the page shows.
+fn shown(view: &ViewInstance) -> Vec<String> {
+    crate::fixtures::texts_props(
+        view,
+        &[
+            "value",
+            "title",
+            "label",
+            "message",
+            "action",
+            "description",
+        ],
+    )
 }
 
 #[test]

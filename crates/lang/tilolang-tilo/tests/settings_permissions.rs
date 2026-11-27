@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::fixtures::labelled;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{Actor, Value, ViewInstance};
@@ -84,16 +85,6 @@ fn pane(host: &Host) -> ViewInstance {
 /// The lines the Permissions pane shows, its text as written.
 fn line(host: &Host) -> Vec<String> {
     texts(&pane(host))
-}
-
-/// The key of the control of `kind` whose label `label` reads, as the pane lays it out.
-fn labelled(tree: &tilolang_runtime::UiNode, kind: &str, label: &str) -> String {
-    tree.of_kind(kind)
-        .into_iter()
-        .find(|node| node.props.get("label") == Some(&Value::text(label)))
-        .unwrap_or_else(|| panic!("a {kind} labelled {label}"))
-        .key
-        .clone()
 }
 
 /// The form an answer's address takes: the portal's consent resource for it.

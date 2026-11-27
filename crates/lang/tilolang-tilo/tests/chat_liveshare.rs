@@ -8,7 +8,7 @@ use serde_json::json;
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 
 use crate::fixtures::invoker::{Answered as _, Sent};
-use crate::fixtures::{Replica, Workspace, target};
+use crate::fixtures::{Replica, Workspace, rows, target, texts_plain as texts};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
@@ -101,33 +101,6 @@ fn open(r: &Replica, at: &ResourceRef) -> ViewInstance {
         }
     }
     r.host.open_resource(at, None).unwrap()
-}
-
-/// Every text a node and its children show.
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The transcript's rows, each one's node.
-fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
-    view.poll_patches().unwrap();
-    let list = view
-        .tree()
-        .first_of_kind("ui.VirtualList")
-        .expect("a transcript")
-        .key
-        .clone();
-    let len = view.list_len(&list).unwrap_or(0);
-    (0..len)
-        .filter_map(|i| view.row(&list, i).unwrap().cloned())
-        .collect()
 }
 
 /// The windows a row pictures live, by the key each preview names.

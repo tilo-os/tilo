@@ -2,29 +2,13 @@
 //! the tilolang Mail reads the Contacts app's book, and taking a suggestion writes the person's
 //! structured address (`Ada Lovelace <ada@example.org>`) after the recipients already typed.
 
-use std::path::Path;
-
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
-use crate::fixtures::{Replica, Workspace, field_id, target};
+use crate::fixtures::{Replica, Workspace, compiled_package as compiled, field_id, target};
 
 const CONTACTS: &str = "so.tilo.contacts";
 const MAIL: &str = "so.tilo.mail";
-
-/// The package of `apps/tl/<dir>` as it ships, compiled against the packages it uses.
-fn compiled(dir: &str, metas: &[tilolang::PackageMeta]) -> tilolang::Compiled {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../apps/tl")
-        .join(dir);
-    let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
-    let ids = tilolang::IdsLock::parse(
-        &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
-    )
-    .expect("its ids parse");
-    tilolang::compile_package_source(&source, &ids, metas)
-        .unwrap_or_else(|diagnostics| panic!("{}: {diagnostics:#?}", dir.display()))
-}
 
 fn call(r: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value {
     let id = {

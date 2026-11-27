@@ -3,9 +3,9 @@
 //! another device of the same person, and every other member, keeps its own and reads none of it.
 //! What people share stays in an ordinary root.
 
-use tilolang_runtime::{Actor, ResourceRef, Value};
+use tilolang_runtime::{ResourceRef, Value};
 
-use crate::fixtures::{Replica, Workspace, action_id, type_id};
+use crate::fixtures::{Replica, Workspace, action_id, person, type_id};
 
 const APP: &str = "so.tilo.test.station";
 
@@ -65,10 +65,6 @@ view places_window(p: Places) {
 "#,
     "",
 );
-
-fn person(name: &str) -> Actor {
-    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
-}
 
 /// The reference to the device `device`'s readings: the document the root stands at there.
 fn readings_of(device: &str, meta: &tilolang_runtime::meta::Meta) -> ResourceRef {

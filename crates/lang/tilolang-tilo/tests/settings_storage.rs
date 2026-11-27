@@ -17,6 +17,7 @@ use tilolang_tilo::host::Host;
 const APP: &str = "so.tilo.settings";
 
 use crate::fixtures::invoker::{Answered as _, Sent};
+use crate::fixtures::settings_pane as pane;
 
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
@@ -49,15 +50,6 @@ fn storage() -> ResourceRef {
 /// The person's devices, as the session publishes them.
 fn devices() -> ResourceRef {
     ResourceRef::parse_id("session:devices", "so.tilo.device#Devices").expect("a resource id")
-}
-
-/// The pane the window shows.
-fn pane(host: &Host) -> String {
-    let root = host.root_of(APP).expect("the app's root");
-    match host.runtime().read(&root, "pane").expect("a pane") {
-        Value::Text(text) => text,
-        other => panic!("not text: {other:?}"),
-    }
 }
 
 /// Run the app-level action `name` with `args`, as a search row does from outside the window.

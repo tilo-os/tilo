@@ -6,9 +6,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilolang_runtime::delegate::Invocation;
-use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
-use crate::fixtures::{Replica, Sent, Workspace};
+use crate::fixtures::{Replica, Sent, Workspace, person, texts_plain as texts};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
@@ -30,31 +30,6 @@ fn workspace_calls(sent: &Rc<RefCell<Vec<Invocation>>>) -> Vec<(String, Option<V
             _ => None,
         })
         .collect()
-}
-
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn person(name: &str) -> Actor {
-    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
-}
-
-fn view_id(r: &Replica, name: &str) -> String {
-    let meta = r.host.package(APP).unwrap().meta;
-    meta.views
-        .iter()
-        .find(|view| view.name == name)
-        .unwrap_or_else(|| panic!("no view {name}"))
-        .id
-        .clone()
 }
 
 /// The workspace as Chat's replica `name` reads it: ada owns it, ben and cy edit, mo moderates.
@@ -94,7 +69,7 @@ fn a_moderator_bans_through_the_workspace_and_overturning_lets_them_back() {
     };
 
     // The people page offers its moderators a Ban on everyone else.
-    let people_view = view_id(&ada, "people");
+    let people_view = ada.view_id(APP, "people");
     let mut people = ada.host.open_resource(&root, Some(&people_view)).unwrap();
     people.poll_patches().unwrap();
     let bans = people
@@ -153,7 +128,7 @@ fn a_moderator_bans_through_the_workspace_and_overturning_lets_them_back() {
     assert!(format!("{:?}", as_who("mo", "ban_reported", vec![report])).contains("banned already"));
 
     // Both stand on the moderators' Reports page as decided, and overturning the ban lifts it.
-    let reports_view = view_id(&ada, "reports");
+    let reports_view = ada.view_id(APP, "reports");
     let mut page = ada.host.open_resource(&root, Some(&reports_view)).unwrap();
     page.poll_patches().unwrap();
     let shown = texts(page.tree());
@@ -182,7 +157,7 @@ fn a_member_who_does_not_moderate_is_offered_no_ban() {
     let ben = chat("ben");
     let root = ben.host.root_of(APP).unwrap();
     ben.commit();
-    let people_view = view_id(&ben, "people");
+    let people_view = ben.view_id(APP, "people");
     let mut people = ben.host.open_resource(&root, Some(&people_view)).unwrap();
     people.poll_patches().unwrap();
     let shown = texts(people.tree());

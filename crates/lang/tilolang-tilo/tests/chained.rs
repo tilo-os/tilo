@@ -3,9 +3,10 @@
 //! steps does.
 
 use crate::fixtures::Workspace;
-use tilolang_runtime::{Actor, UiNode, Value};
+use tilolang_runtime::{Actor, Value};
 
 use crate::fixtures::Replica;
+use crate::fixtures::text_words as texts;
 
 /// A bag whose items a function reads in one chained expression, and in `let` steps.
 const CHAIN: &str = r#"app so.tilo.chain "Chain"
@@ -51,18 +52,6 @@ fn stepped(b: Bag, group: Text) -> List<Text> {
 "#;
 
 const APP: &str = "so.tilo.chain";
-
-/// Every text the view shows, in order.
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
-        .into_iter()
-        .filter(|node| node.kind == "text" || node.kind == "ui.Text")
-        .filter_map(|node| match node.props.get("value") {
-            Some(Value::Text(t)) => Some(t.clone()),
-            _ => None,
-        })
-        .collect()
-}
 
 /// The bag seeded with its items: the replica, and the root to open.
 fn seeded() -> (Replica, tilolang_runtime::ResourceRef) {

@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::fixtures::text_labels as texts;
 use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
@@ -275,23 +276,6 @@ impl App {
             .id
             .clone()
     }
-}
-
-/// Every text the window shows.
-fn texts(view: &ViewInstance) -> Vec<String> {
-    fn walk(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.Text"
-            && let Some(Value::Text(text)) = node.props.get("value")
-        {
-            out.push(text.clone());
-        }
-        for child in &node.children {
-            walk(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(view.tree(), &mut out);
-    out
 }
 
 tilo_test_env::scenario! {

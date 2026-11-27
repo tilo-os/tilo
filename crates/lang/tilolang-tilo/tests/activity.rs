@@ -190,30 +190,6 @@ fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
     found
 }
 
-/// Every word the page shows: each node's text, its title and its label.
-fn words(node: &UiNode, into: &mut Vec<String>) {
-    for prop in ["value", "title", "label", "text", "message", "action"] {
-        match node.props.get(prop) {
-            Some(Value::Text(text)) => into.push(text.clone()),
-            Some(Value::Opt(Some(held))) => {
-                if let Value::Text(text) = &**held {
-                    into.push(text.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-    for child in &node.children {
-        words(child, into);
-    }
-}
-
-fn shown(view: &ViewInstance) -> Vec<String> {
-    let mut out = Vec::new();
-    words(view.tree(), &mut out);
-    out
-}
-
 fn has(view: &ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text == wanted)
 }
@@ -243,6 +219,15 @@ fn open_history(app: &Pane) -> ViewInstance {
     let mut window = app.window();
     pick(&mut window, "place", Value::text("history"));
     window
+}
+
+/// Every word the page shows.
+fn shown(view: &ViewInstance) -> Vec<String> {
+    crate::fixtures::texts_props_held(
+        view,
+        &["value", "title", "label", "text", "message", "action"],
+        true,
+    )
 }
 
 #[test]

@@ -507,6 +507,20 @@ impl Replica {
         self.host.root_of(app).unwrap()
     }
 
+    /// The id of the view `name` of `app`, as this replica's host draws it.
+    pub fn view_id(&self, app: &str, name: &str) -> String {
+        self.host
+            .package(app)
+            .unwrap_or_else(|| panic!("{app} is loaded"))
+            .meta
+            .views
+            .iter()
+            .find(|view| view.name == name)
+            .unwrap_or_else(|| panic!("the view {name}"))
+            .id
+            .clone()
+    }
+
     /// The field `field` (by name or id) of `at` as the runtime reads it now.
     pub fn read(&self, at: &ResourceRef, field: &str) -> Value {
         self.host.runtime().read(at, field).unwrap()
@@ -624,6 +638,287 @@ pub fn nodes(node: &UiNode) -> Vec<&UiNode> {
         out.push(node);
         at.extend(node.children.iter().rev());
     }
+    out
+}
+
+/// The platform's authority for the person `me`, with no workspace: the code's authorship decides.
+pub fn solo() -> tilolang_tilo::authority::TiloAuthority {
+    tilolang_tilo::authority::TiloAuthority::new(person("me"), || None)
+}
+
+/// The package `dir` of `apps/tl`, compiled against `metas`.
+pub fn compiled_package(dir: &str, metas: &[tilolang::PackageMeta]) -> tilolang::Compiled {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../apps/tl")
+        .join(dir);
+    let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
+    let ids = tilolang::IdsLock::parse(
+        &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
+    )
+    .expect("its ids parse");
+    tilolang::compile_package_source(&source, &ids, metas)
+        .unwrap_or_else(|diagnostics| panic!("{}: {diagnostics:#?}", dir.display()))
+}
+
+/// The pane Settings' root is showing.
+pub fn settings_pane(host: &Host) -> String {
+    let root = host.root_of("so.tilo.settings").expect("the app's root");
+    match host.runtime().read(&root, "pane").expect("a pane") {
+        Value::Text(text) => text,
+        other => panic!("not text: {other:?}"),
+    }
+}
+
+/// The text an optional value holds, or `value` itself.
+pub fn given(value: Option<&Value>) -> Option<&Value> {
+    match value? {
+        Value::Opt(inner) => inner.as_deref(),
+        value => Some(value),
+    }
+}
+
+/// Who reacted with each emoji, as the row's reactions show it.
+pub fn reactions(row: &UiNode) -> Vec<(String, Vec<Actor>)> {
+    let Some(node) = row.first_of_kind("ui.Reactions") else {
+        return Vec::new();
+    };
+    let Some(Value::Map(entries)) = node.props.get("reactions") else {
+        panic!("reactions as a map: {:?}", node.props);
+    };
+    entries
+        .iter()
+        .map(|(emoji, who)| {
+            let Value::List(who) = who else {
+                panic!("who reacted, as a set: {who:?}");
+            };
+            let who = who
+                .iter()
+                .map(|p| match p {
+                    Value::Actor(p) => p.clone(),
+                    other => panic!("an actor: {other:?}"),
+                })
+                .collect();
+            (emoji.as_text().unwrap_or_default().to_owned(), who)
+        })
+        .collect()
+}
+
+/// The key of the button in `tree` labelled `label`.
+pub fn button(tree: &UiNode, label: &str) -> String {
+    tree.of_kind("ui.Button")
+        .into_iter()
+        .find(|node| node.props.get("label") == Some(&Value::text(label)))
+        .unwrap_or_else(|| panic!("a button labelled {label}"))
+        .key
+        .clone()
+}
+
+/// The key of the list row in `tree` titled `title`.
+pub fn row(tree: &UiNode, title: &str) -> String {
+    tree.of_kind("ui.ListRow")
+        .into_iter()
+        .find(|node| node.props.get("title") == Some(&Value::text(title)))
+        .unwrap_or_else(|| panic!("a row titled {title}"))
+        .key
+        .clone()
+}
+
+/// The actor of the person `name`.
+pub fn person(name: &str) -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
+}
+
+/// The workspace Chat's replica `name` reads: ada owns it, ben moderates and cy edits.
+pub fn chat_workspace(name: &str) -> Replica {
+    let (replica, _) = Replica::new(name, Workspace::new(), &[CHAT]);
+    stage_members(
+        &replica.host,
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_action_policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_action_policy::Role::Moderator),
+            tilolang_runtime::members::Member::person("cy", tilo_action_policy::Role::Editor),
+        ],
+        None,
+    );
+    replica.commit();
+    replica
+}
+
+/// Open `at` the way the system does: its type's `opened action` as the replica's person, then
+/// its window.
+pub fn open_at(r: &Replica, at: &ResourceRef) -> ViewInstance {
+    if let Some(action) = r.host.runtime().opened_action(&at.ty) {
+        match r
+            .host
+            .runtime()
+            .invoke_action(
+                &person(&r.name),
+                (action.as_str(), vec![Value::resource(at)]),
+            )
+            .unwrap()
+        {
+            tilolang_runtime::InvokeOutcome::Done(_) => {}
+            other => panic!("opening {at:?}: {other:?}"),
+        }
+    }
+    r.host.open_resource(at, None).unwrap()
+}
+
+/// The rows a virtual list draws in `view`, as the list builds them.
+pub fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
+    view.poll_patches().unwrap();
+    let list = view
+        .tree()
+        .first_of_kind("ui.VirtualList")
+        .expect("a virtual list")
+        .key
+        .clone();
+    let len = view.list_len(&list).unwrap_or(0);
+    (0..len)
+        .filter_map(|i| view.row(&list, i).unwrap().cloned())
+        .collect()
+}
+
+/// The view `name` of the loaded Settings, opened as a window opens it.
+pub fn settings_view(host: &Host, name: &str) -> ViewInstance {
+    let id = host
+        .package("so.tilo.settings")
+        .expect("the app is loaded")
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == name)
+        .unwrap_or_else(|| panic!("the app declares the view `{name}`"))
+        .id
+        .clone();
+    let mut view = host
+        .runtime()
+        .open_view(&person("ada"), &id, Vec::new())
+        .unwrap_or_else(|why| panic!("{name} opens: {why}"));
+    view.poll_patches().expect("the view draws");
+    view
+}
+
+/// Hand `host` the reading `json` of the resource `doc` of `ty`, as the session publishes it.
+pub fn reading_at(host: &Host, doc: &str, ty: &str, json: serde_json::Value) {
+    reading_of(
+        host,
+        &ResourceRef::parse_id(doc, ty).expect("a resource id"),
+        json,
+    );
+}
+
+/// [`reading_at`] for the resource `at`.
+pub fn reading_of(host: &Host, at: &ResourceRef, json: serde_json::Value) {
+    host.runtime()
+        .set_reading(at, &json.to_string())
+        .unwrap_or_else(|why| panic!("{at:?} is read: {why}"));
+}
+
+/// The rich text `text`, as a message or a comment carries it.
+pub fn rich(text: &str) -> Value {
+    Value::Rich(tilolang_runtime::rich::RichValue::from_text(text))
+}
+
+/// Every text `node` and its children show, rich text as its reader writes it.
+pub fn texts_of(node: &UiNode) -> Vec<String> {
+    nodes(node)
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            Value::Rich(rich) => Some(rich.written_text()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// [`texts_of`] the drawn view shows.
+pub fn texts(view: &ViewInstance) -> Vec<String> {
+    texts_of(view.tree())
+}
+
+/// Every plain text `node` and its children carry: what a test reads where nothing is rich.
+pub fn texts_plain(node: &UiNode) -> Vec<String> {
+    nodes(node)
+        .into_iter()
+        .flat_map(|node| node.props.values())
+        .filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every text of the tree `tree`, walked by its children.
+pub fn texts_walked(tree: &UiNode) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut at = vec![tree];
+    while let Some(node) = at.pop() {
+        out.extend(node.props.values().filter_map(|value| match value {
+            Value::Text(text) => Some(text.clone()),
+            _ => None,
+        }));
+        at.extend(node.children.iter());
+    }
+    out
+}
+
+/// Every text the nodes of `view` show under `props`, in tree order.
+pub fn texts_props(view: &ViewInstance, props: &[&str]) -> Vec<String> {
+    texts_props_held(view, props, false)
+}
+
+/// [`texts_props`], the text an optional prop holds included: a described component names its
+/// value in an option.
+pub fn texts_props_held(view: &ViewInstance, props: &[&str], held: bool) -> Vec<String> {
+    fn walk(node: &UiNode, props: &[&str], held: bool, out: &mut Vec<String>) {
+        for prop in props {
+            match node.props.get(*prop) {
+                Some(Value::Text(text)) => out.push(text.clone()),
+                Some(Value::Opt(Some(inner))) if held => {
+                    if let Value::Text(text) = &**inner {
+                        out.push(text.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        for child in &node.children {
+            walk(child, props, held, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(view.tree(), props, held, &mut out);
+    out
+}
+
+/// What each text node of `node` and its children say, as a plain text view draws it.
+pub fn text_words(node: &UiNode) -> Vec<String> {
+    nodes(node)
+        .into_iter()
+        .filter(|node| node.kind == "text" || node.kind == "ui.Text")
+        .filter_map(|node| match node.props.get("value") {
+            Some(Value::Text(text)) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Each `ui.Text` of the drawn view and its children, walked by them.
+pub fn text_labels(view: &ViewInstance) -> Vec<String> {
+    fn walk(node: &UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Text"
+            && let Some(Value::Text(text)) = node.props.get("value")
+        {
+            out.push(text.clone());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(view.tree(), &mut out);
     out
 }
 

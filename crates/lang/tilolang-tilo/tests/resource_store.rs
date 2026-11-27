@@ -1,16 +1,9 @@
 //! A package run over the device's one resource store: what an action writes is read back at
 //! once, lists, moves and removals land where they should, and a view follows them.
 
+use crate::fixtures::solo;
 use tilolang_runtime::{InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 use tilolang_tilo::resources::ResourceStore;
-
-/// The platform's authority for one person, with no workspace: the code's authorship decides.
-fn solo() -> tilolang_tilo::authority::TiloAuthority {
-    tilolang_tilo::authority::TiloAuthority::new(
-        tilolang_runtime::Actor::from(tilolang_runtime::ids::MemberId::person("me")),
-        || None,
-    )
-}
 
 const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/todo.tl");
 

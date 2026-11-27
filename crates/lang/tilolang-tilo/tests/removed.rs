@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_render_protocol::patch::local::{End, pair};
-use tilo_render_protocol::patch::{self, Level, ToUi, Transport as _};
+use tilo_render_protocol::patch::{self, Level, ToUi};
 use tilolang_runtime::Meta;
 use tilolang_tilo::OpenEffect;
 use tilolang_tilo::background::Waker;
@@ -18,6 +18,7 @@ use tilolang_tilo::runtime::{Actor, ResourceRef, Value};
 
 use crate::fixtures::call;
 use crate::fixtures::{Replica, Workspace, action_id, target};
+use crate::window_reads::told as sent;
 
 const MAIL_APP: &str = "so.tilo.mail";
 const NOTES_APP: &str = "so.tilo.notes";
@@ -83,15 +84,6 @@ fn window(
     }
     instance.sync();
     (instance, window_end)
-}
-
-/// What the window was sent since the last call.
-fn sent(window: &mut End) -> Vec<ToUi> {
-    let mut messages = Vec::new();
-    while let Ok(Some(batch)) = window.recv() {
-        messages.extend(patch::decode_batch::<ToUi>(&batch).expect("the window is sent batches"));
-    }
-    messages
 }
 
 /// The tree the window shows at `level`, as text.

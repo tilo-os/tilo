@@ -15,35 +15,17 @@ use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::rich::RichValue;
-use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 use crate::fixtures::invoker::{Sent, press, press_confirmed};
-use crate::fixtures::{drawn, set_reading};
+use crate::fixtures::{compiled_package as compiled, drawn, person, set_reading};
 
 const APP: &str = "so.tilo.messages";
 const CHAT: &str = "so.tilo.chat";
 /// The person at the window, and the member they write to on Tilo.
 const ADA: &str = "ada";
 const GRACE: &str = "grace";
-
-fn person(name: &str) -> Actor {
-    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
-}
-
-/// The package of `apps/tl/<dir>` as it ships, compiled against `metas`.
-fn compiled(dir: &str, metas: &[tilolang::PackageMeta]) -> tilolang::Compiled {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../apps/tl")
-        .join(dir);
-    let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
-    let ids = tilolang::IdsLock::parse(
-        &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
-    )
-    .expect("its ids parse");
-    tilolang::compile_package_source(&source, &ids, metas)
-        .unwrap_or_else(|diagnostics| panic!("{}: {diagnostics:#?}", dir.display()))
-}
 
 /// One job the device runs for the app: what it was asked, how it stands, and the handlers its
 /// start named.

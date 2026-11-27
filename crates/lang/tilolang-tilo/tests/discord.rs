@@ -6,7 +6,7 @@ use serde_json::{Value as Json, json};
 use tilolang_runtime::value::{EnumValue, ResourceRef};
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
-use crate::fixtures::{self, Replica, Workspace};
+use crate::fixtures::{self, Replica, Workspace, person};
 
 const DISCORD: &str = include_str!("../../../../apps/tl/discord/app.tl");
 const DISCORD_IDS: &str = include_str!("../../../../apps/tl/discord/app.ids");
@@ -20,10 +20,6 @@ const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
 /// The bridge as the workspace sees it: the app's own program, which alone answers the setup.
 fn bridge() -> Actor {
     Actor::App(tilo_member_types::AppId::new(APP))
-}
-
-fn person(name: &str) -> Actor {
-    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
 }
 
 /// The field `name` of `at`, as the app declares it.

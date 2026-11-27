@@ -9,10 +9,8 @@
     reason = "test assertions"
 )]
 
-use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
-
-const APP: &str = "so.tilo.settings";
 
 /// The person at the settings window.
 fn me() -> Actor {
@@ -20,56 +18,10 @@ fn me() -> Actor {
 }
 
 use crate::fixtures::invoker::{Answered as _, Sent};
+use crate::fixtures::reading_at as reading;
 use crate::fixtures::settings_host as settings;
-
-/// The resource `doc` of `ty`, as a view of a platform package reads it.
-fn resource(doc: &str, ty: &str) -> ResourceRef {
-    ResourceRef::parse_id(doc, ty).expect("a resource id")
-}
-
-/// Hand `host` the reading `json` of `doc`, as the session publishes it there.
-fn reading(host: &Host, doc: &str, ty: &str, json: serde_json::Value) {
-    host.runtime()
-        .set_reading(&resource(doc, ty), &json.to_string())
-        .unwrap_or_else(|why| panic!("{doc} is read: {why}"));
-}
-
-/// The app's view `name`, opened as a window opens it.
-fn open(host: &Host, name: &str) -> ViewInstance {
-    let id = host
-        .package(APP)
-        .expect("the app is loaded")
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == name)
-        .unwrap_or_else(|| panic!("the app declares the view `{name}`"))
-        .id
-        .clone();
-    let mut view = host
-        .runtime()
-        .open_view(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-            &id,
-            Vec::new(),
-        )
-        .unwrap_or_else(|why| panic!("{name} opens: {why}"));
-    view.poll_patches().expect("the view draws");
-    view
-}
-
-/// The words a view shows, its text as written.
-fn texts(view: &ViewInstance) -> Vec<String> {
-    crate::fixtures::nodes(view.tree())
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
-}
+use crate::fixtures::settings_view as open;
+use crate::fixtures::texts;
 
 /// The node of `kind` whose `prop` reads `word`.
 fn named<'a>(tree: &'a UiNode, kind: &str, prop: &str, word: &str) -> &'a UiNode {

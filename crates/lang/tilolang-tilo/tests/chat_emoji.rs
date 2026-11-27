@@ -19,7 +19,7 @@ use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 use ui::kurbo::{Point, Rect};
 
-use crate::fixtures::{Replica as Device, Workspace, target};
+use crate::fixtures::{Replica as Device, Workspace, reactions, target};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
@@ -64,32 +64,6 @@ fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
             view.menu_row(&list, key.as_deref());
             view.poll_patches().unwrap();
             view.row(&list, i).unwrap().cloned()
-        })
-        .collect()
-}
-
-/// The emoji a row's reactions show, each with who reacted.
-fn reactions(row: &UiNode) -> Vec<(String, Vec<Actor>)> {
-    let Some(node) = row.first_of_kind("ui.Reactions") else {
-        return Vec::new();
-    };
-    let Some(Value::Map(entries)) = node.props.get("reactions") else {
-        panic!("reactions as a map: {:?}", node.props);
-    };
-    entries
-        .iter()
-        .map(|(emoji, who)| {
-            let Value::List(who) = who else {
-                panic!("who reacted, as a set: {who:?}");
-            };
-            let who = who
-                .iter()
-                .map(|p| match p {
-                    Value::Actor(p) => p.clone(),
-                    other => panic!("an actor: {other:?}"),
-                })
-                .collect();
-            (emoji.as_text().unwrap_or_default().to_owned(), who)
         })
         .collect()
 }

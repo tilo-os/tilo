@@ -2,15 +2,12 @@
 //! shows (a message's author, the workspace's people), and a problem report's recording.
 //! The system's own words show as their ids here (`tilolang-person-moderator`): no words are given.
 
-use crate::fixtures::{Replica, Workspace, target};
-use tilo_actions::policy::Role;
+use crate::fixtures::{
+    chat_workspace, open_at as open, person, rich, rows, target, texts_of as texts,
+};
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-use tilolang_runtime::members::Member;
-use tilolang_runtime::rich::RichValue;
-use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
+use tilolang_runtime::{InvokeOutcome, UiNode, Value};
 
-const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
-const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const APP: &str = "so.tilo.chat";
 
 /// The device's content store: a file is kept under its own name, and what it holds is the
@@ -40,59 +37,6 @@ impl BlobHost for Device {
     }
 }
 
-fn person(name: &str) -> Actor {
-    Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name))
-}
-
-/// Run `action` as `who`, answering what it answered.
-fn call_as(r: &Replica, who: &str, action: &str, args: Vec<Value>) -> Value {
-    let meta = r.host.package(APP).unwrap().meta;
-    match r
-        .host
-        .runtime()
-        .invoke_action(
-            &person(who),
-            (crate::fixtures::action_id(&meta, action).as_str(), args),
-        )
-        .unwrap()
-    {
-        InvokeOutcome::Done(value) => value,
-        other => panic!("{action}: {other:?}"),
-    }
-}
-
-fn rich(text: &str) -> Value {
-    Value::Rich(RichValue::from_text(text))
-}
-
-/// Every text a node and its children show.
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The transcript's rows as the list builds them.
-fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
-    view.poll_patches().unwrap();
-    let list = view
-        .tree()
-        .first_of_kind("ui.VirtualList")
-        .expect("a transcript")
-        .key
-        .clone();
-    let len = view.list_len(&list).unwrap_or(0);
-    (0..len)
-        .filter_map(|i| view.row(&list, i).unwrap().cloned())
-        .collect()
-}
-
 /// The card a person's popover holds in `node`, by the popover's label.
 fn card<'a>(node: &'a UiNode, label: &str) -> Option<&'a UiNode> {
     node.of_kind("ui.PopoverButton")
@@ -108,70 +52,24 @@ fn button(node: &UiNode, label: &str) -> Option<String> {
         .map(|b| b.key.clone())
 }
 
-fn view_id(r: &Replica, name: &str) -> String {
-    r.host
-        .package(APP)
-        .unwrap()
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == name)
-        .unwrap_or_else(|| panic!("the view {name}"))
-        .id
-        .clone()
-}
-
-fn open(r: &Replica, at: &tilolang_runtime::ResourceRef) -> ViewInstance {
-    if let Some(action) = r.host.runtime().opened_action(&at.ty) {
-        match r
-            .host
-            .runtime()
-            .invoke_action(
-                &person(&r.name),
-                (action.as_str(), vec![Value::resource(at)]),
-            )
-            .unwrap()
-        {
-            InvokeOutcome::Done(_) => {}
-            other => panic!("opening {at:?}: {other:?}"),
-        }
-    }
-    r.host.open_resource(at, None).unwrap()
-}
-
-fn workspace() -> (Replica, tilolang_runtime::ResourceRef) {
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
-    crate::fixtures::stage_members(
-        &ada.host,
-        vec![
-            Member::person("ada", Role::Owner),
-            Member::person("ben", Role::Moderator),
-            Member::person("cy", Role::Editor),
-        ],
-        None,
-    );
-    let root = ada.host.root_of(APP).unwrap();
-    ada.commit();
-    (ada, root)
-}
-
 /// Choosing a message's author opens their card: their face and name, what they are in the
 /// workspace, and what Chat does with someone: writing to them, reporting them and, for a
 /// moderator, banning them. Message on the card opens the conversation with them; the card of the
 /// person looking offers none of these.
 #[test]
 fn a_messages_author_opens_their_card_with_their_role_and_what_to_do_with_them() {
-    let (ada, root) = workspace();
+    let ada = chat_workspace("ada");
+    let root = ada.root(APP);
     let all = Value::resource(&root);
-    let design = call_as(&ada, "ada", "new_channel", vec![all, Value::text("design")]);
+    let design = ada.call_as("ada", APP, "new_channel", vec![all, Value::text("design")]);
     ada.commit();
-    call_as(
-        &ada,
+    ada.call_as(
         "ben",
+        APP,
         "send",
         vec![design.clone(), rich("Shipping at four.")],
     );
-    call_as(&ada, "ada", "send", vec![design.clone(), rich("Thanks.")]);
+    ada.call_as("ada", APP, "send", vec![design.clone(), rich("Thanks.")]);
     ada.commit();
 
     let mut channel = open(&ada, &target(&design));
@@ -207,9 +105,9 @@ fn a_messages_author_opens_their_card_with_their_role_and_what_to_do_with_them()
     let opened = channel.press(&message).unwrap();
     assert!(matches!(opened, InvokeOutcome::Done(_)), "{opened:?}");
     ada.commit();
-    let with_ben = call_as(
-        &ada,
+    let with_ben = ada.call_as(
         "ada",
+        APP,
         "conversation_with",
         vec![Value::resource(&root), Value::Actor(person("ben"))],
     );
@@ -222,10 +120,11 @@ fn a_messages_author_opens_their_card_with_their_role_and_what_to_do_with_them()
 /// The workspace's people page opens each person's card, which says what each is here.
 #[test]
 fn the_people_page_opens_each_persons_card() {
-    let (ada, root) = workspace();
+    let ada = chat_workspace("ada");
+    let root = ada.root(APP);
     let mut people = ada
         .host
-        .open_resource(&root, Some(&view_id(&ada, "people")))
+        .open_resource(&root, Some(&ada.view_id(APP, "people")))
         .unwrap();
     people.poll_patches().unwrap();
     for (who, standing) in [
@@ -247,7 +146,8 @@ fn the_people_page_opens_each_persons_card() {
 /// replay it; what is no recording is refused, so a report never claims one it lacks.
 #[test]
 fn a_problem_report_carries_its_recording_and_its_row_replays_it() {
-    let (ada, root) = workspace();
+    let ada = chat_workspace("ada");
+    let root = ada.root(APP);
     // The host says what it keeps of the workspace's content, as every host does: here, all of it.
     ada.host
         .give_content(&tilolang_tilo::content::WorkspaceContent {
@@ -278,9 +178,9 @@ fn a_problem_report_carries_its_recording_and_its_row_replays_it() {
         format!("{refused:?}").contains("A recording is a video"),
         "{refused:?}"
     );
-    call_as(
-        &ada,
+    ada.call_as(
         "ben",
+        APP,
         "report_problem",
         vec![
             all,

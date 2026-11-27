@@ -96,6 +96,33 @@ pub(crate) fn staged(scenario: &str) -> (Host, Called) {
     (host, called)
 }
 
+/// The desktop as the shell draws the person's layout.
+pub(crate) fn desktop(host: &Host) -> tilolang_runtime::ViewInstance {
+    let meta = &host.package(SHELL).unwrap().meta;
+    let layout = meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "Layout")
+        .expect("the shell declares its layout")
+        .id
+        .clone();
+    let layout = host.root_resource(SHELL, &layout).unwrap();
+    let view = meta
+        .views
+        .iter()
+        .find(|view| view.name == "shell_view")
+        .expect("the shell draws the layout")
+        .id
+        .clone();
+    host.runtime()
+        .open_view(
+            &ada(),
+            &view,
+            vec![tilolang_runtime::Value::resource(&layout)],
+        )
+        .unwrap()
+}
+
 /// The shell's desktop in a window, driven without a display: the instance that runs the shell's
 /// views and the window that shows the tree it sends.
 #[cfg(target_os = "linux")]

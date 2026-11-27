@@ -5,9 +5,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::fixtures::text_words as texts;
 use collab_types::store::MovedRecord;
 use collab_types::store::wire::{Command, Reach, Reply};
-use tilolang_runtime::{Actor, UiNode, Value};
+use tilolang_runtime::Actor;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::resources::{LocalPort, Port, ResourceStore};
 
@@ -45,18 +46,6 @@ impl Port for Reaching {
             other => self.store.command(other),
         }
     }
-}
-
-/// Every text the view shows, in order.
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
-        .into_iter()
-        .filter(|node| node.kind == "text" || node.kind == "ui.Text")
-        .filter_map(|node| match node.props.get("value") {
-            Some(Value::Text(t)) => Some(t.clone()),
-            _ => None,
-        })
-        .collect()
 }
 
 #[test]

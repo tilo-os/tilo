@@ -4,10 +4,11 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::window_reads::reveals;
+use crate::window_reads::sent;
 use tilo_desktop_search::indexed::IndexedContent;
 use tilo_desktop_search::model::{OPEN_ANCHOR, Source as _, Target};
 use tilo_render_protocol::patch::local::{End, pair};
-use tilo_render_protocol::patch::{self as ui, ToUi, Transport as _};
 use tilo_resource::search_index::{IndexState, Publisher};
 use tilo_workspace_search::{AppContentIndex, IndexSearch};
 use tilolang_runtime::value::{ResourceRef, Value};
@@ -100,38 +101,6 @@ fn call(host: &Host, action: &str, args: Vec<Value>) -> Value {
         Ok(InvokeOutcome::Done(value)) => value,
         other => panic!("`{action}` answered {other:?}"),
     }
-}
-
-/// Everything the window was sent since it was last read.
-fn sent(window: &mut End) -> Vec<ToUi> {
-    let mut out = Vec::new();
-    while let Some(batch) = window.recv().expect("the window reads its batches") {
-        out.extend(ui::decode_batch::<ToUi>(&batch).expect("a batch of the window's"));
-    }
-    out
-}
-
-/// The asks the window's editors were sent to show a block (`reveal`).
-fn reveals(messages: &[ToUi]) -> Vec<String> {
-    messages
-        .iter()
-        .filter_map(|message| match message {
-            ToUi::Patch { patches, .. } => Some(patches),
-            _ => None,
-        })
-        .flatten()
-        .filter_map(|patch| match patch {
-            ui::Patch::SetProp {
-                name,
-                value: Some(ui::Value::Opt(Some(ask))),
-                ..
-            } if name == "reveal" => match ask.as_ref() {
-                ui::Value::Text(ask) => Some(ask.clone()),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect()
 }
 
 /// A note Ada writes, titled `title`, of the paragraphs `paragraphs`.

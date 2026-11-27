@@ -15,6 +15,8 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::fixtures::labelled;
+use crate::fixtures::texts;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
@@ -215,29 +217,6 @@ fn devices_pane(host: &Host) -> ViewInstance {
         "the pane draws, not its waiting skeleton: {:?}",
         view.tree()
     );
-}
-
-/// The lines a view shows, its text as written.
-fn texts(view: &ViewInstance) -> Vec<String> {
-    crate::fixtures::nodes(view.tree())
-        .into_iter()
-        .flat_map(|node| node.props.values())
-        .filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            Value::Rich(rich) => Some(rich.written_text()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The key of the control of `kind` whose label `label` reads.
-fn labelled(tree: &tilolang_runtime::UiNode, kind: &str, label: &str) -> String {
-    tree.of_kind(kind)
-        .into_iter()
-        .find(|node| node.props.get("label") == Some(&Value::text(label)))
-        .unwrap_or_else(|| panic!("a {kind} labelled {label}"))
-        .key
-        .clone()
 }
 
 /// The key of the text field whose placeholder `placeholder` reads.

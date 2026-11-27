@@ -226,19 +226,6 @@ fn lists(view: &mut ViewInstance, section: &str, person: &str) -> bool {
     listed(view, section).contains(&person.to_owned())
 }
 
-fn view_id(r: &Replica, name: &str) -> String {
-    r.host
-        .package(APP)
-        .unwrap()
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == name)
-        .unwrap_or_else(|| panic!("the view {name}"))
-        .id
-        .clone()
-}
-
 /// Whether Ben's device reads the channel: what a read by him gets, from the grants as they stand.
 fn reads(ben: &Replica, channel: &tilolang_runtime::ResourceRef) -> bool {
     ben.host.follow_members();
@@ -308,7 +295,7 @@ fn a_moderator_lets_ben_into_a_channel_and_takes_him_out_again() {
     );
     let mut panel = mo
         .host
-        .open_resource(&channel, Some(&view_id(&mo, "channel_members")))
+        .open_resource(&channel, Some(&mo.view_id(APP, "channel_members")))
         .unwrap();
     assert!(
         !lists(&mut panel, "Members", "ben"),
@@ -356,7 +343,7 @@ fn a_moderator_lets_ben_into_a_channel_and_takes_him_out_again() {
     let cy = member("cy", mo.doc.fork(), &policy);
     let mut theirs = cy
         .host
-        .open_resource(&channel, Some(&view_id(&cy, "channel_members")))
+        .open_resource(&channel, Some(&cy.view_id(APP, "channel_members")))
         .unwrap();
     let refused = press(&mut theirs, "ben", "Add");
     assert!(

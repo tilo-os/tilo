@@ -6,8 +6,10 @@
 
 #![cfg(target_os = "linux")]
 
-use tilolang_runtime::{UiNode, Value};
+use tilolang_runtime::Value;
 
+use crate::fixtures::given;
+use crate::fixtures::texts_walked as texts;
 use crate::shell_staged::StagedWindow;
 
 /// The scenario staged: Notes' Share, pressed at its button in its window, waits for Ada.
@@ -29,28 +31,6 @@ fn captures() -> std::path::PathBuf {
         .parent()
         .expect("the build's directory")
         .join("asking-at-press-shot")
-}
-
-/// `value`, out of the option it may be given in.
-fn given(value: Option<&Value>) -> Option<&Value> {
-    match value? {
-        Value::Opt(inner) => inner.as_deref(),
-        value => Some(value),
-    }
-}
-
-/// Every text the nodes under `tree` say, as their props carry it.
-fn texts(tree: &UiNode) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut at = vec![tree];
-    while let Some(node) = at.pop() {
-        out.extend(node.props.values().filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            _ => None,
-        }));
-        at.extend(node.children.iter());
-    }
-    out
 }
 
 /// The shell's desktop as its scenario "a press that needs a yes" stages it, in both themes, saved

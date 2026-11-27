@@ -6,8 +6,7 @@
 
 #![cfg(target_os = "linux")]
 
-use tilolang_runtime::{UiNode, Value};
-
+use crate::fixtures::texts_walked as texts;
 use crate::shell_staged::StagedWindow;
 
 /// The display in use, whose strip holds one window and whose bar carries the bell.
@@ -31,20 +30,6 @@ fn captures() -> std::path::PathBuf {
         .parent()
         .expect("the build's directory")
         .join("shell-displays-shot")
-}
-
-/// Every text the nodes under `tree` say, as their props carry it.
-fn texts(tree: &UiNode) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut at = vec![tree];
-    while let Some(node) = at.pop() {
-        out.extend(node.props.values().filter_map(|value| match value {
-            Value::Text(text) => Some(text.clone()),
-            _ => None,
-        }));
-        at.extend(node.children.iter());
-    }
-    out
 }
 
 /// The shell on two displays, each part drawn on its own display and saved in both themes: one
