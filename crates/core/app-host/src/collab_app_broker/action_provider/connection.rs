@@ -38,6 +38,7 @@ impl AppBrokerState {
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if self.services.hosted_workspaces.is_none() {
+            self.record_kept(caller, request);
             return self.invoke_application_here(caller, (origin, serving), request);
         }
         let runtime = match super::super::launchable::delivery_runtime() {
@@ -58,7 +59,7 @@ impl AppBrokerState {
         runtime.spawn(async move {
             match state.placed(&caller, origin.as_ref(), &request).await {
                 Ok(None) => {
-                    state.record_brought(&caller, &request);
+                    state.record_kept(&caller, &request);
                     let here = state.invoke_application_here(
                         &caller,
                         (origin.as_ref(), serving),
@@ -105,13 +106,18 @@ impl AppBrokerState {
         request
     }
 
-    /// Keep a call another device brought here in this device's record of the invocations it
-    /// was asked for: the record its status is read from, which its completion and its
-    /// cancellation end, and what proves a call its app makes for it still serves a live one.
-    fn record_brought(self: &Arc<Self>, caller: &Caller, request: &InvokeRequest) {
-        let (Some(records), Some(_)) = (self.invocations.get(), caller.forwarder()) else {
+    /// Keep a call another device brought here, or one an app makes on behalf of an invocation
+    /// it serves, in this device's record of the invocations it was asked for: the record its
+    /// status is read from, which its completion and its cancellation end, what proves a call
+    /// its app makes for it still serves a live one, and what taking back the invocation it
+    /// serves takes back with it.
+    fn record_kept(self: &Arc<Self>, caller: &Caller, request: &InvokeRequest) {
+        let Some(records) = self.invocations.get() else {
             return;
         };
+        if caller.forwarder().is_none() && request.on_behalf_of.is_none() {
+            return;
+        }
         let route: Arc<dyn ActionProvider + Send + Sync> =
             Arc::new(super::AppCalls::new(Arc::downgrade(self)));
         records.record(

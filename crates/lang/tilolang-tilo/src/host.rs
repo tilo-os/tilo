@@ -868,6 +868,14 @@ impl HostInner {
             .ok_or_else(|| format!("no package {app}"))
     }
 
+    /// What `app`'s package declares: one this host runs, or another app's it loaded to show
+    /// and call ([`Host::load_foreign_package`]), whose types a call's answer is of.
+    fn meta_of(&self, app: &str) -> Result<Meta, String> {
+        self.runtime
+            .meta_of(app)
+            .ok_or_else(|| format!("no package {app}"))
+    }
+
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         // Planning is a trial run: whatever it wrote is dropped before the store sees it, so asking
         // for an action (to describe it, to offer it) never changes the workspace. It runs the
@@ -899,7 +907,7 @@ impl HostInner {
         value: &Value,
     ) -> Result<Json, String> {
         argument_json(
-            &|app| self.package_of(app).map(|package| package.meta.clone()),
+            &|app| self.meta_of(app),
             meta,
             value,
             &parse_ty(&param.ty, &meta.app)?,
@@ -1682,11 +1690,7 @@ impl Host {
         if let Some(value) = value {
             resources_named(value, app, &app_of, &mut output.resources);
             if let Some(ty) = crate::publish::result_ty(&package.meta, declared) {
-                let owner = |app: &str| {
-                    self.inner
-                        .package_of(app)
-                        .map(|package| package.meta.clone())
-                };
+                let owner = |app: &str| self.inner.meta_of(app);
                 let mut answered = answer_json(&owner, &package.meta, value, &ty)?;
                 // An answer names a resource by its address and how it reads, as a picker
                 // shows it: a caller reads what it found without a read of each.

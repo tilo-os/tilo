@@ -546,6 +546,25 @@ pub(super) enum RowScope<'a> {
 }
 
 impl RowScope<'_> {
+    /// The rows `query` asks for. `max_results: 0` asks only who publishes, and a named provider
+    /// or application only its own rows: build no row nobody asked for. An app named as the
+    /// provider its calls address (`application:<workspace>:<app>`) is asked for its own rows,
+    /// as whichever peer offers them now.
+    fn asked(query: &CatalogueQuery) -> RowScope<'_> {
+        let named = query.provider.as_deref().and_then(application_provider);
+        let provider = query.provider.as_deref().filter(|_| named.is_none());
+        let app_id = query
+            .app_id
+            .as_deref()
+            .or_else(|| named.map(|(_, app)| app));
+        match (provider, app_id) {
+            (Some(provider), None) => RowScope::Provider(provider),
+            (None, _) if query.max_results == 0 => RowScope::None,
+            (provider, Some(app_id)) => RowScope::App { app_id, provider },
+            (None, None) => RowScope::All,
+        }
+    }
+
     fn applications(
         self,
         launcher: &dyn crate::services::LauncherServices,
@@ -1848,21 +1867,7 @@ impl AppBrokerState {
         {
             return self.query_directory(caller, &root, query);
         }
-        // `max_results: 0` asks only who publishes, and a named provider
-        // or application only its own rows: build no row nobody asked for.
-        let scope = match (query.provider.as_deref(), query.app_id.as_deref()) {
-            (Some(provider), Some(app_id)) => RowScope::App {
-                app_id,
-                provider: Some(provider),
-            },
-            (Some(provider), None) => RowScope::Provider(provider),
-            (None, _) if query.max_results == 0 => RowScope::None,
-            (None, Some(app_id)) => RowScope::App {
-                app_id,
-                provider: None,
-            },
-            (None, None) => RowScope::All,
-        };
+        let scope = RowScope::asked(query);
         let (rows, providers) = self.eager_catalogue_with_origin(caller, origin, scope);
         // Nothing at all may mean the workspace holds nothing, or that this
         // agent cannot reach it: only the first is an empty page.

@@ -3,7 +3,7 @@
 //! stop it and to run it again.
 
 use serde_json::{Value, json};
-use tilo_action_services::workspace_invocations::{self, Invocation, InvocationStatus};
+use tilo_action_services::workspace_invocations::{self, CANCEL, Invocation, RETRY, UNDO};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, InvocationReceipt, InvokeRequest,
@@ -19,6 +19,8 @@ const CHAT: &str = ui::apps::CHAT;
 const CHAT_PACKAGE: &str = "chat";
 /// Tasks' id, as the workspace runs it.
 const TASKS: &str = "so.tilo.tasks";
+/// Notes' id, as the workspace runs it.
+const NOTES: &str = "so.tilo.notes";
 
 /// The channel `name` made in the workspace's chat by `agent`: the address its posts go to.
 async fn made_channel(agent: &host::Agent, name: &str) -> String {
@@ -199,37 +201,6 @@ async fn devices_info(
     );
 }
 
-/// One workspace's invocations state what was called, by whom, and how it stands, after the call
-/// ended.
-#[test]
-fn a_reading_states_what_was_called_by_whom_and_how_it_stands() {
-    host::run(|host| async move {
-        let workspace = host.workspace().to_owned();
-        let key = host.key("Visa backend");
-        let invocation = ran(
-            &key,
-            &format!("/v1/workspaces/{workspace}/resources/devices/actions/info"),
-        )
-        .await;
-
-        let listed = collected(host.dispatch().as_ref(), &host.caller()).await;
-        assert_eq!(listed.len(), 1, "{listed:?}");
-        let item = &listed[0];
-        assert_eq!(item.id.as_deref(), Some(invocation.as_str()));
-        assert_eq!(item.calls, std::slice::from_ref(&invocation));
-        assert_eq!(item.status, InvocationStatus::Ended, "{item:?}");
-        assert_eq!(item.by.kind, "agent", "a key's call is the key's: {item:?}");
-        assert_eq!(item.by.name, "Visa backend", "{item:?}");
-        let action = item.action.as_deref().expect("what was called is named");
-        assert!(action.contains('#'), "{action}");
-        assert!(item.remembered, "{item:?}");
-        assert!(
-            !item.recorded,
-            "no record keeps it across a restart: {item:?}"
-        );
-    });
-}
-
 /// A caller the workspace's grants do not admit reads nothing.
 #[test]
 fn a_caller_the_workspace_does_not_admit_is_refused() {
@@ -309,8 +280,9 @@ fn the_workspace_publishes_its_invocations_beside_its_apps() {
 }
 
 /// The workspace's invocations are a resource read through the one record API, as every record
-/// is: whole, or one by its id, and followed, the next call waking a reader that watches them. A
-/// reader names the workspace the record is in, and another workspace's are not read here.
+/// is: whole, or one by its id, and followed, the next call waking a reader that watches them.
+/// Each states what was called, by whom, and how it stands. A reader names the workspace the
+/// record is in, and another workspace's are not read here.
 #[test]
 fn the_workspaces_invocations_are_read_and_followed_through_the_record_api() {
     use tilo_actions::remote::ResourceWake;
@@ -321,6 +293,20 @@ fn the_workspaces_invocations_are_read_and_followed_through_the_record_api() {
         let first = ran(&key, &path).await;
         let dispatch = host.dispatch();
         let caller = host.caller();
+
+        // The record states what was called, by whom, and how it stands.
+        let listed = collected(dispatch.as_ref(), &caller).await;
+        let item = &listed[0];
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(item.calls, std::slice::from_ref(&first));
+        assert_eq!(item.by.kind, "agent", "a key's call is the key's: {item:?}");
+        assert_eq!(item.by.name, "Visa backend", "{item:?}");
+        let action = item.action.as_deref().expect("what was called is named");
+        assert!(action.contains('#'), "{action}");
+        assert!(
+            item.remembered && !item.recorded,
+            "no record keeps it across a restart: {item:?}"
+        );
 
         let whole = reading(dispatch.as_ref(), &caller, "")
             .await
@@ -394,7 +380,7 @@ fn the_workspaces_invocations_are_read_and_followed_through_the_record_api() {
 }
 
 /// A retry runs the same action again as its caller, under a new invocation id, and the new
-/// record says what it runs again.
+/// record says what it runs again; a stranger may not run it again, stop it or take it back.
 #[test]
 fn a_retry_runs_the_action_again_as_its_caller_under_a_new_id() {
     host::run(|host| async move {
@@ -405,15 +391,29 @@ fn a_retry_runs_the_action_again_as_its_caller_under_a_new_id() {
             .await
             .expect("the device answers");
         let original = started.invocation.0.to_string();
+        // A caller neither its own, nor the person its agent works for, nor a writer of its
+        // origin, is refused in words a person reads.
+        let stranger = Caller::local_person(host.person())
+            .in_workspace(host.workspace())
+            .in_new_execution();
+        for action in [RETRY, CANCEL, UNDO] {
+            let asked = invoked(
+                dispatch.as_ref(),
+                &stranger,
+                record_action(&original, action),
+            );
+            let refused = rejected(asked.await.expect("the record answers"));
+            assert!(
+                matches!(&refused, ActionCallError::Refused { reason }
+                    if reason.starts_with("only the caller who made this invocation")),
+                "a stranger is refused in words: {refused:?}"
+            );
+        }
 
         let answered = completed(
-            invoked(
-                dispatch.as_ref(),
-                &caller,
-                record_action(&original, workspace_invocations::RETRY),
-            )
-            .await
-            .expect("its caller runs it again"),
+            invoked(dispatch.as_ref(), &caller, record_action(&original, RETRY))
+                .await
+                .expect("its caller runs it again"),
         );
         let fresh = answered["invocation"]
             .as_str()
@@ -469,26 +469,18 @@ fn a_caller_who_may_write_the_origin_may_run_an_invocation_again_and_stop_it() {
             "another execution of the person is not its caller"
         );
         let answered = completed(
-            invoked(
-                dispatch.as_ref(),
-                &writer,
-                record_action(&original, workspace_invocations::RETRY),
-            )
-            .await
-            .expect("a writer runs it again"),
+            invoked(dispatch.as_ref(), &writer, record_action(&original, RETRY))
+                .await
+                .expect("a writer runs it again"),
         );
         assert_eq!(answered["retries"], original.as_str());
 
         // A writer may stop it too: the record admits them, and what the provider then answers
         // about a call that already ended is the provider's own refusal, not this rule's.
         let refused = rejected(
-            invoked(
-                dispatch.as_ref(),
-                &writer,
-                record_action(&original, workspace_invocations::CANCEL),
-            )
-            .await
-            .expect("a writer stops it"),
+            invoked(dispatch.as_ref(), &writer, record_action(&original, CANCEL))
+                .await
+                .expect("a writer stops it"),
         );
         assert!(
             !matches!(refused, ActionCallError::Refused { .. }),
@@ -527,59 +519,18 @@ fn the_person_an_agent_works_for_may_run_its_invocation_again() {
         let person = caller.clone().in_new_execution();
         assert!(!person.continues(&caller));
         let answered = completed(
-            invoked(
-                dispatch.as_ref(),
-                &person,
-                record_action(&original, workspace_invocations::RETRY),
-            )
-            .await
-            .expect("the agent's person runs it again"),
+            invoked(dispatch.as_ref(), &person, record_action(&original, RETRY))
+                .await
+                .expect("the agent's person runs it again"),
         );
         assert_eq!(answered["retries"], original.as_str());
     });
 }
 
-/// A caller that is neither the invocation's own, nor the person its agent works for, nor a
-/// writer of its origin, is refused in words a person reads.
-#[test]
-fn a_caller_neither_its_own_nor_a_writer_of_its_origin_is_refused() {
-    host::run(|host| async move {
-        let dispatch = host.dispatch();
-        let caller = host.caller();
-        let (provider, address) = devices_info(dispatch.as_ref(), &caller).await;
-        let started = invoked(dispatch.as_ref(), &caller, info(&provider, &address, None))
-            .await
-            .expect("the device answers");
-        let original = started.invocation.0.to_string();
-
-        let stranger = Caller::local_person(host.person())
-            .in_workspace(host.workspace())
-            .in_new_execution();
-        for action in [workspace_invocations::RETRY, workspace_invocations::CANCEL] {
-            let refused = rejected(
-                invoked(
-                    dispatch.as_ref(),
-                    &stranger,
-                    record_action(&original, action),
-                )
-                .await
-                .expect("the record answers"),
-            );
-            let ActionCallError::Refused { reason } = &refused else {
-                panic!("a stranger is refused in words, not {refused:?}");
-            };
-            assert!(
-                reason.starts_with("only the caller who made this invocation"),
-                "{reason}"
-            );
-        }
-    });
-}
-
 /// An agent's run that wrote a message is taken back whole by its record's `undo`: the write
-/// goes, the record says what it changed was taken back, a caller who may not manage the run is
-/// refused, and asking again is refused in words a person reads. Another agent session's two
-/// messages go together through the `undo` of its group, as the activity's Undo run asks.
+/// goes, the record says what it changed was taken back, and asking again is refused in words a
+/// person reads. Another agent session's two messages go together through the `undo` of its
+/// group, as the activity's Undo run asks.
 #[test]
 fn an_agents_run_is_taken_back_whole_through_its_record() {
     use crate::language::chat::{chat_holds, chat_stands_with, opens};
@@ -622,42 +573,11 @@ fn an_agents_run_is_taken_back_whole_through_its_record() {
 
         let dispatch = host.dispatch();
         let person = host.caller();
-        // A stranger, neither the caller nor the person its agent works for, may not take it back.
-        let stranger = Caller::local_person(host.person())
-            .in_workspace(host.workspace())
-            .in_new_execution();
-        let refused = rejected(
-            invoked(
-                dispatch.as_ref(),
-                &stranger,
-                record_action(&run, workspace_invocations::UNDO),
-            )
-            .await
-            .expect("the record answers"),
-        );
-        let ActionCallError::Refused { reason } = &refused else {
-            panic!("a stranger is refused in words, not {refused:?}");
-        };
-        assert!(
-            reason.starts_with("only the caller who made this invocation"),
-            "{reason}"
-        );
-        assert!(
-            chat_holds(host.as_ref(), posted)
-                .await
-                .unwrap_or_else(|error| panic!("{error}")),
-            "a refusal wrote nothing: {posted:?}"
-        );
-
         // The person its agent works for takes the run back whole.
         let undone = completed(
-            invoked(
-                dispatch.as_ref(),
-                &person,
-                record_action(&run, workspace_invocations::UNDO),
-            )
-            .await
-            .expect("the person takes it back"),
+            invoked(dispatch.as_ref(), &person, record_action(&run, UNDO))
+                .await
+                .expect("the person takes it back"),
         );
         assert!(undone.is_null(), "the undo answers nothing of its own");
         // The record stands without the write: what it holds now, not the history the write was
@@ -674,13 +594,9 @@ fn an_agents_run_is_taken_back_whole_through_its_record() {
 
         // Asking again says what stands, in words.
         let again = rejected(
-            invoked(
-                dispatch.as_ref(),
-                &person,
-                record_action(&run, workspace_invocations::UNDO),
-            )
-            .await
-            .expect("the record answers"),
+            invoked(dispatch.as_ref(), &person, record_action(&run, UNDO))
+                .await
+                .expect("the record answers"),
         );
         let ActionCallError::Refused { reason } = &again else {
             panic!("a second undo is refused in words, not {again:?}");
@@ -706,7 +622,7 @@ fn an_agents_run_is_taken_back_whole_through_its_record() {
             "{groups:?}"
         );
         let group = groups[1].as_str().unwrap_or_default();
-        let undo = || record_action(group, workspace_invocations::UNDO);
+        let undo = || record_action(group, UNDO);
         completed(
             invoked(dispatch.as_ref(), &person, undo())
                 .await
@@ -743,37 +659,44 @@ async fn done(agent: &host::Agent, path: &str, args: Value, run: Option<&str>) -
     answer["structuredContent"].clone()
 }
 
-/// The status of the task `id` as the person's copy of the workspace's store holds it, once it
-/// reads `want` (any status with `None`); the last one read when it never comes to `want`.
-async fn status(host: &host::Host, id: &str, want: Option<&str>) -> String {
+/// The record `id` of the kind `kind` as the person reads it in the workspace's store, once
+/// `settled` is true of it; as it reads when it never does.
+async fn stored(
+    host: &host::Host,
+    kind: &str,
+    id: &str,
+    settled: impl Fn(Option<&collab_types::store::Indexed>) -> bool,
+) -> Option<collab_types::store::Indexed> {
+    use collab_types::store::wire::{Command, Reply};
     let deadline = tilo_test_env::hang_deadline();
     loop {
+        let (kind, id) = (kind.to_owned(), id.to_owned());
         let read = host
             .daemon()
             .workspaces()
-            .read_store_as(
-                host.workspace(),
-                host.person(),
-                &collab_types::store::wire::Command::Get {
-                    kind: "tl.so.tilo.tasks.Task".to_owned(),
-                    id: id.to_owned(),
-                },
-            )
-            .await
-            .expect("the person's copy answers a read");
-        let now = match read {
-            collab_types::store::wire::Reply::Resource(Some(task)) => {
-                format!("{:?}", task.scalar("status"))
-            }
-            _ => String::new(),
+            .read_store_as(host.workspace(), host.person(), &Command::Get { kind, id })
+            .await;
+        let Ok(Reply::Resource(now)) = read else {
+            panic!("the person's read answers the record: {read:?}");
         };
-        if (!now.is_empty() && want.is_none_or(|want| now.contains(want)))
-            || std::time::Instant::now() >= deadline
-        {
+        if settled(now.as_ref()) || std::time::Instant::now() >= deadline {
             return now;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
+}
+
+/// The status of the task `id` as the person reads it in the workspace's store, once it
+/// reads `want` (any status with `None`); the last one read when it never comes to `want`.
+async fn status(host: &host::Host, id: &str, want: Option<&str>) -> String {
+    let of = |task: &collab_types::store::Indexed| format!("{:?}", task.scalar("status"));
+    let reads =
+        |task: Option<&_>| task.is_some_and(|task| want.is_none_or(|w| of(task).contains(w)));
+    stored(host, "tl.so.tilo.tasks.Task", id, reads)
+        .await
+        .as_ref()
+        .map(of)
+        .unwrap_or_default()
 }
 
 /// A run is taken back around another member's later change: an agent's run closes a task and
@@ -837,7 +760,7 @@ fn a_run_is_taken_back_around_a_members_later_change() {
             moved_on.contains("in_review"),
             "the person's move lands: {moved_on}"
         );
-        let undo = || record_action(&run, workspace_invocations::UNDO);
+        let undo = || record_action(&run, UNDO);
         completed(
             invoked(dispatch.as_ref(), &person, undo())
                 .await
@@ -867,5 +790,50 @@ fn a_run_is_taken_back_around_a_members_later_change() {
             matches!(&again, ActionCallError::Refused { reason } if reason.contains("already taken back")),
             "a second undo says what stands: {again:?}"
         );
+    });
+}
+
+/// An agent's run in one app that writes another app's record is taken back whole: a task's
+/// `write_note` makes the note in Notes as a step of the run, the run's `undo` takes back what it
+/// changed in both apps, and the record reads undone.
+#[test]
+fn a_task_step_in_two_apps_is_taken_back_as_one() {
+    host::run_with(&["tasks", "notes"], |host| async move {
+        for app in [TASKS, NOTES] {
+            host::start_app(host.as_ref(), app)
+                .await
+                .unwrap_or_else(|refused| panic!("{app} starts: {refused:?}"));
+        }
+        let agent = host.agent();
+        let new_task = format!("{TASKS}#new_task");
+        let task = done(&agent, &new_task, json!({"title": "Plan"}), None).await;
+        let task = task["result"]["id"]
+            .as_str()
+            .expect("the call names the task it made");
+        let run = tilo_actions::InvocationId::new().0.to_string();
+        let path = format!("{TASKS}/{task}#write_note");
+        let note = done(&agent, &path, json!({}), Some(&run)).await;
+        let note = note["result"]["id"]
+            .as_str()
+            .expect("the run answers the note it wrote")
+            .to_owned();
+        let kind = "tl.so.tilo.notes.Note";
+        let made = stored(host.as_ref(), kind, &note, |n| n.is_some()).await;
+        assert!(made.is_some(), "Notes keeps the run's note");
+
+        let (dispatch, person) = (host.dispatch(), host.caller());
+        let undo = record_action(&run, UNDO);
+        completed(
+            invoked(dispatch.as_ref(), &person, undo)
+                .await
+                .expect("the run is taken back"),
+        );
+        let left = stored(host.as_ref(), kind, &note, |n| n.is_none()).await;
+        let taken = one(dispatch.as_ref(), &person, &run).await;
+        assert!(
+            left.is_none(),
+            "the run's note in Notes is taken back: {taken}"
+        );
+        assert_eq!(taken["status"], "undone", "{taken}");
     });
 }

@@ -1298,6 +1298,15 @@ impl Runtime {
             .collect()
     }
 
+    /// The metadata of the package of `app` this runtime loaded, as [`Self::metas`] lists it.
+    #[must_use]
+    pub fn meta_of(&self, app: &str) -> Option<Meta> {
+        let registry = self.core.registry.borrow();
+        let packages = registry.packages();
+        let package = packages.iter().find(|package| package.meta.app == app)?;
+        Some(package.meta.clone())
+    }
+
     /// The descriptions of the apps this runtime does not run ([`Self::load_foreign`]), each
     /// without code: what a host opened over another store describes again, so a package that
     /// reads their roots (a scenario's `workspace.members`) reads there as here.
