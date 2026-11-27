@@ -7973,7 +7973,7 @@ default = false
 [[check]]
 name = "lounge-check-cli"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "# The tilo command and the daemon it starts, packed together (tools/ci/publish/cli-release.sh).\ncargo build --locked --profile lounge-check -p tilo-cli -p tilo-daemon --bin tilo --bin tilo-runtime\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" \"$CARGO_TARGET_DIR/lounge-check/tilo-runtime\" /target/publish/lounge-check/cli/\n"
+run = "# The tilo command and the daemon it starts, packed together as cli-release.sh packs them, with\n# the launcher beside them a device starts every app through (a check's, reading the trust list it\n# is given rather than the image's).\ncargo build --locked --profile lounge-check -p tilo-cli -p tilo-daemon --bin tilo --bin tilo-runtime\ncargo build --locked --profile lounge-check -p launcher --features launcher/dev-overrides --bin tilo-launcher\nrm -rf /target/publish/lounge-check/cli\nmkdir -p /target/publish/lounge-check/cli\ncp \"$CARGO_TARGET_DIR/lounge-check/tilo\" \"$CARGO_TARGET_DIR/lounge-check/tilo-runtime\" \"$CARGO_TARGET_DIR/lounge-check/tilo-launcher\" /target/publish/lounge-check/cli/\n"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-check/cli/**"]
@@ -8040,7 +8040,7 @@ setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx p
 # Its flows run at once, each with its browsers: the job bounds them, as onboarding's (below), never
 # the supervisor's two-browser share of a developer's machine, which held every flow but two waiting
 # for a browser against its own time limit.
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_LOUNGE_APPS = "/target/publish/lounge-check/apps", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
@@ -8097,7 +8097,7 @@ needs = ["lounge-check-cli", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-ca
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/entry/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_SH_ENTRY_VISITS = "1", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
+env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_LOUNGE_APPS = "/target/publish/lounge-check/apps", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/entry/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_SH_ENTRY_VISITS = "1", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: the visitor's page and console, and the stack's own logs.

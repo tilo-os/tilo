@@ -197,8 +197,23 @@ log=$state/logs/server.log
 bash "$tilo_sh/stack.sh" status || true
 timing 'phase=the stack up'
 
+# Every device a flow starts (the `tilo` command's, and the daemon beside it)
+# is given the apps a device image carries: the store it reads them from, the
+# runtimes they execute, and the key they and the packages are trusted by. A
+# page of the person's own workspace is served by it, so it needs what a
+# computer has — nothing here is special to any app.
+apps=${TILO_LOUNGE_APPS:?TILO_LOUNGE_APPS names the apps the Lounge's workspace runs}
+device=$work/device
+mkdir -p "$device/data"
+TILO_INSTALL=$apps/bin/tilo-install TILO_RUNTIME_BUNDLE_DIR=$apps/runtimes \
+  sh "$lounge_dir/install-apps.sh" "$apps/packages" "$device/apps" \
+  || { echo "FAIL: could not install the apps a flow's device runs" >&2; exit 1; }
+ln -sfn "$apps/runtimes" "$device/data/tilo-runtime"
+
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_SERVER=$server_origin E2E_WORKSPACE=$workspace \
-  E2E_STACK=$tilo_sh/stack.sh E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin
+  E2E_STACK=$tilo_sh/stack.sh E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin \
+  TILO_APPS_DATA_DIR=$device/apps XDG_DATA_HOME=$device/data \
+  TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$apps/runtime-publishers.txt
 
 # What each of the stack's services complained about while it ran: each error
 # and warning it logged, without its time, with how often. A failing check

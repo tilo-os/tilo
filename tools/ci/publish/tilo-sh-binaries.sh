@@ -36,7 +36,13 @@ mkdir -p "$out/bin"
 cargo build --locked --profile lounge-check -p tilo-api -p fake-discord -p tilolang-process \
   -p tilo-account-probe --example mail_stand_in \
   --bin tilo-api --bin fake-discord --bin tilolang-process
-for bin in tilo-api fake-discord tilolang-process; do
+# A device starts every app through the launcher beside its programs, and the
+# flows' devices (the `tilo` command's) are given the Lounge's app layer: their
+# launcher is the one a check builds, which reads the trust list they are given
+# rather than the image's /etc/tilo.
+cargo build --locked --profile lounge-check -p launcher --features launcher/dev-overrides \
+  --bin tilo-launcher
+for bin in tilo-api fake-discord tilolang-process tilo-launcher; do
   cp "$target/lounge-check/$bin" "$out/bin/"
 done
 # The stand-in mail server is an example, since it makes a certificate with the
