@@ -1298,8 +1298,10 @@ impl Task {
                     workspace_id,
                     &self.config.cert,
                     self.signer.as_ref(),
+                    &[],
                 )
                 .await
+                .map(|(bootstrap, _)| bootstrap)
             }
             #[cfg(not(target_arch = "wasm32"))]
             tilo_server_client::Carrier::Direct | tilo_server_client::Carrier::Relay => {
@@ -1311,8 +1313,10 @@ impl Task {
                     workspace_id,
                     &self.config.cert,
                     self.signer.as_ref(),
+                    &[],
                 )
                 .await
+                .map(|(bootstrap, _)| bootstrap)
             }
             #[cfg(target_arch = "wasm32")]
             tilo_server_client::Carrier::Direct | tilo_server_client::Carrier::Relay => {

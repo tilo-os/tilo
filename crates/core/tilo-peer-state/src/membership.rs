@@ -19,7 +19,9 @@ const MEMBERSHIP_DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 /// presenting `device`, the certificate it is a member with or the renewal of it.
 /// `endpoint` is the key the host sees the requests come from, and `ask` carries
 /// one request to the host's join service and brings its answer back. `request_id`
-/// names this exchange. The answer is checked by whoever takes it in.
+/// names this exchange. The answer is checked by whoever takes it in. With it
+/// comes the row the device signed of its own, on top of `earlier`, what it
+/// signed into the workspace before: empty where the workspace lists it already.
 ///
 /// # Errors
 /// The serving device cannot be reached, or refuses the proof.
@@ -30,7 +32,8 @@ pub async fn prove<F, Fut>(
     workspace_id: WorkspaceId,
     device: &DeviceCert,
     signer: &dyn collab_types::signer::DeviceSigner,
-) -> Result<join::JoinBootstrap, String>
+    earlier: &[Vec<u8>],
+) -> Result<(join::JoinBootstrap, Vec<Vec<u8>>), String>
 where
     F: Fn(JoinTransportRequest) -> Fut,
     Fut: Future<Output = Result<JoinTransportResponse, String>>,
@@ -51,10 +54,12 @@ where
         _ => return Err("the host answered no membership challenge".into()),
     };
     // A further device of a member writes its own row; a device the
-    // workspace lists already writes nothing.
+    // workspace lists already writes nothing. A redemption of its own the host
+    // has not taken in yet lists it too: the row is signed on top of it, never
+    // beside it, where either could win the device's row.
     let admission = crate::own_admission::sign_further_device_row(
         &workspace_id.to_string(),
-        (&governance, &[]),
+        (&governance, earlier),
         device,
         signer,
         tilo_clock::wall(),
@@ -62,11 +67,14 @@ where
     .await?;
     let proof = join::sign_membership_proof(challenge, signer).await?;
     match ask(JoinTransportRequest::MembershipComplete(
-        join::MembershipCompleteRequest { proof, admission },
+        join::MembershipCompleteRequest {
+            proof,
+            admission: admission.clone(),
+        },
     ))
     .await?
     {
-        JoinTransportResponse::MembershipComplete(bootstrap) => Ok(bootstrap),
+        JoinTransportResponse::MembershipComplete(bootstrap) => Ok((bootstrap, admission)),
         JoinTransportResponse::Error { message, .. } => Err(refused(&message)),
         _ => Err("the host answered no membership".into()),
     }

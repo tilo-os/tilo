@@ -26,11 +26,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::{self, Role, TransportHint};
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
-use tilo_peer_state::owner::enroll::{admit_as_member, prepare_and_complete};
+use tilo_peer_state::owner::enroll::{prepare_and_complete, prove_membership};
 use tilo_peer_state::owner::session::{
     CannotDial, Connect, Holder, Link, Linked, OwnHost, Reach, Scope,
 };
@@ -232,16 +233,21 @@ impl Desktop {
     /// Enter as one of its person's further devices at the holder `at`: no
     /// invitation, and no server to ask.
     async fn enters_as_member(&self, at: TransportHint) {
-        admit_as_member(
-            WorkspaceJoinClient::new(self.endpoint.clone()),
-            self.identity(),
-            self.owner.clone(),
+        let (host, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&at)
+            .expect("the holder's signed address");
+        let (bootstrap, _) = prove_membership(
+            &WorkspaceJoinClient::new(self.endpoint.clone()),
+            &host.endpoint_addr,
             workspace(),
-            at,
-            SystemTime::now(),
+            &self.cert,
+            &self.key,
+            &[],
         )
         .await
         .expect("the workspace admits this person's further device");
+        self.owner
+            .install_member(workspace(), &bootstrap, at, &self.cert, SystemTime::now())
+            .expect("the workspace's copy installs here");
     }
 
     /// Link this device's copy of the workspace to the holder `via`: in

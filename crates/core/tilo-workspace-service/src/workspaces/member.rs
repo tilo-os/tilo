@@ -886,16 +886,34 @@ impl Workspaces {
         holds_copies(&device.cert)?;
         let (address, _) =
             WorkspaceDeviceHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
-        let client = WorkspaceJoinClient::new(self.inner.host.endpoint.clone());
-        let bootstrap = tilo_peer_state::owner::enroll::prove_membership(
-            &client,
-            &address.endpoint_addr,
+        let bootstrap = self
+            .prove_own(&device, &address.endpoint_addr, workspace)
+            .await?;
+        self.hold_member(&device, &bootstrap, hint, false).await
+    }
+
+    /// Prove `device`'s membership of `workspace` at the device serving it at `host`: what it
+    /// answers. A row of its own the device signs there builds on what it signed into the
+    /// workspace before, a redemption still on its way among it, and is kept for the next.
+    async fn prove_own(
+        &self,
+        device: &MemberDevice,
+        host: &iroh::EndpointAddr,
+        workspace: WorkspaceId,
+    ) -> Result<tilo_peer_state::join::JoinBootstrap, String> {
+        let key = device.cert.device_public_key;
+        let _turn = tilo_peer_state::own_admission::signing_turn(&workspace.to_string(), key).await;
+        let (bootstrap, signed) = tilo_peer_state::owner::enroll::prove_membership(
+            &WorkspaceJoinClient::new(self.inner.host.endpoint.clone()),
+            host,
             workspace,
             &device.cert,
             device.signer.as_ref(),
+            &self.own_admissions(workspace, &key),
         )
         .await?;
-        self.hold_member(&device, &bootstrap, hint, false).await
+        self.keep_own_admission(workspace, &key, &signed)?;
+        Ok(bootstrap)
     }
 
     /// Hold each of `held`, a workspace and where the device hosting it serves it, as a member

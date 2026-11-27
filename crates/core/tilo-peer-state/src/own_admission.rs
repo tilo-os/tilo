@@ -197,7 +197,7 @@ pub async fn sign_own_admission(
 }
 
 /// One run of [`further_device_row`] under `key`, as [`signed_turn`] makes it.
-fn further_device_row_turn(
+pub(crate) fn further_device_row_turn(
     workspace: &str,
     signed_on: (&[Vec<u8>], &[Vec<u8>]),
     own: &DeviceCert,
@@ -238,8 +238,15 @@ pub fn further_device_row(
     further_device_row_turn(workspace, (governance, &[]), own, key, now)
 }
 
-/// One run of [`entry_admission`] under `key`, as [`signed_turn`] makes it.
-fn entry_admission_turn(
+/// The changes admitting `own` through `workspace`'s entry: its own row and
+/// its entry admission, signed by its own key, the entry the governance
+/// carries being the grant. No invitation is behind them and no host signed
+/// them.
+///
+/// # Errors
+/// The governance does not read, `key` is not `own`'s, the entry takes nobody
+/// who asks, or the workspace refuses it as every receiver would.
+pub(crate) fn entry_admission_turn(
     workspace: &str,
     signed_on: (&[Vec<u8>], &[Vec<u8>]),
     own: &DeviceCert,
@@ -278,38 +285,12 @@ fn entry_admission_turn(
     )
 }
 
-/// The changes admitting `own` through `workspace`'s entry: its own row and
-/// its entry admission, signed by its own key, the entry the governance
-/// carries being the grant. No invitation is behind them and no host signed
-/// them.
+/// The changes admitting `own` through `workspace`'s entry, signed by
+/// `signer`, which may sign outside the turn.
 ///
 /// # Errors
-/// The governance does not read, `key` is not `own`'s, the entry takes nobody
-/// who asks, or the workspace refuses it as every receiver would.
-pub fn entry_admission(
-    workspace: &str,
-    governance: &[Vec<u8>],
-    own: &DeviceCert,
-    request_id: [u8; 32],
-    name: Option<&str>,
-    key: &dyn DeviceSigner,
-    now: SystemTime,
-) -> Result<Vec<Vec<u8>>, String> {
-    entry_admission_turn(
-        workspace,
-        (governance, &[]),
-        own,
-        request_id,
-        name,
-        key,
-        now,
-    )
-}
-
-/// [`entry_admission`] signed by `signer`, which may sign outside the turn.
-///
-/// # Errors
-/// As [`entry_admission`], or `signer` does not sign.
+/// The governance does not read, the entry takes nobody who asks, the
+/// workspace refuses it as every receiver would, or `signer` does not sign.
 pub async fn sign_entry_admission(
     workspace: &str,
     governance: &[Vec<u8>],

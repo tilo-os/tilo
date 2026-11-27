@@ -12,7 +12,6 @@ use crate::owner::{
     DeviceWorkspaces, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
     VerifiedNativeEnrollmentIntent,
 };
-use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -249,12 +248,13 @@ pub async fn prepare_and_complete(
         // host holds the certificate this device presents from now on.
         JoinTransportResponse::Complete(bootstrap) if bootstrap.device_cert != device => {
             let grant = intent.verified_join().grant();
-            let bootstrap = prove_membership(
+            let (bootstrap, _) = prove_membership(
                 &client,
                 &host.endpoint_addr,
                 grant.workspace_id,
                 &device,
                 identity.signer.as_ref(),
+                &[],
             )
             .await?;
             current(&identity, identity_topic, &device)?;
@@ -277,12 +277,13 @@ pub async fn prepare_and_complete(
                 || (expired(code, &message) && intent.local_device() != &device) =>
         {
             let grant = intent.verified_join().grant();
-            let bootstrap = prove_membership(
+            let (bootstrap, _) = prove_membership(
                 &client,
                 &host.endpoint_addr,
                 grant.workspace_id,
                 &device,
                 identity.signer.as_ref(),
+                &[],
             )
             .await?;
             current(&identity, identity_topic, &device)?;
@@ -353,7 +354,8 @@ fn expired(code: u16, message: &str) -> bool {
 }
 
 /// The workspace's current state for a device that is a member
-/// ([`crate::membership::prove`]), asked of the host at `host` over iroh.
+/// ([`crate::membership::prove`]), asked of the host at `host` over iroh, and the
+/// row the device signed on top of `earlier`.
 ///
 /// # Errors
 /// The serving device cannot be reached, or refuses the proof.
@@ -363,7 +365,8 @@ pub async fn prove_membership(
     workspace_id: WorkspaceId,
     device: &DeviceCert,
     signer: &dyn collab_types::signer::DeviceSigner,
-) -> Result<join::JoinBootstrap, String> {
+    earlier: &[Vec<u8>],
+) -> Result<(join::JoinBootstrap, Vec<Vec<u8>>), String> {
     let mut request_id = [0; 32];
     rand_core::Rng::fill_bytes(
         &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
@@ -381,42 +384,9 @@ pub async fn prove_membership(
         workspace_id,
         device,
         signer,
+        earlier,
     )
     .await
-}
-
-/// Take `workspace` in as one of this person's further devices: the workspace
-/// admits a device certified by a member's root as that member's device, so
-/// this device proves its membership at the device `hint` names, without an
-/// invitation, and holds what it answers. Answers the bootstrap it admitted this
-/// device with, and the hint that names it: what another holder of the
-/// workspace (the device's service) takes the same membership in by.
-#[allow(
-    clippy::type_complexity,
-    reason = "the bootstrap and the device it came from, as the join answers them"
-)]
-pub async fn admit_as_member(
-    client: WorkspaceJoinClient,
-    identity: DeviceIdentity,
-    owner: DeviceWorkspaces,
-    workspace_id: WorkspaceId,
-    hint: join::TransportHint,
-    now: SystemTime,
-) -> Result<(join::JoinBootstrap, join::TransportHint), String> {
-    let (host, _) =
-        WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
-    let (device, _) = identity.current_material(workspace_id)?;
-    let bootstrap = prove_membership(
-        &client,
-        &host.endpoint_addr,
-        workspace_id,
-        &device,
-        identity.signer.as_ref(),
-    )
-    .await?;
-    current(&identity, workspace_id, &device)?;
-    owner.install_member(workspace_id, &bootstrap, hint.clone(), &device, now)?;
-    Ok((bootstrap, hint))
 }
 
 /// Prove this device's membership of `workspace`, a workspace it joined, with the
@@ -442,12 +412,13 @@ pub async fn renew_membership(
     }
     let (serving, _) =
         WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
-    let bootstrap = prove_membership(
+    let (bootstrap, _) = prove_membership(
         &client,
         &serving.endpoint_addr,
         topic,
         &renewed,
         identity.signer.as_ref(),
+        &[],
     )
     .await?;
     current(&identity, topic, &renewed)?;

@@ -644,9 +644,9 @@ fn a_visitor_with_no_name_yet_comes_in_through_the_open_entry() {
     opened(&mut peer, &authority_key, now);
     let (guest_key, guest) = crate::fixture::device(95, 96);
     for blank in [Some(""), Some("  "), None] {
-        crate::own_admission::entry_admission(
+        crate::own_admission::entry_admission_turn(
             peer.workspace_id(),
-            &governance_of(&peer),
+            (&governance_of(&peer), &[]),
             &guest,
             [7; 32],
             blank,
@@ -655,4 +655,67 @@ fn a_visitor_with_no_name_yet_comes_in_through_the_open_entry() {
         )
         .unwrap_or_else(|error| panic!("a visitor named {blank:?} was refused: {error}"));
     }
+}
+
+/// A device of the workspace's owner redeems an invitation and, before the host took that in,
+/// proves its membership as one of the owner's devices, or the other way round: two rows of its
+/// own racing for one place. Each is signed on top of what the device signed before, so the
+/// second builds on the first rather than beside it: in either order, every copy takes both in,
+/// which it does only where the device's row holds its redemption.
+#[test]
+fn a_devices_redemption_and_its_further_row_race_in_either_order() {
+    let (peer, owner, _, _, now) = seeded();
+    let (phone_key, phone) = crate::fixture::device(1, 9);
+    let redemption = invited(&peer, &owner, &phone, now);
+    let governance = governance_of(&peer);
+    let workspace = peer.workspace_id().to_owned();
+    let redeemed = |earlier: &[Vec<u8>]| {
+        crate::own_admission::own_admission_turn(
+            &workspace,
+            (&governance, earlier),
+            &redemption,
+            None,
+            &phone_key,
+            now,
+        )
+        .unwrap()
+    };
+    let further = |earlier: &[Vec<u8>]| {
+        crate::own_admission::further_device_row_turn(
+            &workspace,
+            (&governance, earlier),
+            &phone,
+            &phone_key,
+            now,
+        )
+        .unwrap()
+    };
+    // Signed beside each other, on the governance alone, the second to arrive is refused: the
+    // device gave two changes one number.
+    let (beside, other) = (redeemed(&[]), further(&[]));
+    for (first, second) in [(&beside, &other), (&other, &beside)] {
+        let mut copy = peer.clone();
+        from_author(&mut copy, phone.device_public_key, first.clone(), now).unwrap();
+        assert!(from_author(&mut copy, phone.device_public_key, second.clone(), now).is_err());
+    }
+
+    // The redemption first: the row the membership proof would sign is the redemption's own.
+    let first = redeemed(&[]);
+    assert_eq!(
+        further(&first).into_iter().collect::<BTreeSet<_>>(),
+        first.iter().cloned().collect(),
+        "a device whose redemption lists it signs no second row"
+    );
+    let mut copy = peer.clone();
+    from_author(&mut copy, phone.device_public_key, first, now).unwrap();
+    assert!(copy.role(&phone.device_public_key, now).is_ok());
+
+    // The further row first: the redemption is signed on top of it, and lands after it.
+    let row = further(&[]);
+    assert!(!row.is_empty());
+    let after = redeemed(&row);
+    let mut copy = peer.clone();
+    from_author(&mut copy, phone.device_public_key, row, now).unwrap();
+    from_author(&mut copy, phone.device_public_key, after, now).unwrap();
+    assert!(copy.role(&phone.device_public_key, now).is_ok());
 }

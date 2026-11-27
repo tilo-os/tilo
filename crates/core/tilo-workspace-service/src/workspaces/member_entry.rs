@@ -109,17 +109,9 @@ impl Workspaces {
         }
         let (served, _) = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(&hint)
             .map_err(|error| error.to_string())?;
-        let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(
-            self.inner.host.endpoint.clone(),
-        );
-        let bootstrap = tilo_peer_state::owner::enroll::prove_membership(
-            &client,
-            &served.endpoint_addr,
-            workspace,
-            &device.cert,
-            device.signer.as_ref(),
-        )
-        .await?;
+        let bootstrap = self
+            .prove_own(&device, &served.endpoint_addr, workspace)
+            .await?;
         // The person's own computer asked for this join: theirs to write into their list.
         self.hold_member(&device, &bootstrap, &hint, true).await
     }
