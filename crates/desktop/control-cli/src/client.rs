@@ -46,6 +46,10 @@ pub enum ControlSocket {
     Named(PathBuf),
     /// The device admin's own socket: their login or ssh, never an app.
     Admin(PathBuf),
+    /// The session's MCP server: the socket a process inside an app the
+    /// session launched — a terminal, and what runs in it — reaches. It acts
+    /// with that app's workspace scope, never the admin's authority.
+    Agent(PathBuf),
     /// The device daemon's native endpoint, which answers the frames as
     /// whoever the kernel says is on the other end, in each workspace a
     /// frame names, desktop session or not.
@@ -56,15 +60,18 @@ impl ControlSocket {
     #[must_use]
     pub fn path(&self) -> &Path {
         match self {
-            Self::Named(path) | Self::Admin(path) | Self::Daemon(path) => path,
+            Self::Named(path) | Self::Admin(path) | Self::Agent(path) | Self::Daemon(path) => path,
         }
     }
 }
 
 /// The sockets a semantic request may go through, in the order to try them:
 /// the named development socket alone when `$TILO_TEST_CONTROL` is set;
-/// otherwise the admin's socket of a desktop session in the private runtime
-/// directory, then the device's daemon at `daemon`.
+/// where a desktop session serves its admin socket in the private runtime
+/// directory, that socket, then the session's MCP server, which serves a
+/// process inside an app it launched with that app's workspace scope;
+/// otherwise the device's daemon at `daemon`. A process a session turns away
+/// is never handed on to the daemon, which would answer it as the person.
 #[must_use]
 pub fn semantic_sockets(
     test_control: Option<OsString>,
@@ -74,13 +81,18 @@ pub fn semantic_sockets(
     if let Some(named) = test_control.filter(|named| !named.is_empty()) {
         return vec![ControlSocket::Named(PathBuf::from(named))];
     }
-    tilo_paths::login::session_dir(runtime_dir)
-        .map(|session| {
-            ControlSocket::Admin(session.join(tilo_paths::login::ADMIN_CONTROL_SOCKET_FILE))
-        })
-        .into_iter()
-        .chain(daemon.map(ControlSocket::Daemon))
-        .collect()
+    let session = tilo_paths::login::session_dir(runtime_dir).filter(|session| {
+        session
+            .join(tilo_paths::login::ADMIN_CONTROL_SOCKET_FILE)
+            .exists()
+    });
+    match session {
+        Some(session) => vec![
+            ControlSocket::Admin(session.join(tilo_paths::login::ADMIN_CONTROL_SOCKET_FILE)),
+            ControlSocket::Agent(session.join(tilo_paths::login::AGENT_SOCKET_FILE)),
+        ],
+        None => daemon.map(ControlSocket::Daemon).into_iter().collect(),
+    }
 }
 
 /// The sockets of this process's own environment.
@@ -264,6 +276,18 @@ pub fn refusal_of_process(socket: &ControlSocket, answer: &serde_json::Value) ->
                 },
             )
         }
+        ControlSocket::Agent(_) => {
+            // The control protocol answers `answer` or `err`; a JSON-RPC
+            // error is the socket's MCP framing refusing before any request.
+            answer.get("jsonrpc")?;
+            Some(
+                answer
+                    .pointer("/error/message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        }
         ControlSocket::Named(_) | ControlSocket::Daemon(_) => None,
     }
 }
@@ -273,29 +297,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sockets_are_the_named_one_alone_or_admin_then_the_daemon() {
+    fn sockets_are_the_named_one_alone_the_sessions_or_the_daemon() {
         let daemon = || Some(PathBuf::from("/run/user/7/tilo/native.sock"));
+        let run = tempfile::tempdir().unwrap();
         assert_eq!(
             semantic_sockets(
                 Some("/run/dev/control.sock".into()),
-                Some("/run/user/7".into()),
+                Some(run.path().into()),
                 daemon(),
             ),
             [ControlSocket::Named("/run/dev/control.sock".into())]
         );
+        // No desktop session here: the daemon alone answers.
         assert_eq!(
-            semantic_sockets(Some(OsString::new()), Some("/run/user/7".into()), daemon()),
-            [
-                ControlSocket::Admin("/run/user/7/tilo-session/admin-control.sock".into()),
-                ControlSocket::Daemon("/run/user/7/tilo/native.sock".into()),
-            ]
-        );
-        // Where no session's runtime directory is, the daemon alone answers.
-        assert_eq!(
-            semantic_sockets(None, Some("relative".into()), daemon()),
+            semantic_sockets(Some(OsString::new()), Some(run.path().into()), daemon()),
             [ControlSocket::Daemon("/run/user/7/tilo/native.sock".into())]
         );
         assert!(semantic_sockets(None, None, None).is_empty());
+        // A desktop session here: its admin socket, then its MCP server, and never the daemon,
+        // which would answer a process the session turned away as the person.
+        let session = run.path().join("tilo-session");
+        std::fs::create_dir(&session).unwrap();
+        std::fs::write(session.join("admin-control.sock"), "").unwrap();
+        assert_eq!(
+            semantic_sockets(None, Some(run.path().into()), daemon()),
+            [
+                ControlSocket::Admin(session.join("admin-control.sock")),
+                ControlSocket::Agent(session.join("agent.sock")),
+            ]
+        );
     }
 
     #[test]
@@ -307,9 +337,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_admin_sockets_refusal_of_the_process_hands_on() {
+    fn only_the_sessions_refusals_of_the_process_hand_on() {
         let admin = ControlSocket::Admin("/a".into());
         let refused = serde_json::json!({"err": {"code": "not_permitted", "message": "no"}});
+        let mcp = serde_json::json!({"jsonrpc": "2.0", "error": {"message": "not admitted"}});
+        assert_eq!(
+            refusal_of_process(&ControlSocket::Agent("/b".into()), &mcp).as_deref(),
+            Some("not admitted")
+        );
         assert_eq!(refusal_of_process(&admin, &refused).as_deref(), Some("no"));
         let unknown = serde_json::json!({"err": {"code": "unknown_action", "message": "x"}});
         assert_eq!(refusal_of_process(&admin, &unknown), None);

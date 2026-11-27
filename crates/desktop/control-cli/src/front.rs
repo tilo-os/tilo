@@ -4,10 +4,11 @@
 //! `tilo open`, `tilo action …`, `tilo do`, the standalone `action` and
 //! `app open` are all this module. Each sends the action model's own frames
 //! ([`RemoteActionFrame`]) through the first socket that serves this process
-//! ([`crate::client`]): the device admin's socket at their own login, else
-//! the device's daemon, which answers as whoever the kernel says is calling
-//! whether or not a desktop session runs. Nothing here picks authority or a
-//! workspace; the device decides both.
+//! ([`crate::client`]): on a desktop, the device admin's socket at their own
+//! login, or the session's MCP server from inside an app such as Terminal,
+//! which acts with that app's workspace scope; where no desktop session runs,
+//! the device's daemon. Nothing here picks authority or a workspace; the
+//! device decides both.
 //!
 //! An action is named by its id (`new-window`), or its title
 //! (`new-terminal-window`), as the published tree picks them
@@ -90,6 +91,10 @@ pub fn unreachable_sentence(why: &Unreachable) -> String {
         Unreachable::NoDesktop => {
             "Tilo isn't answering on this computer. Run `tilo status` to see how it stands.".into()
         }
+        Unreachable::Refused {
+            socket: ControlSocket::Agent(_),
+            ..
+        } => "The desktop didn't let this terminal use its actions.".into(),
         Unreachable::Refused { .. } => {
             "The desktop didn't let this program use its actions.".into()
         }

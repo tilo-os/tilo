@@ -7,10 +7,12 @@
 //! - **The device owner's own login or ssh** reaches the admin socket, with
 //!   their authority at the keyboard, through the same capability check as
 //!   the palette.
-//! - **Everything else,** a process the admin socket turns away and any
-//!   process where no desktop session runs, reaches the device's daemon,
-//!   which answers it as whoever the kernel says it is; the desktop's windows
-//!   and seat are providers of the daemon's dispatch while a session runs.
+//! - **A terminal app, and everything run in it,** is turned away there by
+//!   the desktop (the kernel says it is an app's process), and goes on to the
+//!   session's MCP server, which serves it with the terminal workspace's
+//!   scope; anything beyond that is the person's to allow.
+//! - **Any process where no desktop session runs** reaches the device's
+//!   daemon, which answers it as whoever the kernel says it is.
 //! - **A development session** named by `$TILO_TEST_CONTROL` is reached
 //!   there alone.
 

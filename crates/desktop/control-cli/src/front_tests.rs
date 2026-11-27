@@ -339,16 +339,17 @@ fn open_finds_an_app_by_name_and_opens_files_in_it() {
     assert_eq!(complete_apps(&sockets, "no"), ["notes"]);
 }
 
-/// Where the admin socket turns the process away, the same frames go to the
-/// device's daemon, which answers as whoever the kernel says is calling.
+/// From inside an app the admin socket turns the process away, and the
+/// same frames go to the session's MCP server, which acts with that app's
+/// scope.
 #[test]
-fn a_process_the_admin_socket_turns_away_is_answered_by_the_daemon() {
+fn inside_an_app_the_frames_go_to_the_mcp_server() {
     let dir = tempfile::tempdir().expect("tempdir");
     let admin = refusing_admin(dir.path());
-    let agent = FakeDesktop::serve(dir.path(), "native.sock");
+    let agent = FakeDesktop::serve(dir.path(), "agent.sock");
     let sockets = [
         ControlSocket::Admin(admin),
-        ControlSocket::Daemon(agent.path.clone()),
+        ControlSocket::Agent(agent.path.clone()),
     ];
     let done = ran(|io| {
         run(
