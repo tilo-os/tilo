@@ -965,7 +965,7 @@ mod tests {
     )]
 
     use automerge::transaction::{CommitOptions, Transactable as _};
-    use collab_types::store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
+    use collab_types::store::wire::{Bytes, Command, Edit, RECORD_PAGE_BYTES, Reply};
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     use tilo_actions::remote::Caller;
     use tilo_actions::{Actor, MemberId};
@@ -2250,6 +2250,94 @@ mod tests {
         assert!(
             found_once(&search, "groceries", &[]).await.is_empty(),
             "the old title is gone from search"
+        );
+    }
+
+    /// The platform's record of a person's own state of an app: a kind only its author reads, as
+    /// every app's package ships it.
+    const PERSONAL: &str = "tilolang.personal";
+    const PERSONAL_SURFACE: &str = "{\"format\":2,\"resources\":[{\"fields\":[],\"kind\":\"tilolang.personal\",\"label\":\"Your place in the app\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"view-state\",\"kind\":\"undoable\",\"label\":\"Keep a view's state\",\"params\":[]},{\"id\":\"seen\",\"kind\":\"undoable\",\"label\":\"Keep what is seen\",\"params\":[]},{\"id\":\"seen-runs\",\"kind\":\"undoable\",\"label\":\"Keep reviewed runs\",\"params\":[]}],\"version\":1}]}";
+
+    /// `person`'s own state of `app` as the app's process keeps it: the record made, readable by
+    /// them alone, and one place kept in its content, both named the person's.
+    fn personal_kept(app: &str, person: &str) -> Command {
+        let id = format!("{app}@{}", person.to_ascii_lowercase());
+        let stamp = Stamp {
+            invoked: String::new(),
+            verb: "view-state".to_owned(),
+            invoker: Stamp::by(&Actor::Member(MemberId::person(person))),
+            invocation: uuid::Uuid::new_v4().to_string(),
+            ..Stamp::default()
+        };
+        Command::Batch(vec![
+            Command::Put {
+                kind: PERSONAL.to_owned(),
+                id: id.clone(),
+                // Its readers are its author's alone, as its kind says.
+                resource: collab_types::store::Resource::default(),
+                stamp: stamp.clone(),
+            },
+            Command::Edit {
+                kind: PERSONAL.to_owned(),
+                id,
+                edits: vec![Edit::MapPut {
+                    field: "views".to_owned(),
+                    key: "[\"1/tasks\",\"place\"]".to_owned(),
+                    value: serde_json::json!("today"),
+                }],
+                stamp,
+            },
+        ])
+    }
+
+    /// The app's own process keeps the person's state of it: the person whose session the route
+    /// was opened for, not the app. The state reads back as it was kept.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_persons_own_state_written_by_the_apps_process_is_theirs() {
+        /// The app whose window kept the state, as its process writes it.
+        const APP: &str = "so.tilo.tube";
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        crate::workspaces::keep_surface(
+            &workspaces.inner.host.surfaces,
+            APP,
+            PERSONAL_SURFACE.as_bytes(),
+        )
+        .unwrap();
+        let caller = caller_of(workspaces, &workspace);
+        let person = caller
+            .acting()
+            .person_id()
+            .expect("the route is a person's")
+            .to_owned();
+        let context =
+            ResourceRequestContext::authenticated(APP, &workspace, caller).of_app_process();
+        let written = workspaces
+            .resource_command(&context, personal_kept(APP, &person))
+            .await;
+        assert!(matches!(written, Ok(Reply::Written)), "{written:?}");
+
+        let id = format!("{APP}@{}", person.to_ascii_lowercase());
+        let kept = workspaces
+            .resource_command(
+                &context,
+                Command::Content {
+                    kind: PERSONAL.to_owned(),
+                    id,
+                },
+            )
+            .await
+            .expect("their state reads");
+        let Reply::Content(Some(serde_json::Value::Object(kept_content))) = kept else {
+            panic!("the kept state reads as an object of places, not {kept:?}");
+        };
+        assert_eq!(
+            kept_content
+                .get("views")
+                .and_then(|views| views.get("[\"1/tasks\",\"place\"]")),
+            Some(&serde_json::json!("today")),
+            "the place they picked is kept"
         );
     }
 }

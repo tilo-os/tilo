@@ -2375,8 +2375,14 @@ impl Workspaces {
         if writing && writes_kind(&command, tilo_resource_store::WORKSPACE_MEMBERS_KIND) {
             return Err("the workspace's members change through its member actions".into());
         }
-        let (acting, unserved) =
-            stamp_resource_write(context, workspace, &mut command, &device, writing)?;
+        let (acting, unserved) = stamp_resource_write(
+            context,
+            &self.inner.host.surfaces,
+            workspace,
+            &mut command,
+            &device,
+            writing,
+        )?;
         if let collab_types::store::wire::Command::RecordChange {
             changes,
             more,
@@ -3073,6 +3079,7 @@ type Stamped = (Option<tilo_actions::Actor>, Vec<(String, String)>);
 #[cfg(feature = "apps")]
 fn stamp_resource_write(
     context: &tilo_broker_core::services::ResourceRequestContext,
+    surfaces: &collab_types::app_surface::Surfaces,
     workspace: &str,
     command: &mut collab_types::store::wire::Command,
     device: &super::MemberDevice,
@@ -3120,9 +3127,29 @@ fn stamp_resource_write(
         &|invocation| context.invoker_of(invocation).cloned(),
         &otherwise,
         person,
+        &|kind| reads_by_author_alone(surfaces, context.app_id(), kind),
         &mut unserved,
     );
     Ok((Some(acting), unserved))
+}
+
+/// Whether `app`'s surface makes a `kind` one only its author reads
+/// ([`ReaderRule::Author`](tilo_actions::surface::ReaderRule)): the store keeps such a record in
+/// its author's document and refuses one no person made, so an app's own process cannot write it
+/// as itself.
+#[cfg(feature = "apps")]
+fn reads_by_author_alone(
+    surfaces: &collab_types::app_surface::Surfaces,
+    app: &str,
+    kind: &str,
+) -> bool {
+    surfaces.resources_of(app).iter().any(|resource| {
+        resource.kind == kind
+            && matches!(
+                resource.readers.as_ref(),
+                Some(tilo_actions::surface::ReaderRule::Author { .. })
+            )
+    })
 }
 
 /// Whether `command` writes a resource of `kind`, itself or in its batch.
@@ -3141,17 +3168,20 @@ fn writes_kind(command: &collab_types::store::wire::Command, kind: &str) -> bool
 
 /// The command names the verb and invocation, and the workspace service names who made it:
 /// whoever invoked the invocation a write serves, when the workspace service delivered that one
-/// to the app, and `otherwise` (the app itself on its own process's route; the device's person,
-/// or the caller its view was opened for, on the device's own) for any other write, whose
-/// resource type and verb are added to `unserved`; the person the route's caller is, `person`;
-/// and the device it was written on, `device` (its key in hex and what it calls itself), which is
-/// where a resource the write makes live is live.
+/// to the app, and otherwise `otherwise` (the app itself on its own process's route; the device's
+/// person, or the caller its view was opened for, on the device's own) for any other write, whose
+/// resource type and verb are added to `unserved`. A write of a kind only its author reads that
+/// names the route's own person is theirs, made through the app: the store refuses such a record
+/// when no person made it, and the person whose session the route is certified for is that one.
+/// `person` is the route's caller; `device` (its key in hex and what it calls itself) is where a
+/// resource the write makes live is live.
 fn stamp_resource_invoker(
     command: &mut collab_types::store::wire::Command,
     device: &(String, String),
     served: &dyn Fn(&str) -> Option<tilo_actions::Acting>,
     otherwise: &tilo_actions::Acting,
     person: &str,
+    author_read: &dyn Fn(&str) -> bool,
     unserved: &mut Vec<(String, String)>,
 ) {
     use collab_types::store::wire::Command;
@@ -3165,7 +3195,15 @@ fn stamp_resource_invoker(
         | Command::Restore { stamp, .. } => ("", stamp),
         Command::Batch(commands) => {
             for command in commands {
-                stamp_resource_invoker(command, device, served, otherwise, person, unserved);
+                stamp_resource_invoker(
+                    command,
+                    device,
+                    served,
+                    otherwise,
+                    person,
+                    author_read,
+                    unserved,
+                );
             }
             return;
         }
@@ -3174,7 +3212,27 @@ fn stamp_resource_invoker(
     };
     let mut acting = served(&stamp.invocation).unwrap_or_else(|| {
         unserved.push((kind.to_owned(), stamp.verb.clone()));
-        otherwise.clone()
+        // The app's own process writes as itself outside an invocation, except a person's own
+        // state: a record of a kind only its author reads is nobody's the app can write as
+        // itself, and the person it names, the one the route is certified for, made it through
+        // the app.
+        let named = stamp
+            .invoked_by()
+            .and_then(|actor| actor.person_id().map(str::to_owned));
+        match named {
+            Some(named)
+                if otherwise.by.app().is_some()
+                    && author_read(kind)
+                    && named.eq_ignore_ascii_case(person) =>
+            {
+                let mut theirs = tilo_actions::Acting::person(person);
+                if let Some(app) = &otherwise.app {
+                    theirs = theirs.in_app(app.clone());
+                }
+                theirs
+            }
+            _ => otherwise.clone(),
+        }
     });
     // An agent works for a person: the person the route's caller is, where its call named none.
     if acting.agent_id().is_some() && acting.acted_for_person().is_none() {
