@@ -115,6 +115,7 @@ pub struct Daemon {
     live: std::sync::OnceLock<Arc<super::live_relay::Live>>,
     /// How a workspace VM's daemon asks the host that placed it, where this daemon is one
     /// ([`super::vm_environment`]): its Browser's page logins come from the host's vault.
+    #[cfg(target_os = "linux")]
     host_asks: std::sync::OnceLock<super::vm_environment::HostAsks>,
     /// Whether this run walked the old keeper's kept secrets into the person's vault: done once
     /// the workspace is held, so an app launch costs no keyring read after the first.
@@ -199,16 +200,20 @@ impl Daemon {
     }
 
     /// How this daemon asks the host that placed it, where it is a workspace VM's.
+    #[cfg(target_os = "linux")]
     pub(crate) fn host_asks(&self) -> Option<&super::vm_environment::HostAsks> {
         self.host_asks.get()
     }
 
-    /// The device key of the host that placed this daemon's machine, where a host did.
+    /// The device key of the host that placed this daemon's machine, where a host did: read by a
+    /// page fill the host lent, which only a Linux machine is placed for.
+    #[cfg(target_os = "linux")]
     pub(crate) fn placing_host(&self) -> Option<[u8; 32]> {
         self.workspaces.confined_host().map(|host| host.device)
     }
 
     /// This daemon is a workspace VM's, and asks the host that placed it through `asks`.
+    #[cfg(target_os = "linux")]
     pub(crate) fn asks_its_host(&self, asks: super::vm_environment::HostAsks) {
         let _ = self.host_asks.set(asks);
     }
@@ -3227,6 +3232,7 @@ impl Daemon {
             apps,
             workspaces,
             live: std::sync::OnceLock::new(),
+            #[cfg(target_os = "linux")]
             host_asks: std::sync::OnceLock::new(),
             old_secrets: std::sync::atomic::AtomicBool::new(false),
             _identity: identity_broker,

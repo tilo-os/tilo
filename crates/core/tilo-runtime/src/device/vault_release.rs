@@ -11,17 +11,22 @@
 use std::sync::{Arc, Weak};
 use tilo_person_services::PersonServices;
 
+#[cfg(target_os = "linux")]
 use tilo_action_services::environment_device::ItemUse;
+#[cfg(target_os = "linux")]
 use tilo_action_services::environment_window::ItemLent;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, ItemRef, Pending, ReceiptStatus, pending,
+    InvocationState, InvokeRequest, Pending, ReceiptStatus, pending,
 };
+#[cfg(target_os = "linux")]
+use tilo_actions::remote::{InvokeArgument, ItemRef};
 use tilo_actions::{ActionOutput, InvocationId};
 use tilo_person_services::vault_release::AppProcess;
 use tilo_workspace_records::vault as workspace_vault;
 
 use super::services::Daemon;
+#[cfg(target_os = "linux")]
 use super::vm_environment::HostAsks;
 use crate::apps::ProcessOf;
 
@@ -132,7 +137,8 @@ impl ActionProvider for OwnProcess {
         });
         // A fill the host that placed this workspace VM handed its Browser for a turn it carries
         // out is lent by that host, which keeps what decides it; every other fill, the person's
-        // own, is decided by the vault here.
+        // own, is decided by the vault here. Only a Linux machine is placed by a host.
+        #[cfg(target_os = "linux")]
         if asked == Some(workspace_vault::PAGE_FILL)
             && let Some(host) = daemon.host_asks()
             && lent_by_host(asked_by.as_ref(), daemon.placing_host())
@@ -199,6 +205,7 @@ impl ActionProvider for OwnProcess {
 /// that placed the VM ([`HostAsks::lend`]): for the running call it continues, the item it names
 /// and the site its engine says the page is at. The host decides whether it hands the text; this
 /// machine only opens what the host sealed to it for that one fill and site.
+#[cfg(target_os = "linux")]
 fn from_the_host(
     host: &HostAsks,
     workspace: &str,
@@ -251,6 +258,7 @@ fn from_the_host(
 /// that placed this machine (`placing`): a call that host made itself, for a turn it carries out.
 /// A call any other device made, the person's own, is not, and neither is one on a machine no
 /// host placed.
+#[cfg(target_os = "linux")]
 fn lent_by_host(asked_by: Option<&Caller>, placing: Option<[u8; 32]>) -> bool {
     asked_by
         .and_then(Caller::device_public_key)
@@ -276,7 +284,7 @@ pub(crate) fn is_answered_for_this_process(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
