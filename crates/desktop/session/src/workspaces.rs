@@ -13,11 +13,14 @@
 //!
 //! Each pass compares the shell with the shell as the last pass left it: a
 //! workspace made, renamed, moved or taken off here since is written to the
-//! list. What the list says is then brought onto the shell: a workspace it
-//! names that this device does not hold is entered at the device hosting it
-//! ([`ListedWorkspace::host`]), one taken off the list or kept off this
-//! device is let go, and the shell takes the list's order. A workspace the
-//! list was never told of — one joined through someone's invitation, which
+//! list, and so are the workspaces the daemon finds on hosts and the
+//! addresses this device reaches their hosts at. The session takes no
+//! workspace in itself: the daemon's follower of the list does, at the device
+//! hosting each one (`tilo_workspace_service`'s list keeping). What the list
+//! says is then brought onto the shell: a workspace it shows on this device
+//! is shown here once the daemon holds it, one taken off the list or kept off
+//! this device is let go, and the shell takes the list's order. A workspace
+//! the list was never told of — one joined through someone's invitation, which
 //! each device of the person joins on its own — stays as it is. Nothing asks
 //! the devices on a timer.
 
@@ -65,17 +68,15 @@ pub(crate) struct DeviceChoice {
     pub(crate) here: bool,
 }
 
-/// A workspace the person's list shows on this device that this session does not show yet, and
-/// the device hosting it, which serves it to the person's other devices: the device's daemon
-/// enters it there by the list, and the session shows it once the daemon holds it.
+/// A workspace the person's list shows on this device, hosted by another device of theirs, that
+/// this session does not show yet: the device's daemon takes it in by the list, and the session
+/// shows it once the daemon holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ToEnter {
+pub(crate) struct ToShow {
     /// The workspace it names.
     pub(crate) workspace: WorkspaceId,
     /// What the workspace is called.
     pub(crate) name: String,
-    /// The device hosting it.
-    pub(crate) host: [u8; 32],
 }
 
 /// How a workspace came to this session, which says whether the person goes there.
@@ -95,7 +96,7 @@ pub(crate) struct Adoption {
     /// Whether the session changed.
     pub(crate) changed: bool,
     /// Workspaces to show here once the device's daemon holds them.
-    pub(crate) enter: Vec<ToEnter>,
+    pub(crate) show: Vec<ToShow>,
     /// Workspaces to take off this session: taken off the list, or no longer shown on this one.
     pub(crate) release: Vec<WorkspaceId>,
     /// What the daemon refused of what the person changed here: the shell shows the list as the
@@ -712,18 +713,14 @@ impl Personal {
                 continue;
             }
             shown_here.push(workspace);
-            let host = listed.host().filter(|host| *host != self.device);
-            // On this session already: nothing to enter.
-            if present.contains(&workspace) {
+            // On this session already, or hosted nowhere else: nothing to show.
+            if present.contains(&workspace) || listed.host().is_none_or(|host| host == self.device)
+            {
                 continue;
             }
-            let Some(host) = host else {
-                continue;
-            };
-            adoption.enter.push(ToEnter {
+            adoption.show.push(ToShow {
                 workspace,
                 name: listed.name.clone(),
-                host,
             });
             self.entering.insert(workspace);
         }
@@ -1507,7 +1504,7 @@ impl crate::Shared {
             for why in personal.refused_choices() {
                 crate::directory::list_refused_notice(&*self.telling(), &why, None);
             }
-            for opened in adoption.enter {
+            for opened in adoption.show {
                 self.show_listed(&opened);
             }
             for workspace in adoption.release {
@@ -1598,9 +1595,9 @@ impl crate::Shared {
     }
 
     /// Show one of the person's workspaces their list shows here once the device's daemon holds it:
-    /// the daemon enters it by the list, at the device hosting it, and nothing here asks for it. A
-    /// session that reaches no daemon shows it as this computer keeps it.
-    fn show_listed(&self, opened: &ToEnter) {
+    /// the daemon takes it in by the list, at the device hosting it, and nothing here asks for it.
+    /// A session that reaches no daemon shows it as this computer keeps it.
+    fn show_listed(&self, opened: &ToShow) {
         let workspace = opened.workspace.to_string();
         if self
             .view
@@ -1610,7 +1607,6 @@ impl crate::Shared {
             tracing::debug!(
                 target: JOIN_FLOW_TARGET,
                 %workspace,
-                host = %hex::encode(opened.host),
                 "the person's workspace waits for the device's daemon to take it in"
             );
             return;
@@ -1962,22 +1958,22 @@ mod tests {
             "the person's order and names, as this device last left them"
         );
 
-        // The desktop enters them where the laptop hosts them.
+        // The desktop shows them once its daemon takes them in where the laptop hosts them.
         let desktop_shell = session();
         let [own] = on_shell(&desktop_shell)
             .try_into()
             .expect("a fresh session holds one workspace");
         let mut desktop = person.device(0x22, "The desktop");
         let adoption = pass(&mut desktop, &desktop_shell);
-        let entered: Vec<(WorkspaceId, [u8; 32])> = adoption
-            .enter
+        let shown: Vec<WorkspaceId> = adoption
+            .show
             .iter()
-            .map(|opened| (opened.workspace, opened.host))
+            .map(|opened| opened.workspace)
             .collect();
         assert_eq!(
-            entered,
-            [(second, key(0x21)), (first, key(0x21))],
-            "the laptop's workspaces are entered where the laptop hosts them"
+            shown,
+            [second, first],
+            "the laptop's workspaces are shown here, in the person's order"
         );
         assert!(
             listed(&desktop)
@@ -1988,7 +1984,7 @@ mod tests {
         open_here(&desktop_shell, second, "Second");
         open_here(&desktop_shell, first, "Renamed");
         let adoption = pass(&mut desktop, &desktop_shell);
-        assert!(adoption.enter.is_empty() && adoption.release.is_empty());
+        assert!(adoption.show.is_empty() && adoption.release.is_empty());
         assert_eq!(
             on_shell(&desktop_shell),
             [second, first, own],
@@ -2023,16 +2019,13 @@ mod tests {
         assert!(names(&laptop, first), "and it stays the person's");
         assert_eq!(laptop.shown_on(first, &key(0x22)), Some(false));
 
-        // Shown there again, the desktop enters it again.
+        // Shown there again, the desktop shows it again.
         assert!(laptop.set_shown(first, key(0x22), true));
         laptop.written();
         let adoption = pass(&mut desktop, &desktop_shell);
         assert!(
-            adoption
-                .enter
-                .iter()
-                .any(|opened| opened.workspace == first),
-            "a workspace shown on the desktop again is entered there"
+            adoption.show.iter().any(|opened| opened.workspace == first),
+            "a workspace shown on the desktop again is shown there"
         );
     }
 
