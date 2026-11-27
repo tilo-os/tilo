@@ -860,6 +860,27 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// The last sequence number this store already holds for `lineage`, `author`'s line of one
+    /// record of `workspace`: the block a device reserved before it stopped, and the frames the
+    /// store still keeps of it. A line this store has handed no number of yet starts past it.
+    ///
+    /// # Errors
+    ///
+    /// The line's reservation cannot be read.
+    fn last_sequence(&self, workspace: WorkspaceId, lineage: Lineage) -> Result<u64, StoreError> {
+        let kept = self
+            .state(&sequence_state_name(workspace, lineage))?
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or(0);
+        let stood = self
+            .stands(workspace)
+            .into_iter()
+            .find(|(cursor, _)| cursor.lineage == lineage)
+            .map_or(0, |(cursor, _)| cursor.after_seq);
+        Ok(kept.max(stood))
+    }
+
     /// Keep `frame` for `workspace`, unless the store holds that frame of
     /// its lineage already. A checkpoint retires the frames it supersedes:
     /// its author's writes up to its own sequence number, and the other
