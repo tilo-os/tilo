@@ -46,6 +46,37 @@ pub struct FindOptions {
     pub mode: FindMode,
 }
 
+impl FindOptions {
+    /// Whether it runs as the find runs when nobody chose otherwise: any case, whole words as
+    /// part of words, matching text.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// These options with `option` chosen: the key the find's options menu names a choice by
+    /// (`case`, `whole`, `regex`, `text`, `hex`). A choice this find offers nothing for leaves
+    /// them as they are.
+    #[must_use]
+    pub fn choosing(mut self, option: &str, abilities: FindAbilities) -> Self {
+        match option {
+            "case" => self.match_case = !self.match_case,
+            "whole" => self.whole_word = !self.whole_word,
+            "regex" if abilities.regex => {
+                self.mode = if self.mode == FindMode::Regex {
+                    FindMode::Text
+                } else {
+                    FindMode::Regex
+                };
+            }
+            "text" if abilities.hex => self.mode = FindMode::Text,
+            "hex" if abilities.hex => self.mode = FindMode::Hex,
+            _ => {}
+        }
+        self
+    }
+}
+
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]

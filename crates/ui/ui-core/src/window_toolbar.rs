@@ -614,6 +614,13 @@ pub struct WindowOffer {
         skip_serializing_if = "crate::widget::FindAbilities::is_plain"
     )]
     pub find: crate::widget::FindAbilities,
+    /// The options the bar's search runs under now: its case, its words and its mode. The bar
+    /// shows them chosen, and a search reopened picks them up as the app has them.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::widget::FindOptions::is_default"
+    )]
+    pub options: crate::widget::FindOptions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted: Option<AdoptedQuery>,
 }
@@ -1703,6 +1710,11 @@ mod tests {
                     replace: true,
                     regex: true,
                     hex: false,
+                },
+                options: crate::widget::FindOptions {
+                    match_case: true,
+                    whole_word: true,
+                    mode: crate::widget::FindMode::Regex,
                 },
                 adopted: Some(AdoptedQuery {
                     serial: 2,

@@ -364,12 +364,18 @@ answer:
   control, right after the window's place, expands into a field where it
   stands (also Ctrl+F); what is typed reaches the app's own `Findable`
   document (every match painted, "3 of 12", Enter and Shift+Enter step) or
-  its `Filterable` list ("12 of 40"), through `widget::WindowSearch`. It
-  widens step by step: this view, then the whole app ("Search Notes", or
-  Ctrl+F again), then everywhere, both handing the query to the platform
-  palette. An app gets this by providing the capability it already has; it
-  draws nothing. An app running as its own window (every app on a device)
-  gets the same over its shell-ui connection: the framework tells the bar
+  its `Filterable` list ("12 of 40"), through `widget::WindowSearch` in a
+  window the shell frames itself, and through the window's own reading in a
+  shell that draws its windows (the tilolang shell's `ui.FindControls`: what
+  the find acts on, the match of how many, its abilities and the options it
+  runs under come from the window's offer, and every act is the session's
+  own `bar-search*` verb, so the app remains the one search). It widens step
+  by step: this view, then the whole app ("Search Notes", or Ctrl+F again),
+  then everywhere, both handing the query to the platform search the shell's
+  `search` verb opens with the scope it names. An app gets this by providing
+  the capability it already has; it draws nothing. An app running as its own
+  window (every app on a device) gets the same over its shell-ui connection:
+  the framework tells the bar
   what the window offers (`window_toolbar::WindowOffer`) and runs the bar's
   query, steps and History presses on the app's widgets; the app's header
   drops its own whole-app search button (`widget::search_request::APP_SEARCH_BUTTON_ID`) while

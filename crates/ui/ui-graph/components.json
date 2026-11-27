@@ -3413,6 +3413,139 @@
       }
     },
     {
+      "name": "FindControls",
+      "doc": "The window's find controls: the bar's field, the match it stands on of how many, the find's options, the replacement where the content allows one, and the steps from this view out to everything.",
+      "props": [
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while the field is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "acts_on",
+          "doc": "What the window's find acts on, as the window's reading spells it: `document` (its matches are stepped), `list` (the list narrows), `query` (the app searches itself) or `nothing`. Only a document's matches are stepped; everything else widens on Enter.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "current",
+          "doc": "The match the document stands on, counting from one; `0` with none.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "total",
+          "doc": "How many it found.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "replaces",
+          "doc": "The content's find offers replacing.",
+          "type": "bool"
+        },
+        {
+          "name": "regex",
+          "doc": "And a regular expression.",
+          "type": "bool"
+        },
+        {
+          "name": "hex",
+          "doc": "And hex: the content is bytes.",
+          "type": "bool"
+        },
+        {
+          "name": "match_case",
+          "doc": "The options the find runs under now: whether it matches case.",
+          "type": "bool"
+        },
+        {
+          "name": "match_whole_word",
+          "doc": "And whether it matches whole words only.",
+          "type": "bool"
+        },
+        {
+          "name": "match_regex",
+          "doc": "And whether it reads the query as a regular expression.",
+          "type": "bool"
+        },
+        {
+          "name": "match_hex",
+          "doc": "And whether it reads the query as bytes, in hex.",
+          "type": "bool"
+        },
+        {
+          "name": "app",
+          "doc": "The app's name, for the step that searches all of it (\"Search Notes\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "replacing",
+          "doc": "It opened to replace: the replacement takes the keyboard, as Ctrl+H asks.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "changed",
+          "doc": "The query changed as the person typed: what the app's find runs now.",
+          "value": "text"
+        },
+        {
+          "name": "submit",
+          "doc": "Enter: the field's query is asked again, or, where the find acts on no document, the search widens to the whole app.",
+          "value": "text"
+        },
+        {
+          "name": "step",
+          "doc": "The person stepped to the next match (`true`) or the one before.",
+          "value": "bool"
+        },
+        {
+          "name": "option",
+          "doc": "The person chose an option: `case`, `whole`, `regex`, `text` or `hex`, to toggle or to set the mode.",
+          "value": "text"
+        },
+        {
+          "name": "replace",
+          "doc": "The person replaced this match with the text carried.",
+          "value": "text"
+        },
+        {
+          "name": "replace_all",
+          "doc": "The person replaced every match with the text carried.",
+          "value": "text"
+        },
+        {
+          "name": "widen",
+          "doc": "The person widened the search: `app` for everything the app holds, `everywhere` for the platform's search over the workspace.",
+          "value": "text"
+        },
+        {
+          "name": "close",
+          "doc": "The person closed the find, or let go of the field with Escape."
+        }
+      ],
+      "bindings": [
+        {
+          "name": "query",
+          "doc": "The query, edited in the field.",
+          "type": "text",
+          "merge": "splice"
+        }
+      ],
+      "semantics": {
+        "role": "Toolbar"
+      }
+    },
+    {
       "name": "Fullscreen",
       "doc": "A view shown filling the audience's screen while it is presented.",
       "props": [

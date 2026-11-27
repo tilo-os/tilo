@@ -36,18 +36,31 @@ struct Note {
     current: Option<usize>,
     cleared: bool,
     rect: Rect,
+    /// What the last find asked for, as replacing runs it again.
+    query: String,
+    options: FindOptions,
 }
 
 impl Findable for Note {
-    fn find(&mut self, query: &str, _options: FindOptions) -> Vec<FindMatch> {
+    fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
+        self.query = query.to_owned();
+        self.options = options;
         if query.is_empty() {
             self.found = 0;
             return Vec::new();
         }
-        let found: Vec<FindMatch> = self
-            .text
-            .to_lowercase()
-            .match_indices(&query.to_lowercase())
+        let haystack = if options.match_case {
+            self.text.clone()
+        } else {
+            self.text.to_lowercase()
+        };
+        let needle = if options.match_case {
+            query.to_owned()
+        } else {
+            query.to_lowercase()
+        };
+        let found: Vec<FindMatch> = haystack
+            .match_indices(&needle)
             .map(|(start, m)| FindMatch::new(start, start + m.len()))
             .collect();
         self.found = found.len();
@@ -60,6 +73,16 @@ impl Findable for Note {
         self.cleared = true;
         self.found = 0;
         self.current = None;
+    }
+    fn supports_replace(&self) -> bool {
+        true
+    }
+    fn replace_all(&mut self, with: &str) -> usize {
+        let found = self.find(&self.query.clone(), self.options);
+        for found in found.iter().rev() {
+            self.text.replace_range(found.start..found.end, with);
+        }
+        found.len()
     }
 }
 
@@ -219,6 +242,10 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
             search: SearchOffer::Document,
             count: None,
             history: Some(HistoryOffer::Closed),
+            find: crate::widget::FindAbilities {
+                replace: true,
+                ..crate::widget::FindAbilities::default()
+            },
             ..WindowOffer::default()
         })
     );
@@ -232,6 +259,10 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
             search: SearchOffer::Document,
             count: None,
             history: Some(HistoryOffer::Closed),
+            find: crate::widget::FindAbilities {
+                replace: true,
+                ..crate::widget::FindAbilities::default()
+            },
             ..WindowOffer::default()
         }),
     );
@@ -318,6 +349,71 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
             .bar_for_tests()
             .history_control(1),
         Some(HistoryControl::Open)
+    );
+}
+
+/// The bar's options and replacement are the app's own search: matching case narrows what it
+/// finds, and replacing every match is one change of the document, which the app says in its
+/// offer.
+#[test]
+fn the_bar_options_and_replacement_are_the_apps_search() {
+    use crate::window_toolbar::SearchCount;
+
+    let mut app = super::super::framework_history_tests::app_with_root(
+        crate::State::new(),
+        Box::new(Note {
+            text: "Cat cat concat cat".into(),
+            ..Note::default()
+        }),
+    );
+    let count = |app: &mut App| app.window_offer().count;
+    app.receive_bar_event(
+        ToolbarEvent::Search {
+            query: "cat".into(),
+        },
+        None,
+    );
+    assert_eq!(
+        count(&mut app),
+        Some(SearchCount { shown: 1, total: 4 }),
+        "any case finds all four"
+    );
+    assert!(app.window_offer().find.replace, "the note replaces");
+    app.receive_bar_event(
+        ToolbarEvent::SearchOptions {
+            options: FindOptions {
+                match_case: true,
+                ..FindOptions::default()
+            },
+        },
+        None,
+    );
+    assert_eq!(
+        count(&mut app),
+        Some(SearchCount { shown: 1, total: 3 }),
+        "matching case leaves the three that are lowercase"
+    );
+    assert!(app.window_offer().options.match_case, "the bar reads it");
+    app.receive_bar_event(
+        ToolbarEvent::SearchReplace {
+            with: "dog".into(),
+            all: true,
+        },
+        None,
+    );
+    app.take_window_offer_change();
+    assert_eq!(note(&mut app).text, "Cat dog condog dog");
+    assert_eq!(
+        count(&mut app),
+        Some(SearchCount { shown: 0, total: 0 }),
+        "nothing matches any more"
+    );
+    app.receive_bar_event(ToolbarEvent::SearchClose, None);
+    assert_eq!(count(&mut app), None);
+    assert_eq!(
+        app.window_offer().options,
+        FindOptions::default(),
+        "a closed find runs as it opens"
     );
 }
 

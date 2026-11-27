@@ -847,6 +847,8 @@ pub use {
     find_bar::FindOptions, find_bar::FindScope, find_bar::FindSession, find_bar::Findable,
     find_bar::OwnFind, find_bar::paint_find_match, find_bar::with_findable,
 };
+pub mod find_controls;
+pub use {find_controls::FindControls, find_controls::FindControlsProps};
 pub mod search_field;
 pub use {
     search_field::FilterCount, search_field::Filterable, search_field::Filtered,

@@ -167,6 +167,7 @@ impl App {
             count: self.floating.window_bar.driver.count().map(Into::into),
             history: self.window_history_control().map(Into::into),
             find,
+            options: self.floating.window_bar.options,
             adopted: self.floating.window_bar.adopted.clone(),
         }
     }
