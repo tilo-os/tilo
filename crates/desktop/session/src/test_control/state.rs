@@ -357,8 +357,9 @@ pub(super) fn presence_stamp(session: &Session<'_>, hash: &mut impl std::hash::H
 /// front of the active workspace's active strip and group, and, for a tab a window fills,
 /// that window and where the frame draws it. A workspace or strip without a name is named by
 /// its id; `kind` is the tile's variant and `app_id` the app it names, if any. `rect` is the
-/// window's rectangle in the layout, `[x, y, width, height]`, or null while no window of the
-/// tab is mapped: it is what a tool aims at to press something the row names. `frames` is how
+/// frame the shell drew for the window, `[x, y, width, height]`, or the client's where the shell
+/// has laid the window out nowhere yet, and null while no window of the tab is mapped: it is
+/// what a tool aims at to press something the row names. `frames` is how
 /// many frames the window's client committed: a window showing the same thing keeps its count,
 /// so two reads that agree say it drew nothing between them. `resource` is what the window
 /// shows, as its bar carries it when the person picks it up: the record its place is on, which
@@ -367,9 +368,10 @@ pub(super) fn presence_stamp(session: &Session<'_>, hash: &mut impl std::hash::H
 /// which a restart opens it on again: null for a window opened on none.
 pub(super) fn window_rows(
     tree: &Layout,
-    (rect_of, frames_of, resource_of, item_of): (
+    (rect_of, frames_of, drawn_of, resource_of, item_of): (
         impl Fn(u64) -> Option<(i32, i32, i32, i32)>,
         impl Fn(u64) -> u64,
+        impl Fn(u64) -> Option<(i32, i32, i32, i32)>,
         impl Fn(u64) -> Option<String>,
         impl Fn(u64) -> Option<String>,
     ),
@@ -420,8 +422,12 @@ pub(super) fn window_rows(
                     // the shell draws — shows its record all the same, so only where the window
                     // is drawn is read of the surface (below).
                     let resource = resource_of(tab.id);
+                    // Where the person sees the window: the frame the shell drew for it, or the
+                    // client's own rect where the shell has laid out no frame for it yet. A window
+                    // the compositor maps none of stands nowhere, whatever frame it last drew.
                     let rect = window
                         .and_then(&rect_of)
+                        .map(|client| drawn_of(tab.id).unwrap_or(client))
                         .map_or(Json::Null, |(x, y, width, height)| {
                             json!([x, y, width, height])
                         });

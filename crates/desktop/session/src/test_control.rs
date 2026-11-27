@@ -1073,6 +1073,16 @@ fn loop_answer(
 /// The answer to what `op` asks of the session and its hosted surfaces, when it asks of them.
 /// The windows a tool reads: where each is drawn, how many frames it drew, and the resource it
 /// shows. Nothing shows a window while the screen is locked, to anyone but the developer.
+/// `value` in whole screen pixels: a window's frame is drawn in them.
+fn pixels(value: f64) -> i32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a display's span is far inside the range of an i32"
+    )]
+    let pixels = value.round() as i32;
+    pixels
+}
+
 fn windows_answer(
     request: &Json,
     ctx: &Context,
@@ -1095,6 +1105,18 @@ fn windows_answer(
         // of its place: what the window's bar carries.
         let rect_of = |id: u64| compositor.window_rect(id);
         let frames_of = |id: u64| compositor.window_frames(id);
+        // The frame the shell drew for a window: where the person sees it, which a window whose
+        // content the shell draws (a tilolang app's) does not stand in the compositor's space.
+        let drawn_of = |tab: u64| {
+            session.handle.window_rect(tab).map(|rect| {
+                (
+                    pixels(rect.x0),
+                    pixels(rect.y0),
+                    pixels(rect.x1 - rect.x0),
+                    pixels(rect.y1 - rect.y0),
+                )
+            })
+        };
         let places = session.layout.borrow().reading().places;
         let resource_of = |tab: u64| {
             places
@@ -1107,7 +1129,7 @@ fn windows_answer(
         // the app's library the window shows.
         let items = session.handle.window_items();
         let item_of = |tab: u64| items.get(&tab).cloned();
-        let shown = (rect_of, frames_of, resource_of, item_of);
+        let shown = (rect_of, frames_of, drawn_of, resource_of, item_of);
         match &ctx.scope {
             None => session.handle.read(|tree| window_rows(tree, shown, app)),
             Some(scope) => session

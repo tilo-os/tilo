@@ -242,6 +242,9 @@ tilo_test_env::scenario! {
         // The frame draws the one window it has mapped; the other tab is an app to open again, with
         // no window of its own yet.
         let frames = |id: u64| if id == 7 { 41 } else { 0 };
+        // Where the shell drew the window's frame: the rect a person sees, which the client's own
+        // place in the compositor does not follow for a window the shell draws.
+        let drawn = |tab: u64| (tab == 100).then_some((20, 100, 620, 700));
         // The window's app says what it shows; the tab with no window of its own is on no
         // record, so it shows nothing.
         let resources = |tab: u64| (tab == 100).then(|| "notes.page:groceries".to_owned());
@@ -252,6 +255,7 @@ tilo_test_env::scenario! {
             (
                 |id| (id == 7).then_some((14, 96, 946, 984)),
                 frames,
+                drawn,
                 resources,
                 items,
             ),
@@ -259,7 +263,11 @@ tilo_test_env::scenario! {
         );
         assert_eq!(rows.len(), 2, "one row per tab: {rows:?}");
         assert_eq!(rows[0]["window"], json!(7));
-        assert_eq!(rows[0]["rect"], json!([14, 96, 946, 984]));
+        assert_eq!(
+            rows[0]["rect"],
+            json!([20, 100, 620, 700]),
+            "the frame the shell drew, not the client's own place"
+        );
         assert_eq!(rows[0]["active"], json!(true));
         assert_eq!(rows[0]["frames"], json!(41));
         assert_eq!(rows[0]["resource"], json!("notes.page:groceries"));
@@ -276,6 +284,7 @@ tilo_test_env::scenario! {
             (
                 |id| (id == 7).then_some((14, 96, 946, 984)),
                 frames,
+                drawn,
                 resources,
                 items,
             ),
@@ -285,9 +294,23 @@ tilo_test_env::scenario! {
         assert_eq!(notes[0]["app_id"], json!("so.tilo.notes"));
         // A frame that no longer maps the window leaves the row without a rectangle rather than one
         // that is no longer where it is drawn.
-        let closed = window_rows(&tree, (|_| None, frames, resources, items), None);
+        let closed = window_rows(&tree, (|_| None, frames, drawn, resources, items), None);
         assert_eq!(closed[0]["window"], json!(7));
         assert_eq!(closed[0]["rect"], Json::Null);
+        // A shell that has laid out no frame for the window yet leaves the client's own rect, which
+        // is where its surface sits until the shell draws it.
+        let unlaid = window_rows(
+            &tree,
+            (
+                |id| (id == 7).then_some((14, 96, 946, 984)),
+                frames,
+                |_| None,
+                resources,
+                items,
+            ),
+            None,
+        );
+        assert_eq!(unlaid[0]["rect"], json!([14, 96, 946, 984]));
     }
 
     phase a_locked_shell_shows_the_owner_api_nothing_the_lock_hides;
