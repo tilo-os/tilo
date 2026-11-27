@@ -32,8 +32,14 @@ pub(crate) struct Memberships {
 }
 
 impl Memberships {
-    /// Record that `workspace` lists exactly `people` now, and no one else.
-    pub(crate) fn record(&self, workspace: &str, people: impl IntoIterator<Item = [u8; 32]>) {
+    /// Record that `workspace` lists exactly `people` now, and no one else. Answers whether
+    /// anyone it listed before left: their devices hold no access any more, and the links
+    /// admitted under it re-check.
+    pub(crate) fn record(
+        &self,
+        workspace: &str,
+        people: impl IntoIterator<Item = [u8; 32]>,
+    ) -> bool {
         let people: BTreeSet<[u8; 32]> = people.into_iter().collect();
         let before = self
             .by_workspace
@@ -44,6 +50,7 @@ impl Memberships {
             .difference(&people)
             .copied()
             .collect();
+        let anyone_left = !left.is_empty();
         if !left.is_empty() {
             let mut by_person = self.by_person.write_recover();
             for person in left {
@@ -65,6 +72,7 @@ impl Memberships {
                     .insert(workspace.to_owned());
             }
         }
+        anyone_left
     }
 
     /// Record that `workspace` names exactly the devices `devices` among its

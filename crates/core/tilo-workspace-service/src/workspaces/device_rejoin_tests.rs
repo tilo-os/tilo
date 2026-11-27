@@ -170,7 +170,7 @@ fn based_on(
 /// reloaded tab does.
 #[tokio::test]
 async fn a_tab_a_member_device_signed_enters_and_comes_back_as_the_person() {
-    use crate::workspace_access::{DenyReason, ServerTrust, WorkspaceOperation, decide};
+    use crate::workspace_access::{DenyReason, ServerTrust, WorkspaceOperation, decide_now};
     use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
 
     let dir = tempfile::tempdir().unwrap();
@@ -223,16 +223,10 @@ async fn a_tab_a_member_device_signed_enters_and_comes_back_as_the_person() {
     );
 
     // Reloaded, it holds a session of its own: the workspace's admission, with no entry.
-    let runtime = workspaces
-        .inner
-        .host
-        .workspaces
-        .lock()
+    let hosted = workspaces
+        .state(&created.workspace)
         .await
-        .get(&created.workspace_id)
-        .cloned()
-        .unwrap();
-    let runtime = runtime.lock().await;
+        .expect("the workspace is hosted here");
     let peer = crate::auth::AuthenticatedPeer {
         user_public_key: tab.user_public_key,
         device_public_key: tab.device_public_key,
@@ -247,11 +241,12 @@ async fn a_tab_a_member_device_signed_enters_and_comes_back_as_the_person() {
         environments: &service.environments,
     };
     assert_ne!(
-        decide(&runtime, &trust, &peer, WorkspaceOperation::Subscribe),
-        crate::workspace_access::Decision::Deny(DenyReason::NotAMember),
+        decide_now(&hosted, &trust, &peer, WorkspaceOperation::Subscribe),
+        Some(crate::workspace_access::Decision::Deny(
+            DenyReason::NotAMember
+        )),
         "the workspace admits the tab again on its own session"
     );
-    drop(runtime);
     server.shutdown().await;
 }
 

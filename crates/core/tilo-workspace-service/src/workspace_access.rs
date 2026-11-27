@@ -2,8 +2,9 @@
 //!
 //! Every server protocol that admits a device into a workspace — subscribe, the
 //! access audit, state delivery, replay, remote actions, the browser live
-//! protocol, content discovery, compute and environments — asks [`decide`] with
-//! its [`WorkspaceOperation`]. The rule is written once:
+//! protocol, content discovery, compute and environments — asks [`decide_in`] with
+//! its [`WorkspaceOperation`], over the workspace's signed governance. The rule
+//! is written once:
 //!
 //! 1. The certificate is current server-wide ([`ServerTrust::cert`]): not
 //!    expired, not revoked, not blocked by the operator, admitted by the live
@@ -74,7 +75,6 @@ use tilo_user_identity::RevocationList;
 
 use crate::auth::AuthenticatedPeer;
 use crate::policy::TrustPolicy;
-use crate::workspace::WorkspaceRuntime;
 use tilo_server_protocol::WorkspaceId;
 
 /// The protocol asking. Protocols differ only in the three properties below.
@@ -124,26 +124,6 @@ pub enum Decision {
     Deny(DenyReason),
 }
 
-/// Whether `user` is the person this host runs for, or is admitted by a
-/// workspace it serves: who the host queues a device certificate for, beside
-/// the owner's own devices.
-pub async fn admits_person(
-    workspaces: &crate::registry::WorkspaceRegistry,
-    own_user: [u8; 32],
-    user: [u8; 32],
-) -> bool {
-    if user == own_user {
-        return true;
-    }
-    let served: Vec<_> = workspaces.lock().await.values().cloned().collect();
-    for workspace in served {
-        if workspace.lock().await.admits_person(&user) {
-            return true;
-        }
-    }
-    false
-}
-
 impl Decision {
     /// Admitted without any further step.
     pub fn admitted(self) -> bool {
@@ -151,7 +131,7 @@ impl Decision {
     }
 }
 
-/// Why [`decide`] refused.
+/// Why [`decide_in`] refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DenyReason {
     /// The certificate's expiry has passed.
@@ -310,102 +290,71 @@ impl ServerTrust<'_> {
     }
 }
 
-/// The workspace facts [`decide`] reads, from the host's runtime for it or from
-/// the replica its links admit into.
-///
-/// The rule is one; where it reads its facts is not. A connection the host
-/// keeps a runtime for (`crate::workspace::WorkspaceRuntime`) decides from
-/// that, as every session always has. A device's link is admitted before it
-/// listens, from a synchronous callback, so it decides from the workspace's
-/// replica, which its links share and which holds the same governance: its
-/// members by their roots, the devices it lists now, and the hosts keeping it.
-#[derive(Clone, Copy)]
-pub(crate) enum WorkspaceFacts<'a> {
-    /// The host's own runtime for the workspace, as its sessions read it.
-    Runtime(RuntimeFacts<'a>),
-    /// What a workspace's link holds of it, as it admits into it.
-    #[cfg(not(target_arch = "wasm32"))]
-    Link(LinkFacts<'a>),
-}
-
-/// What the host's runtime knows of a workspace.
-#[derive(Clone, Copy)]
-pub(crate) struct RuntimeFacts<'a> {
-    runtime: &'a WorkspaceRuntime,
-    /// Member devices just read from disk, in place of the runtime's set.
-    listed: Option<&'a [[u8; 32]]>,
-}
-
-/// What a workspace's replica knows of it.
+/// The workspace facts [`decide_in`] reads, from the signed governance the
+/// workspace's links share: its members by their roots, the devices it lists
+/// now, and the hosts keeping it.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy)]
-pub(crate) struct LinkFacts<'a> {
-    peer: &'a tilo_peer_state::StatePeer,
+#[derive(Clone)]
+pub(crate) struct WorkspaceFacts<'a> {
     workspace_id: WorkspaceId,
-    now: web_time::SystemTime,
+    /// The workspace's signed member list as this server reads it now. `None`
+    /// where none can be read, which admits nobody.
+    access: Option<std::borrow::Cow<'a, tilo_peer_state::MemberListAccess>>,
+    /// The devices the workspace's governance names among its hosts: they keep
+    /// it and may carry another device's frames to it.
+    keeping: std::borrow::Cow<'a, [tilo_peer_state::join::TransportHint]>,
 }
 
 impl<'a> WorkspaceFacts<'a> {
-    pub(crate) const fn current(runtime: &'a WorkspaceRuntime) -> Self {
-        Self::Runtime(RuntimeFacts {
-            runtime,
-            listed: None,
-        })
-    }
-
-    /// The facts `peer`'s replica holds of `workspace_id`, at `now`:
-    /// [`decide`] for a device dialling the workspace's link, whose admission
-    /// runs before any runtime lock can be waited for.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The facts `peer`'s governance holds of `workspace_id` at `now`:
+    /// [`decide_in`] for a device dialling the workspace's link, whose
+    /// admission runs before any runtime lock can be waited for.
     pub(crate) fn of_link(
         peer: &'a tilo_peer_state::StatePeer,
         workspace_id: WorkspaceId,
         now: web_time::SystemTime,
     ) -> Self {
-        Self::Link(LinkFacts {
-            peer,
+        Self {
             workspace_id,
-            now,
-        })
-    }
-
-    pub(crate) fn workspace_id(&self) -> WorkspaceId {
-        match self {
-            Self::Runtime(facts) => facts.runtime.workspace_id(),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Link(facts) => facts.workspace_id,
-        }
-    }
-
-    /// Whether `device` is a holder the workspace's member list names: a device that keeps the
-    /// workspace and may carry another device's frames to it. The host's session runtime holds
-    /// the members alone, so only a link, which reads the list's holder rows, answers one.
-    pub(crate) fn attached(&self, device: &[u8; 32]) -> bool {
-        match self {
-            Self::Runtime(_) => false,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Link(facts) => facts
-                .peer
+            access: peer
                 .governance()
-                .keeping_devices()
-                .iter()
-                .any(|keeping| keeping.host.device_public_key == *device),
-        }
-    }
-
-    /// The workspace's signed member list as this server reads it now. `None` where none can be
-    /// read, which admits nobody.
-    fn access(&self) -> Option<std::borrow::Cow<'_, tilo_peer_state::MemberListAccess>> {
-        match self {
-            Self::Runtime(facts) => Some(std::borrow::Cow::Borrowed(&*facts.runtime.members)),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Link(facts) => facts
-                .peer
-                .governance()
-                .member_list_access(facts.now)
+                .member_list_access(now)
                 .ok()
                 .map(std::borrow::Cow::Owned),
+            keeping: std::borrow::Cow::Owned(peer.governance().keeping_devices()),
         }
+    }
+
+    /// The facts `member_list` gives, which no host keeps: what a decision is
+    /// read over where a test hands it the member list.
+    #[cfg(test)]
+    pub(crate) fn listed(
+        workspace_id: WorkspaceId,
+        member_list: tilo_peer_state::MemberListAccess,
+    ) -> Self {
+        Self {
+            workspace_id,
+            access: Some(std::borrow::Cow::Owned(member_list)),
+            keeping: std::borrow::Cow::Owned(Vec::new()),
+        }
+    }
+
+    pub(crate) const fn workspace_id(&self) -> WorkspaceId {
+        self.workspace_id
+    }
+
+    /// Whether `device` is a host the workspace's governance names: a device
+    /// that keeps the workspace and may carry another device's frames to it.
+    pub(crate) fn attached(&self, device: &[u8; 32]) -> bool {
+        self.keeping
+            .iter()
+            .any(|keeping| keeping.host.device_public_key == *device)
+    }
+
+    /// The workspace's signed member list as this server reads it now. `None`
+    /// where none can be read, which admits nobody.
+    fn access(&self) -> Option<&tilo_peer_state::MemberListAccess> {
+        self.access.as_deref()
     }
 
     /// Whether a subscribe enrols `peer`'s device here (step 4): a device of its
@@ -421,25 +370,16 @@ impl<'a> WorkspaceFacts<'a> {
     }
 
     fn lists(&self, device: &[u8; 32]) -> bool {
-        match self {
-            Self::Runtime(facts) => facts.listed.map_or_else(
-                || facts.runtime.members.member_devices.contains(device),
-                |listed| listed.contains(device),
-            ),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Link(_) => self
-                .access()
-                .is_some_and(|access| access.member_devices.contains(device)),
-        }
+        self.access()
+            .is_some_and(|access| access.member_devices.contains(device))
     }
 }
 
 /// Whether the workspace lists `peer` for `op`: steps 3 to 5 of the rule, with
-/// no certificate, agent, cross-user or local-person question. Only for
-/// a recipient check that has no server trust at hand; everything else asks
-/// [`decide`].
+/// no certificate, agent, cross-user or local-person question.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn listed(
-    workspace: WorkspaceFacts<'_>,
+    workspace: &WorkspaceFacts<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
 ) -> bool {
@@ -447,25 +387,29 @@ pub(crate) fn listed(
         || workspace.lists(&peer.device_public_key)
 }
 
-/// The one admission decision for every protocol, at the current time.
-pub fn decide(
-    workspace: &WorkspaceRuntime,
+/// The decision for `op` over the governance `state` holds, at the current time: what a live
+/// session, a link and a page's own call ask. `None` where `state` names no workspace.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn decide_now(
+    state: &tilo_peer_state::StatePeer,
     trust: &ServerTrust<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
-) -> Decision {
-    decide_in(
-        WorkspaceFacts::current(workspace),
+) -> Option<Decision> {
+    let workspace_id = WorkspaceId::parse(state.workspace_id())?;
+    Some(decide_in(
+        &WorkspaceFacts::of_link(state, workspace_id, tilo_clock::wall()),
         trust,
         peer,
         op,
         tilo_clock::unix_now_ns(),
-    )
+    ))
 }
 
-/// [`decide`] over explicit workspace facts at `now_ns`.
+/// The decision for `op` over the workspace's facts, at `now_ns`.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn decide_in(
-    workspace: WorkspaceFacts<'_>,
+    workspace: &WorkspaceFacts<'_>,
     trust: &ServerTrust<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
@@ -552,7 +496,7 @@ pub fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
 /// [`crate::environment::EnvironmentScope::reaches`], and the live session
 /// offers such a device no namespace of anyone else's.
 fn environment_decision(
-    workspace: WorkspaceFacts<'_>,
+    workspace: &WorkspaceFacts<'_>,
     scope: crate::environment::EnvironmentScope,
     op: WorkspaceOperation,
 ) -> Decision {
@@ -567,7 +511,7 @@ fn environment_decision(
 /// module): its person's agent, only where its scope reaches, it redeemed
 /// its person's invitation and its person is a member, on an agent's protocols.
 fn grant_decision(
-    workspace: WorkspaceFacts<'_>,
+    workspace: &WorkspaceFacts<'_>,
     peer: &AuthenticatedPeer,
     scope: &tilo_user_identity::AgentScope,
     op: WorkspaceOperation,
@@ -605,8 +549,4 @@ pub fn role_writes(role: collab_types::Role) -> bool {
 
 #[cfg(test)]
 #[path = "workspace_access_tests.rs"]
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "each test keeps its workspace runtime until its last assertion"
-)]
 pub(crate) mod tests;

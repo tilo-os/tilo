@@ -472,7 +472,6 @@ impl ServiceSessions {
             handshake_trust: self.handshake_trust.clone(),
             state_root: self.state_root.clone(),
             revocation_log_root: self.revocation_log_root.clone(),
-            environments: self.handler.environments.clone(),
         }
     }
 
@@ -1058,19 +1057,15 @@ impl ProtocolHandler for Deferred {
     }
 }
 
-/// Settles each workspace's signed member list onto the sessions of the service: who its
-/// sessions admit, what each member device may do, and the people the handshake trusts.
-/// Nothing of it is kept on disk: the list is the workspace's own, and each start reads it
-/// again.
+/// Settles each workspace's signed member list onto the sessions of the service: what each
+/// member device may do, and the people the handshake trusts. Nothing of it is kept on disk:
+/// the list is the workspace's own, and each start reads it again.
 #[derive(Clone)]
 pub(crate) struct MemberListAccessWriter {
     workspaces: WorkspaceRegistry,
     handshake_trust: HandshakeTrust,
     state_root: PathBuf,
     revocation_log_root: PathBuf,
-    /// The browser environments this server placed: their devices are listed
-    /// beside the members the list names, so a change to it keeps them.
-    environments: crate::environment::EnvironmentRegistry,
 }
 
 impl MemberListAccessWriter {
@@ -1094,15 +1089,14 @@ impl MemberListAccessWriter {
         self.handshake_trust.apply();
     }
 
-    /// Take `access`, the members `workspace_id`'s signed list has now, `revoked`, the keys its
-    /// people revoked, and `device_access`, what each member device may do, as what the
-    /// workspace's sessions admit and decide by.
+    /// Take `device_access`, what each member device may do, as what the workspace's sessions
+    /// decide by, `people_left` saying whether its signed member list dropped anyone: either
+    /// takes access away, and wakes the links admitted under it to re-check.
     pub(crate) async fn settle(
         &self,
         workspace_id: WorkspaceId,
-        mut access: tilo_peer_state::MemberListAccess,
-        revoked: Vec<[u8; 32]>,
         device_access: crate::workspace::DeviceAccess,
+        people_left: bool,
     ) -> Result<(), ServiceError> {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
@@ -1111,19 +1105,10 @@ impl MemberListAccessWriter {
             crate::registry::MAX_HELD_WORKSPACES,
         )
         .await?;
-        // An environment this server placed in the workspace is listed by
-        // the server, not by the member list: every settle keeps it until it
-        // stops, confined to its document by the register.
-        access.member_devices.extend(
-            self.environments
-                .placed_in(workspace_id)
-                .into_iter()
-                .map(|(device, _, _)| device),
-        );
-        workspace
-            .lock()
-            .await
-            .settle_members(access, revoked, Some(device_access));
+        let devices_left = workspace.lock().await.settle_access(Some(device_access));
+        if people_left || devices_left {
+            crate::authority_epoch::bump();
+        }
         self.handshake_trust.apply();
         Ok(())
     }
@@ -1132,12 +1117,10 @@ impl MemberListAccessWriter {
     /// people only it had are trusted no more.
     pub(crate) async fn stop(&self, workspace_id: WorkspaceId) {
         let workspace = self.workspaces.lock().await.get(&workspace_id).cloned();
-        if let Some(workspace) = workspace {
-            workspace.lock().await.settle_members(
-                tilo_peer_state::MemberListAccess::default(),
-                [],
-                None,
-            );
+        if let Some(workspace) = workspace
+            && workspace.lock().await.settle_access(None)
+        {
+            crate::authority_epoch::bump();
         }
         self.handshake_trust.apply();
     }
@@ -1329,12 +1312,13 @@ impl ServerProtocol {
     /// Whether `user` is the person this server runs for, or is admitted by a
     /// workspace it serves: who its certification queue takes requests from.
     pub async fn admits(&self, user: [u8; 32]) -> bool {
-        crate::workspace_access::admits_person(
-            &self.workspaces,
-            self.identity.user_public_key,
-            user,
-        )
-        .await
+        if user == self.identity.user_public_key {
+            return true;
+        }
+        let Some(admin) = self.admin.get() else {
+            return false;
+        };
+        admin.admits_person(user).await
     }
 }
 

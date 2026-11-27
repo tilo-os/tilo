@@ -84,29 +84,35 @@ async fn settle_after_the_tab_expires(
 
 /// One answer everywhere a person's membership is read: the server-wide
 /// handshake and the certification queue (which a device paired from another
-/// of theirs, and their root approving it, go through) read the workspace
-/// runtimes' roots; an agent's delegation is bounded by the same roots; the
+/// of theirs, and their root approving it, go through) read the workspace's
+/// signed governance; an agent's delegation is bounded by the same roots; the
 /// person's own listing of workspaces reads the hosted ones.
 async fn assert_still_a_member_everywhere(
     workspaces: &Workspaces,
-    host: &DeviceCert,
     workspace: &str,
     workspace_id: WorkspaceId,
     person: [u8; 32],
 ) {
-    let registry = &workspaces.inner.host.workspaces;
+    let hosted = workspaces.state(workspace).await.expect("the workspace");
     assert!(
-        crate::workspace_access::admits_person(registry, host.user_public_key, person).await,
+        hosted
+            .governance()
+            .member_list_access(tilo_clock::wall())
+            .is_ok_and(|access| access.member_user_roots.contains(&person)),
+        "the workspace's governance still lists the person by their root, with no device of \
+         theirs listed"
+    );
+    assert!(
+        workspaces.admits_person(person).await,
         "the certification queue still takes the person's devices"
     );
-    let runtime = registry.lock().await.get(&workspace_id).cloned().unwrap();
     assert!(
-        runtime.lock().await.admits_person(&person),
-        "the handshake and an agent's delegation still find the person a member"
+        workspaces.member_of(person).await.contains(&workspace_id),
+        "the person's workspaces still list this one"
     );
     assert!(
         workspaces.inner.memberships.holds(&person, workspace),
-        "the person's workspaces still list this one"
+        "the handshake still finds the person a member"
     );
 }
 
@@ -168,23 +174,19 @@ async fn a_member_whose_every_device_expired_is_still_a_member_on_each_way_back(
     let person = root.verifying_key().to_bytes();
 
     let tab = join_on_a_tab_that_ends(workspaces, &cert, &workspace, &root, Role::Moderator).await;
-    let registry = &workspaces.inner.host.workspaces;
     assert!(
-        crate::workspace_access::admits_person(registry, cert.user_public_key, person).await,
+        workspaces.admits_person(person).await,
         "a member while their tab is listed"
     );
 
     settle_after_the_tab_expires(workspaces, &workspace, &tab, person).await;
-    assert_still_a_member_everywhere(workspaces, &cert, &workspace, created.workspace_id, person)
-        .await;
+    assert_still_a_member_everywhere(workspaces, &workspace, created.workspace_id, person).await;
     a_new_tab_comes_back_at_the_part_they_hold(workspaces, &workspace, &root, person).await;
 
     // A stranger is not a member by any of these readings.
     let stranger = SigningKey::from_bytes(&rand::random())
         .verifying_key()
         .to_bytes();
-    assert!(
-        !crate::workspace_access::admits_person(registry, cert.user_public_key, stranger).await
-    );
+    assert!(!workspaces.admits_person(stranger).await);
     server.shutdown().await;
 }

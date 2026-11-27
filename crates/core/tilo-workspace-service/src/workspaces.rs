@@ -944,7 +944,7 @@ pub(crate) struct WorkspaceServices {
     /// Pre-admissions each workspace keeps, spent ones included.
     pub(crate) max_pre_admissions: usize,
     /// The live handshake trust policy, which an admission is decided with
-    /// ([`crate::workspace_access::decide`]), and whom the host's own operations answer.
+    /// ([`crate::workspace_access::decide_in`]), and whom the host's own operations answer.
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// The devices and people this host's operator blocks, as the record of
     /// their own workspace says ([`blocked`]): refused on every protocol here.
@@ -2005,6 +2005,31 @@ impl Workspaces {
             .keys()
             .filter_map(|workspace| WorkspaceId::parse(workspace))
             .collect()
+    }
+
+    /// The workspaces hosted here whose signed governance has `person` as a member now: who
+    /// the server queues a device certificate for, beside its own person's devices.
+    pub async fn member_of(&self, person: [u8; 32]) -> Vec<WorkspaceId> {
+        let now = tilo_clock::wall();
+        let mut member_of = Vec::new();
+        for id in self.ids().await {
+            let Some((_, peer)) = self.hosted_copy(id).await else {
+                continue;
+            };
+            let member = peer
+                .governance()
+                .member_list_access(now)
+                .is_ok_and(|access| access.member_user_roots.contains(&person));
+            if member {
+                member_of.push(id);
+            }
+        }
+        member_of
+    }
+
+    /// Whether a workspace hosted here has `person` as a member now.
+    pub async fn admits_person(&self, person: [u8; 32]) -> bool {
+        !self.member_of(person).await.is_empty()
     }
 
     /// Every workspace this server hosts.
@@ -3423,7 +3448,7 @@ impl Workspaces {
         // Who is in the workspace is what its member list just said: the person
         // listing of every one of them, and the people the handshake trusts, are
         // answered from that, not by reading every workspace this host serves.
-        self.inner.memberships.record(
+        let people_left = self.inner.memberships.record(
             workspace.workspace(),
             access.member_user_roots.iter().copied(),
         );
@@ -3451,7 +3476,7 @@ impl Workspaces {
             self.inner.mcp_server.forget(device);
         }
         host.access
-            .settle(workspace.workspace_id(), access, revoked, device_access)
+            .settle(workspace.workspace_id(), device_access, people_left)
             .await
             .map_err(|error| error.to_string())?;
         // A member copy's own change reaches the device serving it over the

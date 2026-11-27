@@ -2729,16 +2729,7 @@ async fn subscribe(
     workspace: &str,
     device: &DeviceCert,
 ) -> Result<(), crate::workspace_access::DenyReason> {
-    let id = tilo_server_protocol::WorkspaceId::parse(workspace).unwrap();
-    let runtime = workspaces
-        .inner
-        .host
-        .workspaces
-        .lock()
-        .await
-        .get(&id)
-        .cloned()
-        .unwrap();
+    let hosted = workspaces.state(workspace).await.unwrap();
     let revocations = std::sync::RwLock::new(RevocationList::new());
     let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
     let environments = crate::environment::EnvironmentRegistry::default();
@@ -2756,13 +2747,16 @@ async fn subscribe(
         user_public_key: device.user_public_key,
         device_public_key: device.device_public_key,
     };
-    crate::workspace_io::admit_for(
-        &runtime,
+    match crate::workspace_access::decide_now(
+        &hosted,
         &trust,
         &peer,
         crate::workspace_access::WorkspaceOperation::Subscribe,
-    )
-    .await
+    ) {
+        Some(crate::workspace_access::Decision::Admit) => Ok(()),
+        Some(crate::workspace_access::Decision::Deny(reason)) => Err(reason),
+        None => Err(crate::workspace_access::DenyReason::NotAMember),
+    }
 }
 
 /// A person's key makes a workspace of their own, and a device of theirs joins it before any

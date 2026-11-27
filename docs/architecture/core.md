@@ -988,10 +988,8 @@ have their own id types.
 
 Membership is the signed governance log in `tilo-peer-state`
 (`WorkspaceGovernance`, `members/`, `workspace_membership.rs`), with roles
-and grants decided by `action-policy` `WorkspacePolicy`. Beside it are six
-more membership records: `tilo-server-protocol` `WorkspaceRoles`, a
-second role vocabulary; the
-host's copy of the list (`WorkspaceRuntime` `settle_members`, 54 lines); `workspace-join`
+and grants decided by `action-policy` `WorkspacePolicy`. Beside it are four
+more membership records: `workspace-join`
 `MemberList` and `MembershipProof` (3,173); `tilo-api` `store.rs` `Grant`
 with `collab_types::WorkspaceGrant`, the API server's own grant file;
 `apps/workspace_memberships`, a path for agents; and `PersonalStore`, which
@@ -1065,8 +1063,7 @@ workspace vault, despite their names.
 
 | Delete | Size |
 |---|---|
-| The host's role in workspaces it keeps for others: the administrator row a hand-over leaves it, and what it signs under that row (the invitations it mints for a person's own workspace, owner links and server keys; grants, revocations, profile import and page role changes), which become self-written rows and changes signed by the members' own devices. A host is named among the workspace's hosts and holds no role there. `WorkspaceRuntime`'s copy of the member list (`settle_members`, `admits_person`, `lists`), which reads the replica as `LinkFacts` does | to be measured |
-| `WorkspaceRoles.custom_roles` | to be measured |
+| The host's role in workspaces it keeps for others: the administrator row a hand-over leaves it, and what it signs under that row (the invitations it mints for a person's own workspace, owner links and server keys; grants, revocations, profile import and page role changes), which become self-written rows and changes signed by the members' own devices. A host is named among the workspace's hosts and holds no role there | to be measured |
 | `WorkspaceRuntime`'s live relay path (subscriber routing, presence, the live session, invocation replay), deleted in the push that carries live traffic over `tilo-peer-state` links | ~10,000–20,000 with `peer/` |
 | `tilo-api` grant file, `WorkspaceGrant`, `apps/workspace_memberships` | ~3,000 |
 | `PersonalStore` and `tilo-personal-store/1` | ~6,000 |

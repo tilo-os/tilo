@@ -1,7 +1,8 @@
 //! Opening and evicting the runtime of each workspace this host serves, and
 //! enrolling a member's further device. Who a workspace admits is its signed
-//! member list, held in memory ([`WorkspaceRuntime::members`]); no workspace's
-//! opening waits for another's, and no registry guard crosses filesystem work.
+//! governance, which its links read ([`crate::workspace_access`]); no
+//! workspace's opening waits for another's, and no registry guard crosses
+//! filesystem work.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -110,23 +111,5 @@ pub(crate) async fn get_or_initialize(
             .changed()
             .await
             .map_err(|error| io_error(error.to_string()))?;
-    }
-}
-
-/// Admit `peer` to `workspace` for `operation`.
-///
-/// `Err(reason)` when the device is refused.
-#[cfg(test)]
-pub(crate) async fn admit_for(
-    workspace: &SharedWorkspace,
-    trust: &crate::workspace_access::ServerTrust<'_>,
-    peer: &crate::auth::AuthenticatedPeer,
-    operation: crate::workspace_access::WorkspaceOperation,
-) -> Result<(), crate::workspace_access::DenyReason> {
-    use crate::workspace_access::{Decision, decide};
-    let decision = decide(&*workspace.lock().await, trust, peer, operation);
-    match decision {
-        Decision::Admit => Ok(()),
-        Decision::Deny(reason) => Err(reason),
     }
 }

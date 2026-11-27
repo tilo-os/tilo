@@ -16,7 +16,7 @@
 //! devices, by device key, with the one record each reaches, placed by the host
 //! that placed the VM, from the certificate that reaches one workspace alone
 //! ([`EnvironmentRegistry::confine`]). Nothing here is asked of the daemon in the VM:
-//! [`crate::workspace_access::decide`] answers every protocol with it, the
+//! [`crate::workspace_access::decide_in`] answers every protocol with it, the
 //! state protocol's replay, its live fan-out, its record opening and its changes
 //! ask it what a record is, and the live session offers such a device no one
 //! else's tracks. A device that asked to be one is confined whether or not its

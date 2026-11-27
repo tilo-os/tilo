@@ -1,21 +1,13 @@
-//! Per-workspace routing and authorization metadata: who is a member, what each
-//! member device may do, and who the workspace is attached to. A workspace's changes
-//! are not here: they are the device store's, and reach devices over its link.
+//! Per-workspace routing and authorization metadata: what each member device
+//! may do, and who the workspace is attached to. Who a workspace has in it, and
+//! its changes, are not here: both are its signed governance's, which its links
+//! read ([`crate::workspace_access`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::workspace_files::WorkspaceFiles;
 use tilo_server_protocol::WorkspaceId;
-
-/// Whether `next` leaves out a device `previous` lists: only such a list narrows anyone's
-/// access, and wakes the links admitted under it to re-check
-/// (`crate::authority_epoch`). One that only adds devices wakes nobody: a public workspace
-/// admitting a crowd would otherwise re-audit every member's link for every newcomer.
-pub(crate) fn leaves_out(previous: &[[u8; 32]], next: &[[u8; 32]]) -> bool {
-    let kept: std::collections::HashSet<&[u8; 32]> = next.iter().collect();
-    previous.iter().any(|device| !kept.contains(device))
-}
 
 /// The access of each member device of a workspace, by device key.
 pub type DeviceAccess = std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>;
@@ -29,25 +21,16 @@ pub struct WorkspaceRuntime {
     /// The in-process authority serving this workspace, if any: it answers
     /// the workspace's calls.
     pub workspace_authority: Option<crate::workspaces::WorkspaceAuthority>,
-    /// The access of each member device, as the workspace's signed member list
+    /// The access of each member device, as the workspace's signed governance
     /// gives it: what the server decides each change's claimed action against.
-    /// `None` until the list settled here; the server then decides changes
-    /// against their app surface alone.
+    /// `None` until it settled here; the server then decides changes against
+    /// their app surface alone.
     pub(crate) device_access: Option<Arc<DeviceAccess>>,
     /// The workspace's files on this host.
     pub files: WorkspaceFiles,
     /// The workspace left the host's registry ([`crate::workspace_io::evict`]):
     /// its files stay, and this runtime writes them no more.
     pub(crate) evicted: bool,
-    /// Who the workspace's signed member list has now: its members by their roots
-    /// and their devices, with the browser environments this server placed in it
-    /// ([`crate::environment`]). Set when the list settles here and rebuilt from the
-    /// durable list when the workspace is bound; never kept on disk. Both lists are
-    /// sorted.
-    pub(crate) members: Arc<tilo_peer_state::MemberListAccess>,
-    /// The devices this workspace keeps as keys its person revoked: refused with how to approve
-    /// another wherever they ask, until their person's approval admits a new key.
-    pub(crate) revoked_keys: HashSet<[u8; 32]>,
     /// What services beside the workspace's own stack keep for it (a
     /// server's compute routing), one value per type.
     pub extensions: Extensions,
@@ -60,49 +43,24 @@ impl WorkspaceRuntime {
         self.workspace_id
     }
 
-    /// Whether the person whose root is `user` is a member of this workspace: what
-    /// [`crate::workspace_access`] enrols their devices by.
-    #[must_use]
-    pub fn admits_person(&self, user: &[u8; 32]) -> bool {
-        self.members.member_user_roots.binary_search(user).is_ok()
-    }
-
-    /// Whether the workspace's member list has `device`.
-    #[must_use]
-    pub fn lists(&self, device: &[u8; 32]) -> bool {
-        self.members.member_devices.binary_search(device).is_ok()
-    }
-
-    /// Take `members` as who the workspace has now, `revoked` as the keys its people revoked,
-    /// and `device_access` as what each member device may do. A list that leaves a device out
-    /// refuses its links, which re-check on the announced change.
-    pub(crate) fn settle_members(
-        &mut self,
-        mut members: tilo_peer_state::MemberListAccess,
-        revoked: impl IntoIterator<Item = [u8; 32]>,
-        device_access: Option<DeviceAccess>,
-    ) {
-        members.member_devices.sort_unstable();
-        members.member_devices.dedup();
-        members.member_user_roots.sort_unstable();
-        members.member_user_roots.dedup();
-        self.revoked_keys.extend(revoked);
-        self.revoked_keys
-            .retain(|device| members.member_devices.binary_search(device).is_err());
-        let device_removed = self
-            .members
-            .member_devices
-            .iter()
-            .copied()
-            .any(|device| members.member_devices.binary_search(&device).is_err());
-        let roots_left = leaves_out(&self.members.member_user_roots, &members.member_user_roots);
-        self.members = Arc::new(members);
+    /// Take `device_access`, what each member device may do now, as what the
+    /// workspace's changes are decided against: `None` where the workspace is
+    /// served here no more. Answers whether a device had access before and
+    /// has none now, so its links re-check on the announced change. One that
+    /// only adds devices wakes nobody: a public workspace admitting a crowd
+    /// would otherwise re-audit every member's link for every newcomer.
+    pub(crate) fn settle_access(&mut self, device_access: Option<DeviceAccess>) -> bool {
+        let left = match (&self.device_access, &device_access) {
+            (Some(previous), Some(next)) => {
+                previous.keys().any(|device| !next.contains_key(device))
+            }
+            (Some(previous), None) => !previous.is_empty(),
+            (None, _) => false,
+        };
         if let Some(device_access) = device_access {
             self.device_access = Some(Arc::new(device_access));
         }
-        if device_removed || roots_left {
-            crate::authority_epoch::bump();
-        }
+        left
     }
 
     /// Build a runtime for a bound workspace from the files its host keeps.
@@ -120,8 +78,6 @@ impl WorkspaceRuntime {
             workspace_id,
             files,
             evicted: false,
-            members: Arc::default(),
-            revoked_keys: HashSet::new(),
             extensions: Extensions::default(),
             followed: false,
             workspace_authority: None,

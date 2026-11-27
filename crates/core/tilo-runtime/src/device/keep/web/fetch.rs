@@ -161,25 +161,17 @@ async fn caller(
 }
 
 /// The workspaces here `user` is admitted to as a person of its own: a
-/// member or a guest.
+/// member or a guest, as each workspace's signed governance lists them.
 async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Workspace> {
-    let workspaces: Vec<_> = web
-        .context
-        .server
-        .workspaces
-        .lock()
+    let Some(workspaces) = web.workspaces.as_ref() else {
+        return Vec::new();
+    };
+    workspaces
+        .member_of(user)
         .await
-        .iter()
-        .map(|(id, workspace)| (*id, workspace.clone()))
-        .collect();
-    let mut admitted = Vec::new();
-    for (id, workspace) in workspaces {
-        let workspace = workspace.lock().await;
-        if workspace.admits_person(&user) {
-            admitted.push(Workspace(id.as_uuid().as_u128()));
-        }
-    }
-    admitted
+        .into_iter()
+        .map(|id| Workspace(id.as_uuid().as_u128()))
+        .collect()
 }
 
 /// The methods a page may send through the proxy, as a preflight answers.

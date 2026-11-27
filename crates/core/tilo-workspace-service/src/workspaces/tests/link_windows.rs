@@ -226,23 +226,6 @@ async fn dialled_and_running(
     (dialer, running)
 }
 
-/// The host's runtime for `workspace_id`, where its list of the workspace's
-/// members and how it admits them are read and written.
-async fn runtime(
-    workspaces: &Workspaces,
-    workspace_id: WorkspaceId,
-) -> crate::workspace::SharedWorkspace {
-    workspaces
-        .inner
-        .host
-        .workspaces
-        .lock()
-        .await
-        .get(&workspace_id)
-        .cloned()
-        .expect("the host serves the workspace")
-}
-
 /// A member's device is admitted on the link it dials, and catches up from
 /// what the server keeps: the admission hook answers it from the workspace's
 /// replica before the link listens.
@@ -454,14 +437,18 @@ async fn a_member_peoples_new_device_lists_itself_on_its_first_link() {
     let running = list_itself_on_link(&server, &created.workspace, (&member_key, &member)).await;
     tilo_test_env::within("the member's device to be listed", async {
         loop {
-            let held = runtime(&workspaces, created.workspace_id).await;
-            if held
-                .lock()
+            let listed = workspaces
+                .state(&created.workspace)
                 .await
-                .members
-                .member_devices
-                .contains(&member.device_public_key)
-            {
+                .is_some_and(|state| {
+                    state
+                        .governance()
+                        .member_list_access(tilo_clock::wall())
+                        .is_ok_and(|access| {
+                            access.member_devices.contains(&member.device_public_key)
+                        })
+                });
+            if listed {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

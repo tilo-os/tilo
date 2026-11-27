@@ -694,7 +694,7 @@ impl Workspaces {
         })
     }
 
-    /// What the one admission rule ([`crate::workspace_access::decide`])
+    /// What the one admission rule ([`crate::workspace_access::decide_in`])
     /// decides of `remote` linking to the workspace `link` serves, asked of
     /// the workspace's replica, which the link admits into
     /// ([`Self::decision_in`]).
@@ -707,7 +707,7 @@ impl Workspaces {
         self.decision_in(&link.replica(), remote, offered)
     }
 
-    /// What the one admission rule ([`crate::workspace_access::decide`])
+    /// What the one admission rule ([`crate::workspace_access::decide_in`])
     /// decides of `remote` in the workspace `state` is a replica of: the
     /// decision for a subscribe, whether it holds the channels' keys, whether
     /// the device keeps the workspace, and the device as it was decided.
@@ -779,7 +779,7 @@ impl Workspaces {
         let (decision, key_access) = state.read(|facts| {
             let decide = |op| {
                 crate::workspace_access::decide_in(
-                    crate::workspace_access::WorkspaceFacts::of_link(facts, workspace_id, at),
+                    &crate::workspace_access::WorkspaceFacts::of_link(facts, workspace_id, at),
                     &trust,
                     &peer,
                     op,

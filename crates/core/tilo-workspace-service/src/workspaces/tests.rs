@@ -2413,26 +2413,15 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     server.shutdown().await;
 }
 
-/// The member list `workspace_id`'s runtime on this host admits by.
+/// The member list the workspace's signed governance gives, which this host admits by.
 async fn admitted(workspaces: &Workspaces, workspace: &str) -> tilo_peer_state::MemberListAccess {
-    let id = workspaces
-        .workspace(workspace)
+    workspaces
+        .state(workspace)
         .await
+        .expect("the host serves the workspace")
+        .governance()
+        .member_list_access(tilo_clock::wall())
         .unwrap()
-        .lock()
-        .await
-        .workspace_id();
-    let runtime = workspaces
-        .inner
-        .host
-        .workspaces
-        .lock()
-        .await
-        .get(&id)
-        .cloned()
-        .expect("the host serves the workspace");
-    let runtime = runtime.lock().await;
-    runtime.members.as_ref().clone()
 }
 
 /// A removal is answered once the host admits by the list without the person,

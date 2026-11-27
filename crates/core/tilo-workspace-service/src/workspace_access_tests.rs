@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{
@@ -157,44 +157,48 @@ fn one(workspace: &str) -> AgentScope {
 /// A grant `device` that redeemed an invitation of its person `user`, a
 /// member of the workspace.
 fn member_grant(device: [u8; 32], user: [u8; 32]) -> Setup {
-    Box::new(move |runtime, _| {
-        list_device(runtime, device);
-        list_person(runtime, user);
+    Box::new(move |workspace, _| {
+        list_device(workspace, device);
+        list_person(workspace, user);
     })
 }
 
+/// What a decision reads of a workspace here: the signed member list it has now, which its
+/// governance gives in production.
+#[derive(Default)]
+struct Workspace {
+    access: tilo_peer_state::MemberListAccess,
+}
+
 /// Put `device` on the workspace's member list.
-fn list_device(runtime: &mut WorkspaceRuntime, device: [u8; 32]) {
-    let members = Arc::make_mut(&mut runtime.members);
-    members.member_devices.push(device);
-    members.member_devices.sort_unstable();
+fn list_device(workspace: &mut Workspace, device: [u8; 32]) {
+    workspace.access.member_devices.push(device);
+    workspace.access.member_devices.sort_unstable();
 }
 
 /// Put the person whose root is `user` on the workspace's member list.
-fn list_person(runtime: &mut WorkspaceRuntime, user: [u8; 32]) {
-    let members = Arc::make_mut(&mut runtime.members);
-    members.member_user_roots.push(user);
-    members.member_user_roots.sort_unstable();
+fn list_person(workspace: &mut Workspace, user: [u8; 32]) {
+    workspace.access.member_user_roots.push(user);
+    workspace.access.member_user_roots.sort_unstable();
 }
 
-/// [`super::decide_in`] over what the host's runtime for the workspace holds.
+/// [`super::decide_in`] over the member list the workspace holds now.
 fn decide_in(
-    runtime: &WorkspaceRuntime,
+    workspace: &Workspace,
     trust: &ServerTrust<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
     now_ns: u64,
 ) -> Decision {
-    super::decide_in(WorkspaceFacts::current(runtime), trust, peer, op, now_ns)
-}
-
-fn workspace(root: &std::path::Path) -> WorkspaceRuntime {
-    let id = WorkspaceId::parse(WORKSPACE).unwrap();
-    WorkspaceRuntime::open(root, id).unwrap()
+    let facts = WorkspaceFacts::listed(
+        WorkspaceId::parse(WORKSPACE).unwrap(),
+        workspace.access.clone(),
+    );
+    super::decide_in(&facts, trust, peer, op, now_ns)
 }
 
 /// How a case puts its actor into the workspace and the server.
-type Setup = Box<dyn Fn(&mut WorkspaceRuntime, &Server)>;
+type Setup = Box<dyn Fn(&mut Workspace, &Server)>;
 
 /// One actor: how the workspace and the server know it, and the expected
 /// letters over [`OPS`].
@@ -213,8 +217,9 @@ struct Case {
 fn decide_matrix() {
     let server = Server::new();
     let (owner, bob, carol) = (server.owner, server.bob, [3; 32]);
-    let listed =
-        |device: [u8; 32]| -> Setup { Box::new(move |runtime, _| list_device(runtime, device)) };
+    let listed = |device: [u8; 32]| -> Setup {
+        Box::new(move |workspace, _| list_device(workspace, device))
+    };
     let none = || -> Setup { Box::new(|_, _| {}) };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
     // Publish, KeyAccess
@@ -261,8 +266,8 @@ fn decide_matrix() {
         Case {
             name: "a grant that never redeemed an invitation here, on its person's own host",
             peer: grant(owner, [17; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
-            setup: Box::new(move |runtime, _| {
-                list_person(runtime, owner);
+            setup: Box::new(move |workspace, _| {
+                list_person(workspace, owner);
             }),
             expected: "NNNNNNNNNN",
         },
@@ -275,8 +280,8 @@ fn decide_matrix() {
         Case {
             name: "a grant its person revoked",
             peer: grant(owner, [19; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
-            setup: Box::new(move |runtime, server| {
-                member_grant([19; 32], owner)(runtime, server);
+            setup: Box::new(move |workspace, server| {
+                member_grant([19; 32], owner)(workspace, server);
                 server.revoke([19; 32]);
             }),
             expected: "rrrrrrrrrr",
@@ -289,8 +294,8 @@ fn decide_matrix() {
                 minted.cert.issuer = Some(Box::new(parent.cert));
                 minted
             },
-            setup: Box::new(move |runtime, server| {
-                member_grant([63; 32], owner)(runtime, server);
+            setup: Box::new(move |workspace, server| {
+                member_grant([63; 32], owner)(workspace, server);
                 server.revoke([62; 32]);
             }),
             expected: "rrrrrrrrrr",
@@ -309,8 +314,8 @@ fn decide_matrix() {
             // reaches nothing else until it is on the list.
             name: "cross-user device of a member, not on the list yet",
             peer: peer(bob, [23; 32], false, None),
-            setup: Box::new(move |runtime, _| {
-                list_person(runtime, bob);
+            setup: Box::new(move |workspace, _| {
+                list_person(workspace, bob);
             }),
             expected: "ENNNNNNNNN",
         },
@@ -337,24 +342,24 @@ fn decide_matrix() {
             // Its person is a member: an unlisted device of theirs links once it lists itself.
             name: "an unlisted device of this server's person, a member",
             peer: peer(owner, [70; 32], true, None),
-            setup: Box::new(move |runtime, _| list_person(runtime, owner)),
+            setup: Box::new(move |workspace, _| list_person(workspace, owner)),
             expected: "ENNNNNNNNN",
         },
         Case {
             name: "another listed device of the owner, a member",
             peer: peer(owner, [71; 32], false, None),
-            setup: Box::new(move |runtime, _| {
-                list_device(runtime, [71; 32]);
-                list_person(runtime, owner);
+            setup: Box::new(move |workspace, _| {
+                list_device(workspace, [71; 32]);
+                list_person(workspace, owner);
             }),
             expected: "AAAAAAAAAA",
         },
         Case {
             name: "a further device of a member",
             peer: peer(bob, [46; 32], false, None),
-            setup: Box::new(move |runtime, _| {
-                list_person(runtime, bob);
-                list_person(runtime, owner);
+            setup: Box::new(move |workspace, _| {
+                list_person(workspace, bob);
+                list_person(workspace, owner);
             }),
             expected: "ENNNNNNNNN",
         },
@@ -363,7 +368,7 @@ fn decide_matrix() {
             // holding the workspace for someone else, with no place in it, carries it in.
             name: "a further device of a member, where this server's person has no place",
             peer: peer(bob, [48; 32], false, None),
-            setup: Box::new(move |runtime, _| list_person(runtime, bob)),
+            setup: Box::new(move |workspace, _| list_person(workspace, bob)),
             expected: "ENNNNNNNNN",
         },
         Case {
@@ -371,7 +376,7 @@ fn decide_matrix() {
             // wherever the server holding the workspace stands.
             name: "a device of a person the list removed",
             peer: peer(bob, [49; 32], false, None),
-            setup: Box::new(move |runtime, _| list_person(runtime, owner)),
+            setup: Box::new(move |workspace, _| list_person(workspace, owner)),
             expected: "NNNNNNNNNN",
         },
         Case {
@@ -383,8 +388,8 @@ fn decide_matrix() {
         Case {
             name: "revoked member device",
             peer: peer(owner, [51; 32], false, None),
-            setup: Box::new(|runtime, server| {
-                list_device(runtime, [51; 32]);
+            setup: Box::new(|workspace, server| {
+                list_device(workspace, [51; 32]);
                 server.revoke([51; 32]);
             }),
             expected: "rrrrrrrrrr",
@@ -398,15 +403,14 @@ fn decide_matrix() {
             expected: "AAAAAAAAAA",
         },
     ];
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
+    let mut workspace;
     let mut failures = Vec::new();
     for case in &cases {
-        runtime.members = Arc::default();
-        (case.setup)(&mut runtime, &server);
+        workspace = Workspace::default();
+        (case.setup)(&mut workspace, &server);
         let actual: String = OPS
             .iter()
-            .map(|op| letter(decide_in(&runtime, &server.trust(), &case.peer, *op, NOW)))
+            .map(|op| letter(decide_in(&workspace, &server.trust(), &case.peer, *op, NOW)))
             .collect();
         if actual != case.expected {
             failures.push(format!(
@@ -425,8 +429,7 @@ fn decide_matrix() {
 #[test]
 fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     let server = Server::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
+    let mut workspace = Workspace::default();
     let now = tilo_clock::unix_now_ns();
     let until = now.saturating_add(60 * 1_000_000_000);
     let device = [80; 32];
@@ -443,10 +446,18 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
         .unwrap(),
     );
     // Its person is a member; the device itself is listed nowhere.
-    list_person(&mut runtime, server.owner);
-    let letters = |runtime: &WorkspaceRuntime| -> String {
+    list_person(&mut workspace, server.owner);
+    let letters = |workspace: &Workspace| -> String {
         OPS.iter()
-            .map(|op| letter(decide_in(runtime, &server.trust(), &environment, *op, now)))
+            .map(|op| {
+                letter(decide_in(
+                    workspace,
+                    &server.trust(),
+                    &environment,
+                    *op,
+                    now,
+                ))
+            })
             .collect()
     };
     // Its certificate reaches this one workspace, and the host that placed it confines it in
@@ -457,7 +468,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     );
     server.environments.confine(&vm).unwrap();
     assert_eq!(
-        letters(&runtime),
+        letters(&workspace),
         "AAAAbbbAAb",
         "subscribe, state, replay and live; discovery, compute, environment and \
          governance are another device's; its record's actions and publishing; no \
@@ -465,7 +476,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     );
     server.environments.stop(device, until).unwrap();
     assert_eq!(
-        letters(&runtime),
+        letters(&workspace),
         "ssssssssss",
         "a stopped environment's device is refused on every protocol, listed or not"
     );
@@ -473,7 +484,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     // register need not keep the entry.
     assert_eq!(
         decide_in(
-            &runtime,
+            &workspace,
             &server.trust(),
             &environment,
             WorkspaceOperation::State,
@@ -656,18 +667,17 @@ fn a_tab_a_device_signed_is_a_device_of_the_person() {
 /// root refuses every device of theirs.
 #[test]
 fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
-    let dir = tempfile::tempdir().unwrap();
     let server = Server::new();
     let guest = [0x4a; 32];
     let device = [0x4b; 32];
     // The workspace holds the person and the device; the policy lists neither,
     // and its refusal alone would not keep the device out of a workspace its
     // membership holds.
-    let mut runtime = workspace(dir.path());
-    list_person(&mut runtime, guest);
-    list_device(&mut runtime, device);
+    let mut workspace = Workspace::default();
+    list_person(&mut workspace, guest);
+    list_device(&mut workspace, device);
     let first_peer = peer(guest, device, true, None);
-    let decide = |op| decide_in(&runtime, &server.trust(), &first_peer, op, NOW);
+    let decide = |op| decide_in(&workspace, &server.trust(), &first_peer, op, NOW);
     assert_eq!(
         decide(WorkspaceOperation::Subscribe),
         Decision::Admit,
@@ -685,8 +695,7 @@ fn a_blocked_device_or_person_is_refused_though_membership_admits_it() {
     );
 
     // The person's key refuses every device of theirs, listed or not.
-    let other_dir = tempfile::tempdir().unwrap();
-    let mut other = workspace(other_dir.path());
+    let mut other = Workspace::default();
     let second = [0x4c; 32];
     list_person(&mut other, guest);
     list_device(&mut other, second);
