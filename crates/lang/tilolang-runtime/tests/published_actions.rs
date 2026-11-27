@@ -240,6 +240,9 @@ view canvas() {
     ui.Button("Remove") {
       on press: chat.remove(channel: "c_ask")
     }
+    ui.SwipeAction("Remove") {
+      on swipe: chat.remove(channel: "c_ask")
+    }
   }
 }
 "#;
@@ -322,6 +325,20 @@ view canvas() {
                 button.props.get("description"),
                 Some(&Value::text("the channel is the workspace's")),
                 "the reason is the button's too"
+            );
+            // A swipe has no way to stand disabled: it is handed nothing it does not declare,
+            // since the window refuses a whole patch with an undeclared prop and would show the
+            // page before this one from then on. Swiping it is refused with the reason.
+            let swipe = one(&view, "ui.SwipeAction");
+            assert!(
+                !swipe.props.contains_key("enabled") && !swipe.props.contains_key("description"),
+                "a swipe is given only the props it declares: {}",
+                dump(view.tree())
+            );
+            assert_eq!(
+                swipe.events.keys().map(String::as_str).collect::<Vec<_>>(),
+                vec!["swipe"],
+                "the swipe keeps what it runs"
             );
         }
 

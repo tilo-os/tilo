@@ -912,13 +912,23 @@ impl Core {
             let at = vs.nodes.get_mut(node).ok_or("unknown ui node")?;
             at.events.insert(event, act);
             if let Some(reason) = refused {
+                // Only what the component declares: a window refuses a whole patch that hands a
+                // component a prop it does not know, so a swipe or a row that has no way to stand
+                // disabled keeps its look, and the press itself is refused with the reason.
+                let declared = at
+                    .kind
+                    .strip_prefix("ui.")
+                    .and_then(|name| tilolang::toolkit::catalogue().get(name));
+                let known = |prop: &str| declared.is_some_and(|it| it.prop(prop).is_some());
                 let menu = at.kind == "ui.MenuItem";
-                at.props.insert(
-                    if menu { "disabled" } else { "enabled" }.to_owned(),
-                    Value::Bool(menu),
-                );
-                at.props
-                    .insert("description".to_owned(), Value::text(reason));
+                let flag = if menu { "disabled" } else { "enabled" };
+                if known(flag) {
+                    at.props.insert(flag.to_owned(), Value::Bool(menu));
+                }
+                if known("description") {
+                    at.props
+                        .insert("description".to_owned(), Value::text(reason));
+                }
             }
             Ok(())
         })?;

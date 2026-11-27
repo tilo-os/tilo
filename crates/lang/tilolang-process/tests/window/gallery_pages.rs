@@ -353,7 +353,11 @@ fn the_wheel_over_the_page_scrolls_its_content_and_the_next_page_opens_at_its_to
     });
     let path = page.path.clone();
     let start = page.scroll.expect("its offset")[0];
-    assert!(start.abs() < f64::EPSILON, "the page starts at its top");
+    assert!(
+        start.abs() < f64::EPSILON,
+        "the page starts at its top, not at {start}:\n  {}",
+        describe(&composition)
+    );
     harness.hover_at(point.0, point.1);
     harness.scroll(0.0, -3.0);
     let composition = until(
@@ -385,4 +389,29 @@ fn the_wheel_over_the_page_scrolls_its_content_and_the_next_page_opens_at_its_to
         "the next page opens at its top, not at {offset}:\n  {}",
         describe(&composition)
     );
+}
+
+/// Each page the walk visits in turn, and a heading only that page shows.
+const VISITS: [(&str, &str); 6] = [
+    ("Basics", "Rich text and a quote"),
+    ("Controls", "Boxes and switches"),
+    ("Feedback", "Toolbar"),
+    ("States", "Primary button"),
+    ("Backlog", "Add an item to the backlog"),
+    ("Release board", "Doing"),
+];
+
+#[test]
+fn one_window_shows_each_page_it_is_switched_to_in_turn() {
+    crate::support::installed("gallery");
+    let mut app = TestApp::<TlApp>::drive_at("custom", (1280, 800)).expect("the scenario stages");
+    let harness = app.harness();
+    for (place, heading) in VISITS {
+        let _ = pick(harness, place);
+        let _ = until(
+            harness,
+            &format!("{place}, once picked, shows {heading:?}"),
+            |composition| shows(composition, heading),
+        );
+    }
 }
