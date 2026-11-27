@@ -88,6 +88,8 @@ pub mod other_resources;
 pub mod outbox;
 #[path = "owed.rs"]
 pub mod owed;
+#[path = "own_writes.rs"]
+pub mod own_writes;
 #[path = "person_resources.rs"]
 pub mod person_resources;
 #[path = "private_windows.rs"]

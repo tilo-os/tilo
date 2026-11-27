@@ -22,6 +22,9 @@ test-jukebox-play = Play a video
 test-jukebox-played = Played
 test-jukebox-played-note = Note that a video was played
 test-jukebox-played-star = Star a video
+test-ledger = Ledger
+test-ledger-bind = Bind the record to an account
+test-ledger-effects-connect = Connect an account
 
 ## crates/sdk/tilo-app-test-host/tests/chain_list.rs
 test-chain-log = Log

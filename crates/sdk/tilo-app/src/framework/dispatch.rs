@@ -956,6 +956,25 @@ impl DispatchCore {
     pub(crate) fn app_id(&self) -> &'static str {
         self.app_id
     }
+
+    /// Whether the app may apply an action of a resource `declared_by` declares as itself here:
+    /// an action of its own, on its own record of the workspace, never another app's record or
+    /// a nested one, nor a past version.
+    fn applies_own(&self, declared_by: &str) -> Result<(), ActionError> {
+        if declared_by != tilo_resource::kind::DEFAULT_APP && declared_by != self.app_id {
+            return Err(ActionError::Refused(format!(
+                "{} applies as itself only its own actions, not {declared_by}'s",
+                self.app_id
+            )));
+        }
+        if !self.record.is_empty() || self.applied_as.is_some() || self.past {
+            return Err(ActionError::Refused(format!(
+                "{} applies as itself only on its own record of the workspace",
+                self.app_id
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// The entry of the change `doc` committed since `before`, if it committed
@@ -1202,6 +1221,46 @@ impl<R: Resource> Dispatcher<R> {
     /// Why `action` may not be applied by this member.
     fn not_allowed(&self, action: &R::Action) -> ActionError {
         ActionError::Refused(self.core.not_allowed(&(self.permission_of)(action)))
+    }
+
+    /// Why the app may not apply `action` as itself here, if it may not: only what the app keeps
+    /// for itself (`#[action(by_app)]`), only an action of its own resource, only on its own
+    /// record of the workspace, and only for an invoker who may make that change themselves.
+    /// The app never does for someone what they could not do: what it writes is decided again
+    /// by the workspace, under the grant installing the app gave it.
+    ///
+    /// # Errors
+    /// Why not, in the words a person reads.
+    pub(crate) fn may_apply_own(&self, action: &R::Action) -> Result<(), ActionError> {
+        if !R::by_app(action) {
+            return Err(ActionError::Refused(
+                "an app applies as itself only what it keeps for itself".into(),
+            ));
+        }
+        self.core.applies_own(R::APP_ID)?;
+        if !self.may_apply(action) {
+            return Err(self.not_allowed(action));
+        }
+        Ok(())
+    }
+
+    /// Apply `action`, which [`Self::may_apply_own`] admits, to the document `edits` lends, as
+    /// the app itself: the app's own write, which is no step of the person's.
+    ///
+    /// # Errors
+    /// As [`Self::may_apply_own`], or the action's own refusal; nothing is written either way.
+    pub(crate) fn apply_own_now(
+        &self,
+        edits: &mut Edits<'_>,
+        action: &R::Action,
+    ) -> Result<(), ActionError> {
+        self.may_apply_own(action)?;
+        let app = tilo_actions::Acting::by_app(self.core.app_id);
+        let context = self
+            .core
+            .context()
+            .with_invoker(ActionInvoker::admitted(&app));
+        self.apply_now_with(edits, action, context, true, Some(false))
     }
 
     /// Invoke one of the app's effects (`dispatcher.effect(&Backups::BackUp)`)

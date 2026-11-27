@@ -416,6 +416,9 @@ pub(crate) struct EffectEnv<R: Resource> {
     /// its document, one to any other file is a copy.
     pub(crate) opens: &'static [&'static str],
     scope: Option<std::rc::Weak<super::surface::SurfaceScope>>,
+    /// The writes the next settle pass makes: an outbox's settlements, and what the app applies
+    /// as itself ([`EffectCx::apply_own`]).
+    settling: Settling,
 }
 
 impl<R: Resource> Clone for EffectEnv<R> {
@@ -427,6 +430,7 @@ impl<R: Resource> Clone for EffectEnv<R> {
             shows: self.shows.clone(),
             opens: self.opens,
             scope: self.scope.clone(),
+            settling: Rc::clone(&self.settling),
         }
     }
 }
@@ -723,6 +727,31 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// Submit a field edit or a verb, as [`Dispatcher::submit`].
     pub fn submit(&self, submit: impl super::Submit<R>) {
         self.env.dispatch.submit(submit);
+    }
+
+    /// Apply, as the app itself, what it keeps for itself (`#[action(by_app)]`) on its own record
+    /// of the workspace, for the person this effect runs for: a connector binding the
+    /// workspace's record to the account a person connected. The write is the app's, decided
+    /// by the workspace under the grant installing the app gave it, and it is made only where
+    /// the invoker may make that change themselves: the app never widens what they could do.
+    /// It lands in the window's next settle pass, as nobody's undo step.
+    ///
+    /// # Errors
+    /// The action does not build, is not the app's own, the record is not the app's record of
+    /// the workspace, or the invoker may not make the change; nothing is written then.
+    pub fn apply_own(&self, submit: impl super::Submit<R>) -> Result<(), String> {
+        let invoke = submit.into_invoke()?;
+        let action = invoke.build(tilo_resource::origin_now_ms())?;
+        let dispatch = self.env.dispatch.clone();
+        dispatch
+            .may_apply_own(&action)
+            .map_err(|error| error.to_string())?;
+        self.env.settling.borrow_mut().push(Settlement {
+            apply: Box::new(move |edits| dispatch.apply_own_now(edits, &action)),
+            waiting: None,
+        });
+        self.env.wake.wake();
+        Ok(())
     }
 
     /// The resource's live state.
@@ -2193,6 +2222,8 @@ impl<R: Resource> Effects<R> {
         shows: Option<ui_core::application_view::WindowShows>,
         opens: &'static [&'static str],
     ) -> Self {
+        let inner = new_inner();
+        let settling = Rc::clone(&inner.borrow().settling);
         let env = EffectEnv {
             dispatch,
             live,
@@ -2200,11 +2231,12 @@ impl<R: Resource> Effects<R> {
             shows,
             opens,
             scope: None,
+            settling,
         };
         Self {
             jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(Some(env.clone()))))),
             env: Some(env),
-            inner: new_inner(),
+            inner,
             starts_work: true,
         }
     }
@@ -2219,6 +2251,8 @@ impl<R: Resource> Effects<R> {
         shows: Option<ui_core::application_view::WindowShows>,
         opens: &'static [&'static str],
     ) -> Self {
+        let inner = new_inner();
+        let settling = Rc::clone(&inner.borrow().settling);
         Self {
             env: Some(EffectEnv {
                 dispatch,
@@ -2227,8 +2261,9 @@ impl<R: Resource> Effects<R> {
                 shows,
                 opens,
                 scope: None,
+                settling,
             }),
-            inner: new_inner(),
+            inner,
             jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(None)))),
             starts_work: false,
         }
