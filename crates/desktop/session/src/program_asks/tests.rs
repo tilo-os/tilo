@@ -599,14 +599,8 @@ async fn an_apps_network_question_is_asked_in_its_workspace_and_allowed() {
         .ask(network_question("tube", "so.tilo.tube"));
     let asked = device.asked().await;
     assert_eq!(device.raised_in(), ["tube"]);
-    let sites: Vec<&str> = asked
-        .facts
-        .facts
-        .iter()
-        .skip(1)
-        .map(|fact| fact.value.as_str())
-        .collect();
-    assert_eq!(sites.len(), 2, "each site is shown: {asked:?}");
+    let sites = asked.facts.facts.iter().skip(1).count();
+    assert_eq!(sites, 2, "each site is shown: {asked:?}");
     device.resolve(&asked, approve(&[])).await.unwrap();
     tokio::time::timeout(WAIT, answer)
         .await
