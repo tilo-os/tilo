@@ -380,7 +380,7 @@ impl App {
                         if rows.len() >= max_results || inspected >= max_work {
                             break;
                         }
-                        let mut row = row.clone();
+                        let mut row = runtime_collab::ActionDirectoryRow::clone(row);
                         row.has_children &= max_depth > 0;
                         add(row, &mut rows, &mut estimated_bytes);
                         if estimated_bytes > max_bytes {
@@ -529,7 +529,7 @@ impl App {
                     if rows.len() >= max_results || inspected >= max_work {
                         break;
                     }
-                    let mut row = row.clone();
+                    let mut row = runtime_collab::ActionDirectoryRow::clone(row);
                     row.has_children &= max_depth > 0
                         && node.depth.saturating_add(1) < usize::from(ACTION_DIRECTORY_MAX_DEPTH);
                     add(row, &mut rows, &mut estimated_bytes);
@@ -919,7 +919,7 @@ impl App {
                     .get(&tilo_actions::ActionAddress::new(resource_id, action_id))
             })
         {
-            return found(row.clone());
+            return found(runtime_collab::ActionDirectoryRow::clone(row));
         }
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource

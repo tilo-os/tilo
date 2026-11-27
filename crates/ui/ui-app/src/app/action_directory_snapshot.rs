@@ -112,7 +112,7 @@ impl App {
                 pin.snapshot
                     .actions
                     .get(&ActionAddress::new(resource, action))
-                    .cloned()
+                    .map(|row| ActionDirectoryRow::clone(row))
             })
     }
 
@@ -164,7 +164,7 @@ impl App {
             return Some(pin);
         }
         let mut snapshot = ActionDirectorySnapshot::default();
-        snapshot.actions.insert(address, row);
+        snapshot.actions.insert(address, std::sync::Arc::new(row));
         let bytes = snapshot
             .retained_bytes()
             .saturating_add(revision.len())
@@ -313,7 +313,7 @@ impl App {
             .get(&ActionAddress::new(resource, action))
             .map_or(runtime_collab::ActionDirectoryResolution::NotFound, |row| {
                 runtime_collab::ActionDirectoryResolution::Found {
-                    row: Box::new(row.clone()),
+                    row: Box::new(ActionDirectoryRow::clone(row)),
                     revision: Some(pin.revision.clone()),
                 }
             })

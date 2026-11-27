@@ -3,12 +3,15 @@
 use super::effective;
 use runtime_collab::ActionDirectoryRow;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tilo_actions::{ActionAddress, ActionDescriptor, OperationKind, ResourceSpec};
 
-/// One resource's directory level: its actions' rows, then its children's.
+/// One resource's directory level: its actions' rows, then its children's. An action's row is
+/// the one [`ActionDirectorySnapshot::actions`] holds, shared: a directory of thousands of items
+/// is built, and let go, with one copy of each action's descriptor, not one per place it is read.
 #[derive(Debug, PartialEq, Eq)]
 pub struct DirectoryNode {
-    pub rows: Vec<ActionDirectoryRow>,
+    pub rows: Vec<Arc<ActionDirectoryRow>>,
     /// How far below a top-level resource the resource is.
     pub depth: usize,
 }
@@ -27,9 +30,9 @@ pub struct ActionDirectorySnapshot {
     /// Digest of the invocations the published actions encode, when every
     /// one of them is covered; see `effective`.
     pub effective_invocations: Option<[u8; 32]>,
-    pub roots: Vec<ActionDirectoryRow>,
+    pub roots: Vec<Arc<ActionDirectoryRow>>,
     pub nodes: HashMap<String, DirectoryNode>,
-    pub actions: HashMap<ActionAddress, ActionDirectoryRow>,
+    pub actions: HashMap<ActionAddress, Arc<ActionDirectoryRow>>,
     /// Every action's address, in tree order: what a search walks.
     pub order: Vec<ActionAddress>,
 }
@@ -129,7 +132,7 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
         resource: &ResourceSpec,
         parent: &str,
         depth: usize,
-    ) -> (Vec<ActionDirectoryRow>, Option<usize>) {
+    ) -> (Vec<Arc<ActionDirectoryRow>>, Option<usize>) {
         self.effective.resource(resource);
         let name = directory_name(&self.shared, resource);
         let start = self.offset;
@@ -156,7 +159,7 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
                 }
                 self.effective.action(name, action);
                 let exported = exported_directory_action(descriptor, name);
-                let row = ActionDirectoryRow {
+                let row = Arc::new(ActionDirectoryRow {
                     parent_resource: name.to_owned(),
                     resource: name.to_owned(),
                     resource_kind: descriptor.resource_kind.clone(),
@@ -173,9 +176,9 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
                         governing_kind: Some(descriptor.kind),
                     }),
                     descriptor: Some(exported),
-                };
+                });
                 self.snapshot.order.push(address.clone());
-                self.snapshot.actions.insert(address, row.clone());
+                self.snapshot.actions.insert(address, Arc::clone(&row));
                 actions.push(row);
             }
             self.offset = self.offset.saturating_add(1);
@@ -200,7 +203,7 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
         };
         let exposed =
             if let Some(descriptor) = visible.and_then(|index| self.descriptors.get(index)) {
-                vec![ActionDirectoryRow {
+                vec![Arc::new(ActionDirectoryRow {
                     parent_resource: parent.to_owned(),
                     resource: name.to_owned(),
                     resource_kind: resource.kind.clone(),
@@ -217,14 +220,15 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
                         contract: descriptor.contract.clone(),
                         governing_kind: Some(descriptor.kind),
                     }),
-                }]
+                })]
             } else {
                 // Mutating/effect contracts disclose only their typed actions,
                 // never a container label using an invented read policy.
                 let mut exposed = actions.clone();
                 exposed.extend(children.clone());
                 for row in &mut exposed {
-                    parent.clone_into(&mut row.parent_resource);
+                    // Shown at its container's place: a row of its own there.
+                    parent.clone_into(&mut Arc::make_mut(row).parent_resource);
                 }
                 exposed
             };
@@ -255,7 +259,7 @@ impl ActionDirectorySnapshot {
         // action index), each a clone of the same descriptor: its wire
         // length is measured once and counted for each.
         fn rows<'a>(
-            rows: &'a [ActionDirectoryRow],
+            rows: &'a [Arc<ActionDirectoryRow>],
             measured: &mut HashMap<(&'a str, &'a str), usize>,
         ) -> usize {
             rows.iter().fold(0usize, |bytes, row| {

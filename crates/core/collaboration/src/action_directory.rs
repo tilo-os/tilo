@@ -90,7 +90,7 @@ pub fn named_rows(
                 row.action.is_none()
                     && is_named(&row.resource, &row.resource_kind, &row.resource_label, name)
             })
-            .cloned()
+            .map(|row| ActionDirectoryRow::clone(row))
             .collect(),
     )
 }
@@ -284,7 +284,7 @@ impl PublishedDirectory {
         while offset < total && rows.len() < max_results && inspected < max_work {
             let row = match level {
                 Some((level, depth)) => {
-                    let mut row = level[offset].clone();
+                    let mut row = ActionDirectoryRow::clone(&level[offset]);
                     row.has_children &= max_depth > 0
                         && depth
                             .is_none_or(|depth| depth.saturating_add(1) < usize::from(MAX_DEPTH));
@@ -294,7 +294,7 @@ impl PublishedDirectory {
                     .actions
                     .get(&snapshot.order[offset])
                     .filter(|row| action_row_matches(row, &needle))
-                    .cloned(),
+                    .map(|row| ActionDirectoryRow::clone(row)),
             };
             if let Some(mut row) = row {
                 refreshed(&mut row, refresh);
@@ -353,7 +353,7 @@ impl PublishedDirectory {
             .get(&ActionAddress::new(resource, action))
             .map_or(ActionDirectoryResolution::NotFound, |row| {
                 ActionDirectoryResolution::Found {
-                    row: Box::new(row.clone()),
+                    row: Box::new(ActionDirectoryRow::clone(row)),
                     revision: Some(current.clone()),
                 }
             })
