@@ -925,6 +925,10 @@ impl Shell {
                 &resources,
                 &self.link.packages_loaded(),
             ));
+        // What the resources offer still holds, as a view's control bound to one of their
+        // actions draws it: an action the session publishes as unable to run now stands
+        // disabled, with the reason, and its control is enabled again when it can run.
+        self.link.publish_actions_unavailable(&resources);
         for (id, ty) in placed {
             if !self.reading.contains_key(&id) {
                 fresh.push((id.clone(), ty.clone()));

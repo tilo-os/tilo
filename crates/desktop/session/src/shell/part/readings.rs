@@ -84,6 +84,51 @@ impl SessionLink {
         true
     }
 
+    /// The actions the session's resources publish as unavailable now, each with the reason
+    /// ([`tilolang_tilo::runtime::unavailable`]): what a view's control bound to one draws disabled.
+    /// Whether they differ from the last.
+    pub fn publish_unavailable(
+        &self,
+        unavailable: tilolang_tilo::runtime::unavailable::Unavailable,
+    ) -> bool {
+        if self.unavailable.borrow().as_ref() == Some(&unavailable) {
+            return false;
+        }
+        *self.unavailable.borrow_mut() = Some(unavailable);
+        self.unavailable_generation
+            .set(self.unavailable_generation.get().wrapping_add(1));
+        true
+    }
+
+    /// The actions the session's resources publish as unavailable now, each with the reason
+    /// ([`tilolang_tilo::runtime::unavailable`]), by the id the shell's runtime binds them by: the
+    /// address a resource publishes a verb at (`desktop:chrome#delete-workspace`), and the id
+    /// the session's own package names its loose action by (`Desktop/delete-workspace`), which
+    /// the shell's code calls. Whether they differ from the last.
+    pub fn publish_actions_unavailable(
+        &self,
+        resources: &[ui::tilo_actions::ResourceSpec],
+    ) -> bool {
+        self.publish_unavailable(unavailable_of(
+            resources,
+            self.session_actions(),
+            self.session_verbs(),
+        ))
+    }
+
+    /// The resource each of the session's loose actions is published on, by the action's id, as
+    /// the session's description declares them.
+    fn session_actions(&self) -> &BTreeMap<String, String> {
+        self.session_actions
+            .get_or_init(|| tilolang_tilo::platform::session_addresses().unwrap_or_default())
+    }
+
+    /// The session's loose actions as its description declares them, by id.
+    fn session_verbs(&self) -> &BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
+        self.session_verbs
+            .get_or_init(|| tilolang_tilo::platform::session_verbs().unwrap_or_default())
+    }
+
     /// The packages of the apps whose resources the places show, by app id, each its compiled
     /// module: the shell's runtime loads each it has not, so the places draw those resources
     /// through their app's own views, and unloads every other app's, with the readings of its
@@ -526,17 +571,83 @@ impl SessionOrigin {
 
     /// Hand the runtime the verbs the session's resources publish that no loaded package
     /// declares ([`tilolang_tilo::runtime::published`]): a view's action of one is sent to the app
-    /// publishing it, the same path another app's declared action takes. Whether it changed.
+    /// publishing it, the same path another app's declared action takes. And the actions those
+    /// resources publish as unavailable now, so a view's control bound to one draws disabled
+    /// ([`tilolang_tilo::runtime::unavailable`]). Whether it changed.
     fn poll_published(&self, cx: &OriginCx<'_>) -> bool {
-        let generation = self.link.published_generation.get();
-        if generation <= self.published_seen.get() {
-            return false;
+        let mut moved = false;
+        let generation = self.link.unavailable_generation.get();
+        if generation > self.unavailable_seen.get() {
+            self.unavailable_seen.set(generation);
+            let unavailable = self.link.unavailable.borrow().clone().unwrap_or_default();
+            cx.host.runtime().set_unavailable_actions(unavailable);
+            moved = true;
         }
-        self.published_seen.set(generation);
-        let published = self.link.published.borrow().clone().unwrap_or_default();
-        cx.host.runtime().set_published_actions(published);
-        true
+        let generation = self.link.published_generation.get();
+        if generation > self.published_seen.get() {
+            self.published_seen.set(generation);
+            let published = self.link.published.borrow().clone().unwrap_or_default();
+            cx.host.runtime().set_published_actions(published);
+            moved = true;
+        }
+        moved
     }
+}
+
+/// The actions `resources` publish as unavailable now, each with its reason, by the key the
+/// shell's runtime binds a view's control by ([`tilolang_tilo::runtime::unavailable`]): the
+/// address of a resource's verb, and — for a verb the session's own package publishes as a loose
+/// action — the id its code calls (`Desktop/delete-workspace`), which `session` maps to the
+/// resource it is published on and `verbs` to the verb it names there.
+fn unavailable_of(
+    resources: &[ui::tilo_actions::ResourceSpec],
+    session: &BTreeMap<String, String>,
+    verbs: &BTreeMap<String, ui::tilo_actions::surface::VerbSurface>,
+) -> tilolang_tilo::runtime::unavailable::Unavailable {
+    let mut out = tilolang_tilo::runtime::unavailable::from_resources(resources.iter());
+    for (id, address) in session {
+        let Some(verb) = verbs.get(id) else {
+            continue;
+        };
+        if let Some(reason) = unavailable_reason(resources, address, &verb.id) {
+            out.insert(id, reason);
+        }
+    }
+    out
+}
+
+/// Why the resource `address` of `resources` publishes its verb `verb` as unable to run now.
+fn unavailable_reason(
+    resources: &[ui::tilo_actions::ResourceSpec],
+    address: &str,
+    verb: &str,
+) -> Option<String> {
+    fn find(
+        resource: &ui::tilo_actions::ResourceSpec,
+        address: &str,
+        verb: &str,
+    ) -> Option<String> {
+        if resource.id.as_str() == address {
+            let said = resource
+                .actions
+                .iter()
+                .find(|action| action.id == verb)
+                .and_then(|action| match &action.contract.availability {
+                    ui::tilo_actions::Availability::Unavailable { reason, .. } => {
+                        Some(reason.clone())
+                    }
+                    ui::tilo_actions::Availability::Available => None,
+                });
+            if said.is_some() {
+                return said;
+            }
+        }
+        resource
+            .children
+            .iter()
+            .find_map(|child| find(child, address, verb))
+    }
+    resources.iter().find_map(|r| find(r, address, verb))
 }
 
 /// What a view composed in a place changes of the resource it shows, sent to that resource's
@@ -796,6 +907,70 @@ mod with_uses_tests {
             *asked.borrow(),
             Vec::<String>::new(),
             "the device's package is not even looked up: the runtime holds it"
+        );
+    }
+}
+
+#[cfg(test)]
+mod unavailable_tests {
+    use std::collections::BTreeMap;
+
+    use ui::tilo_actions::{ActionSpec, Availability, EncodedAction, OperationKind, ResourceSpec};
+
+    use super::{SessionLink, unavailable_of};
+
+    /// The chrome resource as the session publishes it, its `delete-workspace` unable to run on
+    /// the person's own workspace.
+    fn chrome() -> ResourceSpec {
+        let mut delete = ActionSpec::typed_operation(
+            "delete-workspace",
+            "Delete",
+            "Delete the workspace",
+            OperationKind::Effect,
+            "so.tilo.chrome",
+            Vec::new(),
+            |_| {
+                EncodedAction::encode_operation("so.tilo.chrome", &serde_json::json!({}))
+                    .expect("an encoded call")
+            },
+        );
+        delete.type_mut().contract.availability = Availability::Unavailable {
+            code: "own_workspace".to_owned(),
+            reason: "own workspace".to_owned(),
+        };
+        ResourceSpec::new("desktop:chrome", "desktop", "Desktop").with_action(delete)
+    }
+
+    #[test]
+    fn a_session_action_published_unavailable_is_held_by_its_address_and_by_the_id_the_shell_calls()
+    {
+        let link = SessionLink::default();
+        let actions: BTreeMap<String, String> = link.session_actions().clone();
+        let verbs = link.session_verbs().clone();
+        let map = unavailable_of(&[chrome()], &actions, &verbs);
+        assert_eq!(
+            map.get("desktop:chrome#delete-workspace"),
+            Some("own workspace"),
+            "the address the resource publishes its verb at"
+        );
+        assert_eq!(
+            map.get("Desktop/delete-workspace"),
+            Some("own workspace"),
+            "the id the session's own package names it by, which the shell's code calls"
+        );
+    }
+
+    #[test]
+    fn a_resource_no_action_of_is_unavailable_says_nothing() {
+        let link = SessionLink::default();
+        let map = unavailable_of(
+            &[ResourceSpec::new("desktop:shell", "desktop", "Desktop")],
+            &link.session_actions().clone(),
+            &link.session_verbs().clone(),
+        );
+        assert!(
+            map.is_empty(),
+            "nothing is drawn disabled for a resource whose actions can all run"
         );
     }
 }

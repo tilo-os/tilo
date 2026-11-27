@@ -191,6 +191,16 @@ pub struct SessionLink {
     /// publishing them. `None` until the session publishes one.
     published: RefCell<Option<tilolang_tilo::runtime::published::Published>>,
     published_generation: Cell<u64>,
+    /// The actions the session's resources publish as unavailable now, by the id the shell's
+    /// runtime binds them by ([`tilolang_tilo::runtime::unavailable`]): what a view's control
+    /// bound to one draws disabled, with the reason. `None` until the session publishes one.
+    unavailable: RefCell<Option<tilolang_tilo::runtime::unavailable::Unavailable>>,
+    unavailable_generation: Cell<u64>,
+    /// The resource each of the session's loose actions is published on, by the action's id,
+    /// and the verbs its description declares: what turns the availability a resource publishes
+    /// into the id a view's action is bound by. Read once from the session's description.
+    session_actions: std::sync::OnceLock<BTreeMap<String, String>>,
+    session_verbs: std::sync::OnceLock<BTreeMap<String, ui::tilo_actions::surface::VerbSurface>>,
     /// The resources a view composed in a place read before their readings came in, by id,
     /// each with its type: what the session publishes next ([`SessionLink::take_wanted`]).
     wanted: RefCell<BTreeMap<String, String>>,
@@ -441,6 +451,7 @@ pub struct SessionOrigin {
     readings_seen: RefCell<BTreeMap<String, u64>>,
     packages_seen: Cell<u64>,
     published_seen: Cell<u64>,
+    unavailable_seen: Cell<u64>,
     /// The display this part draws on, as this part's own reading (`session:screen`), and how
     /// often it was told one: the part's views draw its display's strips and bar, so they read
     /// their own.
@@ -464,6 +475,7 @@ impl SessionOrigin {
             readings_seen: RefCell::new(BTreeMap::new()),
             packages_seen: Cell::new(0),
             published_seen: Cell::new(0),
+            unavailable_seen: Cell::new(0),
             screen: RefCell::new(None),
             screen_generation: Cell::new(0),
             screen_seen: Cell::new(0),
@@ -527,6 +539,7 @@ impl Origin for SessionOrigin {
         self.link.layout_generation.get() > self.layout_seen.get()
             || self.link.packages_generation.get() > self.packages_seen.get()
             || self.link.published_generation.get() > self.published_seen.get()
+            || self.link.unavailable_generation.get() > self.unavailable_seen.get()
             || self.screen_generation.get() > self.screen_seen.get()
             || self.room_generation.get() > self.room_seen.get()
             || self
