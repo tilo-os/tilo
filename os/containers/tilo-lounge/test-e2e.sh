@@ -201,22 +201,20 @@ timing 'phase=the stack up'
 # is given the apps a device image carries: the store it reads them from, the
 # runtimes they execute, and the key they and the packages are trusted by. A
 # page of the person's own workspace is served by it, so it needs what a
-# computer has — nothing here is special to any app.
-apps=${TILO_LOUNGE_APPS:?TILO_LOUNGE_APPS names the apps the Lounge runs}
+# computer has — nothing here is special to any app. The layer is the one the
+# Lounge's context carries, which the stack's server was started on.
 device=$work/device
 mkdir -p "$device/data" "$device/bin"
-# The installer as this build made it, at a mode this run sets itself: a copy
-# taken from a build may arrive without its executable bit.
-install -m 0755 "$apps/bin/tilo-install" "$device/bin/tilo-install"
-TILO_INSTALL=$device/bin/tilo-install TILO_RUNTIME_BUNDLE_DIR=$apps/runtimes \
-  sh "$lounge_dir/install-apps.sh" "$apps/packages" "$device/apps" \
+install -m 0755 "$lounge/bin/tilo-install" "$device/bin/tilo-install"
+TILO_INSTALL=$device/bin/tilo-install TILO_RUNTIME_BUNDLE_DIR=$lounge/runtimes \
+  sh "$lounge_dir/install-apps.sh" "$lounge/packages" "$device/apps" \
   || { echo "FAIL: could not install the apps a flow's device runs" >&2; exit 1; }
-ln -sfn "$apps/runtimes" "$device/data/tilo-runtime"
+ln -sfn "$lounge/runtimes" "$device/data/tilo-runtime"
 
 export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_SERVER=$server_origin E2E_WORKSPACE=$workspace \
   E2E_STACK=$tilo_sh/stack.sh E2E_API_URL=$api_origin TILO_CLI_BIN=$tilo_bin \
   TILO_APPS_DATA_DIR=$device/apps XDG_DATA_HOME=$device/data \
-  TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$apps/runtime-publishers.txt
+  TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$lounge/runtime-publishers.txt
 
 # What each of the stack's services complained about while it ran: each error
 # and warning it logged, without its time, with how often. A failing check
