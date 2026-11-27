@@ -28,7 +28,7 @@
     },
     {
       "id": "request",
-      "said": "Type the address of a request",
+      "said": "Type the address of a request: the window names the request by the address's path",
       "ops": {
         "tl": [
           {
@@ -42,7 +42,7 @@
           },
           {
             "wait_for": {
-              "prefix": "http://127.0.0.1:9/users"
+              "title": "/users"
             }
           }
         ]
