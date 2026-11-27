@@ -470,21 +470,32 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     };
     // A window after the root's that shows one thing with views of its own (a list it draws, or the
     // switch between the views its type declares) moves the window there: the window's shell is
-    // its, with the root's sidebar (the places to go back by), and the root's list and its controls
-    // step aside. The window is built anew where it moves to, so its bar is the one what it shows
-    // offers, never a merge of the two.
+    // its, with the root's sidebar (the places to go back by) where the view brings none of its
+    // own, and the root's list and its controls step aside. The window is built anew where it
+    // moves to, so its bar is the one what it shows offers, never a merge of the two.
     if has_overview(detail) || offers_switch(detail) {
         let mut moved = detail.clone();
-        moved = with_part(moved, "sidebar", part_children(root, "sidebar").to_vec());
-        for name in ["sidebar_title", "can_go_back", "back", "pane"] {
-            match root.props.get(name) {
+        // The window keeps the root's places (the way back beside what it shows) while the root
+        // offers any; a root that lists nothing beside its content hands the places to the view
+        // that moves the window, which lists its own.
+        let (places, own_places) = places_for(root, detail);
+        moved = with_part(moved, "sidebar", places);
+        for name in ["can_go_back", "back", "pane"] {
+            if let Some(value) = root.props.get(name) {
+                moved.props.insert((*name).to_owned(), value.clone());
+            }
+        }
+        // The title over those places is the one that names them: the view's own where they are
+        // its, the root's where they are the root's.
+        if !own_places {
+            match root.props.get("sidebar_title") {
                 Some(value) => {
-                    moved.props.insert((*name).to_owned(), value.clone());
+                    moved
+                        .props
+                        .insert("sidebar_title".to_owned(), value.clone());
                 }
                 None => {
-                    if matches!(name, "sidebar_title") {
-                        moved.props.remove(name);
-                    }
+                    moved.props.remove("sidebar_title");
                 }
             }
         }
@@ -509,6 +520,7 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
             }
         }
     }
+    let shell = bring_places(shell, detail);
     let mut actions: Vec<UiNode> = part_children(detail, "actions").to_vec();
     if has_overview(&shell) {
         // The overview's header searches for the window.
@@ -517,6 +529,39 @@ fn at_window(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let content = part_children(detail, "content").to_vec();
     let shell = with_part(shell, "actions", actions);
     with_part(shell, "content", content)
+}
+
+/// The places a window shows beside the view it moves into: the root's, the way back beside what
+/// it shows, while the root offers any; a root that lists nothing beside its content hands the
+/// window to the view that moves it, which lists its own. The flag says they are the view's.
+fn places_for(root: &UiNode, view: &UiNode) -> (Vec<UiNode>, bool) {
+    let root_places = part_children(root, "sidebar");
+    if root_places.is_empty() {
+        (part_children(view, "sidebar").to_vec(), true)
+    } else {
+        (root_places.to_vec(), false)
+    }
+}
+
+/// `shell`, with the own places and their title of the view that moves it, where the shell lists
+/// none of its own: a page window's library lists history and bookmarks beside the pages.
+fn bring_places(shell: UiNode, view: &UiNode) -> UiNode {
+    let (places, own) = places_for(&shell, view);
+    if !own {
+        return shell;
+    }
+    let mut shell = with_part(shell, "sidebar", places);
+    shell = with_part(
+        shell,
+        "sidebar_actions",
+        part_children(view, "sidebar_actions").to_vec(),
+    );
+    if let Some(title) = view.props.get("sidebar_title") {
+        shell
+            .props
+            .insert("sidebar_title".to_owned(), title.clone());
+    }
+    shell
 }
 
 /// Apply the header rules to the composed shell: its bar repeats no action its content or its
@@ -872,6 +917,72 @@ mod tests {
             ["detail~search-p", "detail~add", "detail~views"],
             "the project's own bar, its switch with it"
         );
+    }
+
+    /// A view that moves the window into what it shows brings its own places beside it when the
+    /// window had none of its own: a page window's library lists history and bookmarks there.
+    #[test]
+    fn a_view_that_moves_the_window_brings_its_own_places_where_the_window_had_none() {
+        let page = shell(
+            "page",
+            vec![("content", vec![node("EmptyState", "none", &[])])],
+            &[],
+        );
+        let library = prefixed(
+            &shell(
+                "library",
+                vec![
+                    ("sidebar", vec![node("NavList", "places", &[])]),
+                    ("content", vec![node("VirtualList", "pages", &[])]),
+                ],
+                &[
+                    ("sidebar_title", Value::text("Library")),
+                    ("content_kind", Value::text("list")),
+                ],
+            ),
+            DETAIL,
+        );
+        let composed = compose(&page, Some(&library));
+        let sidebar: Vec<&str> = part_children(&composed, "sidebar")
+            .iter()
+            .map(|node| node.key.as_str())
+            .collect();
+        assert_eq!(
+            sidebar,
+            ["detail~places"],
+            "the library's places stand beside what it lists"
+        );
+        assert_eq!(
+            composed.props.get("sidebar_title"),
+            Some(&Value::text("Library")),
+            "and the title over them names them"
+        );
+        // The window's own places stay the window's, a view's own beside.
+        let root = shell(
+            "home",
+            vec![
+                ("sidebar", vec![node("NavList", "inbox", &[])]),
+                ("content", vec![node("EmptyState", "none", &[])]),
+            ],
+            &[],
+        );
+        let note = prefixed(
+            &shell(
+                "note",
+                vec![
+                    ("sidebar", vec![node("NavList", "own", &[])]),
+                    ("content", vec![node("Scroll", "body", &[])]),
+                ],
+                &[],
+            ),
+            DETAIL,
+        );
+        let composed = compose(&root, Some(&note));
+        let sidebar: Vec<&str> = part_children(&composed, "sidebar")
+            .iter()
+            .map(|node| node.key.as_str())
+            .collect();
+        assert_eq!(sidebar, ["inbox"], "the window's places are the window's");
     }
 
     #[test]

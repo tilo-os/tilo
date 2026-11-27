@@ -507,9 +507,15 @@ d-y2shuesh = Besuchsseite
     .w-opened = Geöffnet
     .w-forget-this-page = Diese Seite vergessen
 
-d-jlg4rve3 = Bibliothek
+d-jzblutyg = Verlauf
     .w-bookmarks = Lesezeichen
     .w-history = Verlauf
+    .w-library = Bibliothek
+
+d-wu2dddpi = Lesezeichen
+    .w-bookmarks = Lesezeichen
+    .w-history = Verlauf
+    .w-library = Bibliothek
 
 d-3dld2nsk = Lesezeichenliste
     .w-no-bookmarks-yet = Noch keine Lesezeichen

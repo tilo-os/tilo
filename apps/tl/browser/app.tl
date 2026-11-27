@@ -3150,10 +3150,10 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
             on choose: new_private_page(b)
         }
         ui.MenuItem("History", icon: .clock) {
-            on choose: open(b, view: library)
+            on choose: open(b, view: history)
         }
         ui.MenuItem("Bookmarks", icon: .star) {
-            on choose: open(b, view: library)
+            on choose: open(b, view: bookmarks)
         }
         ui.MenuItem("Print", icon: .printer, key: "Ctrl+P") {
             on choose: print_page(p)
@@ -3914,12 +3914,24 @@ view visit_page(v: Visit) {
     }
 }
 
-/// The library: the pages visited and the pages saved.
-view library(b: Browser) {
+/// The library on the pages visited.
+view history(b: Browser) {
     state section: Text = "history"
-    state query: Text = ""
+    library(b, section)
+}
+
+/// The library on the pages saved.
+view bookmarks(b: Browser) {
+    state section: Text = "bookmarks"
+    library(b, section)
+}
+
+/// The library: the pages visited and the pages saved, the section the person chose open beside
+/// them.
+view library(b: Browser, section: State<Text>) {
     let title = if section == "bookmarks" { "Bookmarks" } else { "History" }
-    ui.NavShell(content_kind: .list, title: title) {
+    state query: Text = ""
+    ui.NavShell(content_kind: .list, title: title, sidebar_title: "Library") {
         on search(typed: Text): set(query, typed)
         sidebar: {
             ui.NavList(selected: section) {
