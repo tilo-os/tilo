@@ -89,7 +89,9 @@ pub struct Io<'a> {
 pub fn unreachable_sentence(why: &Unreachable) -> String {
     match why {
         Unreachable::NoDesktop => {
-            "Tilo isn't answering on this computer. Run `tilo status` to see how it stands.".into()
+            "Tilo isn't answering on this computer: the session that holds your workspaces is \
+             not running. Run `tilo status` to see how it stands."
+                .into()
         }
         Unreachable::Refused {
             socket: ControlSocket::Agent(_),

@@ -420,7 +420,8 @@ fn the_listing_with_no_daemon_answering_says_how_to_look() {
     assert_eq!(listed.code, 1);
     assert_eq!(
         listed.err,
-        "Tilo isn't answering on this computer. Run `tilo status` to see how it stands.\n"
+        "Tilo isn't answering on this computer: the session that holds your workspaces is not \
+         running. Run `tilo status` to see how it stands.\n"
     );
 }
 
