@@ -131,6 +131,9 @@ fn the_tenants_connection_is_the_persons_unnamed_agent() {
 fn confined(workspace: tilo_desktop_model::WorkspaceId) {
     tilo_identity::sources::test_trust::install();
     let keys = tilo_api::calls::device_keys();
+    // The host's placing stands in for the device's daemon, which alone opens the person's
+    // identity: it holds the key for this step and lets it go before the daemon starts.
+    let _placing = tilo_identity::provisioning::device_key_taken_as_daemon(&keys).unwrap();
     let record = crate::device::services::device_root_record().unwrap();
     let person = tilo_identity::store::load_from_path(record).unwrap();
     let held = tilo_device_identity::persist::read_device_cert(&keys.device_cert).unwrap();

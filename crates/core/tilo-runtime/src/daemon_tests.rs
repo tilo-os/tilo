@@ -464,7 +464,12 @@ fn a_probe_that_missed_is_asked_again_within_the_daemons_bound() {
             atomic::{AtomicBool, Ordering},
         },
     };
-    let directory = tempfile::tempdir().unwrap();
+    // A profile is private to its account, as every daemon's is: one anyone else may enter is
+    // refused before it is looked in.
+    let directory = tempfile::Builder::new()
+        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .tempdir()
+        .unwrap();
     let socket = super::native_socket(directory.path()).unwrap();
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -951,6 +956,9 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     // This computer's one device key, which also seals the root it keeps for an account.
     let keys = tilo_api::calls::device_keys();
     let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    // The test serves the daemon's native endpoint itself, so it takes the key as the daemon
+    // does: founding signs as the device.
+    let _key_taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
     let device = hex::encode(key.verifying_key().to_bytes());
     let place = tilo_device_identity::login::Place::at(root.join("login"), keys);
     let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
