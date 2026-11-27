@@ -108,15 +108,13 @@ impl From<WorkspaceId> for uuid::Uuid {
 /// that follow them and the records an app keeps of them among it. The domain names the
 /// workspace's first use, the person's servers; the ids of workspaces founded before it follow
 /// from it.
+///
+/// One derivation, in [`tilo_action_policy::roles::person_workspace`]: the daemon founding the
+/// workspace, the session and an app window's identity ask there. A files daemon's mount asks the
+/// device daemon which workspace it serves, rather than deriving one.
 #[must_use]
 pub fn person_workspace(person: &[u8; 32]) -> uuid::Uuid {
-    let hash = blake3::Hasher::new()
-        .update(b"tilo admin workspace v1\0")
-        .update(person)
-        .finalize();
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hash.as_bytes()[..16]);
-    uuid::Builder::from_random_bytes(bytes).into_uuid()
+    tilo_action_policy::roles::person_workspace(person)
 }
 
 /// Whether `workspace` is the own workspace of the person whose root is `person`.

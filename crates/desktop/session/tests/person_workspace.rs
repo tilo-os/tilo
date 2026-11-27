@@ -110,14 +110,62 @@ fn choose_mode(device: &Device, mode: &str) {
                 return;
             }
             Some(_) => panic!(
-                "{} sets appearance.mode: {answer}\n{}",
+                "{} sets appearance.mode: {answer}\nits own workspace is {}, its daemon names \
+                 {:?}, it shows {:?}, and it holds {:?}\n{}",
                 device.label,
+                tilo_server_protocol::servers::person_workspace_id(&device.cert.user_public_key),
+                device.daemon_workspace(),
+                device.showing(),
+                device.held(),
                 device.diagnostic()
             ),
             None => return,
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+}
+
+#[test]
+fn a_fresh_device_names_one_own_workspace_for_its_daemon_and_its_session() {
+    let ada = Person::new("Ada");
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.install_passwords();
+    laptop.start();
+    // What the session derives from the person's key, and what the daemon founds: no fixture here
+    // picks a workspace.
+    let own = own_workspace(&ada);
+
+    // The daemon founds that one and holds it, and the session reads it as the person's own: what
+    // its records are read through.
+    laptop.wait_reading(&own);
+    assert_eq!(
+        laptop.daemon_workspace(),
+        own,
+        "{}'s daemon names the person's own workspace: {}\n{}",
+        laptop.label,
+        laptop.daemon_workspace(),
+        laptop.diagnostic()
+    );
+
+    // The one own workspace a plain ask answers is proved on a founding host's own service in the
+    // workspace service's tests; here the daemon and the real session name it the same.
+
+    // An app window opens in the workspace the shell started with, and its collaboration identity
+    // is accepted there. Its store is that workspace's, kept once the device's daemon holds it too.
+    let showing = laptop.showing().expect("a workspace in front");
+    laptop.wait_holding(&showing);
+    laptop.open("so.tilo.passwords");
+    laptop.wait_for_window("so.tilo.passwords");
+    assert!(
+        !laptop
+            .warnings()
+            .contains("collaboration identity rejected"),
+        "{}'s window was admitted: {}\n{}",
+        laptop.label,
+        laptop.warnings(),
+        laptop.diagnostic()
+    );
+    laptop.stop();
 }
 
 #[test]

@@ -32,8 +32,13 @@ pub fn member_record(kind: &str, person: &str) -> Option<String> {
 /// devices, so none has to be told it. It is an ordinary workspace whose only member is the
 /// person: it holds what is theirs alone, their servers, devices, workspace list and the settings
 /// that follow them, and decides the changes of those records.
+///
+/// This is the one derivation of it: the daemon founding the workspace, the session reading it as
+/// the person's own and an app window's identity ask for it here, so no two of them ask for
+/// different workspaces. A files daemon's mount asks the device daemon which workspace it serves,
+/// rather than deriving one.
 #[must_use]
-pub fn person_workspace_id(person: &[u8; 32]) -> String {
+pub fn person_workspace(person: &[u8; 32]) -> uuid::Uuid {
     // The domain names the workspace's first use, the person's servers; the
     // ids of the workspaces already founded follow from it.
     let hash = blake3::Hasher::new()
@@ -42,9 +47,13 @@ pub fn person_workspace_id(person: &[u8; 32]) -> String {
         .finalize();
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.as_bytes()[..16]);
-    uuid::Builder::from_random_bytes(bytes)
-        .into_uuid()
-        .to_string()
+    uuid::Builder::from_random_bytes(bytes).into_uuid()
+}
+
+/// [`person_workspace`] as the text a workspace id is written in.
+#[must_use]
+pub fn person_workspace_id(person: &[u8; 32]) -> String {
+    person_workspace(person).to_string()
 }
 
 /// [`person_workspace_id`] of the person `person` names (the lowercase hex of their user root

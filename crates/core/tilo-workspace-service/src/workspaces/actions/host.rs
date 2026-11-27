@@ -1245,10 +1245,12 @@ impl Workspaces {
     }
 
     /// The workspace of `device`'s person's own it asks for, already permitted
-    /// to, with an invitation into it: the first they made when the ask names
-    /// none (made now if they have none), one of theirs or one they were
-    /// invited into by its id, or another made for a `name`. Every other id is
-    /// refused: the host never answers a workspace the ask did not name.
+    /// to, with an invitation into it: the one own workspace at the id their key
+    /// names when the computer that founds it holds it, else the first they made
+    /// when the ask names none (made now if they have none), one of theirs or
+    /// one they were invited into by its id, or another made for a `name`. Every
+    /// other id is refused: the host never answers a workspace the ask did not
+    /// name.
     async fn create_own_invoke(
         &self,
         (caller, device): (&Caller, &DeviceCert),
@@ -1278,6 +1280,21 @@ impl Workspaces {
             return Err(ActionCallError::refused(
                 AdminRefusal::NotYourOwn.to_reason(),
             ));
+        }
+        // A plain ask for "my workspace" on the computer that founds it answers their one own
+        // workspace, at the id their key names, when this computer holds it. Only the device that
+        // made their identity founds it; one that holds their identity but not their workspace
+        // says how to add this computer instead. It makes no second one beside it.
+        if name.is_none()
+            && moving.is_none()
+            && labels.is_none()
+            && self.founding_here(&person).await.is_ok()
+        {
+            let workspace = tilo_server_protocol::servers::person_workspace_id(&person);
+            let summary = self.summary(&workspace).await.map_err(|_| {
+                ActionCallError::refused(crate::workspaces::person_workspace::not_held())
+            })?;
+            return self.own_person_enters(summary, device).await;
         }
         // A backend that keeps a workspace per customer labels each with its own id for that
         // customer: asking again with the same labels when a call is retried answers the

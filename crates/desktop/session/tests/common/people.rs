@@ -1323,6 +1323,22 @@ impl Device {
         DeviceActions::at(self.native_socket()).ask_followed(action, args)
     }
 
+    /// The workspace this device's daemon names as the person's own: the one it founds, from its
+    /// own status.
+    pub fn daemon_workspace(&self) -> String {
+        let stream = UnixStream::connect(self.native_socket()).expect("the daemon answers");
+        stream
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .expect("a read bound");
+        writeln!(&stream, "{}", json!({"native": "status"})).expect("the status is asked");
+        let mut line = String::new();
+        BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("the daemon answers");
+        let status: Value = serde_json::from_str(&line).expect("the daemon's status");
+        status["workspace"].as_str().unwrap_or_default().to_owned()
+    }
+
     /// The person's device action `action` with `args`, asked on their own connection to this
     /// device's daemon as `tilo device` asks it, in the workspace it holds of theirs: its answer,
     /// asked again until the person's services, which start after the daemon answers, take it.

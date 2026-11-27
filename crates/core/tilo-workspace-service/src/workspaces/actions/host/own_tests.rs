@@ -118,6 +118,57 @@ async fn access(
 }
 
 #[tokio::test]
+async fn a_plain_ask_on_the_computer_that_founds_the_persons_workspace_answers_that_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let host = super::super::tests::host_dispatch(workspaces);
+    assert!(
+        workspaces
+            .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+            .unwrap()
+    );
+    // The one own workspace of this device's person: the id their key names, which their daemon
+    // founds and their session reads as their own.
+    let own = tilo_server_protocol::servers::person_workspace_id(&owner.user_public_key);
+
+    // A computer that holds their identity but not their workspace makes none: it says how to
+    // add the computer from the device that founds it.
+    let refused = create_own(&host, &owner, json!({})).await;
+    assert!(
+        matches!(
+            &refused,
+            Err(ActionCallError::Refused { reason })
+                if reason == &crate::workspaces::person_workspace::not_held()
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        workspaces.list().await.len(),
+        0,
+        "no workspace was made beside it"
+    );
+
+    // The device that made their identity founds it; a plain ask then answers that one.
+    assert_eq!(
+        crate::workspaces::person_workspace::found(workspaces).await,
+        Ok(own.clone())
+    );
+    let asked = create_own(&host, &owner, json!({"language": "en-US"}))
+        .await
+        .unwrap();
+    assert_eq!(asked.workspace.workspace, own);
+    // Asking again answers it, and the computer made no second one beside it.
+    let again = create_own(&host, &owner, json!({})).await.unwrap();
+    assert_eq!(again.workspace.workspace, own);
+    let made = workspaces.list().await;
+    assert_eq!(made.len(), 1, "one own workspace, founded here: {made:?}");
+    assert_eq!(made[0].workspace, own);
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();

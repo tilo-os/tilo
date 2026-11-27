@@ -304,10 +304,7 @@ pub(super) fn own_workspace(person: &[u8; 32]) -> WorkspaceId {
 /// device that made the root founded it, and a second one founded here would be another
 /// workspace under the same id, which none of their other devices reads.
 pub(crate) fn not_held() -> String {
-    "This computer has your Tilo identity but not your workspace, which only the device that \
-     made your identity founds. Add this computer from a device of yours that has it: run `tilo \
-     device add` there, then `tilo login <ticket>` here."
-        .to_owned()
+    tilo_workspace_service::workspaces::person_workspace::not_held()
 }
 
 /// What the daemon's start does for a person whose workspace it holds, done where their workspace

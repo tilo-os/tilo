@@ -112,6 +112,17 @@ pub async fn apply_when_held<R: Resource>(
 /// Why a write waiting for the person's workspace was never made.
 pub(crate) const STOPPED: &str = "this device stopped before it held your own workspace";
 
+/// Why a computer that holds the person's identity but not their workspace does nothing in it:
+/// only the device that made the root founded it, and a second one founded here would be another
+/// workspace under the same id, which none of their other devices reads.
+#[must_use]
+pub fn not_held() -> String {
+    "This computer has your Tilo identity but not your workspace, which only the device that \
+     made your identity founds. Add this computer from a device of yours that has it: run `tilo \
+     device add` there, then `tilo login <ticket>` here."
+        .to_owned()
+}
+
 /// Found this device's person's workspace here, unless this device holds it
 /// already, and answer its id. Only one device founds it: one whose person's
 /// list says another device of theirs keeps it opens it there as a member
