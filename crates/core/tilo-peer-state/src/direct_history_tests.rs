@@ -423,3 +423,87 @@ async fn a_newcomer_joins_each_channel_from_what_its_host_kept_at_its_store() {
         "the commit the newest replaced is not handed"
     );
 }
+
+/// A key group's frame a device wrote and its host carried is sent on to the
+/// host's other links, never back to its author: a device handed its own
+/// access request asks again, and two devices go on asking each other without
+/// end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_is_never_handed_back_its_own_key_group_frames() {
+    let ((intent, bootstrap, _, _, now), owner_copy, key) = hosted_fixture_at(tilo_clock::wall());
+    let directory = tempfile::tempdir().unwrap();
+    let group = collab_types::WorkspaceId::new();
+    let founder = SigningKey::from_bytes(&[41; 32]);
+    let other = SigningKey::from_bytes(&[43; 32]);
+    let genesis = channel_frame(&founder, group, 0);
+    let others_request = channel_frame(&other, group, 2);
+    let own_request = channel_frame(&member_key(), group, 2);
+    let store = Arc::new(Store::open(directory.path().join("store"), Appetite::StoreAll).unwrap());
+    let host = DirectSync::over(Replica::new(owner_copy), key.clone()).with_store(store);
+    let serving = super::Serving::default();
+    serving.serve(host.clone()).unwrap();
+    assert!(
+        host.carry(founder.verifying_key().to_bytes(), &genesis)
+            .unwrap()
+    );
+
+    let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
+    let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+    owner
+        .install(&finalize(intent, pending, bootstrap).unwrap(), now)
+        .unwrap();
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
+    let newcomer = DirectSync::over(owner.replica(workspace).unwrap(), member_key())
+        .owning(owner.clone(), workspace)
+        .unwrap();
+    let mut heard = newcomer.heard();
+    let host_endpoint = endpoint(&key).await;
+    let router = iroh::protocol::Router::builder(host_endpoint.clone())
+        .accept(DIRECT_ALPN, host.clone())
+        .spawn();
+    let newcomer_endpoint = endpoint(&member_key()).await;
+    let linking = tokio::spawn({
+        let newcomer = newcomer.clone();
+        let newcomer_endpoint = newcomer_endpoint.clone();
+        let host_addr = addr(&host_endpoint);
+        async move { newcomer.connect(&newcomer_endpoint, host_addr).await }
+    });
+    let mut handed = Vec::new();
+    let mut heard_until = async |wanted: &crate::NeighbourMsg,
+                                 handed: &mut Vec<crate::NeighbourMsg>| {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while !handed.contains(wanted) {
+                let Ok(frame) = heard.recv().await else {
+                    break;
+                };
+                if frame.message.governance_workspace().is_some() {
+                    handed.push(frame.message);
+                }
+            }
+        })
+        .await
+        .is_ok()
+    };
+    let linked = heard_until(&genesis, &mut handed).await;
+    // What the device sent over its link reaches the host, then another
+    // device's ask after it: the device hears the other's, never its own.
+    if linked {
+        assert!(
+            host.carry(member_key().verifying_key().to_bytes(), &own_request)
+                .unwrap()
+        );
+        assert!(
+            host.carry(other.verifying_key().to_bytes(), &others_request)
+                .unwrap()
+        );
+    }
+    let carried = linked && heard_until(&others_request, &mut handed).await;
+    linking.abort();
+    router.shutdown().await.unwrap();
+    newcomer_endpoint.close().await;
+    assert!(carried, "the device was handed only {handed:?}");
+    assert!(
+        !handed.contains(&own_request),
+        "the device was handed back the access request it wrote"
+    );
+}

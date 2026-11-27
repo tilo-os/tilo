@@ -170,6 +170,10 @@ pub(crate) fn from_device(message: &NeighbourMsg, device: [u8; 32]) -> bool {
         NeighbourMsg::LivePresence { peer, .. } | NeighbourMsg::Heartbeat { peer, .. } => {
             *peer == peer_handle(&device)
         }
+        // A key group's frames name their author in what they sign: a link never sends one back
+        // to the device that wrote it.
+        NeighbourMsg::MlsGovernance { frame, .. } => frame.signed_by.as_bytes() == &device,
+        NeighbourMsg::MlsAccessRequest { request, .. } => request.device.as_bytes() == &device,
         _ => false,
     }
 }
