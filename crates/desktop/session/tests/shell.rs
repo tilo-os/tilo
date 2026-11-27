@@ -3032,10 +3032,11 @@ fn a_press_on_a_launcher_row_shows_that_surface() {
     );
 }
 
-/// What the launcher holds no window for, Search everywhere hands the shell's search: it opens with
-/// what was typed.
+/// What is typed into the launcher runs the shell's search, so it looks everywhere beyond the
+/// apps and windows here: the search the shell publishes asks for what was typed, and the
+/// launcher stays open over the rows it finds.
 #[test]
-fn searching_everywhere_from_the_launcher_opens_the_shells_search_with_the_query() {
+fn typing_in_the_launcher_runs_the_shells_search_with_the_query() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));
@@ -3045,11 +3046,6 @@ fn searching_everywhere_from_the_launcher_opens_the_shells_search_with_the_query
     });
     press(&mut session, LAUNCHER_SEARCH);
     type_text(&mut session, "quarterly");
-    let button = "Search everywhere for quarterly";
-    until(&mut session, |session| {
-        session.shell_control(button).is_some()
-    });
-    press(&mut session, button);
     until(&mut session, |session| {
         session.resources().iter().any(|resource| {
             resource.id.as_str() == "desktop:shell"
@@ -3059,6 +3055,10 @@ fn searching_everywhere_from_the_launcher_opens_the_shells_search_with_the_query
                 })
         })
     });
+    assert!(
+        session.shell_control(LAUNCHER_SEARCH).is_some(),
+        "the launcher stays open over what the search finds"
+    );
     assert!(
         session.shell_refusals().is_empty(),
         "{:?}",
