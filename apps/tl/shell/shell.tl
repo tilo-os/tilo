@@ -38,9 +38,10 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         and dock_shows(s)
         and s.dock_edge == .bottom
         and (space.compact or not dock_hides_itself)
-    let resting = device.overlays.here == ""
-        or device.overlays.here == "none"
-        or device.overlays.here == "switcher" and not device.overlays.switcher_revealed
+    // A dock up a side edge takes its own column the same way, so the page beside it is never
+    // under it; its body keeps the band it rests in while its magnified items grow over it.
+    let dock_side = dock_shows(s) and (s.dock_edge == .left or s.dock_edge == .right)
+    let side_takes_room = front != .none and dock_side and (space.compact or not dock_hides_itself)
     layers {
         // The shell's wallpaper, covering the whole shell under the windows and the bar: the
         // picture the person chose, or the shell's own gradient where it shows none.
@@ -49,72 +50,33 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
             if bar_shows(s) {
                 bar_on_edge(s, traditional)
             }
-            if device.overlays.here == "emoji" {
-                // The picker stands over the windows: this layer draws nothing of the style, so
-                // the windows stay live behind its card, which is the only thing that takes the
-                // keys and the pointer while it is up.
-                layers(fill) {
-                    emoji_card()
-                }
-            } else if device.overlays.here == "about" {
-                // The About sheet stands over the windows, a question the person asked.
-                about_sheet()
-            } else if device.overlays.here == "power" {
-                // The power menu hangs under the bar's trailing end, over the windows the
-                // person was working in.
-                power_sheet()
-            } else if device.overlays.here == "peek" {
-                // The keys a held Super reaches stand over the windows. The shell's own work
-                // stays behind them, so nothing of the style is drawn here; the card itself
-                // stands over everything in `shell_around`.
-                banners_over(roomy: not (space.compact or space.width < 44.0))
-            } else if device.overlays.here == "people" {
-                // Who is here is a panel over the windows the person works in: the style's places
-                // stay where they were under it, so their windows stay in sight, and the others'
-                // pointers over them say where each person is while the roster lists them. The
-                // panel stands in the band's own scroll, as every surface of the shell's does: a
-                // press on the bar is the bar's, never one off the panel.
-                over_band {
-                    layers(fill) {
+            if side_takes_room {
+                // The dock takes its own column beside the band, so nothing of the page stands
+                // under it. Its body keeps the band it rests in, so an item that magnifies grows
+                // over the page without moving it.
+                row(fill) {
+                    if s.dock_edge == .left {
+                        side_dock(s, .left)
+                    }
+                    band {
                         content
-                        scroll(fill) {
-                            surface(fill)
-                        }
+                    }
+                    if s.dock_edge == .right {
+                        side_dock(s, .right)
                     }
                 }
             } else {
-                // The band's page: what rests on it, or the surface standing over it. One stage,
-                // so a surface opens and closes with the shared motion rather than appearing and
-                // vanishing at once. What the style shows keeps the whole band under the bar, and
-                // the banner floats over it: a notice rising never moves what the person had on
-                // screen.
-                over_band {
-                    layers(fill, transition: .cross_fade) {
-                        if resting {
-                            content
-                        } else if device.overlays.here == "switcher" {
-                            surface(fill)
-                        } else if device.overlays.here == "quick-settings" {
-                            // Beside a caret, the panel is drawn over the whole shell, at the
-                            // point the stack settled (below the bar too). Left at its own place
-                            // it keeps the band under the bar's trailing end.
-                            if device.overlays.place == .none {
-                                scroll(fill) {
-                                    quick_settings(fill)
-                                }
-                            }
-                        } else {
-                            // A surface of the shell's own over the places: the launcher, the
-                            // centre, quick settings or the workspaces.
-                            scroll(fill) {
-                                surface(fill)
-                            }
-                        }
-                    }
+                band {
+                    content
                 }
             }
             if dock_takes_room {
-                row(align: .center, distribute: .center) {
+                row(
+                    fill,
+                    align: .center,
+                    distribute: .center,
+                    padding: if s.dock_fit == .floating { .related } else { .none },
+                ) {
                     dock_ground(s, .bottom)
                 }
             }
@@ -128,24 +90,46 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 }
             }
         }
-        if dock_shows(s) and not dock_takes_room {
+        if dock_shows(s)
+            and not dock_takes_room
+            and (not side_takes_room or s.dock_edge == .bottom or s.dock_edge == .top) {
             if s.dock_edge == .bottom {
-                row(at: .bottom, fill, align: .center, distribute: .center) {
+                row(
+                    at: .bottom,
+                    fill,
+                    align: .center,
+                    distribute: .center,
+                    padding: if s.dock_fit == .floating { .related } else { .none },
+                ) {
                     dock_ground(s, .bottom)
                 }
             } else if s.dock_edge == .top {
-                row(at: .top, fill, align: .center, distribute: .center) {
+                row(
+                    at: .top,
+                    fill,
+                    align: .center,
+                    distribute: .center,
+                    padding: if s.dock_fit == .floating { .related } else { .none },
+                ) {
                     dock_ground(s, .top)
                 }
             } else if s.dock_edge == .left {
                 // A dock at a leading or trailing edge hugs its own width: the layer
                 // sits at that edge (`at: .leading`), centred up it, and a `fill` here would
                 // span the whole screen and centre the dock on it instead.
-                stack(at: .leading, align: .center) {
+                stack(
+                    at: .leading,
+                    align: .center,
+                    padding: if s.dock_fit == .floating { .related } else { .none },
+                ) {
                     dock_ground(s, .left)
                 }
             } else {
-                stack(at: .trailing, align: .center) {
+                stack(
+                    at: .trailing,
+                    align: .center,
+                    padding: if s.dock_fit == .floating { .related } else { .none },
+                ) {
                     dock_ground(s, .right)
                 }
             }
@@ -181,6 +165,86 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         }
         // Which screen is which, on each screen, for the moment after Settings was asked.
         identify_card()
+    }
+}
+
+/// The band under the bar: the style's own places, or the surface standing over them.
+template view band(content: View) {
+    let resting = device.overlays.here == ""
+        or device.overlays.here == "none"
+        or device.overlays.here == "switcher" and not device.overlays.switcher_revealed
+    if device.overlays.here == "emoji" {
+        // The picker stands over the windows: this layer draws nothing of the style, so
+        // the windows stay live behind its card, which is the only thing that takes the
+        // keys and the pointer while it is up.
+        layers(fill) {
+            emoji_card()
+        }
+    } else if device.overlays.here == "about" {
+        // The About sheet stands over the windows, a question the person asked.
+        about_sheet()
+    } else if device.overlays.here == "power" {
+        // The power menu hangs under the bar's trailing end, over the windows the
+        // person was working in.
+        power_sheet()
+    } else if device.overlays.here == "peek" {
+        // The keys a held Super reaches stand over the windows. The shell's own work
+        // stays behind them, so nothing of the style is drawn here; the card itself
+        // stands over everything in `shell_around`.
+        banners_over(roomy: not (space.compact or space.width < 44.0))
+    } else if device.overlays.here == "people" {
+        // Who is here is a panel over the windows the person works in: the style's places
+        // stay where they were under it, so their windows stay in sight, and the others'
+        // pointers over them say where each person is while the roster lists them. The
+        // panel stands in the band's own scroll, as every surface of the shell's does: a
+        // press on the bar is the bar's, never one off the panel.
+        over_band {
+            layers(fill) {
+                content
+                scroll(fill) {
+                    surface(fill)
+                }
+            }
+        }
+    } else {
+        // The band's page: what rests on it, or the surface standing over it. One stage,
+        // so a surface opens and closes with the shared motion rather than appearing and
+        // vanishing at once. What the style shows keeps the whole band under the bar, and
+        // the banner floats over it: a notice rising never moves what the person had on
+        // screen.
+        over_band {
+            layers(fill, transition: .cross_fade) {
+                if resting {
+                    content
+                } else if device.overlays.here == "switcher" {
+                    surface(fill)
+                } else if device.overlays.here == "quick-settings" {
+                    // Beside a caret, the panel is drawn over the whole shell, at the
+                    // point the stack settled (below the bar too). Left at its own place
+                    // it keeps the band under the bar's trailing end.
+                    if device.overlays.place == .none {
+                        scroll(fill) {
+                            quick_settings(fill)
+                        }
+                    }
+                } else {
+                    // A surface of the shell's own over the places: the launcher, the
+                    // centre, quick settings or the workspaces.
+                    scroll(fill) {
+                        surface(fill)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A dock up a side edge, in the column it takes beside the band: its body keeps the band it
+/// rests in, so a magnified item grows over the page rather than moving it, and a floating dock
+/// stands the theme's gap in from the screen's edge.
+view side_dock(s: Shell, edge: Edge) {
+    row(fill, align: .center, padding: if s.dock_fit == .floating { .related } else { .none }) {
+        dock_ground(s, edge)
     }
 }
 
@@ -332,6 +396,7 @@ view dock_ground(s: Shell, edge: Edge) {
             shape: if s.dock_fit == .full { .square } else { .rounded },
             edge: if edge == .top { .top } else { .bottom },
             material: if s.dock_finish == .translucent { .glass } else { .calm },
+            reserve: true,
             fill: if s.dock_fit == .full { 1 } else { 0 },
         ) {
             dock(s)
@@ -342,6 +407,7 @@ view dock_ground(s: Shell, edge: Edge) {
             shape: if s.dock_fit == .full { .square } else { .rounded },
             edge: if edge == .left { .leading } else { .trailing },
             material: if s.dock_finish == .translucent { .glass } else { .calm },
+            reserve: true,
         ) {
             dock(s)
         }

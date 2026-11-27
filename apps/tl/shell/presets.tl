@@ -116,6 +116,7 @@ scenario "the dock on the left" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
+    stage(device.windows, desktop_windows())
     let s = shell
     s.dock_edge = .left
     s.dock_fit = .floating
@@ -124,6 +125,13 @@ scenario "the dock on the left" {
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
     s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
     s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    let row = a_workspace(a, "Main")
+    let one = a_strip(a, row, "Note", 1000)
+    a_note_place(a, one, 0)
+    a.front = one
 }
 
 /// The dock on the trailing edge, full width with the bar off: a Windows-like taskbar on a
@@ -137,12 +145,20 @@ scenario "the dock on the right" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
+    stage(device.windows, desktop_windows())
     let s = shell
     s.dock_edge = .right
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
     s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
     s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    let row = a_workspace(a, "Main")
+    let one = a_strip(a, row, "Note", 1000)
+    a_note_place(a, one, 0)
+    a.front = one
 }
 
 /// A dock item mid-drag in the edit mode, with the place it would land marked: the person is

@@ -2691,6 +2691,52 @@ scenario "resources shown as content" -> Layout {
 /// action strip draws (the notes app's `group:` runs), and the dock rides the foot. The style
 /// is the desktop and the chrome preset the traditional one, so this is exactly what a
 /// person sees when they pick it.
+/// The windows a person leaves open on a working desktop: a note, the note beside it, and a chat
+/// channel, each on the strip the chrome's own style gave them. A dock shows the apps that run
+/// here beside the ones the person pinned, so a scenario that stages a dock stages this too.
+fn desktop_windows() -> device.Windows {
+    device.Windows(
+        all: [
+            device.Window(
+                key: "w1",
+                title: "Release planning",
+                origin_app: "Notes",
+                app_key: "so.tilo.notes",
+                icon: "notebook",
+                strip: "Main",
+                workspace: "Studio",
+                recency: 1,
+                focused: true,
+                preview: "live",
+            ),
+            device.Window(
+                key: "w2",
+                title: "Launch checklist",
+                origin_app: "Notes",
+                app_key: "so.tilo.notes",
+                icon: "notebook",
+                strip: "Main",
+                workspace: "Studio",
+                recency: 2,
+                focused: false,
+                preview: "live",
+            ),
+            device.Window(
+                key: "w3",
+                title: "design",
+                origin_app: "Chat",
+                app_key: "so.tilo.chat",
+                icon: "message-square",
+                strip: "Main",
+                workspace: "Studio",
+                recency: 3,
+                focused: false,
+                preview: "live",
+            ),
+        ],
+    )
+}
+
 scenario "the traditional desktop" {
     let d = root Layout
     d.person = "Ada Lovelace"
@@ -2700,49 +2746,7 @@ scenario "the traditional desktop" {
     stage(device.notifications, device.Notifications(notices: [mia_mention()]))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
-    stage(
-        device.windows,
-        device.Windows(
-            all: [
-                device.Window(
-                    key: "w1",
-                    title: "Release planning",
-                    origin_app: "Notes",
-                    app_key: "so.tilo.notes",
-                    icon: "notebook",
-                    strip: "Main",
-                    workspace: "Studio",
-                    recency: 1,
-                    focused: true,
-                    preview: "live",
-                ),
-                device.Window(
-                    key: "w2",
-                    title: "Launch checklist",
-                    origin_app: "Notes",
-                    app_key: "so.tilo.notes",
-                    icon: "notebook",
-                    strip: "Main",
-                    workspace: "Studio",
-                    recency: 2,
-                    focused: false,
-                    preview: "live",
-                ),
-                device.Window(
-                    key: "w3",
-                    title: "design",
-                    origin_app: "Chat",
-                    app_key: "so.tilo.chat",
-                    icon: "message-square",
-                    strip: "Main",
-                    workspace: "Studio",
-                    recency: 3,
-                    focused: false,
-                    preview: "live",
-                ),
-            ],
-        ),
-    )
+    stage(device.windows, desktop_windows())
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))

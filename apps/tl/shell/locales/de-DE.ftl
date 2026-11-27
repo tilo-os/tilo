@@ -363,6 +363,8 @@ d-pltwqaur = Wie sehr das Dock vergrößert
 
 d-pltwqaur-amount = Vergrößerung
 
+d-dvmvtbbz = Seitliches Dock
+
 d-vurzkuat = Verschieben
     .doc = Setzt ein Leistenteil zu dem, vor das es kommt, wo das Teil jetzt auch steht: die eine Aktion, die ein Ziehen abschickt, und dieselbe Änderung aus den Einstellungen, einem Tastenkürzel oder von einem Agenten.
     .w-a-part-cannot-come-before-itself = Ein Teil kann nicht vor sich selbst stehen

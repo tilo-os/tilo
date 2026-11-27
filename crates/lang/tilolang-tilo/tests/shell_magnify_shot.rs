@@ -203,3 +203,46 @@ fn a_dock_on_the_leading_edge_magnifies_under_the_pointer() {
         );
     }
 }
+
+/// The dock keeps the room it rests in: as an item magnifies, the windows over the band stay
+/// exactly where they were.
+#[test]
+fn the_windows_do_not_move_when_the_dock_magnifies() {
+    let mut dark = tilo_ui_base::Theme::dark();
+    dark.reduce_motion = false;
+    let mut shell = StagedWindow::staged("the traditional desktop", (1280, 800), dark);
+    shell.harness.hover_at(4.0, 4.0);
+    settle(&mut shell);
+    let before = shell.harness.targets();
+    let rest = tiles(&before, true);
+    assert!(rest.len() >= 3, "the dock's tiles are laid out: {rest:?}");
+    let centre = rest[rest.len() / 2].center();
+    let windows: Vec<(&String, Rect)> = before
+        .iter()
+        .filter(|(name, _)| name.contains("WindowFrame"))
+        .map(|(name, rect)| (name, *rect))
+        .collect();
+    assert!(
+        !windows.is_empty(),
+        "the staged desktop's windows are addressable: {:?}",
+        before.keys().collect::<Vec<_>>()
+    );
+    shell.harness.hover_at(centre.x, centre.y);
+    settle(&mut shell);
+    let after = shell.harness.targets();
+    let grown = tiles(&after, true);
+    assert!(
+        grew_in_place(&grown, centre),
+        "the dock magnified: {grown:?}"
+    );
+    for (name, rect) in windows {
+        let now = after.get(name).copied().unwrap_or(Rect::ZERO);
+        assert!(
+            (now.x0 - rect.x0).abs() < 0.5
+                && (now.y0 - rect.y0).abs() < 0.5
+                && (now.x1 - rect.x1).abs() < 0.5
+                && (now.y1 - rect.y1).abs() < 0.5,
+            "{name} stayed where it was: {now:?} against {rect:?}"
+        );
+    }
+}
