@@ -105,62 +105,6 @@ scenario "a full dock" {
     s.dock_items.insert(DockItem(key: "a30", title: "Video", icon: "play"))
 }
 
-/// The dock on the leading edge, as a person who works in a wide column sets it, magnifying the
-/// item under the pointer as the dock's setting does.
-scenario "the dock on the left" {
-    let d = root Layout
-    d.person = "Ada Lovelace"
-    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
-    stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
-    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    stage(device.windows, desktop_windows())
-    let s = shell
-    s.dock_edge = .left
-    s.dock_fit = .floating
-    s.dock_zoom = true
-    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
-    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
-    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
-    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
-    let v = viewing
-    v.style = "so.tilo.shell:strips"
-    let a = root Layout
-    let row = a_workspace(a, "Main")
-    let one = a_strip(a, row, "Note", 1000)
-    a_note_place(a, one, 0)
-    a.front = one
-}
-
-/// The dock on the trailing edge, full width with the bar off: a Windows-like taskbar on a
-/// person's second screen.
-scenario "the dock on the right" {
-    let d = root Layout
-    d.person = "Ada Lovelace"
-    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
-    stage(device.time, device.Time(clock: "4:28 PM"))
-    stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
-    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    stage(device.windows, desktop_windows())
-    let s = shell
-    s.dock_edge = .right
-    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
-    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
-    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
-    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
-    let v = viewing
-    v.style = "so.tilo.shell:strips"
-    let a = root Layout
-    let row = a_workspace(a, "Main")
-    let one = a_strip(a, row, "Note", 1000)
-    a_note_place(a, one, 0)
-    a.front = one
-}
-
 /// A dock item mid-drag in the edit mode, with the place it would land marked: the person is
 /// moving Chat before Mail.
 scenario "moving an item on the dock" {

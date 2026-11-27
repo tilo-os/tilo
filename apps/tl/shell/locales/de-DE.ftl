@@ -185,6 +185,29 @@ d-ipplqs3o = Durchscheinend
 
 d-bc2qov6r = Deckend
 
+d-fnckswva = Ränder
+    .doc = Was eine Anzeige von ihren eigenen Rändern sagt: ob der Zeiger an ihrem oberen oder unteren Rand ist und ob ein Fenster dort steht, wo eine Leiste oder ein Dock fahren würde. Das Gerät veröffentlicht für jede Anzeige eine Zeile (`device.displays.displays`), sodass eine Leiste, die sich bis zum Erreichen versteckt, auf der erreichten Anzeige erscheint und auf keiner anderen.
+    .noun = { $count ->
+        [one] Ränder
+       *[other] Ränder
+    }
+
+d-eug3b6ab = Leiste erreicht
+
+d-yiqwedz2 = Leiste verdeckt
+
+d-vpvxtlm4 = Dock erreicht
+
+d-divvrgkh = Dock verdeckt
+
+d-fnckswva-filter-bar_reached = Leiste erreicht
+
+d-fnckswva-filter-bar_covered = Leiste verdeckt
+
+d-fnckswva-filter-dock_reached = Dock erreicht
+
+d-fnckswva-filter-dock_covered = Dock verdeckt
+
 d-rfgelicn = Zeigen
     .doc = Wann eine Leiste oder ein Dock zeigt.
 
