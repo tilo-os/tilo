@@ -448,13 +448,27 @@ impl tilo_service::WorkspaceStore for Counting {
     }
 }
 
+/// A device that shows no notice: what the service tells it is dropped.
+struct Unshown;
+
+impl tilo_service::notice::Notices for Unshown {
+    fn show(&self, _: &tilo_service::notice::Notice) {}
+
+    fn withdraw(&self, _: &str) {}
+
+    fn take_closed(&self) -> Vec<(String, tilo_service::notice::Closed)> {
+        Vec::new()
+    }
+}
+
 /// A service kept in the workspace asks the workspace nothing on a poll while nothing moved:
-/// what it read stands until the session tells it which records moved, and then it reads those
-/// again.
+/// the notices it tells its person stand as it read them until the session tells it which
+/// records moved, and then it reads again.
 #[test]
 fn an_idle_service_asks_the_workspace_nothing_until_a_record_moves() {
     let (ada, _) = Replica::new("ada", Workspace::new(), &[SOURCE]);
     let mut service = ResourceService::of_app(APP, ada.host, "ada");
+    service.set_tell(Unshown);
     let counting = std::rc::Rc::new(Counting(Store::ada_alone(), std::cell::Cell::new(0)));
     let store: std::rc::Rc<dyn tilo_service::WorkspaceStore> = counting.clone();
     service
