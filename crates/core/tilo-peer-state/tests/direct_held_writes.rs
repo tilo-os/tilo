@@ -18,7 +18,7 @@ use collab_types::{
 };
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
-use neighbour_wire::{NeighbourMsg, peer_handle};
+use neighbour_wire::{NeighbourMsg, app_document_group, peer_handle};
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_peer_state::StatePeer;
@@ -76,9 +76,10 @@ async fn hears(
     .unwrap_or_else(|_| panic!("the member hears {step}"))
 }
 
-/// One write of `key`'s device sealed under keys nobody here holds: what a
-/// host keeps in the history its members catch up from.
-fn sealed(key: &SigningKey, person: &[u8; 32]) -> NeighbourMsg {
+/// One write of `key`'s device at `seq` on the record's line, sealed under
+/// keys nobody here holds: what a host keeps in the history its members catch
+/// up from.
+fn sealed(key: &SigningKey, person: &[u8; 32], seq: u64) -> NeighbourMsg {
     let keys = key_group::KeyGroup::create(
         collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
         key_group::MemberKey::generate("owner").unwrap(),
@@ -106,8 +107,7 @@ fn sealed(key: &SigningKey, person: &[u8; 32]) -> NeighbourMsg {
         document_attestation_id(APP, WORKSPACE, RECORD),
         OpKind::Change,
         SystemTime::now(),
-        // Past every write of the host's the member holds.
-        100,
+        seq,
     );
     op.encryption = Some(metadata);
     sign_op(&mut op, key).unwrap();
@@ -249,8 +249,19 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
 
     // A frame the host's history gained after the member caught up reaches
     // the member once it asks for the history again: what a member does once
-    // a write it let go can be taken in.
-    let kept = sealed(&host_key, &server_cert.user_public_key);
+    // a write it let go can be taken in. A line is continuous, so the frame is
+    // the one after the member's place on it: a store answers a hole in a line
+    // with the record's whole state, not with the frames past the hole.
+    let next = b
+        .cursors()
+        .into_iter()
+        .find(|cursor| {
+            cursor.lineage.record == app_document_group(APP, RECORD)
+                && cursor.lineage.author == host_key.verifying_key().to_bytes()
+        })
+        .map(|cursor| cursor.after_seq + 1)
+        .expect("the member stands on the host's line of the record");
+    let kept = sealed(&host_key, &server_cert.user_public_key, next);
     store
         .retain(
             tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap(),
@@ -309,7 +320,7 @@ async fn a_frame_not_signed_by_its_author_is_refused_at_admission() {
     );
 
     // A member's own write, its signature scrambled after it was signed.
-    let mut forged = sealed(&b_key, &b_cert.user_public_key);
+    let mut forged = sealed(&b_key, &b_cert.user_public_key, 1);
     let NeighbourMsg::AppDocument { envelope, .. } = &mut forged else {
         panic!("a write is a document frame");
     };
