@@ -107,6 +107,44 @@ fn every_setting_is_its_sections_verb_named_as_people_name_it() {
 }
 
 #[test]
+fn the_searchs_history_keeps_the_places_it_was_given() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settings = crate::in_memory::scoped();
+    let mut services = services();
+    // What the session's search keeps: where each window was, newest first, as the list of
+    // places the desktop's search sends whole.
+    let places = json!([
+        {
+            "app": "so.tilo.tasks",
+            "workspace": "home",
+            "tab": 9,
+            "label": "Inbox",
+            "at": 1_700_000_000,
+        },
+        {
+            "app": "so.tilo.notes",
+            "workspace": "home",
+            "tab": 4,
+            "label": "Plan",
+            "at": 1_699_999_999,
+        },
+    ]);
+    services
+        .invoke(
+            &section("search_history"),
+            "set-places",
+            &arguments(json!({ "value": places })),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        services.read(&section("search_history")).unwrap()["places"],
+        places,
+        "the places read back as the list of places they were kept as"
+    );
+}
+
+#[test]
 fn a_switch_says_whether_it_is_on_and_is_set_through_its_setter() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settings = crate::in_memory::scoped();
