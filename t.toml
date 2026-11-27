@@ -8092,7 +8092,7 @@ outputs = ["/target/publish/lounge/binaries/**"]
 timeout_secs = 5400
 default = false
 
-# The same two programs, for the checks that run them directly (e2e, the tilo.sh
+# The same programs, for the checks that run them directly (e2e, the tilo.sh
 # stack): the profile Cargo.toml's `lounge-check` describes, which is release optimisation
 # without the whole-program link. A check starts from an empty build directory, so a run takes
 # every unit it reuses from the compiler cache, recompiles the crates the change touched and the

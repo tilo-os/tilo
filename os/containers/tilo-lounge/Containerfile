@@ -31,8 +31,9 @@ RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify
 # The daemon, the Discord connector's outside worker beside it (the connector
 # finds `<app>-worker` next to the server it runs under), the launcher every
 # app's process starts in, and the tilolang process an agent task's programs run
-# in. Each is a file of its own here: the installer below is not one of them.
-COPY bin/tilo-runtime bin/discord-worker bin/tilo-launcher bin/tilolang-process /usr/local/bin/
+# in, and `tilo`, the operator's way to the daemon's actions (`tilo device add`).
+# Each is a file of its own here: the installer below is not one of them.
+COPY bin/tilo-runtime bin/discord-worker bin/tilo-launcher bin/tilolang-process bin/tilo /usr/local/bin/
 # The runtimes the apps execute, at the root a Tilo program resolves its
 # bundles from, trusted by the one key this build signed them and the packages
 # with: a device's own trust list, in the image's /etc/tilo.

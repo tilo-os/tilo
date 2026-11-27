@@ -11,12 +11,12 @@ binaries=${2:?$usage}
 fonts=${3:?$usage}
 apps=${4:?$usage}
 cd "$repo_root"
-[[ -x $binaries/tilo-runtime && -x $binaries/discord-worker ]] || die "no Lounge programs in $binaries"
+[[ -x $binaries/tilo-runtime && -x $binaries/discord-worker && -x $binaries/tilo ]] || die "no Lounge programs in $binaries"
 [[ -f $fonts/manifest.toml ]] || die "no product font catalog in $fonts"
 [[ -x $apps/bin/tilo-launcher && -d $apps/runtimes && -d $apps/packages ]] || die "no Lounge apps in $apps"
 rm -rf "$out"
 mkdir -p "$out/bin" "$out/fonts"
-cp "$binaries/tilo-runtime" "$binaries/discord-worker" \
+cp "$binaries/tilo-runtime" "$binaries/discord-worker" "$binaries/tilo" \
   "$apps/bin/tilo-launcher" "$apps/bin/tilolang-process" "$apps/bin/tilo-install" "$out/bin/"
 cp -a "$apps/runtimes" "$apps/packages" "$apps/runtime-publishers.txt" "$out/"
 cp -a "$fonts/." "$out/fonts/"

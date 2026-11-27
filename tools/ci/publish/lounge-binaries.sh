@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The Lounge image's programs: the device's daemon (tilo-runtime) with the feature `agents` (the host's
 # agent session crate links every web app, since the host mounts the apps' own
-# components) and the Discord connector's outside worker, which the bridge
-# starts beside the server. usage: lounge-binaries.sh OUT [PROFILE]
+# components), the Discord connector's outside worker, which the bridge
+# starts beside the server, and `tilo`. usage: lounge-binaries.sh OUT [PROFILE]
 #
-# `release` is what the image carries. A check that only runs these two
+# `release` is what the image carries. A check that only runs these
 # programs (e2e, the tilo.sh stack) builds `lounge-check`
 # instead: the same code and the same opt-level without the whole-program link,
 # which is most of a run and buys nothing a check can see.
@@ -26,7 +26,7 @@ case $profile in
   lounge-check) ;;
   *) die "unknown profile $profile: release or lounge-check" ;;
 esac
-bins=(tilo-runtime discord-worker)
-cargo build --locked --profile "$profile" -p tilo-daemon -p discord-worker \
+bins=(tilo-runtime discord-worker tilo)
+cargo build --locked --profile "$profile" -p tilo-daemon -p discord-worker -p tilo-cli \
   --features tilo-daemon/agents "${bins[@]/#/--bin=}"
 for bin in "${bins[@]}"; do cp "$target/$profile/$bin" "$out/"; done
