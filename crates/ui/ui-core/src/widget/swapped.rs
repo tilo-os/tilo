@@ -1,12 +1,14 @@
-//! One view swapped for another whole, where it stands: a stage's page, a slide. The view that
-//! was shown stays laid out while it fades out, and the one that replaces it fades in over it
-//! (`motion::SWAP`), both at the same place; once the swap has played only the new one stands.
+//! One view swapped for another whole, where it stands: a stage's page, a slide, the content of
+//! the tab a window shows. The view that was shown stays laid out while it fades out, and the one
+//! that replaces it fades in over it (`motion::SWAP`), both at the same place; once the swap has
+//! played only the new one stands.
 //!
-//! A host builds one when a view that declares its content swapped whole (`transition:
-//! .cross_fade`) changes what it shows: the reconciler hands the widget it had to
-//! [`Swapped::new`] and what it built for the new content beside it. The pace is the view's
-//! `motion:`, the theme's own otherwise; a change no hand made, a still theme and reduced motion
-//! land at once, and then the old view is not kept at all.
+//! A view writes it as `ui.Swapped(shown: what) { … }`: when `shown` names something else, what
+//! stood under the new content stays drawn while it fades out. A host builds one too when a view
+//! that declares its content swapped whole (`transition: .cross_fade`) changes what it shows: the
+//! reconciler hands the widget it had to [`Swapped::new`] and what it built for the new content
+//! beside it. The pace is the view's `motion:`, the theme's own otherwise; a change no hand made,
+//! a still theme and reduced motion land at once, and then the old view is not kept at all.
 
 use std::collections::HashMap;
 
@@ -16,17 +18,38 @@ use winit::event::WindowEvent;
 
 use crate::time::Instant;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    component::Component, component::Described, component::PartViews, widget::AppModel,
+    widget::DrawChild, widget::DrawCtx, widget::Element, widget::EventCtx, widget::ModelPath,
+    widget::Spacer, widget::TaffyTreeExt, widget::Widget,
+};
 use tilo_ui_base::{motion::CrossFade, motion::Feel, motion::frame_now, motion::recent_input};
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
-use tilo_ui_base::{
-    widget::AppModel, widget::DrawChild, widget::DrawCtx, widget::Element, widget::EventCtx,
-    widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
-};
 
-#[tilo_ui_base::component::not_a_component(
-    framework,
-    "a host keeps the view it showed while a whole one is swapped for it"
-)]
+/// What a view that swaps its content whole takes: what it shows, its name, and the pace the
+/// swap plays at. A change of [`Self::shown`] keeps the content it showed under the new one while
+/// it fades out, then lets it go.
+#[derive(Component, Default)]
+#[component(name = "Swapped", role = "Group", label = "name")]
+pub struct SwappedProps {
+    /// What the content is: a view that names another swaps what it shows, the one it showed
+    /// fading out under the new one. Any text does, as a key: the window's front tab, a slide's
+    /// id, a word the view changes. Empty is the same as any other.
+    #[component(data)]
+    pub shown: Option<String>,
+    /// What it shows, for assistive technology.
+    pub name: Option<String>,
+    /// The weight it fills its room with, as a container's `fill`: the whole room for a window's
+    /// content, its own height where it hugs what it holds.
+    pub fill: Option<f64>,
+    /// The pace the swap plays at (`.standard`, `.brisk`, `.calm`, `.still`): the theme's own
+    /// otherwise.
+    pub motion: Option<Feel>,
+    /// What it shows.
+    #[component(part(default))]
+    pub body: Option<Element>,
+}
+
 pub struct Swapped {
     current: Element,
     /// The view that was shown while it fades out, laid out over the current one.
@@ -47,11 +70,41 @@ pub struct Swapped {
     fill: f32,
     /// Reported to the host when this widget's composition changed: the old view kept, or let go.
     structure_dirty: bool,
+    /// What the content is, as the view names it (`ui.Swapped(shown:)`): a view that names
+    /// another swaps what it shows.
+    shown: String,
+    /// A change of [`Self::shown`] the part's reconciliation has not come for yet: the content
+    /// it showed is kept and fades out when the reconciler reaches the view it updates.
+    swap_owed: bool,
+    /// What it shows, for assistive technology.
+    name: Option<String>,
     id: Option<String>,
     rect: Rect,
 }
 
 impl Swapped {
+    /// `current` standing on its own, having swapped nothing.
+    #[must_use]
+    pub fn standing(current: Element) -> Self {
+        Self {
+            current,
+            previous: None,
+            previous_opacity: 1.0,
+            fade: CrossFade::of_spec(tilo_ui_base::motion::SWAP, 0),
+            generation: 0,
+            feel: Feel::Standard,
+            theme: None,
+            pending: false,
+            fill: 0.0,
+            structure_dirty: true,
+            shown: String::new(),
+            swap_owed: false,
+            name: None,
+            id: None,
+            rect: Rect::ZERO,
+        }
+    }
+
     /// `previous` (what the view showed) swapped for `current` (what it shows now).
     #[must_use]
     pub fn new(previous: Element, current: Element) -> Self {
@@ -66,6 +119,9 @@ impl Swapped {
             pending: true,
             fill: 0.0,
             structure_dirty: true,
+            shown: String::new(),
+            swap_owed: false,
+            name: None,
             id: None,
             rect: Rect::ZERO,
         }
@@ -173,6 +229,99 @@ impl Swapped {
     }
 }
 
+/// A view that says what it shows (`ui.Swapped(shown:)`): a change of that name swaps the content
+/// it holds whole, keeping what it showed under the new content while it fades out.
+impl Described for Swapped {
+    type Props = SwappedProps;
+
+    fn from_props(key: &str, props: SwappedProps) -> Self {
+        let SwappedProps {
+            shown,
+            name,
+            fill,
+            motion,
+            body,
+        } = props;
+        let body = body.unwrap_or_else(|| Box::new(Spacer::fixed(0.0)) as Element);
+        let mut built = Self::standing(body).with_id(key);
+        built.shown = shown.unwrap_or_default();
+        built.name = name;
+        built.set_fill(weight(fill));
+        built.set_feel(motion.unwrap_or_default());
+        built
+    }
+
+    fn set_props(&mut self, props: SwappedProps) -> bool {
+        let SwappedProps {
+            shown,
+            name,
+            fill,
+            motion,
+            ..
+        } = props;
+        self.name = name;
+        self.set_fill(weight(fill));
+        self.set_feel(motion.unwrap_or_default());
+        // The content in the part is reconciled where it stands, so a change of what it shows is
+        // only known to be one when that reconciliation comes: the part swaps then. A view that
+        // shows the same content under another name swaps nothing (see `view_mut`).
+        let shown = shown.unwrap_or_default();
+        if shown != self.shown {
+            self.shown = shown;
+            self.swap_owed = true;
+        }
+        true
+    }
+
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
+        (part == "body").then_some(self as &mut dyn PartViews)
+    }
+}
+
+impl PartViews for Swapped {
+    fn len(&self) -> usize {
+        1
+    }
+
+    fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
+        if index != 0 {
+            return None;
+        }
+        if std::mem::take(&mut self.swap_owed) {
+            // The content the part showed is kept and fades out while what comes fades in: the
+            // reconciler updates what this returns, so it updates an empty stand-in and builds
+            // the new content after, which `replace` takes.
+            self.swap(Box::new(Spacer::fixed(0.0)));
+        }
+        Some(&mut self.current)
+    }
+
+    fn insert(&mut self, _index: usize, view: Element) {
+        self.current = view;
+    }
+
+    fn remove(&mut self, _index: usize) {
+        self.current = Box::new(Spacer::fixed(0.0));
+    }
+
+    fn move_view(&mut self, _from: usize, _to: usize) {}
+
+    fn replace(&mut self, _index: usize, view: Element) {
+        self.current = view;
+    }
+}
+
+/// The weight a `fill` prop gives, as the layout solver takes it.
+fn weight(fill: Option<f64>) -> f32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a view's share of its room, far inside f32"
+    )]
+    {
+        fill.unwrap_or(0.0) as f32
+    }
+}
+
 /// The container's style: one cell both views fill, as tall as the taller of them where the
 /// view's own height is open.
 fn container(fill: f32) -> taffy::Style {
@@ -188,19 +337,24 @@ fn container(fill: f32) -> taffy::Style {
         )],
         size: taffy::Size {
             width: taffy::style_helpers::percent(1.0_f32),
-            height: taffy::Dimension::auto(),
+            // A view given room fills it: its own height is the room, never what the pages it
+            // holds happen to be as tall as.
+            height: if fill > 0.0 {
+                taffy::style_helpers::percent(1.0_f32)
+            } else {
+                taffy::Dimension::auto()
+            },
         },
         min_size: taffy::Size {
             width: taffy::style_helpers::length(0.0_f32),
-            height: taffy::Dimension::auto(),
+            height: taffy::style_helpers::length(0.0_f32),
         },
         ..taffy::Style::default()
     };
     tilo_ui_base::widget::layout::filling(style, fill)
 }
 
-/// Both views stand in the one cell, over each other, each taking the whole of it: the page that
-/// came paints where the page that went stood.
+/// The view shown now, taking the whole of the one cell: its size is what the view is.
 fn cell() -> taffy::Style {
     let line = taffy::Line {
         start: taffy::style_helpers::line(1),
@@ -213,12 +367,43 @@ fn cell() -> taffy::Style {
             width: taffy::style_helpers::percent(1.0_f32),
             height: taffy::style_helpers::percent(1.0_f32),
         },
+        min_size: taffy::Size {
+            width: taffy::style_helpers::length(0.0_f32),
+            height: taffy::style_helpers::length(0.0_f32),
+        },
+        ..taffy::Style::default()
+    }
+}
+
+/// The view that is fading out, drawn over the cell the view shown takes: out of the flow, so
+/// what it holds never makes the swap bigger, smaller or wider than the view that stands.
+fn overlay() -> taffy::Style {
+    taffy::Style {
+        position: taffy::Position::Absolute,
+        inset: taffy::Rect {
+            left: taffy::style_helpers::length(0.0_f32),
+            right: taffy::style_helpers::length(0.0_f32),
+            top: taffy::style_helpers::length(0.0_f32),
+            bottom: taffy::style_helpers::length(0.0_f32),
+        },
+        size: taffy::Size {
+            width: taffy::style_helpers::percent(1.0_f32),
+            height: taffy::style_helpers::percent(1.0_f32),
+        },
+        min_size: taffy::Size {
+            width: taffy::style_helpers::length(0.0_f32),
+            height: taffy::style_helpers::length(0.0_f32),
+        },
         ..taffy::Style::default()
     }
 }
 
 impl Widget for Swapped {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        // A change of what the view says it shows, whose part the reconciler found unchanged,
+        // swaps nothing: the frame after it clears what the part did not take, so an edit inside
+        // the tab in front never fades the whole content.
+        self.swap_owed = false;
         self.starts();
         self.settle(frame_now());
         self.current.sync(state, path);
@@ -247,12 +432,11 @@ impl Widget for Swapped {
             .map(|previous| previous.build_layout(taffy, theme, node_map));
         let mut children = Vec::with_capacity(2);
         if let Some(previous) = previous {
+            let _ = taffy.set_style(previous, overlay());
             children.push(previous);
         }
+        let _ = taffy.set_style(current, cell());
         children.push(current);
-        for child in &children {
-            let _ = taffy.set_style(*child, cell());
-        }
         taffy.widget_node(container(self.fill), &children, node_map, self)
     }
 
@@ -274,24 +458,54 @@ impl Widget for Swapped {
     fn draw(&mut self, ctx: &mut DrawCtx<'_>) {
         let (scene, transform, text, theme, env) = ctx.parts();
         let now = frame_now();
-        let opacities = self.opacities(now);
-        if let (Some(previous), Some((outgoing, _))) = (self.previous.as_mut(), opacities)
-            && outgoing > 0.0
+        let rect = self.rect;
+        let Some((_, incoming)) = self.opacities(now) else {
+            // Nothing of the view that went stands: the content is drawn as it is, outside any
+            // layer, so a settled view paints exactly as it would on its own.
+            self.current.draw_child(scene, transform, text, theme, &env);
+            return;
+        };
+        // One share each, summing to one: the page going out at what the fade has left, the page
+        // coming at what it has come. A cross-fade mixes the two pages, so it may only be linear
+        // over complementary shares.
+        let outgoing = self.previous_opacity * (1.0 - incoming);
+        if outgoing <= 0.0 && incoming <= 0.0 {
+            return;
+        }
+        // Both pages stand in one layer, the page going out at its share of the fade and the page
+        // coming added to it at the rest: the mix is the linear one of the two pages, so two
+        // translucent grounds under each other make the colour between them, never a third tint
+        // where the two overlap.
+        let clip = rect.inflate(2.0, 2.0);
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &clip,
+        );
+        if outgoing > 0.0
+            && let Some(previous) = self.previous.as_mut()
         {
-            let rect = self.rect;
             tilo_ui_base::widget::in_opacity_layer(scene, transform, rect, outgoing, |scene| {
                 previous.draw_child(scene, transform, text, theme, &env);
             });
         }
-        let incoming = opacities.map_or_else(|| self.fade.incoming(now), |(_, incoming)| incoming);
-        if incoming <= 0.0 {
-            return;
+        if incoming > 0.0 {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::new(
+                    vello::peniko::Mix::Normal,
+                    vello::peniko::Compose::PlusLighter,
+                ),
+                incoming,
+                transform,
+                &clip,
+            );
+            self.current.draw_child(scene, transform, text, theme, &env);
+            scene.pop_layer();
         }
-        let rect = self.rect;
-        let current = &mut self.current;
-        tilo_ui_base::widget::in_opacity_layer(scene, transform, rect, incoming, |scene| {
-            current.draw_child(scene, transform, text, theme, &env);
-        });
+        scene.pop_layer();
     }
 
     /// The person acts on the view being shown: the one fading out is on its way out and takes
@@ -360,6 +574,13 @@ impl Widget for Swapped {
 
     fn name(&self) -> &'static str {
         "Swapped"
+    }
+
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        self.name.as_ref().map(|name| {
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
+                .with_optional_name(Some(name.clone()))
+        })
     }
 
     fn test_id(&self) -> Option<&str> {

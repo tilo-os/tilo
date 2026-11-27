@@ -8477,6 +8477,63 @@
       }
     },
     {
+      "name": "Swapped",
+      "doc": "What a view that swaps its content whole takes: what it shows, its name, and the pace the swap plays at. A change of [`Self::shown`] keeps the content it showed under the new one while it fades out, then lets it go.",
+      "props": [
+        {
+          "name": "shown",
+          "doc": "What the content is: a view that names another swaps what it shows, the one it showed fading out under the new one. Any text does, as a key: the window's front tab, a slide's id, a word the view changes. Empty is the same as any other.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        },
+        {
+          "name": "name",
+          "doc": "What it shows, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "fill",
+          "doc": "The weight it fills its room with, as a container's `fill`: the whole room for a window's content, its own height where it hugs what it holds.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "motion",
+          "doc": "The pace the swap plays at (`.standard`, `.brisk`, `.calm`, `.still`): the theme's own otherwise.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Motion",
+                "cases": [
+                  "standard",
+                  "brisk",
+                  "calm",
+                  "still"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "body",
+          "doc": "What it shows.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
       "name": "TabStrip",
       "doc": "A frame's tabs, in one row above its content: the shell's tab strip.\nThe chosen tab stands lifted off the strip's ground, and every pill says who is at its resource now. Choosing a pill activates that tab; a pill's close chip closes it; dragging one within the strip reorders it, and letting one go outside the strip hands it to the frame under the pointer.",
       "props": [

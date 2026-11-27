@@ -1796,10 +1796,12 @@ impl Reconciler {
         // A stage shows one page at a time and says its content is swapped whole
         // (`transition: .cross_fade`): the page it showed stays laid out and fades out while the
         // new one fades in. Met again while it swaps, it swaps again, or changes the page it
-        // shows in place without a new swap.
-        if let Some(swapped) = widget
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<ui::widget::Swapped>())
+        // shows in place without a new swap. The toolkit's `ui.Swapped` is the same widget as a
+        // component, and takes its own props and parts like any other.
+        if crate::adapter::description_of(new_node).is_none()
+            && let Some(swapped) = widget
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<ui::widget::Swapped>())
         {
             return self.swapped_in(swapped, old_node, new_node);
         }

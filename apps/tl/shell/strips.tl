@@ -514,25 +514,35 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
             }
             body: {
                 if let p = shown {
-                    // A window whose app stopped answering says so on the window itself, with the
-                    // two ways out: keep waiting, or quit it. The card stands above the content,
-                    // and a window that answers keeps its body the whole room.
-                    let w = shown_window(p)
-                    if let window = w {
-                        if let _ = window.ended {
-                            // The app left this place and said why: the card says what it says,
-                            // with asking for the app again in this same place, or dismissing it.
-                            crashed_card(window)
-                        } else if window.not_responding {
-                            stack(gap: .tight, fill) {
-                                hung_window(window)
+                    // What the tab in front shows, swapped whole when the person chooses another
+                    // tab: the content they left stays drawn under the one that comes while it
+                    // fades out, and is let go once the fade has played. A window's surface is a
+                    // well, and a document its app's own view, so both swap.
+                    ui.Swapped(shown: p.key, fill) {
+                        // Its content in one layer: a window whose app stopped answering says so
+                        // on the window itself, with the two ways out (keep waiting, or quit
+                        // it). The card stands above the content, and a window that answers
+                        // keeps its body the whole room.
+                        layers(fill) {
+                            let w = shown_window(p)
+                            if let window = w {
+                                if let _ = window.ended {
+                                    // The app left this place and said why: the card says what
+                                    // it says, with asking for the app again in this same place,
+                                    // or dismissing it.
+                                    crashed_card(window)
+                                } else if window.not_responding {
+                                    stack(gap: .tight, fill) {
+                                        hung_window(window)
+                                        place_content(p)
+                                    }
+                                } else {
+                                    place_content(p)
+                                }
+                            } else {
                                 place_content(p)
                             }
-                        } else {
-                            place_content(p)
                         }
-                    } else {
-                        place_content(p)
                     }
                 } else {
                     ui.EmptyState("Nothing here", inline: true)

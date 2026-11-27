@@ -136,6 +136,7 @@ mod shell_magnify_shot;
 mod shell_media;
 mod shell_menus;
 mod shell_staged;
+mod shell_tab_fade;
 mod shortcuts_draft;
 mod slides_agent_words;
 mod slides_search;

@@ -231,6 +231,28 @@ impl StagedWindow {
         );
     }
 
+    /// Let the window and its instance answer each other for one frame read at `at`, laying the
+    /// window out after each answer: no motion is run out, so a test steps a fade a frame at a
+    /// time.
+    pub(crate) fn frame_at(&mut self, at: ui::time::Instant) {
+        use tilo_app_window::AppWindow;
+
+        ui::time::testing::with_monotonic_time(at, || {
+            self.instance.settle_pending();
+            if let Some(window) = self
+                .harness
+                .root_widget_mut()
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<AppWindow>())
+            {
+                window.flush();
+                window.receive();
+                self.instance.update();
+            }
+            self.harness.relayout();
+        });
+    }
+
     /// Every accessible node of the window, as a screen reader reads it.
     pub(crate) fn accessible(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
         let snapshot = self.harness.inspection();

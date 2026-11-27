@@ -4,6 +4,7 @@ view custom(g: Gallery) {
     state requests: List<Float> = [12.0, 18.0, 15.0, 22.0, 19.0, 27.0, 24.0, 31.0, 28.0, 36.0]
     state hovered: Option<Int> = .none
     state last: Text = "Nobody messaged yet"
+    state swapping: Int = 0
     ui.Text(
         "Views an app fills like components, shapes drawn with the theme's inks, and live charts.",
         role: .caption,
@@ -39,6 +40,28 @@ view custom(g: Gallery) {
             }
             ui.Button("New reading", icon: .refresh) {
                 on press: set(requests, next_reading(requests))
+            }
+        }
+        ui.Section("A view swapped whole") {
+            ui.Text(
+                "Choosing another swaps what the block shows: the view it showed stays drawn under the one that comes while it fades out, and is let go once the swap has played.",
+                role: .caption,
+                secondary: true,
+            )
+            row(gap: .related) {
+                ui.Button("First", toggled: swapping == 0) {
+                    on press: set(swapping, 0)
+                }
+                ui.Button("Second", toggled: swapping == 1) {
+                    on press: set(swapping, 1)
+                }
+            }
+            ui.Swapped(shown: "{swapping}", name: "A view swapped whole") {
+                if swapping == 0 {
+                    ui.Text("The first view stands where it was.", role: .body)
+                } else {
+                    ui.Text("The second view takes its place.", role: .body)
+                }
             }
         }
         ui.Section("Drawn with the theme") {
