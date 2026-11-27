@@ -276,8 +276,8 @@ impl ContentBackend for RoomChecked {
         self.inner.max_item_bytes()
     }
 
-    fn scratch_dir(&self) -> Option<PathBuf> {
-        self.inner.scratch_dir()
+    fn spill(&self) -> std::io::Result<Option<Box<dyn crate::SpillFile>>> {
+        self.inner.spill()
     }
 }
 

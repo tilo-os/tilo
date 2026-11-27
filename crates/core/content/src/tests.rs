@@ -90,8 +90,8 @@ impl<B: ContentBackend> ContentBackend for Members<B> {
         self.0.max_item_bytes()
     }
 
-    fn scratch_dir(&self) -> Option<std::path::PathBuf> {
-        self.0.scratch_dir()
+    fn spill(&self) -> std::io::Result<Option<Box<dyn crate::SpillFile>>> {
+        self.0.spill()
     }
 
     fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {

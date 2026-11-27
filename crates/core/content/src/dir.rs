@@ -790,8 +790,8 @@ impl ContentBackend for DirBackend {
         self.limits.max_item_bytes
     }
 
-    fn scratch_dir(&self) -> Option<PathBuf> {
-        Some(self.root.clone())
+    fn spill(&self) -> std::io::Result<Option<Box<dyn crate::SpillFile>>> {
+        Ok(Some(Box::new(Spill::open(&self.root)?)))
     }
 }
 
@@ -891,4 +891,56 @@ fn check_admission(
         None => (index.bytes, index.entries.len()),
     };
     check_new_item(limits, bytes, entries, len)
+}
+
+static SPILL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The file the plaintext of an item larger than memory waits in while it is hashed and sealed:
+/// beside the store's own content, never in a system temporary directory, which a device may
+/// hold in RAM. Removed when the write ends, however it ends.
+pub(crate) struct Spill {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl Spill {
+    pub(crate) fn open(dir: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let serial = SPILL_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!(".sealing-{}-{serial}", std::process::id()));
+        let file = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok(Self { file, path })
+    }
+}
+
+impl std::io::Read for Spill {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(buf)
+    }
+}
+
+impl std::io::Write for Spill {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.file.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl std::io::Seek for Spill {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        std::io::Seek::seek(&mut self.file, position)
+    }
+}
+
+impl Drop for Spill {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }

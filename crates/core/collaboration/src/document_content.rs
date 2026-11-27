@@ -521,8 +521,8 @@ impl ContentBackend for DocumentContent {
         MAX_DOCUMENT_CONTENT_BYTES
     }
 
-    fn scratch_dir(&self) -> Option<std::path::PathBuf> {
-        self.local.scratch_dir()
+    fn spill(&self) -> std::io::Result<Option<Box<dyn tilo_content::SpillFile>>> {
+        self.local.spill()
     }
 }
 

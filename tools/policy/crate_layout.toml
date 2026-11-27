@@ -208,5 +208,4 @@ ui = [
 # (`crate -> what it links`), each to cut. The list only shrinks.
 io-free = [
     "tilo-permissions -> tilo-clock",  # the clock reads the device's time zone
-    "tilo-permissions -> tilo-content",  # through tilo-actions' content store, which spills to disk
 ]

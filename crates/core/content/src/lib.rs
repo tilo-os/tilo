@@ -8,10 +8,10 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Seek as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::io::{Read, Seek, Write};
+#[cfg(feature = "dir")]
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "dir")]
 mod dir;
@@ -98,15 +98,22 @@ pub fn part_key(secret: &tilo_seal::SymmetricKey, bytes: &[u8]) -> tilo_seal::Sy
 
 const KEEP_PLAINTEXT: usize = 1024 * 1024;
 
-static SPILL_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// A file a sealing write keeps the plaintext it hashes in once it no longer fits memory: one
+/// the store makes beside its own content ([`ContentBackend::spill`]), removed when it is
+/// dropped.
+pub trait SpillFile: Read + Write + Seek + Send {}
+
+impl<T: Read + Write + Seek + Send> SpillFile for T {}
 
 /// The plaintext a sealing store hashes before it seals it: in memory while it is small, and
-/// past [`KEEP_PLAINTEXT`] bytes in a file beside the store's own content, so a large item costs
-/// disk while it is sealed rather than the memory to hold it whole. A store with no directory of
-/// its own ([`ContentBackend::scratch_dir`]) keeps all of it in memory.
+/// past [`KEEP_PLAINTEXT`] bytes in the store's spill file, so a large item costs disk while it
+/// is sealed rather than the memory to hold it whole. A store with no directory of its own
+/// ([`ContentBackend::spill`]) keeps all of it in memory.
 struct Gathered {
     kept: Vec<u8>,
-    spill: Option<Spill>,
+    spill: Option<Box<dyn SpillFile>>,
+    /// Whether the store was asked for a spill file and had none.
+    unspillable: bool,
 }
 
 impl Gathered {
@@ -114,21 +121,29 @@ impl Gathered {
         Self {
             kept: Vec::new(),
             spill: None,
+            unspillable: false,
         }
     }
 
-    /// Keep `chunk`, spilling what is kept so far and the rest to a file in `scratch` once the
+    /// Keep `chunk`, moving what is kept so far and the rest to `backend`'s spill file once the
     /// plaintext no longer fits memory.
-    fn keep(&mut self, chunk: &[u8], scratch: Option<&Path>) -> Result<(), ContentError> {
+    fn keep(&mut self, chunk: &[u8], backend: &dyn ContentBackend) -> Result<(), ContentError> {
         if self.spill.is_none()
-            && let Some(dir) = scratch
+            && !self.unspillable
             && self.kept.len().saturating_add(chunk.len()) > KEEP_PLAINTEXT
         {
-            self.spill = Some(Spill::open(dir, &self.kept)?);
-            self.kept = Vec::new();
+            match backend.spill()? {
+                Some(mut file) => {
+                    file.write_all(&self.kept)?;
+                    self.spill = Some(file);
+                    self.kept = Vec::new();
+                }
+                None => self.unspillable = true,
+            }
         }
         if let Some(spill) = &mut self.spill {
-            return spill.write(chunk);
+            spill.write_all(chunk)?;
+            return Ok(());
         }
         self.kept.extend_from_slice(chunk);
         Ok(())
@@ -136,49 +151,10 @@ impl Gathered {
 
     fn source(&mut self) -> Result<Box<dyn Read + '_>, ContentError> {
         if let Some(spill) = &mut self.spill {
-            return spill.source();
+            spill.rewind()?;
+            return Ok(Box::new(spill));
         }
         Ok(Box::new(self.kept.as_slice()))
-    }
-}
-
-/// The file the plaintext of an item larger than memory waits in while it is hashed and sealed:
-/// beside the store's own content, never in a system temporary directory, which a device may
-/// hold in RAM. Removed when the write ends, however it ends.
-struct Spill {
-    file: std::fs::File,
-    path: PathBuf,
-}
-
-impl Spill {
-    fn open(dir: &Path, kept: &[u8]) -> Result<Self, ContentError> {
-        std::fs::create_dir_all(dir)?;
-        let serial = SPILL_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!(".sealing-{}-{serial}", std::process::id()));
-        let file = std::fs::File::options()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        let mut spill = Self { file, path };
-        spill.write(kept)?;
-        Ok(spill)
-    }
-
-    fn write(&mut self, chunk: &[u8]) -> Result<(), ContentError> {
-        self.file.write_all(chunk)?;
-        Ok(())
-    }
-
-    fn source(&mut self) -> Result<Box<dyn Read + '_>, ContentError> {
-        self.file.rewind()?;
-        Ok(Box::new(&mut self.file))
-    }
-}
-
-impl Drop for Spill {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -421,11 +397,14 @@ pub trait ContentBackend: Send + Sync {
         ContentLimits::default().max_item_bytes
     }
 
-    /// A directory beside the content this store keeps, where a sealing write may keep the
-    /// plaintext it hashes in a file rather than in memory. `None` for a store with no directory
-    /// of its own: one that keeps content on a host, or holds it in memory.
-    fn scratch_dir(&self) -> Option<PathBuf> {
-        None
+    /// A new file beside the content this store keeps, where a sealing write keeps the plaintext
+    /// it hashes rather than in memory, removed when it is dropped. `None` for a store with no
+    /// directory of its own: one that keeps content on a host, or holds it in memory.
+    ///
+    /// # Errors
+    /// The file could not be made.
+    fn spill(&self) -> std::io::Result<Option<Box<dyn SpillFile>>> {
+        Ok(None)
     }
 }
 
@@ -482,8 +461,8 @@ impl ContentBackend for OneWorkspace {
         self.0.max_item_bytes()
     }
 
-    fn scratch_dir(&self) -> Option<PathBuf> {
-        self.0.scratch_dir()
+    fn spill(&self) -> std::io::Result<Option<Box<dyn SpillFile>>> {
+        self.0.spill()
     }
 }
 
@@ -743,7 +722,6 @@ impl ContentStore {
         hasher: &mut blake3::Hasher,
     ) -> Result<Gathered, ContentError> {
         let limit = self.backend.max_item_bytes();
-        let scratch = self.backend.scratch_dir();
         let mut gathered = Gathered::new();
         let mut buf = vec![0_u8; 64 * 1024];
         let mut read = 0_usize;
@@ -765,7 +743,7 @@ impl ContentStore {
             }
             let chunk = buf.get(..n).unwrap_or_default();
             hasher.update(chunk);
-            gathered.keep(chunk, scratch.as_deref())?;
+            gathered.keep(chunk, &*self.backend)?;
         }
     }
 
@@ -1045,10 +1023,13 @@ impl ContentStore {
         self.backend.workspace_scoped()
     }
 
-    /// A directory beside the content this store keeps, where a sealing write may keep the
-    /// plaintext it hashes in a file rather than in memory; see [`ContentBackend::scratch_dir`].
-    pub fn scratch_dir(&self) -> Option<PathBuf> {
-        self.backend.scratch_dir()
+    /// A new file beside the content this store keeps, where a sealing write keeps the plaintext
+    /// it hashes; see [`ContentBackend::spill`].
+    ///
+    /// # Errors
+    /// The file could not be made.
+    pub fn spill(&self) -> std::io::Result<Option<Box<dyn SpillFile>>> {
+        self.backend.spill()
     }
 
     /// This store, declared as one workspace's ([`Self::workspace_scoped`]): for a host that
