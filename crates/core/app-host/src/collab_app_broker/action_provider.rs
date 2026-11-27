@@ -3310,6 +3310,7 @@ impl AppBrokerState {
             return state;
         }
         self.observe_here(caller, id)
+            .or_else(|| self.observe_sent_on(caller, id))
     }
 
     /// [`Self::action_observe`] of an invocation this broker took itself, not the registry.
@@ -3345,6 +3346,9 @@ impl AppBrokerState {
             .and_then(|providers| providers.next_change(caller, id))
         {
             return change;
+        }
+        if let Some(change) = self.next_change_sent_on(caller, id) {
+            return Some(change);
         }
         self.next_change_here(caller, id, seen)
     }
@@ -3441,6 +3445,9 @@ impl AppBrokerState {
             .provided()
             .and_then(|providers| providers.cancel(caller, id))
         {
+            return cancelled;
+        }
+        if let Some(cancelled) = self.cancel_sent_on(caller, id) {
             return cancelled;
         }
         self.cancel_here(caller, id)

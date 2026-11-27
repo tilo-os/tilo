@@ -29,6 +29,7 @@ pub(crate) use invocation::answered;
 use invocation::*;
 pub(crate) use invocation::{InvocationCompletion, InvocationEnvelope, InvocationJob};
 mod confirmation;
+mod connection_calls;
 use confirmation::*;
 mod journal_commit;
 use journal_commit::*;
@@ -255,7 +256,7 @@ struct HostStepStop {
 
 /// A job by its full key: the app it is an action of, the workspace it runs in and its
 /// invocation id. A caller chooses the id, so a job is never found by the id alone.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct JobKey {
     app: String,
     workspace: String,
@@ -494,6 +495,10 @@ pub struct AppBrokerState {
     /// The calls each app connection made inside an invocation delivered to it, by connection
     /// and call: whose they are, so the connection follows and cancels them as that caller.
     child_calls: Mutex<HashMap<(u64, tilo_actions::InvocationId), tilo_actions::remote::Caller>>,
+    /// The calls this device sent to the device that runs their app's connection, by their full
+    /// key: who made each, and that device's actions, which follow it there
+    /// ([`AppBrokerState::forwarded_call`]).
+    forwarded_calls: Mutex<HashMap<JobKey, connection_calls::ForwardedCall>>,
     /// Shortcut runs the API finished, until history records them.
     ended_invocations: crate::automation::BrokerInvocations,
     /// What each application declared it may do on the action api under

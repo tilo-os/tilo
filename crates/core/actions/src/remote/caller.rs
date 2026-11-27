@@ -578,6 +578,27 @@ impl Caller {
                 && self.execution == owner.execution)
     }
 
+    /// Whether this caller may follow a call `owner` made by who it is, on whatever connection
+    /// or link it asks: it is `owner` itself (the same member, person and device keys), or the
+    /// device that brought `owner`'s call, asking as the person it belongs to. Never an app, an
+    /// agent or an automation on that device, and never whether it may ask the call again.
+    /// What following a call that waits in its asked record is decided by, as reading that
+    /// record is.
+    #[must_use]
+    pub fn follows_by_identity(&self, owner: &Self) -> bool {
+        let same_member = self.acting == owner.acting
+            && self.user_public_key == owner.user_public_key
+            && self.device_public_key == owner.device_public_key;
+        let brought_it = self.forwarded_by.is_none()
+            && owner
+                .forwarded_by
+                .is_some_and(|by| self.device_public_key == Some(by))
+            && self.acting.is_person()
+            && self.acting.app().is_none()
+            && !self.acting.is_automation();
+        same_member || brought_it
+    }
+
     /// This caller without the name it goes by, which is presentation only
     /// ([`Self::named`]): what ownership compares.
     #[must_use]

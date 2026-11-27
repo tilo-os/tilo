@@ -222,6 +222,14 @@ impl<T> InvocationLog<T> {
         self.entries.get(id).map(|entry| &entry.request)
     }
 
+    /// Invocation `id` whoever admitted it, with the caller that did, once its start is done:
+    /// for a provider that decides by its own rule who else may read it.
+    #[must_use]
+    pub fn admitted_by(&self, id: &InvocationId) -> Option<(&Caller, &T)> {
+        let entry = self.entries.get(id)?;
+        Some((&entry.caller, entry.handle.as_ref()?))
+    }
+
     /// The handle for an invocation `caller` admitted, or the caller it continues
     /// ([`Caller::continues`]).
     #[must_use]

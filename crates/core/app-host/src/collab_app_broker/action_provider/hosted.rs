@@ -17,9 +17,10 @@
 use std::sync::Arc;
 
 use tilo_action_calls::settle_with;
+use tilo_actions::remote::asked::RecordRef;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, Completer, InvocationReceipt, InvokeRequest,
-    MAX_REMOTE_WAIT, Pending, RESOURCE_PROVIDER, ReceiptStatus, pending,
+    MAX_REMOTE_WAIT, Pending, RESOURCE_PROVIDER, ReceiptStatus, UpdateMark, pending,
 };
 
 use super::super::published_invocation::InvocationCaller;
@@ -152,7 +153,10 @@ impl AppBrokerState {
 
 /// Complete `done` with `receipt` once the host says the invocation settled:
 /// an accepted one is followed there, a while at a time, for as long as it
-/// runs. A host that stops telling leaves the admission as it stood.
+/// runs. One that waits there for its person's yes in its asked record is
+/// answered as under way at once, so its caller reads where it waits and
+/// follows it to its end themselves. A host that stops telling leaves the
+/// admission as it stood.
 pub(super) fn follow(
     host: Arc<dyn ActionProvider + Send + Sync>,
     caller: Caller,
@@ -163,14 +167,31 @@ pub(super) fn follow(
         done.complete(Ok(receipt));
         return;
     }
+    follow_past(host, caller, receipt, UpdateMark::Accepted, done);
+}
+
+/// [`follow`] from the move `seen`, the last one the host told of the invocation.
+fn follow_past(
+    host: Arc<dyn ActionProvider + Send + Sync>,
+    caller: Caller,
+    receipt: InvocationReceipt,
+    seen: UpdateMark,
+    done: Completer<Result<InvocationReceipt, ActionCallError>>,
+) {
     let now = tilo_clock::now();
     let until = now.checked_add(MAX_REMOTE_WAIT).unwrap_or(now);
-    settle_with(&host, &caller, receipt.invocation, None, until).then(move |state| {
+    settle_with(&host, &caller, receipt.invocation, Some(seen), until).then(move |state| {
         match state.flatten() {
-            // Still running at the end of a wait: follow it again. One that
-            // answered sooner with nothing new is a host that cannot tell.
-            Some(state) if !state.is_terminal() && tilo_clock::now() >= until => {
-                follow(host, caller, state.receipt(), done);
+            Some(state) if state.is_terminal() => done.complete(Ok(state.receipt())),
+            Some(state) if RecordRef::waited_in(&state.update).is_some() => {
+                done.complete(Ok(state.receipt()));
+            }
+            // Moved on, or still running at the end of a wait: follow it again.
+            // One that answered sooner with nothing new is a host that cannot
+            // tell.
+            Some(state) if UpdateMark::of(&state.update) != seen || tilo_clock::now() >= until => {
+                let seen = UpdateMark::of(&state.update);
+                follow_past(host, caller, state.receipt(), seen, done);
             }
             Some(state) => done.complete(Ok(state.receipt())),
             None => done.complete(Ok(receipt)),

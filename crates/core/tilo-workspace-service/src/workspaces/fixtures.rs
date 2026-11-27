@@ -2058,6 +2058,18 @@ pub fn reach_device(
     })
 }
 
+/// The actions of the device at `address`, as `workspaces`' device dials it there: what a device
+/// that finds another by its key through the network's discovery reaches, where a test has none.
+pub fn reach_device_at(
+    workspaces: &Workspaces,
+    address: &iroh_base::EndpointAddr,
+    workspace: &str,
+) -> tilo_peer_state::actions::RemoteDevice {
+    workspaces
+        .action_service()
+        .remote(&workspaces.inner.host.endpoint, address, workspace)
+}
+
 /// The root of the person both devices are of: the one the first device's fixture is
 /// certified by.
 pub fn persons_root() -> SigningKey {

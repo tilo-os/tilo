@@ -906,6 +906,8 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
     .await;
     let desktop_device = desktop.workspaces().lease_device(&workspace).await;
     let laptop_device = laptop.workspaces().lease_device(&workspace).await;
+    let three = tempfile::tempdir().unwrap();
+    let phone = phone_joins(three.path(), (&desktop, &laptop), &workspace).await;
     let (mut on_desktop, mut on_laptop) =
         (runner(desktop.workspaces()), runner(laptop.workspaces()));
     let (scribe_key, scribe) = admit_scribe(desktop.workspaces(), &workspace).await;
@@ -957,9 +959,11 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
     let pair = Pair {
         desktop: &desktop,
         laptop: &laptop,
+        phone: &phone,
         workspace: &workspace,
         desktop_device,
         laptop_device,
+        phone_device: phone.workspaces().device_cert().device_public_key,
     };
     the_agents_call_runs_on_the_laptops_bridge(
         &pair,
@@ -1013,9 +1017,60 @@ fn serve_bridges(
 struct Pair<'a> {
     desktop: &'a TestHost,
     laptop: &'a TestHost,
+    /// The person's phone, which joined the workspace too and runs no connection.
+    phone: &'a TestHost,
     workspace: &'a str,
     desktop_device: [u8; 32],
     laptop_device: [u8; 32],
+    phone_device: [u8; 32],
+}
+
+/// The person's phone, joined to `workspace` on `state` by the invitation `desktop` issues it,
+/// once it and `laptop` know each other's certificates.
+async fn phone_joins(
+    state: &std::path::Path,
+    (desktop, laptop): (&TestHost, &TestHost),
+    workspace: &str,
+) -> TestHost {
+    let phone = device_cert(&persons_root(), "phone", DeviceCapabilities::member());
+    let invitation = tilo_workspace_service::workspaces::fixtures::invitation(
+        desktop,
+        &tilo_workspace_service::workspaces::fixtures::hosting_device().1,
+        workspace,
+        55,
+        &phone.1,
+    )
+    .await;
+    let phone = member_service(state, phone).await;
+    if phone.workspaces().join_member(&invitation).await.is_err() {
+        unreachable!("the phone joins the workspace it was invited to");
+    }
+    let laptop_device = laptop.workspaces().device_cert().device_public_key;
+    knows(phone.workspaces(), workspace, laptop_device).await;
+    let phone_device = phone.workspaces().device_cert().device_public_key;
+    knows(laptop.workspaces(), workspace, phone_device).await;
+    phone
+}
+
+/// Wait until `workspaces` holds the certificate of `device` in `workspace`.
+async fn knows(workspaces: &Workspaces, workspace: &str, device: [u8; 32]) {
+    tilo_test_env::within("the device's certificate reaches the other device", async {
+        loop {
+            if let Ok(state) = workspaces.workspace(workspace).await
+                && state
+                    .lock()
+                    .await
+                    .peer()
+                    .certificates()
+                    .iter()
+                    .any(|certificate| certificate.device_public_key == device)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
 }
 
 /// The agent's call, asked of the desktop, runs on the laptop that holds the connection: as the
@@ -1029,6 +1084,7 @@ async fn the_agents_call_runs_on_the_laptops_bridge(
     // Its person allowed the agent the bridge's send, and asks to be asked for its post.
     a_call_its_person_must_allow_waits_for_their_answer(
         pair,
+        on_desktop_calls,
         laptop_bridge,
         agent,
         (scribe, scribe_key),
@@ -1064,37 +1120,39 @@ async fn the_agents_call_runs_on_the_laptops_bridge(
     );
 }
 
-/// The agent's call the workspace leaves to its person, asked of the laptop that holds the
-/// connection, waits there in its asked record: nothing runs until the person answers
-/// there, nobody else's answer counts, their approve runs it once, and their decline of another
-/// runs nothing and tells the agent so.
+/// The agent's call the workspace leaves to its person, asked of the desktop and sent on to the
+/// laptop that holds the connection, waits there in its asked record: the agent follows it from
+/// the desktop and reads where it waits, nothing runs until the person answers, nobody else's
+/// answer counts and nobody else follows it. Their approve on the laptop runs it once, and their
+/// decline of another from their phone, which keeps no record of it, runs nothing; the agent
+/// reads each outcome on the desktop.
 async fn a_call_its_person_must_allow_waits_for_their_answer(
     pair: &Pair<'_>,
+    on_desktop_calls: &Arc<AppBrokerState>,
     laptop_bridge: &Arc<BridgeProcess>,
     agent: &Caller,
     (scribe, scribe_key): (&DeviceCert, &SigningKey),
 ) {
     let laptop = pair.laptop.workspaces();
-    let calls = laptop.device_actions();
-    // As the laptop's action service admits the call the desktop brings it.
-    let agent = &agent.clone().forwarded_by(pair.desktop_device);
-    let person = Caller::authenticated(
-        persons_root().verifying_key().to_bytes(),
-        pair.laptop_device,
-    )
-    .in_workspace(pair.workspace.to_owned());
-
+    let on_desktop: Arc<dyn ActionProvider + Send + Sync> =
+        Arc::new(AppCallsOf(Arc::clone(on_desktop_calls)));
+    let person = |device: [u8; 32]| {
+        Caller::authenticated(persons_root().verifying_key().to_bytes(), device)
+            .in_workspace(pair.workspace.to_owned())
+    };
     let post = || {
         let mut request = send(pair.workspace, None);
         request.target.address = tilo_actions::ActionAddress::new(CHANNEL, POST);
         signed(pair.workspace, request, (scribe, scribe_key))
     };
     let approved = post();
-    let record = waits_in_its_record(&*calls, agent, approved.clone()).await;
+    let record = waits_in_its_record(&on_desktop, agent, approved.clone()).await;
+    assert_eq!(record.workspace, pair.workspace, "{record:?}");
     assert!(locked(&laptop_bridge.ran).is_empty(), "nothing ran unasked");
 
-    nobody_else_answers(laptop, (agent, &person), &record, pair.workspace).await;
-    let still = calls.observe(agent, &approved.invocation);
+    nobody_else_answers(pair, (agent, &person(pair.laptop_device)), &record).await;
+    nobody_else_follows(pair, &on_desktop, approved.invocation).await;
+    let still = observed(&on_desktop, agent, approved.invocation).await;
     assert!(
         still.as_ref().is_some_and(|state| {
             tilo_actions::remote::asked::RecordRef::waited_in(&state.update).as_ref()
@@ -1107,16 +1165,16 @@ async fn a_call_its_person_must_allow_waits_for_their_answer(
         "nothing ran on their word"
     );
 
-    // The person's approve runs it, once.
+    // The person's approve on the laptop runs it, once, and the agent reads that it ran.
     let answered = answer(
         laptop,
-        &person,
+        &person(pair.laptop_device),
         &record,
         tilo_actions::remote::asked::Offer::Approve,
     )
     .await;
     assert!(answered.is_ok(), "the person approves it: {answered:?}");
-    let ended = followed(&*calls, agent, approved.invocation).await;
+    let ended = followed(&on_desktop, agent, approved.invocation).await;
     assert!(
         matches!(ended, ReceiptStatus::Completed { .. }),
         "the approved call ran: {ended:?}"
@@ -1131,7 +1189,7 @@ async fn a_call_its_person_must_allow_waits_for_their_answer(
     );
     let again = answer(
         laptop,
-        &person,
+        &person(pair.laptop_device),
         &record,
         tilo_actions::remote::asked::Offer::Approve,
     )
@@ -1142,18 +1200,31 @@ async fn a_call_its_person_must_allow_waits_for_their_answer(
     );
     assert!(locked(&laptop_bridge.ran).is_empty(), "still once");
 
-    // Their decline of another runs nothing, and the agent reads that they declined.
+    // Their decline of another, on their phone, reaches the laptop that keeps it: it runs
+    // nothing, and the agent reads on the desktop that they declined.
     let declined = post();
-    let record = waits_in_its_record(&*calls, agent, declined.clone()).await;
+    let record = waits_in_its_record(&on_desktop, agent, declined.clone()).await;
+    // The phone finds the laptop as the network's discovery would let it.
+    let found = tilo_workspace_service::workspaces::fixtures::reach_device_at(
+        pair.phone.workspaces(),
+        &pair.laptop.node_addr(),
+        pair.workspace,
+    )
+    .certificate()
+    .await;
+    assert!(found.is_ok(), "the phone reaches the laptop: {found:?}");
     let answered = answer(
-        laptop,
-        &person,
+        pair.phone.workspaces(),
+        &person(pair.phone_device),
         &record,
         tilo_actions::remote::asked::Offer::Decline,
     )
     .await;
-    assert!(answered.is_ok(), "the person declines it: {answered:?}");
-    let ended = followed(&*calls, agent, declined.invocation).await;
+    assert!(
+        answered.is_ok(),
+        "the person declines it on their phone: {answered:?}"
+    );
+    let ended = followed(&on_desktop, agent, declined.invocation).await;
     assert!(
         matches!(&ended, ReceiptStatus::Cancelled { message: Some(message) }
             if message == tilo_actions::remote::asked::DECLINED),
@@ -1162,13 +1233,44 @@ async fn a_call_its_person_must_allow_waits_for_their_answer(
     assert!(locked(&laptop_bridge.ran).is_empty(), "nothing ran on a no");
 }
 
+/// Another member asking the desktop about the agent's call `invocation`, and asking the laptop
+/// it waits on, reads it as an id nothing admitted, and cannot stop it.
+async fn nobody_else_follows(
+    pair: &Pair<'_>,
+    on_desktop: &Arc<dyn ActionProvider + Send + Sync>,
+    invocation: tilo_actions::InvocationId,
+) {
+    let other = Caller::authenticated(
+        SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+        SigningKey::from_bytes(&[94; 32]).verifying_key().to_bytes(),
+    )
+    .in_workspace(pair.workspace.to_owned());
+    let laptop: Arc<dyn ActionProvider + Send + Sync> = pair.laptop.workspaces().device_actions();
+    for (on, there) in [("the desktop", on_desktop), ("the laptop", &laptop)] {
+        let read = observed(there, &other, invocation).await;
+        assert!(
+            read.is_none(),
+            "another member reads nothing on {on}: {read:?}"
+        );
+        let stopped = there
+            .cancel(&other, &invocation)
+            .await
+            .unwrap_or(Err(ActionCallError::Unanswered));
+        assert!(
+            matches!(stopped, Err(ActionCallError::UnknownInvocation)),
+            "another member stops nothing on {on}: {stopped:?}"
+        );
+    }
+}
+
 /// Neither another person, nor the agent `agent` itself, nor a Shortcut's unattended run acting
-/// as `person` (nobody is at a screen to answer) approves `record`, which asks `person`.
+/// as `person` (nobody is at a screen to answer) approves `record`, which asks `person`: not on
+/// the laptop that keeps it, and not from the person's desktop or phone, which would bring it
+/// there.
 async fn nobody_else_answers(
-    laptop: &Workspaces,
+    pair: &Pair<'_>,
     (agent, person): (&Caller, &Caller),
     record: &tilo_actions::remote::asked::RecordRef,
-    workspace: &str,
 ) {
     let (other_root, other_device) = (
         SigningKey::from_bytes(&[91; 32]),
@@ -1178,15 +1280,34 @@ async fn nobody_else_answers(
         other_root.verifying_key().to_bytes(),
         other_device.verifying_key().to_bytes(),
     )
-    .in_workspace(workspace.to_owned());
+    .in_workspace(pair.workspace.to_owned());
+    let on = |device: [u8; 32]| {
+        Caller::authenticated(persons_root().verifying_key().to_bytes(), device)
+            .in_workspace(pair.workspace.to_owned())
+            .running_shortcut("nightly")
+    };
     let unattended = person.clone().running_shortcut("nightly");
-    for (who, stranger) in [
-        ("another person", &other_person),
-        ("the agent", agent),
-        ("the person's unattended Shortcut", &unattended),
+    for (who, stranger, workspaces) in [
+        ("another person", &other_person, pair.laptop.workspaces()),
+        ("the agent", agent, pair.laptop.workspaces()),
+        (
+            "the person's unattended Shortcut",
+            &unattended,
+            pair.laptop.workspaces(),
+        ),
+        (
+            "the person's unattended Shortcut on their desktop",
+            &on(pair.desktop_device),
+            pair.desktop.workspaces(),
+        ),
+        (
+            "the person's unattended Shortcut on their phone",
+            &on(pair.phone_device),
+            pair.phone.workspaces(),
+        ),
     ] {
         let answer = answer(
-            laptop,
+            workspaces,
             stranger,
             record,
             tilo_actions::remote::asked::Offer::Approve,
@@ -1199,7 +1320,7 @@ async fn nobody_else_answers(
 /// `request`, asked of `calls` as `caller`, waiting for its person's yes: the record it waits in,
 /// as the caller reads it.
 async fn waits_in_its_record(
-    calls: &(impl ActionProvider + Sync + ?Sized),
+    calls: &Arc<dyn ActionProvider + Send + Sync>,
     caller: &Caller,
     request: InvokeRequest,
 ) -> tilo_actions::remote::asked::RecordRef {
@@ -1214,8 +1335,8 @@ async fn waits_in_its_record(
     );
     tilo_test_env::within("the caller reads where its call waits", async {
         loop {
-            if let Some(record) = calls
-                .observe(caller, &invocation)
+            if let Some(record) = observed(calls, caller, invocation)
+                .await
                 .and_then(|state| tilo_actions::remote::asked::RecordRef::waited_in(&state.update))
             {
                 return record;
@@ -1228,13 +1349,13 @@ async fn waits_in_its_record(
 
 /// How `invocation`, which `caller` asked of `calls`, ends, as they follow it.
 async fn followed(
-    calls: &(impl ActionProvider + Sync + ?Sized),
+    calls: &Arc<dyn ActionProvider + Send + Sync>,
     caller: &Caller,
     invocation: tilo_actions::InvocationId,
 ) -> ReceiptStatus {
     tilo_test_env::within("the call ends", async {
         loop {
-            if let Some(state) = calls.observe(caller, &invocation)
+            if let Some(state) = observed(calls, caller, invocation).await
                 && state.update.is_terminal()
             {
                 return state.receipt().status;
@@ -1243,6 +1364,21 @@ async fn followed(
         }
     })
     .await
+}
+
+/// `invocation` as `caller` reads it of `calls`, asked off this runtime's thread: reading a call
+/// another device runs waits for that device's answer, which this runtime carries.
+async fn observed(
+    calls: &Arc<dyn ActionProvider + Send + Sync>,
+    caller: &Caller,
+    invocation: tilo_actions::InvocationId,
+) -> Option<tilo_actions::remote::InvocationState> {
+    let (calls, caller) = (Arc::clone(calls), caller.clone());
+    let Ok(read) = tokio::task::spawn_blocking(move || calls.observe(&caller, &invocation)).await
+    else {
+        unreachable!("a read of a call does not panic")
+    };
+    read
 }
 
 /// `answering`'s `resolution` of the asked `record`, as `workspaces` takes it.

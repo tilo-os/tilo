@@ -18,7 +18,8 @@ use tilo_actions::remote::asked::{
     AskedBy, AskedDispatch, AskedFacts, AskedRecords, Named, RecordRef, Resolve,
 };
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Caller, InvocationReceipt, InvokeArgument, InvokeRequest,
+    Pending,
 };
 use tilo_remote_actions::asked::AskedStore;
 
@@ -52,6 +53,22 @@ pub fn asked_by(caller: &Caller) -> AskedBy {
 }
 
 pub use tilo_actions::remote::asked::approved_or_asks;
+
+/// Whether `caller`, on the device `certificate` certifies (this one where none is named),
+/// answers for its person: a device that holds their identity, never a key they made for their
+/// programs, which acts as them and still answers nothing for them, nor a stand-in or a device
+/// confined to one workspace (its VM, or one placed for its records).
+pub(crate) fn answers_on_a_device_of_theirs(
+    caller: &Caller,
+    certificate: Option<&tilo_user_identity::DeviceCert>,
+) -> bool {
+    caller.key().is_none()
+        && certificate.is_none_or(|certificate| {
+            certificate.capabilities.agent.is_none()
+                && !certificate.capabilities.stand_in
+                && certificate.capabilities.workspace_name().is_none()
+        })
+}
 
 /// Why a call that waits for its person's yes could not be kept for them.
 pub(crate) const NO_WORKSPACE_KEEPS_IT: &str = "no workspace here keeps it for its person";
@@ -243,13 +260,141 @@ impl Workspaces {
         self.inner.asked_store.get().cloned()
     }
 
-    /// Answer `request`, a person's `<record>#resolve`, as `caller`: its receipt once the call
-    /// it answers is admitted again or ended.
+    /// Answer `request`, a person's `<record>#resolve`, as `caller`, on this device: its receipt
+    /// once the call it answers is admitted again or ended. The record is answered where it is
+    /// kept: here, when this device keeps it, and otherwise on the device of the person's in the
+    /// workspace `caller` answers in that keeps it, which this device brings the answer to as
+    /// theirs ([`Self::resolve_kept_here`] there). Who may answer is the store's one rule, and
+    /// what this device brings elsewhere is only its own person's answer: an agent's, an
+    /// app's or an automation's is refused here, as it would be there.
     pub fn resolve_asked(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let kept_here = self
+            .asked_store()
+            .is_some_and(|store| store.record(&request.target.address.resource).is_some());
+        let own_person = hex::encode(self.device_cert().user_public_key);
+        let workspace = caller
+            .workspace()
+            .and_then(collab_types::WorkspaceId::parse);
+        let (Some(workspace), false) = (workspace, kept_here) else {
+            return self.resolve_kept_here(caller, None, request);
+        };
+        if tilo_actions::remote::asked::answering_person(caller) != Some(own_person.as_str())
+            || !answers_on_a_device_of_theirs(caller, None)
+        {
+            return self.resolve_kept_here(caller, None, request);
+        }
+        let (this, caller, request) = (self.clone(), caller.clone(), request.clone());
+        let (done, answer) = tilo_actions::remote::pending();
+        tokio::spawn(async move {
+            done.complete(this.resolve_where_kept(workspace, &caller, request).await);
+        });
+        answer
+    }
+
+    /// `request`, the answer of this device's person to a record another device of theirs in
+    /// `workspace` keeps, brought to each of those devices: the one that keeps it answers, and
+    /// every other one has nothing asked under it.
+    async fn resolve_where_kept(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        use futures::StreamExt as _;
+        let nothing_asked = || ActionCallError::Refused {
+            reason: tilo_remote_actions::asked::NOTHING_ASKED.into(),
+        };
+        let here = self.device_cert();
+        let (person, this_device) = (here.user_public_key, here.device_public_key);
+        let Some(reading) = self.reading(workspace).await else {
+            return Err(nothing_asked());
+        };
+        let (devices, keeper) = reading.replica.read(|peer| {
+            let devices = peer
+                .certificates()
+                .into_iter()
+                .filter(|certificate| {
+                    certificate.user_public_key == person
+                        && certificate.device_public_key != this_device
+                        && certificate.capabilities.records.is_none()
+                        && answers_on_a_device_of_theirs(caller, Some(certificate))
+                })
+                .map(|certificate| certificate.device_public_key)
+                .collect::<Vec<_>>();
+            (
+                devices,
+                super::standing::keeping_device_elsewhere(peer, &this_device),
+            )
+        });
+        let workspace = workspace.to_string();
+        let mut asked: futures::stream::FuturesUnordered<_> = devices
+            .into_iter()
+            .filter_map(|device| self.reached(device, keeper.as_ref(), &workspace))
+            .map(|device| ActionProvider::invoke(&device, caller, request.clone()))
+            .collect();
+        // The device that keeps the record answers it; every other one has nothing asked under
+        // it, keeps no asked records, or is not reached now. A refusal is the answer once no
+        // device took it.
+        let mut refused = None;
+        while let Some(answer) = asked.next().await {
+            match answer {
+                Some(Ok(receipt)) => return Ok(receipt),
+                Some(Err(ActionCallError::Refused { reason }))
+                    if reason == tilo_remote_actions::asked::NOTHING_ASKED => {}
+                None
+                | Some(Err(
+                    ActionCallError::UnknownAction
+                    | ActionCallError::Unavailable { .. }
+                    | ActionCallError::Unanswered,
+                )) => {}
+                Some(Err(error)) => {
+                    refused.get_or_insert(error);
+                }
+            }
+        }
+        Err(refused.unwrap_or_else(nothing_asked))
+    }
+
+    /// The actions of `device`, a device of `workspace`, as this device reaches it: over the
+    /// link `device` holds open to this one, else dialled, at the address it signed into the
+    /// workspace where it is `keeper`, the device keeping the workspace, and by its key
+    /// otherwise.
+    fn reached(
+        &self,
+        device: [u8; 32],
+        keeper: Option<&([u8; 32], iroh::EndpointAddr)>,
+        workspace: &str,
+    ) -> Option<tilo_peer_state::actions::RemoteDevice> {
+        let service = self.action_service();
+        if let Some(linked) = service.remote_held(device, workspace) {
+            return Some(linked);
+        }
+        let address = match keeper {
+            Some((kept_by, address)) if *kept_by == device => address.clone(),
+            _ => iroh_base::EndpointAddr::new(iroh_base::EndpointId::from_bytes(&device).ok()?),
+        };
+        Some(service.remote(&self.inner.host.endpoint, &address, workspace))
+    }
+
+    /// Answer `request`, a person's `<record>#resolve`, as `caller`, from the records this
+    /// device keeps, on the device `certificate` certifies where the answer came over a link:
+    /// its receipt once the call it answers is admitted again or ended. Only a device that
+    /// holds the person's identity answers for them ([`answers_on_a_device_of_theirs`]).
+    pub fn resolve_kept_here(
+        &self,
+        caller: &Caller,
+        certificate: Option<&tilo_user_identity::DeviceCert>,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if !answers_on_a_device_of_theirs(caller, certificate) {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: tilo_remote_actions::asked::ON_YOUR_DEVICE.into(),
+            }));
+        }
         let invocation = request.invocation;
         let answer = match &request.argument {
             InvokeArgument::Json(arguments) => {

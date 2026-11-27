@@ -71,7 +71,11 @@ impl AppBrokerState {
                         })
                     }));
                 }
-                Ok(Some(there)) => run_there(there, caller, request, done).await,
+                Ok(Some(there)) => {
+                    // Followed there, by its caller, once it was taken.
+                    state.sent_on(&caller, &request, &there);
+                    run_there(there, caller, request, done).await;
+                }
                 Err(error) => done.complete(Err(error)),
             }
         });

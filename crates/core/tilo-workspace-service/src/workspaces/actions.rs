@@ -4451,18 +4451,7 @@ impl InWorkspace {
         // does a stand-in or a device confined to one workspace (its VM, or one placed for its
         // records).
         if tilo_actions::remote::asked::is_resolve(&request.target) {
-            let a_device_of_theirs = caller.key().is_none()
-                && self.certificate.as_ref().is_none_or(|certificate| {
-                    certificate.capabilities.agent.is_none()
-                        && !certificate.capabilities.stand_in
-                        && certificate.capabilities.workspace_name().is_none()
-                });
-            if !a_device_of_theirs {
-                return Pending::ready(Err(ActionCallError::Refused {
-                    reason: tilo_remote_actions::asked::ON_YOUR_DEVICE.into(),
-                }));
-            }
-            return workspaces.resolve_asked(caller, &request);
+            return workspaces.resolve_kept_here(caller, self.certificate.as_ref(), &request);
         }
         let reservation = self.server.log().reserve(caller, &request);
         self.run(workspaces, caller, request, reservation)

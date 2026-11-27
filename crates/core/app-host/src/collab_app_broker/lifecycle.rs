@@ -764,6 +764,7 @@ impl AppBrokerState {
                 external_moderation_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_action_calls::InvocationLog::default()),
                 child_calls: Mutex::default(),
+                forwarded_calls: Mutex::default(),
                 ended_invocations: crate::automation::BrokerInvocations::default(),
                 app_action_access: RwLock::new(
                     services

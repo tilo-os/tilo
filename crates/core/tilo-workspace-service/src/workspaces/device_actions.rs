@@ -135,18 +135,41 @@ impl DeviceWork {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.as_certified(
-            caller,
-            move |_, governance, workspace, certificate, caller| {
-                Box::pin(async move {
-                    governance
-                        .in_workspace_as(workspace, &certificate)
-                        .invoke(&caller, request)
-                        .await
-                        .unwrap_or(Err(ActionCallError::Unanswered))
-                })
-            },
-        )
+        self.as_certified(caller, move |work, workspace, certificate, caller| {
+            Box::pin(async move {
+                let governance = work.governance().ok_or(ActionCallError::UnknownAction)?;
+                governance
+                    .in_workspace_as(workspace, &certificate)
+                    .invoke(&caller, request)
+                    .await
+                    .unwrap_or(Err(ActionCallError::Unanswered))
+            })
+        })
+    }
+
+    /// `request`, a person's answer to an asked record, brought by a device of theirs that the
+    /// workspace's roster holds: answered here, where the record is kept, by the store's one
+    /// rule ([`super::Workspaces::resolve_kept_here`]). The device that keeps a record is the
+    /// one any of the person's devices brings their answer to, and it needs no governance of
+    /// its own to take it; one it does not keep is not asked here.
+    fn resolve(
+        self: &Arc<Self>,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.as_certified(caller, move |work, _, certificate, caller| {
+            Box::pin(async move {
+                let workspaces = work
+                    .turns
+                    .get()
+                    .and_then(super::WeakWorkspaces::upgrade)
+                    .ok_or(ActionCallError::UnknownAction)?;
+                workspaces
+                    .resolve_kept_here(&caller, Some(&certificate), &request)
+                    .await
+                    .unwrap_or(Err(ActionCallError::Unanswered))
+            })
+        })
     }
 
     /// `request`, one of the host's own operations (`account/…`) asked by a device of a
@@ -157,8 +180,9 @@ impl DeviceWork {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.as_certified(caller, move |_, governance, _, certificate, caller| {
+        self.as_certified(caller, move |work, _, certificate, caller| {
             Box::pin(async move {
+                let governance = work.governance().ok_or(ActionCallError::UnknownAction)?;
                 governance
                     .as_host(&certificate)
                     .invoke(&caller, request)
@@ -170,15 +194,13 @@ impl DeviceWork {
 
     /// What `decide` answers for `caller`, a device asking in a workspace whose roster holds its
     /// certificate, acting as the workspace says that device acts, handed this work, the
-    /// workspaces' governance, the workspace, that certificate and the caller; a device off the
-    /// roster, or a caller acting as anyone else on it, is not permitted, and with no governance
-    /// here nothing is known.
+    /// workspace, that certificate and the caller; a device off the roster, or a caller acting
+    /// as anyone else on it, is not permitted.
     fn as_certified(
         self: &Arc<Self>,
         caller: &Caller,
         decide: impl FnOnce(
             Arc<Self>,
-            super::ServiceWorkspaceActions,
             WorkspaceId,
             tilo_user_identity::DeviceCert,
             Caller,
@@ -190,8 +212,7 @@ impl DeviceWork {
         + 'static,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let work = Arc::clone(self);
-        let (Some(governance), Some(device), Some(workspace)) = (
-            self.governance(),
+        let (Some(device), Some(workspace)) = (
             caller.device_public_key().copied(),
             caller.workspace().and_then(WorkspaceId::parse),
         ) else {
@@ -235,7 +256,7 @@ impl DeviceWork {
                     return;
                 }
             };
-            completer.complete(decide(work, governance, workspace, certificate, caller).await);
+            completer.complete(decide(work, workspace, certificate, caller).await);
         });
         answer
     }
@@ -288,6 +309,33 @@ impl DeviceWork {
         }
         self.moved
             .send_modify(|moves| *moves = moves.wrapping_add(1));
+    }
+
+    /// How invocation `id` stands for `caller`: one `caller` admitted here, or one another
+    /// device brought that waits, or waited, in its asked record. Following that call is
+    /// reading its record, found by its full address (the caller's workspace and the call's
+    /// id), and is decided as that record is read ([`Caller::follows_by_identity`]): by whoever
+    /// asked it, or the device that brought it, on whatever link they ask. To anyone else it is
+    /// as unknown as an id nothing here admitted.
+    fn logged(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let log = self.log.lock_recover();
+        if let Some(state) = log.get(caller, id) {
+            return Some(state.clone());
+        }
+        let (asked, state) = log.admitted_by(id)?;
+        if !caller.follows_by_identity(asked) {
+            return None;
+        }
+        let state = state.clone();
+        drop(log);
+        let workspace = caller.workspace().and_then(WorkspaceId::parse)?.to_string();
+        let record = self
+            .turns
+            .get()
+            .and_then(super::WeakWorkspaces::upgrade)
+            .and_then(|workspaces| workspaces.asked_store())?
+            .record(&id.0.to_string())?;
+        (record.workspace == workspace).then_some(state)
     }
 
     /// Claim turns in `workspaces` from now on: the workspaces this work belongs to,
@@ -1246,7 +1294,7 @@ impl ActionProvider for Answers {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let logged = self.work.log.lock_recover().get(caller, id).cloned();
+        let logged = self.work.logged(caller, id);
         if let Some(answers) = self.work.providers.observe(caller, id) {
             // A call its person's approve ran here is the provider's to say of while it says
             // anything, and this work's once it ended.
@@ -1270,7 +1318,7 @@ impl ActionProvider for Answers {
         if let Some(change) = self.work.providers.next_change(caller, id) {
             return change;
         }
-        if self.work.log.lock_recover().get(caller, id).is_some() {
+        if self.work.logged(caller, id).is_some() {
             let mut moved = self.work.moved.subscribe();
             let (changed, change) = tilo_actions::remote::pending();
             self.work.runtime.spawn(async move {
@@ -1303,13 +1351,13 @@ impl ActionProvider for Answers {
                 None => Pending::ready(Err(not_served())),
             };
         }
-        match self.work.log.lock_recover().get(caller, id) {
+        match self.work.logged(caller, id) {
             Some(state) if state.is_terminal() => {
                 Pending::ready(Err(ActionCallError::NotCancellable {
                     reason: "the turn already finished here".into(),
                 }))
             }
-            Some(state) if waits_asked(state) => {
+            Some(state) if waits_asked(&state) => {
                 // Withdrawn from its person: its record asks them no more, and it ends so.
                 let at = tilo_actions::remote::asked::RecordRef::waited_in(&state.update);
                 let store = self
@@ -1712,9 +1760,10 @@ impl Answers {
             }
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
-        if hosted(&request.target.provider)
-            || tilo_actions::remote::asked::is_resolve(&request.target)
-        {
+        if tilo_actions::remote::asked::is_resolve(&request.target) {
+            return self.work.resolve(caller, request);
+        }
+        if hosted(&request.target.provider) {
             return self.work.govern(caller, request);
         }
         if request.target.provider == HOST_ACTIONS_PROVIDER {
