@@ -194,16 +194,16 @@ pub fn verify_invocation(
     signer_of(signed, workspace, revocations, (now_ns, None))
 }
 
-/// Check `request`, one of a host's own operations signed for no workspace, as
-/// [`verify_invocation`] does, and return its signer's certificate. An agent's grant proves its
-/// key here whatever workspaces it reaches: what it asks of the host beyond them is the
-/// operation's to judge, which asks the agent's person before it does it. A device confined to
-/// one workspace (a workspace's VM, or one placed for its records) asks the host for nothing.
+/// Check `request`, one of a host's own operations, as [`verify_invocation`] does, and return
+/// its signer's certificate. It is signed for no workspace, an invitation into one excepted,
+/// which is signed for that one: an agent's grant must reach the workspace the operation acts on,
+/// when it names one, and proves its key for making or listing workspaces, which name none. A
+/// device confined to one workspace (a workspace's VM, or one placed for its records) asks the
+/// host for nothing.
 ///
 /// # Errors
 ///
-/// As [`verify_invocation`]; [`InvocationError::OutOfScope`] for a device confined to one
-/// workspace.
+/// As [`verify_invocation`], the workspace's reach and a confined device's included.
 pub fn verify_host_invocation(
     request: &InvokeRequest,
     revocations: &RevocationList,
@@ -211,11 +211,15 @@ pub fn verify_host_invocation(
 ) -> Result<DeviceCert, InvocationError> {
     let signed = request.signed.as_ref().ok_or(InvocationError::Unsigned)?;
     check_signature(signed)?;
-    signed.statement().covers("", request)?;
+    let signed_for = crate::workspaces::invitation_scope(request).unwrap_or_default();
+    signed.statement().covers(signed_for, request)?;
     if !signed.statement().fresh_at(now_ns) {
         return Err(InvocationError::Stale);
     }
-    let cert = proven_signer(signed, revocations, (now_ns, None))?;
+    let cert = match crate::workspaces::host_operation_workspace(request) {
+        Some(workspace) => signer_of(signed, workspace, revocations, (now_ns, None))?,
+        None => proven_signer(signed, revocations, (now_ns, None))?,
+    };
     if cert.capabilities.workspace_name().is_some() {
         return Err(InvocationError::OutOfScope);
     }

@@ -763,6 +763,39 @@ pub fn invitation_scope(request: &InvokeRequest) -> Option<&str> {
         .and_then(serde_json::Value::as_str)
         .filter(|workspace| WorkspaceId::parse(workspace).is_some())
 }
+
+/// The workspace a host operation acts on, when it names one there already: the invitation into
+/// a workspace, or the workspace the operation's own arguments name (deleting, branching,
+/// entering, hosting or unhosting one). `None` for an operation that names no existing
+/// workspace: making one, or listing them, whose own authority decides them. An agent's grant
+/// must reach this workspace for the operation to be its caller's.
+#[must_use]
+pub fn host_operation_workspace(request: &InvokeRequest) -> Option<&str> {
+    if let Some(invited) = invitation_scope(request) {
+        return Some(invited);
+    }
+    let target = &request.target;
+    if target.provider != HOST_ACTIONS_PROVIDER
+        || target.address.resource != HOST_WORKSPACES_RESOURCE
+        || !matches!(
+            target.address.action.as_str(),
+            crate::workspaces::DELETE_WORKSPACE
+                | crate::workspaces::BRANCH_OWN_WORKSPACE
+                | crate::workspaces::ENTER_WORKSPACE
+                | crate::workspaces::HOST_WORKSPACE
+                | crate::workspaces::UNHOST_WORKSPACE
+        )
+    {
+        return None;
+    }
+    let InvokeArgument::Json(arguments) = &request.argument else {
+        return None;
+    };
+    arguments
+        .get("workspace")
+        .and_then(serde_json::Value::as_str)
+        .filter(|workspace| WorkspaceId::parse(workspace).is_some())
+}
 /// Branch `workspace`, one of the caller's person's own on a host that keeps
 /// workspaces of people's own: a new workspace of theirs, named `name` and
 /// labelled `labels` when given, that starts with every record of `workspace`

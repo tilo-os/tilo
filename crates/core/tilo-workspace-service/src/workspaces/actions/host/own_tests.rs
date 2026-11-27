@@ -7,14 +7,16 @@
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_action_services::server_account::{self, Reason, ServerAccount};
+use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
+    ReceiptStatus, RemoteActionTarget,
 };
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::JoinReply;
 use tilo_server_protocol::workspaces::{
-    AdminRefusal, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER,
-    HOST_WORKSPACES_RESOURCE, WorkspacesRequest, administer_invoke,
+    AdminRefusal, BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CreatedWorkspace, DELETE_WORKSPACE,
+    HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, WorkspacesRequest, administer_invoke,
 };
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, RevocationList, prepare_minted_grant,
@@ -1862,6 +1864,109 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
         .cloned();
     assert_eq!(rosa_row.unwrap()["role"], "editor", "{members}");
     server.shutdown().await;
+}
+
+/// `request`, a host operation, signed by `cert`'s device `key` for no workspace.
+async fn signed_host_request(
+    request: InvokeRequest,
+    cert: &DeviceCert,
+    key: &SigningKey,
+) -> InvokeRequest {
+    let mut signed = request.clone();
+    signed.signed = Some(Box::new(
+        tilo_server_protocol::invocation::sign_invocation(
+            "",
+            &request,
+            cert,
+            key,
+            tilo_clock::unix_now_ns(),
+        )
+        .await
+        .unwrap(),
+    ));
+    signed
+}
+
+/// A host's own operation is proved against the workspace it acts on: a key reaching one
+/// workspace deletes or branches that one (the workspace's own authority decides whether it
+/// may), and the same request for another is refused as not its key's reach. A make names the
+/// workspace it makes, never one it acts on.
+#[tokio::test]
+async fn a_host_operation_is_proved_against_the_workspace_it_acts_on() {
+    let root = SigningKey::from_bytes(&rand::random());
+    let key = SigningKey::from_bytes(&rand::random());
+    let here = "6f1d2c3b-4a59-4e7f-8a1b-2c3d4e5f6a7b";
+    let scoped = certified(
+        &root,
+        &key,
+        DeviceCapabilities::agent_grant(AgentScope::parse(here).unwrap()),
+    );
+    let other = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    let ask = |action: &str, workspace: Option<&str>| {
+        let mut request = super::super::tests::request("", action, json!({}));
+        request.target = RemoteActionTarget {
+            provider: HOST_ACTIONS_PROVIDER.into(),
+            address: ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
+        };
+        let arguments = match workspace {
+            Some(workspace) => json!({"workspace": workspace}),
+            None => json!({}),
+        };
+        request.argument = InvokeArgument::Json(arguments.as_object().cloned().unwrap());
+        request
+    };
+    for action in [DELETE_WORKSPACE, BRANCH_OWN_WORKSPACE] {
+        let signed = signed_host_request(ask(action, Some(here)), &scoped, &key).await;
+        assert!(
+            tilo_server_protocol::invocation::verify_host_invocation(
+                &signed,
+                &RevocationList::new(),
+                tilo_clock::unix_now_ns(),
+            )
+            .is_ok(),
+            "{action} acts on its own workspace"
+        );
+        let signed = signed_host_request(ask(action, Some(other)), &scoped, &key).await;
+        assert_eq!(
+            tilo_server_protocol::invocation::verify_host_invocation(
+                &signed,
+                &RevocationList::new(),
+                tilo_clock::unix_now_ns(),
+            ),
+            Err(tilo_server_protocol::invocation::InvocationError::OutOfScope),
+            "{action} reaches no other workspace"
+        );
+    }
+    // Making one names no workspace: its own check is the grant that makes workspaces.
+    let signed = signed_host_request(ask(CREATE_OWN_WORKSPACE, None), &scoped, &key).await;
+    assert!(
+        tilo_server_protocol::invocation::verify_host_invocation(
+            &signed,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .is_ok(),
+        "making a workspace names none to reach"
+    );
+    // A make that names the id of the workspace it makes takes a `workspace` argument and acts
+    // on no workspace that exists: it is not proved against that id's reach.
+    let mut made_under = ask(CREATE_OWN_WORKSPACE, Some(other));
+    made_under.argument = InvokeArgument::Json(
+        json!({"workspace": other, "name": "Another"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    );
+    let signed = signed_host_request(made_under, &scoped, &key).await;
+    assert!(
+        tilo_server_protocol::invocation::verify_host_invocation(
+            &signed,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .is_ok(),
+        "a make names the workspace it makes, not one it acts on"
+    );
 }
 
 /// A workspace this host handed to a person, as a deployment hands its
