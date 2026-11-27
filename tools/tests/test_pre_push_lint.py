@@ -8,6 +8,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+import unittest.mock
 from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1804,3 +1805,32 @@ class InheritedRedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeneratedContentTests(unittest.TestCase):
+    """The scratch tree a fix's patch is applied in is a repository of its own."""
+
+    def test_the_pushers_repository_a_hook_names_is_never_made_bare(self):
+        module = pre_push_lint()
+        clean = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        with tempfile.TemporaryDirectory() as scratch:
+            caller = Path(scratch) / "caller"
+            caller.mkdir()
+            git = lambda *args: subprocess.run(["git", *args], cwd=caller, env=clean, check=True,
+                                               capture_output=True, text=True)
+            git("init", "-q")
+            git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty",
+                "-m", "base")
+            revision = git("rev-parse", "HEAD").stdout.strip()
+            # Pushes come from linked worktrees, whose GIT_DIR is the worktree's own gitdir:
+            # `init` there writes core.bare into the repository every worktree shares.
+            git("worktree", "add", "-q", str(Path(scratch) / "pusher"))
+            patch = ("diff --git a/generated.txt b/generated.txt\nnew file mode 100644\n"
+                     "--- /dev/null\n+++ b/generated.txt\n@@ -0,0 +1 @@\n+made\n")
+            # A push hook runs with GIT_DIR naming the pusher's repository.
+            hook_env = {**clean, "GIT_DIR": str(caller / ".git" / "worktrees" / "pusher")}
+            with unittest.mock.patch.dict(os.environ, hook_env, clear=True):
+                content = module.generated_content(caller, revision, patch, ["generated.txt"])
+            self.assertEqual(content, {"generated.txt": "made\n"})
+            self.assertEqual(git("config", "core.bare").stdout.strip(), "false")
+            self.assertFalse((caller / "generated.txt").exists())

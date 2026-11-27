@@ -1258,10 +1258,16 @@ def generated_content(root: Path, revision: str, patch: str,
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(committed.stdout)
         if patch.strip():
-            # git applies a patch inside a repository only, so the scratch tree is one.
-            subprocess.run(["git", "init", "-q", "."], cwd=tree, capture_output=True, check=False)
+            # git applies a patch inside a repository only, so the scratch tree is one. The push
+            # hook runs with GIT_DIR naming the pusher's repository, and that wins over the
+            # working directory: with it, `init` would turn the pusher's repository bare and
+            # `apply` would patch it. So the git variables never reach the scratch tree's git.
+            scratch_env = {key: value for key, value in os.environ.items()
+                           if not key.startswith("GIT_")}
+            subprocess.run(["git", "init", "-q", "."], cwd=tree, env=scratch_env,
+                           capture_output=True, check=False)
             applied = subprocess.run(["git", "apply", "-p1", "--binary"], cwd=tree, input=patch,
-                                     capture_output=True, text=True, check=False)
+                                     env=scratch_env, capture_output=True, text=True, check=False)
             if applied.returncode != 0:
                 return None
         generated: dict[str, str | None] = {}
