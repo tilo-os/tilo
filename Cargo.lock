@@ -14961,6 +14961,7 @@ dependencies = [
  "tilo-device-identity",
  "tilo-endpoint-reachability",
  "tilo-files",
+ "tilo-fleet-catalogue",
  "tilo-identity",
  "tilo-invocations",
  "tilo-machine",

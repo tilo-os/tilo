@@ -693,10 +693,12 @@ impl<'a> Caller<'a> {
         let path = self.params.get("path");
         if tilo_actions::remote::settings_resources::is_section(path) {
             // A section of the settings is typed by the surface the sections publish, whichever
-            // app shows it: the workspace names it among the surfaces every holder declares.
+            // app shows it: the one `tilo sdk gen` writes their types from. The surface the
+            // workspace judges the sections' writes by goes by the same app's id, but only names
+            // their kinds and `set-*`, so it is no version a generated type was written for.
             let app = tilo_actions::remote::settings_resources::SURFACE_APP;
-            let published = collab_types::app_surface::bytes_of(app)
-                .map(|kept| surface_version(app, &String::from_utf8_lossy(kept)))
+            let published = fleet_catalogue::surface(app)
+                .map(|surface| surface_version(app, surface))
                 .unwrap_or_default();
             return changed(sent, &published, workspace);
         }
