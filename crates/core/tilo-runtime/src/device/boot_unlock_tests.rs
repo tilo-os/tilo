@@ -318,7 +318,7 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
     // their yes there certifies it.
     home.env().set("XDG_CONFIG_HOME", &desk_store);
     let boot = a_boot(1);
-    let enrolled = answered(Box::pin(desk_unlock.enrol(&boot.args)), async {
+    let enrolled = Box::pin(answered(desk_unlock.enrol(&boot.args), async {
         let asked = asked_on_the_laptop(&laptop_asked, &person).await;
         assert_eq!(
             asked.facts.words.replace(['\u{2068}', '\u{2069}'], ""),
@@ -349,7 +349,7 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
             .await
             .expect("the answer is decided at once")
             .expect("the person's yes is taken on the laptop");
-    })
+    }))
     .await;
     let enrolled = enrolled.expect("the desk's boot key is certified through the laptop");
     let response: EnrolResponse =
@@ -382,7 +382,7 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
     // nothing is certified or published for it.
     home.env().set("XDG_CONFIG_HOME", &desk_store);
     let refused = a_boot(2);
-    let declined = answered(Box::pin(desk_unlock.enrol(&refused.args)), async {
+    let declined = Box::pin(answered(desk_unlock.enrol(&refused.args), async {
         let asked = asked_on_the_laptop(&laptop_asked, &person).await;
         laptop_asks
             .resolve(
@@ -396,7 +396,7 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
             .await
             .expect("the answer is decided at once")
             .expect("the person's no is taken on the laptop");
-    })
+    }))
     .await;
     let declined = declined.expect_err("a declined enrolment certifies nothing");
     assert_eq!(declined.code, UNLOCK_DECLINED);
