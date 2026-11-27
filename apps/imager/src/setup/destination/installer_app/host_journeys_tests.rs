@@ -17,13 +17,13 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use super::surface_tests::{FakeBackend, KEY};
 use super::*;
 use crate::backend::destination::network_step::{
     Change, Connectivity, Device, Network, NetworkStep, Readings, Wifi, WifiNetwork,
 };
 use crate::hosting::testing::TestHost;
 use crate::setup::destination::effects::{REVIEW, STORAGE};
+use crate::setup::destination::testing::{FakeBackend, KEY};
 
 type App = TestHost;
 

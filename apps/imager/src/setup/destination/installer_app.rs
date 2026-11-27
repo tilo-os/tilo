@@ -240,7 +240,7 @@ const CTRL_DONE: &str = "\u{1}done";
 const CTRL_FAIL: &str = "\u{1}fail";
 const PREFLIGHT_OK_PREFIX: &str = "\u{1}storage-preflight-ok:";
 const PREFLIGHT_FAIL_PREFIX: &str = "\u{1}storage-preflight-fail:";
-const RECOVERY_KEY_PREFIX: &str = "::tilo-recovery-key::";
+pub(super) const RECOVERY_KEY_PREFIX: &str = "::tilo-recovery-key::";
 
 const INSTALLED_REMOVE_MEDIUM: &str = "Installed. Remove the installer medium, then reboot.";
 const INSTALLED_RESTART: &str = "Installed. Restart to start Tilo.";

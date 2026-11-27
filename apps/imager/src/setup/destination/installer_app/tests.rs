@@ -3,17 +3,7 @@ use crate::backend::destination::disks::{DiskPartition, EFI_SYSTEM_GUID, LINUX_F
 use automerge::AutoCommit;
 use automerge::ReadDoc;
 use serde_json::Value;
-use tilo_ui_base::widget::find_test_id;
-
-fn find_test_id_mut<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
-    if widget.test_id() == Some(id) {
-        return Some(widget);
-    }
-    widget
-        .children_mut()
-        .into_iter()
-        .find_map(|child| find_test_id_mut(child, id))
-}
+use tilo_ui_base::widget::{find_test_id, find_test_id_mut};
 
 fn perform(
     app: &mut InstallerApp,

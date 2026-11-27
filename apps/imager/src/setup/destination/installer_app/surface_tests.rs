@@ -2,7 +2,6 @@
 //! transitions.
 
 use std::collections::HashSet;
-use std::sync::Mutex;
 
 use serde_json::{Value, json};
 
@@ -20,82 +19,7 @@ use ui::tilo_actions::remote::{
 mod capacity_tests;
 mod method_intent_tests;
 
-pub(super) struct FakeBackend {
-    disks: Vec<Disk>,
-    pub(super) installs: Mutex<Vec<(String, String, String, InstallOptions)>>,
-    pub(super) power: Mutex<Vec<PowerAction>>,
-    succeed: bool,
-}
-
-pub(super) const KEY: &str =
-    "bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk";
-pub(super) const SECRET: &str = "correct horse battery staple";
-
-impl FakeBackend {
-    pub(super) fn new() -> Arc<Self> {
-        Self::finishing(true)
-    }
-
-    pub(super) fn finishing(succeed: bool) -> Arc<Self> {
-        Arc::new(Self {
-            disks: Disk::samples(),
-            installs: Mutex::new(Vec::new()),
-            power: Mutex::new(Vec::new()),
-            succeed,
-        })
-    }
-
-    pub(super) fn with_disks(disks: Vec<Disk>) -> Arc<Self> {
-        Arc::new(Self {
-            disks,
-            installs: Mutex::new(Vec::new()),
-            power: Mutex::new(Vec::new()),
-            succeed: true,
-        })
-    }
-}
-
-impl InstallBackend for FakeBackend {
-    fn read_disks(&self) -> Vec<Disk> {
-        self.disks.clone()
-    }
-
-    fn run_install(
-        &self,
-        disk: &str,
-        user: &str,
-        password: &str,
-        opts: &InstallOptions,
-        on_line: &mut dyn FnMut(String),
-    ) -> std::io::Result<bool> {
-        self.installs.lock().unwrap().push((
-            disk.to_owned(),
-            user.to_owned(),
-            password.to_owned(),
-            opts.clone(),
-        ));
-        on_line("==> Installing Tilo onto the target".to_owned());
-        on_line(format!("{RECOVERY_KEY_PREFIX}{KEY}"));
-        // A helper that printed the key raw must not leak it either.
-        on_line(format!("cryptenroll: new key {KEY}"));
-        on_line("==> Setting hostname 'lab-1' and time zone 'UTC'".to_owned());
-        Ok(self.succeed)
-    }
-
-    fn run_alongside_preflight(
-        &self,
-        _disk: &str,
-        _opts: &InstallOptions,
-        _on_line: &mut dyn FnMut(String),
-    ) -> std::io::Result<bool> {
-        Ok(true)
-    }
-
-    fn run_power(&self, action: PowerAction) -> std::io::Result<bool> {
-        self.power.lock().unwrap().push(action);
-        Ok(true)
-    }
-}
+use crate::setup::destination::testing::{FakeBackend, KEY, SECRET};
 
 fn app(backend: &Arc<FakeBackend>) -> (InstallerApp, AutoCommit) {
     let mut app = InstallerApp::with_disks(Vec::new()).with_backend(backend.clone());
@@ -344,14 +268,9 @@ tilo_test_env::scenario! {
             }
         }
         {
-            let backend = Arc::new(FakeBackend {
-                disks: crate::backend::destination::disks::parse_lsblk(
-                    &crate::backend::destination::internal_handoff::tests::lsblk_json().to_string(),
-                ),
-                installs: Mutex::new(Vec::new()),
-                power: Mutex::new(Vec::new()),
-                succeed: true,
-            });
+            let backend = FakeBackend::with_disks(crate::backend::destination::disks::parse_lsblk(
+                &crate::backend::destination::internal_handoff::tests::lsblk_json().to_string(),
+            ));
             let (mut app, mut doc) = app(&backend);
             app.refresh_disks_with(backend.read_disks());
             app.apply_internal_handoff(crate::backend::destination::internal_handoff::tests::handoff());

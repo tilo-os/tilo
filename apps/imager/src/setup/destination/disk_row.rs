@@ -110,22 +110,12 @@ mod tests {
 
     fn disk() -> Disk {
         Disk {
-            name: "/dev/vdb".into(),
             size: "40.0 GiB".into(),
-            model: String::new(),
-            size_bytes: 40 * 1024 * 1024 * 1024,
             partition_table: "gpt".into(),
             partition_table_uuid: "11111111-1111-1111-1111-111111111111".into(),
-            logical_sector_size: 512,
             major_minor: "252:16".into(),
-            wwn: String::new(),
             serial: "tilo-test-target".into(),
-            removable: false,
-            read_only: false,
-            is_system: false,
-            live_system_nodes: Vec::new(),
-            internal_plan: None,
-            partitions: Vec::new(),
+            ..Disk::blank("/dev/vdb", 40 * 1024 * 1024 * 1024)
         }
     }
 

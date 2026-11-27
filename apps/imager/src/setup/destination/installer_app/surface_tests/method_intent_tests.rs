@@ -10,12 +10,7 @@ fn occupied(filesystem: &str) -> Disk {
 }
 
 fn fixture(filesystem: &str) -> (InstallerApp, AutoCommit, Arc<FakeBackend>) {
-    let backend = Arc::new(FakeBackend {
-        disks: vec![occupied(filesystem), Disk::samples().remove(1)],
-        installs: Mutex::new(Vec::new()),
-        power: Mutex::new(Vec::new()),
-        succeed: true,
-    });
+    let backend = FakeBackend::with_disks(vec![occupied(filesystem), Disk::samples().remove(1)]);
     let (mut app, doc) = app(&backend);
     app.step = Step::Disk;
     (app, doc, backend)

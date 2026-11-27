@@ -18,6 +18,8 @@ pub mod installer_app;
 pub mod keyboard_view;
 pub mod seg_choice;
 pub mod status_log;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod unattended;
 
 pub use installer_app::{InstallState, InstallerApp, Step};

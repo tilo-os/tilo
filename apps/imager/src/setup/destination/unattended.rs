@@ -1235,15 +1235,13 @@ mod tests {
     )]
 
     use super::*;
-    use crate::backend::destination::backend::InstallBackend;
-    use crate::backend::destination::install::{InstallOptions, PowerAction};
     use crate::setup::destination::installer_app::Protection;
+    use crate::setup::destination::testing::{FakeBackend, KEY};
     use serde_json::json;
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixStream;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    const KEY: &str = "bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk";
     const DISK_SECRET: &str = "correct horse battery staple";
     const PIN: &str = "739184";
 
@@ -1253,86 +1251,19 @@ mod tests {
 
     fn disk() -> Disk {
         Disk {
-            name: "/dev/vdb".into(),
             size: "40G".into(),
             model: "QEMU HARDDISK".into(),
-            size_bytes: 40 * 1024 * 1024 * 1024,
-            partition_table: String::new(),
-            partition_table_uuid: String::new(),
-            logical_sector_size: 512,
             major_minor: "252:16".into(),
-            wwn: String::new(),
             serial: "tilo-install-target".into(),
-            removable: false,
-            read_only: false,
-            is_system: false,
-            partitions: Vec::new(),
-            live_system_nodes: Vec::new(),
-            internal_plan: None,
+            ..Disk::blank("/dev/vdb", 40 * 1024 * 1024 * 1024)
         }
     }
-
-    type InstallLog = Arc<Mutex<Vec<(String, String, String, InstallOptions)>>>;
 
     struct Refuse;
 
     impl ProtectionProbe for Refuse {
         fn probe(&mut self) -> Result<ProtectionReport, String> {
             Err("the actual TPM2 did not answer".into())
-        }
-    }
-
-    #[derive(Clone, Default)]
-    struct Fake {
-        installs: InstallLog,
-        power: Arc<Mutex<Vec<PowerAction>>>,
-        succeed: Arc<Mutex<bool>>,
-    }
-
-    impl Fake {
-        fn succeeding() -> Self {
-            let fake = Self::default();
-            *fake.succeed.lock().unwrap() = true;
-            fake
-        }
-    }
-
-    impl InstallBackend for Fake {
-        fn read_disks(&self) -> Vec<Disk> {
-            vec![disk()]
-        }
-
-        fn run_install(
-            &self,
-            disk: &str,
-            user: &str,
-            password: &str,
-            opts: &InstallOptions,
-            on_line: &mut dyn FnMut(String),
-        ) -> std::io::Result<bool> {
-            self.installs.lock().unwrap().push((
-                disk.into(),
-                user.into(),
-                password.into(),
-                opts.clone(),
-            ));
-            on_line(format!("::tilo-recovery-key::{KEY}"));
-            on_line("==> Preparing the account on the installed system".into());
-            Ok(*self.succeed.lock().unwrap())
-        }
-
-        fn run_alongside_preflight(
-            &self,
-            _disk: &str,
-            _opts: &InstallOptions,
-            _on_line: &mut dyn FnMut(String),
-        ) -> std::io::Result<bool> {
-            Ok(true)
-        }
-
-        fn run_power(&self, action: PowerAction) -> std::io::Result<bool> {
-            self.power.lock().unwrap().push(action);
-            Ok(true)
         }
     }
 
@@ -1381,9 +1312,9 @@ mod tests {
         })
     }
 
-    fn build_app(fake: &Fake, protection: Protection) -> InstallerApp {
+    fn build_app(fake: &Arc<FakeBackend>, protection: Protection) -> InstallerApp {
         let mut app = InstallerApp::with_disks(Vec::new())
-            .with_backend(Arc::new(fake.clone()))
+            .with_backend(fake.clone())
             .with_protection_for_test(protection);
         app.enable_unattended_mode();
         app
@@ -1398,7 +1329,7 @@ mod tests {
 
         phase a_private_hash_recipe_installs_through_published_actions;
         {
-            let fake = Fake::succeeding();
+            let fake = FakeBackend::with_disks(vec![disk()]);
             let mut app = build_app(
                 &fake,
                 Protection {
@@ -1451,7 +1382,7 @@ mod tests {
 
         phase without_protection_the_account_password_is_the_startup_secret;
         {
-            let fake = Fake::succeeding();
+            let fake = FakeBackend::with_disks(vec![disk()]);
             let mut app = build_app(
                 &fake,
                 Protection {
@@ -1489,7 +1420,7 @@ mod tests {
 
         phase tpm2_requires_the_actual_probe_and_uses_the_reviewed_pin;
         {
-            let fake = Fake::succeeding();
+            let fake = FakeBackend::with_disks(vec![disk()]);
             let mut app = build_app(
                 &fake,
                 Protection {
@@ -1524,7 +1455,7 @@ mod tests {
 
         phase an_explicit_passphrase_plan_survives_a_tpm_verified_target;
         {
-            let fake = Fake::succeeding();
+            let fake = FakeBackend::with_disks(vec![disk()]);
             let mut app = build_app(
                 &fake,
                 Protection {
@@ -1564,7 +1495,7 @@ mod tests {
 
         phase a_failed_hardware_probe_refuses_before_disk_mutation_and_leaves_the_wizard;
         {
-            let fake = Fake::succeeding();
+            let fake = FakeBackend::with_disks(vec![disk()]);
             let mut app = build_app(
                 &fake,
                 Protection {
@@ -1622,7 +1553,7 @@ mod tests {
 
         phase a_changed_disk_identity_refuses_and_names_the_reviewed_target;
         {
-            let fake = Fake::succeeding();
+            let fake = FakeBackend::with_disks(vec![disk()]);
             let mut app = build_app(
                 &fake,
                 Protection {
@@ -1867,7 +1798,7 @@ mod tests {
 
     #[test]
     fn no_discovered_endpoint_with_a_terminal_binds_an_owned_fallback_and_stays_controllable() {
-        let fake = Fake::succeeding();
+        let fake = FakeBackend::with_disks(vec![disk()]);
         let mut app = build_app(
             &fake,
             Protection {
