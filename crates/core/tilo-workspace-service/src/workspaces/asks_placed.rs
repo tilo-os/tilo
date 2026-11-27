@@ -54,6 +54,14 @@ struct Placement {
 #[derive(Default)]
 pub(super) struct AsksPlaced(Mutex<BTreeMap<String, Placement>>);
 
+impl AsksPlaced {
+    /// Forget every placement held in memory, as a site does when it starts again.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn forget(&self) {
+        self.0.lock_recover().clear();
+    }
+}
+
 impl Workspaces {
     /// The grant this device, one of the person's own, gives the site `host` for `workspace`'s
     /// record of asked calls as it hands the workspace over, the record founded first so the
@@ -105,6 +113,21 @@ impl Workspaces {
         }
         tilo_user_identity::verify_placing_grant(&grant)
             .map_err(|error| format!("the grant does not verify: {error}"))?;
+        // Kept on disk as well: the site keeps writing the record after it starts again.
+        let bytes = postcard::to_allocvec(&grant).map_err(|error| error.to_string())?;
+        tilo_files::native::atomic::write(&self.asks_grant_path(workspace), &bytes)
+            .map_err(|error| format!("the site's grant could not be kept: {error}"))?;
+        self.place_asks(workspace, grant, records);
+        Ok(())
+    }
+
+    /// Where this site keeps the grant of `workspace`'s record of asked calls.
+    fn asks_grant_path(&self, workspace: &str) -> std::path::PathBuf {
+        self.inner.dir.join(format!("{workspace}.asks-grant"))
+    }
+
+    /// Place a fresh key of this site's for `records` of `workspace` under `grant`.
+    fn place_asks(&self, workspace: &str, grant: DeviceCert, records: PlacedRecords) {
         self.inner.asks_placed.0.lock_recover().insert(
             workspace.to_owned(),
             Placement {
@@ -114,7 +137,29 @@ impl Workspaces {
                 device: None,
             },
         );
-        Ok(())
+    }
+
+    /// The grant this site kept on disk for `workspace`'s record of asked calls before it started
+    /// again, placed again where it still verifies; nothing where it kept none.
+    fn restore_asks(&self, workspace: &str) {
+        let Ok(bytes) = std::fs::read(self.asks_grant_path(workspace)) else {
+            return;
+        };
+        let restored = postcard::from_bytes::<DeviceCert>(&bytes)
+            .map_err(|error| error.to_string())
+            .and_then(|grant| {
+                let id = WorkspaceId::parse(workspace).ok_or("not a workspace's id")?;
+                let records = asks_records(id)?;
+                tilo_user_identity::verify_placing_grant(&grant)
+                    .map_err(|error| error.to_string())?;
+                Ok((grant, records))
+            });
+        match restored {
+            Ok((grant, records)) => self.place_asks(workspace, grant, records),
+            Err(why) => {
+                tracing::warn!(%workspace, %why, "the site's kept grant of asked calls does not read; it writes none until the workspace is handed over again");
+            }
+        }
     }
 
     /// The device this site writes `workspace`'s record of asked calls as, where it was granted
@@ -128,6 +173,15 @@ impl Workspaces {
         workspace: &str,
     ) -> Option<Result<Arc<MemberDevice>, String>> {
         let now = tilo_clock::unix_now_ns();
+        if !self
+            .inner
+            .asks_placed
+            .0
+            .lock_recover()
+            .contains_key(workspace)
+        {
+            self.restore_asks(workspace);
+        }
         let (grant, records, key) = {
             let placed = self.inner.asks_placed.0.lock_recover();
             let placement = placed.get(workspace)?;

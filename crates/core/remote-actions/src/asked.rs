@@ -170,6 +170,7 @@ impl Record {
             dispatch: self.dispatch.clone(),
             context: self.context.clone(),
             taken: None,
+            seen: None,
             outcome: None,
             edited: self.edited.clone(),
             pressed: self.pressed.clone(),
@@ -892,6 +893,15 @@ impl AskedStore {
         }
     }
 
+    /// Write into the record `at` that this device, which keeps the person's root, took it in and
+    /// asks them: the device that asked reads that it reached the root before they answer.
+    pub fn seen(&self, at: &RecordRef) {
+        if let Some(mut ask) = self.kept_ask(at) {
+            ask.seen = self.here.get().cloned();
+            self.keep(&ask);
+        }
+    }
+
     /// Write how the call `invocation` ended where it ran, `outcome`, into its record in the
     /// workspace: what the device that asked it follows ([`KeptAsk::outcome`]). This device keeps
     /// it no longer.
@@ -931,6 +941,18 @@ impl AskedStore {
             .iter()
             .find(|record| record.at == *at)
             .map(Record::kept)
+    }
+
+    /// Every record kept here in `workspace` that still waits for its person's answer.
+    #[must_use]
+    pub fn kept_in(&self, workspace: &str) -> Vec<KeptAsk> {
+        self.kept
+            .lock_recover()
+            .records
+            .iter()
+            .filter(|record| record.at.workspace == workspace && record.status == Status::Asked)
+            .map(Record::kept)
+            .collect()
     }
 
     /// The record of `invocation` as it is kept.

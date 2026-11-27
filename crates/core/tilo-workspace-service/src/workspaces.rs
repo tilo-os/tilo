@@ -39,6 +39,7 @@ mod asked_grants;
 // The asked calls that wait, kept in their workspaces' records across the host's restarts.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod asked_kept;
+pub use asked_kept::NotAtRoot;
 // The record of asked calls a site of another operator is placed for in a workspace it keeps.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod asks_placed;
@@ -1260,6 +1261,9 @@ struct WorkspacesInner {
     /// ([`asked_kept`]).
     #[cfg(not(target_arch = "wasm32"))]
     unkept_asks: std::sync::Mutex<Vec<tilo_actions::remote::asked::KeptAsk>>,
+    /// The calls this device kept for a device that keeps its person's root and waits on itself
+    /// ([`Workspaces::ask_at_root`]): their records are its own to read and forget.
+    awaited_at_root: std::sync::Mutex<std::collections::HashSet<tilo_actions::InvocationId>>,
     /// What runs the workspaces' Linux machines, as a branch takes its
     /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
@@ -1804,6 +1808,7 @@ impl Workspaces {
                 asks_placed: asks_placed::AsksPlaced::default(),
                 #[cfg(not(target_arch = "wasm32"))]
                 unkept_asks: std::sync::Mutex::default(),
+                awaited_at_root: std::sync::Mutex::default(),
                 machines: std::sync::RwLock::default(),
                 own_readings: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),

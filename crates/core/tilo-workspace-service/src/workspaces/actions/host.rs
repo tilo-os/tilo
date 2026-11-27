@@ -766,7 +766,7 @@ impl Workspaces {
             operation,
             ServiceOperation::CreateWorkspace | ServiceOperation::CreateOwnWorkspace
         ) && let Some(handed) = self
-            .found_through_their_device((caller, device), request, (&args, now))
+            .found_at_their_root((caller, device), request, (&args, now))
             .await?
         {
             return Ok(handed);

@@ -2988,12 +2988,9 @@ impl Daemon {
         // copied is kept here, where their shell reads it as the copies another device offers.
         let clipboard = super::clipboard::Clipboard::new(&workspaces);
         clipboard.register(&workspaces.copies().providers());
-        // A computer that founded its person here makes their workspaces, and makes one for
-        // another of their devices that asks it over the same action service.
+        // A computer that founded its person here answers for their account: the keys they
+        // approve are certified here.
         if own {
-            super::founding_create::FoundingCreate::new(&workspaces)
-                .register(&workspaces.copies().providers());
-            // It answers for their account too: the keys they approve are certified here.
             super::account_keys::AccountKeys::new().register(&workspaces.copies().providers());
         }
         // The interfaces this computer wakes through are kept there too, and the wakes of the

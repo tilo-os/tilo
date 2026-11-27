@@ -2881,3 +2881,9 @@ pub async fn hear_revocations(
         })
         .expect("the copy takes the revocations in");
 }
+
+/// `workspaces` forgets, as it does when it starts again, every placement it holds in memory for
+/// records of asked calls: what it kept on disk is all it has after.
+pub fn restart_asks_placements(workspaces: &Workspaces) {
+    workspaces.inner.asks_placed.forget();
+}

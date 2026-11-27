@@ -35,6 +35,9 @@ use tilo_user_identity::DeviceCert;
 
 use super::{WeakWorkspaces, Workspaces};
 
+mod found;
+pub use found::{NOT_FOR_THIS_DEVICE, found_target, is_found};
+
 /// A call the host runs at the root, on its way to how it ended.
 pub type RootRun = Pin<Box<dyn Future<Output = InvocationUpdate> + Send>>;
 
@@ -61,6 +64,64 @@ pub trait RootKept: Send + Sync {
         agent: &str,
         name: &str,
     ) -> Certifying;
+}
+
+/// The provider a make of one of the person's workspaces, asked by another device of theirs, is
+/// kept for their root under: a device that keeps it runs it ([`found_request`]).
+pub const FOUND_PROVIDER: &str = "so.tilo.founding";
+/// The resource the person's workspaces are made under, as their account names it.
+pub const FOUND_RESOURCE: &str = "account/workspaces";
+/// Make a workspace.
+pub const FOUND_ACTION: &str = "create";
+
+/// The make of a workspace called `name`, under `labels` and the id `id`, that another device
+/// of the person's keeps for a device that keeps their root.
+#[must_use]
+pub fn found_request(name: &str, labels: &WorkspaceLabels, id: Option<&str>) -> InvokeRequest {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("name".into(), Value::String(name.to_owned()));
+    if !labels.is_empty()
+        && let Ok(labels) = serde_json::to_value(labels)
+    {
+        arguments.insert("labels".into(), labels);
+    }
+    if let Some(id) = id {
+        arguments.insert("id".into(), Value::String(id.to_owned()));
+    }
+    InvokeRequest::plain(
+        tilo_actions::remote::RemoteActionTarget {
+            provider: FOUND_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(FOUND_RESOURCE, FOUND_ACTION),
+        },
+        arguments,
+    )
+}
+
+/// What the person reads on the device that keeps their root before saying yes to making the
+/// workspace `name` for their device `asking`.
+#[must_use]
+pub fn found_question(name: &str, asking: &str) -> AskedFacts {
+    let mut args = tilo_history::FluentArgs::new();
+    args.set("name", name.to_owned());
+    args.set("device", asking.to_owned());
+    AskedFacts {
+        words: crate::i18n::message(None, "founding-create-question", &args),
+        on: Some(name.to_owned()),
+        effect: Some(tilo_action_types::ActionKind::Outside),
+        ..AskedFacts::default()
+    }
+}
+
+/// How a device that keeps the person's root takes in a call kept for it that the host runs
+/// ([`Workspaces::found_decides`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decided {
+    /// The person is asked here, and it runs on their yes.
+    Ask,
+    /// It runs now: what the person's grants allow needs no yes.
+    Run,
+    /// It ends refused, for the reason given, and nobody is asked.
+    Refuse(String),
 }
 
 /// The choice a make asked by an agent offers its person, by its place among the choices: let
@@ -282,6 +343,11 @@ impl Workspaces {
         let Some(workspace) = workspace else {
             return Some(Err("no workspace here keeps it for its person".to_owned()));
         };
+        // The same make asked again under another id, as labelled as before, follows the record
+        // kept the first time: the person is asked once, and one workspace is made.
+        if let Some(kept) = self.kept_again(&workspace, certificate, request) {
+            return Some(Ok((kept.at, kept.facts)));
+        }
         let place = self.place_here();
         let facts = asked_at_root(facts, certificate, request, &place);
         let context = certificate
@@ -300,13 +366,40 @@ impl Workspaces {
         )
     }
 
+    /// The record kept in `workspace` for the root of a make `request` asks again, asked under
+    /// `certificate` with the same labels, that waits still: none for a make with no labels.
+    fn kept_again(
+        &self,
+        workspace: &str,
+        certificate: Option<&DeviceCert>,
+        request: &InvokeRequest,
+    ) -> Option<KeptAsk> {
+        let asked = Asked::of(request)?;
+        asked.labels.as_ref()?;
+        let key = certificate?.device_public_key;
+        // Read where it was kept: the workspace's record takes it in only once it is written.
+        self.asked_store()?
+            .kept_in(workspace)
+            .into_iter()
+            .find(|kept| {
+                kept.dispatch == AT_ROOT
+                    && kept.outcome.is_none()
+                    && kept.request.invocation != request.invocation
+                    && kept.caller.clone().restored().device_public_key() == Some(&key)
+                    && Asked::of(&kept.request).is_some_and(|before| {
+                        before.name == asked.name
+                            && before.workspace == asked.workspace
+                            && before.labels == asked.labels
+                    })
+            })
+    }
+
     /// `ended`, how the device that keeps `person`'s root ended a make this host kept for it: one
-    /// that made or entered the workspace has it kept here as the person's own, labelled as
-    /// `request` asked, once it is placed here.
+    /// that made or entered the workspace has it kept here as the person's own once it is placed
+    /// here, labelled as it was asked where it was founded.
     pub(crate) async fn took_in(
         &self,
         person: [u8; 32],
-        request: &InvokeRequest,
         ended: InvocationUpdate,
     ) -> InvocationUpdate {
         let InvocationUpdate::Succeeded { invocation, output } = &ended else {
@@ -334,11 +427,6 @@ impl Workspaces {
             && let Err(error) = own.record(&person, &workspace)
         {
             return failed(*invocation, &error);
-        }
-        if let Some(labels) = Asked::of(request).and_then(|asked| asked.labels)
-            && let Err(error) = self.label(&workspace, &labels).await
-        {
-            return failed(*invocation, &error.to_string());
         }
         ended
     }
@@ -410,8 +498,36 @@ impl AtRoot {
 
     /// `asks`, the calls kept for a device that keeps the person's root, as they stand now:
     /// those that wait are taken in, for the person to answer here once.
-    pub fn kept_changed(&self, asks: Vec<KeptAsk>) {
+    pub fn kept_changed(&self, mut asks: Vec<KeptAsk>) {
+        let here = self.store.here().map(str::to_owned);
+        let (mut asked, mut refused) = (Vec::new(), Vec::new());
+        for ask in &mut asks {
+            let new = ask.dispatch == AT_ROOT
+                && ask.outcome.is_none()
+                && ask.taken.is_none()
+                && self.store.kept_ask(&ask.at).is_none();
+            if !new || !is_found(&ask.request) {
+                continue;
+            }
+            let Some(workspaces) = self.workspaces.upgrade() else {
+                return;
+            };
+            let caller = ask.caller.clone().restored();
+            match workspaces.found_decides(&caller, &ask.at.workspace) {
+                // Taken in as taken here: it runs at once, and nobody is asked.
+                Decided::Run => ask.taken.clone_from(&here),
+                Decided::Ask if ask.seen.is_none() => asked.push(ask.at.clone()),
+                Decided::Ask => {}
+                Decided::Refuse(why) => refused.push((ask.request.invocation, why)),
+            }
+        }
         self.store.take_in(asks);
+        for at in asked {
+            self.store.seen(&at);
+        }
+        for (invocation, why) in refused {
+            self.store.settle_for(invocation, failed(invocation, &why));
+        }
     }
 
     /// What `request` asks, as the person: a new workspace founded once, here, with them as its
@@ -487,8 +603,20 @@ impl AtRoot {
                 .clone()
                 .unwrap_or_else(|| made_id(invocation));
             let (summary, placed) = match workspaces.summary(&workspace).await {
+                // Founded already, before this device started again: placed where it was then,
+                // and the agent enters there as it would have.
                 Ok(summary) if asked.workspace.is_none() || is_member(&summary, person) => {
-                    (summary, None)
+                    let placed = match placed_at {
+                        Some((at, _)) if asked.workspace.is_none() => {
+                            workspaces.hosts(&workspace).await.ok().and_then(|hints| {
+                                hints
+                                    .into_iter()
+                                    .find(|hint| hint.host.device_public_key == at)
+                            })
+                        }
+                        _ => None,
+                    };
+                    (summary, placed)
                 }
                 Ok(_) => {
                     return failed(
@@ -529,6 +657,13 @@ impl AtRoot {
                     }
                 }
             };
+            // Labelled here, where it was founded and its owner writes: the host that asked
+            // takes it in labelled, never as a device no member of it yet.
+            if let Some(labels) = asked.labels.as_ref().filter(|labels| !labels.is_empty())
+                && let Err(error) = workspaces.label(&summary.workspace, labels).await
+            {
+                return failed(invocation, &error.to_string());
+            }
             let mut grant = None;
             if let_in {
                 let (key, agent, label) = agent;
@@ -642,7 +777,7 @@ fn agent_of(caller: &Caller, context: &Value) -> Result<(DeviceCert, AgentNamed)
 }
 
 /// The id of the workspace the make `invocation` founds.
-fn made_id(invocation: InvocationId) -> String {
+pub(crate) fn made_id(invocation: InvocationId) -> String {
     uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, invocation.0.as_bytes()).to_string()
 }
 
@@ -680,6 +815,14 @@ impl AskedDispatch for AtRoot {
     ) -> Result<(), ActionCallError> {
         let run = if let Some(asked) = Asked::of(&request) {
             self.make(caller, &request, asked, context)?
+        } else if is_found(&request) {
+            let workspaces = self
+                .workspaces
+                .upgrade()
+                .ok_or_else(|| refused("this device keeps no workspaces"))?;
+            let (caller, request) = (caller.clone(), request.clone());
+            let workspace = caller.workspace().unwrap_or_default().to_owned();
+            Box::pin(async move { workspaces.found_asked(&caller, &request, &workspace).await })
         } else if self.kept.runs(&request) {
             self.kept.run(request.clone(), caller.clone())
         } else {

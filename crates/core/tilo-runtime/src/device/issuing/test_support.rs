@@ -1,5 +1,5 @@
-//! A device that prints one ticket, for an embedder's test: the laptop a phone test signs a
-//! device in with, without holding the sync engine itself.
+//! A device that prints one ticket, for an embedder's test: the laptop a server test signs the
+//! person's server in with, without holding the sync engine itself.
 
 use std::sync::Arc;
 
@@ -15,8 +15,9 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 use tilo_workspace_service::workspaces::{Workspaces, person_workspace};
 
-/// The person's laptop, serving one ticket: a device that logs in with it is certified by the
-/// person's root and enters the person's workspace on their server.
+/// The person's laptop, serving one ticket the person issued for their server: the server that
+/// logs in with it is certified by the person's root as their own, whatever system it runs, and
+/// enters the person's workspace.
 pub struct Issuing {
     ticket: Ticket,
     endpoint: Endpoint,
@@ -186,7 +187,7 @@ fn serving(
     service.admit_uncertified(
         tilo_device_identity::login::SCOPE,
         Arc::new(
-            ServedTicket::new(
+            ServedTicket::for_server(
                 ticket,
                 person,
                 entry,

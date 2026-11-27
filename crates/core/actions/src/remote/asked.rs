@@ -832,6 +832,11 @@ pub struct KeptAsk {
     /// there ([`AT_ROOT`]): written before it runs, so that device resumes it after a restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub taken: Option<String>,
+    /// The device that keeps the person's root and asks them the call, its key in hex, once it
+    /// took the record in: what tells the device that asked that the call reached the root,
+    /// before the person answers it there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<String>,
     /// How the call ended where it ran ([`AT_ROOT`]): what the device that asked shows, after
     /// which it forgets the record.
     #[serde(default, skip_serializing_if = "Option::is_none")]

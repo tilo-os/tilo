@@ -109,6 +109,12 @@ async fn four_devices() -> Four {
             .await
             .unwrap();
     assert_eq!(person_workspace, person_workspace_id(&person));
+    // It keeps the person's root, so it makes the workspaces their other devices ask for.
+    desk_workspaces
+        .serve_at_root(std::sync::Arc::new(
+            tilo_workspace_service::workspaces::fixtures::RootIn(root.clone()),
+        ))
+        .unwrap();
     // The fake the server signs in to OpenAI at and asks its turns through: started before
     // the server, which is pointed at its addresses as its environment names them.
     let fake = fake_model_providers::FakeProviders::start().await.unwrap();

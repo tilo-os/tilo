@@ -169,3 +169,4 @@ tilo-telling-list = Was mitgeteilt wurde
 tilo-telling-acknowledge = Ein Ding als gesehen vermerken
 tilo-telling-insist = Als nicht zu verpassen markieren
 tilo-telling-since-you-left = Was passiert ist, während sie weg waren
+founding-create-question = Den Arbeitsbereich „{ $name }“ anlegen, um den { $device } gebeten hat?

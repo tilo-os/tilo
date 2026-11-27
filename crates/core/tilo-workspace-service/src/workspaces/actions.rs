@@ -3880,6 +3880,9 @@ pub(crate) struct Shared {
     /// The calls kept for a device that keeps their person's root, which this host follows to
     /// how that device wrote they ended ([`ServiceWorkspaceActions::follow_root`]).
     at_root_calls: Mutex<std::collections::HashSet<InvocationId>>,
+    /// The calls asked again under another id that follow the record a call before them kept for
+    /// the root, by that call: they end as it does ([`ServiceWorkspaceActions::follow_kept`]).
+    at_root_again: Mutex<std::collections::HashMap<InvocationId, Vec<InvocationId>>>,
     /// Set once this host follows the records of those calls.
     following_root: OnceLock<()>,
     /// Told each time a call that was not answered at once moved: its person answered it, or its
@@ -3912,6 +3915,7 @@ impl ServiceWorkspaceActions {
                 live: Mutex::default(),
                 asked_calls: Mutex::default(),
                 at_root_calls: Mutex::default(),
+                at_root_again: Mutex::default(),
                 following_root: OnceLock::new(),
                 moved: tokio::sync::watch::channel(()).0,
             }),
@@ -4116,6 +4120,17 @@ impl ServiceWorkspaceActions {
             .contains(&invocation)
     }
 
+    /// Have `again`, a call asked again under its own id, end as `kept` does, the call whose
+    /// record it follows.
+    pub(super) fn follow_kept(&self, kept: InvocationId, again: InvocationId) {
+        self.shared
+            .at_root_again
+            .lock_recover()
+            .entry(kept)
+            .or_default()
+            .push(again);
+    }
+
     /// Follow `invocation` no more: it was never kept for the root, or it ended here.
     pub(super) fn unfollow_root(&self, invocation: InvocationId) -> bool {
         self.shared.at_root_calls.lock_recover().remove(&invocation)
@@ -4139,7 +4154,17 @@ impl ServiceWorkspaceActions {
             let Some(outcome) = ask.outcome.clone().filter(InvocationUpdate::is_terminal) else {
                 continue;
             };
-            if !self.unfollow_root(invocation) {
+            let again = self
+                .shared
+                .at_root_again
+                .lock_recover()
+                .remove(&invocation)
+                .unwrap_or_default();
+            let followers: Vec<InvocationId> = std::iter::once(invocation)
+                .chain(again)
+                .filter(|follower| self.unfollow_root(*follower))
+                .collect();
+            if followers.is_empty() {
                 continue;
             }
             let (actions, workspaces, ask) = (self.clone(), workspaces.clone(), ask.clone());
@@ -4150,7 +4175,7 @@ impl ServiceWorkspaceActions {
                         <[u8; 32]>::try_from(person).map_err(|_| "not 32 bytes".to_owned())
                     });
                 let outcome = match person {
-                    Ok(person) => workspaces.took_in(person, &ask.request, outcome).await,
+                    Ok(person) => workspaces.took_in(person, outcome).await,
                     Err(why) => {
                         tracing::warn!(
                             ?invocation,
@@ -4161,9 +4186,12 @@ impl ServiceWorkspaceActions {
                         outcome
                     }
                 };
-                actions
-                    .log()
-                    .complete(&invocation, InvocationState::new(invocation, outcome));
+                let mut log = actions.log();
+                for follower in followers {
+                    let ended = outcome.clone().with_invocation(follower);
+                    log.complete(&follower, InvocationState::new(follower, ended));
+                }
+                drop(log);
                 if let Some(store) = workspaces.asked_store() {
                     store.settled(&ask.at);
                 }
@@ -5043,15 +5071,23 @@ pub(super) fn published_params(
             .find(|verb| verb.id == action)
             .map(|verb| (verb.params)());
     }
-    (target.provider == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
+    // A make kept for the person's root takes what making one here takes: none of it secret,
+    // so the device that keeps the root reads its name.
+    let action = if super::at_root::found_target(target) {
+        tilo_server_protocol::workspaces::CREATE_WORKSPACE
+    } else {
+        action
+    };
+    ((target.provider == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
         && target.address.resource == HOST_WORKSPACES_RESOURCE)
-        .then(|| {
-            host::ACCOUNT_VERBS
-                .iter()
-                .find(|(verb, _)| verb.id == action)
-                .map(|(verb, _)| (verb.params)())
-        })
-        .flatten()
+        || super::at_root::found_target(target))
+    .then(|| {
+        host::ACCOUNT_VERBS
+            .iter()
+            .find(|(verb, _)| verb.id == action)
+            .map(|(verb, _)| (verb.params)())
+    })
+    .flatten()
 }
 
 /// Whether the action `target` names answers a secret, as the workspace's governance declares

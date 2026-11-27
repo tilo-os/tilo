@@ -358,35 +358,6 @@ impl Workspaces {
         })
     }
 
-    /// The device that founds `person`'s workspaces, at the address it signed for one of theirs
-    /// this device keeps: the device of theirs that founded that workspace, still keeping it.
-    /// `None` while no workspace kept here names one.
-    pub(super) async fn persons_founding_device(
-        &self,
-        person: &[u8; 32],
-    ) -> Option<([u8; 32], EndpointAddr)> {
-        for workspace in self.inner.memberships.of(person) {
-            let Some(state) = self.state(&workspace).await else {
-                continue;
-            };
-            let governance = state.governance();
-            let Some(founder) = governance.founder() else {
-                continue;
-            };
-            let found = governance.keeping_devices().into_iter().find_map(|hint| {
-                let theirs = host_device(&hint) == founder && hint.host.user_public_key == *person;
-                let addr = WorkspaceDeviceHintV1::from_transport_hint(&hint)
-                    .ok()?
-                    .endpoint_addr;
-                theirs.then_some((founder, addr))
-            });
-            if found.is_some() {
-                return found;
-            }
-        }
-        None
-    }
-
     /// Have the server `device`, at `addr`, hold `workspace` as well, as
     /// `role`, as its owners chose ([`Workspaces::chooses_servers`]): ask the
     /// address it signs for the workspace, name it among the workspace's

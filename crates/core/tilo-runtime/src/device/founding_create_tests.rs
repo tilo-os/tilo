@@ -1,10 +1,9 @@
-//! A workspace asked for on a device of the person's that founds none, made on the one that does,
-//! over the action service both serve, each asking in the person's own workspace: asked through
-//! the account the device answers its person's programs with, taken in from the person's list by
-//! the asking device and every other device of theirs, by itself, put to the person on the
-//! founding device where their grants say so,
-//! refused to another person's device and to an agent, and refused in plain words, in time, when
-//! the founding device is away.
+//! A workspace asked for on a device of the person's that founds none, made on the one that
+//! keeps their root: kept as its record in the person's own workspace, taken in there by the
+//! runner of every call kept for the root, put to the person there where their grants say so,
+//! taken in from the person's list by the asking device and every other device of theirs, by
+//! itself, refused to another person's device and to an agent, and refused in plain words, in
+//! time, while no device that keeps the root takes it in.
 
 #![allow(
     clippy::unwrap_used,
@@ -22,17 +21,17 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::asked::{Offer, RESOLVE, Resolve};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    ActionProvider as _, Caller, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::workspaces::at_root::{self, Decided};
 use tilo_workspace_service::workspaces::person_workspace;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
-use tilo_workspace_service::workspaces::providers::{WorkspaceAnswers as _, WorkspaceCall};
 
 use super::*;
-use crate::device::clipboard::tests::{TwoDevices, answers_at, two_devices};
+use crate::device::clipboard::tests::{TwoDevices, two_devices};
 use crate::device::ticket_tests;
 
 /// The second device's key, as the fixture made it: what its programs' API is served as.
@@ -90,7 +89,6 @@ async fn founding_and_desk() -> TwoDevices {
         .expect("the person's own workspace");
     devices.first.offer_workspaces_here("Laptop");
     keep(&devices.first, &devices.second_cert).await;
-    FoundingCreate::new(&devices.first).register(&devices.first.copies().providers());
     holds_person_workspace(&devices, &devices.second).await;
     devices
 }
@@ -149,38 +147,22 @@ async fn studio(devices: &TwoDevices) -> Arc<ServiceWorkspaces> {
     studio
 }
 
-/// Mark the first device in the person's record as the one keeping their root, signed by that
-/// root, say where it answers, and wait until the desk's copy of the record says so.
-async fn mark_root_kept(devices: &TwoDevices) {
-    let root = ticket_tests::root_in(devices.state.path().to_path_buf())()
-        .expect("the root reads")
-        .expect("the issuer keeps the person's root");
-    let cert = &devices.first_cert;
-    person_workspace::devices::mark_root_holder(devices.first.copies(), &root, cert)
-        .await
-        .expect("the root marks the device that keeps it");
-    person_workspace::apply_on(
-        devices.first.copies(),
-        &person_workspace_id(&devices.person),
-        DEVICES,
-        Devices::KEEP_FACT.with((
-            hex::encode(cert.device_public_key),
-            hex::encode(postcard::to_allocvec(cert).expect("a certificate encodes")),
-            "endpoint".into(),
-            hex::encode(
-                postcard::to_allocvec(&answers_at(&devices.first)).expect("addresses encode"),
-            ),
-        )),
-    )
-    .await
-    .expect("the record says where the founding device answers");
-    tilo_test_env::wait_until("the desk's record names the founding device", || {
-        marks_founding(
-            &devices.second,
-            devices.person,
-            devices.first_cert.device_public_key,
-        )
-    });
+/// The first device runs what is kept for the person's root, as the one keeping it: what the
+/// guard it answers says ([`crate::device::services::root_record_for_test`]).
+fn serve_root(devices: &TwoDevices) -> impl Drop {
+    let kept = crate::device::services::root_record_for_test(
+        tilo_identity::store::resolve_active_identity(devices.state.path())
+            .expect("the founding device keeps the person's root"),
+    );
+    devices
+        .first
+        .copies()
+        .serve_at_root(crate::device::asked::root_kept(
+            &devices.first,
+            devices.first_tickets.clone(),
+        ))
+        .expect("the founding device runs what is kept for the person's root");
+    kept
 }
 
 /// The desk's account, as its person's programs reach it.
@@ -246,16 +228,6 @@ fn create_on_desk_meanwhile(
         devices.second_cert.clone(),
         arguments,
     ))
-}
-
-/// Whether the record `workspaces` holds marks `device` as keeping the person's root.
-fn marks_founding(workspaces: &Arc<ServiceWorkspaces>, person: [u8; 32], device: [u8; 32]) -> bool {
-    let copies = workspaces.copies().clone();
-    crate::device::workspaces::block_on_owned(async move {
-        person_workspace::devices::of(&copies, &person).await
-    })
-    .root_holders(&person)
-    .contains(&device)
 }
 
 /// Whether `workspaces` lists `workspace` and opens it: holds its copy, as a member.
@@ -327,7 +299,7 @@ async fn a_workspace_asked_for_on_a_device_that_founds_none_is_made_on_the_one_t
     );
     let devices = founding_and_desk().await;
     let studio = studio(&devices).await;
-    mark_root_kept(&devices).await;
+    let _root = serve_root(&devices);
 
     // The person asks on the desk: the founding device makes it and answers once it has. Each
     // other device of theirs, the desk and the studio, takes it in from the person's list by
@@ -410,44 +382,39 @@ async fn a_workspace_asked_for_on_a_device_that_founds_none_is_made_on_the_one_t
         ),
         "{joined:?}"
     );
-    let theirs = ServiceWorkspaces::open_for_test(
-        &devices.state.path().join("stranger"),
-        &key,
-        &stranger,
-        &tilo_server_client::ServerAddress::at(devices.first.endpoint().addr()),
-    )
-    .await
-    .expect("the other person's device's service opens");
     let mut asked = serde_json::Map::new();
     asked.insert("name".into(), json!("Not yours"));
-    let mut request = InvokeRequest::plain(
+    let request = InvokeRequest::plain(
         RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(RESOURCE, CREATE),
+            provider: at_root::FOUND_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                at_root::FOUND_RESOURCE,
+                at_root::FOUND_ACTION,
+            ),
         },
         asked,
     );
-    request.wait_ms = Some(tilo_peer_state::actions::CHANGE_WAIT_MS);
     for workspace in [id.clone(), person_workspace_id(&devices.person)] {
-        let remote = theirs.copies().action_service().remote(
-            &theirs.endpoint(),
-            &devices.first.endpoint().addr(),
-            &workspace,
-        );
         let caller = Caller::authenticated(stranger.user_public_key, stranger.device_public_key)
             .in_workspace(workspace.clone());
-        let refused = tilo_test_env::within(
-            "the founding device answers another person's device",
-            remote.invoke(&caller, request.clone()),
-        )
-        .await
-        .expect("the founding device answers");
         assert!(
-            matches!(refused, Err(ActionCallError::NotPermitted)),
-            "a device of another person is refused in {workspace}: {refused:?}"
+            matches!(
+                devices.first.copies().found_decides(&caller, &workspace),
+                Decided::Refuse(_)
+            ),
+            "a device of another person is refused before anyone is asked in {workspace}"
+        );
+        let ran = devices
+            .first
+            .copies()
+            .found_asked(&caller, &request, &workspace)
+            .await;
+        assert!(
+            matches!(&ran, tilo_actions::InvocationUpdate::Failed { error, .. }
+                if error.message == at_root::NOT_FOR_THIS_DEVICE),
+            "nothing is made for a device of another person in {workspace}: {ran:?}"
         );
     }
-    theirs.shutdown().await;
     studio.shutdown().await;
 }
 
@@ -458,7 +425,7 @@ async fn a_workspace_a_device_off_tilo_os_asks_for_waits_for_the_persons_yes_on_
     // it, which the person's grants leave to them.
     let _home = tilo_test_env::TestHome::new().expect("a home");
     let devices = founding_and_desk().await;
-    mark_root_kept(&devices).await;
+    let _root = serve_root(&devices);
     let own = WorkspaceId::parse(&person_workspace_id(&devices.person)).unwrap();
 
     // The person says yes on the founding device: it makes the workspace, and the desk opens it.
@@ -510,44 +477,20 @@ async fn a_workspace_a_device_off_tilo_os_asks_for_waits_for_the_persons_yes_on_
 
     // An agent acting for the person is refused, from the desk as well: what the person
     // themselves is asked about, through the same device and certificate, it never asks.
-    let founding = FoundingCreate::new(&devices.first);
-    let mut asked = serde_json::Map::new();
-    asked.insert("name".into(), json!("For the agent"));
-    let request = InvokeRequest::plain(
-        RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(RESOURCE, CREATE),
-        },
-        asked,
-    );
+    let own = own.to_string();
     let desk = devices.second_cert.device_public_key;
-    let person = Caller::authenticated(devices.person, desk).in_workspace(own.to_string());
-    let agent =
-        Caller::delegated_agent("planner", devices.person, desk).in_workspace(own.to_string());
-    let answered = |caller: Caller| {
-        let (founding, request, certificate) = (
-            Arc::clone(&founding),
-            request.clone(),
-            devices.second_cert.clone(),
-        );
-        async move {
-            let call = WorkspaceCall {
-                workspace: Some(own),
-                caller: &caller,
-                certificate: Some(&certificate),
-            };
-            founding.answer(call, &request).await
-        }
-    };
-    assert!(
-        matches!(
-            answered(person).await,
-            Err(ActionCallError::ConfirmationRequired(_))
-        ),
+    let person = Caller::authenticated(devices.person, desk).in_workspace(own.clone());
+    let agent = Caller::delegated_agent("planner", devices.person, desk).in_workspace(own.clone());
+    assert_eq!(
+        devices.first.copies().found_decides(&person, &own),
+        Decided::Ask,
         "the person is asked"
     );
     assert!(
-        matches!(answered(agent).await, Err(ActionCallError::NotPermitted)),
+        matches!(
+            devices.first.copies().found_decides(&agent, &own),
+            Decided::Refuse(_)
+        ),
         "an agent is refused"
     );
 }
@@ -557,8 +500,9 @@ async fn a_create_with_no_founding_device_in_reach_is_refused_in_plain_words_in_
     let _home = tilo_test_env::TestHome::new().expect("a home");
     let devices = founding_and_desk().await;
 
-    // While the record names no device that founds the person's workspaces, the desk says so,
-    // and asks no one.
+    // While no device that keeps the person's root takes the ask in, the desk says so within the
+    // bound, and nothing is made.
+    let asked = Instant::now();
     let none = create_on_desk(
         Arc::clone(&devices.second),
         devices.second_cert.clone(),
@@ -567,13 +511,17 @@ async fn a_create_with_no_founding_device_in_reach_is_refused_in_plain_words_in_
     .await
     .expect_err("no device makes it");
     assert!(
-        none.contains(tilo_api::account::NO_FOUNDING_DEVICE)
-            && none.contains("none of your devices makes your workspaces"),
+        none.contains(tilo_api::account::FOUNDING_DEVICE_UNREACHED),
         "{none}"
+    );
+    assert!(
+        asked.elapsed() <= WAITED + Duration::from_secs(5),
+        "the refusal comes within the bound: {:?}",
+        asked.elapsed()
     );
 
     // Once it does but is away, the person hears so within the bound, and nothing else is asked.
-    mark_root_kept(&devices).await;
+    let _root = serve_root(&devices);
     devices
         .first_router
         .shutdown()
@@ -709,6 +657,18 @@ fn create_own(
 ) -> InvokeRequest {
     let mut arguments = serde_json::Map::new();
     arguments.insert("name".into(), json!(name));
+    create_own_with(cert, key, arguments, scope, signed_at)
+}
+
+/// The agent's `workspace.create-own` with `arguments`, signed by its key for `scope` at
+/// `signed_at`.
+fn create_own_with(
+    cert: &DeviceCert,
+    key: &SigningKey,
+    arguments: serde_json::Map<String, Value>,
+    scope: &str,
+    signed_at: u64,
+) -> InvokeRequest {
     let mut request = InvokeRequest::plain(
         RemoteActionTarget {
             provider: tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER.to_owned(),
@@ -1037,6 +997,52 @@ async fn an_agents_make_at_a_site_is_founded_on_the_persons_device_once_they_say
     );
     assert!(has_named(&site.device, &person, "On my own").await);
 
+    // The same make asked again under another id, with the same labels, follows the first: the
+    // person is asked once, and both calls end with the one workspace made.
+    let labelled = || {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("name".into(), json!("Atlas"));
+        arguments.insert("labels".into(), json!({ "project": "atlas" }));
+        create_own_with(&agent, &key, arguments, "", tilo_clock::unix_now_ns())
+    };
+    let first = labelled();
+    let first_invocation = first.invocation;
+    tilo_test_env::within("the site answers the agent", at_site.invoke(&caller, first))
+        .await
+        .expect("the site answers")
+        .expect("the site takes the make");
+    let first_waits = followed_to(&at_site, first_invocation, None).await;
+    let retried = labelled();
+    let retried_invocation = retried.invocation;
+    tilo_test_env::within(
+        "the site answers the agent",
+        at_site.invoke(&caller, retried),
+    )
+    .await
+    .expect("the site answers")
+    .expect("the site takes the make asked again");
+    let retried_waits = followed_to(&at_site, retried_invocation, None).await;
+    assert_eq!(
+        tilo_actions::remote::asked::RecordRef::waited_in(&retried_waits),
+        tilo_actions::remote::asked::RecordRef::waited_in(&first_waits),
+        "the make asked again follows the record kept the first time"
+    );
+    let question = question_for(&devices, &site.kept, first_invocation);
+    answer_there(&devices, &question, (Offer::Approve, Vec::new())).await;
+    let made_ids: Vec<Value> = [
+        ended_after(&at_site, first_invocation, &first_waits).await,
+        ended_after(&at_site, retried_invocation, &retried_waits).await,
+    ]
+    .into_iter()
+    .map(|ended| match ended {
+        tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+            output.value.expect("an answer")["workspace"]["workspace"].clone()
+        }
+        other => panic!("both calls end with the workspace: {other:?}"),
+    })
+    .collect();
+    assert_eq!(made_ids[0], made_ids[1], "one workspace is made for both");
+
     // The person says no: nothing is made, and the agent reads their no.
     let declined = asks("Not this one");
     let declined_invocation = declined.invocation;
@@ -1121,6 +1127,21 @@ async fn a_site_writes_the_asked_calls_alone_and_ends_an_ask_it_cannot_keep_once
             .is_err_and(|refusal| refusal.contains("records it was placed for alone")),
         "a record beside the asked calls is refused: {beside:?}"
     );
+
+    // Started again, the site keeps its placement from disk, and keeps the next make as before.
+    tilo_workspace_service::workspaces::fixtures::restart_asks_placements(site.device.copies());
+    let again = asks("After a restart");
+    let again_invocation = again.invocation;
+    tilo_test_env::within("the site answers the agent", at_site.invoke(&caller, again))
+        .await
+        .expect("the site answers")
+        .expect("the site takes the make");
+    let waits_again = followed_to(&at_site, again_invocation, None).await;
+    assert!(
+        tilo_actions::remote::asked::RecordRef::waited_in(&waits_again).is_some(),
+        "after a restart the make waits for the person: {waits_again:?}"
+    );
+    question_for(&devices, &site.kept, again_invocation);
 
     // The person's root revokes the site, and the site's copy hears it from their device.
     let root = ticket_tests::root_in(devices.state.path().to_path_buf())()

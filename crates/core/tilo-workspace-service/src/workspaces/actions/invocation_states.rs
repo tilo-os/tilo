@@ -187,6 +187,18 @@ async fn keep_for_root(
         .await;
     match kept {
         Some(Ok((record, _))) => {
+            // Asked again under its own id, it follows the record the first ask kept.
+            match record.record.parse::<uuid::Uuid>() {
+                Ok(kept) if kept != invocation.0 => {
+                    actions.follow_kept(tilo_actions::InvocationId(kept), invocation);
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    %error,
+                    record = %record.record,
+                    "the asked record is named by no call: this call follows only itself"
+                ),
+            }
             let mut log = actions.log();
             if actions.follows_root(invocation) {
                 let state = InvocationState::new(invocation, record.waiting(invocation));

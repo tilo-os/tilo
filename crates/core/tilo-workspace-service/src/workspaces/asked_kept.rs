@@ -9,12 +9,17 @@
 //! ([`Workspaces::follow_asked_at_root`]), so a root-holding device takes the call up when it
 //! comes online, and the device that asked reads how it went once it ran.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ROOT, ReadDoc as _, Value};
 use tilo_action_services::workspace_invocations::PROVIDER;
-use tilo_actions::remote::asked::{AT_ROOT, AskedKeeping, KeptAsk, RecordRef};
+use tilo_actions::remote::asked::{
+    AT_ROOT, AskedDispatch, AskedFacts, AskedKeeping, KeptAsk, RecordRef,
+};
+use tilo_actions::remote::{Caller, InvokeRequest};
+use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
 use super::{WeakWorkspaces, Workspaces};
@@ -47,6 +52,56 @@ pub const UNKEPT_CODE: &str = "unkept";
 /// What a call whose question could not be kept for the person ends with.
 pub(crate) const UNKEPT: &str = "The question could not be kept where the person's device that \
      keeps their identity reads it, so nothing waits for their answer";
+
+/// Why a call kept for a device that keeps the person's root did not end there, for the device
+/// that kept it and waits on it ([`Workspaces::ask_at_root`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotAtRoot {
+    /// No device that keeps the root took it in within the time given: none was reached.
+    Unreached(Duration),
+    /// It reached one, and the person did not answer there within the time given.
+    Unanswered(Duration),
+    /// Its record could not be written here, for the reason given.
+    Unkept(String),
+}
+
+/// What keeps nothing beside a call this device kept for the root, and admits nothing: it runs
+/// there.
+struct RunsThere;
+
+impl AskedDispatch for RunsThere {
+    fn context(&self, _: InvocationId) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+
+    fn readmit(
+        &self,
+        _: &Caller,
+        _: InvokeRequest,
+        _: &serde_json::Value,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        Err(tilo_actions::remote::ActionCallError::Refused {
+            reason: "it is answered on a device that keeps your identity".to_owned(),
+        })
+    }
+
+    fn declined(
+        &self,
+        _: &Caller,
+        _: InvocationId,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        Ok(())
+    }
+}
+
+/// Forgets, when dropped, that this device waits on the call it kept for the root.
+struct Awaited<'a>(&'a Workspaces, InvocationId);
+
+impl Drop for Awaited<'_> {
+    fn drop(&mut self) {
+        self.0.inner.awaited_at_root.lock_recover().remove(&self.1);
+    }
+}
 
 /// One change to a workspace's record of the calls that wait.
 enum Change {
@@ -322,6 +377,80 @@ impl Workspaces {
         });
     }
 
+    /// Keep `request`, which `caller` asks in `workspace` and only a device that keeps the
+    /// person's root runs, as its record there, and wait until that device ran it: how it ended.
+    /// A device that keeps the root marks the record once it takes it in, within
+    /// `reached_within`, and the person answers there within `answered_within`; past either the
+    /// call ends here, as the record then says, and runs nowhere.
+    ///
+    /// # Errors
+    /// No device that keeps the root took it in in time, the person did not answer in time, or
+    /// its record could not be written here.
+    pub async fn ask_at_root(
+        &self,
+        workspace: &str,
+        (caller, request): (&Caller, &InvokeRequest),
+        facts: &AskedFacts,
+        (reached_within, answered_within): (Duration, Duration),
+    ) -> Result<InvocationUpdate, NotAtRoot> {
+        use tokio::sync::broadcast::error::RecvError;
+
+        let store = self
+            .asked_store()
+            .ok_or_else(|| NotAtRoot::Unkept("this device keeps no asked calls".to_owned()))?;
+        let invocation = request.invocation;
+        // Subscribed before it is written, so no write of its record is missed.
+        let mut writes = self.document_writes();
+        self.inner.awaited_at_root.lock_recover().insert(invocation);
+        let _awaited = Awaited(self, invocation);
+        let runs_there: Weak<dyn AskedDispatch> = Weak::<RunsThere>::new();
+        let at = store
+            .writes_for(AT_ROOT, runs_there)
+            .write_asked(workspace, caller, request, facts)
+            .map_err(NotAtRoot::Unkept)?;
+        let mut reach = std::pin::pin!(tokio::time::sleep(reached_within));
+        let mut answer = std::pin::pin!(tokio::time::sleep(answered_within));
+        let mut reached = false;
+        let ended = loop {
+            if let Some(kept) = self.asked_record(workspace, invocation).await {
+                if let Some(outcome) = kept.outcome.filter(InvocationUpdate::is_terminal) {
+                    store.settled(&at);
+                    return Ok(outcome);
+                }
+                reached |= kept.seen.is_some() || kept.taken.is_some();
+            }
+            tokio::select! {
+                write = writes.recv() => match write {
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => {
+                        break NotAtRoot::Unkept("this device stopped".to_owned());
+                    }
+                },
+                () = reach.as_mut(), if !reached => break NotAtRoot::Unreached(reached_within),
+                () = answer.as_mut() => break NotAtRoot::Unanswered(answered_within),
+            }
+        };
+        // Ended here: the record says so, so no device that keeps the root takes it up after.
+        store.settle_for(
+            invocation,
+            InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(format!("{ended:?}")),
+            },
+        );
+        Err(ended)
+    }
+
+    /// Whether this device waits itself on the call `invocation` it kept for a device that keeps
+    /// the person's root ([`Self::ask_at_root`]).
+    #[must_use]
+    pub fn awaits_at_root(&self, invocation: InvocationId) -> bool {
+        self.inner
+            .awaited_at_root
+            .lock_recover()
+            .contains(&invocation)
+    }
+
     /// The record `workspace` keeps of the call `invocation` while it waits, as it stands there.
     pub async fn asked_record(
         &self,
@@ -374,7 +503,10 @@ impl Workspaces {
                 .await
                 && let Ok(calls) = read(&bytes)
             {
-                kept.extend(calls.into_iter().filter(|call| call.dispatch == AT_ROOT));
+                // What this device waits on itself is its own to read and forget.
+                kept.extend(calls.into_iter().filter(|call| {
+                    call.dispatch == AT_ROOT && !self.awaits_at_root(call.request.invocation)
+                }));
             }
         }
         kept

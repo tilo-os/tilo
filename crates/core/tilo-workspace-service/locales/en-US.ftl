@@ -169,3 +169,4 @@ tilo-telling-list = What was told
 tilo-telling-acknowledge = Say a thing was seen
 tilo-telling-insist = Mark as not to be missed
 tilo-telling-since-you-left = What happened while they were away
+founding-create-question = Make the workspace “{ $name }” that { $device } asked for?

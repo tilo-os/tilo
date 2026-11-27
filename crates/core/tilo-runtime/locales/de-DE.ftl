@@ -96,9 +96,6 @@ so-tilo-clipboard-receive = Annehmen, was ein anderes Gerät kopiert hat
 
 ## Arbeitsbereiche, die das gründende Gerät für die anderen Geräte der Person anlegt
 
-so-tilo-founding-create = Einen Arbeitsbereich anlegen, um den ein anderes deiner Geräte gebeten hat
-founding-create-question = Den Arbeitsbereich „{ $name }“ anlegen, um den { $device } gebeten hat?
-founding-create-another-device = ein anderes deiner Geräte
 
 ## Schlüssel, die die Person für ihre Programme bestätigt, von ihrer Wurzel hier beglaubigt
 
