@@ -78,7 +78,7 @@
           "press": "App opened"
         },
         {
-          "click": "so.tilo.notes"
+          "click": "App id"
         },
         {
           "type": "so.tilo.chat"
