@@ -181,10 +181,16 @@ fn supervisor(dir: &Path) -> PathBuf {
 fn line_to(control: &'static ControlLine) -> LineClient {
     let (app, daemon) = UnixStream::pair().unwrap();
     let writer = Mutex::new(daemon.try_clone().unwrap());
-    let out: ush::app_shells::Out = Arc::new(move |line: String| {
+    let out: tilo_action_services::line::shells::Out = Arc::new(move |line: String| {
         let _ = writeln!(writer.lock().unwrap(), "{line}");
     });
-    let shells = ush::app_shells::AppShells::new("", Ok(()), Arc::new(|| Ok(())), control, out);
+    let shells = tilo_action_services::line::shells::AppShells::new(
+        "",
+        Ok(()),
+        Arc::new(|| Ok(())),
+        Arc::new(ush::app_shells::Runtime(control)),
+        out,
+    );
     let input = BufReader::new(daemon.try_clone().unwrap());
     std::thread::spawn(move || {
         serve_lines_with(

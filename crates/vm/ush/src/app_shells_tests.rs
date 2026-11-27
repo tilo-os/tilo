@@ -7,11 +7,11 @@ use tilo_action_services::{CallLanes as _, Take};
 use tilo_actions::remote::RemoteActionMessage;
 use tilo_actions::remote::shell::ShellOpen;
 
-use super::{AppShells, Out};
 use crate::control_line::ControlLine;
+use tilo_action_services::line::shells::{Allowed, AppShells, Out};
 
 /// What the lane answers the app's open with, once it has.
-fn answer_to_open(allowed: super::Allowed) -> serde_json::Value {
+fn answer_to_open(allowed: Allowed) -> serde_json::Value {
     // A runtime that is not there: an open that reaches it is unavailable, never refused.
     let ush: &'static ControlLine = Box::leak(Box::new(ControlLine::at(
         std::env::temp_dir().join("no-shell-runtime-here.sock"),
@@ -20,7 +20,13 @@ fn answer_to_open(allowed: super::Allowed) -> serde_json::Value {
     let out: Out = Arc::new(move |line| {
         let _ = said.send(line);
     });
-    let shells = AppShells::new("workspace", Ok(()), allowed, ush, out);
+    let shells = AppShells::new(
+        "workspace",
+        Ok(()),
+        allowed,
+        Arc::new(super::Runtime(ush)),
+        out,
+    );
     let open = RemoteActionMessage::ShellOpenRequest {
         correlation: 7,
         open: ShellOpen {

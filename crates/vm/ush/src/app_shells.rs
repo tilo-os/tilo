@@ -1,161 +1,30 @@
-//! The shells an app's own connection carries ([`tilo_actions::remote::shell`]): an app whose
-//! signed manifest grants it shells asks the daemon for one, the daemon opens it on its one
-//! connection to the shell runtime ([`crate::control_line`]) in the workspace the app was started
-//! in, keeps the terminal the runtime hands it, and carries the session's bytes on the app's
-//! connection both ways until it ends.
-//!
-//! The app's process holds no descriptor of the session: it types, resizes and closes by the
-//! shell's id, and hears what the shell printed and, last, how it ended. Its connection closing
-//! lets every shell it opened go.
+//! The shells an app's own connection carries ([`tilo_action_services::line::shells`]), where
+//! the shell runtime runs them: the daemon opens each on its one connection to the runtime
+//! ([`crate::control_line`]) in the workspace the app was started in, and keeps the terminal and
+//! the session lease the runtime hands back.
 
-use std::collections::HashMap;
-use std::io::{Read as _, Write as _};
+use std::io::Read;
 use std::os::fd::{AsRawFd as _, OwnedFd};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use runtime_portal::pending_connection::{LeaseState, SessionLifetime};
+use runtime_portal::pending_connection::{LeaseState, ReaderLifetime, SessionLifetime};
 use serde_json::{Value, json};
-use tilo_action_services::{CallLanes, Take, frame_line};
-use tilo_actions::remote::shell::{
-    MAX_SHELL_BYTES, ShellBytes, ShellEnded, ShellOpen, ShellOpened,
-};
-use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
+use tilo_action_services::line::shells::{OpenedShell, ShellSource};
+use tilo_actions::remote::ActionCallError;
+use tilo_actions::remote::shell::ShellOpen;
 
 use crate::control_line::ControlLine;
-
-/// How many shells one app's connection keeps open at once, as one app's connection to the
-/// runtime was held to.
-const MAX_SHELLS: usize = 8;
 
 /// How long a terminal whose shell has not started yet is waited on before it is read again: a
 /// workspace a server hosts hands its shell over after the terminal opened.
 const HANDED_OVER_WITHIN: Duration = Duration::from_millis(20);
 
-/// Where a line written for the app goes: its connection.
-pub type Out = Arc<dyn Fn(String) + Send + Sync>;
+/// The shell runtime, as the daemon reaches it on `0`.
+pub struct Runtime(pub &'static ControlLine);
 
-/// Whether the app may open a shell now, or why not: asked on each open, since a workspace's
-/// people change while the app runs.
-pub type Allowed = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
-
-/// The shells one app's connection carries.
-pub struct AppShells(Arc<Lane>);
-
-struct Lane {
-    /// The workspace the app was started in: every shell it opens runs there.
-    workspace: String,
-    /// Whether the app's signed manifest grants it shells, or why not.
-    granted: Result<(), String>,
-    /// Whether this computer runs the workspace's programs, or why not.
-    allowed: Allowed,
-    out: Out,
-    ush: &'static ControlLine,
-    shells: Arc<Mutex<HashMap<u64, Held>>>,
-    next: AtomicU64,
-}
-
-/// One open shell: its terminal, written to as the app types, and the lease that keeps its
-/// session; letting both go ends it.
-struct Held {
-    terminal: std::fs::File,
-    _lease: SessionLifetime,
-}
-
-impl AppShells {
-    /// The shells of the app started in `workspace`, which its manifest grants when `granted`
-    /// and the computer runs while it is `allowed`, asked of the runtime on `ush` and written to
-    /// the app with `out`.
-    pub fn new(
-        workspace: &str,
-        granted: Result<(), String>,
-        allowed: Allowed,
-        ush: &'static ControlLine,
-        out: Out,
-    ) -> Self {
-        Self(Arc::new(Lane {
-            workspace: workspace.to_owned(),
-            granted,
-            allowed,
-            out,
-            ush,
-            shells: Arc::default(),
-            next: AtomicU64::new(1),
-        }))
-    }
-}
-
-impl CallLanes for AppShells {
-    fn take(&self, message: &RemoteActionMessage) -> Take {
-        let lane = &self.0;
-        match message {
-            RemoteActionMessage::ShellOpenRequest { correlation, open } => {
-                if let Err(reason) = &lane.granted {
-                    return Take::Answer(opened(
-                        *correlation,
-                        Err(ActionCallError::Refused {
-                            reason: reason.clone(),
-                        }),
-                    ));
-                }
-                if held(&lane.shells).len() >= MAX_SHELLS {
-                    return Take::Answer(opened(
-                        *correlation,
-                        Err(ActionCallError::Refused {
-                            reason: "This app has as many shells open as it may: close one first"
-                                .into(),
-                        }),
-                    ));
-                }
-                // The runtime may wait for a person to allow it: the connection's other frames
-                // are answered meanwhile.
-                let (lane, correlation, open) = (Arc::clone(lane), *correlation, open.clone());
-                let started = std::thread::Builder::new()
-                    .name("tilo-shell-open".into())
-                    .spawn(move || {
-                        let result = lane.open(&open);
-                        (lane.out)(opened(correlation, result));
-                    });
-                if let Err(error) = started {
-                    return Take::Answer(opened(
-                        correlation,
-                        Err(ActionCallError::Unavailable {
-                            reason: error.to_string(),
-                        }),
-                    ));
-                }
-                Take::Silent
-            }
-            RemoteActionMessage::ShellInput(ShellBytes { shell, bytes }) => {
-                if let Some(held) = held(&lane.shells).get_mut(shell) {
-                    let _ = held.terminal.write_all(bytes);
-                }
-                Take::Silent
-            }
-            RemoteActionMessage::ShellResize { shell, cols, rows } => {
-                if let Some(held) = held(&lane.shells).get(shell) {
-                    resize(&held.terminal, *cols, *rows);
-                }
-                Take::Silent
-            }
-            RemoteActionMessage::ShellClose { shell } => {
-                held(&lane.shells).remove(shell);
-                Take::Silent
-            }
-            // What the device itself says: an app that sends one back is saying nothing.
-            RemoteActionMessage::ShellOpenResponse { .. }
-            | RemoteActionMessage::ShellOutput(_)
-            | RemoteActionMessage::ShellEnded(_) => Take::Silent,
-            _ => Take::NotCall,
-        }
-    }
-}
-
-impl Lane {
-    /// Open `open` on the runtime, keep its terminal and carry what it prints to the app.
-    fn open(&self, open: &ShellOpen) -> Result<ShellOpened, ActionCallError> {
-        (self.allowed)().map_err(|reason| ActionCallError::Refused { reason })?;
+impl ShellSource for Runtime {
+    fn open(&self, workspace: &str, open: &ShellOpen) -> Result<OpenedShell, ActionCallError> {
         let mut request = json!({
             "op": "open-session",
             "cols": open.cols.max(1),
@@ -181,11 +50,12 @@ impl Lane {
                 fields.insert("commands".into(), json!(key));
             }
         }
-        let answer = self.ush.ask(&self.workspace, &request).map_err(|error| {
-            ActionCallError::Unavailable {
-                reason: error.to_string(),
-            }
-        })?;
+        let answer =
+            self.0
+                .ask(workspace, &request)
+                .map_err(|error| ActionCallError::Unavailable {
+                    reason: error.to_string(),
+                })?;
         let said: Value = serde_json::from_slice(&answer.line).unwrap_or_default();
         if answer.descriptors.is_empty() {
             return Err(ActionCallError::Refused {
@@ -209,22 +79,21 @@ impl Lane {
             .clone_for_reader()
             .map_err(|error| unavailable(&error))?;
         let terminal = std::fs::File::from(terminal);
-        let output = terminal.try_clone().map_err(|error| unavailable(&error))?;
-        let shell = self.next.fetch_add(1, Ordering::Relaxed);
-        held(&self.shells).insert(
-            shell,
-            Held {
-                terminal,
-                _lease: lease,
-            },
-        );
-        let (out, shells) = (Arc::clone(&self.out), Arc::downgrade(&self.shells));
-        std::thread::Builder::new()
-            .name("tilo-shell-output".into())
-            .spawn(move || carry_output(shell, output, &reading, &out, &shells))
-            .map_err(|error| unavailable(&error))?;
-        Ok(ShellOpened {
-            shell,
+        let ended = Arc::new(Mutex::new(String::new()));
+        let output = Terminal {
+            pty: terminal.try_clone().map_err(|error| unavailable(&error))?,
+            lease: reading,
+            ended: Arc::clone(&ended),
+        };
+        let window = terminal.try_clone().map_err(|error| unavailable(&error))?;
+        Ok(OpenedShell {
+            input: Box::new(terminal),
+            output: Box::new(output),
+            resize: Box::new(move |cols, rows| resize(&window, cols, rows)),
+            report: Box::new(move || {
+                std::mem::take(&mut *ended.lock().unwrap_or_else(PoisonError::into_inner))
+            }),
+            keep: Box::new(lease),
             name: if open.target.get("kind").and_then(Value::as_str) == Some("host") {
                 "host".into()
             } else {
@@ -239,44 +108,33 @@ impl Lane {
     }
 }
 
-/// Carry what the shell `shell` prints to the app until its terminal closes, then how it ended.
-fn carry_output(
-    shell: u64,
-    mut terminal: std::fs::File,
-    lease: &runtime_portal::pending_connection::ReaderLifetime,
-    out: &Out,
-    shells: &Weak<Mutex<HashMap<u64, Held>>>,
-) {
-    let mut buffer = vec![0_u8; MAX_SHELL_BYTES];
-    let report = loop {
-        match terminal.read(&mut buffer) {
-            Ok(read) if read > 0 => out(frame_line(RemoteActionMessage::ShellOutput(ShellBytes {
-                shell,
-                bytes: buffer.get(..read).map(<[u8]>::to_vec).unwrap_or_default(),
-            }))),
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            _ => match lease.state() {
-                // A terminal whose shell is not there yet: a hosted workspace hands it over.
-                LeaseState::Open => std::thread::sleep(HANDED_OVER_WITHIN),
-                LeaseState::Closed => break String::new(),
-                LeaseState::Reported(line) => break String::from_utf8_lossy(&line).into_owned(),
-            },
-        }
-    };
-    if let Some(shells) = shells.upgrade() {
-        held(&shells).remove(&shell);
-    }
-    out(frame_line(RemoteActionMessage::ShellEnded(ShellEnded {
-        shell,
-        report,
-    })));
+/// A session's terminal as its output is read: it ends when the session's lease says the
+/// session ended, and keeps how it did.
+struct Terminal {
+    pty: std::fs::File,
+    lease: ReaderLifetime,
+    ended: Arc<Mutex<String>>,
 }
 
-fn opened(correlation: u64, result: Result<ShellOpened, ActionCallError>) -> String {
-    frame_line(RemoteActionMessage::ShellOpenResponse {
-        correlation,
-        result,
-    })
+impl Read for Terminal {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            match self.pty.read(buffer) {
+                Ok(read) if read > 0 => return Ok(read),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                _ => match self.lease.state() {
+                    // A terminal whose shell is not there yet: a hosted workspace hands it over.
+                    LeaseState::Open => std::thread::sleep(HANDED_OVER_WITHIN),
+                    LeaseState::Closed => return Ok(0),
+                    LeaseState::Reported(line) => {
+                        *self.ended.lock().unwrap_or_else(PoisonError::into_inner) =
+                            String::from_utf8_lossy(&line).into_owned();
+                        return Ok(0);
+                    }
+                },
+            }
+        }
+    }
 }
 
 /// Why the runtime opened no session, in its own words where it gave them.
@@ -296,15 +154,11 @@ fn unavailable(error: &std::io::Error) -> ActionCallError {
     }
 }
 
-fn held(shells: &Mutex<HashMap<u64, Held>>) -> std::sync::MutexGuard<'_, HashMap<u64, Held>> {
-    shells.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Tell the terminal its window is `cols` by `rows` cells: the shell's programs reflow.
 fn resize(terminal: &std::fs::File, cols: u16, rows: u16) {
     let size = libc::winsize {
-        ws_row: rows.max(1),
-        ws_col: cols.max(1),
+        ws_row: rows,
+        ws_col: cols,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };

@@ -77,6 +77,7 @@ pub(crate) mod founding_create;
 mod founding_tests;
 pub(crate) mod home;
 mod host_runs;
+mod host_shells;
 mod hosts;
 pub(crate) mod jobs;
 pub mod keep;

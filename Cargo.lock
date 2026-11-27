@@ -19709,6 +19709,7 @@ dependencies = [
  "libc",
  "linux-vm",
  "package-actions",
+ "portable-pty",
  "postcard",
  "rand 0.10.3",
  "rcgen",

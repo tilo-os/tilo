@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Read as _, Write as _};
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_action_services::line::shells::AppShells;
 use tilo_socket::Stream;
 
 use tilo_actions::remote::{
@@ -340,21 +341,16 @@ impl Frames {
             )),
             _ => None,
         };
-        #[cfg(target_os = "linux")]
         let shells = match (&self.shells, &out) {
-            (Some((workspace, granted, runs_here)), Some(out)) => {
-                Some(ush::app_shells::AppShells::new(
-                    workspace,
-                    granted.clone(),
-                    Arc::clone(runs_here),
-                    super::ush_line::here(),
-                    Arc::clone(out),
-                ))
-            }
+            (Some((workspace, granted, runs_here)), Some(out)) => Some(AppShells::new(
+                workspace,
+                granted.clone(),
+                Arc::clone(runs_here),
+                super::host_shells::source(),
+                Arc::clone(out),
+            )),
             _ => None,
         };
-        #[cfg(not(target_os = "linux"))]
-        let shells: Option<()> = None;
         let call = match (&self.lane, out) {
             (Some(granted), Some(out)) => {
                 Some(tilo_live::app_call::AppLane::new(granted.clone(), out))
@@ -371,7 +367,6 @@ impl Frames {
             audio: self.audio.as_deref(),
             media: call_media.as_ref(),
             presence: presence.as_ref(),
-            #[cfg(target_os = "linux")]
             shells,
         });
         tilo_action_services::serve_lines_handing(
@@ -399,8 +394,7 @@ struct Lanes<'a> {
     audio: Option<&'a super::audio_output::AudioLane>,
     media: Option<&'a super::call_media::CallMediaLane>,
     presence: Option<&'a super::app_presence::PresenceLane>,
-    #[cfg(target_os = "linux")]
-    shells: Option<ush::app_shells::AppShells>,
+    shells: Option<AppShells>,
 }
 
 impl tilo_action_services::CallLanes for Lanes<'_> {
@@ -417,7 +411,6 @@ impl tilo_action_services::CallLanes for Lanes<'_> {
                 taken => return taken,
             }
         }
-        #[cfg(target_os = "linux")]
         if let Some(shells) = &self.shells {
             match tilo_action_services::CallLanes::take(shells, message) {
                 tilo_action_services::Take::NotCall => {}

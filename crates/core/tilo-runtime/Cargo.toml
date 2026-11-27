@@ -266,6 +266,11 @@ tilo-peer-facts = { path = "../peer-facts" }
 # a part that ends hands on, woken from their wait.
 rustix = { workspace = true, features = ["event", "fs", "net", "std"] }
 
+# The shell an app opens where Linux's shell runtime does not run: this computer's own login
+# shell, on a pty (ConPTY on Windows).
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+portable-pty = { version = "0.9.0" }
+
 # Every tilolang process a Windows device starts runs in an AppContainer of its app's own.
 [target.'cfg(windows)'.dependencies]
 launcher-windows = { path = "../launcher-windows" }
