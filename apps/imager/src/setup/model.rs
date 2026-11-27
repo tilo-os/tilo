@@ -17,13 +17,6 @@ pub enum Experience {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FolderMode {
-    Copy,
-    Connected,
-    Later,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     pub host: HostOs,
     pub desktop_session: bool,

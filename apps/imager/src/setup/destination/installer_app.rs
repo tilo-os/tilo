@@ -947,12 +947,6 @@ impl InstallerApp {
         )
     }
 
-    #[must_use]
-    pub fn with_mailbox(mut self, mailbox: Mailbox) -> Self {
-        self.mailbox = Some(mailbox);
-        self
-    }
-
     pub fn for_scenario(name: &str) -> Option<Self> {
         let staged = |step: Step, stage: fn(&mut Self)| {
             let mut app = Self::for_shot(step);

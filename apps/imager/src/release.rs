@@ -404,8 +404,6 @@ fn media_releases(catalog: Catalog, arch: &str) -> Vec<TiloRelease> {
 
 pub const SUPPORTED_ARCHITECTURES: [&str; 2] = ["x86_64", "aarch64"];
 
-pub const ARCHITECTURE_UNSUPPORTED: &str = "installer-preview-target-architecture-unsupported";
-
 type ArchitectureBoundary = (&'static str, fn(&str) -> bool);
 
 const UNQUALIFIED: [ArchitectureBoundary; 3] = [
