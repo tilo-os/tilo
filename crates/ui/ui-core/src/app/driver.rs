@@ -730,6 +730,17 @@ impl Driver {
     #[must_use]
     pub fn frame_owed(&self) -> bool {
         let now = crate::time::now();
+        self.frame_owed_by(now, || self.next_frame_deadline(now))
+    }
+
+    /// [`Self::frame_owed`] at `now`, with the tree's next deadline asked of `deadline` only when
+    /// nothing cheaper already owes the frame: a caller that has the deadline at hand passes it
+    /// rather than walking the tree for it again.
+    fn frame_owed_by(
+        &self,
+        now: crate::time::Instant,
+        deadline: impl FnOnce() -> Option<crate::time::Instant>,
+    ) -> bool {
         self.has_pending_owner_models()
             || self.surface.redraw.get()
             || self
@@ -749,9 +760,7 @@ impl Driver {
                 .any(|root| root.needs_redraw() || root.needs_animation_frame())
             || self.peer_holds_delivery()
             || self.peer_owes_app_frame()
-            || self
-                .next_frame_deadline(now)
-                .is_some_and(|at| at <= now)
+            || deadline().is_some_and(|at| at <= now)
     }
 
     /// Run the frame a deadline made due, if one is: a window's loop draws it before the next
@@ -3044,9 +3053,10 @@ impl Driver {
         let now = crate::time::now();
         let queued_work =
             self.app.wake_pending() || self.app.unsettled() || self.has_pending_owner_models();
+        // Each of these walks the whole tree, so each is asked once and the answers shared.
         let next_wake_deadline = self.next_frame_deadline(now);
         crate::headless::FrameSchedule {
-            needs_redraw: self.frame_owed(),
+            needs_redraw: self.frame_owed_by(now, || next_wake_deadline),
             queued_work,
             needs_animation_frame: self.app.surface_moving(now),
             next_wake_deadline,

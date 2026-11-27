@@ -445,10 +445,20 @@ impl WidgetSurface {
         if self.owed != Owed::Nothing || self.asked() {
             return true;
         }
-        self.host.frame_schedule().queued_work
+        let schedule = self.host.frame_schedule();
+        schedule.queued_work
             || self
-                .next_deadline()
+                .deadline_of(&schedule)
                 .is_some_and(|deadline| deadline <= Instant::now())
+    }
+
+    /// When the tree's next frame is due by `schedule`: at the display's next frame while it
+    /// moves, else at the soonest deadline it set.
+    fn deadline_of(&self, schedule: &ui::headless::FrameSchedule) -> Option<Instant> {
+        if schedule.needs_animation_frame {
+            return Some(self.cadence.due(Instant::now()));
+        }
+        schedule.next_wake_deadline
     }
 
     /// Where the tree is shown.
@@ -1094,14 +1104,10 @@ impl ShellSurface for WidgetSurface {
     /// moves is due on the display's grid, one frame per refresh; else the
     /// earliest deadline the tree sets.
     fn next_deadline(&self) -> Option<std::time::Instant> {
-        let schedule = self.host.frame_schedule();
         if self.owed != Owed::Nothing || self.asked() {
             return Some(Instant::now());
         }
-        if schedule.needs_animation_frame {
-            return Some(self.cadence.due(Instant::now()));
-        }
-        schedule.next_wake_deadline
+        self.deadline_of(&self.host.frame_schedule())
     }
 
     fn set_frame_interval(&mut self, interval: Duration) {
