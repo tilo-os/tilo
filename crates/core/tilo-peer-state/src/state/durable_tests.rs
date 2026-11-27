@@ -161,6 +161,74 @@ tilo_test_env::scenario! {
             || postcard::to_stdvec(&kept_state(None, Vec::new())).unwrap(),
         );
     }
+
+    phase a_write_whose_migration_step_was_written_without_its_bool_is_refused_by_its_record;
+    {
+        // A build in the window between the migration step and its `rewrite` being written whole
+        // kept writes whose claim names the step as a history move: a postcard reader takes the
+        // units prefix after it as the absent bool, and the signature covers the bytes it reads
+        // as. The state is refused by the record, waiting write or sealed, never read with a
+        // write it would serve as another claim.
+        let change = [9_u8; 32];
+        let op = || {
+            let mut op = collab_types::SignedOp::new_unsigned(
+                vec![7_u8; 64],
+                collab_types::ArtifactId::new(),
+                collab_types::Ed25519PublicKey([3; 32]),
+                collab_types::AttestationId::new(),
+                collab_types::OpKind::Change,
+                std::time::SystemTime::UNIX_EPOCH,
+                4,
+            );
+            op.claims = vec![collab_types::claim::ChangeClaim {
+                change,
+                action: collab_types::claim::ClaimedAction::History(
+                    tilo_actions::HistoryOp::Migrate { to: 3, rewrite: true },
+                ),
+                units: Vec::new(),
+                invoker: None,
+                call: None,
+            }];
+            op
+        };
+        let waiting = NeighbourMsg::AppDocument {
+            peer: 0,
+            app_id: "so.tilo.chat".into(),
+            cluster_id: "workspace".into(),
+            document_id: "lounge".into(),
+            envelope: Box::new(op()),
+            readers: None,
+        };
+        let mut state = kept_state(None, Vec::new());
+        state.pending = VecDeque::from([([7; 32], waiting.clone(), false)]);
+        state.pending_bytes = crate::postcard_sink::encoded_len(&waiting, usize::MAX).unwrap();
+        let bytes = postcard::to_stdvec(&state).unwrap();
+        let Err(error) = Durable::read(&bytes, KEPT_WORKSPACE) else {
+            panic!("a state holding the old-shape write reads");
+        };
+        assert!(
+            error.contains("so.tilo.chat/lounge, a waiting write"),
+            "the waiting write is refused by its record: {error}"
+        );
+
+        state.pending = VecDeque::new();
+        state.pending_bytes = 0;
+        state.sealed = vec![(
+            Route {
+                app: "so.tilo.chat".into(),
+                record: "lounge".into(),
+            },
+            vec![op()],
+        )];
+        let bytes = postcard::to_stdvec(&state).unwrap();
+        let Err(error) = Durable::read(&bytes, KEPT_WORKSPACE) else {
+            panic!("a state holding the old-shape sealed write reads");
+        };
+        assert!(
+            error.contains("so.tilo.chat/lounge, a sealed write"),
+            "the sealed write is refused by its record: {error}"
+        );
+    }
 }
 
 /// One write waiting to be sent, in both kept states.

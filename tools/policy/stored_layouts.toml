@@ -374,7 +374,7 @@ types = [
 [[layout]]
 format = "peer durable state"
 version = 19
-digest = "b91dfb0278644fe3"
+digest = "41eaf7bbf7cb38f1"
 what = """a replica's durable state: its workspace, documents, certificates, receipts, the writes it holds for a prerequisite (each a NeighbourMsg, a document write ending with its reader set) and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set (version 10 was written both with and without a waiting document write's reader set; version 13 is version 12's layout, whose certificates name the retired grants their binary form already carried; version 14 is the layout whose claims carry the caller's signed call, a state's held and sealed writes dropped as it comes up because their signatures no longer verify; version 15 is version 14's layout, whose governance rows mark a device the workspace removed without deleting the row; version 16 is version 15's layout, whose certificates may name a placed device's records or a placement grant, which a build of version 15 refuses; version 17 is version 16's layout, whose waiting writes may be the content asked for and answered many at a time, which a build of version 16 refuses; version 18 is version 17's layout, whose waiting writes may be the word that pushed content is kept or let go of, which a build of version 17 refuses)"""
 types = [
   "crates/core/tilo-peer-state/src/state/durable.rs:Durable",
@@ -402,7 +402,7 @@ types = [
 [[layout]]
 format = "peer store frames"
 version = 11
-digest = "4bb86d6b0b6cc384"
+digest = "1a27fb97db784315"
 what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key; version 6 is version 5's layout, whose identity hello names a certificate carrying the retired grants its binary form already wrote; version 7 is the frames whose claims carry the caller's signed call, which their signature covers, so a store opening a frame of version 6 or before drops it rather than writing it again; version 8 is version 7's layout, whose identity hello may name a placed device's certificate or a placement grant, which a build of version 7 refuses, so a store of version 7 is relabelled and keeps its segments; version 9 is version 8's layout, whose messages may be the content asked for and answered many at a time, which a build of version 8 refuses, so a store of version 8 is relabelled and keeps its segments; version 10 is version 9's layout, whose messages may be the word that pushed content is kept or let go of, which a build of version 9 refuses, so a store of version 9 is relabelled and keeps its segments)"""
 types = [
   "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",

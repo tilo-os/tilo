@@ -364,6 +364,21 @@ impl ClaimedAction {
         }
     }
 
+    /// Whether it names the record's storage migration as a history move
+    /// ([`HistoryOp::Migrate`]). No build claims one: [`Self::of`] claims
+    /// every migration as [`FrameworkChange::Migrate`], whichever storage
+    /// step it is. Bytes read as this claim are of a layout before the
+    /// step's `rewrite` was written whole: a postcard reader takes the units
+    /// prefix after the step as that bool, and the record's write reads as a
+    /// migration claimed by its app, which every other reader would decide
+    /// as a history move.
+    #[must_use]
+    pub fn names_migration_as_history(&self) -> bool {
+        self.members()
+            .into_iter()
+            .any(|member| matches!(member, Self::History(HistoryOp::Migrate { .. })))
+    }
+
     /// What the app that made it calls each member, with the item it acted
     /// on: a verb's key, an edit's field path (`title`, `rows.cells`), a
     /// history step's name. A change the framework makes is no app's

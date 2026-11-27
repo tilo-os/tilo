@@ -112,6 +112,20 @@ pub enum StoreError {
          {FRAMES_VERSION}"
     )]
     Version(u32),
+    /// A stored frame claims the record's storage migration as a history move: bytes of a
+    /// layout before the step's fields were written whole, which no build claims and no reader
+    /// decides ([`Frame::of`] refuses such a write, and a frame kept before this build reads it
+    /// as one).
+    #[error(
+        "the frame of {app}/{record} by {author} at {seq} names a storage migration as a \
+         history move: its bytes are of a layout before the step wrote its fields whole"
+    )]
+    MigrationAsHistory {
+        app: String,
+        record: String,
+        author: String,
+        seq: u64,
+    },
 }
 
 /// The frames retired from a store: what a compacting pass removed and what
@@ -536,6 +550,32 @@ fn read_record(bytes: &[u8]) -> Option<(Record<'_>, usize)> {
         _ => return None,
     };
     Some((record, end))
+}
+
+/// Refuse `message`, a frame read back, when a claim it carries names the
+/// record's storage migration as a history move: bytes of a layout before the
+/// step's fields were written whole, which a store kept by another build serves
+/// as another claim. The record is named, so the device that holds it can set
+/// it aside.
+fn refuse_migration_as_history(message: &NeighbourMsg) -> Result<(), StoreError> {
+    let NeighbourMsg::AppDocument {
+        app_id,
+        document_id,
+        envelope,
+        ..
+    } = message
+    else {
+        return Ok(());
+    };
+    if envelope.migration_claimed_as_history().is_none() {
+        return Ok(());
+    }
+    Err(StoreError::MigrationAsHistory {
+        app: app_id.clone(),
+        record: document_id.clone(),
+        author: hex::encode(envelope.author.as_bytes()),
+        seq: envelope.seq,
+    })
 }
 
 /// Every whole record of a segment with its offset and length, and where the
@@ -1313,9 +1353,9 @@ impl Store {
                 replay.more = true;
                 break;
             }
-            replay.frames.push(decode(
-                &reading.bytes(&self.disk, workspace, stored, *entry)?,
-            )?);
+            let message = decode(&reading.bytes(&self.disk, workspace, stored, *entry)?)?;
+            refuse_migration_as_history(&message)?;
+            replay.frames.push(message);
             carried = carried.saturating_add(1);
             carried_bytes = carried_bytes.saturating_add(entry.bytes);
             *rest = after;
@@ -3052,6 +3092,160 @@ mod tests {
             .join(format!("{:016x}.d", frame.seq))
     }
 
+    /// A claim as a build wrote it before a migration step wrote its fields whole: the variant
+    /// indices are `ClaimedAction`'s and `HistoryOp`'s own, and the step names the version it
+    /// brings the record to and nothing after it.
+    #[derive(serde::Serialize)]
+    #[expect(
+        dead_code,
+        reason = "the variants before the step hold the indices it is written at"
+    )]
+    enum BeforeWholeAction {
+        Verb,
+        Edit,
+        Group,
+        History(BeforeWholeMigrate),
+        Framework,
+    }
+
+    #[derive(serde::Serialize)]
+    #[expect(
+        dead_code,
+        reason = "the variants before the migration hold the index it is written at"
+    )]
+    enum BeforeWholeMigrate {
+        Undo,
+        Redo,
+        Restore,
+        Checkpoint,
+        Migrate { to: u32 },
+    }
+
+    #[derive(serde::Serialize)]
+    struct BeforeWholeRun {
+        changes: Vec<[u8; 32]>,
+        action: BeforeWholeAction,
+        units: Vec<collab_types::UnitPath>,
+        invoker: Option<String>,
+        call: Option<tilo_actions::remote::SignedInvocation>,
+    }
+
+    /// What the build that wrote the step signed: the op's fields, its claims written as today's
+    /// runs are, the step's `rewrite` left out.
+    #[derive(serde::Serialize)]
+    struct BeforeWholeSigning {
+        #[serde(with = "serde_bytes")]
+        payload: Vec<u8>,
+        artifact: ArtifactId,
+        author: Ed25519PublicKey,
+        attestation_id: AttestationId,
+        kind: OpKind,
+        timestamp: SystemTime,
+        seq: u64,
+        encryption: Option<EncryptionMetadata>,
+        claims: Vec<BeforeWholeRun>,
+        surface: Option<[u8; 32]>,
+        governance: Vec<[u8; 4]>,
+    }
+
+    /// The signed op the build that wrote the step kept in its frame.
+    #[derive(serde::Serialize)]
+    struct BeforeWholeEnvelope {
+        #[serde(with = "serde_bytes")]
+        payload: Vec<u8>,
+        artifact: ArtifactId,
+        author: Ed25519PublicKey,
+        attestation_id: AttestationId,
+        kind: OpKind,
+        timestamp: SystemTime,
+        seq: u64,
+        encryption: Option<EncryptionMetadata>,
+        claims: Vec<BeforeWholeRun>,
+        surface: Option<[u8; 32]>,
+        governance: Vec<[u8; 4]>,
+        signature: collab_types::Signature,
+    }
+
+    /// That build's frame: one `AppDocument` as it wrote it, tagged as today tags it.
+    #[derive(serde::Serialize)]
+    struct BeforeWholeFrame {
+        peer: neighbour_wire::PeerId,
+        app_id: String,
+        cluster_id: String,
+        document_id: String,
+        envelope: BeforeWholeEnvelope,
+        readers: Option<String>,
+    }
+
+    /// `key`'s frame as a build wrote it before the migration step wrote its `rewrite` whole:
+    /// the step's `to` is written, its bool is not, and the units it writes follow. Built from
+    /// that layout's types, not from this build's: what it signs is what this build writes for
+    /// the claim it reads those bytes as.
+    fn before_whole_migration_frame(key: &SigningKey) -> Vec<u8> {
+        let change = [9_u8; 32];
+        let to = 3_u32;
+        let payload = vec![7_u8; 64];
+        let artifact = ArtifactId::new();
+        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+        let attestation_id = AttestationId::new();
+        let timestamp = at(9);
+        let encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
+        let run = BeforeWholeRun {
+            changes: vec![change],
+            action: BeforeWholeAction::History(BeforeWholeMigrate::Migrate { to }),
+            units: vec![Vec::new()],
+            invoker: None,
+            call: None,
+        };
+        let signed = postcard::to_allocvec(&BeforeWholeSigning {
+            payload: payload.clone(),
+            artifact,
+            author,
+            attestation_id,
+            kind: OpKind::Change,
+            timestamp,
+            seq: 9,
+            encryption,
+            claims: vec![run],
+            surface: None,
+            governance: Vec::new(),
+        })
+        .unwrap();
+        let signature = key.sign(&signed);
+        let mut bytes = vec![NeighbourMsg::APP_DOCUMENT_TAG];
+        bytes.extend(
+            postcard::to_allocvec(&BeforeWholeFrame {
+                peer: peer_handle(&key.verifying_key().to_bytes()),
+                app_id: APP.into(),
+                cluster_id: CLUSTER.into(),
+                document_id: RECORD.into(),
+                envelope: BeforeWholeEnvelope {
+                    payload,
+                    artifact,
+                    author,
+                    attestation_id,
+                    kind: OpKind::Change,
+                    timestamp,
+                    seq: 9,
+                    encryption,
+                    claims: vec![BeforeWholeRun {
+                        changes: vec![change],
+                        action: BeforeWholeAction::History(BeforeWholeMigrate::Migrate { to }),
+                        units: vec![Vec::new()],
+                        invoker: None,
+                        call: None,
+                    }],
+                    surface: None,
+                    governance: Vec::new(),
+                    signature: collab_types::Signature::from_bytes(signature.to_bytes()),
+                },
+                readers: None,
+            })
+            .unwrap(),
+        );
+        bytes
+    }
+
     /// The files of a store the released build kept, as its own store wrote them: three signed,
     /// sealed document writes of [`RECORD`] in [`workspace`], each one file, the first a
     /// checkpoint naming no own record and the others naming one, and no frames-version file.
@@ -4146,6 +4340,53 @@ mod tests {
                 assert_eq!(fs::read(set_aside(&bad)).unwrap(), b"not a frame");
                 assert!(pack_files(dir.path()).is_empty(), "nothing is served in its place");
             }
+        }
+
+        phase a_frame_a_migration_step_was_written_without_its_bool_is_refused_by_its_record;
+        {
+            // A frame a build in the window between the step and its `rewrite` being written
+            // whole wrote decodes: a postcard reader takes the units prefix after the step as
+            // the absent bool, and the record's write reads as a migration claimed by its app,
+            // which its author's signature covers as written. It is refused by the record it
+            // names, never served as the claim it reads as.
+            let dir = tempfile::tempdir().unwrap();
+            let key = device(4);
+            let bytes = before_whole_migration_frame(&key);
+            let decoded = NeighbourMsg::decode(&bytes).expect("the frame decodes");
+            let NeighbourMsg::AppDocument { envelope, .. } = &decoded else {
+                panic!("a document write");
+            };
+            assert_eq!(
+                envelope.claims[0].action,
+                collab_types::claim::ClaimedAction::History(tilo_actions::HistoryOp::Migrate {
+                    to: 3,
+                    rewrite: true,
+                }),
+                "the absent bool reads as the units prefix after it"
+            );
+            assert!(envelope.claims[0].units.is_empty(), "and its units are gone");
+            collab_types::verify_op(envelope)
+                .expect("the write verifies as its author signed the bytes it reads as");
+
+            let header = frame(&key, 9, ContentRetention::Delta);
+            let path = segment_path(dir.path(), workspace(), 0, 0);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, frame_record(&header, &bytes).unwrap()).unwrap();
+            fs::write(dir.path().join(FRAMES_VERSION_FILE), FRAMES_VERSION.to_string()).unwrap();
+
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            let Err(error) = store.replay(workspace(), &[], Budget::default()) else {
+                panic!("a frame written without the step's bool is served");
+            };
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "the frame of {APP}/{RECORD} by {} at 9 names a storage migration as a \
+                     history move: its bytes are of a layout before the step wrote its fields \
+                     whole",
+                    hex::encode(key.verifying_key().to_bytes())
+                )
+            );
         }
 
         phase a_store_newer_than_this_build_reads_is_refused_and_left_whole;

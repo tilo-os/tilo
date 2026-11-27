@@ -43,6 +43,12 @@ pub enum Refusal {
     /// can read again later, sealed under a content key.
     #[error("the op is not sealed under a content key")]
     NotSealed,
+    /// A claim names the record's storage migration as a history move: bytes
+    /// of a layout before the step's fields were written whole, which no
+    /// build claims and no reader decides
+    /// ([`collab_types::claim::ClaimedAction::names_migration_as_history`]).
+    #[error("a claim names a storage migration as a history move")]
+    MigrationAsHistory,
 }
 
 /// A message a store keeps: the sealed op with the routing keys and the
@@ -70,8 +76,10 @@ impl Frame {
     /// # Errors
     ///
     /// [`Refusal::NotADocument`] for any other message, [`Refusal::Unsigned`]
-    /// when the op's signature does not verify, and [`Refusal::NotSealed`]
-    /// when the op is not content-key ciphertext.
+    /// when the op's signature does not verify, [`Refusal::NotSealed`] when
+    /// the op is not content-key ciphertext, and
+    /// [`Refusal::MigrationAsHistory`] when a claim names the record's
+    /// storage migration as a history move.
     pub fn of(message: &NeighbourMsg) -> Result<Self, Refusal> {
         let NeighbourMsg::AppDocument {
             app_id,
@@ -82,6 +90,9 @@ impl Frame {
         else {
             return Err(Refusal::NotADocument);
         };
+        if envelope.migration_claimed_as_history().is_some() {
+            return Err(Refusal::MigrationAsHistory);
+        }
         verify_op(envelope).map_err(|_| Refusal::Unsigned)?;
         let retention = envelope
             .encryption

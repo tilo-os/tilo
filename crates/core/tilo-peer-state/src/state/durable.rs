@@ -136,6 +136,13 @@ impl<'a> Durable<'a> {
         if !tail.is_empty() {
             return Err("trailing bytes after durable state".into());
         }
+        if let Some(named) = durable.migration_as_history() {
+            return Err(format!(
+                "this state cannot be read by this build: it holds {named}, whose claim names a \
+                 storage migration as a history move, bytes of a layout before the step wrote \
+                 its fields whole. Move the state directory aside, or start with an empty one"
+            ));
+        }
         if !durable.sealed.is_empty() && durable.exact.is_none() {
             return Err("sealed record history requires exact admissions".into());
         }
@@ -143,6 +150,43 @@ impl<'a> Durable<'a> {
             return Err("durable admission namespace mismatch".into());
         }
         Ok(durable)
+    }
+
+    /// The first write this state holds whose claim names the record's storage migration as a
+    /// history move ([`collab_types::claim::ClaimedAction::names_migration_as_history`]), named
+    /// with its record, author and sequence number: bytes of a layout before the step's fields
+    /// were written whole, which no build wrote and this one refuses by the record they name.
+    fn migration_as_history(&self) -> Option<String> {
+        for (_, message, _) in &self.pending {
+            if let NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                envelope,
+                ..
+            } = message
+                && envelope.migration_claimed_as_history().is_some()
+            {
+                return Some(format!(
+                    "{app_id}/{document_id}, a waiting write by {} at {}",
+                    hex::encode(envelope.author.as_bytes()),
+                    envelope.seq
+                ));
+            }
+        }
+        for (route, ops) in &self.sealed {
+            for op in ops {
+                if op.migration_claimed_as_history().is_some() {
+                    return Some(format!(
+                        "{}/{}, a sealed write by {} at {}",
+                        route.app,
+                        route.record,
+                        hex::encode(op.author.as_bytes()),
+                        op.seq
+                    ));
+                }
+            }
+        }
+        None
     }
 }
 

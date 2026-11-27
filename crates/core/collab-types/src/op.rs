@@ -799,6 +799,18 @@ impl SignedOp {
         self
     }
 
+    /// The claim it carries that names a storage migration as a history move
+    /// ([`crate::claim::ClaimedAction::names_migration_as_history`]), when one
+    /// does: a shape no build writes, and what a write of a layout before the
+    /// step wrote its fields whole reads as. A reader refuses such a write by
+    /// the record it names rather than deciding it as another action.
+    #[must_use]
+    pub fn migration_claimed_as_history(&self) -> Option<&crate::claim::ChangeClaim> {
+        self.claims
+            .iter()
+            .find(|claim| claim.action.names_migration_as_history())
+    }
+
     /// The op deciding its changes against the app surface `surface`.
     #[must_use]
     pub fn with_surface(mut self, surface: Option<[u8; 32]>) -> Self {

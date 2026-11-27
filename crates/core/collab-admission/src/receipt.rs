@@ -229,6 +229,16 @@ fn decide_op_settled(
     (replay, imported, signer): (bool, Option<&Acting>, Option<&Acting>),
 ) -> Result<Receipt, ReceiptRefusal> {
     use tilo_action_policy::roles;
+    // A migration is the framework's change, never a history move its app claims: bytes that read
+    // as one were written before the step's fields were written whole, and a postcard reader
+    // takes the units prefix after the step as its absent bool. Refused by the record it names,
+    // whichever surface the record's app publishes, rather than decided under a grant for undo.
+    if op.migration_claimed_as_history().is_some() {
+        return Err(ReceiptRefusal::MigrationAsHistory {
+            app: document.app.to_owned(),
+            document: document.document.to_owned(),
+        });
+    }
     let administered = |action: &str| {
         let node = roles::governance_action(document.workspace, action);
         if allows(None, &node, roles::GOVERNANCE_KIND) {

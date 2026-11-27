@@ -201,6 +201,15 @@ pub enum ReceiptRefusal {
         "a record's genesis is its first change, and this record already has what someone made"
     )]
     GenesisAfterContent,
+    /// A claim names the record's storage migration as a history move: the framework's step,
+    /// which no build claims, and what bytes of a layout before the step's fields were written
+    /// whole read as. Deciding it as the history move it reads as would admit a migration under
+    /// a grant for undo.
+    #[error(
+        "the claim on {app}/{document} names a storage migration as a history move: its bytes \
+         are of a layout before the step wrote its fields whole"
+    )]
+    MigrationAsHistory { app: String, document: String },
 }
 
 /// The node of the published tree `action` acts on in `record`.
