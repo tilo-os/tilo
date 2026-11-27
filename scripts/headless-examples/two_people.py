@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -56,10 +57,22 @@ def front_workspace(session: Session) -> dict | None:
     return next(iter(held.values()), None)
 
 
+def identity_record(state: Path) -> Path:
+    """The person's active identity record, resolved the way the product resolves it
+    (`tilo_identity::store::account_active_identity_path`): each account keeps its own store under
+    the profile's identity directory, and the `active` selector names the record, else the legacy
+    `primary.json`."""
+    identity = state / "config/tilo/identity"
+    account = identity / "accounts" / str(os.getuid())
+    selector = account / "active"
+    named = selector.read_text().strip() if selector.is_file() else ""
+    return account / f"{named or 'primary'}.json"
+
+
 def name_person(state: Path, name: str) -> None:
     """Give the person whose state `state` is the profile name `name`, in their active identity
     record, where their own card's rename keeps it."""
-    record = state / "config/tilo/identity/primary.json"
+    record = identity_record(state)
     held = json.loads(record.read_text())
     held["display_name"] = name
     record.write_text(json.dumps(held))
