@@ -571,10 +571,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The run is a person's, or an agent's acting for one: a key's own run is
     /// the agent its certificate names. Or it is what this device's daemon admitted one of its
     /// connections as: an app it launched and attests the process of ([`Caller::launched`]),
-    /// decided by the app's own grants, or the person on their own connection
-    /// ([`Caller::own_person`]).
+    /// decided by the app's own grants, the person on their own connection
+    /// ([`Caller::own_person`]), or a program a seat's shell handed over once the person said yes
+    /// to it there ([`Caller::handed_by_seat`]), whose calls still ask the person.
     pub fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
-        if caller.launched_app().is_some() || caller.is_own_connection() {
+        if caller.launched_app().is_some()
+            || caller.is_own_connection()
+            || caller.handing_seat().is_some()
+        {
             let workspace = caller
                 .workspace()
                 .ok_or_else(|| std::io::Error::other("MCP workspace unavailable"))?

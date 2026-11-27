@@ -4599,3 +4599,32 @@ fn a_device_hands_its_workspace_the_first_piece_of_an_apps_file() {
         "the whole piece is in"
     );
 }
+
+/// A program is on this device, and offered what reaches this device alone, only where a seat's
+/// shell here handed it over once the person said yes to it there: the same program caller with
+/// no seat behind it is listed as a caller this device does not vouch for, as another device's is.
+#[test]
+fn only_a_program_a_seat_handed_over_is_on_this_device() {
+    let person = "ab".repeat(32);
+    let handed = Caller::local_person(person.as_str())
+        .in_workspace("w")
+        .handed_by_seat(7, "/usr/bin/tilo");
+    let listed = on_this_device(&handed);
+    assert!(
+        !listed.is_foreign_device(),
+        "a handed program is on this device"
+    );
+    assert_eq!(listed.handing_seat(), Some(7), "it stays its seat's");
+    assert_eq!(listed.handed_program(), Some("/usr/bin/tilo"));
+
+    let unhanded = Caller::local_person(person.as_str()).in_workspace("w");
+    assert!(
+        on_this_device(&unhanded).is_foreign_device(),
+        "a program no seat handed over is not vouched for"
+    );
+    let from_a_device = Caller::authenticated([1; 32], [2; 32]).in_workspace("w");
+    assert!(
+        on_this_device(&from_a_device).is_foreign_device(),
+        "another device's caller is not this device's"
+    );
+}

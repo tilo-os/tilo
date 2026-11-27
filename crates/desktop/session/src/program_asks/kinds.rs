@@ -363,6 +363,8 @@ pub(crate) fn put(
         CANNOT_JOIN_KIND => cannot_join(details)?,
         tilo_bluetooth_agent::KIND => pairing(details)?,
         crate::mcp_server::KIND => admitted(&who, details)?,
+        #[cfg(target_os = "linux")]
+        crate::app_socket::PROGRAM_KIND => program(&who, details)?,
         crate::network_reach::KIND => reach(&who, details)?,
         #[cfg(target_os = "linux")]
         crate::workspace_delete::KIND => delete_workspace(details)?,
@@ -712,6 +714,26 @@ fn admitted(who: &str, details: Value) -> Kind {
         app_id: None,
     };
     let (choices, reply) = durations(true);
+    facts.choices = choices;
+    Some((facts, reply))
+}
+
+/// A program of this login asks to act as the person through Tilo's API.
+#[cfg(target_os = "linux")]
+fn program(who: &str, details: Value) -> Kind {
+    let asked: crate::app_socket::ProgramAsked = serde_json::from_value(details).ok()?;
+    let mut facts = asking(
+        words("api-program-admission", &[("program", who)]),
+        Some(words(
+            "api-program-admission-detail",
+            &[("path", &asked.program)],
+        )),
+    );
+    facts.by = AskedBy::Program {
+        name: who.to_owned(),
+        app_id: None,
+    };
+    let (choices, reply) = durations(false);
     facts.choices = choices;
     Some((facts, reply))
 }

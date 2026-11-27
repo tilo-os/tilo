@@ -80,6 +80,18 @@ pub struct Vouch {
     /// The service of the daemon's the connection was made for.
     #[serde(default)]
     pub to: HandedTo,
+    /// The program that made the connection, as the kernel named it to the shell: what an API
+    /// connection ([`HandedTo::Api`]) is the person's on, once the person said yes to that program.
+    #[serde(default)]
+    pub program: Option<VouchedProgram>,
+}
+
+/// The program at the other end of a connection the shell hands over: its executable, as the
+/// kernel named it for the process pinned by the connection's pidfd. The person said yes to this
+/// program before the shell handed its connection over; where the connection came from never did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VouchedProgram {
+    pub exe: std::path::PathBuf,
 }
 
 /// The service of the daemon's a [`Vouch`]'s connection was made for: each the shell serves at a
@@ -99,7 +111,8 @@ pub enum HandedTo {
     /// Tilo's API for the person's own programs on this computer (the `tilo` command, the SDKs,
     /// scripts): a connection one of them made at the API socket in the login's private
     /// directory, which only this account's own programs reach and the shell took after the
-    /// kernel said its peer is one of them. The daemon serves it as the person, so it carries
+    /// kernel said its peer is one of them, and the person said yes to the program that made it
+    /// ([`Vouch::program`]). The daemon serves it as the person, so it carries
     /// no [`VouchedApp`].
     Api,
     /// The device VPN: the connection is one link of the shell's (`device_vpn::link`), which the

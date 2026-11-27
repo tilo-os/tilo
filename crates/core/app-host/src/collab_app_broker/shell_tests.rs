@@ -689,6 +689,7 @@ async fn a_vouch_for_a_connection_never_handed_over_is_refused() {
                     process: 41,
                 }),
                 to: runtime_collab::wire::shell::HandedTo::Collaboration,
+                program: None,
             },
         ))
         .await

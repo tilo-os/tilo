@@ -1646,14 +1646,24 @@ impl ShellClient {
             .await
     }
 
-    /// Hand the daemon `connection`, which one of the person's own programs made at this login's
-    /// API socket, to serve as Tilo's API for them ([`crate::wire::shell::HandedTo::Api`]).
+    /// Hand the daemon `connection`, which `program`, one of the person's own programs the person
+    /// said yes to, made at this login's API socket, to serve as Tilo's API for them
+    /// ([`crate::wire::shell::HandedTo::Api`]).
     ///
     /// # Errors
     /// The link carries no descriptors, or the daemon refused the connection.
-    pub async fn hand_api(&self, connection: std::os::fd::OwnedFd) -> Result<(), NotAvailable> {
-        self.hand(crate::wire::shell::HandedTo::Api, connection, None)
-            .await
+    pub async fn hand_api(
+        &self,
+        connection: std::os::fd::OwnedFd,
+        program: crate::wire::shell::VouchedProgram,
+    ) -> Result<(), NotAvailable> {
+        self.hand_from(
+            crate::wire::shell::HandedTo::Api,
+            connection,
+            None,
+            Some(program),
+        )
+        .await
     }
 
     /// A connection the daemon carries as one link of this shell's live session
@@ -1714,6 +1724,17 @@ impl ShellClient {
         connection: std::os::fd::OwnedFd,
         app: Option<(crate::wire::shell::VouchedApp, std::os::fd::OwnedFd)>,
     ) -> Result<(), NotAvailable> {
+        self.hand_from(to, connection, app, None).await
+    }
+
+    /// [`Self::hand`], naming the program that made `connection` where the shell knows it.
+    async fn hand_from(
+        &self,
+        to: crate::wire::shell::HandedTo,
+        connection: std::os::fd::OwnedFd,
+        app: Option<(crate::wire::shell::VouchedApp, std::os::fd::OwnedFd)>,
+        program: Option<crate::wire::shell::VouchedProgram>,
+    ) -> Result<(), NotAvailable> {
         let connection_client = self.current();
         let sender = connection_client.descriptors.as_ref().ok_or_else(|| {
             NotAvailable::Refused("this shell link carries no descriptors".to_owned())
@@ -1730,6 +1751,7 @@ impl ShellClient {
             connection,
             app,
             to,
+            program,
         };
         match self
             .call(crate::wire::shell::ShellCall::Vouch(vouch))

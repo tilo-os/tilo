@@ -103,6 +103,109 @@ impl ApiLane {
     }
 }
 
+/// The API `program` is served, a program the shell of `seat` handed over once the person said
+/// yes to it there: each workspace entered as that program ([`Daemon::enter_handed_program`]),
+/// with the person's account beside it, and named by what it runs in History.
+pub(crate) fn handed_program(
+    daemon: &Arc<Daemon>,
+    seat: u64,
+    program: &str,
+) -> Result<Arc<Direct>, String> {
+    let here = HandedHere {
+        daemon: Arc::downgrade(daemon),
+        seat,
+        program: program.to_owned(),
+        account: daemon.api_here(),
+    };
+    daemon
+        .api_as(Arc::new(here), program)
+        .map_err(|error| error.to_string())
+}
+
+/// The API's view of a program a seat's shell handed over: each workspace entered as that
+/// program, and everything else (the workspaces listed, the account) answered by the person's
+/// own account here.
+struct HandedHere {
+    daemon: Weak<Daemon>,
+    seat: u64,
+    program: String,
+    account: Arc<dyn Here>,
+}
+
+impl Here for HandedHere {
+    fn workspaces(&self, key: &tilo_user_identity::DeviceCert) -> Vec<Workspace> {
+        self.account.workspaces(key)
+    }
+
+    fn enter(&self, workspace: &str, _: &tilo_api::grant_key::GrantKey) -> Asked<'_, Reached> {
+        let (daemon, workspace) = (self.daemon.clone(), workspace.to_owned());
+        let (seat, program) = (self.seat, self.program.clone());
+        Box::pin(async move {
+            // Admission waits on the workspaces, which are served on the runtime this runs on.
+            tokio::task::spawn_blocking(move || {
+                daemon
+                    .upgrade()
+                    .ok_or_else(|| "this computer's daemon is stopping".to_owned())?
+                    .enter_handed_program(&workspace, (seat, &program))
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        })
+    }
+
+    fn account(&self) -> tilo_api::session::FoundAccount<'_> {
+        self.account.account()
+    }
+
+    fn keep(&self, workspace: &str) -> Asked<'_, ()> {
+        self.account.keep(workspace)
+    }
+
+    fn leave(&self, workspace: &str) -> Asked<'_, ()> {
+        self.account.leave(workspace)
+    }
+
+    fn join(&self, invite: &str) -> Asked<'_, String> {
+        self.account.join(invite)
+    }
+
+    fn join_entry(
+        &self,
+        workspace: &str,
+        host: tilo_server_protocol::web::PageHost,
+    ) -> Asked<'_, String> {
+        self.account.join_entry(workspace, host)
+    }
+
+    fn not_here(&self, key: &tilo_user_identity::DeviceCert) -> Vec<Workspace> {
+        self.account.not_here(key)
+    }
+
+    fn workspaces_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        self.account.workspaces_changed()
+    }
+
+    fn import(&self, by: &Caller, carried: serde_json::Value) -> tilo_api::session::Imported {
+        self.account.import(by, carried)
+    }
+
+    fn invocations(&self) -> Option<Arc<tilo_invocations::Invocations>> {
+        self.account.invocations()
+    }
+
+    fn account_here(&self) -> Option<Arc<dyn tilo_api::session::AccountHere>> {
+        self.account.account_here()
+    }
+
+    fn create_where_founded(
+        &self,
+        creating: tilo_api::session::Creating,
+    ) -> tilo_api::session::FoundingAnswer<'_> {
+        self.account.create_where_founded(creating)
+    }
+}
+
 impl CallLanes for ApiLane {
     fn take(&self, message: &RemoteActionMessage) -> Take {
         self.take_body(message, &[])

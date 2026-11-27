@@ -256,17 +256,13 @@ impl Daemon {
     }
 
     /// Serve Tilo's API to the person's own programs on this computer (the `tilo` command, the
-    /// SDKs, scripts), as this device's API ([`Self::api`]): each connection one of them makes at
-    /// the API socket in their login's private directory is taken by their shell, which this
-    /// daemon started, and handed over on its link to be served here. The key it acts as never
-    /// leaves the daemon.
+    /// SDKs, scripts): each connection one of them makes at the API socket in their login's
+    /// private directory is taken by their shell, which this daemon started, and handed over on
+    /// its link, once the person said yes to the program, to be served here as that program
+    /// ([`Self::enter_handed_program`]).
     pub(crate) fn serve_programs_api(self: &Arc<Self>) {
-        match self.api() {
-            Ok(api) => self
-                .shell_dispatch
-                .serve_api(self.cert.user_public_key, api),
-            Err(error) => tracing::warn!(%error, "no API for this computer's programs"),
-        }
+        self.shell_dispatch
+            .serve_api(self.cert.user_public_key, Arc::downgrade(self));
     }
 
     /// Hand each origin connector this device starts the connection to this device's one
@@ -1994,6 +1990,34 @@ impl Daemon {
                 self.account_tree()
             }
         }
+    }
+
+    /// What `program` reaches in `workspace`, a program the shell of `seat` handed over once the
+    /// person said yes to it there, as [`tilo_api::session::Here::enter`] answers a key: a program
+    /// of this device's acting as the person ([`Self::program_tree_in`]), which comes from that
+    /// seat on this device ([`Caller::handed_by_seat`]) and so reaches what that seat's shell
+    /// serves, with the task hosts its programs run in.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now.
+    pub(crate) fn enter_handed_program(
+        self: &Arc<Self>,
+        workspace: &str,
+        (seat, program): (u64, &str),
+    ) -> io::Result<tilo_api::session::Reached> {
+        let caller = Caller::local_person(&self.actor)
+            .handed_by_seat(seat, program)
+            .in_workspace(workspace);
+        let provider = self
+            .person()?
+            .provider_at(workspace, caller.clone(), (None, false))?;
+        let tasks = self.task_hosts(provider.clone(), caller.clone(), &self.actor);
+        Ok(tilo_api::session::Reached {
+            provider: Arc::new(provider),
+            person: self.actor.clone(),
+            caller: Some(caller),
+            tasks,
+        })
     }
 
     /// The tree a program of this device reaches in `workspace` (none: the person's own list),
@@ -7370,6 +7394,11 @@ fn on_this_device(caller: &Caller) -> Caller {
     // alone, the providers their desktop serves on it among them. Any other run here is a caller
     // this device does not vouch for.
     if caller.is_own_connection() && !caller.is_system() && caller.device_public_key().is_none() {
+        return caller.clone();
+    }
+    // A program a seat's shell here handed over once the person said yes to it is on this device
+    // too: what that seat serves is offered to it, and only that seat's.
+    if caller.handing_seat().is_some() && caller.device_public_key().is_none() {
         return caller.clone();
     }
     caller.clone().from_foreign_device(true)

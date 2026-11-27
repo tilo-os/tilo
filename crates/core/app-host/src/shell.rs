@@ -458,9 +458,18 @@ pub trait ShellSpeaking: Send + Sync {
 pub type JoinAnswer = Pin<Box<dyn Future<Output = Result<Option<(String, u64)>, String>> + Send>>;
 
 /// Tilo's API as the device serves it to the programs of the shell's person: it serves the
-/// connection, or refuses it, saying why, for a shell whose person it does not act for.
-pub type ShellApi =
-    Arc<dyn Fn(&ShellCaller, tilo_socket::Stream) -> Result<(), String> + Send + Sync>;
+/// connection of a program the shell of the seat named handed over, or refuses it, saying why,
+/// for a shell whose person it does not act for.
+pub type ShellApi = Arc<
+    dyn Fn(
+            &ShellCaller,
+            u64,
+            &runtime_collab::wire::shell::VouchedProgram,
+            tilo_socket::Stream,
+        ) -> Result<(), String>
+        + Send
+        + Sync,
+>;
 
 /// What carries one device-VPN link of a shell's until it ends.
 pub type DeviceVpnLinks = Arc<

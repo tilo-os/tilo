@@ -445,6 +445,14 @@ mcp-server-withdrawn = The request was withdrawn before anyone answered it.
 mcp-server-declined = You didn’t let this program work here as an agent.
 mcp-server-not-started = This agent’s work here could not start
 
+## Tilo's API at the login's socket: a program of this login asks to act as the
+## person, and only the person's yes to that program lets it.
+api-program-admission = Let { $program } act as you
+api-program-admission-detail = The program at { $path } asks to use Tilo as you: to read and change what is in your workspaces. Allow it only if you started it.
+api-program-declined = You didn’t let this program act as you.
+api-program-unidentified = This computer couldn’t tell which program connected, so it isn’t served.
+api-program-nobody-asked = Nobody here can let this program act as you yet, so it isn’t served.
+
 ## The shortcut catalogue on the action API: every desktop shortcut with its
 ## live and default chords, as the shortcut guide shows them.
 keyboard-shortcuts-resource = Keyboard shortcuts

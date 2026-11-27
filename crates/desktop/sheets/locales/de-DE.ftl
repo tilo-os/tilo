@@ -445,6 +445,14 @@ mcp-server-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantw
 mcp-server-declined = Du hast dieses Programm nicht als Agenten hier arbeiten lassen.
 mcp-server-not-started = Die Arbeit dieses Agenten hier konnte nicht beginnen
 
+## Tilos API am Socket der Anmeldung: ein Programm dieser Anmeldung möchte als
+## die Person handeln, und nur ihr Ja zu genau diesem Programm erlaubt es.
+api-program-admission = { $program } als dich handeln lassen
+api-program-admission-detail = Das Programm unter { $path } möchte Tilo als dich nutzen: lesen und ändern, was deine Arbeitsbereiche enthalten. Erlaube es nur, wenn du es gestartet hast.
+api-program-declined = Du hast dieses Programm nicht als dich handeln lassen.
+api-program-unidentified = Dieser Computer konnte nicht erkennen, welches Programm sich verbunden hat, daher wird es nicht bedient.
+api-program-nobody-asked = Hier kann dieses Programm noch niemand als dich handeln lassen, daher wird es nicht bedient.
+
 ## The shortcut catalogue on the action API: every desktop shortcut with its
 ## live and default chords, as the shortcut guide shows them.
 keyboard-shortcuts-resource = Tastenkürzel

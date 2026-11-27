@@ -23,7 +23,7 @@ pub(super) struct Shell {
     pub(super) caller: ShellCaller,
     /// The seat the shell's link was made for: its account and process, as the kernel named them
     /// when the link was asked for. `None` for a link made for no seat.
-    seat: Option<u64>,
+    pub(super) seat: Option<u64>,
     pub(super) services: Arc<ShellServices>,
     /// The writes the device took since the shell last asked, followed from the moment it
     /// connected, so none falls between two asks.
@@ -217,6 +217,30 @@ fn carry_live(
     Ok(ShellReply::Vouched)
 }
 
+/// Serve `connection`, a program's connection at the person's API socket, as Tilo's API to that
+/// program. Being local is not being the person's: a connection is served only as the program
+/// the person said yes to, which the shell names.
+fn serve_api(
+    shell: &Shell,
+    connection: runtime_portal::descriptors::Owned,
+    program: Option<runtime_collab::wire::shell::VouchedProgram>,
+) -> Result<ShellReply, String> {
+    let program = program.ok_or(
+        "a program's API connection names no program the person said yes to, so it is not served",
+    )?;
+    let api = shell
+        .services
+        .api
+        .as_ref()
+        .ok_or("this device serves no API to its person's programs")?;
+    // The program is the seat's: its calls reach what that seat's shell serves, and no other's.
+    let seat = shell
+        .seat
+        .ok_or("a shell made for no seat hands over no program's API connection")?;
+    api(&shell.caller, seat, &program, handed_stream(connection)?)?;
+    Ok(ShellReply::Vouched)
+}
+
 /// Serve the connection `vouch` hands over as the app it names, on `shell`'s broker: the
 /// descriptors it numbers are taken off the shell's link.
 fn vouch_for(
@@ -225,6 +249,7 @@ fn vouch_for(
         connection,
         app,
         to,
+        program,
     }: runtime_collab::wire::shell::Vouch,
 ) -> Result<ShellReply, String> {
     let taken = |number: u32, what: &str| {
@@ -272,13 +297,7 @@ fn vouch_for(
         if app.is_some() {
             return Err("a program's API connection is vouched for by no launch".to_owned());
         }
-        let api = shell
-            .services
-            .api
-            .as_ref()
-            .ok_or("this device serves no API to its person's programs")?;
-        api(&shell.caller, handed_stream(connection)?)?;
-        return Ok(ShellReply::Vouched);
+        return serve_api(shell, connection, program);
     }
     if to == runtime_collab::wire::shell::HandedTo::Identity {
         if app.is_some() {

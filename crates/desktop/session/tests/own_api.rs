@@ -24,74 +24,41 @@ use serde_json::json;
 use tilo_session::Options;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use crate::common::{api_account, api_request, app_store, device_in, headless, seeded_apps, until};
-
-/// A session on this computer, with the home it keeps it in: the home lives as long as the
-/// session, since nothing of the session's reads it after the home is gone.
-struct Desktop {
-    session: tilo_session::Session,
-    _home: tilo_test_env::TestHome,
-}
+use crate::common::{api_account, api_request, until};
 
 /// The headless session that runs as the shell of this computer's device daemon and serves its
 /// person's API at `api`: what a program of this login reaches as the person. A computer's session
 /// reaches its workspaces over the daemon's shell link, and the API answers from the device's one
-/// dispatch on that link, so the daemon is started here as the person's own service starts it.
-fn session_with_api(root: &std::path::Path, api: &std::path::Path) -> Desktop {
-    session_serving(root, api, seeded_apps())
+/// dispatch on that link, so the daemon is started here as the person's own service starts it,
+/// with the person founded on it and their own workspace kept there
+/// ([`crate::common::on_its_daemon_with`]).
+fn session_with_api(root: &std::path::Path, api: &std::path::Path) -> tilo_session::Session {
+    session_serving(root, api, crate::common::seeded_apps_of)
 }
 
-/// [`session_with_api`] running `services`.
+/// [`session_with_api`] running the services `services` makes for the device once its daemon
+/// serves its person.
 fn session_serving(
     root: &std::path::Path,
     api: &std::path::Path,
-    services: Vec<Box<dyn tilo_service::Service>>,
-) -> Desktop {
-    use std::os::unix::fs::PermissionsExt as _;
-    // A device of the person's own, as a person's computer is: the API's key is this device's
-    // certificate, and its workspaces are held by the daemon.
-    let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
-    home.env()
-        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    let state = device_in(&mut home);
-    // The daemon started below takes the device key itself, so this process lets go of the one it
-    // took for the identity.
-    crate::common::let_go_of_device_keys();
-    // The apps a program compiles against: this test's store, installed as a person's device
-    // installs them, and named to this home as a device names its own. It is installed after
-    // the home is made, since the home names the temporary directory the store is made in.
-    let store = app_store();
-    home.env().set("TILO_APPS_DATA_DIR", store);
-    // A program's task runs in the device's processes, which the daemon starts through the
-    // launcher as it starts every tilolang process: the one this test's build placed beside it.
-    home.env().set(
-        "TILO_LAUNCHER_BIN",
-        tilo_test_env::sibling_binary("launcher", "tilo-launcher"),
-    );
-    let profile = tempfile::tempdir().expect("a profile for the daemon");
-    std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the profile is this user's");
-    let within = tilo_test_env::hang_bound();
-    let daemon = crate::common::start_daemon(profile.path());
-    let person = daemon.person(within).expect("its person's services run");
-    let shell_link = daemon
-        .link_shell(within)
-        .expect("the daemon makes the session's link");
-    let session = headless(Options {
-        person,
-        state: Some(state),
-        shell_link: Some(shell_link),
-        shell_daemon: Some(Box::new((daemon, profile))),
-        collab: false,
-        services,
-        app_socket: tilo_session::AppSocket::At(root.join("app_wire.sock")),
-        api_socket: Some(api.to_owned()),
-        ..Options::default()
-    });
-    Desktop {
-        session,
-        _home: home,
-    }
+    services: impl FnOnce(&crate::common::Device) -> Vec<Box<dyn tilo_service::Service>>,
+) -> tilo_session::Session {
+    crate::common::on_its_daemon_with(
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )],
+        |device| Options {
+            collab: false,
+            state: Some(root.join("state")),
+            services: services(device),
+            asks: Some(crate::common::person_asked()),
+            app_socket: tilo_session::AppSocket::At(root.join("app_wire.sock")),
+            api_socket: Some(api.to_owned()),
+            ..Options::default()
+        },
+    )
 }
 
 /// Once the thread serving the API is up: the socket's name is there as soon as it is bound, and
@@ -128,12 +95,9 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let socket = root.path().join("api.sock");
-    let desktop = session_serving(
-        root.path(),
-        &socket,
-        vec![Box::new(settings_sections::service::SettingsService::new())],
-    );
-    let mut session = desktop.session;
+    let mut session = session_serving(root.path(), &socket, |_| {
+        vec![Box::new(settings_sections::service::SettingsService::new())]
+    });
     served(&mut session, &socket);
     let api = crate::common::Api::open(&mut session, root.path());
     // What `tilo sdk gen` writes the sections' types for: their compiled surface.
@@ -200,6 +164,107 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
     );
 }
 
+/// A program the person said yes to reaches what this device's settings hold, but its yes covers
+/// the program, never each change it makes: one that weakens the device's lock (never locking it)
+/// still raises the system's own question, named for the program. The person's no refuses the
+/// call and changes nothing, and the program answering its own question is refused: only the
+/// person answers it, where Tilo asks them.
+#[test]
+fn a_change_a_confirmed_program_makes_to_the_device_still_asks_the_person() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let root = crate::common::private_home();
+    let socket = root.path().join("api.sock");
+    let mut session = session_serving(root.path(), &socket, |_| {
+        vec![Box::new(settings_sections::service::SettingsService::new())]
+    });
+    served(&mut session, &socket);
+    let workspace = held_workspace(&mut session, &socket);
+    let api = crate::common::Api::in_workspace(&socket, workspace);
+    let power = tilo_app::framework::section_address("power", None);
+    let before = crate::common::wait_for(&mut session, "the device's power section", |session| {
+        api.send(&format!("resources/{power}"), None)
+            .answer(session)
+            .ok()?;
+        session.settle_services();
+        session.read(&power)?.get("lock_minutes").cloned()
+    });
+    assert_ne!(before, json!(0), "the device locks to begin with");
+
+    // Never locking weakens the lock: the call waits for the person, on the system's question.
+    let never = api.send(
+        &format!("resources/{power}/actions/set-lock-minutes"),
+        Some(json!({"value": 0})),
+    );
+    crate::common::wait_for(&mut session, "the system's question", |session| {
+        session.settle_services();
+        session
+            .step(std::time::Duration::from_millis(16))
+            .expect("step");
+        crate::common::on_screen_at(
+            session,
+            "Don't allow",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )
+    });
+
+    // The question is the program's, by what the kernel says it runs, and waits in the workspace.
+    let program = std::env::current_exe()
+        .expect("this test's program")
+        .display()
+        .to_string();
+    let waiting = crate::common::wait_for(&mut session, "the call's asked record", |session| {
+        let listed = api.listing(session, "invocations/workspace", None).ok()?;
+        crate::common::Api::rows(&listed)
+            .find(|row| {
+                row["label"]
+                    .as_str()
+                    .is_some_and(|label| label.contains(&program))
+            })
+            .cloned()
+    });
+    let name = waiting["name"].as_str().expect("the record is named");
+
+    // The program answering its own question is refused, and nothing runs.
+    let answered = api
+        .send(
+            &format!("resources/invocations/workspace/{name}/actions/resolve"),
+            Some(json!({"resolution": "approve"})),
+        )
+        .answer(&mut session);
+    assert!(
+        answered.as_ref().is_err_and(|why| {
+            why.contains(tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM)
+        }),
+        "a program never answers the person's question: {answered:?}"
+    );
+    session.settle_services();
+    assert_eq!(
+        session
+            .read(&power)
+            .and_then(|read| read.get("lock_minutes").cloned()),
+        Some(before.clone()),
+        "the program's own answer changed nothing"
+    );
+
+    // The person's no refuses the call, and the lock stands.
+    crate::common::press(&mut session, "Don't allow");
+    let refused = never.answer(&mut session);
+    assert!(
+        refused.as_ref().map_or(true, |answer| answer.get("status")
+            != Some(&json!("completed"))),
+        "the person's no refuses the program's call: {refused:?}"
+    );
+    session.settle_services();
+    assert_eq!(
+        session
+            .read(&power)
+            .and_then(|read| read.get("lock_minutes").cloned()),
+        Some(before),
+        "declined, the lock is as it was"
+    );
+}
+
 /// A request at the socket lists the person's workspaces, and a program it sends to one of them
 /// answers as the person: `describe(tasks)` reaches the workspace's tasks.
 #[test]
@@ -207,8 +272,7 @@ fn a_program_of_this_login_answers_as_the_person_at_the_sessions_own_api() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api.sock");
-    let desktop = session_with_api(root.path(), &api);
-    let mut session = desktop.session;
+    let mut session = session_with_api(root.path(), &api);
     served(&mut session, &api);
 
     // The list a program of the person's reads: workspace this device entered.
@@ -237,8 +301,7 @@ fn the_socket_is_all_its_directory_holds() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api").join("api.sock");
-    let desktop = session_with_api(root.path(), &api);
-    let mut session = desktop.session;
+    let mut session = session_with_api(root.path(), &api);
     served(&mut session, &api);
 
     let directory = api.parent().expect("the socket's directory");
@@ -273,8 +336,7 @@ fn a_program_is_refused_a_workspace_its_person_does_not_hold() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api.sock");
-    let desktop = session_with_api(root.path(), &api);
-    let mut session = desktop.session;
+    let mut session = session_with_api(root.path(), &api);
     served(&mut session, &api);
     let held = held_workspace(&mut session, &api);
 
@@ -328,8 +390,7 @@ fn a_sandboxed_program_of_this_login_is_refused_at_the_api_socket() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api.sock");
-    let desktop = session_with_api(root.path(), &api);
-    let mut session = desktop.session;
+    let mut session = session_with_api(root.path(), &api);
     served(&mut session, &api);
     // The person's own program is answered.
     held_workspace(&mut session, &api);
@@ -371,5 +432,108 @@ fn a_sandboxed_program_of_this_login_is_refused_at_the_api_socket() {
         said.starts_with("refused "),
         "a sandboxed program reaches the socket and is answered nothing: {said:?}\n{}",
         String::from_utf8_lossy(&ran.stderr)
+    );
+}
+
+/// Where [`api_program`] connects, when a copy of this test's program is started as it.
+const PROGRAM_AT: &str = "TILO_TEST_OWN_API_PROGRAM_AT";
+
+/// A program of this login that asks the API socket what a program of the person's asks first,
+/// and says what came back. Started from a copy of this test's program by
+/// [`a_program_acts_as_the_person_only_once_they_say_yes_to_it`]; run on its own it asks nothing.
+#[test]
+fn api_program() {
+    let Some(socket) = std::env::var_os(PROGRAM_AT) else {
+        return;
+    };
+    match api_account(
+        std::path::Path::new(&socket),
+        "account/workspaces",
+        "list",
+        &json!({}),
+    ) {
+        Ok(answer) => println!("answered {answer}"),
+        Err(why) => println!("refused {why}"),
+    }
+}
+
+/// This test's program copied to `name` under `root`: another program, by the executable the
+/// kernel names for it, which nobody has said anything about.
+fn program_at(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let program = root.join(name);
+    std::fs::copy(std::env::current_exe().expect("this test"), &program)
+        .expect("a copy of this test's program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("the copy runs");
+    std::fs::canonicalize(&program).expect("the copy's path")
+}
+
+/// `program` asking the API socket at `api`, running.
+fn asking(program: &std::path::Path, api: &std::path::Path) -> std::process::Child {
+    std::process::Command::new(program)
+        .args([
+            "--exact",
+            "own_api::api_program",
+            "--nocapture",
+            "--test-threads",
+            "1",
+            "-q",
+        ])
+        .env(PROGRAM_AT, api)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn_locked()
+        .expect("the program starts")
+}
+
+/// What `program` was answered, once it ends: `answered …` or `refused …`.
+fn told(session: &mut tilo_session::Session, mut program: std::process::Child) -> String {
+    until(session, "the program to be answered", |_| {
+        program.try_wait().expect("the program runs").is_some()
+    });
+    let ran = program.wait_with_output().expect("the program's output");
+    String::from_utf8_lossy(&ran.stdout)
+        .lines()
+        .find(|line| line.starts_with("answered ") || line.starts_with("refused "))
+        .unwrap_or_else(|| {
+            panic!(
+                "the program says what it was answered: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            )
+        })
+        .to_owned()
+}
+
+/// A program of the person's login that nobody confirmed acts as no one: being local grants
+/// nothing. It reaches the API socket, is put to the person by the program it is, and when no yes
+/// comes it is refused in words, before any of its calls reaches the daemon as anyone.
+#[test]
+fn a_program_nobody_confirmed_is_refused_and_acts_as_no_one() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let root = crate::common::private_home();
+    let api = root.path().join("api.sock");
+    let program = program_at(root.path(), "unconfirmed-program");
+    let mut session = session_with_api(root.path(), &api);
+    served(&mut session, &api);
+
+    let mut connecting = asking(&program, &api);
+    // Whatever the person is asked about it, they do not say yes.
+    until(&mut session, "the program to be answered", |_| {
+        for question in crate::common::person_asked_now() {
+            assert_eq!(question.kind, "session.api-program", "{question:?}");
+            assert_eq!(
+                question.details["program"],
+                json!(program.display().to_string()),
+                "the person is asked about the program that connected: {question:?}"
+            );
+            crate::common::person_declines(&question.handle);
+        }
+        connecting.try_wait().expect("the program runs").is_some()
+    });
+    let said = told(&mut session, connecting);
+    assert_eq!(
+        said, "refused You didn’t let this program act as you. (not_allowed)",
+        "the program is refused, in words, and answered nothing as the person"
     );
 }

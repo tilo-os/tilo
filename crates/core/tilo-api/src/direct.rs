@@ -16,9 +16,9 @@
 //! A Tilo desktop serves the same server for its own person ([`Direct::here`]):
 //! as its own device key, inside the desktop, which answers each workspace
 //! itself. The person's programs on that computer reach it over a socket of
-//! the login's own ([`Direct::serve_admitted`]). A computer `tilo login` made a device
-//! of answers in its daemon, which keeps that device's one session, so no
-//! program of its opens a second one.
+//! the login's own, each one the person said yes to ([`Direct::serve_admitted`]).
+//! A computer `tilo login` made a device of answers in its daemon, which keeps
+//! that device's one session, so no program of its opens a second one.
 
 use crate::grant_key::GrantKey;
 use crate::store::{GrantKind, Store};
@@ -245,8 +245,8 @@ impl Direct {
     }
 
     /// Serve one connection as this key, one whoever took it already admitted: a program of the
-    /// person's that the desktop took at their login's API socket, admitting only this login's
-    /// own unconfined programs, and handed to the device's daemon.
+    /// person's that the desktop took at their login's API socket, which the person said yes to,
+    /// and handed to the device's daemon. Being a local program admits nothing by itself.
     pub async fn serve_admitted(&self, stream: tilo_files::native::socket::tokio::Stream) {
         let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
             return;
@@ -498,6 +498,7 @@ mod tests {
             tilo_files::native::socket::bind(&socket).unwrap(),
         )
         .unwrap();
+        // The test admits what connects, as the desktop admits a program the person said yes to.
         let direct = std::sync::Arc::new(direct);
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {

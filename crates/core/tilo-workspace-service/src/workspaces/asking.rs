@@ -27,7 +27,8 @@ use tilo_remote_actions::asked::AskedStore;
 use super::Workspaces;
 
 /// Who asks, as the system names `caller`: its key where its call came in on one, its agent by
-/// the name its key goes by, an app by its id, else the person's own device.
+/// the name its key goes by, an app by its id, a program a seat's shell handed over by what it
+/// runs, else the person's own device.
 #[must_use]
 pub fn asked_by(caller: &Caller) -> AskedBy {
     if let Some(key) = caller.key() {
@@ -49,7 +50,12 @@ pub fn asked_by(caller: &Caller) -> AskedBy {
             title: app.to_string(),
             author: None,
         },
-        None => AskedBy::default(),
+        None => caller
+            .handed_program()
+            .map_or_else(AskedBy::default, |program| AskedBy::Program {
+                name: program.to_owned(),
+                app_id: None,
+            }),
     }
 }
 

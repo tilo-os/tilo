@@ -47,6 +47,9 @@ enum Came {
     InProcess,
     /// From a turn this device's agent engine runs here, as the agent.
     EngineTurnHere,
+    /// From a program on this device that the shell of seat `0` handed over after the person
+    /// said yes to it there.
+    HandedBySeat(u64),
 }
 
 /// The authenticated actor behind a request.
@@ -122,6 +125,10 @@ pub struct Caller {
     // The rules the person saved with the Shortcut this caller's run is (`Self::within_shortcut`):
     // set only by the runner, in process, never from a frame.
     shortcut_grant: Option<Vec<tilo_action_policy::Rule>>,
+    // The program a seat's shell handed over, by what the kernel said it runs
+    // (`Self::handed_by_seat`): what History and the person's questions name its calls by.
+    // Display only: it grants nothing.
+    program: Option<String>,
 }
 
 /// The key one of a person's calls came in on, beside the person it acts as
@@ -219,6 +226,7 @@ impl Caller {
             placed: None,
             consented: false,
             shortcut_grant: None,
+            program: None,
         }
     }
 
@@ -370,6 +378,35 @@ impl Caller {
     #[must_use]
     pub const fn is_engine_turn_here(&self) -> bool {
         matches!(self.came, Came::EngineTurnHere)
+    }
+
+    /// The same caller, calling from `program`, a program on this device that the shell of
+    /// `seat` handed over once the person said yes to it there: where the call comes from, never
+    /// what it may do. It is no connection of the person's own, so what a workspace asks of them
+    /// is still put to them, and the program never answers it. Only the daemon that took the
+    /// hand-over sets this.
+    #[must_use]
+    pub fn handed_by_seat(mut self, seat: u64, program: impl Into<String>) -> Self {
+        self.came = Came::HandedBySeat(seat);
+        self.program = Some(program.into());
+        self
+    }
+
+    /// The program a seat's shell handed over that this caller's calls come from
+    /// ([`Self::handed_by_seat`]), by what the kernel said it runs.
+    #[must_use]
+    pub fn handed_program(&self) -> Option<&str> {
+        self.program.as_deref()
+    }
+
+    /// The seat whose shell handed this caller's program over ([`Self::handed_by_seat`]), where
+    /// one did.
+    #[must_use]
+    pub const fn handing_seat(&self) -> Option<u64> {
+        match self.came {
+            Came::HandedBySeat(seat) => Some(seat),
+            _ => None,
+        }
     }
 
     /// The device's operating system on a local connection the provider admitted as its
@@ -1260,6 +1297,9 @@ impl KeptCaller {
             // A kept call is asked again for what it was made for.
             consented: false,
             shortcut_grant,
+            // The ask it waits in names the program it came from
+            // ([`super::asked::AskedFacts::by`]).
+            program: None,
         }
     }
 }

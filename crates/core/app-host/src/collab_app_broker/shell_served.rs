@@ -51,6 +51,7 @@ impl Served {
         asks: mpsc::UnboundedSender<Asking>,
         asked_in: Option<Arc<AskedStore>>,
         hand_over: Option<tilo_workspace_service::workspaces::providers::HandOver>,
+        seat: Option<u64>,
     ) -> Result<Self, String> {
         if !runtime_collab::wire::shell::serves(&provider) {
             return Err(format!(
@@ -69,6 +70,7 @@ impl Served {
             asked: std::sync::Mutex::default(),
             answered_first: std::sync::Mutex::default(),
             asked_in,
+            seat,
             closed: AtomicBool::new(false),
         });
         // The seat is held apart from every provider a call names: only this device's broker
@@ -159,6 +161,9 @@ struct LinkProvider {
         std::sync::Mutex<HashMap<InvocationId, Result<InvocationReceipt, ActionCallError>>>,
     /// Where those records are kept.
     asked_in: Option<Arc<AskedStore>>,
+    /// The seat whose shell serves this provider: a program another seat's shell handed over
+    /// never reaches it.
+    seat: Option<u64>,
     closed: AtomicBool,
 }
 
@@ -168,6 +173,14 @@ struct Followed {
 }
 
 impl LinkProvider {
+    /// Whether `caller` comes from a program another seat's shell handed over: what this seat's
+    /// shell serves is that seat's person's, there, and never the other seat's programs'.
+    fn kept_from(&self, caller: &Caller) -> bool {
+        caller
+            .handing_seat()
+            .is_some_and(|seat| Some(seat) != self.seat)
+    }
+
     /// Why a call fails once the shell closed.
     fn gone(&self) -> String {
         format!(
@@ -347,9 +360,12 @@ impl ActionProvider for LinkProvider {
     /// What the shell last said it offers, a page at a time: the dispatch lists it at once.
     fn query(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        if self.kept_from(caller) {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
         let offered = self.catalogue.read_recover();
         Pending::ready(Ok(CataloguePage::from_rows(
             offered.revision.clone(),
@@ -363,6 +379,9 @@ impl ActionProvider for LinkProvider {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if self.kept_from(caller) {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
         let (done, answer) = tilo_actions::remote::pending();
         let invocation = request.invocation;
         // The person's answer to the call's record comes back as the same call: it asks no more.
@@ -523,5 +542,81 @@ pub(super) async fn carry(
                     .unwrap_or_else(|_| Err("the shell's link has closed".to_owned())),
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_actions::remote::{
+        ActionCallError, ActionProvider as _, Caller, CataloguePage, CatalogueQuery, InvokeRequest,
+        PendingPoll, RemoteActionTarget, settings_resources,
+    };
+    use tilo_workspace_service::workspaces::providers::Providers;
+
+    /// What a seat's shell serves (Settings' sections here) reaches a program that seat's shell
+    /// handed over, and never one another seat's shell handed over: the program comes from the
+    /// other seat, whose person's settings are not these.
+    #[tokio::test]
+    async fn a_program_another_seat_handed_over_never_reaches_this_seats_providers() {
+        let providers = Providers::default();
+        let (asks, _asked) = tokio::sync::mpsc::unbounded_channel();
+        let catalogue = serde_json::to_string(&CataloguePage::from_rows(
+            String::new(),
+            Vec::new(),
+            &CatalogueQuery::default(),
+        ))
+        .unwrap();
+        let _served = super::Served::register(
+            &providers,
+            (settings_resources::PROVIDER.to_owned(), &catalogue),
+            runtime_collab::wire::Handle(1),
+            asks,
+            None,
+            None,
+            Some(1),
+        )
+        .expect("the seat's shell serves its settings");
+        let settings = providers
+            .get(settings_resources::PROVIDER)
+            .expect("registered")
+            .answers;
+        let program = |seat| {
+            Caller::local_person("ab".repeat(32))
+                .in_workspace("w")
+                .handed_by_seat(seat, "/usr/bin/tilo")
+        };
+        let listed = |caller: &Caller| match settings
+            .query(caller, CatalogueQuery::default())
+            .poll_ready()
+        {
+            PendingPoll::Ready(listed) => listed.map(|_| ()),
+            _ => panic!("a listing is answered at once"),
+        };
+        assert_eq!(
+            listed(&program(1)),
+            Ok(()),
+            "its own seat's program lists it"
+        );
+        assert_eq!(
+            listed(&program(2)),
+            Err(ActionCallError::NotPermitted),
+            "another seat's program is kept out"
+        );
+        let request: InvokeRequest = serde_json::from_value(serde_json::json!({
+            "invocation": tilo_actions::InvocationId::new(),
+            "target": RemoteActionTarget {
+                provider: settings_resources::PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new("settings.appearance", "set"),
+            },
+        }))
+        .unwrap();
+        match settings.invoke(&program(2), request).poll_ready() {
+            PendingPoll::Ready(called) => assert_eq!(
+                called.map(|_| ()),
+                Err(ActionCallError::NotPermitted),
+                "another seat's program changes nothing here"
+            ),
+            _ => panic!("another seat's program is refused at once"),
+        }
     }
 }

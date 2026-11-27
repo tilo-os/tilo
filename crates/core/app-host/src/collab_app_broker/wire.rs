@@ -1466,6 +1466,7 @@ impl WireConnection {
             asks,
             shell.services.workspaces.asked_store(),
             Some(shell.hand_over()),
+            shell.seat,
         )?;
         self.next_handle.set(handle.0.wrapping_add(1));
         self.served.borrow_mut().insert(handle, served);

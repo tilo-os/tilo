@@ -107,9 +107,12 @@ pub(crate) fn services(
         standing,
         published: Some(published),
         identity: Some(identity),
-        api: Some(Arc::new(move |shell: &ShellCaller, stream| {
-            api.api(shell, stream)
-        })),
+        api: Some(Arc::new(
+            move |shell: &ShellCaller,
+                  seat,
+                  program: &runtime_collab::wire::shell::VouchedProgram,
+                  stream| api.api(shell, seat, program, stream),
+        )),
     }
 }
 
@@ -118,8 +121,8 @@ pub(crate) fn services(
 #[derive(Default)]
 pub(crate) struct Dispatching {
     person: OnceLock<PersonDispatch>,
-    /// The person the API acts as, and the API.
-    api: OnceLock<([u8; 32], Arc<tilo_api::direct::Direct>)>,
+    /// The person whose programs the API is served to, and the daemon that serves it.
+    api: OnceLock<([u8; 32], std::sync::Weak<super::services::Daemon>)>,
 }
 
 impl Dispatching {
@@ -128,29 +131,45 @@ impl Dispatching {
         let _ = self.person.set(person);
     }
 
-    /// The connections the person's shell takes for their programs are served by `api`, acting
-    /// as `person`, from now on.
-    pub(crate) fn serve_api(&self, person: [u8; 32], api: Arc<tilo_api::direct::Direct>) {
-        let _ = self.api.set((person, api));
+    /// The connections the shell of `person` takes for their programs are served by `daemon`
+    /// from now on.
+    pub(crate) fn serve_api(
+        &self,
+        person: [u8; 32],
+        daemon: std::sync::Weak<super::services::Daemon>,
+    ) {
+        let _ = self.api.set((person, daemon));
     }
 
-    /// Serve `stream`, a connection a program of `shell`'s person made at their API socket, on
-    /// the daemon's runtime: only the shell of the person the API acts as hands one over.
-    fn api(&self, shell: &ShellCaller, stream: tilo_socket::Stream) -> Result<(), String> {
-        let (person, api) = self
+    /// Serve `stream`, a connection `program` made at the API socket of `shell`'s person, on the
+    /// daemon's runtime: only the shell of the person the API is served to hands one over, and
+    /// only for a program the person said yes to at `seat`, which its calls come from.
+    fn api(
+        &self,
+        shell: &ShellCaller,
+        seat: u64,
+        program: &runtime_collab::wire::shell::VouchedProgram,
+        stream: tilo_socket::Stream,
+    ) -> Result<(), String> {
+        let (person, daemon) = self
             .api
             .get()
             .ok_or("this device's API for its person's programs is not up yet")?;
         if shell.person != *person {
             return Err("this device serves its API to its own person's programs only".to_owned());
         }
-        let api = Arc::clone(api);
+        let daemon = daemon
+            .upgrade()
+            .ok_or("this computer's daemon is stopping")?;
+        let api =
+            super::api_lane::handed_program(&daemon, seat, &program.exe.display().to_string())?;
         let runtime = tilo_rt::app().handle();
         let stream = {
             let _inside = runtime.enter();
             tilo_socket::tokio::from_std(stream)
                 .map_err(|error| format!("a program's API connection cannot be served: {error}"))?
         };
+        tracing::debug!(program = %program.exe.display(), "serving a program the person said yes to");
         runtime.spawn(async move { api.serve_admitted(stream).await });
         Ok(())
     }

@@ -179,6 +179,11 @@ pub(super) fn is_local_host_caller(
     if caller.is_foreign_device() {
         return false;
     }
+    // A program a seat's shell on this device handed over once the person said yes to it there
+    // calls from this device. What that seat's shell serves admits it for that seat alone.
+    if caller.handing_seat().is_some() {
+        return true;
+    }
     // A turn this device's agent engine runs here calls from this device, as the agent with
     // its own key: where it runs, never a grant. Its calls are decided on the agent's grants.
     if caller.is_engine_turn_here() {

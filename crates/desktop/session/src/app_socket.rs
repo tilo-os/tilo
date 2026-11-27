@@ -13,6 +13,8 @@
 
 use std::sync::Arc;
 
+use tilo_lock::MutexRecover as _;
+
 use tilo_app_host::collab_app_broker::seat;
 
 use crate::launches::Launches;
@@ -65,11 +67,127 @@ pub(crate) fn serve_identity(
     })
 }
 
+/// The kind of question the API socket asks the person about a program of theirs.
+pub(crate) const PROGRAM_KIND: &str = "session.api-program";
+
+/// What the person is asked about a program: its executable, by its path.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ProgramAsked {
+    pub(crate) program: String,
+}
+
+/// Which programs of this login the person said yes to, and how they are asked about the others.
+///
+/// A program is the executable the kernel names for the process at the other end of its
+/// connection, pinned by the connection's pidfd ([`peer_facts`]). Being a program of this
+/// login admits nothing by itself: only the person's yes to that program does, given on the
+/// system's own sheet as an asked record ([`crate::program_asks`]) and never by anything the
+/// program says. A yes is kept for that program alone, and no longer than this session runs.
+pub(crate) struct Programs {
+    questions: Option<tilo_service::AskSender>,
+    /// Allowed while this session runs.
+    session: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>>,
+    /// The connections of each program the person is being asked about, waiting for the answer.
+    waiting: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Vec<Told>>>,
+}
+
+/// Where one waiting connection of a program is told the person's answer.
+type Told = tokio::sync::oneshot::Sender<Result<(), String>>;
+
+impl Programs {
+    /// The programs the person allowed, asked about through `questions`.
+    pub(crate) fn new(questions: Option<tilo_service::AskSender>) -> Arc<Self> {
+        Arc::new(Self {
+            questions,
+            session: std::sync::Mutex::default(),
+            waiting: std::sync::Mutex::default(),
+        })
+    }
+
+    /// Whether the person lets `program` act as them: at once when they said so before, else
+    /// once they answer the question put to them. Connections of one program that come while
+    /// it is asked about wait for that one answer.
+    ///
+    /// # Errors
+    /// What the program is told: the person declined it, or nobody here can be asked.
+    async fn admit(&self, program: &std::path::Path) -> Result<(), String> {
+        if self.session.lock_recover().contains(program) {
+            return Ok(());
+        }
+        let (told, answer) = tokio::sync::oneshot::channel();
+        let first = {
+            let mut waiting = self.waiting.lock_recover();
+            let asked = waiting.entry(program.to_owned()).or_default();
+            asked.push(told);
+            let first = asked.len() == 1;
+            drop(waiting);
+            first
+        };
+        if first {
+            let decided = self.ask(program).await;
+            let waiting = self
+                .waiting
+                .lock_recover()
+                .remove(program)
+                .unwrap_or_default();
+            for told in waiting {
+                let _ = told.send(decided.clone());
+            }
+        }
+        answer
+            .await
+            .unwrap_or_else(|_| Err(tilo_sheets::word("api-program-declined")))
+    }
+
+    /// Put `program` to the person and keep their answer as long as they chose.
+    async fn ask(&self, program: &std::path::Path) -> Result<(), String> {
+        let Some(questions) = &self.questions else {
+            return Err(tilo_sheets::word("api-program-nobody-asked"));
+        };
+        let label = program.file_name().map_or_else(
+            || program.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let details = serde_json::to_value(ProgramAsked {
+            program: program.display().to_string(),
+        })
+        .unwrap_or_default();
+        tracing::info!(program = %program.display(), "API: asking the person about a program");
+        let answer = questions
+            .ask(tilo_service::Question {
+                handle: format!("api-program:{}", uuid::Uuid::new_v4().simple()),
+                kind: PROGRAM_KIND.to_owned(),
+                app_id: None,
+                label,
+                details,
+            })
+            .await;
+        let chosen = answer.and_then(|answer| answer.choice).and_then(|choice| {
+            tilo_action_types::Lifetime::chosen(choice, tilo_clock::unix_now_ms())
+        });
+        match chosen {
+            None => Err(tilo_sheets::word("api-program-declined")),
+            Some(tilo_action_types::Lifetime::Once | tilo_action_types::Lifetime::Until(_)) => {
+                Ok(())
+            }
+            // The question offers nothing kept beyond this session: a yes until it is taken back
+            // is the person's grant, which only the grants they can see and revoke keep.
+            Some(
+                tilo_action_types::Lifetime::Session | tilo_action_types::Lifetime::UntilRevoked,
+            ) => {
+                self.session.lock_recover().insert(program.to_owned());
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Take the connections the person's own programs (the `tilo` command, the SDKs, scripts) make
-/// at `path`, the API socket in the login's private directory, and hand each to the daemon over
-/// `shell`, which serves Tilo's API to them as the person. The kernel's account of the peer is
-/// the admission: only a program of this login, never one a sandbox confined though it is the
-/// same account, is handed over. The socket is taken for as long as the session runs.
+/// at `path`, the API socket in the login's private directory, and hand each the person said yes
+/// to to the daemon over `shell`, which serves Tilo's API to it as the person. The kernel's
+/// account of the peer says which program it is: one of this login's own, never one a sandbox
+/// confined though it is the same account, and `programs` decides whether the person lets that
+/// program act as them. The socket is taken for as long as the session runs.
 ///
 /// # Errors
 /// The socket's directory is not this account's own, a live session answers at `path`, or the
@@ -77,6 +195,7 @@ pub(crate) fn serve_identity(
 pub(crate) fn serve_api(
     path: &std::path::Path,
     shell: runtime_collab::ShellClient,
+    programs: Arc<Programs>,
 ) -> std::io::Result<()> {
     let listener = crate::mcp_server::bind_private(path)?;
     listener.set_nonblocking(true)?;
@@ -104,13 +223,18 @@ pub(crate) fn serve_api(
                 }
             };
             let local = tokio::task::LocalSet::new();
-            local.block_on(&runtime, hand_api(listener, shell));
+            local.block_on(&runtime, hand_api(listener, shell, programs));
         })?;
     Ok(())
 }
 
-/// Take connections on `listener`, handing each of this login's own programs to the daemon's API.
-async fn hand_api(listener: tokio::net::UnixListener, shell: runtime_collab::ShellClient) {
+/// Take connections on `listener`, handing each of this login's own programs the person said yes
+/// to to the daemon's API.
+async fn hand_api(
+    listener: tokio::net::UnixListener,
+    shell: runtime_collab::ShellClient,
+    programs: Arc<Programs>,
+) {
     loop {
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
@@ -119,12 +243,36 @@ async fn hand_api(listener: tokio::net::UnixListener, shell: runtime_collab::She
                 continue;
             }
         };
-        if !tilo_files::native::socket::tokio::peer_is_this_login(&stream) {
+        let facts = peer_facts::facts(&stream);
+        let login = facts.as_ref().is_ok_and(|facts| {
+            matches!(
+                tilo_api::daemon::admission::SessionPeer::of(
+                    facts,
+                    rustix::process::geteuid().as_raw()
+                ),
+                tilo_api::daemon::admission::SessionPeer::Login { .. }
+            )
+        });
+        if !login {
             tracing::warn!("API: a connection from another account or a sandbox is refused");
             continue;
         }
         let shell = shell.clone();
+        let programs = Arc::clone(&programs);
         tokio::task::spawn_local(async move {
+            // The program is its executable, as the kernel names it for the process the
+            // connection's pidfd pins: one the kernel does not name is no program the person can
+            // be asked about.
+            let Some(program) = facts.ok().and_then(|facts| facts.exe) else {
+                tracing::warn!("API: a program the kernel does not name is refused");
+                refuse(stream, &tilo_sheets::word("api-program-unidentified")).await;
+                return;
+            };
+            if let Err(why) = programs.admit(&program).await {
+                tracing::info!(program = %program.display(), %why, "API: a program is not let act as the person");
+                refuse(stream, &why).await;
+                return;
+            }
             let connection = match stream.into_std() {
                 Ok(connection) => std::os::fd::OwnedFd::from(connection),
                 Err(error) => {
@@ -132,10 +280,36 @@ async fn hand_api(listener: tokio::net::UnixListener, shell: runtime_collab::She
                     return;
                 }
             };
-            if let Err(error) = shell.hand_api(connection).await {
+            let program = runtime_collab::wire::shell::VouchedProgram { exe: program };
+            if let Err(error) = shell.hand_api(connection, program).await {
                 tracing::error!(%error, "the device's daemon did not take a program's API connection");
             }
         });
+    }
+}
+
+/// Tell a program at the API socket why it is not served, as the API answers a refusal, then let
+/// it go.
+async fn refuse(mut stream: tokio::net::UnixStream, why: &str) {
+    use tokio::io::AsyncWriteExt as _;
+    let body = serde_json::json!({"error": {"code": "not_allowed", "message": why}}).to_string();
+    let reply = format!(
+        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let told = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        stream.write_all(reply.as_bytes()).await?;
+        stream.shutdown().await?;
+        // What the program sent is read to its end before the connection closes: closing on
+        // unread bytes resets it, and the program would lose the answer before reading it.
+        tokio::io::copy(&mut stream, &mut tokio::io::sink())
+            .await
+            .map(drop)
+    })
+    .await;
+    if !matches!(told, Ok(Ok(()))) {
+        tracing::debug!("a program refused at the API socket was not told why");
     }
 }
 

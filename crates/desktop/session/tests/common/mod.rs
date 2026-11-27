@@ -698,11 +698,46 @@ pub fn headless(options: Options) -> Session {
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            ..options
+            ..this_program_allowed(options)
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session")
+}
+
+/// `options`, with the person saying yes for this session to this test's own program when it
+/// reaches Tilo's API socket ([`api_request`]): its question is answered on the system's sheet as
+/// the person would answer it, and every other question is left to the test. A session with no
+/// API socket asks nothing of it. A test of that question connects from a program at another
+/// path, which nobody answers for.
+fn this_program_allowed(mut options: Options) -> Options {
+    if options.api_socket.is_none() {
+        return options;
+    }
+    let receiver = if let Some((_, receiver)) = &options.asks {
+        receiver.clone()
+    } else {
+        let (sender, receiver) = tilo_service::asks::channel();
+        options.asks = Some((sender, receiver.clone()));
+        receiver
+    };
+    let this = std::env::current_exe()
+        .expect("this test's program")
+        .display()
+        .to_string();
+    std::thread::spawn(move || {
+        loop {
+            for question in receiver.pending() {
+                if question.kind == "session.api-program"
+                    && question.details["program"] == json!(this)
+                {
+                    receiver.answer(&question.handle, allowed_for(1));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    options
 }
 
 /// [`headless`] on the outputs `outputs` : a test that wants another display, or another size.
@@ -714,7 +749,7 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            ..options
+            ..this_program_allowed(options)
         },
         outputs,
     )
@@ -939,7 +974,7 @@ pub fn on_its_daemon_with(
             person,
             shell_link: Some(shell_link),
             shell_daemon: Some(Box::new((daemon, profile, home))),
-            ..options
+            ..this_program_allowed(options)
         },
         outputs,
     )
@@ -984,7 +1019,7 @@ impl Device {
                 presentation: ui::headless::fixture_runner_inputs,
                 person: self.person.clone(),
                 shell_link: Some(link),
-                ..options
+                ..this_program_allowed(options)
             },
             &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         )

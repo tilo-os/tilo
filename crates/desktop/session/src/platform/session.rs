@@ -1421,6 +1421,9 @@ impl Session {
         activity.attach_content(std::sync::Arc::clone(&record_content));
         let control = crate::test_control::Control::open(&options, std::sync::Arc::clone(&host));
         tilo_startup_metrics::mark("control-socket-open");
+        // The person's own programs on this computer are each let act as them by the person's yes
+        // to that program, asked on the same sheet the MCP server asks on.
+        let api_programs = crate::app_socket::Programs::new(questions.clone());
         let server = crate::mcp_server::mount_named(
             &options,
             questions,
@@ -1438,17 +1441,19 @@ impl Session {
         // it, and this session takes their connections at the socket they reach it at.
         if let Some(path) = options.api_socket.as_deref() {
             match &daemon_link {
-                Ok(shell) => match crate::app_socket::serve_api(path, shell.clone()) {
-                    Ok(()) => tracing::info!(
-                        path = %path.display(),
-                        "taking this computer's programs to the device's API"
-                    ),
-                    Err(error) => tracing::warn!(
-                        %error,
-                        path = %path.display(),
-                        "no API for this computer's programs"
-                    ),
-                },
+                Ok(shell) => {
+                    match crate::app_socket::serve_api(path, shell.clone(), api_programs) {
+                        Ok(()) => tracing::info!(
+                            path = %path.display(),
+                            "taking this computer's programs to the device's API"
+                        ),
+                        Err(error) => tracing::warn!(
+                            %error,
+                            path = %path.display(),
+                            "no API for this computer's programs"
+                        ),
+                    }
+                }
                 Err(reason) => tracing::warn!(
                     %reason,
                     "no API for this computer's programs: the session reaches no daemon"
