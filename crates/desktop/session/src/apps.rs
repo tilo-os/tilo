@@ -2063,7 +2063,12 @@ impl Apps {
         // bound to the app there, which names the instance the window draws.
         let links = self.state.borrow().links.clone();
         let hosted = launch.package().is_some() && self.runs_in_process(app);
-        let timed = tilo_startup_metrics::launch_requested(app);
+        // An ask naming its instance is the shell's, for the window of an open it placed.
+        let timed = if instance.is_some() {
+            tilo_startup_metrics::launch_continued(app)
+        } else {
+            tilo_startup_metrics::launch_requested(app)
+        };
         let failed = |error: String| {
             tilo_startup_metrics::launch_failed(timed);
             ApiError::Failed(error)

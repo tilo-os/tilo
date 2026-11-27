@@ -177,10 +177,10 @@ pub fn launch_generation() -> u128 {
     *GENERATION.get_or_init(|| u128::from(tilo_clock::unix_now_ns()))
 }
 
-/// Begin timing one user-requested launch; same-app launches are FIFO. A launch of `key` the
-/// shell was handed ([`launch_handed_on`]) is the one its ask continues: it keeps its id and the
-/// time the person asked.
-pub fn launch_requested(key: impl Into<String>) -> u64 {
+/// The shell's ask for the window of an open of `key` it placed: the oldest launch of `key` the
+/// shell was handed ([`launch_handed_on`]), which keeps its id and the time the person asked. An
+/// ask with no such launch (the shell opening a window of its own accord) is a launch of its own.
+pub fn launch_continued(key: impl Into<String>) -> u64 {
     let key = key.into();
     {
         let mut launches = launch_table();
@@ -195,6 +195,12 @@ pub fn launch_requested(key: impl Into<String>) -> u64 {
             return launch.id;
         }
     }
+    launch_requested(key)
+}
+
+/// Begin timing one user-requested launch; same-app launches are FIFO.
+pub fn launch_requested(key: impl Into<String>) -> u64 {
+    let key = key.into();
     let id = NEXT_LAUNCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let retired = {
         let mut launches = launch_table();
@@ -1004,14 +1010,14 @@ mod tests {
 
         // The shell asks for each window again, in order: each ask continues its open.
         assert_eq!(
-            launch_requested(app),
+            launch_continued(app),
             first,
             "the shell's ask is the first open"
         );
         launch_shows(first, 41);
         launch_spawned(first, 7001);
         assert_eq!(
-            launch_requested(app),
+            launch_continued(app),
             second,
             "the shell's ask is the second open"
         );
