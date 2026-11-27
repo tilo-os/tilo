@@ -196,7 +196,7 @@ view picture(windows: List<device.Window>, strip: Text) {
             }
         } else {
             let roomy = space.width_class == .expanded or space.width_class == .wide
-            row(gap: .related, align: .start) {
+            row(gap: .related, align: .stretch) {
                 for w in fronts {
                     window_place(w, w.share, peek: false, compact: false, roomy: roomy)
                     for v in behind_tabs(windows, w) {

@@ -1130,7 +1130,7 @@ view poker_table(t: Table) {
 
 /// Three seats side by side, centred.
 view seat_row(t: Table, places: List<Int>) {
-    row(gap: .sibling, distribute: .center, align: .start) {
+    row(gap: .sibling, distribute: .center, align: .stretch) {
         for place in places {
             seat_view(t, place)
         }
