@@ -21,7 +21,7 @@ use ui::accesskit::{Node, TreeUpdate};
 
 use crate::common::window::Client;
 use crate::common::{TITLES, notebook};
-use tilo_compositor::{OutputChange, OutputConfig};
+use tilo_compositor::{InputEvent, OutputChange, OutputConfig};
 use tilo_service::Service;
 use tilo_session::{Options, Session};
 
@@ -569,6 +569,25 @@ fn words_on(session: &Session, output: &str) -> Vec<String> {
     part_words(session, output)
 }
 
+/// Whether the part on `output` draws its top bar: the bar's own menu button is there, which the
+/// whole bar and the compact one both carry.
+fn shows_bar(session: &Session, output: &str) -> bool {
+    part_words(session, output)
+        .iter()
+        .any(|word| word.contains("Tilo"))
+}
+
+/// Put the pointer at `at` and run the passes that carry it.
+fn point_at(session: &mut Session, at: (f64, f64)) {
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: at.0, y: at.1 })
+        .unwrap();
+    for _ in 0..2 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
 /// The node numbered `id` in `tree`.
 fn root(tree: &TreeUpdate) -> &Node {
     let root = tree.tree.as_ref().expect("a window names its root").root;
@@ -896,6 +915,40 @@ fn a_part_made_before_a_layout_reads_it_too() {
     assert_ne!(
         moved, first,
         "the part made before the layout reads it and draws the window that moved: {shown:?}"
+    );
+}
+
+/// A bar set to show only when its edge is reached shows on the display reached and on no other:
+/// the device says of each display whether its own edge is reached, and each part reads its own
+/// display's row, so a reach on the second display does not bring the first one's bar out.
+#[test]
+fn a_bar_that_hides_until_reached_shows_only_on_the_display_reached() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut session = session(&[(0, 0), (WIDTH, 0)]);
+    until(&mut session, |session| session.shell_parts().len() == 2);
+    session
+        .run_shell_action("set_bar_showing", vec![json!("edge_reveal")])
+        .expect("the bar hides until its edge is reached");
+    // Away from every display's top edge, neither display shows a bar.
+    point_at(&mut session, (f64::from(WIDTH) / 2.0, 300.0));
+    until(&mut session, |session| {
+        !shows_bar(session, "HEADLESS-1") && !shows_bar(session, "HEADLESS-2")
+    });
+    // At the second display's top edge, its bar shows; the first display's stays hidden.
+    point_at(&mut session, (f64::from(WIDTH) * 1.5, 0.0));
+    until(&mut session, |session| shows_bar(session, "HEADLESS-2"));
+    assert!(
+        !shows_bar(&session, "HEADLESS-1"),
+        "the display the pointer is not on shows no bar: {:?}",
+        words_on(&session, "HEADLESS-1")
+    );
+    // At the first display's top edge, that one shows and the second hides again.
+    point_at(&mut session, (f64::from(WIDTH) / 2.0, 0.0));
+    until(&mut session, |session| shows_bar(session, "HEADLESS-1"));
+    assert!(
+        !shows_bar(&session, "HEADLESS-2"),
+        "the display the pointer left shows no bar: {:?}",
+        words_on(&session, "HEADLESS-2")
     );
 }
 

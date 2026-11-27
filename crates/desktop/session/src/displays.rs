@@ -19,6 +19,7 @@
 //! ([`Displays::dim`]).
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -441,8 +442,10 @@ struct Inner {
     dimmed: Vec<(String, f32)>,
     /// The software-dimmed generation `dimmed` was worked out from, when the controls can tell.
     dim_generation: Option<u64>,
-    /// What the screen says of its edges, and whether that moved since the last pass.
-    edges: tilo_session_core::shell::ScreenEdges,
+    /// What each display says of its own edges, by connector: whether the pointer is at its top
+    /// or bottom edge and whether a window stands where a bar or dock there would. A shell reads
+    /// the row of the display its part draws on, so a reach on one display shows its bar alone.
+    edges: BTreeMap<String, tilo_session_core::shell::ScreenEdges>,
     edges_moved: bool,
     /// Whether what the person's settings say of the displays changed since the last pass: a
     /// change made anywhere, not only through this service's own actions.
@@ -644,6 +647,11 @@ impl Inner {
                     let level = levels
                         .iter()
                         .find(|level| level.connector == shown.connector);
+                    let edges = self
+                        .edges
+                        .get(&shown.connector)
+                        .copied()
+                        .unwrap_or_default();
                     Display {
                         connector: shown.connector.clone(),
                         name: shown.name.clone(),
@@ -658,6 +666,10 @@ impl Inner {
                         scale: shown.scale,
                         transform: shown.transform.clone(),
                         primary: shown.primary,
+                        bar_reached: edges.bar_reached,
+                        bar_covered: edges.bar_covered,
+                        dock_reached: edges.dock_reached,
+                        dock_covered: edges.dock_covered,
                         mode: shown.mode,
                         modes: shown.modes.clone(),
                         hdr: shown.hdr,
@@ -684,10 +696,13 @@ impl Inner {
                 .and_then(|deadline| i64::try_from(deadline).ok()),
             focused: self.focused.clone(),
             level: None,
-            bar_reached: self.edges.bar_reached,
-            bar_covered: self.edges.bar_covered,
-            dock_reached: self.edges.dock_reached,
-            dock_covered: self.edges.dock_covered,
+            // The device's own summary of its displays' edges: whether any display is reached or
+            // covered, for a reader that has no display of its own (a page's shell). A shell on
+            // the desktop reads the display its part stands on.
+            bar_reached: self.edges.values().any(|edges| edges.bar_reached),
+            bar_covered: self.edges.values().any(|edges| edges.bar_covered),
+            dock_reached: self.edges.values().any(|edges| edges.dock_reached),
+            dock_covered: self.edges.values().any(|edges| edges.dock_covered),
             trusted_tools: self.tools.clone(),
         };
         reading.level = reading.brightness();
@@ -1073,7 +1088,10 @@ impl Displays {
     /// What the screen says of its edges now: the pointer at an edge, and a window where
     /// a bar or a dock there rides. What a bar or dock that shows only sometimes follows.
     /// Whether they moved.
-    pub(crate) fn set_edges(&self, edges: tilo_session_core::shell::ScreenEdges) -> bool {
+    pub(crate) fn set_edges(
+        &self,
+        edges: BTreeMap<String, tilo_session_core::shell::ScreenEdges>,
+    ) -> bool {
         let mut inner = self.inner.borrow_mut();
         if inner.edges == edges {
             return false;

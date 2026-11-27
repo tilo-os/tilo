@@ -354,6 +354,19 @@ pub struct Display {
     pub transform: String,
     /// Whether it is the display the person made primary.
     pub primary: bool,
+    /// Whether the pointer is at, or resting against, this display's top edge: a bar that hides
+    /// until it is reached for shows there while this holds, and on no other display.
+    #[serde(default)]
+    pub bar_reached: bool,
+    /// Whether a window stands where a top bar would ride on this display.
+    #[serde(default)]
+    pub bar_covered: bool,
+    /// Whether the pointer is at this display's bottom edge: a dock there shows while this holds.
+    #[serde(default)]
+    pub dock_reached: bool,
+    /// Whether a window stands where a dock would ride on this display.
+    #[serde(default)]
+    pub dock_covered: bool,
     /// What it shows now, when its current mode is known.
     pub mode: Option<Mode>,
     /// Every mode it offers, as its panel and the signal to it allow.

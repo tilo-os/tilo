@@ -617,10 +617,42 @@ fn shows(when: Showing, reached: Bool, covered: Bool) -> Bool {
     if when == .always { true } else if when == .no_overlap { not covered } else { reached }
 }
 
-/// Whether the top bar shows now: the person's settings, and what the screen says of its edge
-/// (the display's reading, which the session writes).
+/// What one display says of its own edges: whether the pointer is at its top or bottom edge, and
+/// whether a window stands where a bar or a dock there would ride. The device publishes a row for
+/// every display (`device.displays.displays`), so a bar that hides until it is reached for shows
+/// on the display reached and on no other.
+type Edges {
+    bar_reached: Bool
+    bar_covered: Bool
+    dock_reached: Bool
+    dock_covered: Bool
+}
+
+/// The edges of the display this part draws on: its own row of the device's displays, found by the
+/// connector the part's screen names. A host that publishes no display of its own (a page, a shot)
+/// reads the device's summary, which is the same as the one display's on a device with one.
+fn edges_here() -> Edges {
+    let displays = device.displays
+    if let display = displays.displays.find(d -> d.connector == device.screen.connector) {
+        return Edges(
+            bar_reached: display.bar_reached,
+            bar_covered: display.bar_covered,
+            dock_reached: display.dock_reached,
+            dock_covered: display.dock_covered,
+        )
+    }
+    return Edges(
+        bar_reached: displays.bar_reached,
+        bar_covered: displays.bar_covered,
+        dock_reached: displays.dock_reached,
+        dock_covered: displays.dock_covered,
+    )
+}
+
+/// Whether the top bar shows now: the person's settings, and what this display says of its edge.
 fn bar_shows(s: Shell) -> Bool {
-    s.bar_shown and shows(s.bar_showing, device.displays.bar_reached, device.displays.bar_covered)
+    let edges = edges_here()
+    s.bar_shown and shows(s.bar_showing, edges.bar_reached, edges.bar_covered)
 }
 
 /// Whether the shell's bar lists the window in front's actions now: the traditional desktop's
@@ -665,7 +697,8 @@ fn bar_is_traditional(s: Shell) -> Bool {
 /// what a person launches there they ask for where they point. A person who laid the canvas's
 /// chrome out as the traditional desktop chose its dock with it, and keeps it.
 fn dock_shows(s: Shell) -> Bool {
+    let edges = edges_here()
     s.dock_shown
         and (not frames_style() or bar_is_traditional(s))
-        and shows(s.dock_showing, device.displays.dock_reached, device.displays.dock_covered)
+        and shows(s.dock_showing, edges.dock_reached, edges.dock_covered)
 }

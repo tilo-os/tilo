@@ -473,13 +473,11 @@ impl Shell {
         }
     }
 
-    /// Tell the displays what the screen says of its edges: the pointer at the top or bottom edge,
-    /// and a window where a bar or a dock there rides. What a bar or dock that shows
-    /// only sometimes follows. Whether that moved.
+    /// Tell the displays what the pointer and the windows say of each display's edges: the pointer
+    /// at a display's top or bottom edge, and a window where a bar or a dock there would ride.
+    /// Each display's own row of the reading says it, so a bar that hides until it is reached for
+    /// shows on the display reached and on no other. Whether that moved.
     fn publish_edges(&self, compositor: &Compositor, displays: &displays::Displays) -> bool {
-        let Some(outputs) = Self::outputs(compositor) else {
-            return false;
-        };
         let (bar_band, dock_band) = self.bands();
         let windows: Vec<tilo_session_core::shell::WindowRect> = compositor
             .windows()
@@ -491,12 +489,28 @@ impl Shell {
                 height: f64::from(h),
             })
             .collect();
-        let edges = tilo_session_core::shell::screen_edges(
-            outputs,
-            (f64::from(bar_band), f64::from(dock_band)),
-            compositor.pointer_location(),
-            &windows,
-        );
+        let pointer = compositor.pointer_location();
+        let mut edges = std::collections::BTreeMap::new();
+        for output in compositor.outputs().iter().filter(|output| output.enabled) {
+            let Some((x, y, width, height)) = output.rect else {
+                continue;
+            };
+            let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
+                continue;
+            };
+            edges.insert(
+                output.name.clone(),
+                tilo_session_core::shell::screen_edges(
+                    (x, y, width, height),
+                    (f64::from(bar_band), f64::from(dock_band)),
+                    pointer,
+                    &windows,
+                ),
+            );
+        }
+        if edges.is_empty() {
+            return false;
+        }
         displays.set_edges(edges)
     }
 
@@ -530,20 +544,6 @@ impl Shell {
             let bar = tilo_session_core::desktop::overlays::topbar_height(&self.theme);
             (bar, bar)
         })
-    }
-
-    /// The outputs' bounding box `(x, y, w, h)` , as a screen-edge reading names them: every output
-    /// that is on.
-    fn outputs(compositor: &Compositor) -> Option<(i32, i32, u32, u32)> {
-        let (x0, y0, x1, y1) = compositor
-            .outputs()
-            .iter()
-            .filter_map(|output| output.rect)
-            .map(|(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)))
-            .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))?;
-        let width = u32::try_from(x1.saturating_sub(x0)).ok()?;
-        let height = u32::try_from(y1.saturating_sub(y0)).ok()?;
-        Some((x0, y0, width.max(1), height.max(1)))
     }
 
     /// Hand the shell each listing its views list records of, as the session follows it.
