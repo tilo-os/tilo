@@ -51,17 +51,131 @@ view speakers_page() {
             at,
             played,
         )
-    } else if step == "choose" {
-        speakers_choose(sp, placement, chosen, roles, xs, ys, step, at, played)
-    } else if step == "identify" {
-        speakers_identify(placement, chosen, roles, at, played, step)
-    } else if step == "layout" {
-        speakers_layout(sp, chosen, xs, ys, selected, at, step)
-    } else if step == "name" {
-        speakers_name(sp, chosen, roles, name, xs, ys, placement, step)
+    } else if step == "choose" or step == "identify" or step == "layout" or step == "name" {
+        // Making a set is one page per step: where the person is among the steps, the step's
+        // page, and the ways forward under it, drawn by the toolkit's guided page.
+        ui.GuidedPage(
+            steps: if placement == "room" {
+                ["Choose", "Identify", "Place", "Name"]
+            } else { ["Choose", "Identify", "Name"] },
+            current: set_station(step, placement),
+            shows_bar: false,
+            reveals_focus: false,
+        ) {
+            body: {
+                if step == "choose" {
+                    speakers_choose(sp, placement, chosen, roles)
+                } else if step == "identify" {
+                    speakers_identify(placement, chosen, roles, at, played, step)
+                } else if step == "layout" {
+                    speakers_layout(sp, chosen, xs, ys, selected)
+                } else {
+                    speakers_name(sp, chosen, roles, name)
+                }
+            }
+            actions: {
+                if step == "choose" {
+                    let problem = placement_problem(placement, chosen.len())
+                    row(fill, distribute: .end) {
+                        ui.Button("Back") {
+                            on press: set(step, "overview")
+                        }
+                        ui.Button(
+                            "Continue",
+                            role: .primary,
+                            enabled: problem == "",
+                            description: problem,
+                        ) {
+                            on press: set(roles, outputs_roles(placement, chosen))
+                                .then(
+                                    set(xs, outputs_xs(placement, chosen, xs)),
+                                )
+                                .then(
+                                    set(ys, outputs_ys(placement, chosen, ys)),
+                                )
+                                .then(set(step, "identify"))
+                                .then(set(at, 0))
+                                .then(set(played, false))
+                        }
+                    }
+                } else if step == "identify" {
+                    row(fill, distribute: .end) {
+                        ui.Button("Back") {
+                            on press: if at == 0 {
+                                set(step, "choose").then(set(played, false))
+                            } else { set(at, at - 1).then(set(played, false)) }
+                        }
+                        if placement == "room" {
+                            ui.Button("Next speaker", role: .primary) {
+                                on press: if at + 1 < chosen.len() {
+                                    set(at, at + 1)
+                                } else { set(step, "layout") }
+                            }
+                        }
+                    }
+                } else if step == "layout" {
+                    let problem = crowded(chosen, xs, ys)
+                    row(fill, distribute: .end) {
+                        ui.Button("Back") {
+                            on press: set(at, (chosen.len() - 1).max(0)).then(set(step, "identify"))
+                        }
+                        ui.Button(
+                            "Continue",
+                            role: .primary,
+                            enabled: problem == "",
+                            description: problem,
+                        ) {
+                            on press: set(step, "name")
+                        }
+                    }
+                } else {
+                    let problem = name_problem(name, roles)
+                    row(fill, distribute: .end) {
+                        ui.Button("Back") {
+                            on press: if placement == "room" {
+                                set(step, "layout")
+                            } else { set(step, "identify") }
+                        }
+                        ui.Button(
+                            "Save",
+                            role: .primary,
+                            enabled: problem == "",
+                            description: problem,
+                        ) {
+                            on press: device
+                                .create_group(
+                                    device.speakers,
+                                    name: name.trim(),
+                                    members: chosen.map(
+                                        (key, i) -> device.SpeakerMemberChoice(
+                                            device: speaker_device(key),
+                                            output: speaker_output(key),
+                                            role: role_choice(
+                                                roles.at(i) ?? "",
+                                                xs.at(i) ?? 0,
+                                                ys.at(i) ?? 0,
+                                            ),
+                                        ),
+                                    ),
+                                )
+                                .then(set(step, "overview"))
+                        }
+                    }
+                }
+            }
+        }
     } else if step == "calibrate" {
         speakers_calibrate(sp, group, listening, mic_on, mic_off, step)
     }
+}
+
+/// Which of those stations the step is.
+fn set_station(step: Text, placement: Text) -> Int {
+    if step == "choose" {
+        0
+    } else if step == "identify" {
+        1
+    } else if step == "layout" { 2 } else if placement == "room" { 3 } else { 2 }
 }
 
 /// Every set the person has, the way to make one, and the question a removal waits on.
@@ -178,13 +292,8 @@ template view speakers_choose(
     placement: State<Text>,
     chosen: State<List<Text>>,
     roles: State<List<Text>>,
-    xs: State<List<Int>>,
-    ys: State<List<Int>>,
-    step: State<Text>,
-    at: State<Int>,
-    played: State<Bool>,
 ) {
-    section("Choose speakers") {
+    stack(gap: .section) {
         ui.ToggleGroup(caption: "Placement", fill: true) {
             for each in ["stereo", "surround", "room"] {
                 ui.Segment(placement_title(each), chosen: placement == each) {
@@ -233,19 +342,6 @@ template view speakers_choose(
         if problem != "" {
             text(problem, role: .caption)
         }
-        row(fill, distribute: .end) {
-            ui.Button("Back") {
-                on press: set(step, "overview")
-            }
-            ui.Button("Continue", role: .primary, enabled: problem == "", description: problem) {
-                on press: set(roles, outputs_roles(placement, chosen))
-                    .then(set(xs, outputs_xs(placement, chosen, xs)))
-                    .then(set(ys, outputs_ys(placement, chosen, ys)))
-                    .then(set(step, "identify"))
-                    .then(set(at, 0))
-                    .then(set(played, false))
-            }
-        }
     }
 }
 
@@ -259,7 +355,7 @@ template view speakers_identify(
     played: State<Bool>,
     step: State<Text>,
 ) {
-    section("Which one just played?") {
+    stack(gap: .section) {
         text(
             "Speaker {at + 1} of {chosen.len()}. Play a sound and listen for which speaker it comes from.",
             role: .caption,
@@ -302,20 +398,6 @@ template view speakers_identify(
                 }
             }
         }
-        row(fill, distribute: .end) {
-            ui.Button("Back") {
-                on press: if at == 0 {
-                    set(step, "choose").then(set(played, false))
-                } else { set(at, at - 1).then(set(played, false)) }
-            }
-            if placement == "room" {
-                ui.Button("Next speaker", role: .primary) {
-                    on press: if at + 1 < chosen.len() {
-                        set(at, at + 1)
-                    } else { set(step, "layout") }
-                }
-            }
-        }
     }
 }
 
@@ -327,10 +409,8 @@ template view speakers_layout(
     xs: State<List<Int>>,
     ys: State<List<Int>>,
     selected: State<Int>,
-    at: State<Int>,
-    step: State<Text>,
 ) {
-    section("Room layout") {
+    stack(gap: .section) {
         text(
             "Drag each speaker to where it stands. You sit at the marker.",
             role: .caption,
@@ -370,14 +450,6 @@ template view speakers_layout(
         if problem != "" {
             text(problem, role: .caption)
         }
-        row(fill, distribute: .end) {
-            ui.Button("Back") {
-                on press: set(at, (chosen.len() - 1).max(0)).then(set(step, "identify"))
-            }
-            ui.Button("Continue", role: .primary, enabled: problem == "", description: problem) {
-                on press: set(step, "name")
-            }
-        }
     }
 }
 
@@ -387,13 +459,11 @@ template view speakers_name(
     chosen: State<List<Text>>,
     roles: State<List<Text>>,
     name: State<Text>,
-    xs: State<List<Int>>,
-    ys: State<List<Int>>,
-    placement: State<Text>,
-    step: State<Text>,
 ) {
-    section("Name your speakers") {
-        ui.TextInput(bind: name, placeholder: "Living room")
+    stack(gap: .section) {
+        ui.Labelled("Name") {
+            ui.TextInput(bind: name, placeholder: "Living room")
+        }
         text("Shown wherever you can play to these speakers.", role: .caption, secondary: true)
         for each in chosen {
             ui.ListRow(
@@ -410,32 +480,6 @@ template view speakers_name(
         let problem = name_problem(name, roles)
         if problem != "" {
             text(problem, role: .caption)
-        }
-        row(fill, distribute: .end) {
-            ui.Button("Back") {
-                on press: if placement == "room" {
-                    set(step, "layout")
-                } else { set(step, "identify") }
-            }
-            ui.Button("Save", role: .primary, enabled: problem == "", description: problem) {
-                on press: device
-                    .create_group(
-                        device.speakers,
-                        name: name.trim(),
-                        members: chosen.map(
-                            (key, i) -> device.SpeakerMemberChoice(
-                                device: speaker_device(key),
-                                output: speaker_output(key),
-                                role: role_choice(
-                                    roles.at(i) ?? "",
-                                    xs.at(i) ?? 0,
-                                    ys.at(i) ?? 0,
-                                ),
-                            ),
-                        ),
-                    )
-                    .then(set(step, "overview"))
-            }
         }
     }
 }
