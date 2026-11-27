@@ -281,6 +281,9 @@ fn serve(
     let mut workspace: Option<String> = None;
     let mut watching = Watching::default();
     let mut tapped: Option<String> = None;
+    // Why the person's last sign-in or start was refused: said until they ask again, not only
+    // until the next reading of the device, which would take the banner away before it is read.
+    let mut told: Option<String> = None;
     loop {
         // Nothing has shown a folder of a workspace for a while: its watch ends. A cursor the
         // system never closes leaves no other word that the folder went away.
@@ -289,18 +292,14 @@ fn serve(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|_, watch| watch.looked.elapsed() < WATCHING_FOR);
-        let mut refused = None;
         match asked.recv_timeout(READ_AGAIN) {
             Ok(Ask::LogIn(ticket)) => {
-                if let Err(error) = device.log_in(&ticket, &label()) {
-                    refused = Some(format!("{error:#}"));
-                }
+                told = device
+                    .log_in(&ticket, &label())
+                    .err()
+                    .map(|error| format!("{error:#}"));
             }
-            Ok(Ask::Found) => {
-                if let Err(error) = device.found() {
-                    refused = Some(format!("{error:#}"));
-                }
-            }
+            Ok(Ask::Found) => told = device.found().err().map(|error| format!("{error:#}")),
             Ok(Ask::Workspace(chosen)) => workspace = Some(chosen),
             // A file provider's ask is answered here and changes nothing the view shows.
             Ok(Ask::Files(work)) => {
@@ -316,6 +315,7 @@ fn serve(
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
+        let mut refused = told.clone();
         let devices = device.devices().unwrap_or_else(|error| {
             refused.get_or_insert_with(|| format!("{error:#}"));
             Devices::default()
