@@ -1329,41 +1329,52 @@ async fn administers_applications(holder: &crate::keep::common::Hosted, workspac
         .unwrap()
 }
 
-/// Another person's server held as a key holder reads the workspace and
-/// serves it without being a member: every holder gives it the keys, it
-/// admits a member's device on its certificate and carries its changes, and
-/// it lets in nobody the member list lacks, its own person's devices
-/// included. A further device of a person on the list writes its own row
-/// there as at any holder.
+/// Another person's server holds the workspace named as a device that keeps its keys: it reads
+/// the workspace and serves it without being a member, every other device's keys reach it, it
+/// admits a member's device on its certificate, and it lets in nobody the member list lacks, its
+/// own person's devices included. A further device of a person on the list writes its own row
+/// there as at any server. A server that keeps the workspace's files and nothing else keeps its
+/// ciphertext: it admits a member and serves what was written elsewhere, and no server gives it
+/// the keys, also after the group moves on to admit a device.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn another_persons_server_reads_and_serves_and_admits_only_listed_people() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario: the two servers, their keys and the writes stay together"
+)]
+async fn a_workspace_another_person_serves_and_one_keeps_without_its_keys() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
+    let watch = alice.enrol("watch", DeviceCapabilities::primary());
+    let spare = alice.enrol("spare", DeviceCapabilities::primary());
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
     let site = TestUser::fresh("Site");
     let server = site.enrol("server", DeviceCapabilities::member());
     let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let workspaces = hosting_device.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
-    workspaces
-        .enter(&workspace.workspace, (&phone.cert, &phone.sk))
-        .await
-        .unwrap();
+    for device in [&phone, &tablet] {
+        workspaces
+            .enter(&workspace.workspace, (&device.cert, &device.sk))
+            .await
+            .unwrap();
+    }
+
+    // Another person's server keeps the workspace's keys and serves it.
     let mut takes = WorkSetting::own_person();
     takes.from = WorkFrom::Workspaces([workspace.workspace_id].into_iter().collect());
-    let holder = serve_on(&site, &server, takes).await;
+    let site_server = serve_on(&site, &server, takes).await;
     let hint = workspaces
         .attach_server(
             &workspace.workspace,
             server.device_pubkey(),
-            holder.host.node_addr(),
+            site_server.host.node_addr(),
             CopyRole::KeyHolder,
         )
         .await
         .unwrap();
     assert_eq!(tilo_peer_state::holder_role(&hint), CopyRole::KeyHolder);
-
     // The members' devices give the server the keys, beside their own.
     key_holders_once(
         &hosting_device,
@@ -1383,38 +1394,38 @@ async fn another_persons_server_reads_and_serves_and_admits_only_listed_people()
         "{status:?}"
     );
 
-    // It serves the workspace: the phone is admitted there on its
-    // certificate and its change reaches the laptop.
-    let on_holder = member_at(&holder, &phone, workspace.workspace_id).await;
+    // It serves the workspace: the phone is admitted there on its certificate and its change
+    // reaches the laptop.
+    let on_server = member_at(&site_server, &phone, workspace.workspace_id).await;
     assert!(
         names(&hosting_device, &workspace.workspace, &laptop).await,
         "the workspace names the device it was made on"
     );
 
-    // It lets nobody in whom the member list lacks: its own person's device
-    // is refused, and so holds no keys in any other holder's workspace.
+    // It lets nobody in whom the member list lacks: its own person's device is refused, and so
+    // holds no keys in any other server's workspace.
     let own = site.enrol("laptop", DeviceCapabilities::primary());
-    let entered = holder
+    let entered = site_server
         .host
         .workspaces()
         .enter(&workspace.workspace, (&own.cert, &own.sk))
         .await;
     assert!(entered.is_err(), "{entered:?}");
     // Alice's further device writes its own row there, on her certificate.
-    holder
+    site_server
         .host
         .workspaces()
-        .enter(&workspace.workspace, (&tablet.cert, &tablet.sk))
+        .enter(&workspace.workspace, (&watch.cert, &watch.sk))
         .await
-        .expect("a further device of a person on the list enters at any holder");
+        .expect("a further device of a person on the list enters at any server");
     key_holders_once(
         &hosting_device,
         &workspace.workspace,
         "the further device holds the keys",
-        |holders| holders.contains(&tablet.device_pubkey()),
+        |holders| holders.contains(&watch.device_pubkey()),
     )
     .await;
-    write(&on_holder, &phone, "note:entry", "after the entry").unwrap();
+    write(&on_server, &phone, "note:entry", "after the entry").unwrap();
     reaches_host(
         &hosting_device,
         workspace.workspace_id,
@@ -1425,40 +1436,17 @@ async fn another_persons_server_reads_and_serves_and_admits_only_listed_people()
     let holders = workspaces.key_holders(&workspace.workspace).await.unwrap();
     assert!(
         !holders.contains(&own.device_pubkey()),
-        "a key holder of another person let its own person's device in"
+        "a server keeping another person's keys let its own person's device in"
     );
 
-    drop(on_holder);
-    holder.stop().await;
-    hosting_device.stop().await;
-}
-
-/// A server held as a store keeps and forwards the workspace's ciphertext:
-/// it admits a member and serves what was written elsewhere, and no holder
-/// gives it the keys, also after the key group moves on to admit a device.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_store_serves_history_and_never_holds_the_keys() {
-    let alice = TestUser::fresh("Alice");
-    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
-    let phone = alice.enrol("phone", DeviceCapabilities::primary());
-    let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
-    let watch = alice.enrol("watch", DeviceCapabilities::primary());
-    let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    let store = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let workspaces = hosting_device.host.workspaces();
-    let workspace = workspaces.create("Notes").await.unwrap();
-    for device in [&phone, &tablet] {
-        workspaces
-            .enter(&workspace.workspace, (&device.cert, &device.sk))
-            .await
-            .unwrap();
-    }
+    // A server of Alice's that keeps the workspace's files alone keeps its ciphertext: no server
+    // gives it the keys.
+    let files_host = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let hint = workspaces
         .attach_server(
             &workspace.workspace,
             nas.device_pubkey(),
-            store.host.node_addr(),
+            files_host.host.node_addr(),
             CopyRole::Store,
         )
         .await
@@ -1472,11 +1460,11 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
             .any(|held| held.device == nas.device_pubkey() && held.role == CopyRole::Store),
         "{status:?}"
     );
-    for at in [&hosting_device, &store] {
+    for at in [&hosting_device, &files_host] {
         key_holders_once(
             at,
             &workspace.workspace,
-            "the store holds no keys",
+            "the server keeping files holds no keys",
             |holders| {
                 holders.contains(&tablet.device_pubkey()) && !holders.contains(&nas.device_pubkey())
             },
@@ -1484,43 +1472,40 @@ async fn a_store_serves_history_and_never_holds_the_keys() {
         .await;
     }
 
-    // A change made on the laptop reaches the tablet through the store.
-    let on_store = member_at(&store, &tablet, workspace.workspace_id).await;
-    assert!(
-        names(&hosting_device, &workspace.workspace, &laptop).await,
-        "the workspace names the device it was made on"
-    );
+    // A change made on the laptop reaches the tablet through the server that keeps files.
+    let on_files = member_at(&files_host, &tablet, workspace.workspace_id).await;
     host_writes(
         &hosting_device,
         workspace.workspace_id,
         "note:store",
-        "through the store",
+        "through the files kept",
     )
     .await;
-    receives(&on_store, |peer| {
-        copy_says(peer, "note:store", "through the store")
+    receives(&on_files, |peer| {
+        copy_says(peer, "note:store", "through the files kept")
     })
     .await;
 
-    // The group moves on to admit another device; the store is not in it.
+    // The group moves on to admit another device; the server keeping files is not in it.
     workspaces
-        .enter(&workspace.workspace, (&watch.cert, &watch.sk))
+        .enter(&workspace.workspace, (&spare.cert, &spare.sk))
         .await
         .unwrap();
-    for at in [&hosting_device, &store] {
+    for at in [&hosting_device, &files_host] {
         key_holders_once(
             at,
             &workspace.workspace,
-            "the store holds no keys after the group moved on",
+            "the server keeping files holds no keys after the group moved on",
             |holders| {
-                holders.contains(&watch.device_pubkey()) && !holders.contains(&nas.device_pubkey())
+                holders.contains(&spare.device_pubkey()) && !holders.contains(&nas.device_pubkey())
             },
         )
         .await;
     }
 
-    drop(on_store);
-    store.stop().await;
+    drop((on_server, on_files));
+    files_host.stop().await;
+    site_server.stop().await;
     hosting_device.stop().await;
 }
 
