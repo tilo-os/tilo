@@ -341,6 +341,81 @@ pub(crate) enum Makes {
     Keyed,
 }
 
+/// Which actions of the loaded packages are offered on a resource of one type, held by one of
+/// another ([`Core::offers_on`]), read once for each such pair while the same packages stay
+/// loaded.
+#[derive(Default)]
+pub(crate) struct OfferShapes {
+    /// The registry's generation they were read at ([`crate::registry::Registry::generation`]).
+    generation: u64,
+    /// By the target's type and its holder's.
+    by_type: std::collections::HashMap<(String, Option<String>), Rc<OfferShape>>,
+    /// The actions that could make something of a resource of any type: each package's create
+    /// actions, by package and action, in the packages' order.
+    makes: Option<Rc<[(usize, usize)]>>,
+}
+
+/// The actions offered on a resource of one type held by one of another, in a menu's order,
+/// and those that could make something of one.
+pub(crate) struct OfferShape {
+    offered: Vec<OfferAt>,
+    makes: Rc<[(usize, usize)]>,
+}
+
+/// One action offered on a target: the package of the loaded ones and the action of its
+/// declarations, and whether it is its holder's, taking the holder and then the target.
+#[derive(Clone, Copy)]
+struct OfferAt {
+    package: usize,
+    action: usize,
+    on_holder: bool,
+}
+
+impl OfferAt {
+    fn own(package: usize, action: usize) -> Self {
+        Self {
+            package,
+            action,
+            on_holder: false,
+        }
+    }
+
+    fn holder(package: usize, action: usize) -> Self {
+        Self {
+            package,
+            action,
+            on_holder: true,
+        }
+    }
+}
+
+/// Whether `action` is one a menu offers on what it takes: neither a scenario's, nor one only
+/// the platform applies, nor an export.
+fn offered(action: &ActionMeta) -> bool {
+    !action.scenario && !action.platform_applies() && action.export.is_none()
+}
+
+/// Whether `action` of the package `meta` could make something of a resource, whatever its
+/// type: what [`Core::make_offer`] asks of the action alone. It makes a type of its package that
+/// has a title, and puts it in one of the package's roots.
+fn could_make(meta: &Meta, action: &ActionMeta) -> bool {
+    let Some(result) = action.result.as_deref() else {
+        return false;
+    };
+    let Ok(crate::meta::Ty::Record(made)) = crate::meta::parse_ty(result, &meta.app) else {
+        return false;
+    };
+    let Some(ty) = meta.types.iter().find(|ty| ty.name == made.name) else {
+        return false;
+    };
+    ty.fields.iter().any(crate::meta::FieldMeta::holds_text)
+        && action.params.first().is_some_and(|param| {
+            meta.roots
+                .iter()
+                .any(|root| names_type(meta, &param.ty, root))
+        })
+}
+
 /// What a make offer is made from: the title the made resource starts with, and the type the
 /// target is, which a parameter of the action may take.
 struct Source {
@@ -2590,36 +2665,49 @@ impl Core {
     ) -> HResult<R> {
         let held = &target.target;
         let packages = self.registry.borrow().packages();
-        let rank = |pkg: &Rc<Package>| {
-            packages
-                .iter()
-                .position(|p| Rc::ptr_eq(p, pkg))
-                .unwrap_or(usize::MAX)
-        };
-        let mut found: Vec<(bool, usize, usize, Offered)> = Vec::new();
         // The target's own. Another app's resource names its type as `app#Type`, which
         // resolves to the id its package declares before the package is looked up.
         let own = self.registry.borrow().type_id(&held.ty).and_then(|id| {
             let registry = self.registry.borrow();
             registry.type_info(&id)
         });
-        if let Some((pkg, info)) = &own {
-            let at = rank(pkg);
-            for (index, action) in pkg
-                .meta
-                .offered_actions()
-                .filter(|action| action.export.is_none())
-                .enumerate()
-            {
-                let takes_it = action.params.split_first().is_some_and(|(first, rest)| {
-                    all_asked(&pkg.meta, rest)
-                        && !asks_for_own_item(&pkg.meta, info.id.as_str(), rest)
-                        && names_type(&pkg.meta, &first.ty, info.id.as_str())
-                });
-                if !takes_it {
-                    continue;
-                }
-                let shown = Offered {
+        let holder = self.holder_of(held);
+        let shape = self.offer_shape(
+            &held.ty,
+            holder.as_ref().map(|holder| holder.ty.as_str()),
+            own.as_ref().and_then(|(pkg, info)| {
+                let at = packages.iter().position(|p| Rc::ptr_eq(p, pkg))?;
+                Some((at, info.id.as_str()))
+            }),
+            &packages,
+        );
+        let mut offers: Vec<Offered<'_>> = Vec::with_capacity(shape.offered.len());
+        for at in &shape.offered {
+            let Some(action) = packages
+                .get(at.package)
+                .and_then(|pkg| pkg.meta.actions.get(at.action))
+            else {
+                continue;
+            };
+            let shown = match &holder {
+                // The holder's, on it.
+                Some(holder) if at.on_holder => Offered {
+                    action,
+                    args: vec![
+                        Value::Ref(RefValue {
+                            target: Rc::new(holder.clone()),
+                            author: target.author.clone(),
+                        }),
+                        Value::Ref(target.clone()),
+                    ],
+                    rest: action.params.get(2..).unwrap_or_default(),
+                    present: false,
+                    from: None,
+                    group: None,
+                    label: None,
+                },
+                _ if at.on_holder => continue,
+                _ => Offered {
                     action,
                     args: offered_args(action, target, above),
                     rest: action
@@ -2630,62 +2718,15 @@ impl Core {
                     from: None,
                     group: None,
                     label: None,
-                };
-                found.push((action.role.as_deref() == Some("primary"), at, index, shown));
-            }
+                },
+            };
+            offers.push(shown);
         }
-        // The holder's, on it.
-        if let Some(holder) = self.holder_of(held) {
-            let holder_ty = holder.ty.clone();
-            for pkg in &packages {
-                let Some(holder_info) = pkg.type_by_id(&holder_ty) else {
-                    continue;
-                };
-                let at = rank(pkg);
-                for (index, action) in pkg
-                    .meta
-                    .offered_actions()
-                    .filter(|action| action.export.is_none())
-                    .enumerate()
-                {
-                    let [first, second, rest @ ..] = action.params.as_slice() else {
-                        continue;
-                    };
-                    if !all_asked(&pkg.meta, rest) {
-                        continue;
-                    }
-                    let on_holder = names_type(&pkg.meta, &first.ty, holder_info.id.as_str());
-                    let takes_target = names_type(&pkg.meta, &second.ty, &held.ty);
-                    if !(on_holder && takes_target) {
-                        continue;
-                    }
-                    let shown = Offered {
-                        action,
-                        args: vec![
-                            Value::Ref(RefValue {
-                                target: Rc::new(holder.clone()),
-                                author: target.author.clone(),
-                            }),
-                            Value::Ref(target.clone()),
-                        ],
-                        rest,
-                        present: false,
-                        from: None,
-                        group: None,
-                        label: None,
-                    };
-                    found.push((action.role.as_deref() == Some("primary"), at, index, shown));
-                }
-            }
-        }
-        found.sort_by_key(|(primary, pkg, index, _)| (!primary, *pkg, *index));
         // What it already offers as itself is not offered again as something to make: an
         // action written for the target is where a person finds it.
-        let mut offers: Vec<Offered<'_>> =
-            found.into_iter().map(|(_, _, _, shown)| shown).collect();
         // Last, under the menu's one group, what can be made from it: a submenu of its own at
         // the end, so what the app offers the item stays what a person reads first.
-        for shown in self.make_offers(target, own.as_ref(), &packages, makes)? {
+        for shown in self.make_offers(target, own.as_ref(), &packages, &shape.makes, makes)? {
             if !offers
                 .iter()
                 .any(|direct| direct.action.id == shown.action.id)
@@ -2694,6 +2735,102 @@ impl Core {
             }
         }
         f(&offers)
+    }
+
+    /// Which actions of the loaded `packages` are offered on a resource of the type `ty` (whose
+    /// package of those and declared id are `own`, when a loaded package declares it) held by one of the type
+    /// `holder`, in the order a menu shows them, and which could make something of one. What
+    /// the packages declare, which no item changes: a list of thousands reads it once, and each
+    /// row builds only its own arguments. Read again when a package loads or goes.
+    fn offer_shape(
+        &self,
+        ty: &str,
+        holder: Option<&str>,
+        own: Option<(usize, &str)>,
+        packages: &[Rc<Package>],
+    ) -> Rc<OfferShape> {
+        let generation = self.registry.borrow().generation();
+        let key = (ty.to_owned(), holder.map(str::to_owned));
+        {
+            let mut shapes = self.offer_shapes.borrow_mut();
+            if shapes.generation != generation {
+                shapes.by_type.clear();
+                shapes.makes = None;
+                shapes.generation = generation;
+            }
+            if let Some(shape) = shapes.by_type.get(&key) {
+                return Rc::clone(shape);
+            }
+        }
+        let mut found: Vec<(bool, usize, usize, OfferAt)> = Vec::new();
+        if let Some((at, own)) = own
+            && let Some(pkg) = packages.get(at)
+        {
+            for (index, action) in pkg.meta.actions.iter().enumerate() {
+                if !offered(action) {
+                    continue;
+                }
+                let takes_it = action.params.split_first().is_some_and(|(first, rest)| {
+                    all_asked(&pkg.meta, rest)
+                        && !asks_for_own_item(&pkg.meta, own, rest)
+                        && names_type(&pkg.meta, &first.ty, own)
+                });
+                if takes_it {
+                    let primary = action.role.as_deref() == Some("primary");
+                    found.push((primary, at, index, OfferAt::own(at, index)));
+                }
+            }
+        }
+        if let Some(holder) = holder {
+            for (at, pkg) in packages.iter().enumerate() {
+                let Some(holder_info) = pkg.type_by_id(holder) else {
+                    continue;
+                };
+                for (index, action) in pkg.meta.actions.iter().enumerate() {
+                    if !offered(action) {
+                        continue;
+                    }
+                    let [first, second, rest @ ..] = action.params.as_slice() else {
+                        continue;
+                    };
+                    if !all_asked(&pkg.meta, rest) {
+                        continue;
+                    }
+                    let on_holder = names_type(&pkg.meta, &first.ty, holder_info.id.as_str());
+                    if on_holder && names_type(&pkg.meta, &second.ty, ty) {
+                        let primary = action.role.as_deref() == Some("primary");
+                        found.push((primary, at, index, OfferAt::holder(at, index)));
+                    }
+                }
+            }
+        }
+        found.sort_by_key(|(primary, pkg, index, _)| (!primary, *pkg, *index));
+        let makes = {
+            let mut shapes = self.offer_shapes.borrow_mut();
+            Rc::clone(shapes.makes.get_or_insert_with(|| {
+                let mut makes = Vec::new();
+                for (at, pkg) in packages.iter().enumerate() {
+                    for (index, action) in pkg.meta.actions.iter().enumerate() {
+                        if !action.scenario
+                            && !action.platform_applies()
+                            && could_make(&pkg.meta, action)
+                        {
+                            makes.push((at, index));
+                        }
+                    }
+                }
+                makes.into()
+            }))
+        };
+        let shape = Rc::new(OfferShape {
+            offered: found.into_iter().map(|(_, _, _, at)| at).collect(),
+            makes,
+        });
+        self.offer_shapes
+            .borrow_mut()
+            .by_type
+            .insert(key, Rc::clone(&shape));
+        shape
     }
 
     /// The actions that can make something of `target`: for every type of the packages this
@@ -2708,15 +2845,20 @@ impl Core {
         target: &RefValue,
         own: Option<&(Rc<Package>, Rc<crate::registry::TypeInfo>)>,
         packages: &'m [Rc<Package>],
+        could: &[(usize, usize)],
         makes: Makes,
     ) -> HResult<Vec<Offered<'m>>> {
-        let asked = |action: &crate::meta::ActionMeta| makes == Makes::All || action.key.is_some();
+        let asked: Vec<(&'m Rc<Package>, usize, &'m crate::meta::ActionMeta)> = could
+            .iter()
+            .filter_map(|&(rank, index)| {
+                let pkg = packages.get(rank)?;
+                let action = pkg.meta.actions.get(index)?;
+                (makes == Makes::All || action.key.is_some()).then_some((pkg, rank, action))
+            })
+            .collect();
         // A caller that asks only for what a key runs, where no key runs a make action, reads
         // nothing of the target for them: not its title, not its packages' create actions.
-        if !packages
-            .iter()
-            .any(|pkg| pkg.meta.offered_actions().any(&asked))
-        {
+        if asked.is_empty() {
             return Ok(Vec::new());
         }
         let source = match own {
@@ -2734,8 +2876,8 @@ impl Core {
         };
         let group = self.word_args("tilolang-make", &[], "Make");
         let mut found: Vec<(usize, usize, bool, Offered<'m>)> = Vec::new();
-        for (rank, pkg) in packages.iter().enumerate() {
-            for action in pkg.meta.offered_actions().filter(|action| asked(action)) {
+        for (pkg, rank, action) in asked {
+            {
                 let Some((at, source_arg, shown)) =
                     self.make_offer(pkg, action, source.as_ref(), target, &group)
                 else {

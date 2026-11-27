@@ -638,7 +638,8 @@ impl Core {
         let place = |id: &str| placed.and_then(|placed| placed.iter().position(|p| p.0 == id));
         let mut order: Vec<&crate::platform::Offered<'_>> = offers.iter().collect();
         // The menu's order: what the view placed first, in its order, then the rest as offered.
-        order.sort_by_key(|shown| place(&shown.action.id).unwrap_or(usize::MAX));
+        // Each action's place is looked up once: a row's menu holds dozens.
+        order.sort_by_cached_key(|shown| place(&shown.action.id).unwrap_or(usize::MAX));
         let runs = |action: &Value| flag(action, APPLIES) && flag(action, AVAILABLE);
         let swipeable = order
             .iter()

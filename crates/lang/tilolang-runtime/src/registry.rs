@@ -270,9 +270,19 @@ pub struct Registry {
     actions: HashMap<ActionId, ModuleHash>,
     views: HashMap<ViewId, ModuleHash>,
     fns: HashMap<String, ModuleHash>,
+    /// Moves each time a package is added or removed: what was read of the packages loaded
+    /// before stands while it stays the same ([`Self::generation`]).
+    generation: u64,
 }
 
 impl Registry {
+    /// Which packages are loaded, as a number that moves each time one is added or removed: a
+    /// reading of the loaded packages' declarations made at the same generation still holds.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Add a package. Declaration ids must be unused by other packages.
     ///
     /// # Errors
@@ -307,6 +317,7 @@ impl Registry {
         let rc = Rc::new(pkg);
         self.packages.insert(hash.clone(), Rc::clone(&rc));
         self.order.push(hash);
+        self.generation = self.generation.wrapping_add(1);
         Ok(rc)
     }
 
@@ -338,6 +349,9 @@ impl Registry {
             self.views.clone(),
             self.fns.clone(),
         );
+        if !old.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+        }
         for hash in &old {
             self.packages.remove(hash);
             self.order.retain(|h| h != hash);
@@ -395,6 +409,9 @@ impl Registry {
             })
             .cloned()
             .collect();
+        if !gone.is_empty() {
+            self.generation = self.generation.wrapping_add(1);
+        }
         for hash in &gone {
             self.packages.remove(hash);
             self.order.retain(|h| h != hash);

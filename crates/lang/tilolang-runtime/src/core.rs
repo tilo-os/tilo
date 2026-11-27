@@ -314,6 +314,9 @@ pub struct Core {
     /// in one ask ([`Self::links_to`]). Dropped when the page is done
     /// ([`Self::release_links`]), so a row's suggestions cost no read of their own.
     page_links: RefCell<Option<PageLinks>>,
+    /// Which actions of the loaded packages are offered on a resource of each type, as a row's
+    /// menu reads them ([`crate::platform::OfferShapes`]).
+    pub(crate) offer_shapes: RefCell<crate::platform::OfferShapes>,
     /// What the program being run printed and kept, while one runs.
     pub program: RefCell<Option<crate::program::ProgramIo>>,
     /// What finds resources by text for programs' `find`.
@@ -610,6 +613,7 @@ impl Core {
             zone_name: RefCell::new(None),
             items_built: std::cell::Cell::new(0),
             page_links: RefCell::new(None),
+            offer_shapes: RefCell::new(crate::platform::OfferShapes::default()),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
             invoking_window: RefCell::new(None),
