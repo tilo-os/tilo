@@ -24,6 +24,7 @@ use crate::host_ui::{
     COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION, SET_ACTION, SHORTCUT_ACTION, VIEW_STATE,
 };
 use crate::ids::Actor;
+use crate::platform::Makes;
 use crate::value::THEN_ACTION;
 use crate::value::{ActionRef, RefValue, Value};
 use crate::view::{BindTarget, NodeBuild};
@@ -560,32 +561,42 @@ impl Core {
     ) -> Result<(), RuntimeError> {
         let author = self.module_of_frame().map_err(trapped)?;
         let swipes = self.part(at, SWIPE)?.is_none();
-        let offered = self
-            .offers_on(item, above, |offers| {
-                if offers.is_empty() {
-                    return Ok(None);
-                }
-                let keys: Vec<Value> = offers
-                    .iter()
-                    .filter_map(|shown| {
-                        let key = shown.action.key.as_ref()?;
-                        let run = ActionRef {
-                            action: shown.action.id.clone(),
-                            args: shown.args.clone(),
-                            author: Some(author.clone()),
-                            from: shown.from.clone(),
-                        };
-                        Some(Value::Tuple(vec![Value::text(key), Value::Action(run)]))
-                    })
-                    .collect();
-                let swipe = if swipes {
-                    self.swipe_of(item, offers, placed)?
-                } else {
-                    None
-                };
-                Ok(Some((keys, swipe)))
-            })
+        let decide = |offers: &[crate::platform::Offered<'_>]|
+         -> crate::core::HResult<Option<(Vec<Value>, Option<Value>)>> {
+            if offers.is_empty() {
+                return Ok(None);
+            }
+            let keys: Vec<Value> = offers
+                .iter()
+                .filter_map(|shown| {
+                    let key = shown.action.key.as_ref()?;
+                    let run = ActionRef {
+                        action: shown.action.id.clone(),
+                        args: shown.args.clone(),
+                        author: Some(author.clone()),
+                        from: shown.from.clone(),
+                    };
+                    Some(Value::Tuple(vec![Value::text(key), Value::Action(run)]))
+                })
+                .collect();
+            let swipe = if swipes {
+                self.swipe_of(item, offers, placed)?
+            } else {
+                None
+            };
+            Ok(Some((keys, swipe)))
+        };
+        // What makes something of the item is read only where a key runs it: the swipe is an
+        // action of the item's own wherever one can run, and the menu reads the rest when a
+        // person opens it. A row whose own actions decide neither reads them all.
+        let mut offered = self
+            .offers_on(item, above, Makes::Keyed, decide)
             .map_err(trapped)?;
+        if !matches!(&offered, Some((_, swipe)) if swipe.is_some() || !swipes) {
+            offered = self
+                .offers_on(item, above, Makes::All, decide)
+                .map_err(trapped)?;
+        }
         // A row whose item offers nothing of its app's still has the system's Export and Copy
         // link.
         let Some((keys, swipe)) =

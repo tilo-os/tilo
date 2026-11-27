@@ -350,15 +350,31 @@ impl PublishedAction {
     /// [`Self::on_resource`] gives the action back.
     #[must_use]
     pub fn shape(&self) -> Self {
-        let mut shape = Self {
-            resource: String::new(),
-            semantic_identity: None,
-            resource_kind: String::new(),
-            resource_label: String::new(),
-            ..self.clone()
-        };
-        shape.map_words(|text| mark_label(text, &self.resource_label));
-        shape
+        self.clone().into_shape()
+    }
+
+    /// [`Self::shape`], made of `self` rather than of a copy of it.
+    #[must_use]
+    pub fn into_shape(mut self) -> Self {
+        let label = std::mem::take(&mut self.resource_label);
+        self.resource.clear();
+        self.semantic_identity = None;
+        self.resource_kind.clear();
+        self.map_words(|text| mark_label(text, &label));
+        self
+    }
+
+    /// Whether the words of `self`, a [`Self::shape`], name the resource it is
+    /// offered on: only then do they read differently from one resource to the
+    /// next ([`Self::on_resource`]).
+    #[must_use]
+    pub fn words_name_resource(&self) -> bool {
+        let marked = |text: &str| text.contains(MARK);
+        marked(&self.action_label)
+            || self.description.as_deref().is_some_and(marked)
+            || matches!(&self.input, PublishedInput::Text { prompt, placeholder, .. }
+                if marked(prompt) || marked(placeholder))
+            || self.params.iter().any(|param| marked(&param.description))
     }
 
     /// The action `self`, a [`Self::shape`], is on the resource `resource`

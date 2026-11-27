@@ -254,6 +254,21 @@ impl SurfaceTable {
             .unwrap_or_default()
     }
 
+    /// The published resource `resource` and the shapes of its template, in order, each with
+    /// where it stands in the template and its id: what [`Self::actions_of`] expands, for a
+    /// reader that keeps what the resources of one shape share instead of a copy per resource.
+    #[must_use]
+    pub fn shapes_of(&self, resource: &str) -> Option<ShapesOf<'_>> {
+        let (_, held) = self.resources.get(resource)?;
+        let members = self.templates.get(&held.template)?;
+        let shapes = members
+            .iter()
+            .enumerate()
+            .filter_map(|(at, member)| Some((at, member, self.shapes.get(member)?)))
+            .collect();
+        Some((held, shapes))
+    }
+
     fn offered(&self, resource: &SurfaceResource) -> Vec<ExportedAction> {
         let Some(members) = self.templates.get(&resource.template) else {
             return Vec::new();
@@ -325,6 +340,19 @@ impl SurfaceResource {
         action
     }
 }
+
+/// A published resource and the shapes of its template, each with where it stands in the
+/// template and its id ([`SurfaceTable::shapes_of`]).
+pub type ShapesOf<'a> = (
+    &'a SurfaceResource,
+    Vec<(usize, &'a ShapeId, &'a ExportedAction)>,
+);
+
+/// A resource as a publisher shapes it, with the shapes its template names in order.
+type Shaped = (
+    SurfaceResource,
+    Vec<(ShapeId, std::sync::Arc<ExportedAction>)>,
+);
 
 /// One entry a surface is published from: an action as the app describes it,
 /// or as the broker already holds it.
@@ -461,7 +489,7 @@ impl SurfacePublication {
             if old.map(|old| &old.resource) != Some(&resource) {
                 for (id, shape) in shapes {
                     if !held_shapes.contains(&id) && sent_shapes.insert(id) {
-                        delta.shapes.push((id, shape));
+                        delta.shapes.push((id, ExportedAction::clone(&shape)));
                     }
                 }
                 if !held_templates.contains(&template) && sent_templates.insert(template) {
@@ -563,7 +591,7 @@ fn shaped<E: SurfaceEntry>(
     descriptors: &[E],
     workspace: Option<String>,
     known: &mut KnownShapes,
-) -> Option<(SurfaceResource, Vec<(ShapeId, ExportedAction)>)> {
+) -> Option<Shaped> {
     let mut members = Vec::with_capacity(indices.len());
     let mut shapes = Vec::new();
     let mut unavailable = Vec::new();
@@ -580,8 +608,7 @@ fn shaped<E: SurfaceEntry>(
                 reason,
             });
         }
-        let shape = exported.shape();
-        let id = shape_of(known, shape.clone());
+        let (id, shape) = shape_of(known, exported.into_shape());
         members.push(id);
         shapes.push((id, shape));
     }
@@ -597,15 +624,19 @@ fn shaped<E: SurfaceEntry>(
 }
 
 /// The id of `shape`: the one `known` holds for an equal shape, else its content hash, which
-/// `known` then holds.
-fn shape_of(known: &mut KnownShapes, shape: ExportedAction) -> ShapeId {
+/// `known` then holds; and the shape as `known` holds it.
+fn shape_of(
+    known: &mut KnownShapes,
+    shape: ExportedAction,
+) -> (ShapeId, std::sync::Arc<ExportedAction>) {
     let same = known.entry(shape.action.clone()).or_default();
-    if let Some((_, id)) = same.iter().find(|(held, _)| **held == shape) {
-        return *id;
+    if let Some((held, id)) = same.iter().find(|(held, _)| **held == shape) {
+        return (*id, std::sync::Arc::clone(held));
     }
     let id = shape_id(&shape);
-    same.push((std::sync::Arc::new(shape), id));
-    id
+    let shape = std::sync::Arc::new(shape);
+    same.push((std::sync::Arc::clone(&shape), id));
+    (id, shape)
 }
 
 /// The content hash that names a catalogue entry on the wire.

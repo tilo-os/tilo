@@ -386,7 +386,7 @@ impl RemoteRows {
         let changed: Vec<String> = self
             .rows
             .iter()
-            .filter(|(_, row)| crate::window::rebind::rebinding(before, after, row).is_some())
+            .filter(|(_, row)| crate::window::rebind::rebinds(before, after, row))
             .map(|(key, _)| key.clone())
             .collect();
         if changed.is_empty() {

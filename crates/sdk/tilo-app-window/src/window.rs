@@ -709,17 +709,17 @@ impl AppWindow {
             .flatten()
             .map(|view| view.target.id_string())
             .collect();
-        self.actions()
-            .iter()
-            .find(|action| {
-                shown.contains(&action.address.resource)
+        self.offered
+            .offered()
+            .find(|(resource, action)| {
+                shown.iter().any(|shown| shown == resource)
                     && action
                         .state
                         .shortcut
                         .as_deref()
                         .is_some_and(|chord| same_press(chord, pressed))
             })
-            .map(|action| action.address.clone())
+            .map(|(resource, action)| tilo_actions::ActionAddress::new(resource, &action.id))
     }
 
     /// The person chose `address` from the window's command palette with `argument`, or pressed a
@@ -733,16 +733,16 @@ impl AppWindow {
         address: tilo_actions::ActionAddress,
         argument: Option<String>,
     ) {
+        let key = self
+            .offered
+            .offered()
+            .find(|(resource, action)| *resource == address.resource && action.id == address.action)
+            .and_then(|(_, action)| action.state.shortcut.clone());
         if argument.is_none()
-            && let Some(key) = self
-                .actions()
-                .iter()
-                .find(|action| action.address == address)
-                .and_then(|action| action.state.shortcut.as_deref())
-            && let Some(field) = self
-                .built
-                .as_ref()
-                .and_then(|built| focus_field(built, &tilo_ui_base::platform::Shortcut::from(key)))
+            && let Some(key) = key
+            && let Some(field) = self.built.as_ref().and_then(|built| {
+                focus_field(built, &tilo_ui_base::platform::Shortcut::from(key.as_str()))
+            })
         {
             self.focus_request = Some(field);
             self.flush();
@@ -2560,10 +2560,10 @@ impl AppWindow {
     /// pressed on those, as the app declared it, and the keys the app gave it are no longer its.
     /// The keys the app declared its action `action` on.
     fn declared_keys(&self, action: &str) -> Option<String> {
-        self.actions()
-            .iter()
-            .find(|offered| offered.address.action == action)
-            .and_then(|offered| offered.state.shortcut.clone())
+        self.offered
+            .offered()
+            .find(|(_, offered)| offered.id == action)
+            .and_then(|(_, offered)| offered.state.shortcut.clone())
     }
 
     /// The app's commands the person moved, as the window's palette shows them.

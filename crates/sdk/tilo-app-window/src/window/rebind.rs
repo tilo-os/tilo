@@ -11,13 +11,7 @@ pub(crate) fn rebinding(
     after: &crate::adapter::Adapter,
     node: &UiNode,
 ) -> Option<UiNode> {
-    let own = node.events.values().any(|event| {
-        let Some(invoked) = event.invokes.as_ref() else {
-            return false;
-        };
-        before.holds(&invoked.resource, &invoked.action)
-            != after.holds(&invoked.resource, &invoked.action)
-    });
+    let own = rebinds_own(before, after, node);
     let children: Vec<Option<UiNode>> = node
         .children
         .iter()
@@ -43,5 +37,34 @@ pub(crate) fn rebinding(
             .zip(children)
             .map(|(child, rebound)| rebound.unwrap_or_else(|| child.clone()))
             .collect(),
+    })
+}
+
+/// Whether a control in the tree `node` would take the other path now that the window offers the
+/// actions `after`: [`rebinding`], for a reader that builds the tree again whole (a list's row).
+pub(crate) fn rebinds(
+    before: &crate::adapter::Published,
+    after: &crate::adapter::Adapter,
+    node: &UiNode,
+) -> bool {
+    rebinds_own(before, after, node)
+        || node
+            .children
+            .iter()
+            .any(|child| rebinds(before, after, child))
+}
+
+/// Whether an event of `node` itself would take the other path.
+fn rebinds_own(
+    before: &crate::adapter::Published,
+    after: &crate::adapter::Adapter,
+    node: &UiNode,
+) -> bool {
+    node.events.values().any(|event| {
+        let Some(invoked) = event.invokes.as_ref() else {
+            return false;
+        };
+        before.holds(&invoked.resource, &invoked.action)
+            != after.holds(&invoked.resource, &invoked.action)
     })
 }

@@ -332,6 +332,15 @@ pub(crate) struct Offered<'m> {
     pub(crate) label: Option<String>,
 }
 
+/// Which of the actions that make something of a target [`Core::offers_on`] offers: all of them,
+/// as a menu lists them, or only those a key runs, which is all a row whose menu nobody opened
+/// needs of them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Makes {
+    All,
+    Keyed,
+}
+
 /// What a make offer is made from: the title the made resource starts with, and the type the
 /// target is, which a parameter of the action may take.
 struct Source {
@@ -2457,7 +2466,7 @@ impl Core {
     /// Last stand the system's Export and Copy link, on every resource a link opens
     /// ([`Self::system_offers`]): no app writes its own.
     pub(crate) fn actions_on(&self, target: &RefValue, above: &Value) -> HResult<Vec<Value>> {
-        let mut out = self.offers_on(target, above, |offers| {
+        let mut out = self.offers_on(target, above, Makes::All, |offers| {
             let mut out = Vec::with_capacity(offers.len().saturating_add(2));
             for shown in offers {
                 out.extend(self.action_value(shown, Some(target))?);
@@ -2561,6 +2570,7 @@ impl Core {
         &self,
         target: &RefValue,
         above: &Value,
+        makes: Makes,
         f: impl FnOnce(&[Offered<'_>]) -> HResult<R>,
     ) -> HResult<R> {
         let held = &target.target;
@@ -2660,7 +2670,7 @@ impl Core {
             found.into_iter().map(|(_, _, _, shown)| shown).collect();
         // Last, under the menu's one group, what can be made from it: a submenu of its own at
         // the end, so what the app offers the item stays what a person reads first.
-        for shown in self.make_offers(target, own.as_ref(), &packages)? {
+        for shown in self.make_offers(target, own.as_ref(), &packages, makes)? {
             if !offers
                 .iter()
                 .any(|direct| direct.action.id == shown.action.id)
@@ -2683,7 +2693,17 @@ impl Core {
         target: &RefValue,
         own: Option<&(Rc<Package>, Rc<crate::registry::TypeInfo>)>,
         packages: &'m [Rc<Package>],
+        makes: Makes,
     ) -> HResult<Vec<Offered<'m>>> {
+        let asked = |action: &crate::meta::ActionMeta| makes == Makes::All || action.key.is_some();
+        // A caller that asks only for what a key runs, where no key runs a make action, reads
+        // nothing of the target for them: not its title, not its packages' create actions.
+        if !packages
+            .iter()
+            .any(|pkg| pkg.meta.offered_actions().any(&asked))
+        {
+            return Ok(Vec::new());
+        }
         let source = match own {
             Some((pkg, info)) => {
                 let Some(ty) = pkg.meta.types.iter().find(|ty| ty.id == info.id) else {
@@ -2700,7 +2720,7 @@ impl Core {
         let group = self.word_args("tilolang-make", &[], "Make");
         let mut found: Vec<(usize, usize, bool, Offered<'m>)> = Vec::new();
         for (rank, pkg) in packages.iter().enumerate() {
-            for action in pkg.meta.offered_actions() {
+            for action in pkg.meta.offered_actions().filter(|action| asked(action)) {
                 let Some((at, source_arg, shown)) =
                     self.make_offer(pkg, action, source.as_ref(), target, &group)
                 else {

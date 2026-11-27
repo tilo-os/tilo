@@ -6,12 +6,12 @@
 //! action API it publishes. So a window offers the same palette whichever way its app runs, and neither
 //! side knows how the other works.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tilo_actions::{
-    ActionAddress, ActionArgs, ActionDescriptor, ActionOutput, ActionParam, ActionSpec,
-    EncodedAction, ExecutionLocus, InputSpec, OperationKind, ParamType, ResourceSpec,
+    ActionAddress, ActionArgs, ActionDescriptor, ActionOutput, ActionParam, ActionSpec, ActionType,
+    EncodedAction, ExecutionLocus, InputSpec, OperationKind, ParamType, ResourceSpec, Target,
 };
 use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use tilo_ui_base::{
@@ -50,24 +50,54 @@ impl Chosen {
 }
 
 /// What the app offers at its window: the surface it publishes there, as the broker holds it,
-/// with every action of every resource and the declaration the window's palette offers of each
-/// resource.
+/// and the declaration the window's palette offers of each resource.
 #[derive(Default)]
 pub(crate) struct Offered {
     surface: SurfaceTable,
-    /// Each resource's actions together, in the order the resources were first published.
-    actions: Vec<ActionDescriptor>,
-    /// Each resource's declaration, in that same order.
+    /// Each resource's declaration, in the order the resources were first published.
     specs: Vec<ResourceSpec>,
+    /// Each resource's actions together, in that same order: read from the surface when first
+    /// asked for after a change, which only a reader of the descriptors does.
+    actions: std::cell::OnceCell<Vec<ActionDescriptor>>,
+    /// The type of each action as the window offers it, by its shape: every resource of a kind
+    /// offers the same one, bound to itself, so a row coming into view builds none of it.
+    /// Keyed by the shape's content hash ([`SurfaceDelta::shapes`]).
+    types: HashMap<[u8; 16], ShapeTypes>,
 }
+
+/// The types the window offers of one shape: its words, read for a resource where they name it,
+/// and whether it can run, as each resource offering it says.
+#[derive(Default)]
+struct ShapeTypes {
+    names_resource: bool,
+    types: HashMap<TypeKey, Arc<ActionType>>,
+}
+
+/// What sets one type of a shape apart: the resource label its words name, where they name one,
+/// and why it can't run (code, reason), where it can't.
+type TypeKey = (Option<String>, Option<(String, String)>);
 
 impl Offered {
     pub(crate) fn actions(&self) -> &[ActionDescriptor] {
-        &self.actions
+        self.actions.get_or_init(|| {
+            self.specs
+                .iter()
+                .flat_map(|spec| self.surface.actions_of(spec.id.as_str()))
+                .map(|action| action.descriptor(ExecutionLocus::default()))
+                .collect()
+        })
     }
 
     pub(crate) fn specs(&self) -> &[ResourceSpec] {
         &self.specs
+    }
+
+    /// Each action the window offers with the resource it is on, in the order the palette lists
+    /// them: what a press looked up by its keys reads, with no descriptor read for it.
+    pub(crate) fn offered(&self) -> impl Iterator<Item = (&str, &ActionSpec)> {
+        self.specs
+            .iter()
+            .flat_map(|spec| spec.actions.iter().map(|action| (spec.id.as_str(), action)))
     }
 
     /// Take the change `bytes` of the surface the app publishes at the window
@@ -78,69 +108,64 @@ impl Offered {
         let delta: SurfaceDelta = serde_json::from_slice(bytes)
             .map_err(|error| format!("the app's action catalogue did not read back: {error}"))?;
         self.surface.apply(&delta)?;
+        self.actions = std::cell::OnceCell::new();
         let surface = &self.surface;
-        let read = |resource: &str| -> Vec<ActionDescriptor> {
-            surface
-                .actions_of(resource)
-                .iter()
-                .map(|action| action.descriptor(ExecutionLocus::default()))
-                .collect()
-        };
-        let mut actions = Vec::with_capacity(self.actions.len());
-        let mut specs = Vec::with_capacity(self.specs.len());
-        let mut push = |mine: Vec<ActionDescriptor>, spec: Option<ResourceSpec>| {
-            if let Some(spec) = spec.or_else(|| declared(&mine)) {
-                specs.push(spec);
-                actions.extend(mine);
-            }
-        };
+        self.types.retain(|id, _| surface.holds(id));
         let changed: HashSet<&str> = (delta.resources.iter())
             .map(|resource| resource.resource.as_str())
             .collect();
+        let mut specs = Vec::with_capacity(self.specs.len());
         let mut seen: HashSet<String> = HashSet::new();
         if !delta.reset {
             let removed: HashSet<&str> = delta.removed.iter().map(String::as_str).collect();
-            let mut held = std::mem::take(&mut self.actions).into_iter().peekable();
             for spec in std::mem::take(&mut self.specs) {
-                let mine: Vec<ActionDescriptor> = std::iter::from_fn(|| {
-                    held.next_if(|action| action.address.resource == spec.id.as_str())
-                })
-                .collect();
-                let name = spec.id.as_str();
-                seen.insert(name.to_owned());
-                if removed.contains(name) {
-                    continue;
+                let name = spec.id.as_str().to_owned();
+                if changed.contains(name.as_str()) {
+                    specs.extend(self.declared(&name));
+                } else if !removed.contains(name.as_str()) {
+                    specs.push(spec);
                 }
-                if changed.contains(name) {
-                    push(read(name), None);
-                } else {
-                    push(mine, Some(spec));
-                }
+                seen.insert(name);
             }
         }
         for resource in &delta.resources {
             if seen.insert(resource.resource.clone()) {
-                push(read(&resource.resource), None);
+                specs.extend(self.declared(&resource.resource));
             }
         }
-        self.actions = actions;
         self.specs = specs;
         Ok(())
     }
-}
 
-/// The declaration the window's palette offers of the resource whose actions are `actions`.
-fn declared(actions: &[ActionDescriptor]) -> Option<ResourceSpec> {
-    let first = actions.first()?;
-    let mut spec = ResourceSpec::new(
-        first.address.resource.clone(),
-        first.resource_kind.clone(),
-        first.resource_label.clone(),
-    );
-    for action in actions {
-        spec = spec.with_action(offered(action));
+    /// The declaration the window's palette offers of the published resource `name`: each of its
+    /// actions the type its shape has for it, bound to it. `None` for a resource that offers none.
+    fn declared(&mut self, name: &str) -> Option<ResourceSpec> {
+        let (resource, shapes) = self.surface.shapes_of(name)?;
+        let (_, _, first) = shapes.first()?;
+        let first = first.on_resource(name, &resource.fields);
+        let mut spec = ResourceSpec::new(name, first.resource_kind, first.resource_label);
+        let target = Target::new(name.to_owned());
+        for (at, id, shape) in shapes {
+            let types = self.types.entry(*id).or_insert_with(|| ShapeTypes {
+                names_resource: shape.words_name_resource(),
+                types: HashMap::new(),
+            });
+            let unavailable = resource
+                .unavailable
+                .iter()
+                .find(|unavailable| unavailable.at as usize == at)
+                .map(|unavailable| (unavailable.code.clone(), unavailable.reason.clone()));
+            let words = types
+                .names_resource
+                .then(|| resource.fields.resource_label.clone());
+            let ty = types.types.entry((words, unavailable)).or_insert_with(|| {
+                let action = resource.offers(at, shape);
+                Arc::clone(offered(&action.descriptor(ExecutionLocus::default())).action_type())
+            });
+            spec = spec.with_action(ty.bind(target.clone()));
+        }
+        Some(spec)
     }
-    Some(spec)
 }
 
 /// What the app publishes at its window when it offers `descriptors`, as one change from
@@ -198,9 +223,12 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
         OperationKind::Effect,
         HOSTED_ACTION,
         params,
-        Arc::new(move |_target, args: &ActionArgs| {
+        // The resource is the one the type is bound to: every resource of a kind offers one type.
+        Arc::new(move |target, args: &ActionArgs| {
             let chosen = Chosen {
-                resource: address.resource.clone(),
+                resource: target
+                    .get::<String>()
+                    .map_or_else(|| address.resource.clone(), String::clone),
                 action: address.action.clone(),
                 arguments: serde_json::Value::Object(args.to_json()),
             };
