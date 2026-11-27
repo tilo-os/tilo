@@ -23,7 +23,7 @@
 //! client holds is the client's, and is not followed either. Unlocking always
 //! takes the person's credential on one of their devices.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use tilo_compositor::Error;
@@ -42,8 +42,68 @@ use crate::platform::fabric::DeviceId;
 /// of it as they start and as they stop, never as they type.
 pub const USING_FOR_MS: u64 = 60_000;
 
-/// How long a device waits before it says its session again after its daemon did not take it.
+/// How long a device waits before it says something of itself again after its daemon did not
+/// take it, the first time: twice as long after each refusal in a row, up to [`SAY_AT_MOST_EVERY`].
 const SAY_AGAIN: Duration = Duration::from_secs(5);
+const SAY_AT_MOST_EVERY: Duration = Duration::from_secs(300);
+
+/// How the daemon answered what this device last said of its session, as the loop has not heard
+/// yet: nothing new, taken, or not taken.
+const UNHEARD: u8 = 0;
+const TAKEN: u8 = 1;
+const MISSED: u8 = 2;
+
+/// What this device waits to say of itself again: a fact by its name, or its session.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Saying {
+    Fact(String),
+    Session,
+}
+
+/// When one thing this device says of itself may be said again, and how long it waits after the
+/// next refusal.
+#[derive(Clone, Copy)]
+struct Quiet {
+    until: Instant,
+    next: Duration,
+}
+
+/// When each thing this device says of itself may be said again: one write waiting for the daemon
+/// holds back that one, never what else the device has to say.
+#[derive(Default)]
+struct Quiets(std::collections::BTreeMap<Saying, Quiet>);
+
+impl Quiets {
+    /// Whether `saying` waits at `now`: the daemon was asked it a moment ago, or did not take it.
+    fn waits(&self, saying: &Saying, now: Instant) -> bool {
+        self.0.get(saying).is_some_and(|quiet| now < quiet.until)
+    }
+
+    /// Hold `saying` back from `now`: [`SAY_AGAIN`] the first time, twice as long each time in a
+    /// row after, up to [`SAY_AT_MOST_EVERY`], so a daemon that keeps refusing it is not asked on a
+    /// clock.
+    fn hush(&mut self, saying: Saying, now: Instant) {
+        let wait = self
+            .0
+            .get(&saying)
+            .map_or(SAY_AGAIN, |quiet| quiet.next)
+            .min(SAY_AT_MOST_EVERY);
+        if let Some(until) = now.checked_add(wait) {
+            self.0.insert(
+                saying,
+                Quiet {
+                    until,
+                    next: wait.saturating_mul(2),
+                },
+            );
+        }
+    }
+
+    /// `saying` reached the record: the next change of it is said at once.
+    fn heard(&mut self, saying: &Saying) {
+        self.0.remove(saying);
+    }
+}
 
 /// What this device does to follow the person's other devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,11 +299,11 @@ pub(crate) struct OwnerDevices {
     cert: DeviceCert,
     /// The other devices' sessions as the record last read, by device, and the reading they are of.
     others: RefCell<Others>,
-    /// When this device may say its session again, after its daemon did not take it.
-    quiet_until: Cell<Option<Instant>>,
+    /// When each thing this device says of itself may be said again.
+    quiet: RefCell<Quiets>,
     /// The daemon did not take what this device last said of its session: said off the loop, so
     /// the loop hears it on its next pass ([`Self::take_missed`]).
-    missed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    missed: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// What this device is ([`crate::platform::fabric::DeviceAbout`]), postcard in hex, and its
     /// certificate the same way: what it keeps of itself in the record, through its daemon too.
     about: Option<(String, String)>,
@@ -272,7 +332,7 @@ impl OwnerDevices {
             record,
             cert,
             others: RefCell::default(),
-            quiet_until: Cell::new(None),
+            quiet: RefCell::default(),
             missed: std::sync::Arc::default(),
             about,
         }
@@ -325,12 +385,8 @@ impl OwnerDevices {
         let Some((_, certificate)) = &self.about else {
             return;
         };
-        if self.record.held().is_none()
-            || self
-                .quiet_until
-                .get()
-                .is_some_and(|until| Instant::now() < until)
-        {
+        let saying = Saying::Fact(name.to_owned());
+        if self.record.held().is_none() || self.quiet(&saying) {
             return;
         }
         let key = hex::encode(self.cert.device_public_key);
@@ -344,13 +400,14 @@ impl OwnerDevices {
                     && kept.facts.get(name).map(String::as_str) == Some(value)
             });
         if kept {
+            self.quiet.borrow_mut().heard(&saying);
             return;
         }
         let keep =
             Devices::KEEP_FACT.with((key, certificate.clone(), name.to_owned(), value.to_owned()));
         // Said off the loop: the follow shows it once the daemon wrote it, and until then, or
-        // when the daemon did not take it, it is not said again for a few seconds.
-        self.quiet_until.set(Instant::now().checked_add(SAY_AGAIN));
+        // when the daemon did not take it, it is not said again for a while.
+        self.hush(saying);
         let name = name.to_owned();
         self.record.invoke_unwaited(&keep, move |kept| {
             if let Err(error) = kept {
@@ -427,21 +484,21 @@ impl OwnerDevices {
     /// the loop. Whether it was said; one the daemon did not take is heard on a later pass
     /// ([`Self::take_missed`]), and the daemon is not asked again for a few seconds.
     fn say(&self, session: OwnerSession) -> bool {
-        if self
-            .quiet_until
-            .get()
-            .is_some_and(|until| Instant::now() < until)
-        {
+        if self.quiet(&Saying::Session) {
             return false;
         }
         let missed = std::sync::Arc::clone(&self.missed);
         self.record.invoke_unwaited(
             &Devices::saying_session(&self.cert.device_public_key, session),
             move |said| {
-                if let Err(error) = said {
-                    tracing::warn!(%error, "this device's session reaches the person's devices later");
-                    missed.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                let heard = match said {
+                    Ok(()) => TAKEN,
+                    Err(error) => {
+                        tracing::warn!(%error, "this device's session reaches the person's devices later");
+                        MISSED
+                    }
+                };
+                missed.store(heard, std::sync::atomic::Ordering::Relaxed);
             },
         );
         true
@@ -450,13 +507,30 @@ impl OwnerDevices {
     /// Whether the daemon did not take what this device last said of its session: it is said
     /// again once the daemon may be asked again.
     fn take_missed(&self) -> bool {
-        let missed = self
+        match self
             .missed
-            .swap(false, std::sync::atomic::Ordering::Relaxed);
-        if missed {
-            self.quiet_until.set(Instant::now().checked_add(SAY_AGAIN));
+            .swap(UNHEARD, std::sync::atomic::Ordering::Relaxed)
+        {
+            MISSED => {
+                self.hush(Saying::Session);
+                true
+            }
+            TAKEN => {
+                self.quiet.borrow_mut().heard(&Saying::Session);
+                false
+            }
+            _ => false,
         }
-        missed
+    }
+
+    /// Whether `saying` waits now.
+    fn quiet(&self, saying: &Saying) -> bool {
+        self.quiet.borrow().waits(saying, Instant::now())
+    }
+
+    /// Hold `saying` back from now.
+    fn hush(&self, saying: Saying) {
+        self.quiet.borrow_mut().hush(saying, Instant::now());
     }
 }
 
@@ -542,6 +616,39 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One thing this device says of itself waiting for its daemon holds back that one alone: its
+    /// other facts and its session are said at once, and a daemon that keeps refusing one is asked
+    /// it ever less often, never on a clock.
+    #[test]
+    fn a_write_waiting_for_the_daemon_holds_back_only_itself() {
+        let now = Instant::now();
+        let displays = Saying::Fact("displays".to_owned());
+        let mut quiet = Quiets::default();
+        quiet.hush(displays.clone(), now);
+        assert!(quiet.waits(&displays, now));
+        assert!(!quiet.waits(&Saying::Fact("about".to_owned()), now));
+        assert!(!quiet.waits(&Saying::Session, now));
+        assert!(!quiet.waits(&displays, now + SAY_AGAIN));
+
+        let mut waited = Vec::new();
+        for _ in 0..10 {
+            quiet.hush(displays.clone(), now);
+            let until = (1..=600)
+                .map(|seconds| now + Duration::from_secs(seconds))
+                .find(|at| !quiet.waits(&displays, *at))
+                .expect("it is said again within ten minutes");
+            waited.push(until.duration_since(now).as_secs());
+        }
+        assert_eq!(waited, [10, 20, 40, 80, 160, 300, 300, 300, 300, 300]);
+
+        quiet.heard(&displays);
+        quiet.hush(displays.clone(), now);
+        assert!(
+            !quiet.waits(&displays, now + SAY_AGAIN),
+            "a fact heard starts over"
+        );
+    }
 
     /// A device on the same network.
     fn session(locked: bool, changed_ms: i64) -> (OwnerSession, bool) {
