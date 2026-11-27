@@ -1700,6 +1700,80 @@ fn an_earlier_versions_change_is_decided_under_both_versions() {
     );
 }
 
+/// While a version runs, a change naming another surface is decided under the running one too,
+/// even on a copy that reads nothing of what the workspace ran: an earlier surface never gets its
+/// change in alone, whatever this copy has taken in yet.
+#[test]
+fn a_change_naming_another_surface_is_never_decided_under_it_alone_while_one_runs() {
+    use crate::state::{SurfaceGate, surface_gate};
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    let ran = |surfaces: &[[u8; 32]]| {
+        let ran: Arc<BTreeSet<[u8; 32]>> = Arc::new(surfaces.iter().copied().collect());
+        move || ran
+    };
+    for (named, running, ran_before, gate, what) in [
+        (
+            Some(PINNED),
+            Some(NEWER),
+            ran(&[]),
+            SurfaceGate::AlsoUnder(NEWER),
+            "ran reads as nothing",
+        ),
+        (
+            Some(PINNED),
+            Some(NEWER),
+            ran(&[PINNED, NEWER]),
+            SurfaceGate::AlsoUnder(NEWER),
+            "ran it",
+        ),
+        (
+            Some(NEWEST),
+            Some(NEWER),
+            ran(&[PINNED, NEWER]),
+            SurfaceGate::SetAside,
+            "never ran it",
+        ),
+        (
+            Some(NEWER),
+            Some(NEWER),
+            ran(&[]),
+            SurfaceGate::Decide,
+            "the running one",
+        ),
+        (
+            None,
+            Some(NEWER),
+            ran(&[]),
+            SurfaceGate::SetAside,
+            "no surface, one running",
+        ),
+        (
+            Some(PINNED),
+            None,
+            ran(&[]),
+            SurfaceGate::Decide,
+            "the app never ran",
+        ),
+        (
+            Some(NEWEST),
+            None,
+            ran(&[PINNED]),
+            SurfaceGate::SetAside,
+            "uninstalled, never ran it",
+        ),
+        (
+            None,
+            None,
+            ran(&[]),
+            SurfaceGate::Decide,
+            "nothing named, nothing running",
+        ),
+    ] {
+        assert_eq!(surface_gate(named, running, ran_before), gate, "{what}");
+    }
+}
+
 /// The one decision about a surface the workspace has not run sets a change aside, to be decided
 /// again: it has no refusal to give, whatever the workspace runs, ran or uninstalled.
 #[test]

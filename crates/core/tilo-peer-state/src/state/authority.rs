@@ -1557,21 +1557,9 @@ impl StatePeer {
     /// again once the workspace runs more, so a copy that has not seen a version yet keeps out
     /// nothing a copy that has takes in.
     pub(crate) fn surface_gate(&self, app: &str, surface: Option<[u8; 32]>) -> SurfaceGate {
-        let running = self.workspace_surface(app);
-        match (surface, running) {
-            (None, None) => SurfaceGate::Decide,
-            (Some(named), Some(running)) if named == running => SurfaceGate::Decide,
-            (None, Some(_)) => SurfaceGate::SetAside,
-            (Some(named), running) => {
-                let ran = self.ran_surfaces(app);
-                match running {
-                    _ if ran.is_empty() => SurfaceGate::Decide,
-                    Some(running) if ran.contains(&named) => SurfaceGate::AlsoUnder(running),
-                    None if ran.contains(&named) => SurfaceGate::Decide,
-                    _ => SurfaceGate::SetAside,
-                }
-            }
-        }
+        surface_gate(surface, self.workspace_surface(app), || {
+            self.ran_surfaces(app)
+        })
     }
 
     /// [`Self::authorize_document`] by the governance this peer holds.
@@ -2256,6 +2244,38 @@ pub(crate) enum SurfaceGate {
     AlsoUnder([u8; 32]),
     /// Set aside until the workspace runs the surface it names.
     SetAside,
+}
+
+/// [`StatePeer::surface_gate`] by what it reads: the surface a change names, the one the
+/// workspace runs, and those it ran. While a version runs, a change naming another surface is
+/// never decided under that surface alone, even where what the workspace ran reads as nothing
+/// (a copy that has not taken in that part yet): it is decided under the running one too.
+pub(crate) fn surface_gate(
+    named: Option<[u8; 32]>,
+    running: Option<[u8; 32]>,
+    ran: impl FnOnce() -> std::sync::Arc<BTreeSet<[u8; 32]>>,
+) -> SurfaceGate {
+    match (named, running) {
+        (None, None) => SurfaceGate::Decide,
+        (Some(named), Some(running)) if named == running => SurfaceGate::Decide,
+        (None, Some(_)) => SurfaceGate::SetAside,
+        (Some(named), Some(running)) => {
+            let ran = ran();
+            if ran.is_empty() || ran.contains(&named) {
+                SurfaceGate::AlsoUnder(running)
+            } else {
+                SurfaceGate::SetAside
+            }
+        }
+        (Some(named), None) => {
+            let ran = ran();
+            if ran.is_empty() || ran.contains(&named) {
+                SurfaceGate::Decide
+            } else {
+                SurfaceGate::SetAside
+            }
+        }
+    }
 }
 
 /// `surfaces`, each surface a change names read together with `running`'s: what both declare.

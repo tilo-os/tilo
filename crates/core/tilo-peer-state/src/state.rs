@@ -132,7 +132,7 @@ mod admitting;
 mod authority;
 pub use authority::DocumentKeysBasis;
 #[cfg(test)]
-pub(crate) use authority::SurfaceGate;
+pub(crate) use authority::{SurfaceGate, surface_gate};
 mod construction;
 mod durable;
 mod durable_before_call;
