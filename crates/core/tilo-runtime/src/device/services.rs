@@ -6663,11 +6663,11 @@ impl RuntimeActionProvider {
         }
     }
 
-    /// A run of another member's device `key` in `workspace`, which this device holds: its calls
-    /// are that member's own on that device, decided by the workspace's grants for them through
-    /// the broker's host for other devices, and a search answers what they may read, never what
-    /// this device's person may. Nothing of the device's own is theirs: no ticket, no asked
-    /// record of its person's.
+    /// A run of the device `key` in `workspace`, which this device holds: its calls are its
+    /// person's own on that device, its certificate chaining to them, decided by the workspace's
+    /// grants for them through the broker's host for other devices, and a search answers what
+    /// they may read. Nothing of this device's own is theirs: no ticket, no asked record, no
+    /// key it makes and no root it keeps.
     ///
     /// # Errors
     /// The workspace is not kept here, or does not admit the run now.

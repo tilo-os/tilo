@@ -2,11 +2,10 @@
 //! workspaces on this computer, answered for the person's keys that entered them there
 //! ([`crate::key_sessions`]).
 //!
-//! A key of the person's is admitted as an MCP client of this runtime is: the profile's person
-//! on this device, with an agent named after the key acting under a key of its own. Another
-//! member's device runs as that member, decided by the workspace's grants for them. A computer that
-//! founded its person's workspace answers that one ([`HostRuns`]); a keeping server answers
-//! each workspace it keeps ([`KeptRuns`]), its dispatch built for that workspace.
+//! A device runs as its person, decided by the workspace's grants for them; an agent's grant of
+//! the person's as an MCP client of this runtime does, an agent acting under a key of its own.
+//! A computer that founded its person's workspace answers that one ([`HostRuns`]); a keeping
+//! server answers each workspace it keeps ([`KeptRuns`]), its dispatch built for that workspace.
 
 use super::services::RuntimeActionProvider;
 use super::services::action_provider;
@@ -171,8 +170,9 @@ impl crate::key_sessions::Sessions for KeptRuns {
     }
 }
 
-/// The run of `key`, `whose` it is, in `workspace` through `provider`: a key of the person's as
-/// an agent of `actor`'s named after the key, a member's device as that member.
+/// The run of `key`, `whose` it is, in `workspace` through `provider`: an agent's grant of the
+/// person's as an agent of `actor`'s named after the key, any device as its own person, which
+/// needs no root of theirs here.
 ///
 /// The key's agent is named as the workspace lists every agent of its person's devices
 /// ([`tilo_actions::remote::device_agent_id`]): the run is admitted as the agent the record
@@ -188,7 +188,7 @@ pub(super) fn key_run(
         label => label,
     };
     let (run, caller) = match whose {
-        Whose::Own => provider
+        Whose::Own if key.capabilities.agent.is_some() => provider
             .agent_session(workspace, actor, policy_time, |person| {
                 (
                     tilo_actions::remote::device_agent_id(person, name),
@@ -196,7 +196,7 @@ pub(super) fn key_run(
                 )
             })
             .map(|(run, caller, _, _)| (run, caller)),
-        Whose::Member => provider.member_session(workspace, key, policy_time),
+        Whose::Own | Whose::Member => provider.member_session(workspace, key, policy_time),
     }
     .map_err(|error| error.to_string())?;
     Ok((Arc::new(run), caller))

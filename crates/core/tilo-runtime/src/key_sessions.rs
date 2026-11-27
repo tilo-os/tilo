@@ -12,8 +12,8 @@
 //! Each key works in a run of its own ([`Sessions::open`]). Before every message the key is
 //! checked against the person's devices, as their own workspace lists them
 //! ([`PersonalDevices::admit`]: theirs, current, not revoked), and its grant's scope against
-//! the workspace; a key that no longer holds loses its run. A key of the person's runs as an
-//! agent of theirs, which the device's broker admits as it admits one at its MCP server.
+//! the workspace; a key that no longer holds loses its run. A device of the person's runs as
+//! them, an agent's grant of theirs as the broker admits an agent at its MCP server.
 //!
 //! A device of another member of the workspace, which the workspace's roster admitted on the
 //! link, runs as that member: what it asks is decided by the workspace's grants for them, and a
@@ -48,8 +48,8 @@ pub trait Sessions: Send + Sync {
     fn workspace(&self, workspace_id: WorkspaceId) -> Option<String>;
 
     /// A session for `key`, `whose` it is, in `workspace`: the host its calls go through and
-    /// the caller they go as. A key of the person's is admitted as the broker admits an agent
-    /// at this device's MCP server; a member's device as that member, its calls decided by
+    /// the caller they go as. An agent's grant of the person's is admitted as the broker admits
+    /// an agent at this device's MCP server; a device as its own person, its calls decided by
     /// the workspace's grants for them. A refusal says why.
     ///
     /// # Errors
