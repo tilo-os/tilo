@@ -929,10 +929,13 @@ pub fn publish_resource(
     id: &str,
     label: &str,
 ) -> ResourceSpec {
-    let mut resource = types.resource(type_name, id, label.to_owned(), true);
-    // What the resource is, whatever alias a window publishes it under: the kind it publishes
-    // as and the id it keeps. A host that approves work on one resource, and a caller that
-    // names it from another device, bind to exactly it by this.
+    identified(types.resource(type_name, id, label.to_owned(), true))
+}
+
+/// `resource` with what it is, whatever alias a window publishes it under: the kind it publishes
+/// as and the id it keeps. A host that approves work on one resource, a caller that names it from
+/// another device, and a step an action on it declares bind to exactly it by this.
+fn identified(mut resource: ResourceSpec) -> ResourceSpec {
     resource.semantic_identity =
         tilo_actions::ResourceSemanticIdentity::new(resource.kind.clone(), resource.id.as_str());
     resource
@@ -1153,7 +1156,12 @@ impl Reader<'_> {
     fn item_alone(&self, at: &ResourceRef) -> Option<ResourceSpec> {
         let name = self.store.kinds().get(&at.ty)?.name.clone();
         let label = self.label(at, &name);
-        Some(self.types.resource(&name, &at.id_string(), label, false))
+        Some(identified(self.types.resource(
+            &name,
+            &at.id_string(),
+            label,
+            false,
+        )))
     }
 }
 

@@ -227,17 +227,26 @@ impl ActionProvider for Engine {
     }
 }
 
+/// The person at the device: one run of its dispatch, held for the whole test as a shell holds
+/// its own. An invocation, and the calls its app makes for it, continue only while the run that
+/// started it does.
+struct Person<'a> {
+    host: &'a host::Host,
+    dispatch: Arc<dyn ActionProvider + Send + Sync>,
+}
+
 /// Invoke `action` on `resource` of the Migrations app with `arguments`, as the person.
 async fn invoke(
-    host: &host::Host,
+    person: &Person<'_>,
     resource: &str,
     action: &str,
     arguments: &Value,
 ) -> InvocationReceipt {
-    let target = application_action_target(host.workspace(), MIGRATE, resource, action);
-    host.dispatch()
+    let target = application_action_target(person.host.workspace(), MIGRATE, resource, action);
+    person
+        .dispatch
         .invoke(
-            &host.caller(),
+            &person.host.caller(),
             host::call(&target.provider, target.address, arguments),
         )
         .await
@@ -246,10 +255,10 @@ async fn invoke(
 }
 
 /// How invocation `id` stands once it ended, asked of the dispatch until it has.
-async fn ended(host: &host::Host, id: InvocationId) -> InvocationUpdate {
+async fn ended(person: &Person<'_>, id: InvocationId) -> InvocationUpdate {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let state = host.dispatch().observe(&host.caller(), &id);
+        let state = person.dispatch.observe(&person.host.caller(), &id);
         if let Some(state) = state.filter(InvocationState::is_terminal) {
             return state.update;
         }
@@ -272,13 +281,13 @@ async fn until(what: &str, seen: impl Fn() -> bool) {
 
 /// The resource the Migrations app's `reviewed` is published on: the app's root, as the
 /// catalogue lists it.
-async fn root(host: &host::Host) -> String {
+async fn root(person: &Person<'_>) -> String {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let page = host
-            .dispatch()
+        let page = person
+            .dispatch
             .query(
-                &host.caller(),
+                &person.host.caller(),
                 CatalogueQuery {
                     app_id: Some(MIGRATE.to_owned()),
                     needle: "reviewed".to_owned(),
@@ -323,29 +332,32 @@ fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
         // The engine is the Migrations app's own code, as the device registers it.
         host.daemon()
             .provide_own(PROVIDER, MIGRATE, Arc::clone(&engine) as _);
+        let person = Person {
+            host: host.as_ref(),
+            dispatch: host.dispatch(),
+        };
         let open = application_open_target(host.workspace(), MIGRATE);
-        let opened = host
-            .dispatch()
+        let opened = person
+            .dispatch
             .invoke(
-                &host.caller(),
+                &person.host.caller(),
                 host::call(&open.provider, open.address, &json!({})),
             )
             .await
             .expect("the dispatch answers")
             .expect("the app opens");
-        ended(host.as_ref(), opened.invocation).await;
+        ended(&person, opened.invocation).await;
 
-        let root = root(host.as_ref()).await;
+        let root = root(&person).await;
         let reviewed = invoke(
-            host.as_ref(),
+            &person,
             &root,
             "reviewed",
             &json!({"source": "home", "title": "Home folders", "device": DEVICE,
                     "handle": "/home/ada"}),
         )
         .await;
-        let InvocationUpdate::Succeeded { output, .. } =
-            ended(host.as_ref(), reviewed.invocation).await
+        let InvocationUpdate::Succeeded { output, .. } = ended(&person, reviewed.invocation).await
         else {
             panic!("the migration is made");
         };
@@ -353,7 +365,7 @@ fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
 
         // Start: the app's call reaches the engine at the device's address, as the provider it
         // registered, and the app's invocation waits on it.
-        let started = invoke(host.as_ref(), &migration, "start", &json!({})).await;
+        let started = invoke(&person, &migration, "start", &json!({})).await;
         until("the engine is asked to start", || {
             !engine.asked("start").is_empty()
         })
@@ -368,9 +380,9 @@ fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
             "the engine's run continues the app's start"
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let following = host
-            .dispatch()
-            .observe(&host.caller(), &started.invocation)
+        let following = person
+            .dispatch
+            .observe(&person.host.caller(), &started.invocation)
             .expect("the app's start is known");
         assert!(
             !following.is_terminal(),
@@ -378,30 +390,31 @@ fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
         );
 
         // Stop: the app's call stops the engine's run, which ends the app's start with it.
-        let stopped = invoke(host.as_ref(), &migration, "stop", &json!({})).await;
+        let stopped = invoke(&person, &migration, "stop", &json!({})).await;
         assert!(
             matches!(
-                ended(host.as_ref(), stopped.invocation).await,
+                ended(&person, stopped.invocation).await,
                 InvocationUpdate::Succeeded { .. }
             ),
             "the stop runs"
         );
         assert_eq!(engine.asked("stop").len(), 1);
-        let start_ended = ended(host.as_ref(), started.invocation).await;
+        let start_ended = ended(&person, started.invocation).await;
         assert!(
             !matches!(start_ended, InvocationUpdate::Succeeded { .. }),
             "a stopped run did not bring everything in: {start_ended:?}"
         );
 
         // Cancel: cancelling the app's start cancels the engine's run it waits on.
-        let again = invoke(host.as_ref(), &migration, "start", &json!({})).await;
+        let again = invoke(&person, &migration, "start", &json!({})).await;
         until("the engine is asked to start again", || {
             engine.asked("start").len() == 2
         })
         .await;
         let run = engine.asked("start").remove(1).0.invocation;
-        host.dispatch()
-            .cancel(&host.caller(), &again.invocation)
+        person
+            .dispatch
+            .cancel(&person.host.caller(), &again.invocation)
             .await
             .expect("the dispatch answers")
             .expect("the app's start is cancelled");
@@ -409,7 +422,7 @@ fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
             engine.cancelled.lock().unwrap().contains(&run)
         })
         .await;
-        let again_ended = ended(host.as_ref(), again.invocation).await;
+        let again_ended = ended(&person, again.invocation).await;
         assert!(
             !matches!(again_ended, InvocationUpdate::Succeeded { .. }),
             "{again_ended:?}"
