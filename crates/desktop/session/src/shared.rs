@@ -174,7 +174,6 @@ impl Shared {
         // its state left `searching` — and nothing new of the kind came in, it matched nothing.
         // A failure is never read from the app's records: it comes from the search's own
         // invocation result, at `place_found` and Retry (shell.md §8).
-        let app_resources = self.services.borrow().resources();
         let running: Vec<(
             String,
             layout::LayoutQueryReading,
@@ -187,6 +186,12 @@ impl Shared {
                 Some((query.key.clone(), query, held))
             })
             .collect();
+        // A canvas no query stands on asks nothing of the apps' records: rebuilding everything
+        // every service publishes for it would be work done on every pass for nothing.
+        if running.is_empty() {
+            return;
+        }
+        let app_resources = self.services.borrow().resources();
         for (key, query, held) in running {
             let fresh: Vec<layout::AnswerRef> = app_resources
                 .iter()
