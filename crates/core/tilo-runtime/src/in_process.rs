@@ -40,6 +40,9 @@ const PERSON_ACTION_WAIT_MS: u32 = 10_000;
 pub struct Devices {
     pub signed_in: bool,
     pub workspaces: Vec<Workspace>,
+    /// The person's own workspace, by its key: where a window is before the person picks
+    /// another. `None` before anyone signed in.
+    pub own: Option<String>,
 }
 
 /// One of the person's workspaces, keyed as the shell's layout keys its workspaces.
@@ -146,6 +149,7 @@ impl Device {
         Ok(Devices {
             signed_in: true,
             workspaces,
+            own: Some(Self::own_workspace()?),
         })
     }
 
@@ -159,6 +163,22 @@ impl Device {
         self.running
             .as_ref()
             .and_then(|running| running.services(within).ok())
+    }
+
+    /// The person's own workspace: the one their root names, which the certificate this device
+    /// holds of theirs is signed by.
+    fn own_workspace() -> Result<String> {
+        let place = Self::login_place()?;
+        let cert = tilo_device_identity::persist::read_owner_cert(place.keys())
+            .context("this device's certificate")?
+            .context("this device holds no certificate of its person")?;
+        anyhow::ensure!(
+            cert.device_public_key == Self::device_key()?,
+            "this device's certificate names another device"
+        );
+        Ok(tilo_server_protocol::servers::person_workspace_id(
+            &cert.user_public_key,
+        ))
     }
 
     /// The apps of `workspace`: the packages its host installed into it, which this device's
@@ -197,7 +217,9 @@ impl Device {
                         || package_store::display_name_for_package_id(&id),
                         |app| app.display_name.clone(),
                     ),
-                    icon: String::new(),
+                    icon: ui::icons::app_glyph(&id, found.and_then(|app| app.category.as_deref()))
+                        .name()
+                        .to_owned(),
                     category: found
                         .and_then(|app| app.category.clone())
                         .unwrap_or_default(),

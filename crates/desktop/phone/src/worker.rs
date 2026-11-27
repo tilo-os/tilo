@@ -52,7 +52,8 @@ pub enum Ask {
 pub struct Seen {
     pub generation: u64,
     pub devices: Devices,
-    /// The workspace the person chose, and its apps.
+    /// The workspace the phone is in, and its apps: the one the person picked, else their own.
+    /// `None` before anyone signed in.
     pub workspace: Option<String>,
     pub apps: Vec<App>,
     /// Why the last ask failed, in the words the person reads.
@@ -285,7 +286,8 @@ fn serve(
     notifier: &dyn Notifier,
     wake: &dyn Fn(),
 ) {
-    let mut workspace: Option<String> = None;
+    // The workspace the person picked in the shell's view, while they have picked one.
+    let mut picked: Option<String> = None;
     let mut watching = Watching::default();
     let mut tapped: Option<String> = None;
     // Why the person's last sign-in or start was refused: said until they ask again, not only
@@ -307,7 +309,7 @@ fn serve(
                     .map(|error| format!("{error:#}"));
             }
             Ok(Ask::Found) => told = device.found().err().map(|error| format!("{error:#}")),
-            Ok(Ask::Workspace(chosen)) => workspace = Some(chosen),
+            Ok(Ask::Workspace(chosen)) => picked = Some(chosen),
             // A file provider's ask is answered here and changes nothing the view shows.
             Ok(Ask::Files(work)) => {
                 work(&mut device);
@@ -327,6 +329,8 @@ fn serve(
             refused.get_or_insert_with(|| format!("{error:#}"));
             Devices::default()
         });
+        // Before the person picks one, the phone is in their own workspace.
+        let workspace = picked.clone().or_else(|| devices.own.clone());
         if let Some(chosen) = workspace.as_deref().filter(|_| devices.signed_in) {
             register(&device, chosen, &mut watching);
             if let Err(error) = watching.catch_up(&device, chosen, notifier) {

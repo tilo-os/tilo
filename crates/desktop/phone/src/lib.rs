@@ -97,12 +97,10 @@ fn hand_window_connection(worker: &worker::Worker) {
             if !devices.signed_in {
                 return Ok(None);
             }
-            // The phone's window is the device's own, in the first of the person's workspaces.
+            // Before the person picks a workspace, the phone's window is in their own.
             let workspace = devices
-                .workspaces
-                .first()
-                .map(|workspace| workspace.key.clone())
-                .ok_or("none of your workspaces is on this phone yet")?;
+                .own
+                .ok_or("this phone holds no certificate of yours yet")?;
             device
                 .window_connection(TILO_PHONE, &workspace)
                 .map(|connection| Some((connection, workspace)))

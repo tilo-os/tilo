@@ -65,18 +65,27 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     phone
         .log_in(&laptop.ticket(), "Pixel")
         .expect("the phone redeems the ticket its person's laptop printed");
-    support::until("the phone lists the workspace it joined", || {
+    let devices = support::until("the phone lists the workspace it joined", || {
         let devices = phone.devices().map_err(|error| format!("{error:#}"))?;
         if devices
             .workspaces
             .iter()
             .any(|workspace| workspace.key == server.workspace)
         {
-            Ok(())
+            Ok(devices)
         } else {
             Err(format!("{devices:?}"))
         }
     });
+    // Before the person picks one, the phone is in their own workspace: the one their root
+    // names, whatever order the workspaces are listed in.
+    assert_eq!(
+        devices.own,
+        Some(tilo_server_protocol::servers::person_workspace_id(
+            &server.person.verifying_key().to_bytes()
+        )),
+        "the phone is in the person's own workspace: {devices:?}"
+    );
 
     // What the phone's view lists under the workspace (`device.apps`): the apps the workspace's
     // host installed into it, which its device reads from the record its follower reads too.
@@ -93,6 +102,11 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     assert!(
         apps.iter().any(|app| app.name == "Notes"),
         "Notes is listed by its name: {apps:?}"
+    );
+    // The view's row shows each app by its glyph, and a row naming none is not built.
+    assert!(
+        apps.iter().all(|app| !app.icon.is_empty()),
+        "every app is listed with its glyph: {apps:?}"
     );
 
     opens_what_the_workspace_runs(&server, &phone);

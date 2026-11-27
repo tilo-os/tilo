@@ -1,5 +1,5 @@
-//! A phone a person signed in to is theirs: launched again, its own window joins their workspace
-//! as the window of an app their computer launches does, and what it keeps is the workspace's.
+//! A phone a person signed in to is theirs: launched again, its own window joins their own
+//! workspace as the window of an app their computer launches does, and what it keeps is the workspace's.
 //! The phone is its own launcher, so its launch makes the window's connection itself and hands it
 //! to the window, which the launch then builds and joins exactly as it builds any window.
 //!
@@ -92,16 +92,19 @@ fn a_signed_in_phone_opens_its_window_in_the_workspace() {
         "the window shows the phone, not why it could not: {shown}"
     );
 
-    // The window's own record is the workspace's: the person's server, which keeps the workspace
-    // for their other devices, holds it.
+    // Before the person picks a workspace the window is in their own: their server, which keeps
+    // it for their other devices, holds the window's record.
+    let own = tilo_server_protocol::servers::person_workspace_id(
+        &server.person.verifying_key().to_bytes(),
+    );
     let kept = support::until(
-        "the phone's window record is on the person's server",
+        "the phone's window record is in the person's own workspace",
         || {
             let _ = window.poll_frame();
             let reply = server
                 .runtime
                 .block_on(server.workspaces().own_resource_command(
-                    &server.workspace,
+                    &own,
                     PHONE,
                     Command::Count {
                         kind: tilolang_process::window::RESOURCE_TYPE.to_owned(),

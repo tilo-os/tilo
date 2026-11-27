@@ -132,7 +132,7 @@ impl PhoneView {
         any
     }
 
-    /// Open what the shell asked to open, in the workspace the person chose.
+    /// Open what the shell asked to open, in the workspace the phone is in.
     fn open_asked(&mut self) -> bool {
         let Some(app) = self.to_open.borrow_mut().take() else {
             return false;
@@ -140,11 +140,15 @@ impl PhoneView {
         let Seen {
             workspace, devices, ..
         } = self.worker.seen();
-        let workspace = workspace.unwrap_or_default();
-        // Once a person's identity has the device, what an app keeps is the workspace's: its
-        // window joins it over the connection the device's daemon makes for it. Before that
-        // nothing is anyone's, and the app's records stay on the phone.
-        let records = if devices.signed_in {
+        // Once a person's identity has the device, what an app keeps is the workspace's the phone
+        // is in: its window joins it over the connection the device's daemon makes for it.
+        // Before that nothing is anyone's, there is no workspace, and the app's records stay on
+        // the phone.
+        let (workspace, records) = if devices.signed_in {
+            let Some(workspace) = workspace else {
+                tracing::error!(app, "the phone is in no workspace of the person's");
+                return false;
+            };
             let (asked, wanted) = (app.clone(), workspace.clone());
             match self
                 .worker
@@ -152,14 +156,14 @@ impl PhoneView {
                 .ask(move |device| device.window_connection(&asked, &wanted))
                 .and_then(|made| made.map_err(|error| format!("{error:#}")))
             {
-                Ok(connection) => Records::Workspace(connection),
+                Ok(connection) => (workspace, Records::Workspace(connection)),
                 Err(error) => {
                     tracing::error!(app, %error, "the app's window has no connection to its workspace");
                     return false;
                 }
             }
         } else {
-            Records::Here(self.storage.clone())
+            (String::new(), Records::Here(self.storage.clone()))
         };
         match open(&app, &workspace, &self.bundles, records) {
             Ok(window) => {
