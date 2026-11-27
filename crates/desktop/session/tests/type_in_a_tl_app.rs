@@ -11,6 +11,7 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
     clippy::significant_drop_tightening,
     reason = "test fixtures: a failed step is the assertion, and the device lives until the \
               session ends"
@@ -49,7 +50,7 @@ fn named(device: &Device, name: &str) -> Vec<Value> {
 #[track_caller]
 fn wait_drawn(device: &Device, name: &str) -> Value {
     tilo_test_env::wait_for(format!("{} to draw {name:?}", device.label), || {
-        named(device, name).into_iter().find(|target| drawn(target))
+        named(device, name).into_iter().find(drawn)
     })
 }
 
@@ -107,12 +108,8 @@ fn a_person_clicks_a_text_field_in_a_tl_app_and_what_they_type_arrives() {
     // into the field, which is the app the typing reached.
     click(&device, &wait_drawn(&device, "Add trigger"));
     tilo_test_env::wait_for(format!("{} to list its trigger", device.label), || {
-        let titled = named(&device, "An app opens")
-            .into_iter()
-            .find(|target| drawn(target));
-        let typed = named(&device, TYPED)
-            .into_iter()
-            .find(|target| drawn(target));
+        let titled = named(&device, "An app opens").into_iter().find(drawn);
+        let typed = named(&device, TYPED).into_iter().find(drawn);
         (titled.is_some() && typed.is_some()).then_some(())
     });
 }
