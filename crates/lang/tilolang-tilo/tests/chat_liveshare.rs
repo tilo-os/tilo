@@ -38,7 +38,8 @@ fn window(key: &str, title: &str, app: &str, elsewhere: bool) -> serde_json::Val
         "not_responding": false, "attention": false, "busy": false, "modified": false,
         "presence": [], "fullscreen": false,
         "floating": false, "renameable": false, "opens_tabs": false, "controls_desktop": false,
-        "display_id": "screen-1", "bar_location": "", "bar_field": "", "bar_typing": false,
+        "display_id": "screen-1", "bar_location": "", "resource": "",
+        "bar_field": "", "bar_typing": false,
         "find": null, "bar": null, "author": null, "ended": null,
     })
 }

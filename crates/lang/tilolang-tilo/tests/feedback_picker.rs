@@ -84,7 +84,7 @@ fn windows_reading() -> String {
                 "elsewhere": false, "device": "laptop", "device_name": "Laptop",
                 "fullscreen": false, "floating": false, "renameable": true, "opens_tabs": false,
                 "controls_desktop": false, "display_id": "screen-1", "bar_location": "top",
-                "bar_field": "", "bar_typing": false,
+                "resource": "", "bar_field": "", "bar_typing": false,
             },
             {
                 "key": "2", "title": "Inbox", "origin_app": "Mail", "app_key": "so.tilo.mail",
@@ -97,7 +97,7 @@ fn windows_reading() -> String {
                 "elsewhere": false, "device": "laptop", "device_name": "Laptop",
                 "fullscreen": false, "floating": false, "renameable": true, "opens_tabs": false,
                 "controls_desktop": false, "display_id": "screen-1", "bar_location": "top",
-                "bar_field": "", "bar_typing": false,
+                "resource": "", "bar_field": "", "bar_typing": false,
             },
         ]
     })
