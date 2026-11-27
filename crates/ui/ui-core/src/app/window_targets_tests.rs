@@ -582,3 +582,38 @@ fn an_agent_writes_in_the_shells_box_and_sends_it() {
     assert!(!app.window_box.is_open(), "the box went");
     assert_eq!(keys.get(), 0, "nothing reached the content");
 }
+
+/// What a window says beside its controls is described too, after them and answering no press:
+/// a status line a person reads there is one an agent or a test asking what the window shows
+/// reads. A button's own words are the button, never a line of their own.
+#[test]
+fn a_window_describes_the_words_it_says_after_its_controls() {
+    let button = crate::widget::Button::new("go", "Go").on_click(|| {});
+    let column = crate::widget::Column::new()
+        .push(Box::new(crate::widget::Text::new(
+            "Waiting for a second player to sit down",
+        )))
+        .push(Box::new(button));
+    let mut app = app_with_root(crate::State::new(), Box::new(column));
+    let (app_side, mut shell) = UnixStream::pair().unwrap();
+    app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+    layout(&mut app);
+
+    let targets = described(&mut app, &mut shell).expect("the window describes what it shows");
+    let names: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Go", "Waiting for a second player to sit down"],
+        "the control first, then the words, each once: {targets:?}"
+    );
+    let said = &targets[1];
+    assert!(
+        said.actions.is_empty(),
+        "words the window says answer no press: {said:?}"
+    );
+    assert!(
+        said.rect[2] > said.rect[0] && said.rect[3] > said.rect[1],
+        "and are described where they are drawn: {:?}",
+        said.rect
+    );
+}

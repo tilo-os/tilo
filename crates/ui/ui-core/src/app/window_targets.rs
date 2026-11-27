@@ -45,9 +45,17 @@ impl App {
     ///
     /// Read from the tree itself, so a control the window does not draw, one
     /// it hides, and one it answers nothing on is never offered.
+    ///
+    /// What the window says beside its controls — a status line, whose seat
+    /// is the person's, a heading — follows them, as far as the room left
+    /// allows: a person reads it there, and so does an agent or a test that
+    /// asks what the window shows. The controls come first, so a long page of
+    /// words never crowds out one of them; and a control's own words are not
+    /// said again.
     #[cfg(feature = "native")]
     fn window_targets(&mut self) -> Vec<WindowTarget> {
         let mut targets = Vec::new();
+        let mut words: Vec<WindowTarget> = Vec::new();
         for (_, described) in self.build_a11y_tree_update(1.0).nodes {
             if targets.len() == MAX_TARGETS {
                 break;
@@ -61,8 +69,16 @@ impl App {
                 .author_id()
                 .map(str::trim)
                 .filter(|identity| !identity.is_empty());
+            // Words the window says carry them as their value where they have no label.
+            let says = matches!(
+                described.role(),
+                crate::accesskit::Role::Label
+                    | crate::accesskit::Role::Paragraph
+                    | crate::accesskit::Role::Heading
+            );
             let name = described
                 .label()
+                .or_else(|| says.then(|| described.value()).flatten())
                 .map(str::trim)
                 .filter(|name| !name.is_empty());
             if name.is_none() && identity.is_none() {
@@ -100,6 +116,19 @@ impl App {
                 .into_iter()
                 .any(|action| described.supports_action(action));
             if !operable && identity.is_none() {
+                if let Some(name) = name
+                    && says
+                {
+                    words.push(WindowTarget {
+                        role: format!("{:?}", described.role()),
+                        name: name.to_owned(),
+                        identity: None,
+                        rect: [bounds.x0, bounds.y0, bounds.x1, bounds.y1],
+                        actions: Vec::new(),
+                        level: described.level(),
+                        selected: false,
+                    });
+                }
                 continue;
             }
             // One operation offered twice as the same control is one control to name: where a
@@ -131,6 +160,21 @@ impl App {
                 selected: described.is_selected().unwrap_or(false)
                     || matches!(described.toggled(), Some(crate::accesskit::Toggled::True)),
             });
+        }
+        for said in words {
+            if targets.len() == MAX_TARGETS {
+                break;
+            }
+            // The words a control carries are its name already: a button's label is the
+            // button, not a line of its own beside it.
+            let [x0, y0, x1, y1] = said.rect;
+            let carried = targets.iter().any(|control: &WindowTarget| {
+                let [cx0, cy0, cx1, cy1] = control.rect;
+                control.name == said.name && x0 >= cx0 && y0 >= cy0 && x1 <= cx1 && y1 <= cy1
+            });
+            if !carried {
+                targets.push(said);
+            }
         }
         targets
     }

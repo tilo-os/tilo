@@ -466,11 +466,12 @@ impl DesktopHandle {
     #[must_use]
     pub fn window_offers(&self, tab: TabId, name: &str) -> bool {
         let shared = self.shared.borrow();
-        shared
-            .bars
-            .targets
-            .get(&tab)
-            .is_some_and(|(_, targets)| targets.iter().any(|target| target.name == name))
+        shared.bars.targets.get(&tab).is_some_and(|(_, targets)| {
+            // Words the window only says are not a control a press reaches.
+            targets
+                .iter()
+                .any(|target| target.name == name && !target.actions.is_empty())
+        })
     }
 
     /// Press the control `name` of a window the shell shows, as an assistive
