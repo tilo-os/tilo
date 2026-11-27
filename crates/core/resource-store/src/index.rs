@@ -1692,8 +1692,37 @@ impl Index {
     }
 }
 
+impl Index {
+    /// The readers a commit's resources are filed under: the set it names, else the set the
+    /// document already stands for, else the every-member set a content or placement document of
+    /// this store begins its id with. Never none: a row filed with no readers is one nobody
+    /// reads, and a document the store accepted would be unreadable for good.
+    fn readers_named(&self, commit: &Commit<'_>) -> String {
+        if !commit.readers.is_empty() {
+            return commit.readers.to_owned();
+        }
+        if let Some(readers) = self
+            .readers(commit.doc)
+            .filter(|readers| !readers.is_empty())
+        {
+            return readers.to_owned();
+        }
+        // A set named by its digest is one this store does not know: it is left as it stands
+        // rather than widened to every member.
+        match collab_types::store_document_readers(commit.doc) {
+            Some(collab_types::EVERY_MEMBER) => collab_types::EVERY_MEMBER.to_owned(),
+            _ => String::new(),
+        }
+    }
+}
+
 impl CommitHook for Index {
     fn committed(&mut self, commit: &Commit<'_>) {
+        // A resource is filed under its document's readers, and a commit that names none files
+        // it under the set the document already stands for: a row filed with no readers is one
+        // nobody reads, so a document the store accepted would be unreadable for good.
+        let named = self.readers_named(commit);
+        let filed = named.as_str();
         for change in commit.changes {
             match change {
                 Change::Put {
@@ -1713,7 +1742,7 @@ impl CommitHook for Index {
                         })
                     });
                     if let Some((readers, doc)) = earlier {
-                        if readers != commit.readers
+                        if readers != filed
                             && let Some(table) = self
                                 .kinds
                                 .get_mut(kind)
@@ -1736,7 +1765,7 @@ impl CommitHook for Index {
                     self.kinds
                         .entry(kind.clone())
                         .or_default()
-                        .entry(commit.readers.to_owned())
+                        .entry(filed.to_owned())
                         .or_default()
                         .insert(id, stored);
                     self.docs
@@ -1749,7 +1778,9 @@ impl CommitHook for Index {
             }
         }
         let held = self.docs.entry(commit.doc.to_owned()).or_default();
-        commit.readers.clone_into(&mut held.readers);
+        if !filed.is_empty() {
+            filed.clone_into(&mut held.readers);
+        }
         held.heads = commit.heads.to_vec();
     }
 }

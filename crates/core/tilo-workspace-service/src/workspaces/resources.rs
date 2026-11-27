@@ -660,14 +660,18 @@ impl Resources {
             .held(doc)
             .map(|(_, record)| record.to_owned())
             .collect();
-        let Some(bytes) = self.store_mut().evict(doc) else {
+        let Some(bytes) = self.store_mut().document(doc).map(Automerge::save) else {
             return;
         };
-        for record in records {
-            tilo_resource::action::forget_record(&record);
-        }
+        // Kept whole first, let go after: a document that left memory must be one the store can
+        // read back, so a document it accepted never becomes unreadable.
         if let Err(error) = self.keep_whole(doc, &bytes) {
             tracing::warn!(%doc, %error, "a resource document was not kept whole");
+            return;
+        }
+        drop(self.store_mut().evict(doc));
+        for record in records {
+            tilo_resource::action::forget_record(&record);
         }
     }
 

@@ -1601,7 +1601,19 @@ impl Store {
                 kind: kind.to_owned(),
                 id: id.to_owned(),
             })?;
-        let readers = self.index.readers(&held.doc).unwrap_or_default().to_owned();
+        // A document this store placed names its readers; one it has not placed yet is filed
+        // under the set its own id begins with, as its content is: never under none.
+        let readers = self
+            .index
+            .readers(&held.doc)
+            .filter(|readers| !readers.is_empty())
+            .map_or_else(
+                || match collab_types::store_document_readers(&held.doc) {
+                    Some(collab_types::EVERY_MEMBER) => collab_types::EVERY_MEMBER.to_owned(),
+                    _ => String::new(),
+                },
+                str::to_owned,
+            );
         Ok((content_id(&readers, kind, id), readers))
     }
 

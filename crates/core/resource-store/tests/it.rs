@@ -1234,6 +1234,82 @@ mod store {
         }
     }
 
+    /// A document the store accepted never becomes unreadable: a commit that names no readers —
+    /// a content change for a document whose placement the store was not told — files the
+    /// document's resources under the set the document stands for, never under none, and leaves
+    /// what it held readable.
+    #[test]
+    fn a_commit_naming_no_readers_leaves_the_documents_resources_readable() {
+        let mut index = Index::new();
+        let doc = "*/Issue#0";
+        index.committed(&Commit {
+            doc,
+            readers: MEMBERS,
+            heads: &[],
+            changes: &[issue("i1", "", "a00001", "One", "open", 1)],
+        });
+        assert_eq!(index.filed(ISSUE, "i1"), Some(MEMBERS), "filed as its set");
+        // The commit a content write carries for the same document, naming no readers of it.
+        index.committed(&Commit {
+            doc,
+            readers: "",
+            heads: &[],
+            changes: &[issue("i1", "", "a00001", "One", "doing", 1)],
+        });
+        assert_eq!(
+            index.filed(ISSUE, "i1"),
+            Some(MEMBERS),
+            "still filed under the set the document stands for"
+        );
+        assert!(
+            index.get(ISSUE, "i1").is_some()
+                && index
+                    .filed(ISSUE, "i1")
+                    .is_some_and(|readers| readers == MEMBERS),
+            "a member still reads what the store accepted"
+        );
+    }
+
+    /// A document let go of memory is read back from the source, so a store that let it go never
+    /// answers a resource it accepted with nothing.
+    #[test]
+    fn a_document_let_go_is_readable_again_from_the_source() {
+        let anyone = |_: &str| true;
+        let kept: std::sync::Arc<std::sync::Mutex<BTreeMap<String, Vec<u8>>>> =
+            std::sync::Arc::default();
+        let source = std::sync::Arc::clone(&kept);
+        let mut store = Store::with_source(
+            crate::WORKSPACE,
+            Box::new(move |doc| {
+                source
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(doc)
+                    .cloned()
+            }),
+        );
+        store
+            .declare(Schema {
+                types: vec![record_type(ISSUE)],
+                ..Schema::default()
+            })
+            .unwrap();
+        let written = put(
+            &mut store,
+            "i1",
+            resource("board", "a00001", "Issue", "done"),
+        );
+        let doc = written[0].doc.clone();
+        let bytes = store.evict(&doc).expect("the document was in memory");
+        kept.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(doc.clone(), bytes);
+        assert!(
+            store.get(ISSUE, "i1", &anyone).is_some(),
+            "the document read back from the source holds what it held"
+        );
+    }
+
     fn listed(store: &Store, query: &Query, may_read: &dyn Fn(&str) -> bool) -> Vec<String> {
         store
             .query(query, may_read)
