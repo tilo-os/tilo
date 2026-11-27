@@ -417,21 +417,70 @@ fn not_opened_card(event: &Event, could_not_open: bool) -> (String, Option<Strin
     )
 }
 
-/// What the app itself said, in the one line that tells a person most, when `event` ended before
-/// its window came: a panic's message, else the last of its stderr lines that is not the
-/// launcher's own account of the launch. "tilo-launcher: … ended: exit status: 1" is no reason
-/// the app gave, and tells a person nothing to act on.
+/// How many of the last lines an app printed a launch quotes when it ended before its window
+/// came: enough to show what it was doing as it went, few enough to read.
+const SAID_LINES: usize = 4;
+
+/// The most of one quoted line: a launch's own account of the argv it ran is one enormous line,
+/// and a card ends where a person can act on it.
+const SAID_LINE_CHARS: usize = 240;
+
+/// What the app itself said, when `event` ended before its window came: a panic's message, else
+/// the last of its stderr lines that the launcher did not print, each clipped and joined by a
+/// newline. "tilo-launcher: … ended: exit status: 1" is no reason the app gave, and tells a
+/// person nothing to act on. A program that prints several lines as it fails keeps them all, so
+/// a launch that dies inside its sandbox is never reported as one that said nothing at all.
 fn what_it_said(event: &Event, could_not_open: bool) -> Option<String> {
     if !could_not_open {
         return None;
     }
-    telling_line(&event.said.stderr)
+    said_lines(&event.said.stderr)
+}
+
+/// The lines of an app's stderr that tell why it could not come: the message of the panic that
+/// ended it (`thread 'main' panicked at src/main.rs:12:5:` says nothing a person can act on; the
+/// line after it does), else its last lines that are not the launcher's own account or a note
+/// the toolchain printed for whoever debugs it. A program that printed nothing of its own is
+/// answered by the launcher's own account of how it ended, its prefix dropped, rather than by a
+/// sentence with no fact under it.
+fn said_lines(stderr: &[String]) -> Option<String> {
+    // A panic's message is the cause on its own; the lines around it are the toolchain's.
+    if stderr.iter().any(|line| line.contains("panicked at")) {
+        return telling_line(stderr);
+    }
+    let lines: Vec<&str> = stderr
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect();
+    // The launcher's own account of the launch is no reason the app gave, but a program that
+    // printed nothing of its own is still reported by how it ended rather than by silence.
+    let app: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| !line.starts_with(launcher::SAYS))
+        .collect();
+    let quoted: Vec<String> = if app.is_empty() {
+        lines
+            .iter()
+            .rev()
+            .take(SAID_LINES)
+            .rev()
+            .map(|line| line.strip_prefix(launcher::SAYS).unwrap_or(line))
+            .map(|line| line.chars().take(SAID_LINE_CHARS).collect())
+            .collect()
+    } else {
+        app.iter()
+            .skip(app.len().saturating_sub(SAID_LINES))
+            .map(|line| line.chars().take(SAID_LINE_CHARS).collect())
+            .collect()
+    };
+    (!quoted.is_empty()).then(|| quoted.join("\n"))
 }
 
 /// The line of an app's stderr that best tells why it could not come: the message of the panic
-/// that ended it (`thread 'main' panicked at src/main.rs:12:5:` says nothing a person can act on;
-/// the line after it does), else its last line that is not the launcher's own or a note the
-/// toolchain printed for whoever debugs it.
+/// that ended it, else its last line that is not the launcher's own or a note the toolchain
+/// printed for whoever debugs it.
 fn telling_line(stderr: &[String]) -> Option<String> {
     let mut lines: Vec<&str> = stderr
         .iter()
@@ -483,7 +532,7 @@ fn why_not_opened(event: &Event, could_not_open: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::telling_line;
+    use super::{SAID_LINE_CHARS, said_lines, telling_line};
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_owned).collect()
@@ -532,7 +581,8 @@ mod tests {
         );
     }
 
-    /// Nothing the app said, only the launcher's own account: there is no quote to show.
+    /// Nothing the app said, only the launcher's own account: there is no line the launcher can
+    /// quote as the app's reason.
     #[test]
     fn a_launcher_alone_says_nothing_of_the_app() {
         assert_eq!(
@@ -540,5 +590,62 @@ mod tests {
             None
         );
         assert_eq!(telling_line(&[]), None);
+    }
+
+    /// A program that says several things as it fails keeps them all: the last lines it printed
+    /// are quoted in order, not only the last one.
+    #[test]
+    fn the_last_lines_an_app_printed_are_all_quoted() {
+        let said = said_lines(&lines(
+            "tilolang: the package's module is not installed\n\
+             tilolang: the workspace refused its first write\n\
+             tilo-launcher: so.tilo.chat ended: exit status: 2",
+        ));
+        assert_eq!(
+            said.as_deref(),
+            Some(
+                "tilolang: the package's module is not installed\n\
+                 tilolang: the workspace refused its first write"
+            )
+        );
+    }
+
+    /// Only the last few lines are quoted, so a launch that printed a page still names what it
+    /// was doing when it went.
+    #[test]
+    fn only_the_last_few_lines_are_quoted() {
+        let text = (1..=10)
+            .map(|n| format!("step {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let said = said_lines(&lines(&text)).expect("the app's lines");
+        assert_eq!(said, "step 7\nstep 8\nstep 9\nstep 10");
+    }
+
+    /// A program that printed nothing of its own is still reported by how it ended: the launch
+    /// never answers with a sentence and no fact under it.
+    #[test]
+    fn a_silent_child_is_reported_by_how_it_ended() {
+        let said = said_lines(&lines(
+            "tilo-launcher: so.tilo.chat ran bwrap --unshare-all --clearenv\n\
+             tilo-launcher: so.tilo.chat ended: exit status: 2",
+        ));
+        assert_eq!(
+            said.as_deref(),
+            Some(
+                "so.tilo.chat ran bwrap --unshare-all --clearenv\n\
+                 so.tilo.chat ended: exit status: 2"
+            ),
+            "the launcher's account is quoted, without its prefix, when the app said nothing"
+        );
+    }
+
+    /// An enormous line — the launcher's account of the argv it ran — is clipped, so the quote
+    /// stays something a person can read.
+    #[test]
+    fn an_enormous_line_is_clipped() {
+        let long = format!("tilo-launcher: {} ended: exit status: 2", "x".repeat(1000));
+        let said = said_lines(&lines(&long)).expect("how it ended");
+        assert_eq!(said.chars().count(), SAID_LINE_CHARS);
     }
 }

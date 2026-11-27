@@ -417,6 +417,70 @@ fn a_launchers_account_of_a_failed_launch_is_not_its_reason() {
     );
 }
 
+/// A program that printed several lines as it failed is quoted by all of its last lines: a launch
+/// that died inside its sandbox says what it was doing as it went, not one arbitrary line of it.
+#[test]
+fn a_launch_quotes_every_last_line_its_program_printed() {
+    let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    let desktop = shell();
+    apps.attach(desktop.clone());
+    canvas_ended(
+        &apps,
+        1,
+        std::time::Duration::from_secs(1),
+        End::exited(2),
+        &[
+            "tilolang: the module was not read",
+            "tilo-sandbox-exec: landlock: fully enforced (42 ro, 6 rw)",
+            "tilo-launcher: so.tilo.canvas ended: exit status: 2",
+        ],
+    );
+    apps.follow_ended();
+    let said = described(&desktop);
+    assert!(
+        said.iter().any(|word| {
+            *word
+                == "tilolang: the module was not read\n\
+                      tilo-sandbox-exec: landlock: fully enforced (42 ro, 6 rw)"
+        }),
+        "both of the app's lines are quoted under the card's sentence: {said:?}"
+    );
+}
+
+/// A program that printed nothing of its own is still answered by how it ended: the card and the
+/// reason an agent reads name the end, without the launcher's prefix, rather than only a sentence.
+#[test]
+fn a_silent_launch_says_how_it_ended() {
+    let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    let desktop = shell();
+    apps.attach(desktop.clone());
+    canvas_ended(
+        &apps,
+        1,
+        std::time::Duration::from_secs(1),
+        End::exited(2),
+        &[
+            "tilo-launcher: so.tilo.canvas ran bwrap --unshare-all --clearenv",
+            "tilo-launcher: so.tilo.canvas ended: exit status: 2",
+        ],
+    );
+    apps.follow_ended();
+    let shown = texts(&desktop);
+    let said = described(&desktop);
+    assert!(
+        said.iter().any(|word| {
+            *word
+                == "so.tilo.canvas ran bwrap --unshare-all --clearenv\n\
+                      so.tilo.canvas ended: exit status: 2"
+        }),
+        "the card says how the launch ended when the program said nothing: {said:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text.contains("tilo-launcher:")),
+        "the launcher's prefix is dropped from what the card says: {shown:?}"
+    );
+}
+
 /// An app that showed a window and later ended cleanly opened: its end is no notice, even once
 /// its window is gone from the shell.
 #[test]
