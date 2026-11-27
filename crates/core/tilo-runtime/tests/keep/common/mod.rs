@@ -1065,22 +1065,36 @@ impl Linked {
         let running = sync.clone();
         let running = tokio::spawn(async move { running_session.run(&running).await });
         if !listed {
-            // The device signed its own row on the member list as it placed itself, and the
-            // link carries it: it is in once the host has taken that row in, as a session waits
-            // for before it counts itself a member.
+            // A device of a person the workspace lists signed its own row on the member list,
+            // and the link carries it: it is in once the host has taken that row in, as a
+            // session waits for before it counts itself a member. A device placed for records
+            // alone is in no member list and signs no row there: it is in once the host has
+            // taken in the certificate it was placed with.
             let device_key = device.cert.device_public_key;
+            let placed = device.cert.capabilities.records.is_some();
             let name = workspace.to_string();
-            tilo_test_env::within("the host takes in the row the device signed", async {
+            let what = if placed {
+                "the host takes in the certificate the device was placed with"
+            } else {
+                "the host takes in the row the device signed"
+            };
+            tilo_test_env::within(what, async {
                 loop {
-                    let listed = Box::pin(workspaces.state(&name))
+                    let admitted = Box::pin(workspaces.state(&name))
                         .await
                         .is_some_and(|state| {
-                            state
-                                .governance()
-                                .member_list_access(std::time::SystemTime::now())
-                                .is_ok_and(|access| access.member_devices.contains(&device_key))
+                            if placed {
+                                state
+                                    .placed_device(&device_key, std::time::SystemTime::now())
+                                    .is_some_and(|decided| decided.is_ok())
+                            } else {
+                                state
+                                    .governance()
+                                    .member_list_access(std::time::SystemTime::now())
+                                    .is_ok_and(|access| access.member_devices.contains(&device_key))
+                            }
                         });
-                    if listed || running.is_finished() {
+                    if admitted || running.is_finished() {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
