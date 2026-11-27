@@ -35,6 +35,15 @@ pub(super) struct Reading {
     pub(super) store: std::sync::Arc<std::sync::Mutex<tilo_resource_store::Store>>,
     /// Where that store keeps the files of the documents it leaves memory.
     pub(super) root: std::path::PathBuf,
+    /// The workspace as its document described it last, by that document's heads: what every
+    /// command an app sends is admitted against, built again only once the document changes.
+    described: Arc<std::sync::Mutex<Option<Described>>>,
+}
+
+/// A workspace's description, and the heads of the document it was built from.
+struct Described {
+    heads: Option<Vec<automerge::ChangeHash>>,
+    workspace: Option<Arc<tilo_desktop_model::Workspace>>,
 }
 
 /// What a workspace's join log and entry say of the invitations it issued,
@@ -216,11 +225,32 @@ impl HostedWorkspace {
             member: self.member.is_some(),
             store: self.resources.shared(),
             root: self.resources.root().to_path_buf(),
+            described: Arc::default(),
         }
     }
 }
 
 impl Reading {
+    /// The workspace `id` as its document describes it now ([`super::describe`]). Its document's
+    /// heads are read under the replica's lock; the description is built again only when they
+    /// moved, from the replica borrowed, never a copy of it.
+    fn described(&self, id: WorkspaceId) -> Option<Arc<tilo_desktop_model::Workspace>> {
+        let peer = self.replica.lock();
+        let heads = peer.workspace_heads();
+        let mut described = self.described.lock_recover();
+        if let Some(kept) = described.as_ref().filter(|kept| kept.heads == heads) {
+            return kept.workspace.clone();
+        }
+        let name = peer.governance().workspace_name().unwrap_or_default();
+        let workspace = super::describe(id, &name, &peer).map(Arc::new);
+        drop(peer);
+        *described = Some(Described {
+            heads,
+            workspace: workspace.clone(),
+        });
+        workspace
+    }
+
     /// The store's document `doc`, saved as the store holds it now, read without the workspace's
     /// lock: from memory, or from the file it kept. `None` for a document the store placed none
     /// by.
@@ -465,16 +495,16 @@ impl tilo_broker_core::services::WorkspaceAuthority for Workspaces {
         Ok(())
     }
 
-    /// Only the requested workspace is built.
+    /// Only the requested workspace is read, as it was built last unless its document changed.
     fn with_workspace(
         &self,
         workspace: &str,
         read: &mut dyn FnMut(Option<&tilo_desktop_model::Workspace>),
     ) -> Result<(), String> {
         let held = WorkspaceId::parse(workspace)
-            .and_then(|id| self.workspace_now(id))
+            .and_then(|id| self.inner.readings.held(workspace)?.described(id))
             .filter(|held| held.id().to_string() == workspace);
-        read(held.as_ref());
+        read(held.as_deref());
         Ok(())
     }
 
