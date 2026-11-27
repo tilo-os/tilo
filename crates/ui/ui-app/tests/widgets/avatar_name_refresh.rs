@@ -38,10 +38,13 @@ use winit::keyboard::*;
 fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
     use tilo_ui_app::widget::{Row, TextInput};
     let name = tilo_ui_base::LocalState::new("Ada".to_owned());
-    let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
     let avatar = Avatar::person("Ada", "ada")
         .with_name_state(&name)
-        .with_profile_photo(&photo)
+        .with_image(tilo_ui_base::widget::avatar_face::profile_image(
+            &[200, 100, 50, 255],
+            1,
+            1,
+        ))
         .size(AvatarSize::Portrait);
     let input = TextInput::local().with_initial_value("Ada");
     let root = Row::new().push(Box::new(avatar)).push(Box::new(input));

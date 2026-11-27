@@ -313,7 +313,7 @@ mod marker_frame_tests {
 impl Drop for FloatingRuntime {
     fn drop(&mut self) {
         if self.network_status_active {
-            tilo_process_services::network_status::clear_host_status();
+            tilo_net::status::clear_host_status();
         }
     }
 }
@@ -1327,13 +1327,10 @@ impl App {
                     }
                     if let Some(status) = network_status {
                         self.floating.network_status_active = true;
-                        tilo_process_services::network_status::set_host_status(
-                            status.available,
-                            status.metered,
-                        );
+                        tilo_net::status::set_host_status(status.available, status.metered);
                     } else {
                         if self.floating.network_status_active {
-                            tilo_process_services::network_status::clear_host_status();
+                            tilo_net::status::clear_host_status();
                         }
                         self.floating.network_status_active = false;
                     }
@@ -1539,7 +1536,7 @@ impl App {
             self.set_window_presents_history(false);
         }
         if self.floating.network_status_active {
-            tilo_process_services::network_status::clear_host_status();
+            tilo_net::status::clear_host_status();
             self.floating.network_status_active = false;
         }
         if let Some(reply) = self
@@ -1823,18 +1820,12 @@ mod host_shell_allow_tests {
             frame.push(b'\n');
             shell_side.write_all(&frame).unwrap();
             app.pump_floating_surface_service();
-            assert_eq!(
-                tilo_process_services::network_status::current().metered,
-                metered
-            );
+            assert_eq!(tilo_net::status::current().metered, metered);
         }
         drop(shell_side);
         app.pump_floating_surface_service();
         assert!(!app.floating.network_status_active);
-        assert_ne!(
-            tilo_process_services::network_status::current().metered,
-            Some(false)
-        );
+        assert_ne!(tilo_net::status::current().metered, Some(false));
         // An older host has no richer status; the same appearance still parses.
         let old: FloatingSurfaceHostMessage =
             serde_json::from_str(r#"{"type":"appearance","workspace_hue":180}"#).unwrap();
@@ -1849,10 +1840,7 @@ mod host_shell_allow_tests {
         // consumed inherited descriptor or resurrect the stale snapshot.
         app.pump_floating_surface_service();
         assert!(app.floating.client.is_none());
-        assert_ne!(
-            tilo_process_services::network_status::current().metered,
-            Some(false)
-        );
+        assert_ne!(tilo_net::status::current().metered, Some(false));
         drop(app);
 
         // A fresh App gets a fresh launch connection. This controlled fixture
@@ -1875,15 +1863,9 @@ mod host_shell_allow_tests {
         frame.push(b'\n');
         shell_side.write_all(&frame).unwrap();
         relaunched.pump_floating_surface_service();
-        assert_eq!(
-            tilo_process_services::network_status::current().metered,
-            Some(false)
-        );
+        assert_eq!(tilo_net::status::current().metered, Some(false));
         drop(relaunched);
-        assert_ne!(
-            tilo_process_services::network_status::current().metered,
-            Some(false)
-        );
+        assert_ne!(tilo_net::status::current().metered, Some(false));
     }
 
     struct DeviceShellProbe {

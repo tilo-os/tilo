@@ -1539,11 +1539,11 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     );
     let held = Arc::new(Mutex::new(serde_json::to_vec(&owner).unwrap()));
     let reads = Arc::new(AtomicUsize::new(0));
-    let read: tilo_process_services::action_authority::AuthoritySource = {
+    let read = {
         let (held, reads) = (held.clone(), reads.clone());
         Arc::new(move || {
             reads.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(held.lock().unwrap().clone()))
+            Ok::<_, String>(Some(held.lock().unwrap().clone()))
         })
     };
     let (watch, changed) = crate::application::manual_authority_watch();
