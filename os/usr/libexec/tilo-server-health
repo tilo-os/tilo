@@ -11,12 +11,11 @@
 #
 # A server that serves means, in order:
 #
-#   1. The server is serving: tilo-runtime.service is active, the daemon answers a
-#      status call, and its metrics snapshot is one it wrote since this boot
-#      began. The daemon binds its endpoint and opens every durable workspace
-#      before it serves anything, and stops with its unit when either fails, so an
-#      active server that answers, with a fresh snapshot, is one peers can dial
-#      and whose store opened. The call is a command of the daemon's own account
+#   1. The server is serving: tilo-runtime.service is active and the daemon
+#      answers a status call. The daemon binds its endpoint and opens every durable
+#      workspace before it serves anything, and stops with its unit when either
+#      fails, so an active server that answers is one peers can dial and whose
+#      store opened. The call is a command of the daemon's own account
 #      and environment (this unit runs as it): the file a native endpoint leaves
 #      behind outlives the daemon, so it is no answer.
 #
@@ -35,17 +34,11 @@ CERTS="${TILO_SERVER_HEALTH_CERTS:-/var/lib/tilo/device/certs}"
 # sockets' directory by the one function the daemon binds by, so nothing here
 # names where they are.
 TILO="${TILO_SERVER_HEALTH_TILO:-/usr/bin/tilo}"
-# Where it keeps what a server keeps: the device's own state directory, as the
-# login places it under the account's state home.
-OWN="${TILO_SERVER_HEALTH_OWN:-${XDG_STATE_HOME:-/var/lib/tilo/state}/tilo/device/own}"
 # How long a serving generation may take to come up: the server's own
 # TimeoutStartSec plus firstboot's enrollment wait, which has already run by the
 # time this unit is asked.
 DEADLINE="${TILO_SERVER_HEALTH_TIMEOUT:-240}"
 POLL="${TILO_SERVER_HEALTH_POLL:-2}"
-# A metrics snapshot older than this is not evidence of a serving daemon: the
-# daemon writes one every second while it runs.
-FRESH="${TILO_SERVER_HEALTH_FRESH:-30}"
 
 final_state() {
   systemctl status --no-pager --lines=20 tilo-runtime.service 2>&1 \
@@ -78,10 +71,6 @@ serving() {
     reason="tilo-runtime.service is not active"
   elif ! said=$("$TILO" status --daemon 2>&1); then
     reason=$said
-  elif [ ! -r "$OWN/metrics.json" ]; then
-    reason="the server has written no metrics snapshot in $OWN"
-  elif [ $(( $(date +%s) - $(stat -c %Y "$OWN/metrics.json") )) -gt "$FRESH" ]; then
-    reason="the server's metrics snapshot in $OWN is older than ${FRESH}s: it is not serving now"
   fi
   if [ -n "$reason" ]; then
     warn "$reason"

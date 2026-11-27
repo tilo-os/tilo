@@ -67,10 +67,7 @@ in their workspace, so every device of theirs reads and changes it.
 
 The generated configuration uses `allow_matching_user`, so the owner's other
 certified devices connect automatically. Workspace authority travels signed by
-the owner identity. Inspect the
-running state with:
-
-The daemon's counters are in the state volume's `metrics.json`.
+the owner identity.
 
 ## Three roles
 
