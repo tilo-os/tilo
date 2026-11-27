@@ -167,15 +167,6 @@ pub(crate) fn declared_outside() -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// What the device's packages declare their code can reach outside, as one number that moves only
-/// when a declaration does: what the reading is read again by.
-fn outside_revision(outside: &[(String, Vec<String>)]) -> u64 {
-    use std::hash::{Hash as _, Hasher as _};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    outside.hash(&mut hasher);
-    hasher.finish()
-}
-
 /// The workspace's grants, published as `workspace/access`.
 pub(crate) struct Served {
     handle: DesktopHandle,
@@ -253,7 +244,9 @@ impl Served {
             tree: self.handle.revision(),
             chosen: self.chosen.as_ref().map_or(0, |table| table.revision()),
             mounts: self.mounts.revision(),
-            outside: outside_revision(&(self.outside)()),
+            // What the packages declare moves only when a surface is named or arrives here: the
+            // count of those is read, never the declarations rebuilt and compared each pass.
+            outside: collab_types::app_surface::Surfaces::process().registered(),
         }
     }
 
