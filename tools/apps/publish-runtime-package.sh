@@ -5,7 +5,8 @@
 #
 # Uploads the thin package and its content-addressed payload objects side by
 # side as the immutable generic package <artifact-name>/$VERSION, then submits
-# the publisher-signed registry entry naming the runtime it provides. A runtime
+# the publisher-signed registry entry naming the runtime it provides
+# (`tilo-runtime/<build>`, or `tilolang/<build>` for the tilolang runtime). A runtime
 # the registry already offers for <arch> is left alone. Environment: VERSION,
 # TILO_PACKAGE_TOKEN, PACKAGE_API (the authenticated generic-package base),
 # REGISTRY_URL, OWNER, REGISTRY_CLI (tilo-app-package), REGISTRY_IDENTITY
@@ -35,7 +36,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 tapp=$(find "$dir" -maxdepth 1 -name '*.tapp' -print -quit)
 [[ -n $tapp ]] || { printf 'no runtime package in %s\n' "$dir" >&2; exit 1; }
 provides=$("$REGISTRY_CLI" inspect "$tapp" \
-  | sed -n 's/^provides *= *"\(tilo-runtime\/[^"]*\)".*/\1/p' | head -1)
+  | sed -n 's/^provides *= *"\([a-z][a-z-]*\/[^"]*\)".*/\1/p' | head -1)
 service_version=
 if [[ $package_id == so.tilo.signal-provider ]]; then
   # This explicitly selected executable consumes a runtime. Registry admission

@@ -310,11 +310,11 @@ def main() -> int:
         args.output.mkdir(parents=True, exist_ok=True)
         args.media_output.mkdir(parents=True, exist_ok=True)
         selected = apps if not args.apps else sorted(set(filter(None, re.split(r"[ ,]+", args.apps))))
-        unknown = sorted(set(selected) - set(apps))
-        if unknown:
-            die("requested apps are not in the downloadable fleet: " + ", ".join(unknown))
         for app in selected:
-            build_one(args.root, app, copy[app], args.media_base.rstrip("/"), args.output, args.media_output)
+            # An app the catalogue has no copy for yet still gets a complete entry: its English
+            # tag line describes it until the catalogue says more.
+            described = copy.get(app) or {"description": taglines(args.root, app)["en"]}
+            build_one(args.root, app, described, args.media_base.rstrip("/"), args.output, args.media_output)
     except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
         print(f"registry metadata: {error}", file=sys.stderr)
         return 2

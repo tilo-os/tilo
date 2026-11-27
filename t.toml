@@ -3588,6 +3588,28 @@ heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# A release's signed packages, published to the registry at apps.tilo.so from main
+# (`tools/apps/publish-apps.sh`): every tapp with its compressed twin and the store's artwork go up
+# as immutable generic packages, then the Tilo and tilolang runtimes, the apps and the language
+# packs are submitted as entries the publisher identity signs, which the registry verifies again
+# before its signed catalogue names them. It refuses a registry at another package format, and a
+# release signed by keys devices do not already trust. `--input apps="tl-chat"` publishes only the
+# apps named, with the runtimes; a second run of the same commit uploads and submits nothing new.
+[[check]]
+name = "publish-apps-{arch}"
+# Publishes with a stored token, to hosts no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/apps/publish-apps.sh /target/app-release/{arch}"
+needs = ["sign-apps-{arch}", "app-release-smoke-{arch}"]
+requires = ["arch={arch}"]
+secrets = ["TILO_PACKAGES_TOKEN", "TAPP_PUBLISHER_IDENTITY"]
+cache = false
+on = ["dispatch"]
+timeout_secs = 3600
+dispatch_inputs = { apps = "" }
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 # Two builds of one app give the same bytes, or every image and update re-sends what did not
 # change: `tools/apps/check-reproducible-tapp.sh` packages a small app twice through the same
 # script, with one identity made for it, and names every byte that differs.

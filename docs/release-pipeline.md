@@ -6,7 +6,7 @@ does not fan out into unrelated builds:
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
 | Server, Lounge, web entry, `tilo` and `tilolang` commands | A `vX.Y.Z` tag (t's `tag:vX.Y.Z` checks), or a dispatch of one of them on that tag | The frozen RPM set of each architecture that has a build node, the images, the musl builds of both commands | Images under `sha-<commit>`, the version and `latest`; the CLI archives (`tilo-<os>-<arch>.tar.gz` and `tilolang-<os>-<arch>.tar.gz` under one signed SHA256SUMS); the published `set-<fingerprint>-<arch>` RPM snapshots |
-| Apps | A dispatch of t's app release checks (`apps-build-{arch}`, `sign-apps-{arch}`, `app-reproducible-{arch}`, `app-release-smoke-{arch}`) | Both native architectures: the compile, the signed package, and the render/engine smoke | Signed, reproducible tapps and immutable collection bundles built on t; registry publication is a separate step |
+| Apps | A dispatch of t's app release checks (`apps-build-{arch}`, `sign-apps-{arch}`, `app-reproducible-{arch}`, `app-release-smoke-{arch}`) | Both native architectures: the compile, the signed package, and the render/engine smoke | Signed, reproducible tapps built on t; `publish-apps-{arch}`, dispatched on main, puts them, the Tilo and tilolang runtimes and the language packs in the registry at apps.tilo.so |
 | Desktop session | A dispatch of `desktop-package-{arch}`; `publish-desktop-payload` publishes the OS payload | Both native architectures' host-package jobs, run serially per architecture | Install-tested Debian, RPM, Arch and Nix packages; the immutable OS payload under `publish-desktop-payload` |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
 | Server OS | A dispatch on a `vX.Y.Z` tag (t's `publish-host`) | The server's programs, the package-snapshot base, the sealed image booted in a VM under Secure Boot | The signed server image, its UKI signed for Secure Boot, in `registry.tilo.so/tilo/tilo-host` under `sha-<commit>`, `gen<N>`, `<version>` and `latest` |
@@ -47,8 +47,12 @@ signature the same way.
 Continuous app packaging is a dispatch of t's app release checks: `apps-build-{arch}`
 compiles the default collection, `sign-apps-{arch}` signs it, `app-reproducible-{arch}`
 proves two builds of an app match, and `app-release-smoke-{arch}` proves every app
-draws and loads its engine. The packaging coordinator that would have dispatched
-qualification runs was never enabled and is gone. OS releases happen only when
+draws and loads its engine. `publish-apps-{arch}` (`tools/apps/publish-apps.sh`), dispatched
+on main with `--publish`, submits what `sign-apps-{arch}` signed to the registry at
+apps.tilo.so: it refuses a catalogue at another package format and a release whose keys are not
+the ones devices already trust (the registry's allowlisted publisher, and
+`os/registry-runtime-publisher.hex` for the runtimes). The packaging coordinator that would have
+dispatched qualification runs was never enabled and is gone. OS releases happen only when
 someone runs one on a release tag; never per push.
 
 Kernel and kernel buildroot snapshots remain input-promotion work: they run only

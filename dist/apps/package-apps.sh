@@ -348,6 +348,13 @@ fi
 "$repo_root/tools/apps/pack-runtime-package.sh" \
     "$out/runtime/tilo-runtime/$runtime_version" so.tilo.runtime "Tilo runtime" \
     "$runtime_package_version" "$identity" "$release_dir" "$out/runtime-package" >/dev/null
+# The tilolang runtime the tilolang apps execute, as the registry offers it beside them, in a
+# directory of its own: a runtime package's directory holds its payload objects and nothing else.
+if (( tilolang_apps > 0 )); then
+    "$repo_root/tools/apps/pack-runtime-package.sh" \
+        "$tilolang_bundle" so.tilo.runtime.tilolang "Tilolang runtime" \
+        "$runtime_package_version" "$identity" "$release_dir" "$out/runtime-package/tilolang" >/dev/null
+fi
 
 # The language runtimes the selected apps name (`optional-runtimes =
 # ["bun/1.4.5+bun"]`): a `kind = "runtime"` package of each, built from its

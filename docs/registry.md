@@ -809,7 +809,12 @@ updates nothing from it. So a change of the format ships in
 this order: deploy the registry-server of the commit that changed it, sign a
 snapshot with it (the signing command chains the older-format predecessor by
 its hash), and only then release apps and devices that read the new format;
-an app publication refuses to submit to a registry at another format. The
+an app publication refuses to submit to a registry at another format. When
+the new format changes the signed form itself, as format 4 did, no stored
+entry verifies any more: `sign-snapshot --retire-unreadable-catalogue` moves
+the old catalogue under `retired/` and signs an empty one that continues its
+sequence, so devices' checkpoints still move forward, and every package is
+submitted again. The
 compact form:
 
 - Per entry it keeps only the newest release and the newest pre-release of
