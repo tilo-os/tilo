@@ -198,11 +198,11 @@ onto unrelated commits passes in seconds, and a package the new commits of
 while the lint ran, the push is refused: rebase and push again.
 
 A lint that passed stands for the same change after such a rebase. The hook
-remembers a pass by the push's own patch and the trees of the linted packages'
-own directories, so a retry whose rebase resolved no conflict, onto commits
-that touch none of those directories, is sent without linting again, however
-wide the push. What only the combination with `main`'s new commits breaks is
-found by t's clippy families on `main` and fixed by the next commit.
+remembers a pass by the push's own patch, the packages it lints and the change
+it makes in each of their own directories, so a retry whose rebase resolved no
+conflict is sent without linting again, however wide the push and whatever
+`main` changed elsewhere. What only the combination with `main`'s new commits
+breaks is found by t's clippy families on `main` and fixed by the next commit.
 
 Without t, or with `CARGO` naming a cargo drop-in (which may build on another
 machine), the lint compiles with that cargo, or the `cargo` on your `PATH`.

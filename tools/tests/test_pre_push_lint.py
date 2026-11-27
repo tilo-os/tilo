@@ -1312,6 +1312,44 @@ class PrePushLintTests(unittest.TestCase):
         self.with_t()
         self.stands_after_a_rebase()
 
+    def test_a_rebase_onto_a_new_dependant_of_the_pushed_package_reuses_the_pass(self):
+        # Main's manifests now name another crate that builds on the pushed one, so the retry
+        # compiles it too. Which crates depend on the change is main's to decide, not the
+        # push's, and it must not cost the push its remembered pass.
+        self.add_dependent("user", "pub fn uses() -> u32 { fixture_native::answer() }\n")
+        self.write("native/src/lib.rs", LIB.format(answer=55))
+        self.commit("feat: answer 55")
+        self.assertEqual(self.push().returncode, 0)
+        self.assertNotEqual(self.calls(), [], "the first push is linted")
+        main = self.rebase({
+            "newcomer/Cargo.toml": CRATE.format(name="newcomer")
+                                   + '\n[dependencies]\nfixture-native = { path = "../native" }\n',
+            "newcomer/src/lib.rs": "pub fn more() -> u32 { fixture_native::answer() }\n",
+            "Cargo.toml": WORKSPACE.replace('"fake-binding"]', '"fake-binding", "newcomer"]'),
+        })
+        self.dependents.append("newcomer")
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], retry.stderr)
+        self.assertIn("pre-push: reusing the clippy pass for patch ", retry.stderr)
+
+    def test_a_rebase_onto_main_unifying_more_features_reuses_the_pass(self):
+        # workspace-unify is generated from main's manifests: a feature it starts giving the
+        # pushed package changes the command the lint runs, not the push's own change.
+        self.write("native/src/lib.rs", LIB.format(answer=56))
+        self.commit("feat: answer 56")
+        self.assertEqual(self.push().returncode, 0)
+        self.assertNotEqual(self.calls(), [], "the first push is linted")
+        main = self.rebase({"tools/workspace-unify/Cargo.toml": (
+            '[package]\nname = "workspace-unify"\nversion = "0.0.0"\n\n'
+            "[target.'cfg(all(target_os = \"linux\", target_arch = \"x86_64\"))'.dependencies]\n"
+            '"fixture-native" = { path = "../../../native", default-features = false, '
+            'features = ["extra"] }\n')})
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], retry.stderr)
+        self.assertIn("pre-push: reusing the clippy pass for patch ", retry.stderr)
+
     def test_a_stray_file_at_the_top_of_the_checkout_keeps_the_pass(self):
         # A mangled shell redirect leaves an empty file named `{` behind; no package reads it.
         self.write("{", "")

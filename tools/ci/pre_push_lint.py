@@ -75,12 +75,19 @@ compile that fails in a package whose build reads nothing the push changes is ma
 push that passes on reds says which, and whose they are; a board that cannot be read refuses.
 
 A lint that passed stands for the same change after a rebase that leaves it alone: a pass is
-remembered by the push's own patch (`git patch-id`) and the trees of the linted packages' own
-directories at its head. A push retried after main moved, whose rebase resolved nothing and whose
-packages' directories main's new commits did not touch, has both the same and is sent without
+remembered by the push's own patch (`git patch-id`), the packages it lints with the files it
+writes in each of their own directories, and the kinds of run its lint makes. A push retried
+after main moved, whose rebase resolved nothing, has all three the same and is sent without
 linting again, however long the lint took and however much main changed elsewhere, dependencies
-of those packages included. What only the combination breaks is t's clippy families' to find on
-main, and the next commit's to fix. The passes are kept in the repository's git directory.
+of those packages included. What main decides about a run - the dependants its manifests name,
+the features workspace-unify gives the packages, the checks `t scope` names, the commits a
+format check compares - is not part of the key: a retry computes those again, against commits
+the push never saw, and keying a pass by them made a push lint from scratch after every rebase.
+What main's own commits did to a linted package's files does not enter the key either: t's
+clippy families lint those interactions on main, and the next commit fixes a red there. What
+only the combination breaks is t's clippy families' to find on main. A rebase that resolved a
+conflict into another change writes another patch, so it is linted. The passes are kept in the
+repository's git directory.
 
 The lint reads the files on disk, so a push is refused when what it sends is not
 the tree checked out here: a lint that spoke for another commit would say
@@ -1726,20 +1733,31 @@ def report(results: list[tuple[Lint, int, str]], elapsed: float, checked: str,
     return 1
 
 
-def own_key(root: Path, push: Push, runs: list[Lint]) -> tuple[str, str] | None:
+def own_key(root: Path, push: Push, selection: Selection,
+            runs: list[Lint]) -> tuple[str, str] | None:
     """What a pass of this push's lint is remembered by, and the patches it names.
 
-    The push's own patches and the runs it makes. A rebase changes neither: the same
-    change replayed onto newer commits has the same patch-id, and its runs are the
-    changed packages', which the patch decides. A rebase that resolves a conflict
-    into another change has another patch-id, so it is linted. What main's commits
-    since then did to a linted package's own files does not enter here: t's clippy
+    The push's own patches, the packages it lints with the files it writes in each of their
+    own directories, and the kinds of run its lint makes. A rebase that resolved nothing
+    changes none of them, however much main moved: the same change replayed onto newer commits
+    has the same patch-ids, lints the same packages, writes the same files in their
+    directories, and asks for the same kinds of run. A rebase that resolved a conflict into
+    another change writes another patch, so it is linted.
+
+    What main decides about the run does not enter - the dependants its manifests name, the
+    features workspace-unify gives the packages, the checks `t scope` names, the commits a
+    format check compares: a retry after main moved computes those again, against commits the
+    push never saw, and keying a pass by them made a busy package lint from scratch after every
+    rebase. What main's commits did to those directories does not enter either: t's clippy
     families lint those interactions on main, and a red main is fixed forward.
     """
-    # The format check names the commits it compares, which a rebase changes; the change it reads
-    # is the patch below.
-    commits = {commit for comparison in push.comparisons for commit in comparison}
-    parts = [shlex.join(part for part in run.command if part not in commits) for run in runs]
+    directories = ({name: directory.as_posix()
+                    for directory, name in package_maps(selection.metadata, root)[1].items()}
+                   if selection.linted else {})
+    # Only which kinds of run there are: a command also names the dependants main's manifests
+    # give a package, the features workspace-unify gives it, and the commits to compare, none of
+    # which is the push's to decide.
+    parts = [f"run {run.label}" for run in runs]
     patches = []
     for base, head in push.comparisons:
         patch = subprocess.run(["git", "diff", "--no-renames", "--binary", f"{base}..{head}", "--"],
@@ -1749,7 +1767,20 @@ def own_key(root: Path, push: Push, runs: list[Lint]) -> tuple[str, str] | None:
         if patch.returncode != 0 or not identity:
             return None
         patches.append(identity[0].decode())
-        parts.append(patches[-1])
+        parts.append(f"patch {patches[-1]}")
+        for name in selection.linted:
+            directory = directories.get(name)
+            if directory is None:
+                return None
+            # What the push writes in the package's own directory, blobs included: a rebase onto
+            # commits that leave these files alone replays the same bytes, and one whose merge
+            # changes them lints again.
+            own = subprocess.run(["git", "diff", "--no-renames", "--raw", "-z",
+                                  f"{base}..{head}", "--", directory or "."],
+                                 cwd=root, capture_output=True, check=False)
+            if own.returncode != 0:
+                return None
+            parts.append(f"{name} {directory} {hashlib.sha256(own.stdout).hexdigest()}")
     return hashlib.sha256("\n".join(parts).encode()).hexdigest(), " ".join(patches)
 
 
@@ -1816,13 +1847,13 @@ def worktree_differs(root: Path) -> bool:
     return False
 
 
-def earlier_pass(root: Path, push: Push, runs: list[Lint],
+def earlier_pass(root: Path, push: Push, selection: Selection, runs: list[Lint],
                  options: argparse.Namespace, what: str) -> tuple[str | None, bool]:
     """The key to remember this lint under, and whether the push stands on a pass already.
 
-    A pass is remembered by the push's own patch and the runs it makes; a rebase that resolves
-    nothing keeps both. A worktree with uncommitted changes is not the pushed commit's tree and
-    speaks for no change to stand on later.
+    A pass is remembered by the push's own patch, the packages it lints, and the kinds of run
+    it makes; a rebase that resolves nothing keeps all of them. A worktree with uncommitted
+    changes is not the pushed commit's tree and speaks for no change to stand on later.
     """
     dirty = worktree_differs(root)
     if dirty:
@@ -1830,7 +1861,7 @@ def earlier_pass(root: Path, push: Push, runs: list[Lint],
             "which is not quite the pushed commit")
     if options.range or dirty:
         return None, False
-    naming = own_key(root, push, runs)
+    naming = own_key(root, push, selection, runs)
     if naming is None:
         return None, False
     key, patches = naming
@@ -1866,7 +1897,7 @@ def surface_only(root: Path, push: Push, options: argparse.Namespace) -> int:
     say(f"pre-push: linting the app surface's generated files through t ({' '.join(checks)})")
     formatting = formatting_run(root, push) if rustfmt_available() else ["t", "test", "fmt"]
     runs = lint_runs(root, Selection([], {}), formatting, checks)
-    key, reused = earlier_pass(root, push, runs, options, "surface")
+    key, reused = earlier_pass(root, push, Selection([], {}), runs, options, "surface")
     if reused:
         return 0
     results, elapsed = run_together(root, runs, options.keep_logs)
@@ -1991,7 +2022,7 @@ def main(argv: list[str]) -> int:
     formatting = formatting_run(root, push) if rustfmt_available() else ["t", "test", "fmt"]
     runs = lint_runs(root, selection, formatting, checks)
     # A lint of files that are not the pushed commit's speaks for no change to stand on later.
-    key, reused = earlier_pass(root, push, runs, options, "clippy")
+    key, reused = earlier_pass(root, push, selection, runs, options, "clippy")
     if reused:
         return 0
     say(f"pre-push: linting {packages(len(selection.linted))}"
