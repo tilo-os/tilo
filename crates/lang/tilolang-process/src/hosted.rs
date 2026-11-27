@@ -1611,57 +1611,61 @@ struct Answered {
 /// beside it and whether it can run. The window's catalogue and the action directory carry the
 /// same answer, so both are shown it the same way.
 trait Offers {
+    /// What `offered` sets here: the action's label, its icon and whether it can run.
+    fn shown(
+        &mut self,
+    ) -> (
+        &mut String,
+        &mut Option<String>,
+        &mut tilo_actions::Availability,
+    );
+
     /// Show `offered` here; whether that moved anything.
-    fn offers(&mut self, offered: &tilolang_tilo::host::Offered) -> bool;
+    fn offers(&mut self, offered: &tilolang_tilo::host::Offered) -> bool {
+        fn set<T: PartialEq + Clone>(held: &mut T, said: Option<&T>) -> bool {
+            let Some(said) = said.filter(|said| **said != *held) else {
+                return false;
+            };
+            held.clone_from(said);
+            true
+        }
+        let (label, icon, availability) = self.shown();
+        let icon_said = offered.icon.clone().map(Some);
+        set(label, offered.label.as_ref())
+            | set(icon, icon_said.as_ref())
+            | set(availability, offered.availability.as_ref())
+    }
 }
 
 impl Offers for ActionDescriptor {
-    fn offers(&mut self, offered: &tilolang_tilo::host::Offered) -> bool {
-        let mut moved = false;
-        if let Some(label) = &offered.label
-            && *label != self.action_label
-        {
-            self.action_label.clone_from(label);
-            moved = true;
-        }
-        if let Some(icon) = &offered.icon
-            && self.icon.as_ref() != Some(icon)
-        {
-            self.icon = Some(icon.clone());
-            moved = true;
-        }
-        if let Some(availability) = &offered.availability
-            && *availability != self.contract.availability
-        {
-            self.contract.availability = availability.clone();
-            moved = true;
-        }
-        moved
+    fn shown(
+        &mut self,
+    ) -> (
+        &mut String,
+        &mut Option<String>,
+        &mut tilo_actions::Availability,
+    ) {
+        (
+            &mut self.action_label,
+            &mut self.icon,
+            &mut self.contract.availability,
+        )
     }
 }
 
 impl Offers for collaboration::ExportedAction {
-    fn offers(&mut self, offered: &tilolang_tilo::host::Offered) -> bool {
-        let mut moved = false;
-        if let Some(label) = &offered.label
-            && *label != self.action_label
-        {
-            self.action_label.clone_from(label);
-            moved = true;
-        }
-        if let Some(icon) = &offered.icon
-            && self.icon.as_ref() != Some(icon)
-        {
-            self.icon = Some(icon.clone());
-            moved = true;
-        }
-        if let Some(availability) = &offered.availability
-            && *availability != self.contract.availability
-        {
-            self.contract.availability = availability.clone();
-            moved = true;
-        }
-        moved
+    fn shown(
+        &mut self,
+    ) -> (
+        &mut String,
+        &mut Option<String>,
+        &mut tilo_actions::Availability,
+    ) {
+        (
+            &mut self.action_label,
+            &mut self.icon,
+            &mut self.contract.availability,
+        )
     }
 }
 
