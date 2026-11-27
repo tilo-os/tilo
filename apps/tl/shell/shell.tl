@@ -71,8 +71,9 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 }
             }
             if dock_takes_room {
+                // The dock's own height, under the band: `fill` here would share the shell's
+                // height between the dock and the windows.
                 row(
-                    fill,
                     align: .center,
                     distribute: .center,
                     padding: if s.dock_fit == .floating { .related } else { .none },
