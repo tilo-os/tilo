@@ -392,6 +392,24 @@ pub fn launch_failed(id: u64) {
     );
 }
 
+/// Retire one launch's timing because the window it asked for is the shell's to map: the shell
+/// opens the window and starts the app through a pass of its own, whose launch is timed from its
+/// own request. Nothing is logged: the open was asked for, not started here, and leaving the ask
+/// pending would have the window's map and first frame credited to a request that never spawned
+/// a process, so a reader of the log (a walk's record of the open) would find no open at all.
+pub fn launch_handed_over(id: u64) {
+    let retired = {
+        let mut launches = launch_table();
+        let Some(index) = launches.iter().position(|launch| launch.id == id) else {
+            return;
+        };
+        launches.remove(index)
+    };
+    if retired.surface_id.is_some() {
+        AWAITING_FIRST_PRESENT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Global capture state: the first `mark` reads a single atomic pointer.
 static METRICS: OnceLock<Option<Metrics>> = OnceLock::new();
 
@@ -874,6 +892,60 @@ pub fn span<T>(name: &str, f: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The launches still being timed: the ask that the next window's map is credited to.
+    fn pending() -> Vec<(u64, String, bool, Option<u64>)> {
+        launch_table()
+            .iter()
+            .map(|launch| {
+                (
+                    launch.id,
+                    launch.key.clone(),
+                    launch.spawned_at.is_some(),
+                    launch.surface_id,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_window_the_shell_maps_is_timed_by_the_launch_that_starts_it() {
+        // A person's open reaches the session as the shell's ask for a window, and the shell's
+        // own pass starts the app. The ask started no process, so it leaves nothing pending for
+        // the window's map to be credited to: that map is the launching process's, measured from
+        // its own request, which is the open a walk records.
+        let key = "so.tilo.test-held-by-the-shell";
+        let surface = 9_001;
+        let planned = launch_requested(key);
+        launch_handed_over(planned);
+        assert!(
+            !pending().iter().any(|(id, ..)| *id == planned),
+            "the ask the shell took is no longer a launch: {:?}",
+            pending()
+        );
+        let started = launch_requested(key);
+        launch_spawned(started, 4_242);
+        launch_mapped(key, surface);
+        let credited = pending()
+            .into_iter()
+            .find(|(_, _, _, mapped)| *mapped == Some(surface));
+        assert_eq!(
+            credited.as_ref().map(|(id, ..)| *id),
+            Some(started),
+            "the window's map is credited to the launch that spawned the process"
+        );
+        assert!(
+            credited.is_some_and(|(_, _, spawned, _)| spawned),
+            "the launch the window is credited to spawned"
+        );
+        launch_first_present(surface, 1);
+        assert!(
+            !pending()
+                .iter()
+                .any(|(_, _, _, mapped)| *mapped == Some(surface)),
+            "the open ends at its first presented frame"
+        );
+    }
 
     #[test]
     fn launch_latency_lines_survive_the_default_session_filter() {

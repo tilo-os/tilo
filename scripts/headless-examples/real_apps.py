@@ -771,6 +771,9 @@ class Session:
         self.runtime_root: Path | None = None
         # The account the session runs as, when it is not the caller's own.
         self.account = None
+        # What the last `open` cost: the catalogue listing that found the app's row, and the
+        # invocation that started it (`opened_took`).
+        self.opened_took: dict[str, int] = {}
 
     # -- lifecycle --
 
@@ -1028,12 +1031,19 @@ class Session:
         return self.invoke(row["provider"], *address(row), args)
 
     def open(self, app: str, deadline: float = 120.0) -> dict | str:
-        """Open the installed app `app` (its application id) as the workspace offers it."""
+        """Open the installed app `app` (its application id) as the workspace offers it. What the
+        ask cost is kept in `opened_took`, in milliseconds: the catalogue listing that found the
+        app's `open` row (`listing_ms`), and the invocation that started it (`invoke_ms`)."""
+        began = time.monotonic()
         resource = f"app.{app}"
         row = until(f"the session to offer {app}", lambda: next(
             (row for row in self.actions(app) if address(row) == (resource, "open")), None),
             deadline)
-        return self.invoke_row(row)
+        listed = time.monotonic()
+        receipt = self.invoke_row(row)
+        self.opened_took = {"listing_ms": round((listed - began) * 1000),
+                            "invoke_ms": round((time.monotonic() - listed) * 1000)}
+        return receipt
 
     def windows(self) -> list:
         return self.control({"op": "windows"})["answer"]["windows"]

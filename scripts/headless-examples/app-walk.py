@@ -1584,20 +1584,30 @@ class Walk:
             self.window = found
         return found
 
-    def launch(self, wait: bool = True, deadline: float = 120.0) -> None:
+    def launch(self, wait: bool = True, deadline: float = 120.0) -> dict:
         """Open the app through the desktop's own launcher. Without `wait`, the
         walk goes on the moment the launcher takes it: what a person presses
-        before the app is ready."""
+        before the app is ready. Answers where the wait went: the catalogue
+        listing that finds the app's row and the invoke that starts it
+        (`listing_ms`, `invoke_ms` of the ask), the window (`window_ms`) and the
+        app's own process and window (`up_ms`)."""
         self.asking()
+        began = time.monotonic()
         self.session.open(self.v["id"])
+        asked = round((time.monotonic() - began) * 1000)
+        took = {**self.session.opened_took, "asked_ms": asked}
         if wait:
             until_value(f"the window of {self.v['id']}", self.window_of, deadline)
             # The app's own process in the session's store, where the launcher
             # runs it from: a window without one is the shell's, not the app's.
+            windowed = round((time.monotonic() - began) * 1000)
+            took["window_ms"] = windowed - asked
             try:
                 self.session.answering(self.v["id"], deadline)
             except Failed:
                 pass
+            took["up_ms"] = round((time.monotonic() - began) * 1000) - windowed
+        return took
 
     def close_window(self) -> None:
         window = self.window_of()
@@ -1693,12 +1703,12 @@ class Walk:
         """Open the app, waiting for its window unless the value says not to."""
         wait = value if isinstance(value, bool) else value.get("wait", True)
         began = time.monotonic()
-        self.launch(wait=wait, deadline=float(value.get("deadline", 120))
-                    if isinstance(value, dict) else 120.0)
+        took = self.launch(wait=wait, deadline=float(value.get("deadline", 120))
+                           if isinstance(value, dict) else 120.0)
         waited = None
         if wait:
             waited = round((time.monotonic() - began) * 1000)
-        return {"opened": self.v["id"], "waited_ms": waited}
+        return {"opened": self.v["id"], "waited_ms": waited, **took}
 
     def op_press(self, value) -> dict:
         selector = pick(value, self.variant)

@@ -2080,7 +2080,7 @@ impl Apps {
             .map_err(failed)?;
         let launch = launch.as_ref();
         if instance.is_none()
-            && self.ask_shell_window(launch, workspace, new_window, reveal, hosted)?
+            && self.ask_shell_window(launch, workspace, new_window, reveal, hosted, timed)?
         {
             return Ok(true);
         }
@@ -2199,7 +2199,10 @@ impl Apps {
     }
 
     /// Ask the shell for `launch`'s window where this session has one: whether the shell took it
-    /// and the window opens there rather than here.
+    /// and the window opens there rather than here. A window it takes is started by the shell's own
+    /// pass, whose launch is timed from its own request, so an ask it took leaves `timed` no
+    /// launch: pending, it would take that window's map and first frame as an open whose launcher
+    /// never spawned one.
     fn ask_shell_window(
         &self,
         launch: &Launch,
@@ -2207,9 +2210,14 @@ impl Apps {
         new_window: bool,
         reveal: Option<&str>,
         hosted: bool,
+        timed: u64,
     ) -> Result<bool, ApiError> {
         window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
-        self.ask_shell(launch, workspace, new_window, reveal, None)
+        let taken = self.ask_shell(launch, workspace, new_window, reveal, None)?;
+        if taken {
+            tilo_startup_metrics::launch_handed_over(timed);
+        }
+        Ok(taken)
     }
 
     /// The instance a hosted app's window opens in: the one the shell named, else the next this
