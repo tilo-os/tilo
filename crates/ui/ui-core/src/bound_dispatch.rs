@@ -91,7 +91,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 #[cfg(all(feature = "model", feature = "native"))]
 use taffy::NodeId;
+#[cfg(feature = "model")]
 use tilo_permissions::PermissionContext;
+#[cfg(feature = "model")]
 use tilo_permissions::SharedPermissions;
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::MemberId;

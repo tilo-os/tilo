@@ -28,7 +28,7 @@ default = ["native", "broker-transport"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read", "tilo-ui-base/model"]
+model = ["dep:tilo-permissions", "dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read", "tilo-ui-base/model"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
@@ -129,7 +129,7 @@ portal = ["native", "tilo-process-services/portal"]
 host-portals = ["tilo-process-services/host-portals"]
 
 [dependencies]
-tilo-permissions.workspace = true
+tilo-permissions = { workspace = true, optional = true }
 tilo-member-types.workspace = true
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
