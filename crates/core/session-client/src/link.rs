@@ -271,37 +271,6 @@ type Queue = Arc<Mutex<VecDeque<Event>>>;
 pub type Takes = fn(&Event) -> bool;
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
-/// What answers a request another device addressed to this session's device, which the host
-/// passes on over the actions link this session dialled it on: a listing of a window this device
-/// holds, an action on it. The device's own action service answers it ([`ActionService`]), so a
-/// request reached through the host is decided and dispatched exactly as one asked of the device
-/// at its own address.
-///
-/// [`ActionService`]: tilo_peer_state::actions::ActionService
-pub trait InboundActions: Send + Sync {
-    /// Answer the one request `recv` carries on `send`, as a run of `execution`, the run of the
-    /// link it came over. The link proves only the host, so the request stands on its own
-    /// signature, and a refusal is answered on `send` like any answer.
-    fn answer<'a>(
-        &'a self,
-        execution: &'a tilo_actions::remote::ExecutionLease,
-        send: tilo_peer_state::transport::StreamSend,
-        recv: tilo_peer_state::transport::StreamRecv,
-    ) -> tilo_peer_state::transport::StreamFuture<'a, ()>;
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl InboundActions for tilo_peer_state::actions::ActionService {
-    fn answer<'a>(
-        &'a self,
-        execution: &'a tilo_actions::remote::ExecutionLease,
-        send: tilo_peer_state::transport::StreamSend,
-        recv: tilo_peer_state::transport::StreamRecv,
-    ) -> tilo_peer_state::transport::StreamFuture<'a, ()> {
-        Box::pin(self.answer_passed(execution, send, recv))
-    }
-}
-
 /// What a session reports to everyone holding its [`Link`]: its status, the events it heard, and
 /// who to wake when either changed. The transport writes it; the link reads it.
 pub struct Reports(Mutex<Reported>);
@@ -322,9 +291,9 @@ struct Reported {
     /// What the page shows where its live session would be, when it has none: that no peer network could
     /// be reached ([`Link::live_note`]).
     live_note: Option<String>,
-    /// What serves what another device asks this one through the host
-    /// ([`InboundActions`]): a host's routes reach the session here.
-    inbound: Option<Arc<dyn InboundActions>>,
+    /// The device's own action service, answering what the host passes on ([`Link::answer_with`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    answers: Option<tilo_peer_state::actions::ActionService>,
     /// Told when a queue that takes the members' presence comes or goes
     /// ([`Reports::reads_presence`]).
     presence_moved: Option<Wake>,
@@ -346,15 +315,11 @@ impl Reported {
 }
 
 impl Reports {
-    /// Serve what another device addresses to this device from now on.
-    pub fn serve_inbound(&self, inbound: Arc<dyn InboundActions>) {
-        self.lock().inbound = Some(inbound);
-    }
-
-    /// What answers what another device addresses to this device, once one does.
+    /// The device's own action service, once the session answers with one ([`Link::answer_with`]).
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
-    pub fn inbound(&self) -> Option<Arc<dyn InboundActions>> {
-        self.lock().inbound.clone()
+    pub fn answers(&self) -> Option<tilo_peer_state::actions::ActionService> {
+        self.lock().answers.clone()
     }
 
     /// What a session of `device` that has not connected yet reports.
@@ -368,7 +333,8 @@ impl Reports {
             takers: Vec::new(),
             fetch_proxy: None,
             live_note: None,
-            inbound: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            answers: None,
             presence_moved: None,
             closing: tokio::sync::watch::Sender::new(false),
         })))
@@ -910,12 +876,13 @@ impl Link {
         }
     }
 
-    /// Answer what another device addresses to this device through the host with `inbound`,
-    /// from now on: a device that dialled its host, behind a NAT or on a phone, is reached through
-    /// that host this way. Until then such a request is refused at once
-    /// ([`neighbour_wire::actions::ANSWERS_NONE_PASSED`]).
-    pub fn serve_inbound(&self, inbound: Arc<dyn InboundActions>) {
-        self.reports.serve_inbound(inbound);
+    /// Answer what other devices ask this device through the host with `answers`, the device's
+    /// own action service, from now on: a device behind a NAT or on a phone is reached that way.
+    /// A lent session answers with its device's from the start ([`crate::Lent::answers`]); one
+    /// with none refuses at once ([`neighbour_wire::actions::ANSWERS_NONE_PASSED`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn answer_with(&self, answers: tilo_peer_state::actions::ActionService) {
+        self.reports.lock().answers = Some(answers);
     }
 }
 

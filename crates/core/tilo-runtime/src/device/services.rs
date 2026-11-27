@@ -2755,6 +2755,8 @@ impl Daemon {
             || workspaces.copies().action_service(),
             take_work::TakesWork::actions,
         );
+        // What other devices ask this one through its host is answered by the same service.
+        workspaces.answer_with(actions.clone());
         // The workspaces this device hosts run their Terminal sessions' shells here: the
         // dispatch answers the records' `run` and `open-terminal` with ush's shells, and the
         // endpoint takes the streams it hands out. A member that takes its server's work runs

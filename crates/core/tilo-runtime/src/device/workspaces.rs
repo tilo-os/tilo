@@ -92,6 +92,8 @@ pub(crate) struct ServiceWorkspaces {
     /// The session this device entered with, once a holder ran: what the device's own actions are
     /// asked of its host through.
     session: std::sync::OnceLock<Entered>,
+    /// The action service the daemon answers device actions on ([`Self::answer_with`]).
+    answers: std::sync::OnceLock<tilo_peer_state::actions::ActionService>,
     /// Whether this device takes its server's work, and so is one of its person's servers.
     takes_work: std::sync::atomic::AtomicBool,
     /// The record content service of these workspaces, once it is made, and the shelf it keeps
@@ -225,6 +227,7 @@ impl ServiceWorkspaces {
             keys: None,
             groups: None,
             session: std::sync::OnceLock::new(),
+            answers: std::sync::OnceLock::new(),
             takes_work: std::sync::atomic::AtomicBool::new(false),
             content: OnceLock::new(),
             keepers: Mutex::new(Vec::new()),
@@ -474,7 +477,22 @@ impl ServiceWorkspaces {
             links: Arc::new(MemberLinks(Arc::clone(&self.service))),
             endpoint: Some(Arc::clone(&self.bound)),
             own: true,
+            answers: self.answers(),
         }
+    }
+
+    /// Answer what other devices ask this device through its host with `actions`, the service
+    /// the daemon answers at the device's own address.
+    pub(crate) fn answer_with(&self, actions: tilo_peer_state::actions::ActionService) {
+        let _ = self.answers.set(actions);
+    }
+
+    /// The daemon's action service once it chose one, the workspaces' own until then.
+    fn answers(&self) -> tilo_peer_state::actions::ActionService {
+        self.answers
+            .get()
+            .cloned()
+            .unwrap_or_else(|| self.copies().action_service())
     }
 
     /// Keep `device`, the login's session: each workspace it entered was taken in here as its host

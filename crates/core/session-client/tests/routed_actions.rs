@@ -15,7 +15,7 @@ use tilo_peer_state::actions::ActionService;
 use tilo_peer_state::direct::Replica;
 use tilo_server_client::link::{Dialer, Purpose};
 use tilo_session_actions::Heard;
-use tilo_session_client::{Cmd, Event, InboundActions, Outbox as _};
+use tilo_session_client::{Cmd, Event, Outbox as _};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
@@ -85,53 +85,74 @@ async fn a_request_through_the_host_is_decided_and_answered_by_the_device_it_nam
             .at(tilo_clock::wall())
             .exact(),
     ));
-    window_peer.serve_inbound(Arc::new(service) as Arc<dyn InboundActions>);
+    window_peer.answer_with(service);
 
-    let heard = caller_peer.events();
-    caller_peer
-        .send(Cmd::RemoteAction(
-            workspace(),
-            window.cert.device_public_key,
-            catalogue(11),
-        ))
-        .unwrap();
-    let answer = wait_for("the window's answer at the device that asked", || {
-        let answered = heard.drain().into_iter().find_map(|event| match event {
-            Event::Remote(Heard::Action {
-                workspace_id,
-                from,
-                frame,
-                ..
-            }) if workspace_id == workspace() && from == window.cert.device_public_key => {
-                Some(RemoteActionFrame::decode(&frame).ok()?.message)
-            }
-            Event::Remote(Heard::Undeliverable { refusal, .. }) => {
-                panic!("the request did not reach the window: {refusal:?}")
-            }
-            _ => None,
-        });
-        async move { answered }
-    })
-    .await;
-    let RemoteActionMessage::CatalogueResponse {
-        correlation,
-        result,
-    } = answer
-    else {
-        panic!("the window's device answers with its listing: {answer:?}");
+    let heard = &caller_peer.events();
+    let (asking, window_key) = (&caller_peer, window.cert.device_public_key);
+    let ask = move |correlation: u64| {
+        asking
+            .send(Cmd::RemoteAction(
+                workspace(),
+                window_key,
+                catalogue(correlation),
+            ))
+            .unwrap();
+        wait_for("the window's answer at the device that asked", move || {
+            let answered = heard.drain().into_iter().find_map(|event| match event {
+                Event::Remote(Heard::Action {
+                    workspace_id,
+                    from,
+                    frame,
+                    ..
+                }) if workspace_id == workspace() && from == window_key => {
+                    Some(RemoteActionFrame::decode(&frame).ok()?.message)
+                }
+                Event::Remote(Heard::Undeliverable { refusal, .. }) => {
+                    panic!("the request did not reach the window: {refusal:?}")
+                }
+                _ => None,
+            });
+            async move { answered }
+        })
     };
-    assert_eq!(correlation, 11);
-    assert_eq!(
-        result
-            .expect("the window answered its own listing")
-            .revision,
-        "window"
-    );
+    let listed = |answer: RemoteActionMessage, asked_as: u64| {
+        let RemoteActionMessage::CatalogueResponse {
+            correlation,
+            result,
+        } = answer
+        else {
+            panic!("the window's device answers with its listing: {answer:?}");
+        };
+        assert_eq!(correlation, asked_as);
+        assert_eq!(
+            result
+                .expect("the window answered its own listing")
+                .revision,
+            "window"
+        );
+    };
+    listed(ask(11).await, 11);
     assert_eq!(
         *asked.lock().unwrap(),
         [Some(caller.cert.device_public_key)],
         "the window's dispatcher served it as the device that signed it, never as the host"
     );
+
+    // The host lets the window's link go: the window dials it again, and is reached as before.
+    let hosting = host.server.workspaces().unwrap().action_service();
+    let dropped = hosting
+        .reach(window.cert.device_public_key)
+        .expect("the host reaches the window over the link it dialled");
+    tilo_peer_state::transport::Transport::close(dropped.as_ref(), 0, b"let go");
+    wait_for("the window to dial its host again", || {
+        let again = hosting
+            .reach(window.cert.device_public_key)
+            .is_some_and(|link| !Arc::ptr_eq(&link, &dropped));
+        async move { again.then_some(()) }
+    })
+    .await;
+    listed(ask(14).await, 14);
+    asked.lock().unwrap().clear();
 
     // A device of someone the workspace gives nothing asks the window the same way, through
     // the host: the host passes it on, and the window refuses it on its signature.
@@ -173,9 +194,8 @@ async fn a_request_through_the_host_is_decided_and_answered_by_the_device_it_nam
         asked_at.elapsed() < tilo_peer_state::actions::REPLY_DEADLINE,
         "refused at once, not after a deadline"
     );
-    assert_eq!(
-        asked.lock().unwrap().len(),
-        1,
+    assert!(
+        asked.lock().unwrap().is_empty(),
         "nothing of the stranger's reached the window's dispatcher"
     );
     dialer.close().await;

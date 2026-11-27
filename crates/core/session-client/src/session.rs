@@ -282,6 +282,9 @@ pub struct Lent {
     /// sessions on the lent endpoint. A device that runs a session of its own beside this one
     /// lends none, as a second live session under its key would shadow that one's.
     pub own: bool,
+    /// The device's own action service, answering what the host passes on to this device over
+    /// the session's actions link ([`crate::Link::answer_with`]).
+    pub answers: tilo_peer_state::actions::ActionService,
 }
 
 /// What a session lent by its device's own session reads and writes through, on every target: the
@@ -364,6 +367,7 @@ pub fn start_session_lent(
         own: lent.own,
     };
     let (mut task, link, receiver) = session_task(config, signer, store, Some(parts.clone()));
+    link.answer_with(lent.answers);
     if let Some(endpoint) = parts.endpoint.clone() {
         task.dial.lend(endpoint, parts.own);
     }
@@ -1857,6 +1861,11 @@ impl Task {
                 _ = tick.tick() => {
                     if let Some(exit) = self.retry_links().await {
                         return exit;
+                    }
+                    // The host reaches this device over its actions link: one it let go is
+                    // dialled again on the tick, so the device stays reachable.
+                    if self.actions.is_none() {
+                        self.dial_actions().await;
                     }
                     self.check_admission();
                     self.ask_behind_again(tilo_clock::unix_now_ms());
@@ -4524,11 +4533,11 @@ async fn signed_host_message(
 
 /// Answer each request the host passes on over `link`, the actions link this session dialled it
 /// on, until the link ends: another device's request addressed to this one, `device`, reached
-/// through the host because this device dialled out. Each is answered on its own stream, by what
-/// answers this device's inbound requests ([`crate::Reports::inbound`]), which decides it on its
-/// own signature as it decides one asked of the device directly; with nothing there to answer
-/// it, it is refused at once, so its caller learns and asks the device elsewhere. The link's
-/// requests are one run, ended with the link.
+/// through the host because this device dialled out. Each is answered on its own stream, by the
+/// device's own action service ([`crate::Reports::answers`]), which decides it on its own
+/// signature as it decides one asked of the device directly; a session with no such service (a
+/// page's, an agent's) refuses it at once, so its caller learns and asks the device elsewhere. The
+/// link's requests are one run, ended with the link.
 async fn answer_passed(
     link: tilo_server_client::link::Link,
     reports: Arc<Reports>,
@@ -4538,13 +4547,19 @@ async fn answer_passed(
     let execution = tilo_actions::remote::ExecutionLease::mint();
     while let Ok((send, recv)) = link.accept_bi().await {
         let (send, recv) = (Box::new(send) as StreamSend, Box::new(recv) as StreamRecv);
-        let inbound = reports.inbound();
-        let execution = execution.clone();
+        // A page holds no action service of its own: what reaches it through its host is refused.
+        #[cfg(target_arch = "wasm32")]
+        let _ = (&reports, &execution);
+        #[cfg(not(target_arch = "wasm32"))]
+        let (answers, execution) = (reports.answers(), execution.clone());
         n0_future::task::spawn(async move {
-            let answered = match inbound {
-                Some(inbound) => inbound.answer(&execution, send, recv).await,
+            #[cfg(not(target_arch = "wasm32"))]
+            let answered = match answers {
+                Some(answers) => answers.answer_passed(&execution, send, recv).await,
                 None => refuse_passed(device, send, recv).await,
             };
+            #[cfg(target_arch = "wasm32")]
+            let answered = refuse_passed(device, send, recv).await;
             if let Err(error) = answered {
                 tracing::warn!(%error, "a request passed on through the host was not answered");
             }
