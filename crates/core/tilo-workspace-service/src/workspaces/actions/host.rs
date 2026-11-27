@@ -936,7 +936,9 @@ impl Workspaces {
                         moving.is_none() && !own.any_of(&person)
                     }
                 });
-                if founds && !makes {
+                // Elsewhere it is refused before anything waits, unless its yes is carried out
+                // at a device that keeps the person's root ([`crate::workspaces::at_root`]).
+                if founds && !makes && !crate::workspaces::at_root::waits_at_root(device, &args.0) {
                     self.founding_here(&person).await?;
                 }
                 makes && founds
@@ -1395,7 +1397,7 @@ impl Workspaces {
 
     /// Whether this host founds `person`'s workspaces, being theirs and the device that founded
     /// their own workspace (or theirs where they have none yet); else the refusal naming it.
-    async fn founding_here(&self, person: &[u8; 32]) -> Result<(), ActionCallError> {
+    pub(crate) async fn founding_here(&self, person: &[u8; 32]) -> Result<(), ActionCallError> {
         let here = self.device_cert();
         let founder = self
             .state(&tilo_server_protocol::servers::person_workspace_id(person))

@@ -18,8 +18,9 @@
 //! A call only the person's root signs, made on a device that keeps none, is capped
 //! (`tilo_action_policy::Cap::ROOTLESS_DEVICE`): it waits in its record for a device of theirs that
 //! keeps the root ([`asked::AT_ROOT`], [`DeviceAsked::hand_on`]). That device takes the record up
-//! ([`DeviceAsked::kept_changed`]), asks the person once, runs it under its root ([`AtRoot`]) and
-//! writes how it went into the record, which the device that asked shows and then forgets.
+//! ([`DeviceAsked::kept_changed`]), asks the person once, runs it under its root through the
+//! workspace service's one runner ([`AtRoot`]) and writes how it went into the record, which the
+//! device that asked shows and then forgets.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
@@ -39,6 +40,7 @@ use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
 use tilo_invocations::{Invocations, Route, TakeBack, take_back_run};
 use tilo_lock::MutexRecover as _;
 use tilo_remote_actions::asked::AskedStore;
+use tilo_workspace_service::workspaces::at_root::{AtRoot, Certifying, RootKept, RootRun};
 
 /// The name the store knows the device's dispatch by, across its restarts.
 const DISPATCH: &str = "device";
@@ -188,11 +190,11 @@ impl DeviceAsked {
         Arc::new_cyclic(|me: &Weak<Self>| {
             let dispatch: Weak<dyn AskedDispatch> = me.clone();
             // Nothing here runs a call kept for a device that keeps the root, until this device
-            // serves them ([`DeviceAsked::serve_at_root`]).
-            let none: Weak<dyn AskedDispatch> = Weak::<AtRoot>::new();
+            // serves them ([`DeviceAsked::serve_at_root`]): it is written for that device alone.
+            let none: Weak<dyn AskedDispatch> = Weak::<Self>::new();
             Self {
                 me: me.clone(),
-                at_root: store.for_dispatch(asked::AT_ROOT, none),
+                at_root: store.writes_for(asked::AT_ROOT, none),
                 serving_at_root: std::sync::OnceLock::new(),
                 records: store.for_dispatch(DISPATCH, dispatch),
                 store,
@@ -318,29 +320,33 @@ impl DeviceAsked {
         self.serving_at_root.get().is_some()
     }
 
-    /// Run here what waits for a device that keeps the person's root, with `tickets`: this
-    /// device keeps it.
-    pub(crate) fn serve_at_root(&self, tickets: super::ticket::Tickets) {
-        let at_root = Arc::new(AtRoot {
+    /// Run here what waits for a device that keeps the person's root, through the workspace
+    /// service's runner over `workspaces`, with `tickets` for the device's own root-only actions:
+    /// this device keeps it.
+    pub(crate) fn serve_at_root(
+        &self,
+        workspaces: &Arc<super::workspaces::ServiceWorkspaces>,
+        tickets: super::ticket::Tickets,
+    ) {
+        let kept = Arc::new(DeviceRoot {
             tickets,
-            store: Arc::clone(&self.store),
-            runtime: tokio::runtime::Handle::current(),
+            workspaces: Arc::downgrade(workspaces),
         });
-        let dispatch: Weak<dyn AskedDispatch> = Arc::downgrade(&at_root) as Weak<dyn AskedDispatch>;
-        // A device that already serves them keeps the dispatch that runs: registering a second
-        // one would leave the records pointing at a dispatch this call drops.
-        if self.serving_at_root.set(at_root).is_err() {
+        let at_root = AtRoot::new(&self.store, workspaces.copies(), kept);
+        // A device that already serves them keeps the runner that runs: registering a second
+        // one would leave the records pointing at a runner this call drops.
+        if self.serving_at_root.set(Arc::clone(&at_root)).is_err() {
             return;
         }
-        let _ = self.store.for_dispatch(asked::AT_ROOT, dispatch);
+        at_root.serve();
     }
 
     /// `asks`, the calls the workspaces here keep for a device that keeps the person's root, as
     /// they stand now: a device that keeps it takes up those that wait, for its person to answer
     /// once; the device that asked shows how each it handed on ended, and forgets its record.
     pub(crate) fn kept_changed(&self, asks: Vec<KeptAsk>) {
-        if self.serving_at_root.get().is_some() {
-            self.store.take_in(asks.clone());
+        if let Some(at_root) = self.serving_at_root.get() {
+            at_root.kept_changed(asks.clone());
         }
         let here = self.store.here().map(str::to_owned);
         for ask in asks {
@@ -719,65 +725,46 @@ impl AskedDispatch for DeviceAsked {
     }
 }
 
-/// What runs here, on a device that keeps the person's root, a call another device of theirs kept
-/// for one ([`asked::AT_ROOT`]): the person answered it here, once, whatever the action's own
-/// confirmation says; it runs under the root kept here, and how it ended is written into its
-/// record for the device that asked.
-pub(crate) struct AtRoot {
+/// The device's own root-only actions and the agent keys its person's root certifies, as the
+/// workspace service's runner runs them on a device that keeps that root.
+struct DeviceRoot {
     tickets: super::ticket::Tickets,
-    store: Arc<AskedStore>,
-    runtime: tokio::runtime::Handle,
+    workspaces: Weak<super::workspaces::ServiceWorkspaces>,
 }
 
-impl AskedDispatch for AtRoot {
-    fn context(&self, _: InvocationId) -> Value {
-        Value::Null
+impl RootKept for DeviceRoot {
+    fn runs(&self, request: &InvokeRequest) -> bool {
+        super::ticket::Tickets::root_only(request)
     }
 
-    fn readmit(
+    fn run(&self, request: InvokeRequest, caller: Caller) -> RootRun {
+        let tickets = self.tickets.clone();
+        Box::pin(async move { tickets.run_to_end(&request, &caller).await })
+    }
+
+    fn certify_agent(
         &self,
-        caller: &Caller,
-        request: InvokeRequest,
-        _: &Value,
-    ) -> Result<(), ActionCallError> {
-        if !super::ticket::Tickets::root_only(&request) {
-            return Err(ActionCallError::Refused {
-                reason: "only what the person's root signs is answered at it".into(),
-            });
-        }
-        // Taken before it runs: after a restart this device runs it again, never drops it.
-        self.store.take(request.invocation);
-        let (tickets, store, caller) = (
-            self.tickets.clone(),
-            Arc::clone(&self.store),
-            caller.clone(),
-        );
-        self.runtime.spawn(async move {
-            let outcome = tickets.run_to_end(&request, &caller).await;
-            store.settle_for(request.invocation, outcome);
-        });
-        Ok(())
-    }
+        person: [u8; 32],
+        key: [u8; 32],
+        workspace: &str,
+        agent: &str,
+        name: &str,
+    ) -> Certifying {
+        use tilo_app_host::agents::agent_keys::AgentGrants as _;
 
-    fn declined(&self, _: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
-        self.store.settle_for(
-            invocation,
-            InvocationUpdate::Cancelled {
-                invocation,
-                message: Some(asked::DECLINED.to_owned()),
-            },
-        );
-        Ok(())
-    }
-
-    fn withdrawn(&self, _: &Caller, invocation: InvocationId, message: &str) {
-        self.store.settle_for(
-            invocation,
-            InvocationUpdate::Cancelled {
-                invocation,
-                message: Some(message.to_owned()),
-            },
-        );
+        let grants = super::signing::GrantsOf {
+            workspaces: self.workspaces.clone(),
+        };
+        let (workspace, agent, name) = (workspace.to_owned(), agent.to_owned(), name.to_owned());
+        Box::pin(async move {
+            let workspace = tilo_server_protocol::WorkspaceId::parse(&workspace)
+                .ok_or("the workspace is named by no workspace's id")?;
+            tokio::task::spawn_blocking(move || {
+                grants.certify(person, key, workspace, &agent, &name)
+            })
+            .await
+            .map_err(|stopped| stopped.to_string())?
+        })
     }
 }
 

@@ -363,6 +363,23 @@ impl AskedStore {
         })
     }
 
+    /// The records calls are written through for the dispatch `name`, which runs elsewhere or
+    /// is registered on its own ([`Self::for_dispatch`]): `context` says what is kept beside
+    /// each call as it is written ([`AskedDispatch::context`]), and is never handed an answer.
+    /// What a host that keeps no person's root writes a call for one that does through.
+    #[must_use]
+    pub fn writes_for(
+        self: &Arc<Self>,
+        name: &str,
+        context: Weak<dyn AskedDispatch>,
+    ) -> Arc<dyn AskedRecords> {
+        Arc::new(DispatchRecords {
+            store: Arc::clone(self),
+            name: name.to_owned(),
+            dispatch: context,
+        })
+    }
+
     /// The dispatch `name`, while it runs.
     fn dispatch(&self, name: &str) -> Weak<dyn AskedDispatch> {
         self.dispatches

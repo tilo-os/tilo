@@ -72,6 +72,19 @@ pub(super) async fn ended(
     ran: Result<Result<Answered, ActionCallError>, tokio::task::JoinError>,
 ) -> Result<InvocationReceipt, ActionCallError> {
     let invocation = call.request.invocation;
+    // A make of a workspace of the person's own that their agent's grant does not reach waits
+    // for a device that keeps their root, where their yes founds it: unless this is the device
+    // that founds their workspaces, which asks them and founds it itself.
+    let at_root = call.request.approval().is_none()
+        && crate::workspaces::at_root::kept_for_root(call.certificate.as_ref(), &call.request)
+        && match call.certificate.as_ref() {
+            Some(certificate) => call
+                .workspaces
+                .founding_here(&certificate.user_public_key)
+                .await
+                .is_err(),
+            None => false,
+        };
     match ran {
         Ok(Ok(Answered::Live(moves))) => Ok(follow(actions, call, moves)),
         Ok(Ok(Answered::Value(value))) => {
@@ -79,6 +92,9 @@ pub(super) async fn ended(
             let receipt = state.receipt();
             actions.log().complete(&invocation, state);
             Ok(receipt)
+        }
+        Ok(Err(ActionCallError::ConfirmationRequired(facts))) if at_root => {
+            keep_for_root(actions, call, *facts).await
         }
         Ok(Err(ActionCallError::ConfirmationRequired(facts)))
             if call.request.approval().is_none() =>
@@ -153,6 +169,65 @@ pub(super) async fn ended(
             Err(ActionCallError::Unavailable {
                 reason: format!("the host's operation stopped: {stopped}"),
             })
+        }
+    }
+}
+
+/// Keep `call`, which waits for its person's yes and runs only at a device of theirs that keeps
+/// their root, as its asked record for that device, showing `facts`: it waits under way here, and
+/// ends as that device writes into the record ([`Actions::root_settled`]). This host runs none of
+/// it.
+async fn keep_for_root(
+    actions: &Actions,
+    call: &Call,
+    facts: tilo_actions::remote::asked::AskedFacts,
+) -> Result<InvocationReceipt, ActionCallError> {
+    let invocation = call.request.invocation;
+    let facts = crate::workspaces::at_root::asked_at_root(facts, call.certificate.as_ref());
+    // Followed before its record is written, so how it ends is never missed.
+    actions.follow_root(&call.workspaces, invocation);
+    let kept = call
+        .workspaces
+        .keep_for_root(
+            call.workspace_id,
+            (&call.caller, call.certificate.as_ref()),
+            &call.request,
+            &facts,
+        )
+        .await;
+    match kept {
+        Some(Ok(record)) => {
+            let mut log = actions.log();
+            if actions.follows_root(invocation) {
+                let state = InvocationState::new(invocation, record.waiting(invocation));
+                let receipt = state.receipt();
+                log.complete(&invocation, state);
+                Ok(receipt)
+            } else {
+                // It ended already: how it ended is what it answers.
+                Ok(log.get(&call.caller, &invocation).map_or(
+                    InvocationReceipt {
+                        invocation,
+                        status: tilo_actions::remote::ReceiptStatus::Accepted,
+                    },
+                    InvocationState::receipt,
+                ))
+            }
+        }
+        Some(Err(why)) => {
+            actions.unfollow_root(invocation);
+            actions.log().abandon(&invocation);
+            Err(ActionCallError::Refused {
+                reason: format!(
+                    "it waits for a device of your own that keeps your identity, and could not be \
+                     kept for it: {why}"
+                ),
+            })
+        }
+        None => {
+            actions.unfollow_root(invocation);
+            actions.log().abandon(&invocation);
+            Err(ActionCallError::ConfirmationRequired(Box::new(facts)))
         }
     }
 }

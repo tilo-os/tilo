@@ -23,7 +23,6 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use serde_json::{Map, json};
-use tilo_action_services::server_account::{NextStepKind, Reason};
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_session_client::device::{Awaiting, Device, DeviceRefusal};
@@ -451,8 +450,10 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         own.workspace_id
     );
     // It makes no workspace, and enters no other. Its grant names one workspace: another is its
-    // person's to allow, and is made on their own device, which this site is not. A yes could not
-    // be carried out here, so Bob is not asked: the key is told what works instead.
+    // person's to allow, and is made on their own device, which this site is not. The site keeps
+    // the make in the workspace the key reaches, for a device of Bob's that keeps his identity
+    // ([`an_agent_held_to_one_workspace_makes_another_only_at_its_persons_root`]), and the key
+    // reads that it waits, and in which record.
     let made = script
         .own_workspace(
             Map::from_iter([("name".into(), json!("More"))]),
@@ -460,25 +461,9 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         )
         .await
         .unwrap_err();
-    assert_eq!(made.awaiting, None, "{made:?}");
-    let typed = made.refusal.expect("the refusal is typed");
-    assert_eq!(
-        typed.reason,
-        Reason::FoundOnYourDevice {
-            devices: Vec::new()
-        }
-    );
-    for remedy in [
-        NextStepKind::MakeOnYourDevice,
-        NextStepKind::AskThroughYourDevice,
-    ] {
-        assert!(typed.step(remedy).is_some(), "{remedy:?} in {typed:?}");
-    }
-    let records = workspaces.asked_records().unwrap();
-    assert!(
-        records.asked_of(&bob_person).is_empty(),
-        "no question is held"
-    );
+    assert_eq!(made.code, DeviceRefusal::AWAITING_APPROVAL, "{made:?}");
+    let more = made.awaiting.expect("the make that waits is named");
+    assert_eq!(more.ask.workspace, own.workspace, "{more:?}");
     assert!(
         script
             .enter_workspace(&elsewhere.workspace, "A script")
@@ -552,6 +537,363 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     helper.close();
 
     laptop_peer.close();
+    tab.close();
+    drop(host.web);
+    host.server.shutdown().await;
+    drop(bob_host.web);
+    bob_host.server.shutdown().await;
+}
+
+/// Bob's root, as his own computer keeps it: what certifies a key of his agents for a workspace.
+struct BobsRoot(ed25519_dalek::SigningKey);
+
+impl tilo_workspace_service::workspaces::at_root::RootKept for BobsRoot {
+    fn runs(&self, _: &tilo_actions::remote::InvokeRequest) -> bool {
+        false
+    }
+
+    fn run(
+        &self,
+        _: tilo_actions::remote::InvokeRequest,
+        _: tilo_actions::remote::Caller,
+    ) -> tilo_workspace_service::workspaces::at_root::RootRun {
+        panic!("Bob's computer runs no root-only operation of its own here")
+    }
+
+    fn certify_agent(
+        &self,
+        person: [u8; 32],
+        key: [u8; 32],
+        workspace: &str,
+        _agent: &str,
+        name: &str,
+    ) -> tilo_workspace_service::workspaces::at_root::Certifying {
+        let (root, workspace, name) = (self.0.clone(), workspace.to_owned(), name.to_owned());
+        Box::pin(async move {
+            assert_eq!(
+                person,
+                root.verifying_key().to_bytes(),
+                "only Bob's root is kept here"
+            );
+            tilo_server_client::certification::issue_agent_grant(
+                &root,
+                key,
+                &name,
+                DeviceCapabilities::agent_grant(AgentScope::parse(&workspace).unwrap()),
+                Some(tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000)),
+            )
+            .await
+            .map(Some)
+            .map_err(|error| error.to_string())
+        })
+    }
+}
+
+/// The make `script` asks for a workspace called `name`, which waits for its person.
+async fn asks_to_make(script: &Device, name: &str) -> Awaiting {
+    let made = script
+        .own_workspace(
+            Map::from_iter([("name".into(), json!(name))]),
+            tilo_actions::InvocationId::new(),
+        )
+        .await
+        .expect_err("the make waits for its person");
+    assert_eq!(made.code, DeviceRefusal::AWAITING_APPROVAL, "{made:?}");
+    made.awaiting.expect("the make that waits is named")
+}
+
+/// The person's answer `resolve` to the make `awaiting`, given as `person` on `device` against
+/// `workspaces`' store: once `wait` says it has the question, its result.
+async fn answer_with(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    (person, device): ([u8; 32], [u8; 32]),
+    awaiting: &Awaiting,
+    resolve: tilo_actions::remote::asked::Resolve,
+) -> Result<(), tilo_actions::remote::ActionCallError> {
+    let store = workspaces
+        .asked_store()
+        .expect("the host keeps asked records");
+    store
+        .resolve(
+            &awaiting.ask,
+            &tilo_actions::remote::Caller::authenticated(person, device),
+            &resolve,
+        )
+        .await
+        .expect("the answer is decided at once")
+}
+
+/// Wait until `workspaces`, a device that keeps the person's root, took in the make `awaiting`.
+async fn taken_in(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    awaiting: &Awaiting,
+) {
+    let store = workspaces
+        .asked_store()
+        .expect("the host keeps asked records");
+    let deadline = tokio::time::Instant::now() + FOLLOWING;
+    while store.kept_ask(&awaiting.ask).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the device that keeps the root takes the make in: {awaiting:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// A key `cert` certifies, on `host`'s computer whose certificate is `server`.
+fn on_host(
+    host: &crate::support::TestHost,
+    server: &tilo_user_identity::DeviceCert,
+    (cert, key): (tilo_user_identity::DeviceCert, &ed25519_dalek::SigningKey),
+) -> Device {
+    Device::over(
+        PeerConfig {
+            host: host.iroh(),
+            cert,
+            server_cert: server.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+            entering: None,
+        },
+        Arc::new(key.clone()),
+        "A script",
+    )
+}
+
+/// A key Bob made for one workspace asks the site for another. The site makes none: it keeps the
+/// make for a device of Bob's that keeps his identity, where he answers it once. His no makes
+/// nothing; his yes founds it there, as him and owned by him, and the key gets no reach in it
+/// unless he let it work there with the same answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_held_to_one_workspace_makes_another_only_at_its_persons_root() {
+    use tilo_actions::remote::asked::{Offer, Resolve};
+    use tilo_workspace_service::workspaces::at_root::LET_WORK;
+
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
+    let workspaces = host.server.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    assert!(
+        workspaces
+            .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+            .unwrap()
+    );
+    assert!(workspaces.admit_own_through(&lounge.workspace));
+
+    // Bob's computer keeps his root and his Servers workspace.
+    let bob = new_key();
+    let bob_person = bob.verifying_key().to_bytes();
+    let bob_computer = enrol(&bob, "bob-computer", DeviceCapabilities::primary());
+    let bob_state = tempfile::tempdir().unwrap();
+    let bob_host = start_workspace_host(&bob, &bob_computer, bob_state.path(), false).await;
+    let bob_workspaces = bob_host.server.workspaces().unwrap();
+    tilo_workspace_service::workspaces::person_workspace::found(bob_workspaces)
+        .await
+        .unwrap();
+    bob_workspaces
+        .serve_at_root(Arc::new(BobsRoot(bob.clone())))
+        .unwrap();
+
+    // Bob's tab in the Lounge has the site make his own workspace, which his computer takes in.
+    let tab_key = new_key();
+    let tab_cert = guest_certificate(
+        &bob,
+        tab_key.verifying_key().to_bytes(),
+        "Firefox on Linux",
+        tilo_clock::unix_now_ns(),
+    )
+    .await
+    .unwrap();
+    let tab = enter_as(
+        &host,
+        entry_grant(&host, &alice, &host_device, &lounge.workspace, bob_person).await,
+        &tab_cert,
+        &tab_key,
+        &host_device.cert,
+        lounge.workspace_id,
+    )
+    .await;
+    let device = Device::of(
+        tab.clone(),
+        tab_cert.clone(),
+        host_device.cert.clone(),
+        "Firefox on Linux",
+    );
+    let own = device
+        .enter_own_workspace("en-US", None, "Bob", |_| false, None)
+        .await
+        .unwrap();
+    assert_eq!(device.join(&own.workspace).await.unwrap(), own.workspace_id);
+    take_in(bob_workspaces, workspaces, &own.workspace).await;
+
+    // A key Bob made for that one workspace.
+    let script_key = new_key();
+    let script_cert = tilo_server_client::certification::issue_agent_grant(
+        &bob,
+        script_key.verifying_key().to_bytes(),
+        "A script",
+        DeviceCapabilities::agent_grant(AgentScope::parse(&own.workspace).unwrap()),
+        Some(tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000)),
+    )
+    .await
+    .unwrap();
+    let script = on_host(&host, &host_device.cert, (script_cert.clone(), &script_key));
+    script.connected().await.unwrap();
+    assert_eq!(
+        script
+            .enter_workspace(&own.workspace, "A script")
+            .await
+            .unwrap(),
+        own.workspace_id
+    );
+    let at_root = (bob_person, bob_computer.cert.device_public_key);
+    let approve = || Resolve {
+        resolution: Offer::Approve,
+        ..Resolve::default()
+    };
+    let held_before = bob_workspaces.ids().await.len();
+
+    // Without a yes at Bob's root nothing is made: the site, which keeps no root of his, answers
+    // nothing for it, and his no there ends the make.
+    let more = asks_to_make(&script, "More").await;
+    let at_site = answer_with(
+        workspaces,
+        (bob_person, tab_key.verifying_key().to_bytes()),
+        &more,
+        approve(),
+    )
+    .await
+    .expect_err("the site keeps no root of Bob's");
+    assert_eq!(
+        at_site.to_string(),
+        tilo_actions::remote::ActionCallError::Refused {
+            reason: tilo_actions::remote::asked::ANSWERED_AT_ROOT.into()
+        }
+        .to_string()
+    );
+    taken_in(bob_workspaces, &more).await;
+    answer_with(
+        bob_workspaces,
+        at_root,
+        &more,
+        Resolve {
+            resolution: Offer::Decline,
+            ..Resolve::default()
+        },
+    )
+    .await
+    .expect("Bob says no on his computer");
+    let declined = script
+        .answer_of(&more, FOLLOWING)
+        .await
+        .expect_err("a declined make makes nothing");
+    assert_eq!(declined.code, DeviceRefusal::DECLINED, "{declined:?}");
+    assert_eq!(
+        bob_workspaces.ids().await.len(),
+        held_before,
+        "nothing is made"
+    );
+
+    // His yes founds it on his computer, once, as him: a second yes finds it answered.
+    let plans = asks_to_make(&script, "Plans").await;
+    taken_in(bob_workspaces, &plans).await;
+    answer_with(bob_workspaces, at_root, &plans, approve())
+        .await
+        .expect("Bob says yes on his computer");
+    let again = answer_with(bob_workspaces, at_root, &plans, approve())
+        .await
+        .expect_err("an approve is used once");
+    assert!(
+        matches!(again, tilo_actions::remote::ActionCallError::Refused { .. }),
+        "{again:?}"
+    );
+    let made = script
+        .answer_of(&plans, FOLLOWING)
+        .await
+        .expect("his yes makes it, and the key reads it");
+    let made_workspace = made["workspace"].as_str().unwrap().to_owned();
+    assert_eq!(made["name"], json!("Plans"), "{made}");
+    assert!(
+        made.get("grant").is_none(),
+        "no reach was asked for: {made}"
+    );
+    let summary = bob_workspaces.summary(&made_workspace).await.unwrap();
+    let bobs = summary
+        .members
+        .iter()
+        .find(|member| member.root() == Some(bob_person) && !member.removed)
+        .expect("Bob is in the workspace made for him");
+    assert_eq!(
+        bobs.role,
+        Some(tilo_peer_state::join::Role::Owner),
+        "{:?}",
+        summary.members
+    );
+    assert!(
+        workspaces.summary(&made_workspace).await.is_err(),
+        "the site holds nothing of it"
+    );
+    assert_eq!(
+        bob_workspaces.ids().await.len(),
+        held_before + 1,
+        "one is made"
+    );
+    // The key reaches no further than before: it does not enter the new workspace.
+    let outside = on_host(
+        &bob_host,
+        &bob_computer.cert,
+        (script_cert.clone(), &script_key),
+    );
+    assert!(
+        outside
+            .enter_workspace(&made_workspace, "A script")
+            .await
+            .is_err(),
+        "a key Bob let work in one workspace has no reach in the one he made"
+    );
+    outside.close();
+
+    // Let work there with the same answer, the key gets its grant in the new workspace, signed
+    // by his root, and enters it.
+    let together = asks_to_make(&script, "Together").await;
+    taken_in(bob_workspaces, &together).await;
+    answer_with(
+        bob_workspaces,
+        at_root,
+        &together,
+        Resolve {
+            chosen: vec![LET_WORK],
+            ..approve()
+        },
+    )
+    .await
+    .expect("Bob says yes and lets the script work there");
+    let made = script
+        .answer_of(&together, FOLLOWING)
+        .await
+        .expect("his yes makes it");
+    let together_workspace = made["workspace"].as_str().unwrap().to_owned();
+    let grant: tilo_user_identity::DeviceCert =
+        serde_json::from_value(made["grant"].clone()).expect("the key's grant there");
+    assert_eq!(
+        grant.device_public_key,
+        script_key.verifying_key().to_bytes()
+    );
+    assert_eq!(grant.user_public_key, bob_person);
+    let inside = on_host(&bob_host, &bob_computer.cert, (grant, &script_key));
+    assert_eq!(
+        inside
+            .enter_workspace(&together_workspace, "A script")
+            .await
+            .unwrap()
+            .to_string(),
+        together_workspace
+    );
+    inside.close();
+
+    script.close();
     tab.close();
     drop(host.web);
     host.server.shutdown().await;

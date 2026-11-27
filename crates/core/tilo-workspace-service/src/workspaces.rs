@@ -124,6 +124,8 @@ pub(crate) use packaged_model::keep_surface;
 pub use packaged_model::package_surface;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod asking;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod at_root;
 mod pages;
 mod peer_parts;
 mod reads;
@@ -1172,6 +1174,10 @@ struct WorkspacesInner {
     asked_store: std::sync::OnceLock<Arc<tilo_remote_actions::asked::AskedStore>>,
     /// This host's dispatch, as that store hands it back the calls it keeps.
     asked_dispatch: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedDispatch>>,
+    /// What runs here the calls kept for a device that keeps the person's root, once this host
+    /// keeps it ([`Workspaces::serve_at_root`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    at_root: std::sync::OnceLock<Arc<at_root::AtRoot>>,
     /// What runs the workspaces' Linux machines, as a branch takes its
     /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
@@ -1693,6 +1699,8 @@ impl Workspaces {
                 asked_wrap: std::sync::OnceLock::new(),
                 asked_store: std::sync::OnceLock::new(),
                 asked_dispatch: std::sync::OnceLock::new(),
+                #[cfg(not(target_arch = "wasm32"))]
+                at_root: std::sync::OnceLock::new(),
                 machines: std::sync::RwLock::default(),
                 own_readings: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),

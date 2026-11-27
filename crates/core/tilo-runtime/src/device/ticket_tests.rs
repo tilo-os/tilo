@@ -2351,7 +2351,8 @@ impl RevokeAtRoot {
         )
         .await
         .expect("the root marks the device that keeps it");
-        self.holder_asked.serve_at_root(self.holder.clone());
+        self.holder_asked
+            .serve_at_root(&self.issuer, self.holder.clone());
         let (taken, took) = tokio::sync::oneshot::channel();
         let taken = std::sync::Mutex::new(Some(taken));
         let follows = Arc::downgrade(&self.holder_asked);

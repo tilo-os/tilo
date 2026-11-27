@@ -2402,8 +2402,6 @@ impl Workspaces {
             else {
                 continue;
             };
-            // The keys may have made a kept record readable: whoever follows it is told.
-            self.wrote(workspace, app_id, document_id);
             // A resource's document is the store's, which takes it in as it does at the copy's
             // start ([`Self::recall_member_resources`]).
             if collab_types::is_store_document(document_id) {
@@ -2412,18 +2410,19 @@ impl Workspaces {
                     .replay_resource_write(&mut hosted, frame.author, &message)
                     .await;
                 took |= admitted;
-                continue;
-            }
-            let taken = hosted.take_served(frame.author, &message)
+            } else if hosted.take_served(frame.author, &message)
                 || self
                     .follow_kept_checked(&mut hosted, frame.author, message.clone())
                     .await
-                    .changed;
-            if taken {
+                    .changed
+            {
                 self.tell_followers(&hosted, frame.author, &message, true)
                     .await;
                 took = true;
             }
+            // The keys may have made a kept record readable: whoever follows it is told once it
+            // is taken in, as reads do not wait for this copy's lock and would find it missing.
+            self.wrote(workspace, app_id, document_id);
         }
         if took {
             self.keep_soon(&mut hosted);

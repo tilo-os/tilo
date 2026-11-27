@@ -252,7 +252,7 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
     );
     copies.provide(PROVIDER, Arc::new(OnThisDevice(laptop.clone())));
     let (laptop_asks, _, laptop_asked) = dispatch(copies, laptop_cert.device_public_key);
-    laptop_asked.serve_at_root(laptop.clone());
+    laptop_asked.serve_at_root(&laptop_service, laptop.clone());
 
     // The desk's daemon, which keeps no root of the person's.
     let desk_endpoint = endpoint(&desk_key).await;

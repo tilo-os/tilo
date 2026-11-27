@@ -3252,7 +3252,7 @@ impl Daemon {
                         );
                     }
                     // Their root-only asks are answered here from now on, as their root is.
-                    asked.serve_at_root((*tickets).clone());
+                    asked.serve_at_root(&serving, (*tickets).clone());
                 });
             }));
         }

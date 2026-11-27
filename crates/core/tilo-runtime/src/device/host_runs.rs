@@ -96,7 +96,7 @@ pub(super) fn settling(
             // keys, and what their own tilo reads.
             drop(workspaces.workspaces());
             super::first_workspace::hold_person(workspaces.copies(), &cert).await?;
-            asked.serve_at_root((*tickets).clone());
+            asked.serve_at_root(&workspaces, (*tickets).clone());
             Ok(true)
         })
     })

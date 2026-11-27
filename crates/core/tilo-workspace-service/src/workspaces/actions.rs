@@ -3809,6 +3809,11 @@ pub(crate) struct Shared {
     >,
     /// The calls that wait in their asked records (`asked_calls`).
     pub(super) asked_calls: AskedCalls,
+    /// The calls kept for a device that keeps their person's root, which this host follows to
+    /// how that device wrote they ended ([`ServiceWorkspaceActions::follow_root`]).
+    at_root_calls: Mutex<std::collections::HashSet<InvocationId>>,
+    /// Set once this host follows the records of those calls.
+    following_root: OnceLock<()>,
     /// Told each time a call that was not answered at once moved: its person answered it, or its
     /// work ended. What a follow of the host's own operations waits on ([`ServiceWorkspaceActions::host_change`]).
     moved: tokio::sync::watch::Sender<()>,
@@ -3838,6 +3843,8 @@ impl ServiceWorkspaceActions {
                 mcp_follows: Mutex::default(),
                 live: Mutex::default(),
                 asked_calls: Mutex::default(),
+                at_root_calls: Mutex::default(),
+                following_root: OnceLock::new(),
                 moved: tokio::sync::watch::channel(()).0,
             }),
         }
@@ -4017,6 +4024,64 @@ impl ServiceWorkspaceActions {
     /// Whether `caller` started invocation `id` here.
     fn admitted(&self, caller: &Caller, id: &InvocationId) -> bool {
         self.log().get(caller, id).is_some()
+    }
+
+    /// Follow `invocation`, kept for a device that keeps its person's root, to how that device
+    /// writes it ended into its record in `workspaces` ([`Self::root_settled`]).
+    pub(super) fn follow_root(&self, workspaces: &Workspaces, invocation: InvocationId) {
+        self.shared.at_root_calls.lock_recover().insert(invocation);
+        if self.shared.following_root.set(()).is_ok() {
+            let shared = Arc::downgrade(&self.shared);
+            workspaces.follow_asked_at_root(move |asks| {
+                if let Some(shared) = shared.upgrade() {
+                    ServiceWorkspaceActions { shared }.root_settled(&asks);
+                }
+            });
+        }
+    }
+
+    /// Whether `invocation` waits still for a device that keeps its person's root.
+    pub(super) fn follows_root(&self, invocation: InvocationId) -> bool {
+        self.shared
+            .at_root_calls
+            .lock_recover()
+            .contains(&invocation)
+    }
+
+    /// Follow `invocation` no more: it was never kept for the root, or it ended here.
+    pub(super) fn unfollow_root(&self, invocation: InvocationId) -> bool {
+        self.shared.at_root_calls.lock_recover().remove(&invocation)
+    }
+
+    /// `asks`, the calls kept for a device that keeps the person's root, as they stand: each
+    /// this host kept that the device wrote how it ended ends so here, for whoever follows it,
+    /// and its record is forgotten.
+    fn root_settled(&self, asks: &[tilo_actions::remote::asked::KeptAsk]) {
+        let store = self
+            .shared
+            .workspaces
+            .get()
+            .and_then(WeakWorkspaces::upgrade)
+            .and_then(|workspaces| workspaces.asked_store());
+        let mut ended = false;
+        for ask in asks {
+            let invocation = ask.request.invocation;
+            let Some(outcome) = ask.outcome.clone().filter(InvocationUpdate::is_terminal) else {
+                continue;
+            };
+            if !self.unfollow_root(invocation) {
+                continue;
+            }
+            self.log()
+                .complete(&invocation, InvocationState::new(invocation, outcome));
+            if let Some(store) = &store {
+                store.settled(&ask.at);
+            }
+            ended = true;
+        }
+        if ended {
+            self.moved();
+        }
     }
 
     /// A call that was not answered at once moved: whoever follows one wakes and reads it again.
@@ -4309,6 +4374,21 @@ impl ActionProvider for InWorkspace {
             && let Some(at) = store.record(&id.0.to_string())
         {
             store.withdraw(&at, TAKEN_BACK);
+            // One kept for a device that keeps the person's root ends here: nothing here runs
+            // it to be told so.
+            if self.server.unfollow_root(*id) {
+                self.server.log().complete(
+                    id,
+                    InvocationState::new(
+                        *id,
+                        InvocationUpdate::Cancelled {
+                            invocation: *id,
+                            message: Some(TAKEN_BACK.to_owned()),
+                        },
+                    ),
+                );
+                self.server.moved();
+            }
             return Pending::ready(Ok(()));
         }
         tilo_actions::remote::Pending::ready(if self.server.admitted(caller, id) {
@@ -4874,17 +4954,25 @@ const TAKEN_BACK: &str = "Whoever asked took the question back";
 pub(super) const HOST_DISPATCH: &str = "host";
 
 /// The parameters the action `target` names is published with, where it is one of the
-/// workspace's governance verbs. `None` for any other.
+/// workspace's governance verbs or one of the host's own operations. `None` for any other.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn published_params(
     target: &tilo_actions::remote::RemoteActionTarget,
 ) -> Option<Vec<ActionParam>> {
-    (target.provider == WORKSPACE_GOVERNANCE_PROVIDER)
+    let action = target.address.action.as_str();
+    if target.provider == WORKSPACE_GOVERNANCE_PROVIDER {
+        return VERBS
+            .iter()
+            .find(|verb| verb.id == action)
+            .map(|verb| (verb.params)());
+    }
+    (target.provider == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
+        && target.address.resource == HOST_WORKSPACES_RESOURCE)
         .then(|| {
-            VERBS
+            host::ACCOUNT_VERBS
                 .iter()
-                .find(|verb| verb.id == target.address.action)
-                .map(|verb| (verb.params)())
+                .find(|(verb, _)| verb.id == action)
+                .map(|(verb, _)| (verb.params)())
         })
         .flatten()
 }

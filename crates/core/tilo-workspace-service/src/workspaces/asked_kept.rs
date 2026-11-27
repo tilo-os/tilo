@@ -173,11 +173,17 @@ impl Workspaces {
 
     /// Hand `seen` the calls kept in the records of every workspace kept here to be answered at
     /// a device that keeps the person's root ([`tilo_actions::remote::asked::AT_ROOT`]): now,
-    /// again on each write to one of those records, and again whenever presence moves (a device
-    /// of the person's came online), from a task of the runtime this is called on.
+    /// again on each write to one of those records, whenever a workspace's governance moves or
+    /// one is held here (the keys that open a record kept in it may have come), and whenever
+    /// presence moves (a device of the person's came online), from a task of the runtime this
+    /// is called on.
     pub fn follow_asked_at_root(&self, seen: impl Fn(Vec<KeptAsk>) + Send + 'static) {
+        use tokio::sync::broadcast::error::RecvError;
+
         let workspaces = self.downgrade();
-        let mut writes = self.document_writes();
+        // Subscribed before the first read, so a change between the two is read again.
+        let (mut writes, mut governance) = (self.document_writes(), self.governance_changes());
+        let mut holds = self.holds_changed();
         tokio::spawn(async move {
             // One presence wake at a time: made again only once presence moved.
             let mut presence = None;
@@ -193,30 +199,31 @@ impl Workspaces {
                 let asked = held.asked_at_root().await;
                 seen(asked);
                 drop(held);
-                let written = async {
-                    loop {
-                        match writes.recv().await {
-                            Ok(write) if write.app == PROVIDER && write.record == RECORD => {
-                                return true;
-                            }
+                // Whether presence moved: its wake is made again for the next read.
+                let present = loop {
+                    tokio::select! {
+                        write = writes.recv() => match write {
+                            // The record's id on the wire is the store's, not its name: any
+                            // write to the provider's records reads them again.
+                            Ok(write) if write.app == PROVIDER => break false,
                             Ok(_) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                return true;
+                            Err(RecvError::Lagged(_)) => break false,
+                            Err(RecvError::Closed) => return,
+                        },
+                        changed = governance.recv() => match changed {
+                            Ok(_) | Err(RecvError::Lagged(_)) => break false,
+                            Err(RecvError::Closed) => return,
+                        },
+                        held = holds.changed() => {
+                            if held.is_err() {
+                                return;
                             }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+                            break false;
                         }
+                        _ = &mut *moved => break true,
                     }
                 };
-                let moved = tokio::select! {
-                    open = written => {
-                        if !open {
-                            return;
-                        }
-                        false
-                    }
-                    _ = moved => true,
-                };
-                if moved {
+                if present {
                     presence = None;
                 }
             }

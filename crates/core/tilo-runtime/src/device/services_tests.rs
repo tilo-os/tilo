@@ -2300,7 +2300,7 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
         )
         .await
         .expect("the root marks the device that keeps it");
-        daemon.asked.serve_at_root(tickets);
+        daemon.asked.serve_at_root(&daemon.workspaces, tickets);
     });
     let requested = |invocation: tilo_actions::InvocationId| {
         store
