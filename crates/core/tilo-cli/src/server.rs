@@ -40,7 +40,7 @@ pub enum ServerCmd {
     Logs {
         /// The server.
         server: String,
-        /// The systemd unit, e.g. tilo-server.service.
+        /// The systemd unit, e.g. tilo-runtime.service.
         service: String,
         /// How many lines back to read, at most 500.
         #[arg(long, default_value_t = 200)]
@@ -50,7 +50,7 @@ pub enum ServerCmd {
     Restart {
         /// The server.
         server: String,
-        /// The systemd unit, e.g. tilo-server.service.
+        /// The systemd unit, e.g. tilo-runtime.service.
         service: String,
     },
     /// Reboot the machine.

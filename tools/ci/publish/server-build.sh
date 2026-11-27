@@ -35,11 +35,10 @@ fi
 # decide the image; a commit time is no input (oci-build.sh fixes the timestamps).
 context=$scratch/server-context
 rm -rf "$context"
-mkdir -p "$context/bin" "$context/os/containers/tilo-server" "$context/os/usr/lib/systemd/system"
+mkdir -p "$context/bin" "$context/os/containers/tilo-server"
 cp os/containers/tilo-server/Containerfile "$context/"
 cp "$binaries/tilo" "$binaries/tilo-runtime" "$context/bin/"
 cp os/containers/tilo-server/tilo-home-peer "$context/os/containers/tilo-server/"
-cp os/usr/lib/systemd/system/tilo-server.service "$context/os/usr/lib/systemd/system/"
 bash tools/ci/publish/oci-build.sh "$context" "$context/Containerfile" "$out" \
   --platform linux/amd64 \
   --build-arg "RPMS_REF=$rpms_ref"

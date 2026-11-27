@@ -1,27 +1,26 @@
 [Unit]
 Description=Set up this server's disk unlock with the person's other devices
 Documentation=file:///usr/share/doc/tilo/server.md
-# The server's own daemon has the person's root certify the boot key, as every computer's does,
+# The device's one daemon has the person's root certify the boot key, as on every computer,
 # so this runs once the daemon does, and only where the install kept a key for it
 # (tilo-disk-encrypt finish --unlock owner-device).
-After=tilo-server.service
-Requires=tilo-server.service
+After=tilo-runtime.service
+Requires=tilo-runtime.service
 ConditionPathExists=/var/lib/tilo/install-key/volume.conf
-ConditionPathExists=!/var/lib/tilo-server/decommissioned
+ConditionPathExists=!/var/lib/tilo/state/decommissioned
 
 [Service]
 # Started once its request is handed over, so no boot waits for the person: it stays running
 # until they answer on a device of theirs that keeps the root.
 Type=exec
 # The request goes to the daemon as the daemon's own account, in its environment, as
-# tilo-server.service runs it: the daemon admits its own account as the device's system, and its
+# tilo-runtime.service runs it: the daemon admits its own account as the device's system, and its
 # sockets are that account's alone.
-User=tilo-server
-Group=tilo-server
+User=tilo
+Group=tilo
 SupplementaryGroups=tilo-identity
-Environment=HOME=/var/lib/tilo-server TILO_IDENTITY_ROOT=/var/lib/tilo
-Environment=XDG_STATE_HOME=/var/lib/tilo/state TILO_RUNTIME_PROFILE=/var/lib/tilo-server
-Environment=XDG_RUNTIME_DIR=/run/tilo-server
+Environment=HOME=/var/lib/tilo/state TILO_IDENTITY_ROOT=/var/lib/tilo
+Environment=XDG_STATE_HOME=/var/lib/tilo/state TILO_RUNTIME_PROFILE=/var/lib/tilo/state
 # Where root hands the request to that account, and the account keeps the daemon's answer.
 RuntimeDirectory=tilo-server-unlock
 RuntimeDirectoryMode=0700
@@ -56,7 +55,10 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 KeyringMode=private
-CapabilityBoundingSet=
+# Root hands the request over in the account's own 0700 runtime directory and
+# reads the answer from it. Reaching both takes CAP_DAC_OVERRIDE, and the files
+# it leaves there, or removes, are the account's: CAP_CHOWN and CAP_FOWNER.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native

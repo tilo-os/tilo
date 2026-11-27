@@ -1945,7 +1945,7 @@ mod tests {
         // person it presents.
         persist::write_public_key(&paths.user_pubkey, &cert.user_public_key).unwrap();
 
-        // `tilo-server-firstboot` waits for a certificate under `certs/`, never for a
+        // The daemon's enrollment waits for a certificate under `certs/`, never for a
         // system-wide copy.
         assert!(paths.device_cert_for_user(&cert.user_public_key).is_file());
         assert!(!paths.system_device_cert().exists());

@@ -244,8 +244,8 @@ enum Cmd {
     },
     /// What your servers are, and what you may ask them to do from here.
     #[command(
-        after_help = "Examples:\n  tilo server list\n  tilo server status nas\n  tilo server logs nas tilo-server.service\n  \
-                      tilo server restart nas tilo-server.service\n  tilo server update nas\n\n\
+        after_help = "Examples:\n  tilo server list\n  tilo server status nas\n  tilo server logs nas tilo-runtime.service\n  \
+                      tilo server restart nas tilo-runtime.service\n  tilo server update nas\n\n\
                       A server is reached over Tilo's owner-only route from this computer's own \
                       device: nothing here needs ssh. `tilo server list` names the servers this \
                       computer enrolled."

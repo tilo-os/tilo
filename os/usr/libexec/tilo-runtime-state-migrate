@@ -1,0 +1,47 @@
+#!/usr/bin/bash
+# Move a server's daemon state to the device daemon's state root, once.
+#
+# Before a server ran the device's one daemon (tilo-runtime.service) like every
+# other device, its own daemon kept its profile and the workspaces it served
+# under /var/lib/tilo-server, and its configuration named that root. The one
+# daemon keeps both under /var/lib/tilo/state, which its unit names.
+#
+# This runs before the daemon starts and does nothing on a machine that never
+# had the old root. It goes once the machines installed before that change have
+# upgraded; nothing else reads the old path.
+set -euo pipefail
+
+old=/var/lib/tilo-server
+new=/var/lib/tilo/state
+config=/etc/tilo/server.toml
+
+log() { printf 'tilo-runtime-state-migrate: %s\n' "$*"; }
+
+[ -d "$old" ] || exit 0
+[ ! -L "$old" ] || { echo "tilo-runtime-state-migrate: $old is a link, not the daemon's state" >&2; exit 1; }
+
+install -d -o tilo -g tilo -m 0700 "$new"
+for entry in "$old"/* "$old"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    name=${entry##*/}
+    # Nothing a running daemon left behind: its sockets and locks are made
+    # again by the daemon that starts next.
+    case $name in *.sock|*.lock) continue ;; esac
+    # What the new root already holds (the login, the daemon's own records) is
+    # the truth; the old root only fills what is missing.
+    [ -e "$new/$name" ] && continue
+    mv -- "$entry" "$new/$name"
+done
+rm -rf --one-file-system "$old"
+# All of it is the daemon's own root: the account it used to keep it under is
+# gone, and a copy of it can carry another image's number for an account.
+chown -R --no-dereference --one-file-system tilo:tilo "$new"
+
+# A configuration the old image wrote names the old root. The daemon cannot
+# write outside its own unit's writable paths, so it is pointed at the one root
+# every device's daemon keeps.
+if [ -f "$config" ] && grep -qx 'state_root = "/var/lib/tilo-server"' "$config"; then
+    sed -i 's|^state_root = "/var/lib/tilo-server"$|state_root = "/var/lib/tilo/state"|' "$config"
+    log "the server configuration names the daemon's state root"
+fi
+log "the server's daemon state moved to $new"

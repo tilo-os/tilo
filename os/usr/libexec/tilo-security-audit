@@ -183,7 +183,7 @@ device_key="$device_key_dir/keypair.bin"
 device_key_owner="$(stat -c '%u' "$device_key" 2>/dev/null || echo invalid)"
 device_dir_meta="$(stat -c '%u:%a' "$device_key_dir" 2>/dev/null || echo invalid)"
 device_key_meta="$(stat -c '%u:%a:%h:%s' "$device_key" 2>/dev/null || echo invalid)"
-daemon_uids=" $(id -u tilo 2>/dev/null || true) $(id -u tilo-server 2>/dev/null || true) "
+daemon_uids=" $(id -u tilo 2>/dev/null || true) "
 case "$daemon_uids" in
   *" $device_key_owner "*) daemon_key=1 ;;
   *) daemon_key=0 ;;
@@ -598,7 +598,7 @@ esac
 # (ProtectProc=invisible). /proc is not remounted hidepid globally: that hides
 # PID 1 from every unprivileged process, which breaks libsystemd's unit
 # lookups (the AT-SPI bus cannot start); secret holders are non-dumpable.
-for unit in tilo-server.service tilo-local-model.service; do
+for unit in tilo-runtime.service tilo-local-model.service; do
   if [ "$(systemctl show -p ProtectProc --value "$unit" 2>/dev/null)" = invisible ]; then
     ok "$unit sees only its own processes (ProtectProc=invisible)"
   else

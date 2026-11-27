@@ -10,22 +10,21 @@ Documentation=file:///usr/share/doc/tilo/recovery.md
 #
 # A machine waiting to be paired has no server yet; it is judged by
 # multi-user.target alone, so it is never rolled back for waiting on a person.
-After=multi-user.target tilo-server.service
+After=multi-user.target tilo-runtime.service
 # Above tilo-server-health's own wait (240 s), so the verdict is its own.
 TimeoutStartSec=360
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# The daemon's own state and environment, as tilo-server.service tells it: the check asks the
+# The daemon's own state and environment, as tilo-runtime.service tells it: the check asks the
 # daemon a status call, and a daemon's sockets are its own account's, so the check runs as that
 # account in that environment and names no directory itself. It only reads.
-User=tilo-server
-Group=tilo-server
+User=tilo
+Group=tilo
 SupplementaryGroups=tilo-identity
-Environment=HOME=/var/lib/tilo-server TILO_IDENTITY_ROOT=/var/lib/tilo
-Environment=XDG_STATE_HOME=/var/lib/tilo/state TILO_RUNTIME_PROFILE=/var/lib/tilo-server
-Environment=XDG_RUNTIME_DIR=/run/tilo-server
+Environment=HOME=/var/lib/tilo/state TILO_IDENTITY_ROOT=/var/lib/tilo
+Environment=XDG_STATE_HOME=/var/lib/tilo/state TILO_RUNTIME_PROFILE=/var/lib/tilo/state
 ExecStart=/usr/libexec/tilo-server-health
 # The verdict has to be readable from the serial console of a machine whose
 # server never came up, which is precisely the machine this is about.

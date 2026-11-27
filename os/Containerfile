@@ -1041,7 +1041,6 @@ COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share
 COPY os/usr/share/tilo/system-interfaces.toml /tilo-components/usr/share/tilo/system-interfaces.toml
 # Server component metadata travels with the same component in images and updates.
 COPY os/usr/lib/tilo/node-server.toml /tilo-components/usr/lib/tilo/node-server.toml
-COPY os/usr/lib/sysusers.d/tilo-server.conf /tilo-components/usr/lib/sysusers.d/tilo-server.conf
 COPY os/usr/lib/systemd/system/tilo-node-server@.service \
     os/usr/lib/systemd/system/tilo-node-session-key@.service \
     os/usr/lib/systemd/system/tilo-node-session@.service \
@@ -2179,10 +2178,7 @@ COPY \
     os/usr/lib/systemd/user/tilo-runtime-resident.path \
     /usr/lib/systemd/user/
 COPY \
-    os/usr/lib/systemd/system/tilo-server.service \
-    os/usr/lib/systemd/system/tilo-server-firstboot.service \
-    os/usr/lib/systemd/system/tilo-server-state-migrate.service \
-    os/usr/lib/systemd/system/tilo-server-unlock.service \
+    os/usr/lib/systemd/system/tilo-runtime-state-migrate.service \
     os/usr/lib/systemd/system/tilo-network-start.service \
     os/usr/lib/systemd/system/tilo-network-start.target \
     /usr/lib/systemd/system/
@@ -2192,8 +2188,7 @@ COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
     /usr/lib/NetworkManager/conf.d/20-tilo-wake.conf
 COPY os/usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf \
     /usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf
-COPY os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate \
-    os/usr/libexec/tilo-server-unlock /usr/libexec/
+COPY os/usr/libexec/tilo-runtime-state-migrate /usr/libexec/
 COPY \
     os/usr/share/polkit-1/actions/org.tilo.disk-unlock.policy \
     /usr/share/polkit-1/actions/
@@ -2502,7 +2497,7 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
-COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-server.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf \
+COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf \
     os/usr/lib/tmpfiles.d/tilo-device-control.conf /usr/lib/tmpfiles.d/
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
 COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
@@ -2510,21 +2505,15 @@ COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpf
 # The device-trust group, which must exist before tmpfiles-setup runs so the
 # certificate directories can be created with it. See the snippet: the device
 # key is the daemon account's alone, and this group is never given it.
-# The server's static account: a desktop set up as a node runs the server
-# (tilo-node-server@) under it, as the host image runs tilo-server.service. Its
-# snippet ships with the server component (os/components.toml), which arrives
-# with the compiled binaries, so the account is made from the source file here.
 COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \
     os/usr/lib/sysusers.d/tilo-identity.conf \
     os/usr/lib/sysusers.d/tilo-ntfs.conf \
     os/usr/lib/sysusers.d/tilo-runtime.conf \
     /usr/lib/sysusers.d/
-RUN --mount=type=bind,source=os/usr/lib/sysusers.d/tilo-server.conf,target=/run/tilo-server-sysusers.conf,ro \
-    systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
+RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-runtime.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
- && systemd-sysusers /run/tilo-server-sysusers.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-ntfs.conf
 
 # xdg-desktop-portal backend registration.
@@ -2882,6 +2871,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl enable tilo-sandbox-view.service tilo-sandbox-view.path && \
     systemctl enable tilo-runtime-resident.service && \
     systemctl enable tilo-runtime.service && \
+    systemctl enable tilo-runtime-state-migrate.service && \
     systemctl enable NetworkManager-dispatcher.service
 
 # Boot-time prune. These units sit on the critical chain but their work

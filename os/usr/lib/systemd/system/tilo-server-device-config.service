@@ -16,8 +16,11 @@ PrivateIPC=yes
 ProtectHome=yes
 ProtectSystem=strict
 # The request the server writes and the report and confirmation it reads, the
-# keyfiles NetworkManager reads, and the hostname it sets.
-ReadWritePaths=/var/lib/tilo-server /etc/NetworkManager/system-connections /etc/hostname
+# keyfiles NetworkManager reads, and the hostname it sets. The request and
+# report live in the daemon's own state root, which is its account's 0700
+# directory: the helper reaches it and gives the daemon back the files it
+# writes there.
+ReadWritePaths=/var/lib/tilo/state /etc/NetworkManager/system-connections /etc/hostname
 ProtectProc=invisible
 ProcSubset=pid
 ProtectKernelTunables=yes
@@ -32,7 +35,9 @@ RestrictAddressFamilies=AF_UNIX AF_NETLINK
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 RemoveIPC=yes
-CapabilityBoundingSet=
+# It reads the request and writes the report inside the daemon's 0700 state
+# root, and gives the daemon the report and the confirmation it reads there.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

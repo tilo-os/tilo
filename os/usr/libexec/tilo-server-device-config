@@ -4,10 +4,10 @@
 #
 #   tilo-server-device-config
 #
-# The server is unprivileged and writes what it wants at one fixed path
-# (/var/lib/tilo-server/device-config.request, written by the tilo-server
-# daemon from the server's entry in the admin workspace's `tilo.servers`
-# document). A path unit starts this as root when that file changes. The
+# The server is unprivileged: its daemon writes what it wants at one fixed path
+# in its own state root (/var/lib/tilo/state/device-config.request, from the
+# server's entry in the admin workspace's `tilo.servers` document). A path unit
+# starts this as root when that file changes. The
 # request is a revision line and one line per setting, fields separated by
 # `|`, in exactly these shapes:
 #
@@ -35,11 +35,11 @@
 # pool belong to the image's own boot chain, not here.
 set -eu
 
-request=${TILO_DEVICE_CONFIG_REQUEST:-/var/lib/tilo-server/device-config.request}
-report=${TILO_DEVICE_CONFIG_REPORT:-/var/lib/tilo-server/device-config.report}
-applied_at=${TILO_DEVICE_CONFIG_APPLIED_AT:-/var/lib/tilo-server/device-config.applied-at}
-confirmed=${TILO_DEVICE_CONFIG_CONFIRMED:-/var/lib/tilo-server/device-config.confirmed}
-state_dir=${TILO_DEVICE_CONFIG_STATE:-/var/lib/tilo-server}
+request=${TILO_DEVICE_CONFIG_REQUEST:-/var/lib/tilo/state/device-config.request}
+report=${TILO_DEVICE_CONFIG_REPORT:-/var/lib/tilo/state/device-config.report}
+applied_at=${TILO_DEVICE_CONFIG_APPLIED_AT:-/var/lib/tilo/state/device-config.applied-at}
+confirmed=${TILO_DEVICE_CONFIG_CONFIRMED:-/var/lib/tilo/state/device-config.confirmed}
+state_dir=${TILO_DEVICE_CONFIG_STATE:-/var/lib/tilo/state}
 revert_after=${TILO_DEVICE_CONFIG_REVERT_AFTER:-90}
 nm_dir=${TILO_NETWORKMANAGER_DIR:-/etc/NetworkManager/system-connections}
 nmcli=${TILO_NMCLI:-nmcli}
@@ -71,6 +71,9 @@ write_report() {
         printf 'detail\t%s\n' "$2"
     } >"$tmp"
     chmod 0600 "$tmp"
+    # The daemon reads the report as the state root's account: give it the file
+    # it could not take back itself.
+    chown --reference="${report%/*}" "$tmp" 2>/dev/null || true
     mv -f "$tmp" "$report"
 }
 
@@ -487,6 +490,7 @@ if [ "$network_changed" = 1 ]; then
     mkdir -p "$state_dir"
     printf 'revision\t%s\n' "$revision" >"$applied_at.tmp"
     chmod 0600 "$applied_at.tmp"
+    chown --reference="${applied_at%/*}" "$applied_at.tmp" 2>/dev/null || true
     mv -f "$applied_at.tmp" "$applied_at"
     waited=0
     kept=0

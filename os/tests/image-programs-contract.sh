@@ -10,8 +10,7 @@
 set -euo pipefail
 
 for f in /usr/libexec/tilo/tilo-runtime \
-    /usr/libexec/tilo-server-firstboot /usr/libexec/tilo-server-state-migrate \
-    /usr/libexec/tilo-server-unlock \
+    /usr/libexec/tilo-runtime-state-migrate \
     /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
     /usr/bin/tilo-session /usr/bin/fs /usr/libexec/tilo/tilo-greeter \
     /usr/libexec/tilo/tilo-installer /usr/libexec/tilo/tilo-launcher /usr/libexec/tilo/tilo-runtime-bundle \
@@ -30,6 +29,19 @@ if [ -n "$missing" ]; then
   printf 'the session or xwayland-satellite has unresolved runtime libraries:\n%s\n' "$missing" >&2
   exit 1
 fi
+
+# One daemon account per device, and no second host's setup beside it: a
+# server is this image with its daemon's configuration, not another machine.
+getent passwd tilo >/dev/null || { echo 'the image carries no daemon account' >&2; exit 1; }
+if getent passwd tilo-server >/dev/null 2>&1; then
+  echo 'the image carries a second daemon account' >&2
+  exit 1
+fi
+for stale in /usr/lib/systemd/system/tilo-server.service \
+    /usr/lib/systemd/system/tilo-server-firstboot.service \
+    /usr/libexec/tilo-server-firstboot; do
+  [ ! -e "$stale" ] || { echo "$stale is a second host's setup" >&2; exit 1; }
+done
 
 # The browser's engine, where the image carries one (TILO_WITH_BROWSER): its runtime bundle,
 # signed by the browser runtime's publisher.

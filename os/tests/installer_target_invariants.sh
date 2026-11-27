@@ -635,12 +635,11 @@ fi
 # the installer: the sibling unlock can only be enrolled by an enrolled machine,
 # and the first boot must open the disk before anything can start. The ticket
 # itself never enters a log or a command argument: `tilo login -` reads it from
-# standard input, here and at the server's first boot.
+# standard input.
 if grep -Fq -- '--install-plan) INSTALL_PLAN=1' "$backend" \
    && grep -Fq 'the staged plan carried no ticket' "$backend" \
    && grep -Fq 'login - --label "$HOSTNAME_VAL" < "${TILO_TICKET:-/etc/tilo/ticket}"' "$backend" \
-   && grep -Fq 'login - --label "$label" < "$ticket"' "$repo_root/os/usr/libexec/tilo-server-firstboot" \
-   && ! grep -Eq 'login "\$\(' "$backend" "$repo_root/os/usr/libexec/tilo-server-firstboot" \
+   && ! grep -Eq 'login "\$\(' "$backend" \
    && grep -Fq 'enrol_planned_server' "$backend" \
    && grep -Fq 'enrol_planned_sibling' "$backend" \
    && grep -Fq 'TILO_IDENTITY_ROOT="$PLAN_ENROLLED_IDENTITY" "$DISK_ENCRYPT" enrol' "$backend" \
@@ -657,13 +656,17 @@ else
   bad "a staged plan can install with a person, without one, without enrolling, or with its ticket exposed"
 fi
 
-# A ticket login files the certificate under its person, so the server's first
-# boot waits for one under device/certs/ and never for a system-wide copy.
-if grep -Fq 'certs="$identity_root/device/certs"' "$repo_root/os/usr/libexec/tilo-server-firstboot" \
-   && ! grep -Eq '^cert=' "$repo_root/os/usr/libexec/tilo-server-firstboot"; then
-  ok "the server's first boot waits for the person's certificate under device/certs"
+# A ticket login files the certificate under its person, so the machine waits
+# for one under device/certs/ and never for a system-wide copy; the installed
+# system carries the key and the certificates the login left it.
+if grep -Fq 'for part in device-private device; do' "$backend" \
+   && grep -Fq 'paths.device_cert_for_user(&cert.user_public_key).is_file()' \
+      "$repo_root/crates/core/tilo-identity/src/provisioning.rs" \
+   && grep -Fq '!paths.system_device_cert().exists()' \
+      "$repo_root/crates/core/tilo-identity/src/provisioning.rs"; then
+  ok "the login's certificate is the person's, under device/certs, and the install carries it"
 else
-  bad "the server's first boot still requires the removed system-wide certificate"
+  bad "a joined machine still requires the removed system-wide certificate"
 fi
 
 # A staged server installs with nobody at its screen, so its disk recovery key is

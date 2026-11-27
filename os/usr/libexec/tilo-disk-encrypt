@@ -47,7 +47,7 @@
 # machine with no usable TPM, `finish --unlock … --var <installed /var>` keeps
 # the throwaway install key: it writes it root-only into the encrypted root at
 # <var>/lib/tilo/install-key/luks.key, with the volume's LUKS UUID beside it
-# in volume.conf, and leaves its key slot in the header. Once the server's daemon
+# in volume.conf, and leaves its key slot in the header. Once the device's daemon
 # runs, tilo-server-unlock.service spends that key on the sibling slot, removes
 # the key's own slot and shreds the file.
 # Both files are inside the encrypted root and neither value is ever logged.
@@ -769,15 +769,15 @@ stage_sibling_enrol() {
   label_like "$dir/volume.conf" /var/lib/tilo/install-key/volume.conf
   # The status the server reports reads this marker, and spends it only after
   # the slot is enrolled and the key is gone.
-  install -d -m 0700 "$var/lib/tilo-server"
-  # The server account owns its state root (tmpfiles.d/tilo-server.conf). The
-  # check runs where that account does not exist; an install always has it.
-  if getent passwd tilo-server >/dev/null 2>&1; then
-    chown tilo-server:tilo-server "$var/lib/tilo-server" \
-      || die "finish: could not give the server account its state root"
+  install -d -m 0700 "$var/lib/tilo/state"
+  # The daemon account owns its state root (tmpfiles.d/tilo-runtime-state.conf).
+  # The check runs where that account does not exist; an install always has it.
+  if getent passwd tilo >/dev/null 2>&1; then
+    chown tilo:tilo "$var/lib/tilo/state" \
+      || die "finish: could not give the daemon account its state root"
   fi
-  ( umask 0022; : > "$var/lib/tilo-server/sibling-unlock-pending" )
-  label_like "$var/lib/tilo-server/sibling-unlock-pending" /var/lib/tilo-server/sibling-unlock-pending
+  ( umask 0022; : > "$var/lib/tilo/state/sibling-unlock-pending" )
+  label_like "$var/lib/tilo/state/sibling-unlock-pending" /var/lib/tilo/state/sibling-unlock-pending
   log "  kept the install key inside the encrypted root until the server sets up its unlock"
 }
 

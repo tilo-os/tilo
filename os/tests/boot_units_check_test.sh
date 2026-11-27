@@ -69,7 +69,7 @@ expect_fail 'a confirmation that could not start' 'result: exit-code, exit statu
 grep -Fq '1 unit(s) failed on this boot' "$work/out" \
   || { cat "$work/out"; echo 'FAIL: the failed confirmation must be listed as a failed unit' >&2; exit 1; }
 
-expect_fail 'an unrelated failed unit' 'tilo-server.service' STUB_FAILED='tilo-server.service'
+expect_fail 'an unrelated failed unit' 'tilo-runtime.service' STUB_FAILED='tilo-runtime.service'
 
 expect_fail 'a missing confirmation unit' 'tilo-rollback-confirm.service is not installed' \
   STUB_CONFIRM_INSTALLED=no

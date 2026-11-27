@@ -2,7 +2,7 @@
 Description=Watch the machine configuration a server's document asks for
 
 [Path]
-PathChanged=/var/lib/tilo-server/device-config.request
+PathChanged=/var/lib/tilo/state/device-config.request
 Unit=tilo-server-device-config.service
 
 [Install]

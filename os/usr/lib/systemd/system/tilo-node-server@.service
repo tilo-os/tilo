@@ -6,13 +6,14 @@ Description=Tilo node server for %i's session
 After=network-online.target var-lib-tilo.mount tilo-node-session-key@%i.service
 Wants=network-online.target
 Requires=tilo-node-session-key@%i.service
-Conflicts=tilo-server.service
 ConditionPathExists=/etc/tilo/node/install-token
 
 [Service]
 Type=exec
-User=tilo-server
-Group=tilo-server
+# The device's daemon account: a node's server is a network parser like the
+# device's own daemon, never uid 0 and never the session's person.
+User=tilo
+Group=tilo
 SupplementaryGroups=tilo-identity
 EnvironmentFile=/var/lib/tilo-node/%i/session.env
 # The node's own device identity, installed by the person's page, and the
@@ -38,7 +39,7 @@ Restart=on-failure
 RestartSec=5
 LimitCORE=0
 
-# The same sandbox as tilo-server.service: a network-facing daemon.
+# The same sandbox as the device's own daemon: a network-facing daemon.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
