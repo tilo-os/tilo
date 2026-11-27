@@ -85,8 +85,13 @@ impl ShownOnPage {
                     // item it presents, whichever form of the resource's id the page named.
                     frame.perform_semantic_named(&widget, named.as_deref(), &Action::Activate)
                 });
-            if let Err(reason) = opened {
-                tracing::debug!(%reason, show, "a page's address names nothing it opens");
+            match opened {
+                // The page shows the item once its instance ran the activation, as a press is
+                // answered with what it changed: before that the view still shows the list.
+                Ok(()) => await_presses(frame),
+                Err(reason) => {
+                    tracing::debug!(%reason, show, "a page's address names nothing it opens");
+                }
             }
         }
         let composition = composition(frame);
@@ -127,11 +132,7 @@ impl ShownOnPage {
             tracing::debug!(%reason, id, "a page's press was refused");
         }
         // The page is answered once its instance ran the press, with what that changed.
-        await_app(frame, |window| {
-            window
-                .view()
-                .is_some_and(tilo_app_window::AppWindow::presses_unanswered)
-        });
+        await_presses(frame);
         self.changed(frame)
     }
 
@@ -215,6 +216,22 @@ impl ShownOnPage {
         let composition = composition(frame);
         self.page.patch(&composition)
     }
+}
+
+/// Wait until `frame`'s instance ran every press its window sent it.
+fn await_presses(frame: &mut Driver) {
+    // What the frame that took the press raised goes out first: until then it counts as no press.
+    if let Some(view) = frame
+        .widget_mut::<HostedWindow>()
+        .and_then(HostedWindow::view_mut)
+    {
+        view.flush();
+    }
+    await_app(frame, |window| {
+        window
+            .view()
+            .is_some_and(tilo_app_window::AppWindow::presses_unanswered)
+    });
 }
 
 /// Lay `frame` out as what its instance sends arrives, while `waits` holds of its window.
@@ -326,11 +343,7 @@ pub fn serve(
                     window.hand_desktop(layout.to_string());
                 }
                 // What the page shows next shows that desktop: its views took it first.
-                await_app(frame, |window| {
-                    window
-                        .view()
-                        .is_some_and(tilo_app_window::AppWindow::presses_unanswered)
-                });
+                await_presses(frame);
                 let changed = patches(page.fill_wells(frame, wells));
                 WindowAnswer::Desktop {
                     changed,
