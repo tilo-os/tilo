@@ -2,10 +2,9 @@
 //! lists the public workspaces they serve, who is in each one now and how many belong. The
 //! workspaces this computer holds open instead of joining, and a site that cannot be read says so
 //! without hiding them.
-//! A workspace another person's host keeps is joined with an invitation: its text, or the link a
-//! site holds sealed for it, is pasted into the sheet and redeemed where it names. A listing is a
-//! catalogue and nothing to enter: pressing Join on one says it needs an invitation, and no site's
-//! entry is read for a host to dial.
+//! A workspace another person's host keeps is joined through the open entry its site publishes,
+//! pressing Join on its listing or pasting a link to it, or with an invitation: its text, or the
+//! link a site holds sealed for it, is pasted into the sheet and redeemed where it names.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -207,10 +206,24 @@ fn site() -> (Responder, Arc<Mutex<String>>) {
     (responder, page)
 }
 
-/// A site that lists `entries` and answers nothing else: an entry is entered on a session with its
-/// host, never asked here.
+/// A site that lists `entries` and publishes the host their entries are at, and answers nothing
+/// else: an entry is entered at that host, never asked here.
 fn joining_site(entries: Vec<DirectoryEntry>) -> Responder {
-    let page = page_of(entries);
+    let host = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+    let page = serde_json::to_string(&DirectoryPage {
+        host: Some(tilo_server_protocol::web::PageHost {
+            server_cert: certified(
+                &host,
+                &host,
+                "The site",
+                tilo_user_identity::DeviceCapabilities::member(),
+            ),
+            address: None,
+            origin: None,
+        }),
+        workspaces: entries,
+    })
+    .expect("a directory page");
     Responder::handle(move |request| {
         let body = match (request.method.as_str(), request.target.as_str()) {
             ("GET", "/entry.json") => r#"{"directory":"directory"}"#.to_owned(),

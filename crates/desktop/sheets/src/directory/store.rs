@@ -145,28 +145,30 @@ impl Store {
             .cloned()
     }
 
-    /// Join `listing`, which the sheet knows as `key`: a workspace another
-    /// person's host keeps is joined with an invitation it sends, never by
-    /// entering through its site, so a listing with none is told to ask for
-    /// one.
+    /// Join `listing`, which the sheet knows as `key`, through the open entry
+    /// its directory publishes, as a pasted link to it does: this device
+    /// signs its own admission there.
     ///
     /// # Errors
-    /// What a person does instead: ask for an invitation.
-    pub fn join(&self, _key: &str, listing: &Listed, _person: &Person) -> Result<(), String> {
+    /// The listing publishes no entry: its workspace lets people in by
+    /// invitation only.
+    pub fn join(&self, key: &str, listing: &Listed) -> Result<(), String> {
         let name = listing.entry.name.trim();
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            workspace = %listing.entry.workspace,
-            key = %listing.key(),
-            site = %listing.host,
-            name = %name,
-            outcome = "no invitation",
-            "join: a listing is joined with an invitation, so nothing is asked of its site"
+        let workspace = &listing.entry.workspace;
+        let Some(host) = listing.entry_host.clone().filter(|_| !workspace.is_empty()) else {
+            return Err(format!(
+                "{name} takes people in by invitation: paste the invite link someone in it sends you"
+            ));
+        };
+        self.granted(
+            key,
+            name,
+            Granted {
+                workspace: workspace.clone(),
+                way: client::Way::Entry(Box::new(host)),
+            },
         );
-        Err(format!(
-            "{name} needs an invitation: open it on its site, or paste the invite link someone \
-             in it sends you"
-        ))
+        Ok(())
     }
 
     /// Join what the person pasted into the sheet — an invitation's text or a

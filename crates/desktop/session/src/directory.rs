@@ -58,9 +58,14 @@ pub fn follow(
     notices: &dyn Notices,
     host: &dyn Host,
 ) {
+    let answered = store.answered();
+    // What the person pressed goes first, so a listing joined through its entry is added in the
+    // same pass.
+    if let Some(state) = state {
+        carry_out(state, store, host);
+    }
     // A host set up to join one workspace joins it with nobody at the directory: what was granted
     // is taken and added whether or not the sheet is open.
-    let answered = store.answered();
     for joined in store.take_joined() {
         match host.add(&joined) {
             Ok(()) => {
@@ -102,12 +107,13 @@ pub fn follow(
     for said in store.take_failures_to_say() {
         failure_notice(notices, &said);
     }
-    let Some(state) = state else {
-        return;
-    };
-    if answered {
+    if answered && let Some(state) = state {
         state.show(view(store, host));
     }
+}
+
+/// Carry out what the person pressed in the sheet `state` shows.
+fn carry_out(state: &DirectoryState, store: &Store, host: &dyn Host) {
     for effect in state.take_asked() {
         match effect {
             DirectoryEffect::Join { key } => join_listed(state, store, host, &key),
@@ -193,31 +199,15 @@ fn join_listed(state: &DirectoryState, store: &Store, host: &dyn Host, key: &str
         }
         // One join at a time: the first is still on its way.
         Some(_) => return,
-        None => {
-            let joined = host
-                .person()
-                .inspect_err(|reason| {
-                    tracing::info!(
-                        target: JOIN_FLOW_TARGET,
-                        workspace = %listing.entry.workspace,
-                        %key,
-                        site = %listing.host,
-                        %reason,
-                        outcome = "no person to join as",
-                        "join: this host has no person to join as"
-                    );
-                })
-                .and_then(|person| store.join(key, &listing, &person));
-            match joined {
-                // The join is on its way: the sheet is done with it, and the person is told when it
-                // lands (or why it did not).
-                Ok(()) => {
-                    state.presentation().close();
-                    return;
-                }
-                Err(error) => store.set_note(Some(error)),
+        // The join is on its way: the sheet is done with it, and the person is told when it lands
+        // (or why it did not).
+        None => match store.join(key, &listing) {
+            Ok(()) => {
+                state.presentation().close();
+                return;
             }
-        }
+            Err(error) => store.set_note(Some(error)),
+        },
     }
     state.show(view(store, host));
 }
