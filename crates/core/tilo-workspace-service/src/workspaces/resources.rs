@@ -1389,6 +1389,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// As [`Self::open_resources`].
+    #[cfg(feature = "apps")]
     pub async fn open_resource_query(
         &self,
         context: &tilo_broker_core::services::ResourceRequestContext,
