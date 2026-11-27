@@ -158,7 +158,14 @@ fn two_desktops_message_each_other() {
     send(&studio.ada_laptop, &bob_key, "hello Bob");
     wait_for_texts(&studio.bob_laptop, &ada_key, &["hello Bob"]);
     send(&studio.bob_laptop, &ada_key, "hello Ada");
-    wait_for_texts(&studio.ada_laptop, &bob_key, &["hello Bob", "hello Ada"]);
+    // Both desktops read the two messages before either is compared: the one that answered shows
+    // its own message once its app lists it, which is a turn after the write it made.
+    for (device, peer) in [
+        (&studio.ada_laptop, &bob_key),
+        (&studio.bob_laptop, &ada_key),
+    ] {
+        wait_for_texts(device, peer, &["hello Bob", "hello Ada"]);
+    }
     assert_eq!(
         message_ids(&studio.ada_laptop, &bob_key),
         message_ids(&studio.bob_laptop, &ada_key),
@@ -293,13 +300,15 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
         show_chat(device, &studio.site);
         wait_for_texts(device, &ada_key, &["one", "two", "three"]);
     }
-    // Bob answers, and Ada's laptop, which stayed on, shows it with her own three.
+    // Bob answers, and Ada's laptop, which stayed on, shows it with her own three. His phone,
+    // which answered, shows her three with its own once its app lists the message it wrote.
     send(&studio.bob_phone, &ada_key, "answered");
     let all = ["one", "two", "three", "answered"];
     for (device, peer) in [
         (&studio.ada_laptop, &bob_key),
         (&studio.ada_phone, &bob_key),
         (&studio.bob_laptop, &ada_key),
+        (&studio.bob_phone, &ada_key),
     ] {
         wait_for_texts(device, peer, &all);
     }
@@ -705,6 +714,9 @@ fn enter(device: &mut Device, site: &Site, member: Option<&str>) {
 fn show_chat(device: &Device, site: &Site) {
     device.wait_holding(&site.workspace);
     device.wait_showing(&site.workspace);
+    // Chat is the device's own app until its session moves what it carries into the workspace:
+    // opening it before then finds a workspace that does not run it.
+    device.wait_apps_kept();
     device.open(CHAT);
     device.wait_for_window(CHAT);
     conversations_action(device, "write_to");
