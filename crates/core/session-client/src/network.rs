@@ -418,10 +418,6 @@ pub enum Cmd {
     /// Dial a workspace host: an always-on peer that keeps what this person's devices publish while
     /// the others are away.
     Connect(EndpointAddr),
-    /// Hear the person's other devices from now on.
-    WatchSiblings,
-    /// Say `msg` to each of the person's devices whose session is up.
-    TellSiblings(Box<NeighbourMsg>),
     /// Dial one of the person's own devices, for the session that carries their device fabric.
     ConnectDevice(EndpointAddr),
     /// Ask the host of the joined workspace on `ws` to replay what it retains.

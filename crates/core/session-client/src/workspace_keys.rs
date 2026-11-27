@@ -28,7 +28,6 @@ use std::time::Duration;
 
 use crate::network::{Cmd, RosterDevice, Topic, topic_of};
 
-use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
 use tilo_broker_core::collab_core::{BrokerChannels, BrokerSealChecks};
@@ -128,7 +127,6 @@ impl KeyService {
         let access = service.map(|service| {
             let access = SharedKeys::with_wake(service, Arc::new(move || poke.poke()));
             keys.set(Some(access.clone()));
-            link.answer_with(access.clone());
             access
         });
         let settled_access = access.clone();
@@ -187,9 +185,6 @@ pub struct KeyLink {
     records: Mutex<AskedRecords>,
     /// What this session says on the peer network, once it is running.
     outgoing: Mutex<Option<std::sync::Arc<dyn crate::Outbox>>>,
-    /// The workspaces whose group's frames this device asked the person's other devices for, each
-    /// with the epoch it held then ([`Self::want_frames`]).
-    wanted: Mutex<BTreeMap<ModelWorkspaceId, u64>>,
     /// This device's keys, which answer what the person's other devices ask of its groups.
     keys: Mutex<Option<SharedKeys>>,
     park: Arc<GovernancePark>,
@@ -203,7 +198,6 @@ impl KeyLink {
             changed: Mutex::new(BTreeSet::new()),
             records: Mutex::new(AskedRecords::new()),
             outgoing: Mutex::new(None),
-            wanted: Mutex::new(BTreeMap::new()),
             keys: Mutex::new(None),
             park: GovernancePark::new(),
         })
@@ -238,120 +232,6 @@ impl KeyLink {
         self.park.poke();
     }
 
-    /// Answer what the person's other devices ask of this device's groups with `keys`.
-    pub fn answer_with(&self, keys: SharedKeys) {
-        *self.keys.lock_recover() = Some(keys);
-    }
-
-    /// This device holds a write of `workspace` sealed under a key its group at `epoch` lacks: ask
-    /// the person's other devices for the group's frames from there on, as the workspace's host
-    /// would replay them, and for the frames of each of the workspace's reader groups this
-    /// device is in from the epoch it holds of that one. Asked once per epoch held, and again
-    /// whenever one of those devices comes up ([`Self::sibling_arrived`]).
-    pub fn want_frames(&self, workspace: ModelWorkspaceId, epoch: u64) {
-        let keys = self.keys.lock_recover().clone();
-        let groups = keys
-            .map(|keys| keys.reader_groups_of(workspace))
-            .unwrap_or_default();
-        for (group, epoch) in std::iter::once((workspace, epoch)).chain(groups) {
-            self.want_group(group, epoch);
-        }
-    }
-
-    /// This device holds `write` of `workspace` and could not open it: ask for the frames of
-    /// the group it is sealed under, which for a document sealed under its own group (the
-    /// workspace's vault) is no group of the workspace's, and for the workspace's own
-    /// ([`Self::want_frames`]).
-    pub fn want_write_frames(&self, workspace: ModelWorkspaceId, write: &collab_types::SignedOp) {
-        let group = write
-            .encryption
-            .map_or(workspace, |metadata| metadata.key_group(workspace));
-        if group != workspace {
-            self.want_group(group, 0);
-        }
-        self.want_frames(workspace, 0);
-    }
-
-    /// Ask the person's other devices for `group`'s frames from `epoch` on, once per epoch.
-    fn want_group(&self, group: ModelWorkspaceId, epoch: u64) {
-        if self.wanted.lock_recover().insert(group, epoch) == Some(epoch) {
-            return;
-        }
-        self.tell_siblings(NeighbourMsg::MlsGovernanceWanted {
-            workspace: group.to_string(),
-            from_epoch: epoch,
-        });
-    }
-
-    /// One of the person's devices came up: it hears what this device still waits for.
-    pub fn sibling_arrived(&self) {
-        // What a group moved past since it was asked for is not asked again.
-        let keys = self.keys.lock_recover().clone();
-        let wanted = {
-            let mut wanted = self.wanted.lock_recover();
-            wanted.retain(|workspace, epoch| {
-                keys.as_ref()
-                    .and_then(|keys| keys.record_keys(*workspace))
-                    .and_then(Result::ok)
-                    .is_none_or(|held| held.epoch() <= *epoch)
-            });
-            wanted.clone()
-        };
-        for (workspace, epoch) in wanted {
-            self.tell_siblings(NeighbourMsg::MlsGovernanceWanted {
-                workspace: workspace.to_string(),
-                from_epoch: epoch,
-            });
-        }
-    }
-
-    /// Take in what `peer`, one of the person's devices, said on the session between the two: a
-    /// group's frames and access requests go to the key service as the host's do, which judges
-    /// them alike; an ask for frames is answered with this device's own, when the group admits
-    /// `peer`, each in the workspace that carries the group.
-    pub fn heard_from_sibling(&self, peer: [u8; 32], message: &NeighbourMsg) {
-        match message {
-            NeighbourMsg::MlsGovernance { .. } | NeighbourMsg::MlsAccessRequest { .. } => {
-                self.heard(message);
-            }
-            NeighbourMsg::MlsGovernanceWanted {
-                workspace,
-                from_epoch,
-            } => {
-                let Some(workspace) = ModelWorkspaceId::parse(workspace) else {
-                    return;
-                };
-                let keys = self.keys.lock_recover().clone();
-                let Some(keys) = keys else {
-                    return;
-                };
-                let frames =
-                    keys.frames_for(workspace, &Ed25519PublicKey::from_bytes(peer), *from_epoch);
-                // The frames go under the scope their group's governance travels in: a document's
-                // frames name its route, and are read as that group's, not as the workspace's.
-                let scope = keys
-                    .scope_of(workspace)
-                    .unwrap_or_else(|| keys.carrier(workspace).to_string());
-                for frame in frames {
-                    self.tell_siblings(NeighbourMsg::MlsGovernance {
-                        workspace: scope.clone(),
-                        frame: Box::new(frame),
-                        delivery: 0,
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Say `message` to the person's other devices whose sessions are up.
-    fn tell_siblings(&self, message: NeighbourMsg) {
-        let outgoing = self.outgoing.lock_recover().clone();
-        if let Some(outgoing) = outgoing {
-            let _ = outgoing.send(Cmd::TellSiblings(Box::new(message)));
-        }
-    }
-
     /// Say `message`, group governance of `workspace`, on the peer network; `false` when the peer network is
     /// not running.
     fn say(&self, workspace: ModelWorkspaceId, message: NeighbourMsg) -> bool {
@@ -380,6 +260,12 @@ impl KeyLink {
     /// Workspace `workspace` 's state moved here: the devices it admits and the groups its
     /// records are may differ from what was last read.
     pub fn workspace_changed(&self, workspace: ModelWorkspaceId) {
+        // Its governance names the readers of its records: a message of a record's group kept for
+        // them is judged in the pass this wakes.
+        let keys = self.keys.lock_recover().clone();
+        if let Some(keys) = keys {
+            keys.workspace_settled(workspace);
+        }
         self.changed.lock_recover().insert(workspace);
         self.park.poke();
     }
@@ -506,9 +392,6 @@ impl GovernanceTransport for KeyLink {
         let Some(workspace) = governance_workspace(&message) else {
             return false;
         };
-        // The person's other devices hear it whether the workspace's host is there or not: a device
-        // of theirs that fell behind asks them to be admitted again, and is admitted by them.
-        self.tell_siblings(message.clone());
         self.say(workspace, message)
     }
 
@@ -755,6 +638,7 @@ pub fn roster_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Roster,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use collab_types::Ed25519PublicKey;
 
     tilo_test_env::scenario! {
         fn governance_reaches_the_groups_through_the_key_link;
@@ -793,58 +677,6 @@ mod tests {
                 "a governance frame waits for the next settle"
             );
             assert!(link.take_inbound().is_empty(), "and is taken once");
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_write_this_device_cannot_open_asks_for_the_group_it_is_sealed_under;
-
-        phase a_document_sealed_under_its_own_group_asks_for_that_group;
-        // A document sealed under a group of its own (the workspace's vault) is opened with that
-        // group's keys, not the workspace's: a device that lacks them asks the person's other
-        // devices for that group's frames, beside the workspace's own, and once per epoch.
-        {
-            let link = KeyLink::new();
-            let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
-            link.attach(Arc::new(outgoing));
-            let workspace = ModelWorkspaceId::new();
-            let vault = ModelWorkspaceId::new();
-            let mut write = collab_types::SignedOp::new_unsigned(
-                b"sealed".to_vec(),
-                collab_types::ArtifactId::new(),
-                Ed25519PublicKey::from_bytes([1; 32]),
-                collab_types::AttestationId::new(),
-                collab_types::OpKind::Change,
-                std::time::SystemTime::UNIX_EPOCH,
-                1,
-            );
-            write.encryption = Some(collab_types::EncryptionMetadata::content_group(
-                workspace,
-                vault,
-                3,
-                collab_types::ContentRetention::Delta,
-            ));
-            let wanted = |said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>| {
-                let mut groups = Vec::new();
-                while let Ok(command) = said.try_recv() {
-                    if let Cmd::TellSiblings(message) = command
-                        && let NeighbourMsg::MlsGovernanceWanted { workspace, .. } = *message
-                    {
-                        groups.push(workspace);
-                    }
-                }
-                groups.sort();
-                groups
-            };
-            link.want_write_frames(workspace, &write);
-            let mut both = vec![vault.to_string(), workspace.to_string()];
-            both.sort();
-            assert_eq!(wanted(&mut said), both);
-            link.want_write_frames(workspace, &write);
-            assert!(
-                wanted(&mut said).is_empty(),
-                "what was asked for at an epoch is not asked again"
-            );
         }
     }
 

@@ -228,9 +228,6 @@ impl std::fmt::Debug for Engine {
 pub struct HistoryKeys {
     keys: KeyProvider,
     handed: Arc<std::sync::Mutex<RouteKeys>>,
-    /// Where this device asks its other devices for a group's frames when a write is sealed
-    /// under an epoch whose key it does not hold ([`workspace_keys::KeyLink::want_frames`]).
-    link: Arc<std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>>,
 }
 
 impl HistoryKeys {
@@ -240,7 +237,6 @@ impl HistoryKeys {
         Self {
             keys,
             handed: Arc::default(),
-            link: Arc::default(),
         }
     }
 
@@ -268,19 +264,10 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
         let group = write
             .encryption
             .map_or(workspace, |metadata| metadata.key_group(workspace));
-        let opened = match self.handed(group) {
+        match self.handed(group) {
             Some(handed) => handed.open(write),
             None => self.service()?.open_history_write(workspace, write),
-        };
-        if opened.is_err()
-            && let Some(link) = self.link.lock_recover().clone()
-        {
-            // A write sealed under an epoch whose key is not here yet: the person's other devices
-            // are asked for the frames of the group it is sealed under, as they are for any
-            // record's keys.
-            link.want_write_frames(workspace, write);
         }
-        opened
     }
 
     fn named_readers(&self, workspace: WorkspaceId, document: &str) -> Option<String> {
@@ -330,7 +317,6 @@ impl Engine {
         owner.keep_sealed_histories(Arc::new(HistoryKeys {
             keys: keys.clone(),
             handed: Arc::clone(&handed),
-            link: Arc::clone(&link),
         }));
         Self {
             owner,

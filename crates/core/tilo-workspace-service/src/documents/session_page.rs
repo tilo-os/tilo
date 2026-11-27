@@ -19,18 +19,13 @@ pub fn page_holder(engine: &Arc<Engine>, workspace: WorkspaceId) -> Option<HeldD
         .with_current(workspace, |view| Ok(view.device().device_public_key))
         .ok()?;
     let handed = Arc::downgrade(engine);
-    let behind = Arc::downgrade(engine);
     let keys = crate::own_device::key_groups(
         engine.keys(),
         Some(Box::new(move |workspace| {
             WorkspaceId::parse(workspace).and_then(|id| handed.upgrade()?.handed_keys(id))
         })),
         None,
-        Some(Arc::new(move |group, held| {
-            if let Some(link) = behind.upgrade().and_then(|engine| engine.link()) {
-                link.want_frames(group, held);
-            }
-        })),
+        None,
     )
     .keys;
     Some(HeldDocuments::over(
