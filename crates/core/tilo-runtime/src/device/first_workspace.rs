@@ -90,12 +90,6 @@ impl FirstWorkspace {
             },
             (None, None) => None,
         };
-        // A workspace here when the daemon starts is settled by the start itself.
-        let settled = if named.is_some() {
-            tokio::sync::OnceCell::new_with(Some(()))
-        } else {
-            tokio::sync::OnceCell::new()
-        };
         Ok(Arc::new(Self {
             file,
             id: named.map_or_else(tokio::sync::OnceCell::new, |named| {
@@ -104,7 +98,9 @@ impl FirstWorkspace {
             workspaces,
             replicas: OnceLock::new(),
             settling: OnceLock::new(),
-            settled,
+            // A workspace here when the daemon starts is settled as one founded later is: the
+            // start settles it ([`Self::settle`]), and so does whatever reaches it first.
+            settled: tokio::sync::OnceCell::new(),
         }))
     }
 
@@ -127,8 +123,8 @@ impl FirstWorkspace {
     }
 
     /// Have `settling` done once the person's workspace is here: when it is founded, and when
-    /// whatever first reaches it finds it came in from their desktop ([`Self::settle`]). A
-    /// workspace here when the daemon started is the start's own to settle.
+    /// whatever first reaches it finds it came in from their desktop ([`Self::settle`]), and as
+    /// the daemon starts when it is here already.
     pub(crate) fn when_here(&self, settling: Settling) {
         let _ = self.settling.set(settling);
     }

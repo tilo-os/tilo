@@ -2860,43 +2860,19 @@ impl Daemon {
                 Arc::clone(&asked) as Arc<dyn tilo_actions::remote::asked::AskedReads>
             );
         }
-        // A device that keeps the person's root says so in their devices record, signed by that
-        // root, and answers what their devices without it hand on; every device follows the
-        // calls kept for one, to take them up or to show how its own ended.
-        let held_root = self::root().ok().flatten().filter(|_| !confined);
-        let (copies, cert) = (workspaces.copies().clone(), identity.cert.clone());
-        let (serving, following) = (Tickets::clone(&tickets), Arc::downgrade(&asked));
+        // The person's workspace here as the daemon starts is settled now, as one founded or
+        // arriving later is: this device listed with their others and, where it keeps their root,
+        // marked as the one that does, in one write, and their root-only asks served here
+        // ([`super::first_workspace::FirstWorkspace::settle`]). Settling is what marks a root;
+        // a settling refused here is tried again by the first call that needs the workspace, and
+        // answered to it. Every device follows the calls kept for a root, to take them up or to
+        // show how its own ended.
+        let copies = workspaces.copies().clone();
+        let settling = Arc::clone(&first);
+        let following = Arc::downgrade(&asked);
         tilo_rt::app().handle().spawn(async move {
-            use tilo_workspace_service::workspaces::person_workspace;
-            // A person founded on this computer has no workspace here until their first call
-            // founds it, and settling it marks this device then
-            // ([`super::first_workspace::FirstWorkspace::settle`]).
-            let held_root = match held_root {
-                Some(root)
-                    if copies
-                        .state(&person_workspace::workspace_id(&copies))
-                        .await
-                        .is_some() =>
-                {
-                    Some(root)
-                }
-                _ => None,
-            };
-            if let Some(root) = held_root {
-                match person_workspace::devices::mark_root_holder(
-                    &copies, &root, &cert,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        if let Some(asked) = following.upgrade() {
-                            asked.serve_at_root(serving);
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "this device's root is not marked in its person's devices");
-                    }
-                }
+            if let Err(error) = settling.settle().await {
+                tracing::warn!(%error, "the person's workspace is not settled as the daemon starts");
             }
             copies.follow_asked_at_root(move |asks| {
                 if let Some(asked) = following.upgrade() {
