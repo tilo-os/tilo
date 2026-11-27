@@ -2137,7 +2137,15 @@ fn workspace_members(
         row.avatar = workspaces
             .person_profile_photo(&root)
             .map(collab_types::AvatarBytes);
-        rows.push(row.members_row(root == owner));
+        let mut row = row.members_row(root == owner);
+        // The parts of the workspace someone holds a role over, when it is not all of it.
+        if let Some(scope) = policy.member_scope(&person).filter(|_| !member.removed)
+            && let Some(fields) = row.as_object_mut()
+        {
+            let scope: Vec<String> = scope.iter().map(ToString::to_string).collect();
+            fields.insert("scope".into(), serde_json::json!(scope));
+        }
+        rows.push(row);
     }
     for (agent, _) in policy.agent_members_at(now) {
         let id = agent.id().to_owned();

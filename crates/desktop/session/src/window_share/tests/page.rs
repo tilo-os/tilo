@@ -1557,11 +1557,7 @@ fn the_page_of_a_window_nobody_shared_reaches_nobody_who_asks_for_it() {
 /// Whether `session`'s shell names the share of the window in `tab` in its workspace's governance.
 fn names_the_share(session: &Session, tab: u64) -> bool {
     session.handle().read(|tree| {
-        tree.workspaces[0]
-            .policy
-            .grants
-            .iter()
-            .any(|grant| is_of_share(grant, &window_share_id(tab)))
+        tilo_desktop_model::window_share::shares_window(&tree.workspaces[0].policy, tab)
     })
 }
 

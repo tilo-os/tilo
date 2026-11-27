@@ -39,6 +39,8 @@ pub struct Person {
     /// Their role's key among [`People::roles`], where it is one of them.
     pub role_key: Option<String>,
     pub additional_roles: Vec<String>,
+    /// The parts of the workspace their role is over, when it is not all of it.
+    pub scope: Option<String>,
     /// Their extra permissions, only when they have any.
     pub extra: Option<String>,
     pub offers: Offers,
@@ -251,11 +253,17 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
     if person.you {
         row = row.tags(&[(people.you_tag.as_str(), ChipStyle::Neutral)]);
     }
-    let details: Vec<&str> = people
-        .custom_roles
-        .iter()
-        .filter(|role| person.additional_roles.contains(&role.key))
-        .map(|role| role.label.as_str())
+    let details: Vec<&str> = person
+        .scope
+        .as_deref()
+        .into_iter()
+        .chain(
+            people
+                .custom_roles
+                .iter()
+                .filter(|role| person.additional_roles.contains(&role.key))
+                .map(|role| role.label.as_str()),
+        )
         .chain(person.extra.as_deref())
         .collect();
     if !details.is_empty() {
@@ -358,6 +366,7 @@ pub(super) fn sample() -> People {
         role: role.to_owned(),
         role_key: Some(role.to_lowercase()),
         additional_roles: Vec::new(),
+        scope: None,
         extra: None,
         offers,
         can_manage: offers != Offers::Nothing,

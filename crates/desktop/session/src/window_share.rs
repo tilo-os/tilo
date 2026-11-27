@@ -32,7 +32,7 @@ use media::realtime::CodecCapabilities;
 use neighbour_wire::{PeerId, SurfaceId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tilo_action_policy::share::{ShareAccess, is_of_share, share_grants};
+use tilo_action_policy::{Grantee, Role};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, Selection};
@@ -41,7 +41,7 @@ use tilo_session_core::surface::Scroll;
 
 use self::peer::{PeerStreamStart, WhyEnded};
 use tilo_desktop_model::window_share::{
-    mapped_window, window_node, window_of_node, window_share_id, window_shares,
+    mapped_window, shares_window, window_node, window_of_node, window_shares,
 };
 use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
@@ -703,7 +703,6 @@ impl WindowShares {
             share_source.share(workspace, app_id, tab, true);
             return;
         }
-        let share = window_share_id(tab);
         let node = window_node(workspace, app_id, tab);
         if let Some((view, id)) = governing(view, workspace) {
             // This device's signer signs the change and may answer only later: the write runs off
@@ -713,7 +712,7 @@ impl WindowShares {
                 let view = Arc::clone(view);
                 off_loop(async move {
                     Membership::of(&view, id)
-                        .share(&share, node, ShareAccess::View)
+                        .set_scoped_role(Grantee::role(Role::Viewer), node, Some(Role::Viewer))
                         .await
                 })
             };
@@ -730,13 +729,6 @@ impl WindowShares {
             });
             return;
         }
-        let grants = match share_grants(workspace, &self.person, &share, &node, ShareAccess::View) {
-            Ok(grants) => grants,
-            Err(error) => {
-                tracing::warn!(%error, tab, "a window cannot be shared with the workspace");
-                return;
-            }
-        };
         let mut tree = session.read(Clone::clone);
         let mut changed = false;
         for held in tree
@@ -744,12 +736,10 @@ impl WindowShares {
             .iter_mut()
             .filter(|held| held.policy.workspace == workspace)
         {
-            for grant in &grants {
-                let present = held.policy.grants.iter().any(|known| known.id == grant.id);
-                if !present {
-                    held.policy.grants.push(grant.clone());
-                    changed = true;
-                }
+            if !shares_window(&held.policy, tab) {
+                held.policy
+                    .share_with_everyone(&node, Some(Role::Viewer), &self.person);
+                changed = true;
             }
         }
         if changed {
@@ -763,15 +753,12 @@ impl WindowShares {
     /// or not the session still names it — a window that closed took its grants off the shell as it
     /// went — and one that lives only on this session ends it there.
     fn retract(&mut self, session: &DesktopHandle, view: Option<&Arc<WorkspaceView>>, tab: TabId) {
-        let share = window_share_id(tab);
         // A share still on its way into a governance is not there to end yet: it ends once it
         // landed.
         if let Some(ended) = self.writing.borrow_mut().get_mut(&tab) {
             *ended = true;
         }
-        let shares = |policy: &tilo_action_policy::WorkspacePolicy| {
-            policy.grants.iter().any(|grant| is_of_share(grant, &share))
-        };
+        let shares = |policy: &tilo_action_policy::WorkspacePolicy| shares_window(policy, tab);
         if let Some(share_source) = &self.share_source {
             let sharing: Vec<String> = session.read(|tree| {
                 tree.workspaces
@@ -800,12 +787,22 @@ impl WindowShares {
             let Some((view, id)) = governing(view, workspace) else {
                 continue;
             };
-            if !view.policy(workspace).is_ok_and(|policy| shares(&policy)) {
+            let Some(scope) = view.policy(workspace).ok().and_then(|policy| {
+                policy
+                    .everyone
+                    .iter()
+                    .map(|entry| entry.scope.clone())
+                    .find(|scope| window_of_node(scope).is_some_and(|(_, shared)| shared == tab))
+            }) else {
                 continue;
-            }
+            };
             let written = {
-                let (view, share) = (Arc::clone(view), share.clone());
-                off_loop(async move { Membership::of(&view, id).unshare(&share).await })
+                let view = Arc::clone(view);
+                off_loop(async move {
+                    Membership::of(&view, id)
+                        .set_scoped_role(Grantee::role(Role::Viewer), scope, None)
+                        .await
+                })
             };
             self.once_landed(session, view, workspace, written, move |answer| {
                 if let Err(error) = answer {
@@ -865,7 +862,6 @@ impl WindowShares {
         view: Option<&Arc<WorkspaceView>>,
         now: Instant,
     ) -> Vec<Shared> {
-        let now_ms = tilo_clock::unix_now_ms();
         let mut shared = Vec::new();
         for held in &tree.workspaces {
             let workspace = held.policy.workspace.clone();
@@ -881,7 +877,7 @@ impl WindowShares {
                         .or_insert_with(|| hex::encode(device));
                 }
             }
-            for (tab, share) in window_shares(&held.policy, &owners, now_ms) {
+            for (tab, share) in window_shares(&held.policy, &owners) {
                 if peer_salt_of(tab) == self.salt {
                     // This device's own window: it streams from here, and shows no tab of itself.
                     continue;
@@ -2599,9 +2595,9 @@ fn shares_of_unheard(
     owners: &BTreeMap<u16, String>,
 ) -> bool {
     policy
-        .grants
+        .everyone
         .iter()
-        .filter_map(|grant| window_of_node(&grant.node))
+        .filter_map(|entry| window_of_node(&entry.scope))
         .any(|(_, tab)| !owners.contains_key(&peer_salt_of(tab)))
 }
 

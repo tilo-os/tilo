@@ -207,7 +207,11 @@ fn historical_basis(
             canonical_bytes(grant).map_err(|_| BasisError::Malformed)?,
         );
     }
-    let members: BTreeMap<String, tilo_action_policy::Role> = membership.members;
+    let members: BTreeMap<String, tilo_action_policy::Role> = membership
+        .members
+        .iter()
+        .map(|(person, assigned)| (person.clone(), assigned.role()))
+        .collect();
     let peers = strict_map(doc, &ROOT, "peers")?;
     let mut roster = BTreeSet::new();
     for key in doc.keys(&peers) {

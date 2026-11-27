@@ -96,7 +96,7 @@ tilo_test_env::scenario! {
         assert!(policy.is_owner(&new));
         assert!(!policy.members.contains_key(&new), "an owner is no member");
         assert!(!policy.is_administrator(&new));
-        assert_eq!(policy.members.get(&old), Some(&Role::Editor));
+        assert_eq!(policy.role_of(&old), Some(Role::Editor));
         assert!(policy.is_administrator(&old), "the owner it replaced administers it");
         let grant = policy
             .grants

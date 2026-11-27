@@ -1252,7 +1252,7 @@ mod tests {
             for member in 0..400 {
                 policy
                     .members
-                    .insert(format!("member-{member}"), tilo_action_policy::Role::Viewer);
+                    .insert(format!("member-{member}"), tilo_action_policy::Role::Viewer.into());
             }
             let access = AppAccess {
                 app: "so.tilo.notes".into(),

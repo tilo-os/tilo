@@ -239,8 +239,8 @@ fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may(
 
     let base = || {
         let mut policy = WorkspacePolicy::new(id.clone(), owner.clone());
-        policy.members.insert(author.clone(), Role::Editor);
-        policy.members.insert(member.clone(), Role::Editor);
+        policy.members.insert(author.clone(), Role::Editor.into());
+        policy.members.insert(member.clone(), Role::Editor.into());
         policy
     };
     // The agent's own grant: it may take the chat's changes, whichever person's turn it answers,

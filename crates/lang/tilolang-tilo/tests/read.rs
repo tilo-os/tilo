@@ -389,7 +389,7 @@ fn deny_cy(chain: &Chain) {
             .resource(at.id_string())
     };
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
-    policy.members.insert("cy".to_owned(), Role::Viewer);
+    policy.members.insert("cy".to_owned(), Role::Viewer.into());
     for (id, at) in [
         ("hide-secret", node("Post", &chain.secret)),
         ("hide-secret-ask", node("Ask", &chain.secret_ask)),

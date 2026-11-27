@@ -118,11 +118,7 @@ fn a_window_on_another_device_is_said_not_shared_until_it_is_and_again_once_its_
         .expect("the share is stopped");
     until(&mut host, &mut window, &mut viewer, |host, _, _| {
         !host.session.handle().read(|tree| {
-            tree.workspaces[0]
-                .policy
-                .grants
-                .iter()
-                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+            tilo_desktop_model::window_share::shares_window(&tree.workspaces[0].policy, tab)
         })
     });
     carry_governance(&host.session, &viewer.session);

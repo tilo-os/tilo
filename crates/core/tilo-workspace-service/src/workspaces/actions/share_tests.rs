@@ -1,6 +1,7 @@
-//! A member's share of one record or item with a workspace this host serves,
-//! as a page asks it (`crate::workspaces::shares`): the same rule every receiver
-//! holds a device's own share to (`tilo_peer_state::workspace::share`).
+//! `grant.set`: this host's own person giving someone, or everyone, a role over one part of a
+//! workspace it serves (`crate::workspaces::shares`). The host decides each as its caller's, as
+//! every receiver decides a device's own, and signs only its own person's: everyone else shares
+//! from their own device, but for a window of a device this host placed in the workspace.
 
 #![expect(
     clippy::significant_drop_tightening,
@@ -8,75 +9,76 @@
 )]
 
 use serde_json::{Value, json};
+use tilo_action_policy::{Grantee, Role, TreePath};
+use tilo_action_types::ActionKind;
+use tilo_actions::remote::{
+    ActionCallError, ActionProvider as _, ReceiptStatus, WORKSPACE_GRANT_SET,
+};
+use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::DeviceCert;
 
-use super::tests::{admit, hosted};
+use super::ServiceWorkspaceActions;
+use super::tests::{admit, caller, hosted, request, settled};
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{hosting_device, test_host};
+use crate::workspaces::tests::{guest_device, hosting_device, test_host};
 
-const SHARE_RESOURCE: &str = "share";
-const UNSHARE_RESOURCE: &str = "unshare";
-const RESOURCE_PERMITS: &str = "permits";
-
-/// A member's ask of `workspace`: share, end a share, or what they may do at a
-/// node, with its arguments.
-struct Ask {
+/// One workspace this host serves, and how its members ask it.
+struct Asked<'a> {
+    workspaces: &'a Workspaces,
     workspace: String,
-    action: &'static str,
-    argument: Value,
+    id: WorkspaceId,
+    host: ServiceWorkspaceActions,
 }
 
-fn member_request(workspace: &str, action: &'static str, argument: Value) -> Ask {
-    Ask {
-        workspace: workspace.to_owned(),
-        action,
-        argument,
+impl Asked<'_> {
+    /// `device`'s `grant.set`: `role` (`null` takes their share back) over `address` for
+    /// `person`, a person's hex root or `everyone`.
+    async fn set(
+        &self,
+        device: &DeviceCert,
+        person: &str,
+        address: &str,
+        role: Option<&str>,
+    ) -> Result<Value, ActionCallError> {
+        let argument = json!({ "person": person, "address": address, "role": role });
+        let pending = self.host.in_workspace(self.id).invoke(
+            &caller(device),
+            request(&self.workspace, WORKSPACE_GRANT_SET, argument),
+        );
+        let receipt = settled(pending).await?;
+        match receipt.status {
+            ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+            other => panic!("a share completes at once: {other:?}"),
+        }
+    }
+
+    /// Whether `device`'s person may do `kind` at `node`, as the workspace decides now.
+    async fn may(&self, device: &DeviceCert, node: &str, kind: ActionKind) -> bool {
+        let node: TreePath = node.parse().unwrap();
+        let now = web_time::SystemTime::now();
+        let state = self.workspaces.workspace(&self.workspace).await.unwrap();
+        let locked = state.lock().await;
+        let member = locked
+            .peer()
+            .permissions(device.device_public_key, now)
+            .unwrap();
+        member.allows(&node, kind, now)
+    }
+
+    async fn policy(&self) -> tilo_action_policy::WorkspacePolicy {
+        let state = self.workspaces.workspace(&self.workspace).await.unwrap();
+        let locked = state.lock().await;
+        tilo_peer_state::workspace::policy_of(
+            locked.peer().admitted_workspace().unwrap(),
+            &self.workspace,
+        )
     }
 }
 
-/// What the workspace answers `ask` from `device`.
-async fn invoke(workspaces: &Workspaces, device: &DeviceCert, ask: Ask) -> Result<Value, String> {
-    let text = |key: &str| ask.argument[key].as_str().unwrap_or_default().to_owned();
-    let node = || -> Result<tilo_action_policy::TreePath, String> {
-        text("node").parse().map_err(|_| "not a node".to_owned())
-    };
-    match ask.action {
-        SHARE_RESOURCE => {
-            let access = text("access").parse().map_err(|_| "no access".to_owned())?;
-            workspaces
-                .share_resource(&ask.workspace, device, &text("share"), &node()?, access)
-                .await
-                .map(|grants| json!({ "grants": grants }))
-        }
-        UNSHARE_RESOURCE => workspaces
-            .unshare_resource(&ask.workspace, device, &text("share"))
-            .await
-            .map(|revoked| json!({ "revoked": revoked })),
-        _ => {
-            let node = node()?;
-            let now = web_time::SystemTime::now();
-            let state = workspaces
-                .workspace(&ask.workspace)
-                .await
-                .map_err(|error| error.to_string())?;
-            let held = state.lock().await;
-            let member = held
-                .peer()
-                .permissions(device.device_public_key, now)
-                .map_err(|error| error.to_string())?;
-            drop(held);
-            return Ok(json!({
-                "read": member.allows(&node, tilo_action_types::ActionKind::Read, now),
-                "undoable": member.allows(&node, tilo_action_types::ActionKind::Undoable, now),
-            }));
-        }
-    }
-    .map_err(|error| error.to_string())
-}
-
-/// An item of Notes' own record of `workspace`, by its id.
+/// A note in Notes in `workspace`, by its id.
 fn note(workspace: &str, id: &str) -> String {
-    tilo_action_policy::TreePath::workspace(workspace)
+    TreePath::workspace(workspace)
         .app("so.tilo.notes")
         .kind("notes.notebook")
         .any(tilo_action_policy::Level::Resource)
@@ -84,162 +86,20 @@ fn note(workspace: &str, id: &str) -> String {
         .to_string()
 }
 
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one share told whole, through both paths, in order"
-)]
-async fn a_share_grants_the_workspace_one_item_until_its_sharer_ends_it() {
-    use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
-
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = hosting_device();
-    let server = test_host(dir.path(), &key, &owner).await;
-    let workspaces = server.workspaces();
-    let (workspace, _, _) = hosted(workspaces).await;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let bo = admit(workspaces, &workspace, &owner, 2).await;
-    workspaces
-        .set_member_role(
-            &workspace,
-            &owner,
-            crate::workspaces::SetMemberRoleRequest {
-                request_id: [40; 32],
-                user_public_key: bo.user_public_key,
-                role: tilo_peer_state::join::Role::Viewer,
-            },
-        )
-        .await
-        .unwrap();
-    let (p1, p2) = (note(&workspace, "p1"), note(&workspace, "p2"));
-    let permits =
-        |node: &str| member_request(&workspace, RESOURCE_PERMITS, json!({ "node": node }));
-    let share = |access: &str| {
-        member_request(
-            &workspace,
-            SHARE_RESOURCE,
-            json!({ "share": "m1", "node": p1, "access": access }),
-        )
-    };
-    let unshare = || member_request(&workspace, UNSHARE_RESOURCE, json!({ "share": "m1" }));
-    let bo_writes = |node: &str| {
-        let request = permits(node);
-        let bo = &bo;
-        async move {
-            invoke(workspaces, bo, request).await.unwrap()["undoable"]
-                .as_bool()
-                .unwrap()
-        }
-    };
-
-    // Bo, a Viewer, reads the note and writes nothing.
-    let before = invoke(workspaces, &bo, permits(&p1)).await.unwrap();
-    assert_eq!(before, json!({ "read": true, "undoable": false }));
-
-    // Bo cannot hand out more than he holds.
-    assert!(invoke(workspaces, &bo, share("edit")).await.is_err());
-
-    // A view share gives no writes.
-    let viewed = invoke(workspaces, &ada, share("view")).await.unwrap();
-    assert_eq!(viewed, json!({ "grants": 1 }));
-    assert!(!bo_writes(&p1).await);
-
-    // Ada, an Editor, shares it to edit: Bo writes that note, not its sibling.
-    invoke(workspaces, &ada, share("edit")).await.unwrap();
-    assert!(bo_writes(&p1).await);
-    assert!(
-        !bo_writes(&p2).await,
-        "a sibling note stays as Bo's role has it"
-    );
-    assert_eq!(
-        invoke(workspaces, &ada, share("edit")).await.unwrap(),
-        json!({ "grants": 1 }),
-        "a repeat is the same share"
-    );
-    // The page's action API decides the same.
-    assert_eq!(
-        workspaces
-            .page_workspaces(
-                &bo,
-                WorkspacesRequest::Permits {
-                    workspace: workspace.clone(),
-                    node: p1.clone(),
-                },
-            )
-            .await,
-        WorkspacesReply::Permits(true)
-    );
-
-    // Only its sharer ends it.
-    assert_eq!(
-        invoke(workspaces, &bo, unshare()).await.unwrap(),
-        json!({ "revoked": 0 })
-    );
-    assert!(bo_writes(&p1).await);
-    assert_eq!(
-        invoke(workspaces, &ada, unshare()).await.unwrap(),
-        json!({ "revoked": 1 })
-    );
-    assert!(!bo_writes(&p1).await);
-
-    // Shared again through a page's action API, and ended there.
-    let shared = workspaces
-        .page_workspaces(
-            &ada,
-            WorkspacesRequest::Share {
-                workspace: workspace.clone(),
-                share: "m1".into(),
-                node: p1.clone(),
-                access: "edit".into(),
-            },
-        )
-        .await;
-    assert_eq!(shared, WorkspacesReply::Shared(1));
-    assert!(bo_writes(&p1).await);
-    let every = tilo_action_policy::TreePath::workspace(&workspace)
-        .app("so.tilo.notes")
-        .kind("notes.notebook")
-        .any(tilo_action_policy::Level::Resource)
-        .to_string();
-    assert!(matches!(
-        workspaces
-            .page_workspaces(
-                &ada,
-                WorkspacesRequest::Share {
-                    workspace: workspace.clone(),
-                    share: "m2".into(),
-                    node: every,
-                    access: "view".into(),
-                },
-            )
-            .await,
-        WorkspacesReply::Refused(_)
-    ));
-    assert_eq!(
-        workspaces
-            .page_workspaces(
-                &ada,
-                WorkspacesRequest::Unshare {
-                    workspace: workspace.clone(),
-                    share: "m1".into(),
-                },
-            )
-            .await,
-        WorkspacesReply::Shared(1)
-    );
-    assert!(!bo_writes(&p1).await);
-    server.shutdown().await;
+fn refused(answer: Result<Value, ActionCallError>) -> String {
+    match answer {
+        Err(ActionCallError::Refused { reason }) => reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
 }
 
 #[tokio::test]
-async fn a_share_to_edit_lifts_no_restriction() {
-    use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
-
+async fn the_owner_shares_one_note_with_everyone_until_they_take_it_back() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, _, _) = hosted(workspaces).await;
+    let (workspace, id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     workspaces
@@ -254,195 +114,213 @@ async fn a_share_to_edit_lifts_no_restriction() {
         )
         .await
         .unwrap();
-    let p1 = note(&workspace, "p1");
-    let shared = json!({ "share": "m1", "node": p1, "access": "edit" });
-    invoke(
+    let asked = Asked {
         workspaces,
-        &ada,
-        member_request(&workspace, SHARE_RESOURCE, shared),
-    )
-    .await
-    .unwrap();
-    let permits = || {
-        invoke(
-            workspaces,
-            &bo,
-            member_request(&workspace, RESOURCE_PERMITS, json!({ "node": p1 })),
-        )
+        workspace: workspace.clone(),
+        id,
+        host,
     };
-    assert_eq!(
-        permits().await.unwrap(),
-        json!({ "read": true, "undoable": true })
-    );
+    let (p1, p2) = (note(&workspace, "p1"), note(&workspace, "p2"));
+    let writes = ActionKind::Undoable;
 
-    // Restricted, Bo writes nothing, the note shared to edit included, and
-    // still reads it.
+    // Bo, a Viewer, reads the note and writes nothing, and cannot give more than he holds.
+    assert!(asked.may(&bo, &p1, ActionKind::Read).await);
+    assert!(!asked.may(&bo, &p1, writes).await);
+    refused(asked.set(&bo, "everyone", &p1, Some("editor")).await);
+
+    // Ada, an Editor, shares from her own device: the host signs no share as hers.
+    let reason = refused(asked.set(&ada, "everyone", &p1, Some("editor")).await);
+    assert!(reason.contains("from their own device"), "{reason}");
+
+    // The owner shares it with everyone to edit: Bo writes that note, not the one beside it.
+    let shared = asked
+        .set(&owner, "everyone", &p1, Some("editor"))
+        .await
+        .unwrap();
+    assert_eq!(shared, json!({ "scope": p1, "changed": true }));
+    assert!(asked.may(&bo, &p1, writes).await);
+    assert!(
+        !asked.may(&bo, &p2, writes).await,
+        "another note stays as Bo's role has it"
+    );
+    assert_eq!(
+        asked
+            .set(&owner, "everyone", &p1, Some("editor"))
+            .await
+            .unwrap()["changed"],
+        json!(false),
+        "a repeat changes nothing"
+    );
+    let everyone = asked.policy().await.everyone;
+    assert_eq!(everyone.len(), 1);
+    assert_eq!(
+        everyone[0].by,
+        hex::encode(owner.user_public_key),
+        "a share is its signer's"
+    );
+    // Restricted, Bo writes nothing, the note shared to edit included, nor hands it out; the
+    // page's action API decides the same. Lifted, the share lets him write again.
+    let bo_key = bo.user_public_key;
+    let request = |request_id| crate::workspaces::RemoveMemberRequest {
+        request_id,
+        user_public_key: bo_key,
+    };
     let until = tilo_clock::unix_now_ms() + 30 * 60_000;
     workspaces
-        .restrict_member(
-            &workspace,
-            &owner,
-            crate::workspaces::RemoveMemberRequest {
-                request_id: [41; 32],
-                user_public_key: bo.user_public_key,
-            },
-            until,
-        )
+        .restrict_member(&workspace, &owner, request([41; 32]), until)
         .await
         .unwrap();
+    assert!(asked.may(&bo, &p1, ActionKind::Read).await);
+    assert!(!asked.may(&bo, &p1, writes).await);
+    let permits = WorkspacesRequest::Permits {
+        workspace: workspace.clone(),
+        node: p1.clone(),
+    };
     assert_eq!(
-        permits().await.unwrap(),
-        json!({ "read": true, "undoable": false })
+        workspaces.page_workspaces(&bo, permits).await,
+        WorkspacesReply::Permits(false)
     );
-    assert_eq!(
-        workspaces
-            .page_workspaces(
-                &bo,
-                WorkspacesRequest::Permits {
-                    workspace: workspace.clone(),
-                    node: p1.clone(),
-                },
-            )
-            .await,
-        WorkspacesReply::Permits(false),
-        "the page's action API decides the same"
-    );
-    // Nor may he hand out what his restriction keeps from him.
-    let reshare = json!({ "share": "m2", "node": p1, "access": "view" });
-    assert!(
-        invoke(
-            workspaces,
-            &bo,
-            member_request(&workspace, SHARE_RESOURCE, reshare)
-        )
-        .await
-        .is_err()
-    );
-
-    // Lifted, the share lets him write again.
+    refused(asked.set(&bo, "everyone", &p1, Some("viewer")).await);
     workspaces
-        .unrestrict_member(
-            &workspace,
-            &owner,
-            crate::workspaces::RemoveMemberRequest {
-                request_id: [42; 32],
-                user_public_key: bo.user_public_key,
-            },
-        )
+        .unrestrict_member(&workspace, &owner, request([42; 32]))
         .await
         .unwrap();
-    assert_eq!(
-        permits().await.unwrap(),
-        json!({ "read": true, "undoable": true })
-    );
+    assert!(asked.may(&bo, &p1, writes).await);
+
+    // Only its giver takes it back: Bo may not, the owner may.
+    refused(asked.set(&bo, "everyone", &p1, None).await);
+    assert!(asked.may(&bo, &p1, writes).await);
+    asked.set(&owner, "everyone", &p1, None).await.unwrap();
+    assert!(!asked.may(&bo, &p1, writes).await);
+
+    // The whole workspace is a role, never a share.
+    let whole = TreePath::workspace(&workspace).rest().to_string();
+    let reason = refused(asked.set(&owner, "everyone", &whole, Some("viewer")).await);
+    assert!(reason.contains("whole workspace is not shared"), "{reason}");
     server.shutdown().await;
 }
 
-/// A window is shared under its own share id by the device it runs on, the
-/// one its tab's topology namespace is registered to; nobody shares another
-/// device's window, nor a window in a namespace no device holds. The share
-/// is the workspace's record of who shared which window, read back by every
-/// member ([`tilo_desktop_model::window_share::window_shares`]).
 #[tokio::test]
-async fn only_the_device_a_window_runs_on_shares_it() {
-    use tilo_desktop_model::window_share::{window_node, window_share_id};
-
+async fn a_person_given_files_alone_holds_files_alone() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
-    let (workspace, _, _) = hosted(workspaces).await;
+    let (workspace, id, host) = hosted(workspaces).await;
+    let asked = Asked {
+        workspaces,
+        workspace: workspace.clone(),
+        id,
+        host,
+    };
+    let (_, bram) = guest_device();
+    let bram = hex::encode(bram.user_public_key);
+
+    // A person the workspace does not hold is let in over Files alone, by its short address.
+    let given = asked
+        .set(
+            &owner,
+            &bram,
+            &format!("{workspace}/files/**"),
+            Some("editor"),
+        )
+        .await
+        .unwrap();
+    let files = TreePath::workspace(&workspace)
+        .app(tilo_actions::tree::FILES_APP)
+        .rest();
+    assert_eq!(given["scope"], json!(files.to_string()));
+    let policy = asked.policy().await;
+    assert_eq!(policy.member_scope(&bram), Some(vec![&files]));
+
+    // Part of an app needs all of the app's keys, which only a full member holds.
+    let reason = refused(
+        asked
+            .set(&owner, &bram, &note(&workspace, "p1"), Some("viewer"))
+            .await,
+    );
+    assert!(reason.contains("is part of an app"), "{reason}");
+
+    // Taking back the last part is leaving.
+    asked
+        .set(&owner, &bram, &format!("{workspace}/files/**"), None)
+        .await
+        .unwrap();
+    assert!(!asked.policy().await.members.contains_key(&bram));
+    server.shutdown().await;
+}
+
+/// A window is shared by the device it runs on: nobody shares another device's window. A
+/// device this host placed in the workspace holds none of its keys, so the host signs that
+/// device's own window share and its end, and no other member's. Every member reads the share
+/// back ([`tilo_desktop_model::window_share::window_shares`]).
+#[tokio::test]
+async fn only_the_device_a_window_runs_on_shares_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, id, _) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     // Ada's device mints its windows under the salt its key derives.
     let salt = tilo_desktop_model::ids::device_salt_of_key(&ada.device_public_key);
     let notes = (u64::from(salt) << 48) | 4;
-    let share = |tab: u64, id: &str| {
-        member_request(
-            &workspace,
-            SHARE_RESOURCE,
-            json!({
-                "share": id,
-                "node": window_node(&workspace, "so.tilo.notes", tab).to_string(),
-                "access": "view",
-            }),
+    let window = tilo_desktop_model::window_share::window_node(&workspace, "so.tilo.notes", notes);
+    let (ws, window) = (workspace.as_str(), &window);
+    let share = |device: DeviceCert, role: Option<Role>| async move {
+        let everyone = Grantee::role(Role::Viewer);
+        workspaces
+            .set_scoped_role(ws, &device, (everyone, window), role)
+            .await
+    };
+    let shared_windows = || async {
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        let locked = state.lock().await;
+        let peer = locked.peer();
+        let doc = peer.admitted_workspace().unwrap();
+        tilo_desktop_model::window_share::window_shares(
+            &tilo_peer_state::workspace::policy_of(doc, &workspace),
+            &tilo_desktop_model::window_share::device_salts(doc),
         )
     };
-    let refused = |answer: Result<Value, String>| answer.is_err();
-    assert!(
-        refused(invoke(workspaces, &bo, share(notes, &window_share_id(notes))).await),
-        "Bo can't share a window of Ada's device"
-    );
-    assert!(
-        refused(invoke(workspaces, &ada, share(notes, "m1")).await),
-        "a window is shared under its own share id"
-    );
-    let held_salts = {
-        let state = workspaces.workspace(&workspace).await.unwrap();
-        let held = state.lock().await;
-        tilo_desktop_model::window_share::device_salts(held.peer().admitted_workspace().unwrap())
-    };
-    assert_eq!(
-        held_salts.get(&salt),
-        Some(&hex::encode(ada.device_public_key)),
-        "the workspace knows which device mints under Ada's salt"
-    );
-    let unheld = (1..u16::MAX)
-        .find(|salt| !held_salts.contains_key(salt))
-        .expect("a salt none of the workspace's devices mints under");
-    let elsewhere = (u64::from(unheld) << 48) | 4;
-    assert!(
-        refused(
-            invoke(
-                workspaces,
-                &ada,
-                share(elsewhere, &window_share_id(elsewhere))
-            )
-            .await
-        ),
-        "nor a window in a namespace no device holds"
-    );
-    assert!(shared_windows(workspaces, &workspace).await.is_empty());
-
-    invoke(workspaces, &ada, share(notes, &window_share_id(notes)))
+    let reason = share(bo.clone(), Some(Role::Viewer))
         .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        reason.contains("only the device a window runs on"),
+        "{reason}"
+    );
+    let reason = share(ada.clone(), Some(Role::Viewer))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(reason.contains("from their own device"), "{reason}");
+
+    // Placed in the workspace, Ada's device shares its own window through this host.
+    let placed = crate::environment::EnvironmentScope::of_workspace_device(id);
+    let environments = &workspaces.inner.host.environments;
+    environments
+        .place_certified(&ada, placed, u64::MAX)
         .unwrap();
-    let now_shared = shared_windows(workspaces, &workspace).await;
+    assert!(share(ada.clone(), Some(Role::Viewer)).await.unwrap());
+    assert!(
+        !share(ada.clone(), Some(Role::Viewer)).await.unwrap(),
+        "a repeat changes nothing"
+    );
+    let now_shared = shared_windows().await;
     let shared = now_shared.get(&notes).expect("Ada's Notes is shared");
     assert_eq!(shared.host, hex::encode(ada.device_public_key));
-    assert_eq!(shared.sharer, hex::encode(ada.user_public_key));
-    assert_eq!(shared.app_id, "so.tilo.notes");
-
-    invoke(
-        workspaces,
-        &ada,
-        member_request(
-            &workspace,
-            UNSHARE_RESOURCE,
-            json!({ "share": window_share_id(notes) }),
-        ),
-    )
-    .await
-    .unwrap();
-    assert!(
-        shared_windows(workspaces, &workspace).await.is_empty(),
-        "the share ended"
+    assert_eq!(
+        shared.sharer,
+        hex::encode(owner.user_public_key),
+        "the host signs it"
     );
-    server.shutdown().await;
-}
 
-/// The windows shared in `workspace` now, by the workspace's own record.
-async fn shared_windows(
-    workspaces: &crate::workspaces::Workspaces,
-    workspace: &str,
-) -> std::collections::BTreeMap<u64, tilo_desktop_model::window_share::WindowShare> {
-    let state = workspaces.workspace(workspace).await.unwrap();
-    let held = state.lock().await;
-    let peer = held.peer();
-    let doc = peer.admitted_workspace().unwrap();
-    tilo_desktop_model::window_share::window_shares(
-        &tilo_peer_state::workspace::policy_of(doc, workspace),
-        &tilo_desktop_model::window_share::device_salts(doc),
-        tilo_clock::unix_now_ms(),
-    )
+    // Bo takes nobody's share back; Ada's placed device takes its own back.
+    share(bo.clone(), None).await.unwrap_err();
+    assert!(share(ada.clone(), None).await.unwrap());
+    assert!(shared_windows().await.is_empty(), "the share ended");
+    server.shutdown().await;
 }

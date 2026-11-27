@@ -267,17 +267,19 @@ pub enum WorkspaceMembershipCommand {
     /// ([`SettingsChange`]): decided against the caller's own grants where
     /// they made it, on every device that receives it.
     Settings(SettingsChange),
-    /// Share `node`, one record or one item of it, with the workspace's members
-    /// as `access` gives, under the share id `share`: grants the caller
-    /// gives of what they hold ([`crate::workspace::share`]).
-    Share {
+    /// A share of one resource under a share id, as builds wrote it before a share was a role
+    /// over part of the workspace ([`tilo_action_policy::Change::SetScopedRole`]): kept in its
+    /// place and refused.
+    #[serde(rename = "Share")]
+    RetiredShare {
         share: String,
         node: TreePath,
-        access: tilo_action_policy::share::ShareAccess,
+        /// Seeing (0) or also changing (1), as that build numbered it.
+        access: u8,
     },
-    /// End the share `share`: the grants of it the caller gave, or all of
-    /// them when they may revoke in the workspace.
-    Unshare { share: String },
+    /// The end of such a share: kept in its place and refused.
+    #[serde(rename = "Unshare")]
+    RetiredUnshare { share: String },
     /// Claim the lease `id` of the workspace's own state for the caller's
     /// device, for `ttl_ms` from now, ranked by `rank`, or let it go
     /// (`ttl_ms` 0) ([`crate::state::leases`]). A member device that does
@@ -387,6 +389,10 @@ impl MemberPlace {
         }
     }
 }
+
+/// Why a share under a share id is refused.
+pub const RETIRED_SHARE: &str =
+    "this share was written by an earlier build: share it again to give its people a role over it";
 
 /// The longest lease id a member claims.
 const MAX_LEASE_ID: usize = 256;
@@ -547,9 +553,11 @@ impl WorkspaceMembershipCommand {
                 | SettingsChange::Shortcuts(_) => Ok(()),
             };
         }
-        if matches!(self, Self::Share { .. } | Self::Unshare { .. }) {
-            // The share's id and node are checked as its grants are made.
-            return Ok(());
+        if matches!(
+            self,
+            Self::RetiredShare { .. } | Self::RetiredUnshare { .. }
+        ) {
+            return Err(RETIRED_SHARE.into());
         }
         Ok(())
     }
@@ -624,6 +632,10 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
         Change::Grant(grant) if grant.id.as_str().trim().is_empty() => {
             return Err("a grant needs an id".into());
         }
+        Change::SetScopedRole { grantee, .. } => match grantee.person_id() {
+            Some(person) => person,
+            None => return Ok(()),
+        },
         Change::Grant(_)
         | Change::Revoke(_)
         | Change::DefineRole { .. }
@@ -668,8 +680,28 @@ mod tests {
                     WorkspaceMembershipCommand::UninstallApp { app: "e".into() },
                     vec![0x0a, 0x01, b'e'],
                 ),
+                (
+                    WorkspaceMembershipCommand::RetiredShare {
+                        share: "s".into(),
+                        node: TreePath::workspace("r"),
+                        access: 0,
+                    },
+                    [&[0x0d, 0x01, b's', 11][..], b"workspace:r", &[0x00]].concat(),
+                ),
+                (
+                    WorkspaceMembershipCommand::RetiredUnshare { share: "s".into() },
+                    vec![0x0e, 0x01, b's'],
+                ),
             ];
             for (command, golden) in cases {
+                if matches!(
+                    command,
+                    WorkspaceMembershipCommand::RetiredShare { .. }
+                        | WorkspaceMembershipCommand::RetiredUnshare { .. }
+                ) {
+                    // A share an earlier build kept reads as itself and is refused.
+                    assert_eq!(command.validate(), Err(RETIRED_SHARE.to_owned()));
+                }
                 assert_eq!(
                     postcard::to_stdvec(&command).unwrap(),
                     golden,

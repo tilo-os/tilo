@@ -633,8 +633,8 @@ mod tests {
 
     fn access() -> MemberAccess {
         let mut policy = WorkspacePolicy::new("workspace", "ada");
-        policy.members.insert("bo".to_owned(), Role::Editor);
-        policy.members.insert("cy".to_owned(), Role::Viewer);
+        policy.members.insert("bo".to_owned(), Role::Editor.into());
+        policy.members.insert("cy".to_owned(), Role::Viewer.into());
         policy.grants.push(Grant::new(
             "agent-member:planner",
             Grantee::agent("planner", "ada"),

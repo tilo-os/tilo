@@ -138,14 +138,15 @@ fn project<'a>(
     let root = automerge::ROOT;
     let owner = read::strict_string(workspace, &root, "owner").map_err(policy_error)?;
     let owner_key = canonical_key(&owner)?;
-    // The membership as the log makes it: who is in, and each grant by id.
+    // The membership as the log makes it: who is in, and each grant by id. A role
+    // over part of the workspace shows here as its derived grants.
     let mut grants = BTreeMap::new();
     for grant in &membership.grants {
         grants.insert(grant.id.as_str().to_owned(), encoded(grant)?);
     }
     let mut members = BTreeMap::new();
     for (person, role) in &membership.members {
-        members.insert(person.clone(), *role);
+        members.insert(person.clone(), role.role());
     }
     let peers = read::strict_map(workspace, &root, "peers").map_err(policy_error)?;
     // The names the workspace keeps, by the key each is for: a device's, or a

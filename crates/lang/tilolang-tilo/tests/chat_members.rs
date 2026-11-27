@@ -116,9 +116,13 @@ fn write(policy: &Shared, change: Change) {
 /// that, and Ben edits.
 fn workspace() -> Shared {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
-    policy.members.insert("mo".to_owned(), Role::Moderator);
-    policy.members.insert("cy".to_owned(), Role::Moderator);
-    policy.members.insert("ben".to_owned(), Role::Editor);
+    policy
+        .members
+        .insert("mo".to_owned(), Role::Moderator.into());
+    policy
+        .members
+        .insert("cy".to_owned(), Role::Moderator.into());
+    policy.members.insert("ben".to_owned(), Role::Editor.into());
     for action in [governance::GRANT, governance::REVOKE] {
         policy.grants.push(Grant::new(
             format!("mo-{action}"),

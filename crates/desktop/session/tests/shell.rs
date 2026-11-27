@@ -2425,7 +2425,7 @@ fn a_row_nobody_named_says_when_they_joined() {
         workspace
             .policy
             .members
-            .insert(person.to_owned(), tilo_action_policy::Role::Editor);
+            .insert(person.to_owned(), tilo_action_policy::Role::Editor.into());
         workspace.policy.joined.insert(person.to_owned(), at);
     }
     handle.replace_tree(tree);

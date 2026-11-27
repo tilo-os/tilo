@@ -628,52 +628,29 @@ tilo_test_env::scenario! {
     // A share is its sharer's operation: one they may give takes effect, and one
     // they may not is kept and changes nothing.
     {
-        use tilo_action_policy::share::ShareAccess;
+        use tilo_action_policy::Role;
         let before = hosted();
         let (editor_key, viewer_key) = (key(0x02), key(0x03));
         let (editor_signs, viewer_signs) = (editor_device(), viewer_device());
-        let edit = share_of_note(editor_root(), ShareAccess::Edit);
+        let (editor, viewer) = (person_id(editor_root()), person_id(viewer_root()));
+        let editing = writing(&before, &editor_signs, Some(Role::Editor));
         assert!(
-            holds(
-                &before,
-                member(&editor_key, editor_root()),
-                &regranting(&before, &editor_signs, &edit, &[]),
-                &edit
-            ),
+            holds(&before, member(&editor_key, editor_root()), &editing, &editor, Role::Editor),
             "an Editor shares a note to edit as theirs"
         );
-        let viewer_edit = share_of_note(viewer_root(), ShareAccess::Edit);
+        let viewer_editing = writing(&before, &viewer_signs, Some(Role::Editor));
         assert!(
-            !holds(
-                &before,
-                member(&viewer_key, viewer_root()),
-                &regranting(&before, &viewer_signs, &viewer_edit, &[]),
-                &viewer_edit
-            ),
+            !holds(&before, member(&viewer_key, viewer_root()), &viewer_editing, &viewer, Role::Editor),
             "a Viewer hands out no edit"
         );
-        let view = share_of_note(viewer_root(), ShareAccess::View);
+        let viewing = writing(&before, &viewer_signs, Some(Role::Viewer));
         assert!(
-            holds(
-                &before,
-                member(&viewer_key, viewer_root()),
-                &regranting(&before, &viewer_signs, &view, &[]),
-                &view
-            ),
+            holds(&before, member(&viewer_key, viewer_root()), &viewing, &viewer, Role::Viewer),
             "but shares what they see"
         );
-        assert!(
-            !holds(
-                &before,
-                member(&viewer_key, viewer_root()),
-                &regranting(&before, &viewer_signs, &edit, &[]),
-                &edit
-            ),
-            "nobody shares as someone else"
-        );
 
-        let mut shared = before.clone();
-        let changes: Vec<_> = regranting(&before, &editor_signs, &edit, &[])
+        let mut shared = before;
+        let changes: Vec<_> = editing
             .into_iter()
             .map(|bytes| automerge::Change::from_bytes(bytes).unwrap())
             .collect();
@@ -682,8 +659,9 @@ tilo_test_env::scenario! {
             holds(
                 &shared,
                 member(&viewer_key, viewer_root()),
-                &regranting(&shared, &viewer_signs, &[], &edit),
-                &edit
+                &writing(&shared, &viewer_signs, None),
+                &editor,
+                Role::Editor
             ),
             "only its sharer ends a share"
         );
@@ -691,8 +669,9 @@ tilo_test_env::scenario! {
             !holds(
                 &shared,
                 member(&editor_key, editor_root()),
-                &regranting(&shared, &editor_signs, &[], &edit),
-                &edit
+                &writing(&shared, &editor_signs, None),
+                &editor,
+                Role::Editor
             ),
             "its sharer ends it"
         );
@@ -819,50 +798,47 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The grants of `person`'s share `m1` of a note, giving `access`.
-fn share_of_note(
-    person: [u8; 32],
-    access: tilo_action_policy::share::ShareAccess,
-) -> Vec<tilo_action_policy::Grant> {
-    let note = tilo_action_policy::TreePath::workspace(WORKSPACE)
+/// The note every member is given a role over in the tests.
+fn note() -> tilo_action_policy::TreePath {
+    tilo_action_policy::TreePath::workspace(WORKSPACE)
         .app("so.tilo.notes")
         .kind("notes.notebook")
-        .any(tilo_action_policy::Level::Resource)
-        .item("p1");
-    tilo_action_policy::share::share_grants(WORKSPACE, &person_id(person), "m1", &note, access)
-        .unwrap()
+        .resource("p1")
 }
 
-/// The changes `by` writing `grants` into the workspace, and taking `ended`
-/// out, make on `before`.
-fn regranting(
+/// The changes `by` sharing the note with everyone at `role`, or ending their share (`None`),
+/// make on `before`.
+fn writing(
     before: &AutoCommit,
     by: &(ed25519_dalek::SigningKey, DeviceCert),
-    grants: &[tilo_action_policy::Grant],
-    ended: &[tilo_action_policy::Grant],
+    role: Option<tilo_action_policy::Role>,
 ) -> Vec<Vec<u8>> {
     changes_after(before, |doc| {
-        let changes = grants
-            .iter()
-            .cloned()
-            .map(Change::Grant)
-            .chain(ended.iter().map(|grant| Change::Revoke(grant.id.clone())))
-            .collect();
+        let changes = vec![Change::SetScopedRole {
+            grantee: tilo_action_policy::Grantee::role(tilo_action_policy::Role::Viewer),
+            scope: note(),
+            role,
+        }];
         sign(doc, by, changes);
     })
 }
 
-/// Whether the workspace `changes` make of `before` holds every grant in `grants`.
+/// Whether the workspace `changes` make of `before` shares the note with everyone at `role`, as
+/// `by` gave it.
 fn holds(
     before: &AutoCommit,
     writer: Writer<'_>,
     changes: &[Vec<u8>],
-    grants: &[tilo_action_policy::Grant],
+    by: &str,
+    role: tilo_action_policy::Role,
 ) -> bool {
     let admitted = admit(Some(before), writer, &owner_root(), changes)
         .expect("an operation that proves its writer is kept");
     let policy = crate::workspace::policy_of(&admitted.candidate, WORKSPACE);
-    grants.iter().all(|grant| policy.grants.contains(grant))
+    policy
+        .everyone
+        .iter()
+        .any(|entry| entry.scope == note() && entry.by == by && entry.role == role)
 }
 
 fn coverage(sequence: u64) -> crate::coverage::Coverage {

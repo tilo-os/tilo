@@ -532,9 +532,12 @@ pub fn decided_node(node: &TreePath) -> std::borrow::Cow<'_, TreePath> {
 /// lifts, stops it too.
 #[must_use]
 pub fn own_records(workspace: &str, person: &str) -> Vec<(TreePath, KindSet)> {
-    persons_own(workspace, person)
+    let mut own: Vec<_> = persons_own(workspace, person)
         .map(|node| (node, KindSet::UNDOABLE))
-        .collect()
+        .collect();
+    // Every member reads who else is in the workspace, a member given only part of it too.
+    own.push((workspace_resource(workspace), KindSet::READ));
+    own
 }
 
 /// The id of the grant that lets `app` keep its own records ([`app_records_grant`]).

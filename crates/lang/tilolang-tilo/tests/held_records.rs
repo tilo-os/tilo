@@ -41,7 +41,7 @@ const WORKSPACE: &str = "workspace";
 fn access(who: &str) -> tilo_action_policy::MemberAccess {
     use tilo_action_policy::{MemberAccess, Role, WorkspacePolicy};
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
-    policy.members.insert("bo".to_owned(), Role::Viewer);
+    policy.members.insert("bo".to_owned(), Role::Viewer.into());
     MemberAccess::person(policy, who)
 }
 

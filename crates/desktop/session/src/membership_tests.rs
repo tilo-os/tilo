@@ -66,11 +66,11 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
     workspace
         .policy
         .members
-        .insert(hex::encode(cert.user_public_key), Role::Owner);
+        .insert(hex::encode(cert.user_public_key), Role::Owner.into());
     workspace
         .policy
         .members
-        .insert(joiner.to_owned(), Role::Editor);
+        .insert(joiner.to_owned(), Role::Editor.into());
     (
         engine,
         workspace,
@@ -346,7 +346,7 @@ fn a_role_another_member_sets_reaches_this_shells_people() {
     workspace
         .policy
         .members
-        .insert(session.clone(), Role::Editor);
+        .insert(session.clone(), Role::Editor.into());
     assert!(
         project(&mut workspace, &policy),
         "the people the workspace has are projected on to this session"
@@ -388,7 +388,7 @@ fn the_workspace_takes_the_people_its_settings_change() {
     workspace
         .policy
         .members
-        .insert(person.clone(), Role::Moderator);
+        .insert(person.clone(), Role::Moderator.into());
     let set = membership.changes(
         &workspace,
         &PolicyEdit {
@@ -448,7 +448,7 @@ fn the_workspace_takes_the_people_its_settings_change() {
     workspace
         .policy
         .members
-        .insert(person.clone(), Role::Editor);
+        .insert(person.clone(), Role::Editor.into());
     let added = membership.changes(
         &workspace,
         &PolicyEdit {
@@ -505,7 +505,7 @@ fn a_change_the_workspace_refuses_leaves_its_people_as_they_were() {
         .policy
         .members
         .iter()
-        .find(|(_, role)| **role == Role::Owner)
+        .find(|(_, role)| role.role() == Role::Owner)
         .map(|(person, _)| person.clone())
         .expect("the workspace's owner");
     let before = role_of(&engine, &owner);

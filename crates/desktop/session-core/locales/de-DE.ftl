@@ -535,6 +535,7 @@ workspace-settings-member-extra = { $count ->
     [one] 1 zusätzliche Berechtigung
    *[other] { $count } zusätzliche Berechtigungen
 }
+workspace-settings-member-scope = Nur { $parts }
 workspace-settings-remove = Entfernen
 workspace-settings-owner-only = Nur der Eigentümer des Arbeitsbereichs kann Berechtigungen ändern.
 workspace-settings-refused = Der Arbeitsbereich hat die Änderung abgelehnt

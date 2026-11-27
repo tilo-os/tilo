@@ -8,7 +8,7 @@ use tilo_action_policy::{Authority, TreePath, WorkspacePolicy, roles};
 
 pub const PROJECTION_PATH: &str = "/run/tilo/action-authority/current.json";
 pub const MAX_PROJECTION_BYTES: usize = 64 * 1024;
-pub const SCHEMA_VERSION: u16 = 4;
+pub const SCHEMA_VERSION: u16 = 5;
 const MAX_GRANTS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +44,7 @@ struct StoredProjection {
 
 /// A grant the code defines and a policy gives back when it loads: a built-in role's.
 fn is_code_grant(grant: &tilo_action_policy::Grant) -> bool {
-    roles::is_role_grant(grant)
+    roles::is_role_grant(grant) || tilo_action_policy::scoped::is_scoped_grant(grant)
 }
 
 impl From<StoredProjection> for AppActionAuthorityProjection {
@@ -185,7 +185,9 @@ mod tests {
 
     fn policy() -> AppActionAuthorityProjection {
         let mut workspace = WorkspacePolicy::new("workspace-a", "person-a");
-        workspace.members.insert("person-b".into(), Role::Editor);
+        workspace
+            .members
+            .insert("person-b".into(), Role::Editor.into());
         AppActionAuthorityProjection::project(&workspace, "so.tilo.store", "person-b", false)
     }
 
@@ -277,7 +279,7 @@ mod tests {
         phase projection_keeps_only_grants_that_reach_the_app;
         {
             let mut workspace = WorkspacePolicy::new("workspace-a", "person-a");
-            workspace.members.insert("person-b".into(), Role::Viewer);
+            workspace.members.insert("person-b".into(), Role::Viewer.into());
             for (id, app) in [("store", "so.tilo.store"), ("settings", "so.tilo.settings")] {
                 workspace.grants.push(Grant::new(
                     id,

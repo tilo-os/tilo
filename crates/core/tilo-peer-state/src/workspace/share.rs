@@ -1,45 +1,17 @@
-//! Shares a member gives: one record, or one item of it, shared with the
-//! workspace ([`tilo_action_policy::share`]).
-//!
-//! A share is grants on the shared node, signed by the sharer's own device as
-//! a membership operation and applied by every device's replay
-//! ([`members_own`]): it gives only what the sharer holds, on one node, as
-//! theirs; a window only from the device it runs on
-//! ([`window_is_the_writers`]); and it ends only by its sharer or by one who
-//! may revoke in the workspace.
-use tilo_action_policy::share::{self, ShareAccess};
+//! What a member does by their own rule beside the workspace's grants: share a window only
+//! from the device it runs on ([`window_is_the_writers`]), and assign a saved set of grants they
+//! may assign ([`members_own`]).
 use tilo_action_policy::{
-    Authority, Change, Context, Grant, GrantId, Grantee, TreePath, WorkspacePolicy, roles,
-    roles::governance,
+    Authority, Change, Context, Grant, Grantee, TreePath, WorkspacePolicy, roles,
 };
 
-/// The start of every share grant's id.
-const SHARE_PREFIX: &str = "share:";
-
-/// The share `grant` is one of, when it is a share's: its id is
-/// `share:<share>:<role>`.
-#[must_use]
-pub fn share_of(grant: &GrantId) -> Option<&str> {
-    grant
-        .as_str()
-        .strip_prefix(SHARE_PREFIX)
-        .and_then(|rest| rest.rsplit_once(':'))
-        .map(|(share, _)| share)
-}
-
-/// Whether `device` (hex), sharing `node` as `share`, is the device the
-/// window it names runs on: a window's tab id carries the salt of the device
-/// that minted it, which hosts it ([`tilo_desktop_model::peer_salt_of`]).
-/// Nobody shares another device's window.
-pub fn window_is_the_writers(device: &str, share: &str, node: &TreePath) -> Result<(), String> {
-    use tilo_desktop_model::window_share::{window_of_node, window_of_share_id};
-    let tab = match (
-        window_of_node(node).map(|(_, tab)| tab),
-        window_of_share_id(share),
-    ) {
-        (None, None) => return Ok(()),
-        (Some(tab), Some(named)) if named == tab => tab,
-        _ => return Err("a window is shared under its own share id".into()),
+/// Whether `device` (hex), sharing `node`, is the device the window it names runs on: a
+/// window's tab id carries the salt of the device that minted it, which hosts it
+/// ([`tilo_desktop_model::peer_salt_of`]). Nobody shares another device's window; any other node
+/// is no window's.
+pub fn window_is_the_writers(device: &str, node: &TreePath) -> Result<(), String> {
+    let Some((_, tab)) = tilo_desktop_model::window_share::window_of_node(node) else {
+        return Ok(());
     };
     let salt = tilo_failure::ignored!(
         "a device named by no hex key runs no window",
@@ -53,53 +25,9 @@ pub fn window_is_the_writers(device: &str, share: &str, node: &TreePath) -> Resu
     Ok(())
 }
 
-/// The grants `person`, writing from `device` (hex) on the workspace `doc`, gives
-/// by sharing `node` with `access` as `share`, once each check a receiver
-/// makes holds: they are neither banned nor restricted, the node is one
-/// record or item of the workspace, a window is theirs to share, and they hold
-/// all it gives.
-pub fn share_grants(
-    policy: &WorkspacePolicy,
-    (person, device, authority, cx): (&str, &str, &Authority<'_>, &Context<'_>),
-    share: &str,
-    node: &TreePath,
-    access: ShareAccess,
-) -> Result<Vec<Grant>, String> {
-    if policy.is_blocked(person) || policy.restricted_until(person, cx).is_some() {
-        return Err("you can't share in this workspace right now".into());
-    }
-    let grants = share::share_grants(&policy.workspace, person, share, node, access)
-        .map_err(|refusal| refusal.to_string())?;
-    window_is_the_writers(device, share, node)?;
-    share::check_held(authority, &grants, cx).map_err(|refusal| refusal.to_string())?;
-    Ok(grants)
-}
-
-/// The share grants `person` may end of `share` in `policy`: those they gave,
-/// or all of them when they may revoke in the workspace.
-#[must_use]
-pub fn ended_by(
-    policy: &WorkspacePolicy,
-    (person, authority, cx): (&str, &Authority<'_>, &Context<'_>),
-    share: &str,
-) -> Vec<GrantId> {
-    let revokes = policy
-        .check_action(authority, governance::REVOKE, cx, false)
-        .is_ok();
-    let sharer = Grantee::person(person.to_owned());
-    policy
-        .grants
-        .iter()
-        .filter(|grant| share::is_of_share(grant, share))
-        .filter(|grant| revokes || grant.granted_by == sharer)
-        .map(|grant| grant.id.clone())
-        .collect()
-}
-
 /// The membership `change` leaves `policy` at when it is `person`'s by a
 /// member's own rule, though the workspace's grants alone would not let them
-/// make it: a share of what they hold ([`share_grants`]), the end of a share
-/// they may end ([`ended_by`]), or a grant of a saved set they may assign
+/// make it: a grant of a saved set they may assign
 /// (`preset:<id>:<set>:<rule>`), as `presets` names its rules.
 ///
 /// # Errors
@@ -107,64 +35,22 @@ pub fn ended_by(
 pub(crate) fn members_own(
     policy: &WorkspacePolicy,
     presets: impl FnOnce() -> Vec<tilo_action_policy::Preset>,
-    (person, device, authority, cx): (&str, &str, &Authority<'_>, &Context<'_>),
+    (person, authority, cx): (&str, &Authority<'_>, &Context<'_>),
     change: &Change,
 ) -> Result<WorkspacePolicy, String> {
+    let Change::Grant(grant) = change else {
+        return Err("not a change a member makes by their own rule".into());
+    };
+    let Some((set, index)) = roles::preset_assigned(&grant.id) else {
+        return Err(format!(
+            "grant {} is not the writer's to give",
+            grant.id.as_str()
+        ));
+    };
+    assigned(&presets(), (set, index), (person, authority, cx), grant)?;
     let mut next = policy.clone();
-    match change {
-        Change::Grant(grant) => {
-            if let Some(share) = share_of(&grant.id) {
-                let access = [ShareAccess::View, ShareAccess::Edit]
-                    .into_iter()
-                    .find(|access| access.kinds() == grant.kinds)
-                    .ok_or_else(|| {
-                        format!("share grant {} gives no share's access", grant.id.as_str())
-                    })?;
-                let made = share_grants(
-                    policy,
-                    (person, device, authority, cx),
-                    share,
-                    &grant.node,
-                    access,
-                )?;
-                if !made.contains(grant) {
-                    return Err(format!(
-                        "share grant {} is not the writer's share",
-                        grant.id.as_str()
-                    ));
-                }
-                // One share, one node.
-                if policy
-                    .grants
-                    .iter()
-                    .any(|held| share_of(&held.id) == Some(share) && held.node != grant.node)
-                {
-                    return Err(format!("share {share} names more than one node"));
-                }
-            } else if let Some((set, index)) = roles::preset_assigned(&grant.id) {
-                assigned(&presets(), (set, index), (person, authority, cx), grant)?;
-            } else {
-                return Err(format!(
-                    "grant {} is not the writer's to give",
-                    grant.id.as_str()
-                ));
-            }
-            next.grants.retain(|held| held.id != grant.id);
-            next.grants.push(grant.clone());
-        }
-        Change::Revoke(id) => {
-            let share = share_of(id)
-                .ok_or_else(|| format!("grant {} is not the writer's to end", id.as_str()))?;
-            if !ended_by(policy, (person, authority, cx), share).contains(id) {
-                return Err(format!(
-                    "share grant {} is not the writer's to end",
-                    id.as_str()
-                ));
-            }
-            next.grants.retain(|held| held.id != *id);
-        }
-        _ => return Err("not a change a member makes by their own rule".into()),
-    }
+    next.grants.retain(|kept| kept.id != grant.id);
+    next.grants.push(grant.clone());
     Ok(next)
 }
 

@@ -28,6 +28,7 @@ pub fn tab(content: PeopleContent) -> sheet::People {
                 role: entry.role,
                 role_key: Some(entry.role_key),
                 additional_roles: entry.additional_roles,
+                scope: entry.scope,
                 extra: entry.extra,
                 offers: match entry.offers {
                     domain::people::Offers::Nothing => sheet::Offers::Nothing,

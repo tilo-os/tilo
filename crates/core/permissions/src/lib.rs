@@ -331,7 +331,7 @@ impl PermissionContext {
         } else {
             let mut policy =
                 policy::WorkspacePolicy::unowned(workspace, &policy::Grantee::role(Role::Owner));
-            policy.members.insert(person.clone(), role);
+            policy.members.insert(person.clone(), role.into());
             policy
         };
         Self::new(
@@ -508,7 +508,7 @@ impl PermissionContext {
     #[must_use]
     pub fn with_participation(&self, writable: bool) -> Option<Self> {
         let person = self.access.person_id().unwrap_or_default().to_owned();
-        let current = self.access.policy.members.get(&person).copied()?;
+        let current = self.access.policy.members.get(&person)?.whole()?;
         if self.access.acting.delegated()
             || !matches!(current, Role::Viewer | Role::Editor)
             || self.access.policy.members.len() != 1
@@ -519,7 +519,7 @@ impl PermissionContext {
         let mut access = (*self.access).clone();
         Arc::make_mut(&mut access.policy)
             .members
-            .insert(person, role);
+            .insert(person, role.into());
         let mut next = self.clone();
         next.access = Arc::new(access);
         Some(next)

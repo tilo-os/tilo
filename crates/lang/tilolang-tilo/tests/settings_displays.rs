@@ -31,7 +31,7 @@ fn settings() -> Host {
     let compiled =
         tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
     let mut policy = WorkspacePolicy::new("team", "ada");
-    policy.members.insert("ada".to_owned(), Role::Owner);
+    policy.members.insert("ada".to_owned(), Role::Owner.into());
     let owner = MemberAccess::person(policy, "ada");
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),

@@ -26,7 +26,9 @@ fn cx() -> Context<'static> {
 fn workspace(members: &[(&str, Role)], administrator: &str) -> WorkspacePolicy {
     let mut workspace = WorkspacePolicy::new("r", OWNER);
     for (person, role) in members {
-        workspace.members.insert((*person).to_owned(), *role);
+        workspace
+            .members
+            .insert((*person).to_owned(), (*role).into());
     }
     workspace.grants.push(roles::administrator_grant(
         "r",
@@ -203,7 +205,7 @@ tilo_test_env::scenario! {
     phase an_administrator_grant_on_the_workspace_resource_is_outranked_by_the_editor_rule;
     {
         let mut workspace = WorkspacePolicy::new("r", OWNER);
-        workspace.members.insert(CAROL.into(), Role::Editor);
+        workspace.members.insert(CAROL.into(), Role::Editor.into());
         let legacy = Grant::new(
             roles::administrator_grant_id(CAROL).as_str(),
             Grantee::person(CAROL),
@@ -225,9 +227,13 @@ tilo_test_env::scenario! {
 /// host administers a person's workspace, and `members` besides.
 fn administered(members: &[(&str, Role)]) -> WorkspacePolicy {
     let mut workspace = WorkspacePolicy::new("r", OWNER);
-    workspace.members.insert(ADMIN.to_owned(), Role::Editor);
+    workspace
+        .members
+        .insert(ADMIN.to_owned(), Role::Editor.into());
     for (person, role) in members {
-        workspace.members.insert((*person).to_owned(), *role);
+        workspace
+            .members
+            .insert((*person).to_owned(), (*role).into());
     }
     for grant in [
         roles::administrator_grant("r", ADMIN, Grantee::person(OWNER)),
@@ -274,7 +280,7 @@ tilo_test_env::scenario! {
         make(&mut made, ADMIN, BOB).unwrap();
         assert!(made.is_administrator(BOB));
         // An administrator an administrator made makes another in turn.
-        made.members.insert("dee".into(), Role::Editor);
+        made.members.insert("dee".into(), Role::Editor.into());
         make(&mut made, BOB, "dee").unwrap();
         assert!(made.is_administrator("dee"));
 

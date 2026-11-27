@@ -6,8 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Answer, Authority, Context, Grant, GrantId, Grantee, Party, Role, TreePath, Verdict,
+    Answer, Authority, Context, Grant, GrantId, Grantee, Level, Party, Role, Segment, TreePath,
+    Verdict,
     roles::{self, governance},
+    scoped::{self, RoleAssignment, ScopedRole},
 };
 use tilo_action_types::{ActionKind, Lifetime};
 use tilo_member_types::PersonId;
@@ -27,8 +29,13 @@ pub struct WorkspacePolicy {
     /// The owner, by person id. Structural: holds everything and cannot be
     /// removed, demoted or denied by a grant.
     pub owner: Option<String>,
-    /// Members other than the owner and the role preset each holds.
-    pub members: BTreeMap<String, Role>,
+    /// Members other than the owner and the roles each holds, over the whole workspace or
+    /// over parts of it ([`RoleAssignment`]).
+    pub members: BTreeMap<String, RoleAssignment>,
+    /// Parts of the workspace shared with everyone holding a role over the whole workspace, as
+    /// they are and as they join later.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub everyone: Vec<ScopedRole>,
     /// When the workspace admitted each member, Unix milliseconds, by person
     /// id. Recorded once, by whoever admitted them, and kept through role
     /// changes; a member admitted before workspaces recorded it has none.
@@ -51,7 +58,9 @@ pub struct WorkspacePolicy {
 struct StoredWorkspacePolicy {
     workspace: String,
     owner: Option<String>,
-    members: BTreeMap<String, Role>,
+    members: BTreeMap<String, StoredAssignment>,
+    #[serde(default)]
+    everyone: Vec<ScopedRole>,
     #[serde(default)]
     joined: BTreeMap<String, u64>,
     grants: Vec<Grant>,
@@ -61,12 +70,29 @@ struct StoredWorkspacePolicy {
     assigned_roles: BTreeMap<String, BTreeSet<String>>,
 }
 
+/// A member's roles as written: one role over the whole workspace, as policies were written
+/// before roles took a scope, or the entries.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredAssignment {
+    Role(Role),
+    Assignment(RoleAssignment),
+}
+
 impl From<StoredWorkspacePolicy> for WorkspacePolicy {
     fn from(stored: StoredWorkspacePolicy) -> Self {
         Self {
             workspace: stored.workspace,
             owner: stored.owner,
-            members: stored.members,
+            members: stored
+                .members
+                .into_iter()
+                .map(|(person, stored)| match stored {
+                    StoredAssignment::Role(role) => (person, role.into()),
+                    StoredAssignment::Assignment(assigned) => (person, assigned),
+                })
+                .collect(),
+            everyone: stored.everyone,
             joined: stored.joined,
             grants: stored.grants,
             custom_roles: stored.custom_roles,
@@ -142,6 +168,14 @@ pub enum Change {
     TransferOwnership {
         person: String,
     },
+    /// Give `grantee` (a person, or everyone as `Grantee::Role(Role::Viewer)`) `role` over
+    /// `scope`, one part of the workspace, as the signer's own entry beside any other giver's;
+    /// or take the signer's entry back (`None`).
+    SetScopedRole {
+        grantee: Grantee,
+        scope: TreePath,
+        role: Option<Role>,
+    },
 }
 
 impl Change {
@@ -169,9 +203,11 @@ impl Change {
             Self::Grant(_)
             | Self::DefineRole { .. }
             | Self::RetiredSetMemberRoles { .. }
-            | Self::SetMemberCustomRole { assigned: true, .. } => governance::GRANT,
+            | Self::SetMemberCustomRole { assigned: true, .. }
+            | Self::SetScopedRole { role: Some(_), .. } => governance::GRANT,
             Self::Revoke(_)
             | Self::RemoveRole { .. }
+            | Self::SetScopedRole { role: None, .. }
             | Self::SetMemberCustomRole {
                 assigned: false, ..
             } => governance::REVOKE,
@@ -192,6 +228,7 @@ impl Change {
             | Self::RetiredSetMemberRoles { person, .. }
             | Self::SetMemberCustomRole { person, .. }
             | Self::TransferOwnership { person } => Some(person),
+            Self::SetScopedRole { grantee, .. } => grantee.person_id(),
             Self::Grant(_)
             | Self::Revoke(_)
             | Self::DefineRole { .. }
@@ -267,6 +304,13 @@ pub enum Refusal {
     NotAPerson(String),
     InvalidRole,
     UnknownRole(String),
+    /// A share of the whole workspace: someone holds that as their role, given in People.
+    WholeWorkspace,
+    /// A part narrower than one app, given to someone who holds no role over the whole
+    /// workspace: their devices hold only what has its own key, which is one app's data.
+    PartOfApp(TreePath),
+    /// A share names one person, or everyone.
+    NotPersonOrEveryone,
 }
 
 impl std::fmt::Display for Refusal {
@@ -322,6 +366,15 @@ impl std::fmt::Display for Refusal {
                 "{id} names any visitor: what visitors may do follows the workspace's entry"
             ),
             Self::NotAPerson(id) => write!(f, "{id} is not a person's id"),
+            Self::WholeWorkspace => f.write_str(
+                "the whole workspace is not shared: a member's role over all of it is set in People",
+            ),
+            Self::PartOfApp(scope) => write!(
+                f,
+                "{scope} is part of an app: someone who is not a member of the whole workspace is \
+                 given whole apps, since each app's data is locked with its own key"
+            ),
+            Self::NotPersonOrEveryone => f.write_str("a part of the workspace is shared with one person or with everyone"),
         }
     }
 }
@@ -350,6 +403,7 @@ impl WorkspacePolicy {
             workspace,
             owner: Some(owner),
             members: BTreeMap::new(),
+            everyone: Vec::new(),
             joined: BTreeMap::new(),
             grants,
             custom_roles: BTreeMap::new(),
@@ -375,6 +429,7 @@ impl WorkspacePolicy {
             workspace,
             owner: None,
             members: BTreeMap::new(),
+            everyone: Vec::new(),
             joined: BTreeMap::new(),
             grants,
             custom_roles: BTreeMap::new(),
@@ -388,7 +443,33 @@ impl WorkspacePolicy {
     #[must_use]
     pub fn with_current_roles(mut self) -> Self {
         self.grants = roles::current_role_grants(std::mem::take(&mut self.grants));
+        self.derive_scoped_grants();
         self
+    }
+
+    /// The grants every scoped entry gives ([`scoped::grants`]), in place of those it gave
+    /// before: whatever changes an entry calls it, so the grants are always the entries'.
+    pub(crate) fn derive_scoped_grants(&mut self) {
+        self.grants.retain(|grant| !scoped::is_scoped_grant(grant));
+        let workspace = self.workspace.as_str();
+        let everyone = Grantee::role(Role::Viewer);
+        for (index, entry) in self.everyone.iter().enumerate() {
+            self.grants.extend(scoped::grants(
+                workspace,
+                (scoped::EVERYONE, index),
+                entry,
+                &everyone,
+            ));
+        }
+        for (person, assigned) in &self.members {
+            let grantee = Grantee::person(person.clone());
+            for (index, entry) in assigned.scopes.iter().enumerate() {
+                if !scoped::is_whole(&entry.scope, workspace) {
+                    self.grants
+                        .extend(scoped::grants(workspace, (person, index), entry, &grantee));
+                }
+            }
+        }
     }
 
     /// Move the policy to another workspace id: every grant on this
@@ -401,6 +482,14 @@ impl WorkspacePolicy {
         }
         for grant in &mut self.grants {
             grant.node = grant.node.with_workspace(&self.workspace, &workspace);
+        }
+        let entries = self
+            .members
+            .values_mut()
+            .flat_map(|assigned| assigned.scopes.iter_mut())
+            .chain(&mut self.everyone);
+        for entry in entries {
+            entry.scope = entry.scope.with_workspace(&self.workspace, &workspace);
         }
         self.workspace = workspace;
     }
@@ -427,7 +516,33 @@ impl WorkspacePolicy {
         if self.is_owner(person) {
             return Some(Role::Owner);
         }
-        self.members.get(person).copied()
+        self.members.get(person).map(RoleAssignment::role)
+    }
+
+    /// The role a person holds over the whole workspace: `Owner` for the owner, `None` for a
+    /// non-member and for a member given only parts of it.
+    #[must_use]
+    pub fn whole_role_of(&self, person: &str) -> Option<Role> {
+        if self.is_owner(person) {
+            return Some(Role::Owner);
+        }
+        self.members.get(person)?.whole()
+    }
+
+    /// The parts of the workspace `person` holds a role over: `None` when it is all of it (the
+    /// owner, or a member over the whole workspace), and nothing for a non-member. What their
+    /// devices hold follows it; a part shared with everyone widens it not.
+    #[must_use]
+    pub fn member_scope(&self, person: &str) -> Option<Vec<&TreePath>> {
+        if self.whole_role_of(person).is_some() {
+            return None;
+        }
+        Some(
+            self.members
+                .get(person)
+                .map(|assigned| assigned.scopes.iter().map(|entry| &entry.scope).collect())
+                .unwrap_or_default(),
+        )
     }
 
     /// When the workspace admitted `person`, Unix milliseconds: as recorded,
@@ -546,6 +661,7 @@ impl WorkspacePolicy {
             }
             if let Some(person) = grant.grantee.person_id()
                 && roles::administrator_named(&grant.id).is_none()
+                && !scoped::is_scoped_grant(grant)
             {
                 let extra = grants.extra.entry(person).or_default();
                 *extra = extra.saturating_add(1);
@@ -603,7 +719,7 @@ impl WorkspacePolicy {
             return Vec::new();
         };
         let mut grantees = vec![Grantee::person(id)];
-        if let Some(role) = self.role_of(person) {
+        if let Some(role) = self.whole_role_of(person) {
             grantees.push(Grantee::role(role));
             if let Some(roles) = self.assigned_roles.get(person) {
                 grantees.extend(roles.iter().cloned().map(Grantee::CustomRole));
@@ -628,6 +744,13 @@ impl WorkspacePolicy {
         let mut party = Party::new(self.grantees_of(person), &self.grants).held_off_by(held_off);
         if self.is_owner(person) || self.members.contains_key(person) {
             party = party.owning_records(roles::own_records(&self.workspace, person));
+        }
+        // A member given parts of the workspace reaches nothing else of it; someone who is no
+        // member reaches what grants naming them say, as ever.
+        if let Some(scope) = self.member_scope(person)
+            && self.members.contains_key(person)
+        {
+            party = party.within(&self.workspace, scope.into_iter().cloned().collect());
         }
         if self.is_owner(person) {
             party.owning(self.node())
@@ -1011,6 +1134,25 @@ impl WorkspacePolicy {
         match change {
             Change::Grant(grant) => self.admit_grant(actor_person, actor, grant, cx, approved),
             Change::Revoke(id) => self.admit_revoke(actor_person, actor, id, cx, approved),
+            Change::SetScopedRole {
+                grantee,
+                scope,
+                role,
+            } => {
+                // A member shares what they hold as their own say, as they always could; letting
+                // someone in is `add-member`'s, and taking back another's share `revoke`'s.
+                self.check_not_held_off(actor, cx)?;
+                match (role, grantee.person_id()) {
+                    (None, _) if scoped::gave(self.entries_of(grantee), scope, actor_person) => {
+                        Ok(Vec::new())
+                    }
+                    (None, _) => self.admit_action(actor, governance::REVOKE, cx, approved),
+                    (Some(_), Some(person)) if !self.is_member(person) => {
+                        self.admit_action(actor, governance::ADD_MEMBER, cx, approved)
+                    }
+                    (Some(_), _) => Ok(Vec::new()),
+                }
+            }
             change => self.admit_action(actor, change.action(), cx, approved),
         }
     }
@@ -1162,13 +1304,9 @@ impl WorkspacePolicy {
         self.spend(&spent);
         match change {
             Change::TransferOwnership { person } => self.hand_over(&person, cx),
-            Change::AddMember { person, role } => {
-                self.joined.entry(person.clone()).or_insert(cx.now_unix_ms);
-                self.members.insert(person, role);
-            }
-            Change::SetRole { person, role } => {
-                self.members.insert(person, role);
-            }
+            change @ (Change::AddMember { .. }
+            | Change::SetRole { .. }
+            | Change::SetScopedRole { .. }) => self.set_roles(actor_person, change, cx),
             Change::RemoveMember { person } => self.drop_member(&person),
             Change::Ban { person } => {
                 self.drop_member(&person);
@@ -1247,6 +1385,68 @@ impl WorkspacePolicy {
         Ok(())
     }
 
+    /// Admitting, a new role and a share set one assignment, each its giver's entry.
+    fn set_roles(&mut self, actor_person: &str, change: Change, cx: &Context<'_>) {
+        match change {
+            Change::AddMember { person, role } | Change::SetRole { person, role } => {
+                self.joined.entry(person.clone()).or_insert(cx.now_unix_ms);
+                self.members
+                    .entry(person)
+                    .or_insert_with(|| RoleAssignment { scopes: Vec::new() })
+                    .set_whole(role, actor_person);
+                self.derive_scoped_grants();
+            }
+            Change::SetScopedRole {
+                grantee,
+                scope,
+                role,
+            } => self.set_scoped(&grantee, &scope, role, actor_person, cx),
+            _ => {}
+        }
+    }
+
+    /// Set `giver`'s entry for `grantee` over `scope`, or take it back; taking back an entry
+    /// someone else gave takes every entry there. A person left with none leaves.
+    fn set_scoped(
+        &mut self,
+        grantee: &Grantee,
+        scope: &TreePath,
+        role: Option<Role>,
+        giver: &str,
+        cx: &Context<'_>,
+    ) {
+        let any = role.is_none() && !scoped::gave(self.entries_of(grantee), scope, giver);
+        match grantee.person_id() {
+            Some(person) => {
+                let person = person.to_owned();
+                if role.is_some() {
+                    self.joined.entry(person.clone()).or_insert(cx.now_unix_ms);
+                }
+                let assigned = self
+                    .members
+                    .entry(person.clone())
+                    .or_insert_with(|| RoleAssignment { scopes: Vec::new() });
+                scoped::set_entry(&mut assigned.scopes, scope, role, giver, any);
+                if assigned.scopes.is_empty() {
+                    self.drop_member(&person);
+                }
+            }
+            None => scoped::set_entry(&mut self.everyone, scope, role, giver, any),
+        }
+        self.derive_scoped_grants();
+    }
+
+    /// The entries given to `grantee`: a person's, or everyone's.
+    fn entries_of(&self, grantee: &Grantee) -> &[ScopedRole] {
+        match grantee.person_id() {
+            Some(person) => self
+                .members
+                .get(person)
+                .map_or(&[], |assigned| assigned.scopes.as_slice()),
+            None => &self.everyone,
+        }
+    }
+
     /// Make `person` the owner. They leave the members, as an owner is none,
     /// and hold no administrator grant, as the owner administers by being the
     /// owner. Whoever owned the workspace stays as an Editor and an
@@ -1265,7 +1465,8 @@ impl WorkspacePolicy {
         let Some(previous) = previous else {
             return;
         };
-        self.members.insert(previous.clone(), Role::Editor);
+        self.members.insert(previous.clone(), Role::Editor.into());
+        self.derive_scoped_grants();
         self.joined
             .entry(previous.clone())
             .or_insert(cx.now_unix_ms);
@@ -1286,6 +1487,11 @@ impl WorkspacePolicy {
         self.assigned_roles.remove(person);
         self.grants
             .retain(|grant| grant.grantee.person_id() != Some(person));
+        let gone = self.everyone.len();
+        self.everyone.retain(|entry| entry.by != person);
+        if self.everyone.len() != gone {
+            self.derive_scoped_grants();
+        }
     }
 
     /// Whether `actor_person` may ban or restrict `person`, beyond the grant
@@ -1362,7 +1568,68 @@ impl WorkspacePolicy {
                 role,
                 assigned,
             } => self.check_member_custom_role(actor, person, role, *assigned, cx),
+            Change::SetScopedRole {
+                grantee,
+                scope,
+                role,
+            } => self.check_scoped_role(actor, grantee, scope, *role, cx),
         }
+    }
+
+    /// A share names one part of this workspace short of all of it, and one person (neither its
+    /// owner nor banned) or everyone. It gives no more than the giver holds there, and someone
+    /// who holds no role over the whole workspace is given whole apps.
+    fn check_scoped_role(
+        &self,
+        actor: &Authority<'_>,
+        grantee: &Grantee,
+        scope: &TreePath,
+        role: Option<Role>,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
+        if scope.workspace_id() != Some(self.workspace.as_str()) {
+            return Err(Refusal::OutsideWorkspace(scope.clone()));
+        }
+        if scoped::is_whole(scope, &self.workspace) {
+            return Err(Refusal::WholeWorkspace);
+        }
+        let person = match grantee {
+            Grantee::Role(Role::Viewer) => None,
+            grantee => Some(grantee.person_id().ok_or(Refusal::NotPersonOrEveryone)?),
+        };
+        let Some(role) = role else {
+            return Ok(());
+        };
+        if role == Role::Owner {
+            return Err(Refusal::OwnerRole);
+        }
+        if let Some(person) = person {
+            if self.is_owner(person) {
+                return Err(Refusal::Owner);
+            }
+            if self.is_banned(person) {
+                return Err(Refusal::Banned(person.to_owned()));
+            }
+            let whole_app = match scope.segments() {
+                [_, Segment::Name(Level::App, _), rest @ ..] => {
+                    rest.iter().all(|segment| *segment == Segment::Rest)
+                }
+                _ => false,
+            };
+            if self.whole_role_of(person).is_none() && !whole_app {
+                return Err(Refusal::PartOfApp(scope.clone()));
+            }
+        }
+        let entry = ScopedRole {
+            scope: scope.clone(),
+            role,
+            by: String::new(),
+        };
+        let everyone = Grantee::role(Role::Viewer);
+        for grant in scoped::grants(&self.workspace, ("", 0), &entry, &everyone) {
+            Self::check_within(actor, &grant, cx)?;
+        }
+        Ok(())
     }
 
     /// The owner alone hands the workspace to someone who is neither its owner
@@ -1471,7 +1738,7 @@ impl WorkspacePolicy {
     /// the workspace's to take away.
     fn check_revocation(&self, id: &GrantId) -> Result<(), Refusal> {
         if let Some(grant) = self.grants.iter().find(|grant| &grant.id == id) {
-            if roles::is_role_grant(grant) {
+            if roles::is_role_grant(grant) || scoped::is_scoped_grant(grant) {
                 return Err(Refusal::BuiltInRole(id.clone()));
             }
             Ok(())
@@ -1529,7 +1796,7 @@ impl WorkspacePolicy {
     ) -> Result<(), Refusal> {
         // What a visitor may do is the entry's to say ([`crate::EntryPolicy::visitor_grants`]),
         // never a grant someone writes.
-        if roles::is_role_grant(grant) {
+        if roles::is_role_grant(grant) || scoped::is_scoped_grant(grant) {
             return Err(Refusal::BuiltInRole(grant.id.clone()));
         }
         if grant.grantee == Grantee::AnyKey {

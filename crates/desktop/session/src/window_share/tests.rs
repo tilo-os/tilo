@@ -36,7 +36,7 @@ use crate::sync::Event;
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use serde_json::Value;
-use tilo_action_policy::{Role, share::is_of_share};
+use tilo_action_policy::Role;
 use tilo_actions::ResourceSpec;
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig, Selection};
@@ -47,7 +47,6 @@ use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 
 use tilo_session_core::desktop::verbs::WINDOW_KIND;
 
-use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
     CanvasPlace, GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId,
@@ -260,7 +259,10 @@ fn with_member_list(mut shell: Layout, owner: &str, members: &[(String, Role)]) 
     for workspace in &mut shell.workspaces {
         workspace.policy.owner = Some(owner.to_owned());
         for (person, role) in members {
-            workspace.policy.members.insert(person.clone(), *role);
+            workspace
+                .policy
+                .members
+                .insert(person.clone(), (*role).into());
         }
     }
     shell
@@ -1920,12 +1922,11 @@ fn a_share_shows_on_another_device_from_the_workspace_governance() {
     let grants = host
         .session
         .handle()
-        .read(|tree| tree.workspaces[0].policy.grants.clone());
+        .read(|tree| tree.workspaces[0].policy.clone());
     assert!(
-        grants
-            .iter()
-            .any(|grant| is_of_share(grant, &window_share_id(tab))),
-        "the share is in the workspace's governance: {grants:?}"
+        tilo_desktop_model::window_share::shares_window(&grants, tab),
+        "the share is in the workspace's member list: {:?}",
+        grants.everyone
     );
     assert!(
         hosted(&viewer.session, tab).is_none(),
@@ -1958,11 +1959,7 @@ fn a_share_shows_on_another_device_from_the_workspace_governance() {
         .expect("the share is stopped");
     until(&mut host, &mut window, &mut viewer, |host, _, _| {
         !host.session.handle().read(|tree| {
-            tree.workspaces[0]
-                .policy
-                .grants
-                .iter()
-                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+            tilo_desktop_model::window_share::shares_window(&tree.workspaces[0].policy, tab)
         })
     });
     carry_governance(&host.session, &viewer.session);
@@ -2035,12 +2032,11 @@ fn a_window_is_shared_by_naming_the_tab_it_is_shown_in() {
     let grants = host
         .session
         .handle()
-        .read(|tree| tree.workspaces[0].policy.grants.clone());
+        .read(|tree| tree.workspaces[0].policy.clone());
     assert!(
-        grants
-            .iter()
-            .any(|grant| is_of_share(grant, &window_share_id(tab))),
-        "the share is in the workspace's governance, where its other devices read it: {grants:?}"
+        tilo_desktop_model::window_share::shares_window(&grants, tab),
+        "the share is in the workspace's member list, where its other devices read it: {:?}",
+        grants.everyone
     );
 
     // A tab that shows no window of this device shares nothing.
@@ -2075,15 +2071,10 @@ fn only_a_share_of_an_unheard_device_asks_who_the_workspace_admits() {
         !super::shares_of_unheard(&policy, &unheard),
         "a workspace that shares no window asks nothing"
     );
-    policy.grants.extend(
-        tilo_action_policy::share::share_grants(
-            WORKSPACE,
-            &person(0x71),
-            &window_share_id(tab),
-            &tilo_desktop_model::window_share::window_node(WORKSPACE, APP, tab),
-            tilo_action_policy::share::ShareAccess::View,
-        )
-        .expect("a window's share"),
+    policy.share_with_everyone(
+        &tilo_desktop_model::window_share::window_node(WORKSPACE, APP, tab),
+        Some(Role::Viewer),
+        &person(0x71),
     );
     assert!(
         super::shares_of_unheard(&policy, &unheard),
@@ -2201,11 +2192,7 @@ fn a_window_the_shell_already_lists_is_pictured_in_a_tab_of_its_own_beside_the_s
         .expect("the share is stopped");
     until(&mut host, &mut window, &mut viewer, |host, _, _| {
         !host.session.handle().read(|tree| {
-            tree.workspaces[0]
-                .policy
-                .grants
-                .iter()
-                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+            tilo_desktop_model::window_share::shares_window(&tree.workspaces[0].policy, tab)
         })
     });
     carry_governance(&host.session, &viewer.session);
@@ -2308,11 +2295,7 @@ fn a_window_the_shell_lists_as_running_on_its_host_is_pictured_there_and_stays_w
         .expect("the share is stopped");
     until(&mut host, &mut window, &mut viewer, |host, _, _| {
         !host.session.handle().read(|tree| {
-            tree.workspaces[0]
-                .policy
-                .grants
-                .iter()
-                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+            tilo_desktop_model::window_share::shares_window(&tree.workspaces[0].policy, tab)
         })
     });
     carry_governance(&host.session, &viewer.session);
@@ -2402,11 +2385,7 @@ fn stop_share_and_carry(
         .expect("the share is stopped");
     until(host, window, viewer, |host, _, _| {
         !host.session.handle().read(|tree| {
-            tree.workspaces[0]
-                .policy
-                .grants
-                .iter()
-                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+            tilo_desktop_model::window_share::shares_window(&tree.workspaces[0].policy, tab)
         })
     });
     carry_governance(&host.session, &viewer.session);

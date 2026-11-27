@@ -89,7 +89,7 @@ fn assistant_of(person: &str) -> Caller {
 impl Ada {
     fn new() -> Self {
         let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
-        policy.members.insert("bo".to_owned(), Role::Editor);
+        policy.members.insert("bo".to_owned(), Role::Editor.into());
         let access = MemberAccess::person(policy, "ada");
         let (replica, _) = Replica::access("ada", Workspace::new(), CALENDAR_SET, Some(access));
         let asks = Asks::default();

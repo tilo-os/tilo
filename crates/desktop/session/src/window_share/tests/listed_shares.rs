@@ -9,6 +9,7 @@ use ed25519_dalek::SigningKey;
 
 use super::*;
 use crate::daemon_fixture::TestDaemon;
+use tilo_desktop_model::window_share::shares_window;
 
 /// The device `daemon` serves, kept under `root` as a computer keeps its own: the key a session
 /// started there signs with and the certificate its person's root gave it.
@@ -92,27 +93,22 @@ fn alone(
     }
 }
 
-/// How many grants of the share `share` the governance the daemon holds of `workspace` names.
-fn listed_shares(daemon: &TestDaemon, workspace: WorkspaceId, share: &str) -> usize {
-    daemon
+/// How many shares of the window `tab` the member list the daemon has of `workspace` names.
+fn listed_shares(daemon: &TestDaemon, workspace: WorkspaceId, tab: TabId) -> usize {
+    let policy = daemon
         .copy(workspace)
         .governance()
         .member_policy()
-        .expect("the workspace's governance")
-        .grants
-        .iter()
-        .filter(|grant| is_of_share(grant, share))
-        .count()
+        .expect("the workspace's member list");
+    usize::from(shares_window(&policy, tab))
 }
 
-/// How many grants of the share `share` the shell's copy of the workspace `workspace` names.
-fn on_shell(session: &Session, workspace: WorkspaceId, share: &str) -> usize {
+/// How many shares of the window `tab` the shell's copy of the workspace `workspace` names.
+fn on_shell(session: &Session, workspace: WorkspaceId, tab: TabId) -> usize {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .filter(|held| held.id() == workspace)
-            .flat_map(|held| &held.policy.grants)
-            .filter(|grant| is_of_share(grant, share))
+            .filter(|kept| kept.id() == workspace && shares_window(&kept.policy, tab))
             .count()
     })
 }
@@ -208,7 +204,6 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_memb
         tilo_desktop_model::ids::device_salt_of_key(&second.certificate().device_public_key),
         "the window is the second device's own"
     );
-    let share = window_share_id(tab);
 
     // The first device's own session, on the shell that lists the window as open on another
     // device, before anything of the share reached it.
@@ -225,7 +220,7 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_memb
             .expect("a frame");
     }
     assert_eq!(
-        listed_shares(&first, workspace_id, &share),
+        listed_shares(&first, workspace_id, tab),
         0,
         "the first device knows nothing of the share before it is made"
     );
@@ -252,19 +247,19 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_memb
         &mut window,
         "the share lands in the workspace's governance and on the sharer's shell",
         |sharer| {
-            listed_shares(&second, workspace_id, &share) == 1
-                && on_shell(&sharer.session, workspace_id, &share) == 1
+            listed_shares(&second, workspace_id, tab) == 1
+                && on_shell(&sharer.session, workspace_id, tab) == 1
         },
     );
     assert_eq!(
-        listed_shares(&second, workspace_id, &share),
+        listed_shares(&second, workspace_id, tab),
         1,
-        "the share is in the workspace's governance the second device's daemon holds, one grant \
-         to the viewers that reaches every role above them: a share only its own shell names \
+        "the share is in the workspace's member list on the second device's daemon, one role \
+         over the window for everyone: a share only its own shell names \
          reaches no other device"
     );
     assert_eq!(
-        on_shell(&sharer.session, workspace_id, &share),
+        on_shell(&sharer.session, workspace_id, tab),
         1,
         "and its own shell reads it from there"
     );
@@ -277,8 +272,8 @@ fn a_window_a_second_device_shares_reaches_the_first_through_the_workspaces_memb
         &mut None,
         "the first device's daemon holds the share and its shell names it",
         |viewer| {
-            listed_shares(&first, workspace_id, &share) == 1
-                && on_shell(&viewer.session, workspace_id, &share) == 1
+            listed_shares(&first, workspace_id, tab) == 1
+                && on_shell(&viewer.session, workspace_id, tab) == 1
         },
     );
     let host = hex::encode(second.certificate().device_public_key);

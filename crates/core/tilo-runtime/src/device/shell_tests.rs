@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use tilo_action_policy::share::{ShareAccess, is_of_share};
 use tilo_action_policy::{Answer, Authority, Context, Grantee, Role, TreePath};
 use tilo_action_types::ActionKind;
 use tilo_actions::remote::RemoteActionTarget;
@@ -44,9 +43,9 @@ fn policy(
 }
 
 /// An app's share of one node of the workspace (Chat sharing what a window shows with the
-/// members) is the workspace's own governance: the shell asks the daemon, the share's grants are
-/// written into the workspace this device keeps, signed as the device, and its end takes them
-/// back. Nobody but the device's own person asks it.
+/// members) is the workspace's own member list: the shell asks the daemon, everyone's role over
+/// the node is written into the workspace this device keeps, signed as the device, and its end
+/// takes it back. Nobody but the device's own person asks it.
 #[test]
 fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
     let placed = WorkspaceId::new();
@@ -68,42 +67,35 @@ fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
             .block_on(async move { Box::pin(ask(&workspaces, caller, request)).await })
             .expect("the runtime runs")
     };
-    let share = WorkspaceMembershipCommand::Share {
-        share: "m1".into(),
-        node: node.clone(),
-        access: ShareAccess::View,
+    let set = |role| WorkspaceMembershipCommand::Member {
+        change: tilo_action_policy::Change::SetScopedRole {
+            grantee: Grantee::role(Role::Viewer),
+            scope: node.clone(),
+            role,
+        },
+    };
+    let shared = |policy: &tilo_action_policy::WorkspacePolicy| {
+        policy
+            .everyone
+            .iter()
+            .filter(|entry| entry.scope == node)
+            .count()
     };
 
     let stranger = ShellCaller { person: [7; 32] };
     assert!(
-        asked(stranger, share.clone()).is_err(),
+        asked(stranger, set(Some(Role::Viewer))).is_err(),
         "the daemon acts for its own person only"
     );
-    assert!(
-        policy(&workspaces, placed)
-            .grants
-            .iter()
-            .all(|grant| !is_of_share(grant, "m1")),
+    assert_eq!(
+        shared(&policy(&workspaces, placed)),
+        0,
         "a refused share writes nothing"
     );
 
-    asked(person, share).expect("the workspace's owner shares what they hold");
+    asked(person, set(Some(Role::Viewer))).expect("the workspace's owner shares what they hold");
     let policy_now = policy(&workspaces, placed);
-    let of_share: Vec<_> = policy_now
-        .grants
-        .iter()
-        .filter(|grant| is_of_share(grant, "m1"))
-        .collect();
-    assert_eq!(
-        of_share.len(),
-        1,
-        "the share is one of the workspace's own grants"
-    );
-    assert_eq!(
-        of_share[0].grantee,
-        Grantee::role(Role::Viewer),
-        "the grant is the viewer role's, and every role above it reads through it"
-    );
+    assert_eq!(shared(&policy_now), 1, "the share is the workspace's own");
     assert_eq!(
         Authority::person(policy_now.party_of(Grantee::role(Role::Viewer)))
             .decide(&node, ActionKind::Read, &Context::at_secs(0))
@@ -112,16 +104,10 @@ fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
         "a member reads what is shared"
     );
 
-    asked(
-        person,
-        WorkspaceMembershipCommand::Unshare { share: "m1".into() },
-    )
-    .expect("the share ends");
-    assert!(
-        policy(&workspaces, placed)
-            .grants
-            .iter()
-            .all(|grant| !is_of_share(grant, "m1")),
+    asked(person, set(None)).expect("the share ends");
+    assert_eq!(
+        shared(&policy(&workspaces, placed)),
+        0,
         "nothing of the share is left in the workspace"
     );
 }

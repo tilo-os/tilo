@@ -1862,7 +1862,7 @@ mod tests {
             workspace
                 .policy
                 .members
-                .insert(person.into(), tilo_action_policy::Role::Editor);
+                .insert(person.into(), tilo_action_policy::Role::Editor.into());
             workspace.policy.joined.insert(person.into(), admitted);
             workspace.member_here(Member::named(MemberId::person(person), "Alex"));
         }

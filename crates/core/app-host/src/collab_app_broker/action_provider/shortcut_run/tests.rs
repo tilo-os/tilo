@@ -1493,7 +1493,7 @@ fn saved_by(saver: &Saver, shortcuts: Vec<tilo_automation::Shortcut>) -> Fixture
         let kept = &mut tree.desktop.workspaces[0];
         kept.policy
             .members
-            .insert(saver.person(), tilo_action_policy::Role::Editor);
+            .insert(saver.person(), tilo_action_policy::Role::Editor.into());
         for shortcut in shortcuts {
             kept.shortcuts.push(tilo_automation::SavedShortcut::encode(
                 &saver.saves(&workspace, shortcut),

@@ -15,7 +15,7 @@ pub(in crate::state) fn role_in(
     if policy.owner.as_deref() == Some(person) {
         return Some(Role::Owner);
     }
-    let role = policy.members.get(person).copied()?;
+    let role = policy.members.get(person)?.role();
     let node = tilo_action_policy::TreePath::workspace(workspace);
     let blocked = policy.grants.iter().any(|grant| {
         grant.grantee.person_id() == Some(person)

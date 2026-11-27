@@ -497,6 +497,8 @@ workspace-settings-member-extra = { $count ->
     [one] 1 extra permission
    *[other] { $count } extra permissions
 }
+# The parts of the workspace a member holds a role over, when it is not all of it.
+workspace-settings-member-scope = Only { $parts }
 workspace-settings-remove = Remove
 workspace-settings-owner-only = Only the workspace owner can change permissions.
 workspace-settings-refused = The workspace refused that change

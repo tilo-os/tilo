@@ -1876,7 +1876,7 @@ mod tests {
             assert_eq!(kept(&by_eve), Err(InvocationError::NotInvoker));
 
             let mut policy = WorkspacePolicy::new(WORKSPACE, ada.as_str());
-            policy.members.insert(bo, Role::Editor);
+            policy.members.insert(bo, Role::Editor.into());
             let policy = policy.with_current_roles();
             let notes = TreePath::workspace(WORKSPACE).app("notes").action("append");
             let cx = Context::at(NOW);

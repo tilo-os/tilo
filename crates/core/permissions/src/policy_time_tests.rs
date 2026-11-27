@@ -9,7 +9,7 @@ fn member_with(answer: Answer) -> PermissionContext {
     if answer == Answer::Deny {
         std::sync::Arc::make_mut(&mut access.policy)
             .members
-            .insert("member".into(), Role::Editor);
+            .insert("member".into(), Role::Editor.into());
     }
     std::sync::Arc::make_mut(&mut access.policy).grants.push(
         policy::Grant::new(

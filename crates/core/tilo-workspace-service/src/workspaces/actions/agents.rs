@@ -347,7 +347,7 @@ impl Workspaces {
 /// Each request a page asks ([`WorkspacesRequest`]), by its name, as the
 /// action asked of the server itself (`true`) or of the workspaces it is: an agent's grant
 /// for the one is its grant for the other.
-const PAGE_ACTIONS: [(&str, bool, &str); 21] = [
+const PAGE_ACTIONS: [(&str, bool, &str); 19] = [
     ("List", true, LIST_WORKSPACES),
     ("Create", true, CREATE_WORKSPACE),
     ("Place", true, CREATE_WORKSPACE),
@@ -363,8 +363,6 @@ const PAGE_ACTIONS: [(&str, bool, &str); 21] = [
     ("Permits", false, MEMBERS_READ.action),
     ("Name", false, super::NAME),
     ("Rename", false, governance::RENAME),
-    ("Share", false, governance::SETTINGS),
-    ("Unshare", false, governance::SETTINGS),
     ("Servers", false, super::SERVERS),
     ("AddServer", false, super::ADD_SERVER),
     ("RemoveServer", false, super::REMOVE_SERVER),

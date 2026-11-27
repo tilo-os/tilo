@@ -1292,9 +1292,13 @@ fn identities(
         }
     }
     // An owner's role is the workspace's, never a membership change.
-    if wanted.members.values().any(|role| *role == Role::Owner)
-        && held.members.values().all(|role| *role != Role::Owner)
-    {
+    let owns = |assigned: &tilo_action_policy::RoleAssignment| {
+        assigned
+            .scopes
+            .iter()
+            .any(|entry| entry.role == Role::Owner)
+    };
+    if wanted.members.values().any(owns) && !held.members.values().any(owns) {
         return Err(MembershipRefusal::Refused("the owner's role".into()));
     }
     Ok(())

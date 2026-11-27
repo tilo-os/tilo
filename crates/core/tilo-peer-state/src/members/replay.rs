@@ -591,7 +591,10 @@ impl<'a> Log<'a> {
             .or_insert(op.at_ns / 1_000_000);
         // Someone who is a member already keeps the role they hold: the entry
         // is how someone enters, not the place they hold now.
-        policy.members.entry(person_hex).or_insert(role);
+        policy
+            .members
+            .entry(person_hex)
+            .or_insert_with(|| role.into());
         true
     }
     /// Admit `person` into `policy` by the invitation `invite`, as recorded at
@@ -652,7 +655,7 @@ impl<'a> Log<'a> {
         policy
             .members
             .entry(person.clone())
-            .or_insert(admitted.grant.role);
+            .or_insert_with(|| admitted.grant.role.into());
         // An administrator's invitation makes its holder one as they enter,
         // given by whom it carries the making of: every device replays the
         // same admission to the same grants. Someone already a member keeps
@@ -769,7 +772,15 @@ fn effect(
         // The change is decided against the membership as the changes before
         // it left it, and applied to the operation's own copy. One the
         // workspace's grants do not allow may still be the member's by their
-        // own rule: a share, its end, or a saved set they assign.
+        // own rule: a saved set they assign. A member shares a window from the device it runs
+        // on; the owner's and an administrator's devices host shares for those who ask them.
+        if let Change::SetScopedRole { scope, .. } = change
+            && !next.is_owner(&person)
+            && !next.is_administrator(&person)
+        {
+            crate::workspace::share::window_is_the_writers(&device, scope)
+                .map_err(|why| Box::new((change.clone(), why)))?;
+        }
         let mut after = next.clone();
         let authority = next.person_on_device(&person, foreign);
         next = match after.apply(&person, &authority, change.clone(), &cx, false) {
@@ -777,14 +788,14 @@ fn effect(
             Err(refusal) => crate::workspace::share::members_own(
                 &next,
                 || tilo_desktop_model::projection::workspace_presets_of(doc),
-                (&person, &device, &authority, &cx),
+                (&person, &authority, &cx),
                 change,
             )
             .map_err(|own| {
-                // A member's own rule covers grants and their ends alone: why it did not
-                // cover one is part of the answer, and says nothing about any other change.
+                // A member's own rule covers grants alone: why it did not cover one is part of
+                // the answer, and says nothing about any other change.
                 let why = match change {
-                    Change::Grant(_) | Change::Revoke(_) => format!("{refusal}; {own}"),
+                    Change::Grant(_) => format!("{refusal}; {own}"),
                     _ => refusal.to_string(),
                 };
                 Box::new((change.clone(), why))

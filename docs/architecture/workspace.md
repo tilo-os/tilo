@@ -671,11 +671,11 @@ its own. Only a window the device maps, in a tab it minted, in a workspace
 its session takes part in offers the row; a device that shows the window's
 picture, or its placeholder, does not.
 
-The share itself is workspace state. The device the window runs on writes the
-share's grants, on the window's own node, into the workspace's governance as
-its member's change (`WorkspaceMembershipCommand::Share`), so they leave with
+The share itself is workspace state: everyone holding a role over the window's
+own node, which the device the window runs on writes into the workspace's
+member list as its member's change (`Change::SetScopedRole`), so it leaves with
 the rest of what that device writes there. Every device that holds the
-workspace, the sharer's included, reads them from the governance it admitted
+workspace, the sharer's included, reads them from the member list it admitted
 and shows the window from there. Which device shares makes no difference to
 who is shown it. A device that takes part through the workspace's host sends
 the change to that host, which admits it and hands it on to the workspace's

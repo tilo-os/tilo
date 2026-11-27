@@ -138,7 +138,9 @@ mod tests {
     /// workspace adds or takes away at that verb's node.
     fn policy(answer: Answer) -> WorkspacePolicy {
         let mut policy = WorkspacePolicy::new(WORKSPACE, OWNER);
-        policy.members.insert(EDITOR.to_owned(), Role::Editor);
+        policy
+            .members
+            .insert(EDITOR.to_owned(), Role::Editor.into());
         policy.grants.push(Grant::new(
             "verb",
             Grantee::person(EDITOR),

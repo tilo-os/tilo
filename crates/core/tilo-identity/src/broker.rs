@@ -1277,7 +1277,7 @@ params = []
             shared
                 .policy
                 .members
-                .insert(profile.person_id(), collab_types::Role::Editor);
+                .insert(profile.person_id(), collab_types::Role::Editor.into());
             tree.write().desktop.workspaces = vec![shared];
             assert!(matches!(sign(&tree), Response::Signature(_)));
         }

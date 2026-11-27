@@ -167,7 +167,7 @@ fn op(doc: &mut AutoCommit, heads: &[automerge::ChangeHash]) -> collab_types::op
 /// Ada made the workspace and owns it; Vic only reads it.
 fn policy() -> WorkspacePolicy {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
-    policy.members.insert("vic".into(), Role::Viewer);
+    policy.members.insert("vic".into(), Role::Viewer.into());
     policy.grants.push(Grant::new(
         "vic-reads-mail",
         Grantee::person("vic"),
@@ -276,7 +276,7 @@ tilo_test_env::scenario! {
     phase a_member_settles_what_they_sent;
     {
         let mut policy = writes_mail("bob");
-        policy.members.insert("bob".into(), Role::Editor);
+        policy.members.insert("bob".into(), Role::Editor.into());
         let held = held();
         assert_eq!(
             received(&settle(&held, "bob"), &held, &page(&policy, "bob")),
@@ -309,7 +309,7 @@ tilo_test_env::scenario! {
     // itself may have put an entry in it.
     {
         let mut policy = writes_mail("bob");
-        policy.members.insert("bob".into(), Role::Editor);
+        policy.members.insert("bob".into(), Role::Editor.into());
         let settle = ClaimedAction::Edit {
             kind: KIND.into(),
             path: vec![

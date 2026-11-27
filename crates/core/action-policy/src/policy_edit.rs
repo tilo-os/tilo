@@ -248,12 +248,32 @@ impl WorkspacePolicy {
         removed
     }
 
+    /// Share `scope` with everyone at `role` as `by`, or end `by`'s share of it (`None`),
+    /// without a check: a workspace that lives only on this session, which no other device
+    /// reads.
+    pub fn share_with_everyone(&mut self, scope: &TreePath, role: Option<Role>, by: &str) {
+        crate::scoped::set_entry(&mut self.everyone, scope, role, by, false);
+        self.derive_scoped_grants();
+    }
+
+    /// End every share with everyone whose part `ended` names, without a check. Whether one
+    /// ended.
+    pub fn end_everyone_shares(&mut self, ended: impl Fn(&TreePath) -> bool) -> bool {
+        let before = self.everyone.len();
+        self.everyone.retain(|entry| !ended(&entry.scope));
+        let changed = self.everyone.len() != before;
+        if changed {
+            self.derive_scoped_grants();
+        }
+        changed
+    }
+
     /// Admit `person` with `role`, without a check (the host installing an
     /// accepted invite or the workspace's first state). The owner stays owner.
     pub fn add_member(&mut self, person: impl Into<String>, role: Role) {
         let person = person.into();
         if !self.is_owner(&person) {
-            self.members.insert(person, role);
+            self.members.insert(person, role.into());
         }
     }
 
@@ -286,7 +306,7 @@ impl WorkspacePolicy {
             .chain(
                 self.members
                     .iter()
-                    .map(|(person, role)| (person.clone(), *role)),
+                    .map(|(person, assigned)| (person.clone(), assigned.role())),
             )
             .collect()
     }

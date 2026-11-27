@@ -37,7 +37,7 @@ tilo_test_env::scenario! {
     phase the_owner_hands_it_over_and_stays_as_an_administrator;
     {
         let mut workspace = WorkspacePolicy::new("r", OWNER);
-        workspace.members.insert(BOB.to_owned(), Role::Editor);
+        workspace.members.insert(BOB.to_owned(), Role::Editor.into());
         workspace.grants.push(roles::administrator_grant(
             "r",
             BOB,
@@ -70,7 +70,7 @@ tilo_test_env::scenario! {
     phase nobody_else_hands_it_over;
     {
         let mut workspace = WorkspacePolicy::new("r", OWNER);
-        workspace.members.insert(BOB.to_owned(), Role::Editor);
+        workspace.members.insert(BOB.to_owned(), Role::Editor.into());
         workspace.grants.push(roles::administrator_grant(
             "r",
             BOB,
@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
     phase a_banned_person_is_handed_nothing;
     {
         let mut workspace = WorkspacePolicy::new("r", OWNER);
-        workspace.members.insert(BOB.to_owned(), Role::Editor);
+        workspace.members.insert(BOB.to_owned(), Role::Editor.into());
         let owner = workspace.clone();
         workspace
             .apply(
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
         let root = [3u8; 32];
         let founder = [4u8; 32];
         let mut workspace = WorkspacePolicy::new("shared", hex::encode(founder));
-        workspace.members.insert(hex::encode(root), Role::Editor);
+        workspace.members.insert(hex::encode(root), Role::Editor.into());
         let node = displays("shared", &root);
         let owner = Authority::person(workspace.party(&hex::encode(founder)));
         assert_eq!(

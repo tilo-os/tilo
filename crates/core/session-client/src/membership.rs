@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use crate::engine::Engine;
 use tilo_action_policy::PolicyEdit;
-use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
+use tilo_action_policy::{Change, Grant, RoleAssignment, WorkspacePolicy};
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
@@ -151,19 +151,28 @@ impl<'a> Membership<'a> {
     ) -> Vec<WorkspaceMembershipCommand> {
         let mut changes = Vec::new();
         for person in &edit.members {
-            changes.push(match workspace.policy.members.get(person) {
-                Some(role) if self.has(person) => Change::SetRole {
-                    person: person.clone(),
-                    role: *role,
+            // An edit here sets a role over the whole workspace; a part of it is `grant.set`'s.
+            changes.push(
+                match workspace
+                    .policy
+                    .members
+                    .get(person)
+                    .map(RoleAssignment::whole)
+                {
+                    Some(Some(role)) if self.has(person) => Change::SetRole {
+                        person: person.clone(),
+                        role,
+                    },
+                    Some(Some(role)) => Change::AddMember {
+                        person: person.clone(),
+                        role,
+                    },
+                    Some(None) => continue,
+                    None => Change::RemoveMember {
+                        person: person.clone(),
+                    },
                 },
-                Some(role) => Change::AddMember {
-                    person: person.clone(),
-                    role: *role,
-                },
-                None => Change::RemoveMember {
-                    person: person.clone(),
-                },
-            });
+            );
         }
         changes.extend(edit.custom_roles.iter().cloned());
         for id in &edit.granted {
@@ -278,37 +287,24 @@ impl<'a> Membership<'a> {
         .await
     }
 
-    /// Share `node` — one record of the workspace, or one item of it — with its members as `access`
-    /// gives, under the share id `share`, as this device: the grants of it that the workspace
-    /// admits, bounded by what this person holds at the node.
-    ///
-    /// # Errors
-    /// The workspace refused the share — this device's person does not hold what it would give —
-    /// or this device could not publish it.
-    pub async fn share(
-        &self,
-        share: &str,
-        node: tilo_action_policy::TreePath,
-        access: tilo_action_policy::share::ShareAccess,
-    ) -> Result<(), String> {
-        self.command(WorkspaceMembershipCommand::Share {
-            share: share.to_owned(),
-            node,
-            access,
-        })
-        .await
-    }
-
-    /// End the share `share` in the workspace: the grants of it this device's person gave, or all of
-    /// them when they may revoke in the workspace.
+    /// Give `grantee` (a person, or everyone as the Viewer role) `role` over `scope`, one part of
+    /// the workspace, as this device's person; or take their share of it back (`None`).
     ///
     /// # Errors
     /// The workspace refused it, or this device could not publish it.
-    pub async fn unshare(&self, share: &str) -> Result<(), String> {
-        self.command(WorkspaceMembershipCommand::Unshare {
-            share: share.to_owned(),
-        })
-        .await
+    pub async fn set_scoped_role(
+        &self,
+        grantee: tilo_action_policy::Grantee,
+        scope: tilo_action_policy::TreePath,
+        role: Option<tilo_action_policy::Role>,
+    ) -> Result<(), String> {
+        let change = tilo_action_policy::Change::SetScopedRole {
+            grantee,
+            scope,
+            role,
+        };
+        self.command(WorkspaceMembershipCommand::Member { change })
+            .await
     }
 
     /// Write `command` into the workspace's governance as this device, signed by its ownership,
@@ -327,17 +323,18 @@ impl<'a> Membership<'a> {
 /// that holds the workspace reads it there, the sharer's own included. Whether anything changed.
 pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let owner = policy.owner.as_deref();
-    let members: BTreeMap<String, Role> = policy
+    let members: BTreeMap<String, RoleAssignment> = policy
         .members
         .iter()
         .filter(|(person, _)| owner != Some(person.as_str()))
-        .map(|(person, role)| (person.clone(), *role))
+        .map(|(person, assigned)| (person.clone(), assigned.clone()))
         .collect();
     let joined = policy.joined.clone();
     let grants = settled(&policy.grants);
     let held = settled(&workspace.policy.grants);
     if workspace.policy.owner == policy.owner
         && workspace.policy.members == members
+        && workspace.policy.everyone == policy.everyone
         && workspace.policy.joined == joined
         && workspace.policy.custom_roles == policy.custom_roles
         && workspace.policy.assigned_roles == policy.assigned_roles
@@ -347,6 +344,7 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     }
     workspace.policy.owner.clone_from(&policy.owner);
     workspace.policy.members = members;
+    workspace.policy.everyone.clone_from(&policy.everyone);
     workspace.policy.joined = joined;
     workspace
         .policy

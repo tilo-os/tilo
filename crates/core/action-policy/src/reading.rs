@@ -166,7 +166,7 @@ mod tests {
         phase keeping_out_a_reader_writes_their_deny_and_letting_them_back_removes_it;
         {
             let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
-            policy.members.insert("ben".to_owned(), Role::Editor);
+            policy.members.insert("ben".to_owned(), Role::Editor.into());
             let cx = Context::at_time(tilo_clock::wall());
             let node = channel();
             assert!(reads(&policy, "ben"), "a member reads what the workspace holds");
@@ -207,8 +207,8 @@ mod tests {
         phase a_member_the_workspace_does_not_let_grant_is_refused;
         {
             let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
-            policy.members.insert("ben".to_owned(), Role::Editor);
-            policy.members.insert("cy".to_owned(), Role::Editor);
+            policy.members.insert("ben".to_owned(), Role::Editor.into());
+            policy.members.insert("cy".to_owned(), Role::Editor.into());
             let cx = Context::at_time(tilo_clock::wall());
             let refused = policy.reading_change(
                 &Authority::person(policy.party("cy")),

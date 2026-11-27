@@ -49,18 +49,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Map, Value, json};
 use tilo_action_calls::InvocationLog;
 use tilo_action_policy::roles::{self, governance};
-use tilo_action_policy::{Answer, EntryPolicy, ListingPolicy};
+use tilo_action_policy::{Answer, EntryPolicy, ListingPolicy, TreePath};
 use tilo_action_services::{formats, mcp_server, server_account};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_APPS, WORKSPACE_GOVERNANCE_KIND,
-    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE, WORKSPACE_INVITATIONS, WORKSPACE_INVITE,
-    WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED, WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT,
-    WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST,
-    WORKSPACE_WAITING, workspace_app, workspace_app_named, workspace_governance_address,
-    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
-    workspace_member, workspace_person,
+    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE, WORKSPACE_GRANT_SET,
+    WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
+    WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
+    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_app, workspace_app_named,
+    workspace_governance_address, workspace_governance_child, workspace_governance_operation,
+    workspace_governance_resource, workspace_member, workspace_person,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -248,7 +248,7 @@ pub struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 52] = [
+const VERBS: [Verb; 53] = [
     Verb {
         id: WORKSPACE_INVITE,
         label: "Invite",
@@ -624,6 +624,15 @@ const VERBS: [Verb; 52] = [
         check: "",
         kind: roles::GOVERNANCE_KIND,
         params: grant_params,
+    },
+    Verb {
+        id: WORKSPACE_GRANT_SET,
+        label: "Share a part of the workspace",
+        // A member shares what they hold as their own say; the handler decides it as every
+        // receiver does.
+        check: "",
+        kind: roles::GOVERNANCE_KIND,
+        params: share_params,
     },
     Verb {
         id: WORKSPACE_READ_GRANT,
@@ -1019,6 +1028,56 @@ fn grant_params() -> Vec<ActionParam> {
         ParamType::Text,
         "The grant, by its id: what `workspace/permissions/<grant>` names.",
     )]
+}
+
+/// The part of `workspace` `address` names: a node in its text form, or `<workspace>/<app>/**`
+/// for one whole app, Files by its name.
+fn scope_of(workspace: &str, address: &str) -> Result<TreePath, ActionCallError> {
+    let node = tilo_failure::ignored!(
+        "an address that is no node's text form is read as `<workspace>/<app>/**`",
+        address.parse::<TreePath>().ok()
+    );
+    if let Some(node) = node
+        && node.workspace_id().is_some()
+    {
+        return Ok(node);
+    }
+    let app = (address.strip_prefix(workspace))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(|rest| rest.strip_suffix("/**").unwrap_or(rest))
+        .filter(|app| !app.is_empty() && !app.contains('/'))
+        .ok_or_else(|| {
+            ActionCallError::invalid_request(format!("`{address}` names no part of this workspace"))
+        })?;
+    let files = tilo_actions::tree::names_files(app);
+    let app = if files {
+        tilo_actions::tree::FILES_APP
+    } else {
+        app
+    };
+    Ok(TreePath::workspace(workspace).app(app).rest())
+}
+
+/// Who is given which part of the workspace, at which role.
+fn share_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "person",
+            ParamType::Text,
+            "The person, by their user root key (64 hex characters), or `everyone`.",
+        ),
+        ActionParam::required(
+            "address",
+            ParamType::Text,
+            "The part of the workspace, such as `<workspace>/files/**`.",
+        ),
+        ActionParam::optional(
+            "role",
+            ParamType::Text,
+            "The role over it; none takes the share back.",
+        )
+        .with_choices(["viewer", "commenter", "editor", "moderator"]),
+    ]
 }
 
 /// Who reads which resource: the resource, and the member or the role.
@@ -2548,6 +2607,7 @@ impl Workspaces {
             REVOKE_KEY => self.governance_revoke_key(call).await,
             WEBHOOKS | CREATE_WEBHOOK | DELETE_WEBHOOK => self.webhook_actions(action, call).await,
             WORKSPACE_GRANT_REVOKE => self.revoke_policy_grant(call).await,
+            WORKSPACE_GRANT_SET => self.set_grant(call).await,
             WORKSPACE_READ_GRANT => self.set_reading(call, true).await,
             WORKSPACE_READ_REVOKE => self.set_reading(call, false).await,
             _ => self.governance_members(action, call).await,
@@ -2793,6 +2853,31 @@ impl Workspaces {
             .map_err(ActionCallError::refused)?;
         drop(workspace);
         Ok(json!({ "revoked": id }))
+    }
+
+    /// Give a person, or everyone, a role over one part of the workspace, or take the caller's
+    /// share of it back (`workspace/grants#set`). Answers the part and whether anything changed.
+    async fn set_grant(&self, call: GovernanceCall<'_>) -> Result<Value, ActionCallError> {
+        let grantee = match call.args.text("person")? {
+            Some("everyone") => tilo_action_policy::Grantee::role(tilo_action_policy::Role::Viewer),
+            _ => {
+                tilo_action_policy::Grantee::person(hex::encode(call.args.required_key("person")?))
+            }
+        };
+        let scope = scope_of(call.workspace, call.args.required_text("address")?)?;
+        let role = call
+            .args
+            .text("role")?
+            .map(|role| {
+                tilo_action_policy::Role::parse(role)
+                    .ok_or_else(|| ActionCallError::invalid_request(format!("`{role}` is no role")))
+            })
+            .transpose()?;
+        let changed = self
+            .set_scoped_role(call.workspace, call.device, (grantee, &scope), role)
+            .await
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        Ok(json!({ "scope": scope.to_string(), "changed": changed }))
     }
 
     /// Let a person or a role read one resource, or keep them from it
@@ -5163,7 +5248,7 @@ mod surface_tests {
         WORKSPACE_MEMBERS, WORKSPACE_WAITING,
     };
     use tilo_actions::remote::{
-        WORKSPACE_APP, WORKSPACE_APPS, WORKSPACE_CONTENT, WORKSPACE_PERMISSION,
+        WORKSPACE_APP, WORKSPACE_APPS, WORKSPACE_CONTENT, WORKSPACE_GRANTS, WORKSPACE_PERMISSION,
         WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST,
     };
 
@@ -5190,7 +5275,7 @@ mod surface_tests {
     /// governance tree, named after what it holds. Each is a resource type of its own, so a verb
     /// several offer (`list` on the members, the invitations and the servers) is one action of
     /// each, named by its type.
-    const RESOURCES: [(&str, &str); 12] = [
+    const RESOURCES: [(&str, &str); 13] = [
         ("members", "Members"),
         ("member", "Member"),
         ("invitations", "Invitations"),
@@ -5203,6 +5288,7 @@ mod surface_tests {
         ("apps", "Apps"),
         ("app", "App"),
         ("permission", "Permission"),
+        ("grants", "Grants"),
     ];
 
     /// The resource the action published at `child` stands on: the child of the governance tree
@@ -5221,6 +5307,7 @@ mod surface_tests {
             Some(WORKSPACE_APPS) => "apps",
             Some(WORKSPACE_APP) => "app",
             Some(WORKSPACE_PERMISSION) => "permission",
+            Some(WORKSPACE_GRANTS) => "grants",
             other => panic!("the surface names no resource for the actions on {other:?}"),
         }
     }

@@ -40,6 +40,7 @@ fn decide_at(grants: &[Grant], node: &TreePath, kind: ActionKind, consequential:
         workspace: WORKSPACE.into(),
         owner: Some(PERSON.into()),
         members: std::collections::BTreeMap::default(),
+        everyone: Vec::new(),
         joined: std::collections::BTreeMap::default(),
         grants: grants.to_vec(),
         custom_roles: std::collections::BTreeMap::default(),
@@ -355,6 +356,7 @@ fn policy_with(grants: Vec<Grant>) -> WorkspacePolicy {
         workspace: WORKSPACE.into(),
         owner: Some(PERSON.into()),
         members: std::collections::BTreeMap::default(),
+        everyone: Vec::new(),
         joined: std::collections::BTreeMap::default(),
         grants,
         custom_roles: std::collections::BTreeMap::default(),
@@ -423,8 +425,8 @@ fn a_person_answers_for_their_own_agent_without_governing() {
     use tilo_action_policy::Change;
     use tilo_member_types::Acting;
     let mut members = std::collections::BTreeMap::new();
-    members.insert(PERSON.to_owned(), tilo_action_policy::Role::Viewer);
-    members.insert("b0b".to_owned(), tilo_action_policy::Role::Viewer);
+    members.insert(PERSON.to_owned(), tilo_action_policy::Role::Viewer.into());
+    members.insert("b0b".to_owned(), tilo_action_policy::Role::Viewer.into());
     let mut policy = policy_with(Vec::new());
     policy.owner = Some("0wner".into());
     policy.members = members;
@@ -564,6 +566,7 @@ fn the_workspaces_denial_of_an_agent_reaches_it_for_every_person() {
         workspace: WORKSPACE.into(),
         owner: Some(OWNER.into()),
         members: std::collections::BTreeMap::default(),
+        everyone: Vec::new(),
         joined: std::collections::BTreeMap::default(),
         grants: vec![
             rule("workspace:helper-kept-from-vault", &vault, Answer::Deny),

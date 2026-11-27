@@ -199,7 +199,7 @@ fn the_content_pane_shows_what_the_host_keeps_in_mebibytes() {
 
     // A member who is no owner of the workspace: they read its limits and change none.
     let mut policy = WorkspacePolicy::new("team", "bo");
-    policy.members.insert("ada".to_owned(), Role::Editor);
+    policy.members.insert("ada".to_owned(), Role::Editor.into());
     let (host, _) = settings_with(Some(MemberAccess::person(policy, "ada")));
     limits(&host);
     invoke(&host, "open_pane", vec![Value::text("content")]);

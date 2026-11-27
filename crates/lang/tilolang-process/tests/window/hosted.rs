@@ -945,7 +945,7 @@ impl Session {
         use tilo_permissions::policy::WorkspacePolicy;
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let mut policy = WorkspacePolicy::new(route.cluster_id.to_string(), "ada");
-        policy.members.insert("bo".to_owned(), Role::Editor);
+        policy.members.insert("bo".to_owned(), Role::Editor.into());
         let spec = Spec::new(app, route.cluster_id.to_string(), 1, "bo")
             .in_language("en-US")
             .access(MemberAccess::person(policy, "bo"));

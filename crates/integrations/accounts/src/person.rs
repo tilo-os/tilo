@@ -1028,8 +1028,8 @@ mod tests {
         let editor = "ab".repeat(32);
         let viewer = "cd".repeat(32);
         let mut policy = WorkspacePolicy::new(WORKSPACE, &editor);
-        policy.members.insert(editor.clone(), Role::Editor);
-        policy.members.insert(viewer.clone(), Role::Viewer);
+        policy.members.insert(editor.clone(), Role::Editor.into());
+        policy.members.insert(viewer.clone(), Role::Viewer.into());
         // Mail publishes the accounts record, so its actions are Mail's.
         let accounts = TreePath::workspace(WORKSPACE)
             .app(MAIL)

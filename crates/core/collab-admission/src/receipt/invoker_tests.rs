@@ -60,9 +60,9 @@ impl SurfaceSource for Tree {
 /// it then reads there too.
 pub(super) fn policy(writes: Option<Answer>) -> WorkspacePolicy {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "owner");
-    policy.members.insert("ada".into(), Role::Editor);
-    policy.members.insert("bob".into(), Role::Editor);
-    policy.members.insert("vic".into(), Role::Viewer);
+    policy.members.insert("ada".into(), Role::Editor.into());
+    policy.members.insert("bob".into(), Role::Editor.into());
+    policy.members.insert("vic".into(), Role::Viewer.into());
     if let Some(writes) = writes {
         let files = TreePath::workspace(WORKSPACE).app(FILES);
         for (id, kinds, answer) in [

@@ -33,7 +33,7 @@ fn access(answers: Vec<tilo_action_policy::Grant>) -> MemberAccess {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
     policy
         .members
-        .insert("grace".to_owned(), tilo_action_policy::Role::Editor);
+        .insert("grace".to_owned(), tilo_action_policy::Role::Editor.into());
     policy.grants.extend(answers);
     MemberAccess::person(policy, "ada")
 }

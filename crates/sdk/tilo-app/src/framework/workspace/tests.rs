@@ -20,7 +20,7 @@ fn a_known_reader_can_read_their_record_at_any_role() {
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
     let mut policy = WorkspacePolicy::new(WORKSPACE, bob.clone());
-    policy.members.insert(ada.clone(), Role::Viewer);
+    policy.members.insert(ada.clone(), Role::Viewer.into());
     let policy = policy.with_current_roles();
     let route = tilo_actions::policy::roles::member_record(History::KIND, &ada)
         .expect("Ada's record has a verifiable owner");

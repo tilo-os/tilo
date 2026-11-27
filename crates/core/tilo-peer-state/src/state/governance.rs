@@ -932,8 +932,8 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        if !change.is_custom_role_change() {
-            return Err("expected a custom role change".into());
+        if !change.is_custom_role_change() && !matches!(change, Change::SetScopedRole { .. }) {
+            return Err("expected a custom role change or a share".into());
         }
         self.peer.require_member_writer(key, now)?;
         let document = self
@@ -944,12 +944,15 @@ impl PeerGovernanceMut<'_> {
             .ok_or("workspace governance missing")?;
         // Giving a member a role of the workspace's own, or taking it, changes that member;
         // defining a role changes nobody.
-        let stamp = matches!(change, Change::SetMemberCustomRole { .. })
-            .then(|| {
-                self.peer
-                    .own_action(tilo_action_policy::roles::governance::SET_ROLE, key, now)
-            })
-            .flatten();
+        let stamp = matches!(
+            change,
+            Change::SetMemberCustomRole { .. } | Change::SetScopedRole { .. }
+        )
+        .then(|| {
+            self.peer
+                .own_action(tilo_action_policy::roles::governance::SET_ROLE, key, now)
+        })
+        .flatten();
         self.peer.naming(stamp, |peer| {
             peer.write_changes(document, vec![change], key, now)
         })

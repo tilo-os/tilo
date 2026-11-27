@@ -356,8 +356,14 @@ mod tests {
     fn workspace() -> Workspace {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(7), "Studio");
         workspace.policy = WorkspacePolicy::new("studio", OWNER);
-        workspace.policy.members.insert(ADA.into(), Role::Editor);
-        workspace.policy.members.insert(BO.into(), Role::Editor);
+        workspace
+            .policy
+            .members
+            .insert(ADA.into(), Role::Editor.into());
+        workspace
+            .policy
+            .members
+            .insert(BO.into(), Role::Editor.into());
         workspace.named_people([(ADA, "Ada"), (BO, "Bo")]);
         workspace
     }
@@ -443,7 +449,10 @@ mod tests {
     #[test]
     fn a_member_who_may_not_administer_the_grants_is_told_nothing() {
         let mut workspace = workspace();
-        workspace.policy.members.insert(VIEWER.into(), Role::Viewer);
+        workspace
+            .policy
+            .members
+            .insert(VIEWER.into(), Role::Viewer.into());
         share(
             &mut workspace,
             "bo-plan",

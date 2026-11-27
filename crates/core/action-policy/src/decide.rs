@@ -25,6 +25,9 @@ pub enum Basis<'g> {
     OwnRecord,
     /// No live grant covers the node and kind.
     NoGrant,
+    /// The node is in the workspace, outside every part of it the person holds a role over
+    /// ([`Party::within`]).
+    OutsideScope,
 }
 
 /// One party's answer for one node and kind.
@@ -172,6 +175,9 @@ pub struct Party<'g> {
     /// The answers that narrow the party to what they name: while one stands, `delegated`
     /// decides nothing.
     pub narrowing: Vec<&'g Grant>,
+    /// The parts of one workspace the party holds a role over, when it is not all of it: every
+    /// other node of that workspace is denied, whatever its grants say ([`Self::within`]).
+    pub scope: Option<(String, Vec<TreePath>)>,
 }
 
 /// What a device or a piece of software may do at most, whatever its grants
@@ -264,7 +270,28 @@ impl<'g> Party<'g> {
             cap: None,
             delegated: Vec::new(),
             narrowing: Vec::new(),
+            scope: None,
         }
+    }
+
+    /// The same party, with a role over `scope` alone of `workspace`. Its own resources, its
+    /// own device's settings and reading the workspace's member list stay its own.
+    #[must_use]
+    pub fn within(mut self, workspace: &str, scope: Vec<TreePath>) -> Self {
+        self.scope = Some((workspace.to_owned(), scope));
+        self
+    }
+
+    /// Whether `node` lies in the scoped workspace, outside every part the party holds.
+    fn outside_scope(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> bool {
+        let Some((workspace, scope)) = &self.scope else {
+            return false;
+        };
+        let reads_who_is_in = kind == ActionKind::Read
+            && node.id_at(Level::Kind) == Some(crate::roles::WORKSPACE_KIND);
+        node.workspace_id() == Some(workspace.as_str())
+            && !reads_who_is_in
+            && !scope.iter().any(|part| cx.covers(part, node))
     }
 
     /// The same party, capped by `cap`.
@@ -390,6 +417,12 @@ impl<'g> Party<'g> {
                 basis: Basis::OwnRecord,
             };
         }
+        if self.outside_scope(node, kind, cx) {
+            return Decision {
+                answer: Answer::Deny,
+                basis: Basis::OutsideScope,
+            };
+        }
         decide(self.deciding(cx), &self.grantees, node, kind, cx)
     }
 
@@ -433,6 +466,7 @@ impl<'g> Party<'g> {
             cap: self.cap,
             delegated: self.delegated.iter().copied().cloned().collect(),
             narrowing: self.narrowing.iter().copied().cloned().collect(),
+            scope: self.scope.clone(),
         }
     }
 }
@@ -462,6 +496,7 @@ struct EffectiveParty {
     cap: Option<Cap>,
     delegated: Vec<Grant>,
     narrowing: Vec<Grant>,
+    scope: Option<(String, Vec<TreePath>)>,
 }
 
 /// Who is acting: a person, and the delegations bounding them (an agent, a
@@ -830,6 +865,10 @@ impl<'g> Verdict<'g> {
         let reason = match self.parts.get(index).map(|part| part.basis) {
             Some(Basis::Owner) => "the person owns the workspace".to_owned(),
             Some(Basis::OwnRecord) => format!("{} is theirs alone", self.node),
+            Some(Basis::OutsideScope) => format!(
+                "{} is outside the parts of the workspace the person was given",
+                self.node
+            ),
             Some(Basis::Capped(cap) | Basis::RootOnly(cap)) => cap.why.to_owned(),
             Some(Basis::Grant(grant)) => format!(
                 "{} give {} on {} the answer \"{}\" (grant {})",

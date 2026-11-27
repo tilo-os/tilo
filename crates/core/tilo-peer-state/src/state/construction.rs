@@ -6,7 +6,7 @@ use super::{
     VerifiedCertificate, administrator_grant_id, err, held, now_ns, process_default,
 };
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::Change;
+use tilo_action_policy::{Change, RoleAssignment};
 
 use automerge::{ReadDoc as _, transaction::Transactable as _};
 
@@ -227,7 +227,7 @@ impl StatePeer {
         }
         let admin_id = administrator_grant_id(user_public_key);
         let moderation_id = tilo_action_policy::roles::administrator_moderation_grant_id(&person);
-        let before_role = held.members.get(&person).copied();
+        let before_role = held.members.get(&person).and_then(RoleAssignment::whole);
         let before_admin = held.grants.iter().any(|grant| grant.id == admin_id);
         let mut changes = vec![match before_role {
             None => Change::AddMember {

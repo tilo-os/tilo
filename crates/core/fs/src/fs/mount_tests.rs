@@ -277,7 +277,7 @@ fn editor_procs(dir: &Path) -> crate::writer::WriterResolver {
 /// as [`mounted`] names them) holds `role`.
 fn policy_with(role: tilo_action_policy::Role) -> tilo_action_policy::WorkspacePolicy {
     let mut policy = tilo_action_policy::WorkspacePolicy::new("w", "11".repeat(32));
-    policy.members.insert("03".repeat(32), role);
+    policy.members.insert("03".repeat(32), role.into());
     policy
 }
 

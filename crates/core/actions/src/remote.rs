@@ -264,6 +264,13 @@ pub const WORKSPACE_READ_GRANT: &str = "reading.grant";
 /// The operation that keeps a person or a role from reading one resource
 /// (`workspace/members#revoke-read`), admitted by the workspace's grant on revoking.
 pub const WORKSPACE_READ_REVOKE: &str = "reading.revoke";
+/// The roles a workspace's people hold over its parts, under its member list
+/// (`workspace/grants`).
+pub const WORKSPACE_GRANTS: &str = "grants";
+/// Give a person, or everyone, a role over one part of the workspace, or take that share back
+/// (`workspace/grants#set`): `person` (their root key in hex, or `everyone`), `address` (such as
+/// `<workspace>/files/**`) and `role` (none takes the share back).
+pub const WORKSPACE_GRANT_SET: &str = "grant.set";
 /// The workspace's record of its agents, under its governance root (`workspace/agents`): who
 /// works in the workspace, changed only by the three actions published there.
 pub const WORKSPACE_AGENTS: &str = "agents";
@@ -327,7 +334,7 @@ pub fn workspace_agent_effects(operation: &str) -> Vec<crate::ActionEffect> {
 /// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
 /// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
-pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 46] = [
+pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
     (
         "member.add",
         Some(WORKSPACE_MEMBERS),
@@ -389,6 +396,7 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 46] = [
         Some(WORKSPACE_MEMBERS),
         "revoke-read",
     ),
+    (WORKSPACE_GRANT_SET, Some(WORKSPACE_GRANTS), "set"),
     (WORKSPACE_AGENT_CREATE, Some(WORKSPACE_AGENTS), "create"),
     (WORKSPACE_AGENT_UPDATE, Some(WORKSPACE_AGENTS), "update"),
     (WORKSPACE_AGENT_DELETE, Some(WORKSPACE_AGENTS), "delete"),

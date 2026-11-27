@@ -1645,7 +1645,7 @@ async fn an_agents_turn_does_only_what_both_it_and_its_asker_may() {
     described
         .policy
         .members
-        .insert(hex::encode(bo), Role::Editor);
+        .insert(hex::encode(bo), Role::Editor.into());
     described
         .policy
         .grants

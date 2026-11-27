@@ -2074,7 +2074,7 @@ tilo_test_env::scenario! {
         let (app, bundle) = shipped(&shipped_dir().join("tasks"));
         let workspace = uuid::Uuid::new_v4();
         let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace.to_string(), ADA);
-        policy.members.insert(BO.to_owned(), tilo_action_policy::Role::Viewer);
+        policy.members.insert(BO.to_owned(), tilo_action_policy::Role::Viewer.into());
         let access = tilo_action_policy::MemberAccess::person(policy, ADA);
         let (mut host, sent, inbox, workspace) = running_with_no_view("ada", &app, bundle, Some(access));
         settle_with_no_view(&mut host);

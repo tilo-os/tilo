@@ -851,7 +851,9 @@ fn a_commenter_comments_on_a_task_and_changes_nothing_of_it() {
     use tilolang_tilo::meta::MetaExt as _;
 
     let mut policy = WorkspacePolicy::new("workspace-comments", "ada");
-    policy.members.insert("cyd".to_owned(), Role::Commenter);
+    policy
+        .members
+        .insert("cyd".to_owned(), Role::Commenter.into());
     let (ada, _) = Replica::access(
         "ada",
         Workspace::new(),

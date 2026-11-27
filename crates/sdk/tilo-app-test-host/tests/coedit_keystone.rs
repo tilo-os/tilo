@@ -496,7 +496,9 @@ use tilo_action_policy::MemberAccess;
 fn member(root: [u8; 32], role: Role) -> MemberAccess {
     let person = tilo_member_types::PersonId::from_root(root);
     let mut policy = tilo_action_policy::WorkspacePolicy::new(DEFAULT_WORKSPACE, "owner");
-    policy.members.insert(person.as_str().to_owned(), role);
+    policy
+        .members
+        .insert(person.as_str().to_owned(), role.into());
     MemberAccess::person(policy, person)
 }
 

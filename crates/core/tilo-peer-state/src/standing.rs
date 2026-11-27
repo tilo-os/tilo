@@ -62,8 +62,8 @@ impl Standing {
         if let Some(owner) = &policy.owner {
             all.entry(owner.clone()).or_default().owner = true;
         }
-        for (person, role) in &policy.members {
-            all.entry(person.clone()).or_default().role = Some(*role);
+        for (person, assigned) in &policy.members {
+            all.entry(person.clone()).or_default().role = assigned.whole();
         }
         for (person, assigned) in &policy.assigned_roles {
             all.entry(person.clone())
@@ -121,7 +121,7 @@ impl Standing {
         }
         match self.role {
             Some(role) => {
-                policy.members.insert(person.to_owned(), role);
+                policy.members.insert(person.to_owned(), role.into());
             }
             None => {
                 policy.members.remove(person);
@@ -615,7 +615,7 @@ mod tests {
         let policy = |members: &[(&str, Role)]| WorkspacePolicy {
             members: members
                 .iter()
-                .map(|(person, role)| ((*person).to_owned(), *role))
+                .map(|(person, role)| ((*person).to_owned(), (*role).into()))
                 .collect(),
             ..WorkspacePolicy::new("w", "owner")
         };

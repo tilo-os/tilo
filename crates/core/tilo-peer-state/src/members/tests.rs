@@ -122,8 +122,8 @@ tilo_test_env::scenario! {
             let ops: Vec<&SignedMembershipOp> = order.iter().map(|at| all[*at]).collect();
             assert_eq!(replay(&holding(&doc, &ops), WORKSPACE), reached);
         }
-        assert_eq!(reached.members.get(&person(&ada.1)), Some(&Role::Editor));
-        assert_eq!(reached.members.get(&person(&cy.1)), Some(&Role::Viewer));
+        assert_eq!(reached.role_of(&person(&ada.1)), Some(Role::Editor));
+        assert_eq!(reached.role_of(&person(&cy.1)), Some(Role::Viewer));
         assert_eq!(heads(&ops(&holding(&doc, &all))), {
             let mut heads = vec![id(&remove), id(&add)];
             heads.sort();
@@ -209,7 +209,7 @@ tilo_test_env::scenario! {
             vec![adding(&ada.1, Role::Viewer)],
         );
         let policy = replay(&holding(&doc, &[&first, &removed, &back]), WORKSPACE);
-        assert_eq!(policy.members.get(&ada_person), Some(&Role::Viewer));
+        assert_eq!(policy.role_of(&ada_person), Some(Role::Viewer));
         assert_eq!(
             policy.joined.get(&ada_person),
             Some(&(AT_NS / 1_000_000 + 4))
@@ -278,7 +278,7 @@ tilo_test_env::scenario! {
         let written = doc.get_changes(&before);
         replay::carry(&before, &doc, &written, WORKSPACE);
         let carried = replay(&doc, WORKSPACE);
-        assert_eq!(carried.members.get(&person(&ada.1)), Some(&Role::Editor));
+        assert_eq!(carried.role_of(&person(&ada.1)), Some(Role::Editor));
         assert_eq!(
             grant_times(&doc, WORKSPACE).get(&granted.id),
             Some(&(AT_NS + 1)),

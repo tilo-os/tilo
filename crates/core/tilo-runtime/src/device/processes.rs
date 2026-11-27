@@ -2381,7 +2381,7 @@ mod tests {
         let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "bob");
         policy
             .members
-            .insert("ada".to_owned(), tilo_action_policy::Role::Viewer);
+            .insert("ada".to_owned(), tilo_action_policy::Role::Viewer.into());
         let policy = Arc::new(policy);
         let access = |app: &str| {
             (app == NOTES)

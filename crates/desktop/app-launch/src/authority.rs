@@ -318,7 +318,7 @@ mod tests {
         {
             let directory = tempfile::tempdir().expect("a directory");
             let mut policy = WorkspacePolicy::new("workspace-7", OWNER);
-            policy.members.insert(MEMBER.into(), Role::Editor);
+            policy.members.insert(MEMBER.into(), Role::Editor.into());
             let editor = workspace(directory.path(), policy.clone(), MEMBER);
             let authority = Authority::new();
             let file = authority
@@ -327,7 +327,7 @@ mod tests {
                 .expect("a projection");
             assert!(may_add_notes(&file), "an editor may make a note");
 
-            policy.members.insert(MEMBER.into(), Role::Viewer);
+            policy.members.insert(MEMBER.into(), Role::Viewer.into());
             let viewer = workspace(directory.path(), policy, MEMBER);
             let authority = Authority::new();
             let file = authority
@@ -345,7 +345,7 @@ mod tests {
             let directory = tempfile::tempdir().expect("a directory");
             let authority = Authority::new();
             let mut policy = WorkspacePolicy::new("workspace-7", OWNER);
-            policy.members.insert(MEMBER.into(), Role::Editor);
+            policy.members.insert(MEMBER.into(), Role::Editor.into());
             let mut launched = workspace(directory.path(), policy.clone(), MEMBER);
             let file = authority
                 .publish(&launched, APP)
@@ -369,7 +369,7 @@ mod tests {
 
             // The workspace takes the member's part back: the app already running
             // there hears the new authority.
-            policy.members.insert(MEMBER.into(), Role::Viewer);
+            policy.members.insert(MEMBER.into(), Role::Viewer.into());
             launched.policy = Some(policy);
             assert_eq!(authority.workspaces(), vec!["workspace-7".to_owned()]);
             authority.refresh(&launched).expect("refreshed");

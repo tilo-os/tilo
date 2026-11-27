@@ -457,9 +457,10 @@ mod tests {
     fn editor() -> MemberAccess {
         let person = tilo_member_types::PersonId::from_root(EDITOR);
         let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "owner");
-        policy
-            .members
-            .insert(person.as_str().to_owned(), tilo_action_policy::Role::Editor);
+        policy.members.insert(
+            person.as_str().to_owned(),
+            tilo_action_policy::Role::Editor.into(),
+        );
         MemberAccess::person(policy, person)
     }
 

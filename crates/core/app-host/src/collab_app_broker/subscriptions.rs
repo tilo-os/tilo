@@ -548,7 +548,7 @@ mod tests {
             let mut policy = WorkspacePolicy::new(&self.workspace, "owner");
             policy
                 .members
-                .insert(editor.as_str().to_owned(), Role::Editor);
+                .insert(editor.as_str().to_owned(), Role::Editor.into());
             deliver(
                 &self.channels,
                 &self.fanout,

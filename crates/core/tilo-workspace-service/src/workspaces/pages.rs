@@ -306,8 +306,10 @@ impl Workspaces {
             WorkspacesRequest::Permits { workspace, node } => {
                 WorkspacesReply::Permits(self.page_permits(&workspace, device, &node).await?)
             }
-            request @ (WorkspacesRequest::Share { .. } | WorkspacesRequest::Unshare { .. }) => {
-                self.page_share(device, request).await?
+            WorkspacesRequest::RetiredShare | WorkspacesRequest::RetiredUnshare => {
+                WorkspacesReply::Refused(
+                    "a page shares part of a workspace with `grant.set`".into(),
+                )
             }
             WorkspacesRequest::Name { workspace, name } => {
                 self.name_self(&workspace, device, &name, now).await?
@@ -407,42 +409,6 @@ impl Workspaces {
             now,
         )?;
         Ok(WorkspacesReply::Notices(workspace.admissions.notices()))
-    }
-
-    /// A page's share of one record or item with the workspace, or its end.
-    async fn page_share(
-        &self,
-        device: &DeviceCert,
-        request: WorkspacesRequest,
-    ) -> Result<WorkspacesReply, CollaborationError> {
-        Ok(WorkspacesReply::Shared(match request {
-            WorkspacesRequest::Share {
-                workspace,
-                share,
-                node,
-                access,
-            } => {
-                let node = node
-                    .parse()
-                    .map_err(|_| CollaborationError::new("not a node of the workspace's tree"))?;
-                let access = access
-                    .parse()
-                    .map_err(|_| CollaborationError::new("a share gives `view` or `edit`"))?;
-                let grants = self
-                    .share_resource(&workspace, device, &share, &node, access)
-                    .await?;
-                // Who may do what changed in the workspace: its operators read
-                // that here, as they read who was admitted.
-                tracing::info!(%workspace, %share, %node, access = access.as_str(), grants, "a share grants the workspace");
-                grants
-            }
-            WorkspacesRequest::Unshare { workspace, share } => {
-                let revoked = self.unshare_resource(&workspace, device, &share).await?;
-                tracing::info!(%workspace, %share, revoked, "a share ended");
-                revoked
-            }
-            _ => return Err(CollaborationError::new("not a share")),
-        }))
     }
 
     /// Name `device`'s person `name`, asked in `workspace`: the name they go

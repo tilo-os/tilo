@@ -1296,7 +1296,7 @@ mod tests {
         tree.workspaces[0]
             .policy
             .members
-            .insert("vie".to_owned(), tilo_action_policy::Role::Viewer);
+            .insert("vie".to_owned(), tilo_action_policy::Role::Viewer.into());
         let read = reading_of(&tree, "vie", &[], &[], &mut paths(), 0);
         assert_eq!(read["known"], serde_json::json!(true));
         assert_eq!(read["shares"], serde_json::json!([]));

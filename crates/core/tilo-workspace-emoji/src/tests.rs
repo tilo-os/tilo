@@ -213,7 +213,7 @@ fn a_workspaces_roles_decide_who_adds_and_who_moderates() {
         ("v", Role::Viewer),
         ("c", Role::Commenter),
     ] {
-        policy.members.insert(person.to_owned(), role);
+        policy.members.insert(person.to_owned(), role.into());
     }
     let node = |id: &str| {
         let declared = WorkspaceEmoji::declarations()

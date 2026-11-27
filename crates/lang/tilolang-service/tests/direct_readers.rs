@@ -43,7 +43,7 @@ fn agent(id: &str) -> Actor {
 /// their own, reading no more than they do.
 fn policy() -> WorkspacePolicy {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
-    policy.members.insert("bo".to_owned(), Role::Editor);
+    policy.members.insert("bo".to_owned(), Role::Editor.into());
     for (agent, person) in [("scout", "ada"), ("helper", "bo")] {
         policy.grants.push(Grant::new(
             format!("agent-member:{agent}"),

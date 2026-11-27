@@ -1088,7 +1088,7 @@ tilo_test_env::scenario! {
         let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace-dm", "ada");
         policy
             .members
-            .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
+            .insert("ben".to_owned(), tilo_action_policy::Role::Editor.into());
         let (ada, loaded) = Replica::access(
             "ada",
             Workspace::new(),
@@ -1228,7 +1228,7 @@ tilo_test_env::scenario! {
         let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace-dm", "ada");
         policy
             .members
-            .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
+            .insert("ben".to_owned(), tilo_action_policy::Role::Editor.into());
         let (ada, _loaded) = Replica::access(
             "ada",
             Workspace::new(),
@@ -1325,8 +1325,8 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
     let random = call(&ada, "new_channel", vec![all, Value::text("random")]);
     ada.commit();
 
-    // Ben is a Viewer of the workspace, granted edit on `design` alone: the grant a share of the
-    // channel writes, on the channel's own node.
+    // Ben is a Viewer of the workspace, and `design` alone is shared with everyone to edit: the
+    // role a share of the channel gives, on the channel's own node.
     let share = |channel: &tilolang_runtime::ResourceRef, access| {
         let node = tilo_action_policy::TreePath::workspace("workspace")
             .app(APP)
@@ -1341,11 +1341,8 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
         let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace", "ada");
         policy
             .members
-            .insert("ben".to_owned(), tilo_action_policy::Role::Viewer);
-        policy.grants.extend(
-            tilo_action_policy::share::share_grants("workspace", "ada", "share-1", &node, access)
-                .unwrap(),
-        );
+            .insert("ben".to_owned(), tilo_action_policy::Role::Viewer.into());
+        policy.share_with_everyone(&node, Some(access), "ada");
         policy
     };
     let access: std::rc::Rc<std::cell::RefCell<Option<tilo_action_policy::MemberAccess>>> =
@@ -1375,7 +1372,7 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
     let design_ref = target(&design);
     let random_ref = target(&random);
     *access.borrow_mut() = Some(tilo_action_policy::MemberAccess::person(
-        share(&design_ref, tilo_action_policy::share::ShareAccess::Edit),
+        share(&design_ref, tilo_action_policy::Role::Editor),
         "ben",
     ));
     assert!(
@@ -1388,7 +1385,7 @@ fn a_grant_that_lets_a_person_write_a_channel_lets_them_post_there() {
 
     // Viewing it is no writing it: a share to read refuses the post.
     *access.borrow_mut() = Some(tilo_action_policy::MemberAccess::person(
-        share(&design_ref, tilo_action_policy::share::ShareAccess::View),
+        share(&design_ref, tilo_action_policy::Role::Viewer),
         "ben",
     ));
     let reading_only = plan(&design_ref).expect_err("viewing is not posting");
@@ -2766,7 +2763,7 @@ fn the_workspaces_people_are_a_page_of_their_own() {
     let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace-people", "ada");
     policy
         .members
-        .insert("ben".to_owned(), tilo_action_policy::Role::Editor);
+        .insert("ben".to_owned(), tilo_action_policy::Role::Editor.into());
     policy
         .grants
         .push(admitted("workspace-people", "helper", "ada"));

@@ -82,11 +82,7 @@ fn a_window_is_shared_with_its_workspace_from_its_menu_and_stopped_there() {
     let mut viewer = member(0x66, showing(host.sync.publisher(), APP, tab));
     let shared_in_governance = |host: &Member| {
         host.session.handle().read(|tree| {
-            tree.workspaces[0]
-                .policy
-                .grants
-                .iter()
-                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+            tilo_desktop_model::window_share::shares_window(&tree.workspaces[0].policy, tab)
         })
     };
 

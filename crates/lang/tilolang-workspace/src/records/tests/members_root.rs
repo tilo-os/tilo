@@ -37,7 +37,7 @@ action call_roll(r: Roll) -> Int {
 fn an_action_the_service_runs_reads_the_members_through_the_workspaces_root() {
     let packages = Packages::compile(&[(ROLL, "")]).expect("the roll call compiles");
     let mut policy = WorkspacePolicy::new("workspace", "ada");
-    policy.members.insert("bo".to_owned(), Role::Editor);
+    policy.members.insert("bo".to_owned(), Role::Editor.into());
     let ada = member(tilo_actions::MemberId::person("ada"));
     let mut opened = Opened::open(
         ResourceStore::new(Rc::new(LocalPort::in_memory())),

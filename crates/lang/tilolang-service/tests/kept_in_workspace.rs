@@ -251,7 +251,7 @@ fn a_seed_step_as_another_member_is_refused_as_not_being_them() {
     let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace", "ada");
     policy
         .members
-        .insert("bo".to_owned(), tilo_action_policy::Role::Editor);
+        .insert("bo".to_owned(), tilo_action_policy::Role::Editor.into());
     let (refused, said) = seed_as_ada("bo", policy);
     let refused = refused.expect_err("the seed's step taken as someone else is refused");
     assert!(

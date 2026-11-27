@@ -1,18 +1,10 @@
-//! A member sharing one record, or one item of it, with a workspace this server
-//! hosts ([`tilo_action_policy::share`]).
-//!
-//! A share is grants on the shared resource's node. A member's device
-//! writes its own shares into the workspace; a page, which holds no copy of the
-//! workspace, asks this host through its `/workspaces` requests (`super::pages`), and
-//! the host writes the same grants as the workspace's host, decided as every
-//! receiver decides a device's share ([`tilo_peer_state::workspace::share`]): it
-//! gives only what the sharer holds on that node, and only they (or whoever
-//! may revoke) end it.
+//! Giving someone, or everyone, a role over one part of a workspace this server serves
+//! ([`tilo_action_policy::Change::SetScopedRole`], `grant.set`). A change records its signer as
+//! the giver, so this server signs only its own person's shares, and the windows of a device it
+//! placed in the workspace: every other member shares from their own device.
 
-use tilo_action_policy::share::ShareAccess;
-use tilo_action_policy::{Context, TreePath};
+use tilo_action_policy::{Change, Context, Grantee, Role, TreePath};
 use tilo_peer_state::join_log::request_digest;
-use tilo_peer_state::workspace::share;
 use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, Workspaces, system_time};
@@ -26,106 +18,93 @@ fn fresh_request() -> Result<[u8; 32], CollaborationError> {
 }
 
 impl Workspaces {
-    /// Share `node` of `workspace` with its members as `access` gives, for
-    /// `device`'s person, under the share id `share`. A repeat of the same
-    /// share is no new change. Answers how many grants the share holds.
+    /// Give `grantee` `role` over `scope` of `workspace`, or take this server's share of it back
+    /// (`None`), as `device`'s person asks. Answers whether the workspace changed.
     ///
     /// # Errors
-    /// A malformed share, a device that is no current member's, a member
-    /// held off the workspace, a share above the sharer's own holdings, or a
-    /// change that could not commit.
+    /// A device that is no current member's, a share its person may not give, a share this
+    /// server does not sign for them, or a change that could not commit.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked from the decision through the committed change"
     )]
-    pub async fn share_resource(
+    pub async fn set_scoped_role(
         &self,
         workspace: &str,
         device: &DeviceCert,
-        share: &str,
-        node: &TreePath,
-        access: ShareAccess,
-    ) -> Result<u32, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let at = system_time(now);
-        let state = self.workspace(workspace).await?;
-        let mut hosted = state.lock().await;
-        let member = hosted.peer().permissions(device.device_public_key, at)?;
-        let cx = Context::at_time(at);
-        let device_key = hex::encode(device.device_public_key);
-        let person = member
-            .person_id()
-            .ok_or_else(|| CollaborationError::new("the caller is no person's device"))?;
-        let grants = share::share_grants(
-            &member.policy,
-            (person, &device_key, &member.authority(), &cx),
-            share,
-            node,
-            access,
+        (grantee, scope): (Grantee, &TreePath),
+        role: Option<Role>,
+    ) -> Result<bool, CollaborationError> {
+        tilo_peer_state::workspace::share::window_is_the_writers(
+            &hex::encode(device.device_public_key),
+            scope,
         )
         .map_err(CollaborationError::new)?;
-        let count = u32::try_from(grants.len()).unwrap_or(u32::MAX);
-        if grants
-            .iter()
-            .all(|grant| member.policy.grants.contains(grant))
-        {
-            return Ok(count);
-        }
-        let digest = request_digest(&("resource.share", &grants))?;
-        let key = self.inner.host.key.clone();
-        self.administer(
-            &mut hosted,
-            fresh_request()?,
-            digest,
-            |peer| peer.governance_mut().put_member_grants(&grants, &key, at),
-            now,
-        )
-        .await?;
-        Ok(count)
-    }
-
-    /// End `device`'s person's share `share` in `workspace`: revoke its grants
-    /// they gave, or any of its grants for a person who may revoke. Answers how
-    /// many were revoked; none is no error.
-    ///
-    /// # Errors
-    /// A device that is no current member's, or a change that could not
-    /// commit.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked from the decision through the committed change"
-    )]
-    pub async fn unshare_resource(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        share: &str,
-    ) -> Result<u32, CollaborationError> {
+        // A device this server placed in the workspace holds none of its keys, and nothing yet
+        // carries a change it signed itself: this server signs that device's own windows.
+        let placed_window = tilo_desktop_model::window_share::window_of_node(scope).is_some()
+            && crate::environment::environment_of(
+                &self.inner.host.environments,
+                &device.device_public_key,
+            )
+            .and_then(crate::environment::Environment::placed)
+            .is_some_and(|placed| placed.workspace.to_string() == workspace);
         let now = tilo_clock::unix_now_ns();
-        let at = system_time(now);
+        let cx = Context::at_time(system_time(now));
         let state = self.workspace(workspace).await?;
         let mut hosted = state.lock().await;
-        let member = hosted.peer().permissions(device.device_public_key, at)?;
-        let cx = Context::at_time(at);
+        let member = hosted
+            .peer()
+            .permissions(device.device_public_key, system_time(now))?;
         let person = member
             .person_id()
             .ok_or_else(|| CollaborationError::new("the caller is no person's device"))?;
-        let ids = share::ended_by(&member.policy, (person, &member.authority(), &cx), share);
-        if ids.is_empty() {
-            return Ok(0);
+        let change = Change::SetScopedRole {
+            grantee,
+            scope: scope.clone(),
+            role,
+        };
+        let refused =
+            |refusal: tilo_action_policy::Refusal| CollaborationError::new(refusal.to_string());
+        if role.is_some() {
+            (*member.policy)
+                .clone()
+                .apply(person, &member.authority(), change.clone(), &cx, false)
+                .map_err(refused)?;
         }
-        let count = u32::try_from(ids.len()).unwrap_or(u32::MAX);
-        let digest = request_digest(&("resource.unshare", &ids))?;
+        let host = hex::encode(self.inner.host.cert.user_public_key);
+        if person != host && !placed_window {
+            return Err(CollaborationError::new(
+                "a member shares from their own device, which signs the share as theirs",
+            ));
+        }
+        let mut after = (*member.policy).clone();
+        after
+            .apply(
+                &host,
+                &member.policy.person_on_device(&host, false),
+                change.clone(),
+                &cx,
+                false,
+            )
+            .map_err(refused)?;
+        if after == *member.policy {
+            return Ok(false);
+        }
+        let digest = request_digest(&("resource.share", &change))?;
         let key = self.inner.host.key.clone();
         self.administer(
             &mut hosted,
             fresh_request()?,
             digest,
-            |peer| peer.governance_mut().remove_member_grants(&ids, &key, at),
+            |peer| {
+                peer.governance_mut()
+                    .change_member_list(change, &key, system_time(now))
+            },
             now,
         )
         .await?;
-        Ok(count)
+        Ok(true)
     }
 
     /// Let `grantee` read `node` of `workspace` (`reads`) or keep them from it, as

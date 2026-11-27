@@ -170,6 +170,14 @@ tilo_test_env::scenario! {
                 vec![0x0c, 0x01, b'p', 0x01, b'i', 0x01],
             ),
             (Change::TransferOwnership { person: p() }, vec![0x0d, 0x01, b'p']),
+            (
+                Change::SetScopedRole {
+                    grantee: Grantee::role(Role::Viewer),
+                    scope: TreePath::workspace("r").app("f"),
+                    role: Some(Role::Editor),
+                },
+                [&[0x0e, 0x01, 0x00, 17][..], b"workspace:r/app:f", &[0x01, 0x02]].concat(),
+            ),
 
         ];
         for (change, golden) in &cases {
@@ -187,7 +195,8 @@ tilo_test_env::scenario! {
                 | Change::RemoveRole { .. }
                 | Change::RetiredSetMemberRoles { .. }
                 | Change::SetMemberCustomRole { .. }
-                | Change::TransferOwnership { .. } => stored_as!(change, golden),
+                | Change::TransferOwnership { .. }
+                | Change::SetScopedRole { .. } => stored_as!(change, golden),
             }
         }
         let grant = Grant::new(
@@ -209,5 +218,23 @@ tilo_test_env::scenario! {
         let assignment = Change::RetiredSetMemberRoles { person: p(), roles: ["i".to_owned()].into() };
         assert!(workspace.apply("a11ce", &owner, assignment, &Context::at(1), false).is_err());
         assert_eq!(workspace, held);
+    }
+
+    // A build from before roles took a scope reads changes up to 0x0d and refuses the whole
+    // operation that carries a share: it gives that build's devices no membership at all, never
+    // a wider one, since a share never takes a role over the whole workspace away
+    // (`policy.rs`, the scoped roles scenario).
+    phase a_build_before_scopes_reads_no_share;
+    {
+        #[derive(serde::Deserialize, Debug)]
+        enum Before { V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13 }
+        let share = Change::SetScopedRole {
+            grantee: Grantee::person("p"),
+            scope: TreePath::workspace("r").app("f"),
+            role: None,
+        };
+        let bytes = postcard::to_stdvec(&share).unwrap();
+        assert!(postcard::from_bytes::<Before>(&bytes).is_err());
+        assert!(postcard::from_bytes::<Before>(&[0x0d]).is_ok());
     }
 }

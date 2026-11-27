@@ -2,7 +2,7 @@ use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{StatePeer, SystemTime, person_of};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Change, Grantee, Role, TreePath, roles};
+use tilo_action_policy::{Change, Grantee, Role, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -156,9 +156,12 @@ impl StatePeer {
             Change::RetiredSetMemberRoles { .. } => {
                 Err("roles are assigned one at a time".to_owned())
             }
-            Change::DefineRole { .. } | Change::RemoveRole { .. } => self
-                .governance_mut()
-                .change_member_list(change.clone(), key, now),
+            Change::DefineRole { .. }
+            | Change::RemoveRole { .. }
+            | Change::SetScopedRole { .. } => {
+                self.governance_mut()
+                    .change_member_list(change.clone(), key, now)
+            }
             Change::SetMemberCustomRole { .. } => self.as_action(
                 roles::governance::SET_ROLE,
                 caller.user_public_key,
@@ -223,63 +226,6 @@ impl StatePeer {
         member_root(person)?;
         self.governance_mut()
             .remove_member_grants(&[roles::restriction_grant_id(person)], key, now)
-    }
-
-    /// Share `node` with the workspace as `access` gives, under `share`, as the
-    /// caller: the grants a receiver admits from them
-    /// ([`crate::workspace::share::share_grants`]). A share the workspace already
-    /// holds is no change.
-    fn apply_share(
-        &mut self,
-        caller: &DeviceCert,
-        share: &str,
-        node: &TreePath,
-        access: tilo_action_policy::share::ShareAccess,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let member = self.membership(caller.device_public_key, now)?;
-        let authority = member.authority();
-        let cx = tilo_action_policy::Context::at_time(now);
-        let device = hex::encode(caller.device_public_key);
-        let grants = crate::workspace::share::share_grants(
-            &member.policy,
-            (person_of(&member)?, &device, &authority, &cx),
-            share,
-            node,
-            access,
-        )?;
-        if grants
-            .iter()
-            .all(|grant| member.policy.grants.contains(grant))
-        {
-            return Ok(false);
-        }
-        self.governance_mut().put_member_grants(&grants, key, now)
-    }
-
-    /// End the share `share` as the caller
-    /// ([`crate::workspace::share::ended_by`]): no grant of it theirs to end is
-    /// no change.
-    fn apply_unshare(
-        &mut self,
-        caller: &DeviceCert,
-        share: &str,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let member = self.membership(caller.device_public_key, now)?;
-        let authority = member.authority();
-        let cx = tilo_action_policy::Context::at_time(now);
-        let ended = crate::workspace::share::ended_by(
-            &member.policy,
-            (person_of(&member)?, &authority, &cx),
-            share,
-        );
-        if ended.is_empty() {
-            return Ok(false);
-        }
-        self.governance_mut().remove_member_grants(&ended, key, now)
     }
 
     /// Give or take back a grant in the workspace, as the caller: the workspace's
@@ -436,19 +382,6 @@ impl PeerWorkspaceMut<'_> {
         }
         if let WorkspaceMembershipCommand::Settings(change) = command {
             return self.peer.apply_settings_change(caller, change, key, now);
-        }
-        if let WorkspaceMembershipCommand::Share {
-            share,
-            node,
-            access,
-        } = command
-        {
-            return self
-                .peer
-                .apply_share(caller, share, node, *access, key, now);
-        }
-        if let WorkspaceMembershipCommand::Unshare { share } = command {
-            return self.peer.apply_unshare(caller, share, key, now);
         }
         self.peer.apply_own_row(caller, command, key, now)
     }

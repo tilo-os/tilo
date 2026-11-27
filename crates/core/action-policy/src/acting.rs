@@ -274,8 +274,8 @@ mod tests {
 
     fn policy() -> WorkspacePolicy {
         let mut policy = WorkspacePolicy::new(WORKSPACE, "owner");
-        policy.members.insert("editor".into(), Role::Editor);
-        policy.members.insert("viewer".into(), Role::Viewer);
+        policy.members.insert("editor".into(), Role::Editor.into());
+        policy.members.insert("viewer".into(), Role::Viewer.into());
         policy
     }
 

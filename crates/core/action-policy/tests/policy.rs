@@ -667,7 +667,9 @@ tilo_test_env::scenario! {
 fn workspace_with_members(members: &[(&str, Role)]) -> WorkspacePolicy {
     let mut workspace = WorkspacePolicy::new("r", ALICE);
     for (person, role) in members {
-        workspace.members.insert((*person).to_owned(), *role);
+        workspace
+            .members
+            .insert((*person).to_owned(), (*role).into());
     }
     workspace.with_current_roles()
 }
@@ -1680,7 +1682,7 @@ tilo_test_env::scenario! {
     phase a_governance_change_spends_the_once_grant_it_ran_on;
     {
         let mut workspace = WorkspacePolicy::new("r", CAROL);
-        workspace.members.insert(ALICE.into(), Role::Editor);
+        workspace.members.insert(ALICE.into(), Role::Editor.into());
         let once = Grant::new(
             "grant-once",
             alice(),

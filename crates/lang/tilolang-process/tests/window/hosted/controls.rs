@@ -793,7 +793,7 @@ mod access {
     /// Ada's access in `workspace`, whose owner is Bob, as `role`.
     fn ada_as(workspace: &str, role: Role) -> MemberAccess {
         let mut policy = WorkspacePolicy::new(workspace, "bob");
-        policy.members.insert("ada".to_owned(), role);
+        policy.members.insert("ada".to_owned(), role.into());
         MemberAccess::person(policy, "ada")
     }
 

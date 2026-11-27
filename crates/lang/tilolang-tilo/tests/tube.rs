@@ -14,7 +14,7 @@ use crate::fixtures::{Replica, Workspace, field_id, nodes, person};
 /// install grants the effects an app declares, so these tests drive the app's own logic.
 fn access(name: &str) -> MemberAccess {
     let mut policy = WorkspacePolicy::new("workspace", "ada");
-    policy.members.insert("bo".to_owned(), Role::Editor);
+    policy.members.insert("bo".to_owned(), Role::Editor.into());
     policy.grants.push(Grant::new(
         "the app's effects",
         Grantee::person(name),

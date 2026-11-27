@@ -130,8 +130,12 @@ fn the_composers_drawer_offers_the_members_of_the_conversation_by_the_names_the_
         ],
         |workspace| {
             let mut policy = policy::WorkspacePolicy::new(workspace, "ada");
-            policy.members.insert("u_mia".to_owned(), Role::Editor);
-            policy.members.insert("u_leo".to_owned(), Role::Viewer);
+            policy
+                .members
+                .insert("u_mia".to_owned(), Role::Editor.into());
+            policy
+                .members
+                .insert("u_leo".to_owned(), Role::Viewer.into());
             policy.grants.push(policy::Grant::new(
                 "agent-member:planner",
                 Grantee::agent("planner", "ada"),

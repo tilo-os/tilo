@@ -10,15 +10,14 @@
 //!   current epoch, for that one sender and only the streams it publishes
 //!   ([`tilo_live::frame::Stream::OWN`]), and sealed to its device key, so
 //!   whatever carries the answer between here and the VM reads none of it;
-//! - a window it shares is written as the workspace's host writes a web
-//!   page's share ([`tilo_workspace_service::workspaces::Workspaces::share_resource`]),
+//! - a window it shares is written as this host's own person's share
+//!   ([`tilo_workspace_service::workspaces::Workspaces::set_scoped_role`]),
 //!   after checking the window's id was minted under the asking device's own
 //!   salt: a confined device shares its own windows and nobody else's.
 //!
 //! What a Browser window asks for a field it fills from a vault item is answered beside these,
 //! where the fill was handed to it ([`super::turn_fills`]).
 
-use tilo_action_policy::share::ShareAccess;
 use tilo_action_services::environment_device::{
     self, END_WINDOW_SHARE, MEDIA_KEYS, MediaKeys, SHARE_WINDOW, WindowShare,
 };
@@ -28,7 +27,7 @@ use tilo_actions::remote::{
     pending,
 };
 use tilo_desktop_model::ids::{device_salt_of_key, peer_salt_of};
-use tilo_desktop_model::window_share::{window_node, window_share_id};
+use tilo_desktop_model::window_share::window_node;
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
@@ -167,7 +166,6 @@ impl Asked {
         if !owns_window(&self.device.device_public_key, window.tab) {
             return Err(ActionCallError::NotPermitted);
         }
-        let id = window_share_id(window.tab);
         let refused = |error: tilo_workspace_service::workspaces::CollaborationError| {
             ActionCallError::Refused {
                 reason: error.to_string(),
@@ -179,19 +177,14 @@ impl Asked {
             .ok_or_else(|| ActionCallError::Unavailable {
                 reason: "this host serves no workspace".to_owned(),
             })?;
-        let grants = if share {
-            let node = window_node(&self.workspace, &window.app, window.tab);
-            workspaces
-                .share_resource(&self.workspace, &self.device, &id, &node, ShareAccess::View)
-                .await
-                .map_err(refused)?
-        } else {
-            workspaces
-                .unshare_resource(&self.workspace, &self.device, &id)
-                .await
-                .map_err(refused)?
-        };
-        Ok(serde_json::json!({ "grants": grants }))
+        let node = window_node(&self.workspace, &window.app, window.tab);
+        let everyone = tilo_action_policy::Grantee::role(tilo_action_policy::Role::Viewer);
+        let role = share.then_some(tilo_action_policy::Role::Viewer);
+        let grants = workspaces
+            .set_scoped_role(&self.workspace, &self.device, (everyone, &node), role)
+            .await
+            .map_err(refused)?;
+        Ok(serde_json::json!({ "grants": u32::from(grants) }))
     }
 }
 

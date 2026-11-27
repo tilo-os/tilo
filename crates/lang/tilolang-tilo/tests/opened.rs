@@ -209,7 +209,7 @@ fn opening_from_search_runs_what_opening_does_as_the_opener() {
     // stays as it was, since she may not change it.
     let rota = receive(&mut window, "Rota");
     let mut policy = WorkspacePolicy::new("workspace", "sol");
-    policy.members.insert("ada".to_owned(), Role::Viewer);
+    policy.members.insert("ada".to_owned(), Role::Viewer.into());
     window.set_access(Rc::new(move || {
         Some(MemberAccess::person(policy.clone(), "ada"))
     }));

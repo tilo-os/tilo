@@ -329,29 +329,11 @@ pub enum WorkspacesRequest {
         /// `https://<site>/#/@<host>/w/<workspace>?invite=<secret>`.
         link: String,
     },
-    /// Share one record, or one item of it, with `workspace`'s members, as the
-    /// calling device's person: answered with [`WorkspacesReply::Shared`], how
-    /// many grants the share holds. The members below the owner get what
-    /// `access` gives, never more than the sharer holds there.
-    Share {
-        workspace: String,
-        /// The share's id, such as the message that shares it: 1 to 128
-        /// letters, digits or `.` `_` `:` `-`.
-        share: String,
-        /// The record or item, as a node of the workspace's tree in its text
-        /// form (`workspace:<id>/app:<app>/kind:<kind>/resource:<id>[/item:<id>]`;
-        /// `resource:*` names an item of the app's own record).
-        node: String,
-        /// `view` or `edit`.
-        access: String,
-    },
-    /// End the share `share` in `workspace`: answered with
-    /// [`WorkspacesReply::Shared`], how many of its grants were revoked (its
-    /// sharer's, or any for a person who may revoke them).
-    Unshare {
-        workspace: String,
-        share: String,
-    },
+    /// Sharing part of a workspace is its `grant.set` action now, which every caller asks.
+    #[serde(rename = "Share")]
+    RetiredShare,
+    #[serde(rename = "Unshare")]
+    RetiredUnshare,
     /// How the calling device's person names themself in `workspace` from now
     /// on, a display name ([`tilo_user_identity::display_name`]): the name
     /// the workspace's member list and every person list show for them.
@@ -428,9 +410,8 @@ pub enum WorkspacesReply {
     Permits(bool),
     /// The requests left at the entry, oldest first.
     WaitList(Vec<WaitListEntry>),
-    /// How many grants a [`WorkspacesRequest::Share`] holds, or a
-    /// [`WorkspacesRequest::Unshare`] revoked.
-    Shared(u32),
+    #[serde(rename = "Shared")]
+    RetiredShared,
     /// The workspace names the caller as asked, for [`WorkspacesRequest::Name`].
     Named,
     /// The servers keeping a workspace ([`WorkspacesRequest::Servers`]): the

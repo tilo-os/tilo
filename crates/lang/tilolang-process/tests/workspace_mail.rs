@@ -107,7 +107,7 @@ fn wake() -> tilolang_tilo::background::Waker {
 /// Ada owns the workspace; Bo is one of its viewers.
 fn policy(workspace: uuid::Uuid) -> WorkspacePolicy {
     let mut policy = WorkspacePolicy::new(workspace.to_string(), ADA);
-    policy.members.insert(BO.to_owned(), Role::Viewer);
+    policy.members.insert(BO.to_owned(), Role::Viewer.into());
     policy
 }
 

@@ -42,7 +42,7 @@ mod policy_edit;
 mod readers;
 pub mod reading;
 pub mod roles;
-pub mod share;
+pub mod scoped;
 pub mod turn;
 mod workspace;
 
@@ -84,4 +84,5 @@ pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use policy_edit::{PolicyEdit, PresetMutationError, sort_presets, until_secs};
 pub use readers::ReaderRule;
 pub use roles::{Preset, PresetError, Rule};
+pub use scoped::{RoleAssignment, ScopedRole};
 pub use workspace::{Change, PersonGrants, Refusal, WorkspacePolicy};

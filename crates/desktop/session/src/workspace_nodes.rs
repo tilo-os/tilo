@@ -1,19 +1,18 @@
-//! One node of a workspace's tree, as an app asks about it: sharing a record or an item of it with
+//! One node of a workspace's tree, as an app asks about it: sharing a resource or part of one with
 //! the workspace's people (Chat showing a window, a note shared into a channel), ending that share,
 //! or asking what the person may do there.
 //!
-//! A share is not a promise kept by the app that shares: it is grants on the node, written into the
-//! workspace's own governance with this device's key, which the workspace decides as it decides
-//! every grant and every device of it receives as it receives every change its people make
-//! ([`tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Share`]). What a person
-//! may do at a node is the workspace's policy, read where this device holds it.
+//! A share is not a promise kept by the app that shares: it is everyone holding a role over the
+//! node, written into the workspace's member list with this device's key, which the workspace
+//! decides and every device of it receives as it receives every change its people make
+//! ([`tilo_action_policy::Change::SetScopedRole`]). What a person may do at a node is the
+//! workspace's policy, read where this device holds it.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use tilo_action_policy::share::{ShareAccess, is_of_share};
-use tilo_action_policy::{Authority, Context, TreePath, WorkspacePolicy};
+use tilo_action_policy::{Authority, Context, Grantee, Role, TreePath, WorkspacePolicy};
 use tilo_action_types::ActionKind;
 use tilo_broker_core::services::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 use tilo_desktop_model::WorkspaceId;
@@ -67,34 +66,41 @@ impl WorkspaceNodes {
         if node.workspace_id() != Some(workspace) {
             return Err("the node is not in this workspace".into());
         }
-        let held = |share: &str| {
+        // How many shares with everyone the workspace holds of the node.
+        let shares = || {
             self.policy(workspace).map(|policy| {
                 policy
-                    .grants
+                    .everyone
                     .iter()
-                    .filter(|grant| is_of_share(grant, share))
+                    .filter(|entry| entry.scope == node)
                     .count()
             })
         };
         let membership = Membership::of(&self.view, id);
+        let everyone = || Grantee::role(Role::Viewer);
         Ok(match ask {
-            WorkspaceNodeAsk::Share { share, access } => {
-                let access: ShareAccess = access.parse().map_err(
-                    |refusal: tilo_action_policy::share::ShareRefusal| refusal.to_string(),
-                )?;
-                // What the share gives, as the workspace writes it: the same grants every device
-                // reads, bounded by what this person holds there when the workspace admits them.
-                membership.share(&share, node, access).await?;
-                self.settled(|| held(&share).is_ok_and(|grants| grants > 0))
-                    .await;
-                json!({ "grants": held(&share)? })
+            WorkspaceNodeAsk::Share { access, .. } => {
+                let role = match access.as_str() {
+                    "view" => Role::Viewer,
+                    "edit" => Role::Editor,
+                    _ => return Err(format!("a share gives `view` or `edit`, not `{access}`")),
+                };
+                // What the share gives, as the workspace writes it, bounded by what this person
+                // holds there when the workspace admits it.
+                membership
+                    .set_scoped_role(everyone(), node.clone(), Some(role))
+                    .await?;
+                self.settled(|| shares().is_ok_and(|count| count > 0)).await;
+                json!({ "grants": shares()? })
             }
-            WorkspaceNodeAsk::Unshare { share } => {
-                let before = held(&share)?;
-                membership.unshare(&share).await?;
-                self.settled(|| held(&share).is_ok_and(|grants| grants == 0))
+            WorkspaceNodeAsk::Unshare { .. } => {
+                let before = shares()?;
+                membership
+                    .set_scoped_role(everyone(), node.clone(), None)
+                    .await?;
+                self.settled(|| shares().is_ok_and(|count| count < before))
                     .await;
-                json!({ "revoked": before.saturating_sub(held(&share)?) })
+                json!({ "revoked": before.saturating_sub(shares()?) })
             }
             WorkspaceNodeAsk::Permits => {
                 let policy = self.policy(workspace)?;
@@ -148,7 +154,6 @@ impl WorkspaceNodeActions for WorkspaceNodes {
 mod tests {
     use std::sync::mpsc;
 
-    use tilo_action_policy::share::share_grants;
     use tilo_actions::remote::{InvokeRequest, PendingPoll};
     use tilo_peer_state::workspace_view::{WorkspaceReading, resource};
     use tilo_session_client::engine::ServiceAnswer;
@@ -244,9 +249,7 @@ mod tests {
         );
 
         answer.send(()).expect("the share still waits");
-        policy.grants.extend(
-            share_grants(&id, &owner, "m1", &node, ShareAccess::View).expect("a share of a node"),
-        );
+        policy.share_with_everyone(&node, Some(Role::Viewer), &owner);
         view.apply(&resource(&id), Some(&standing(policy)))
             .expect("the daemon's reading applies");
         let within =

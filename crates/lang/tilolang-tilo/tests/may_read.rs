@@ -51,7 +51,7 @@ fn node_of(kind: &str, note: &ResourceRef) -> TreePath {
 /// with a read of `open` alone, when `scout_reads`.
 fn access(kind: &str, open: &ResourceRef, secret: &ResourceRef, scout_reads: bool) -> MemberAccess {
     let mut policy = WorkspacePolicy::new(WORKSPACE, "ada");
-    policy.members.insert("cy".to_owned(), Role::Viewer);
+    policy.members.insert("cy".to_owned(), Role::Viewer.into());
     policy.grants.push(Grant::new(
         "hide-secret",
         Grantee::person("cy"),

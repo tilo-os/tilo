@@ -17,6 +17,8 @@ pub struct Person {
     /// Their role, by the key a role change names it.
     pub role_key: String,
     pub additional_roles: Vec<String>,
+    /// The parts of the workspace their role is over, when it is not all of it.
+    pub scope: Option<String>,
     /// Their extra permissions, only when they have any.
     pub extra: Option<String>,
     pub offers: Offers,
@@ -92,6 +94,8 @@ pub struct Member {
     pub administrator: bool,
     /// How many permissions they hold beyond their role.
     pub grants: usize,
+    /// The parts of the workspace their role is over, by name; empty for all of it.
+    pub scope: Vec<String>,
 }
 
 /// The members of `ws` in the tab's order, each named as `names` (the roster) names them.
@@ -102,7 +106,15 @@ pub fn members(ws: &Workspace, names: &PeopleNames, viewer: &str) -> Vec<Member>
         .into_iter()
         .map(|(user, role)| {
             let grants = ws.policy.extra_grants(&user);
+            // Someone given parts of the workspace is given whole apps: each part reads as its app.
+            let scope = ws.policy.member_scope(&user).unwrap_or_default();
             Member {
+                scope: (scope.into_iter())
+                    .map(|part| {
+                        part.id_at(tilo_action_policy::Level::App)
+                            .map_or_else(|| part.to_string(), tilo_actions::noun::app_label)
+                    })
+                    .collect(),
                 name: member_row_name(
                     names,
                     ws,
@@ -175,6 +187,12 @@ pub fn content_of(
                 },
                 role_key: member.role.key().to_owned(),
                 additional_roles: Vec::new(),
+                scope: (!member.scope.is_empty()).then(|| {
+                    t_args(
+                        "workspace-settings-member-scope",
+                        &[("parts", member.scope.join(", ").into())],
+                    )
+                }),
                 extra: (member.grants > 0).then(|| {
                     t_args(
                         "workspace-settings-member-extra",
@@ -240,6 +258,7 @@ mod tests {
             owns,
             administrator,
             grants: 0,
+            scope: Vec::new(),
         }
     }
 
@@ -291,6 +310,37 @@ mod tests {
                 ),
                 ("Backup box", "Keeps an encrypted copy and reads none of it"),
             ]
+        );
+    }
+
+    #[test]
+    fn a_member_over_part_of_the_workspace_reads_which_part_under_their_role() {
+        use tilo_action_policy::{Change, Context, Grantee, Role, TreePath};
+        let mut ws = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(7), "Home");
+        ws.policy = tilo_action_policy::WorkspacePolicy::new("ws", "owner");
+        let shared = Change::SetScopedRole {
+            grantee: Grantee::person("bram"),
+            scope: TreePath::workspace("ws")
+                .app("so.tilo.file-explorer")
+                .rest(),
+            role: Some(Role::Editor),
+        };
+        let (owner, cx) = (
+            ws.policy.clone(),
+            Context::at_time(std::time::SystemTime::now()),
+        );
+        let authority = owner.person_on_device("owner", false);
+        ws.policy
+            .apply("owner", &authority, shared, &cx, false)
+            .unwrap();
+        let listed = members(&ws, &PeopleNames::default(), "owner");
+        let content = content_of(&listed, "owner", true, &[]);
+        let said: Vec<_> = (content.people.iter())
+            .map(|person| (person.role.as_str(), person.scope.as_deref()))
+            .collect();
+        assert_eq!(
+            said,
+            [("Owner", None), ("Editor", Some("Only File explorer"))]
         );
     }
 
