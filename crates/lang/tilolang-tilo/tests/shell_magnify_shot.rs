@@ -36,7 +36,7 @@ fn tiles(targets: &HashMap<String, Rect>, foot: bool) -> Vec<Rect> {
         .copied()
         .filter(|rect| {
             (rect.width() - rect.height()).abs() < 1.5
-                && rect.width() > 16.0
+                && rect.width() > 26.0
                 && rect.width() < 160.0
         })
         .filter(|rect| {
@@ -47,11 +47,13 @@ fn tiles(targets: &HashMap<String, Rect>, foot: bool) -> Vec<Rect> {
             }
         })
         .collect();
+    // Along the edge, then across it: two items never share a place, so the order a capture is
+    // taken in is the dock's own and not the map's.
     out.sort_by(|a, b| {
         if foot {
-            a.x0.total_cmp(&b.x0)
+            a.x0.total_cmp(&b.x0).then(a.y0.total_cmp(&b.y0))
         } else {
-            a.y0.total_cmp(&b.y0)
+            a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0))
         }
     });
     // One rect per item: an item and its wrapper stand at the same box, and a glyph or a count
@@ -244,5 +246,67 @@ fn the_windows_do_not_move_when_the_dock_magnifies() {
                 && (now.y1 - rect.y1).abs() < 0.5,
             "{name} stayed where it was: {now:?} against {rect:?}"
         );
+    }
+}
+
+/// The dock's items stand on the edge it rests on. As one magnifies, the others keep that floor:
+/// the run grows away from it, so no tile lifts off the body's edge and no badge crosses it.
+#[test]
+fn the_docks_items_keep_its_floor_while_one_magnifies() {
+    for (scenario, foot) in [
+        ("the traditional desktop", true),
+        ("the dock on the left", false),
+    ] {
+        let mut theme = tilo_ui_base::Theme::dark();
+        theme.reduce_motion = false;
+        let mut shell = StagedWindow::staged(scenario, (1280, 800), theme);
+        shell.harness.hover_at(4.0, 4.0);
+        settle(&mut shell);
+        let at_rest = tiles(&shell.harness.targets(), foot);
+        assert!(
+            at_rest.len() >= 3,
+            "{scenario}: the dock's tiles are laid out: {at_rest:?}"
+        );
+        // The edge they stand on: their feet along the bottom, their leading side up an edge.
+        let floor = if foot {
+            let floor = at_rest[0].y1;
+            for rect in &at_rest {
+                assert!(
+                    (rect.y1 - floor).abs() < 0.5,
+                    "{scenario}: the tiles rest on one floor: {at_rest:?}"
+                );
+            }
+            floor
+        } else {
+            let floor = at_rest[0].x0;
+            for rect in &at_rest {
+                assert!(
+                    (rect.x0 - floor).abs() < 0.5,
+                    "{scenario}: the tiles rest on one floor: {at_rest:?}"
+                );
+            }
+            floor
+        };
+        let centre = at_rest[at_rest.len() / 2].center();
+        shell.harness.hover_at(centre.x, centre.y);
+        settle(&mut shell);
+        let grown = tiles(&shell.harness.targets(), foot);
+        assert!(
+            grew_in_place(&grown, centre),
+            "{scenario}: the dock magnified: {grown:?}"
+        );
+        // A tile's own height rounds to the pixel, so the edge itself may land within a pixel of
+        // the floor; what it may not do is leave it, as a centred run lifts every other tile.
+        for rect in &grown {
+            let off = if foot {
+                rect.y1 - floor
+            } else {
+                rect.x0 - floor
+            };
+            assert!(
+                off.abs() <= 1.5,
+                "{scenario}: {rect:?} keeps the floor at {floor}: {grown:?}"
+            );
+        }
     }
 }

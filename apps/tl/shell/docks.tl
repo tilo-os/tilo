@@ -27,16 +27,25 @@ view dock(s: Shell) {
 /// than its edge has room for scrolls along it, so the dock stays on the output.
 ///
 /// The run holds the items the shell's document keeps, which a drag rearranges. The apps running
-/// now stand beside it (`dock_running_tiles`): a running app the person never pinned names no
-/// document, so a drop could carry nothing of it — it is drawn, and pressed, and not dragged.
-/// They stand the run's own gap apart, so a badge on a tile's corner never reaches the next.
+/// now follow it, along the same edge and in the same direction (`dock_running_tiles`): a running
+/// app the person never pinned names no document, so a drop could carry nothing of it — it is
+/// drawn, and pressed, and not dragged. They stand the run's own gap apart, so a badge on a
+/// tile's corner never reaches the next.
 view dock_run(s: Shell) {
     let access = s.dock_edge == .left or s.dock_edge == .right
     let across = s.dock_fit == .full
     let running = unfiled_running(s)
+    // The items keep the dock's floor as one grows: a magnified tile makes the run taller, and a
+    // run centred in it would lift every other tile off the floor and push a badge past the
+    // body's edge. They sit on the edge the dock stands on, so a tile grows into the page, as
+    // the dock's setting says, and never takes its neighbours with it.
     if access {
-        stack(gap: .sibling, align: .center) {
-            ui.DragRun(axis: .vertical, distribute: .center) {
+        stack(gap: .sibling, align: if s.dock_edge == .left { .start } else { .end }) {
+            ui.DragRun(
+                axis: .vertical,
+                distribute: .center,
+                align: if s.dock_edge == .left { .start } else { .end },
+            ) {
                 on drop(moved: DockItem, at: Int): place_item(s, moved, at)
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
@@ -47,12 +56,15 @@ view dock_run(s: Shell) {
                     }
                 }
             }
-            dock_running_tiles(s, running)
+            dock_running_tiles(s, running, vertical: true, to_end: s.dock_edge == .right)
         }
     } else if across {
         scroll(axis: .horizontal) {
-            row(gap: .sibling, align: .center) {
-                ui.DragRun(axis: .horizontal) {
+            row(gap: .sibling, align: if s.dock_edge == .top { .start } else { .end }) {
+                ui.DragRun(
+                    axis: .horizontal,
+                    align: if s.dock_edge == .top { .start } else { .end },
+                ) {
                     trailing: {
                         clock_or_news(space.compact)
                         bell()
@@ -67,13 +79,17 @@ view dock_run(s: Shell) {
                         }
                     }
                 }
-                dock_running_tiles(s, running)
+                dock_running_tiles(s, running, vertical: false, to_end: s.dock_edge != .top)
             }
         }
     } else {
         scroll(axis: .horizontal) {
-            row(gap: .sibling, align: .center) {
-                ui.DragRun(axis: .horizontal, distribute: .center) {
+            row(gap: .sibling, align: if s.dock_edge == .top { .start } else { .end }) {
+                ui.DragRun(
+                    axis: .horizontal,
+                    distribute: .center,
+                    align: if s.dock_edge == .top { .start } else { .end },
+                ) {
                     on drop(moved: DockItem, at: Int): place_item(s, moved, at)
                     for item in s.dock_items {
                         if item.pinned or s.dock_running {
@@ -84,7 +100,7 @@ view dock_run(s: Shell) {
                         }
                     }
                 }
-                dock_running_tiles(s, running)
+                dock_running_tiles(s, running, vertical: false, to_end: s.dock_edge != .top)
             }
         }
     }
@@ -125,15 +141,27 @@ fn running_item(w: device.Window) -> DockItem {
     )
 }
 
-/// The running apps the document does not keep, each a tile of its own beside the run: a press
-/// opens or focuses its window, and it keeps its badge. It is not a `ui.DragItem`, which names
-/// the document an item stands for: a running app the person never pinned has one only here, not
-/// in the shell's document. Pinning the app puts it in the run, where it is rearranged.
-view dock_running_tiles(s: Shell, running: List<DockItem>) {
+/// The running apps the document does not keep, each a tile of its own after the run and along
+/// its edge: a press opens or focuses its window, and it keeps its badge. It is not a
+/// `ui.DragItem`, which names the document an item stands for: a running app the person never
+/// pinned has one only here, not in the shell's document. Pinning the app puts it in the run,
+/// where it is rearranged.
+view dock_running_tiles(s: Shell, running: List<DockItem>, vertical: Bool, to_end: Bool) {
     if not running.is_empty() {
-        row(gap: .sibling, align: .center) {
-            for item in running {
-                dock_tile(s, item)
+        // Along the run's own axis: a dock standing up an edge stacks them below the run it
+        // holds, never beside it in a row the column has no room for. And on the run's floor,
+        // for the reason `dock_run` gives.
+        if vertical {
+            stack(gap: .sibling, align: if to_end { .end } else { .start }) {
+                for item in running {
+                    dock_tile(s, item)
+                }
+            }
+        } else {
+            row(gap: .sibling, align: if to_end { .end } else { .start }) {
+                for item in running {
+                    dock_tile(s, item)
+                }
             }
         }
     }

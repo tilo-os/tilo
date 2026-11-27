@@ -2750,10 +2750,9 @@ scenario "the traditional desktop" {
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     stage(device.windows, desktop_windows())
     let s = shell
-    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
-    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
-    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
-    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    s.dock_items.insert(DockItem(key: "so.tilo.notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "so.tilo.mail", title: "Mail", icon: "mail", badge: 3))
+    s.dock_items.insert(DockItem(key: "so.tilo.files", title: "Files", icon: "folder"))
     apply(s, .windows_desktop)
     let pinned = notes.notebook.notes.filter(n -> n.pinned)
     let rest = notes.notebook.notes.filter(n -> not n.pinned)
@@ -4268,25 +4267,24 @@ scenario "a window found in" {
 scenario "the dock on the left" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts"))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
-    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio"))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
     stage(device.windows, desktop_windows())
     let s = shell
     s.dock_edge = .left
     s.dock_fit = .floating
     s.dock_zoom = true
-    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
-    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
-    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
-    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    s.dock_items.insert(DockItem(key: "so.tilo.notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "so.tilo.mail", title: "Mail", icon: "mail", badge: 3))
+    s.dock_items.insert(DockItem(key: "so.tilo.files", title: "Files", icon: "folder"))
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Layout
-    let row = a_workspace(a, "Main")
+    let row = a_front_workspace(a, "Main")
     let one = a_strip(a, row, "Note", 1000)
     a_note_place(a, one, 0)
     a.front = one
@@ -4297,23 +4295,22 @@ scenario "the dock on the left" {
 scenario "the dock on the right" {
     let d = root Layout
     d.person = "Ada Lovelace"
-    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts"))
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
-    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio"))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
     stage(device.windows, desktop_windows())
     let s = shell
     s.dock_edge = .right
-    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
-    s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
-    s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))
-    s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
+    s.dock_items.insert(DockItem(key: "so.tilo.notes", title: "Notes", icon: "file-text"))
+    s.dock_items.insert(DockItem(key: "so.tilo.mail", title: "Mail", icon: "mail", badge: 3))
+    s.dock_items.insert(DockItem(key: "so.tilo.files", title: "Files", icon: "folder"))
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Layout
-    let row = a_workspace(a, "Main")
+    let row = a_front_workspace(a, "Main")
     let one = a_strip(a, row, "Note", 1000)
     a_note_place(a, one, 0)
     a.front = one
