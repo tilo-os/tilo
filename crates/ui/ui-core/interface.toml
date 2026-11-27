@@ -686,6 +686,7 @@ ActionRequest = "accesskit::ActionRequest: one assistive action a client takes o
 "WindowOffer.count" = "Option<SearchCount> optional"
 "WindowOffer.find" = "FindAbilities optional"
 "WindowOffer.history" = "Option<HistoryOffer> optional"
+"WindowOffer.options" = "FindOptions optional"
 "WindowOffer.search" = "SearchOffer optional"
 "WindowTarget" = "struct"
 "WindowTarget.actions" = "Vec<TargetAction>"
