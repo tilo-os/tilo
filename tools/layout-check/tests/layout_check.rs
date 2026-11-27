@@ -241,8 +241,10 @@ fn a_word_a_window_shows_from_another_languages_catalogue_is_a_finding() {
         "the one word German lacks:\n{}",
         layout_check::render(&german)
     );
+    // A module names the text by its slug's short key (`module_word_key` of
+    // `w-a-word-only-the-source-language`), which is what the finding shows.
     assert!(
-        mixed[0].contains("w-a-word-only-the-source-language"),
+        mixed[0].contains("w5qixi4"),
         "the word the app's German leaves out: {}",
         mixed[0]
     );
