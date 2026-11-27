@@ -449,6 +449,7 @@ pub struct Instance {
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
     /// The app's held connections, until the host they are handed to starts.
+    #[cfg(any(unix, windows))]
     connections: Option<crate::held::Connections>,
     /// The outside services the package's types with an origin are kept in step with.
     origins: crate::origin::Origins,
@@ -590,6 +591,7 @@ impl Instance {
                     .sink
                     .unwrap_or_else(|| Box::new(crate::sink::LogSink::dev())),
             ),
+            #[cfg(any(unix, windows))]
             connections: None,
             origins: Rc::default(),
             history: Vec::new(),
@@ -678,6 +680,7 @@ impl Instance {
                 rest: sink,
             });
         }
+        #[cfg(any(unix, windows))]
         if let Some(connections) = self.connections.take() {
             host.runtime().set_held(connections);
         }
@@ -685,6 +688,7 @@ impl Instance {
 
     /// Reach the app's held connections through `connections`: what its `connection.*` asks. An
     /// instance whose host has not started yet hands them to it as it starts.
+    #[cfg(any(unix, windows))]
     pub fn hold(&mut self, connections: crate::held::Connections) {
         match self.host() {
             Some(host) => host.runtime().set_held(connections),
