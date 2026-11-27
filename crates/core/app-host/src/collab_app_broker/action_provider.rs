@@ -1047,8 +1047,27 @@ impl AppBrokerState {
         target: (&str, &str, &str),
         contract: &tilo_actions::ActionContract,
     ) -> bool {
-        actor.action_answer_in(workspace, app, target, &contract.need(), now)
-            != tilo_action_policy::Answer::Deny
+        Self::member_own_offered(workspace, actor, contract)
+            || actor.action_answer_in(workspace, app, target, &contract.need(), now)
+                != tilo_action_policy::Answer::Deny
+    }
+
+    /// Whether `contract` is one the workspace's host runs for a member themselves
+    /// ([`tilo_actions::MEMBER_OWN_TAG`]), `actor` being a member of `workspace`: every member is
+    /// offered it, whatever its app may do with the record, and each call is admitted on its own.
+    /// A caller who is no member of the workspace is offered nothing by this.
+    fn member_own_offered(
+        workspace: &Workspace,
+        actor: &BrokerActor,
+        contract: &tilo_actions::ActionContract,
+    ) -> bool {
+        contract.is_member_own()
+            && actor
+                .acting()
+                .people()
+                .first()
+                .copied()
+                .is_some_and(|person| workspace.policy.is_member(person))
     }
 
     /// `action` of `app` as `actor` is offered it; one it is denied is left out, or for an agent
@@ -1071,8 +1090,9 @@ impl AppBrokerState {
         }
         let (address, need) = (&action.address, action.contract.need());
         let target = (&*action.resource_kind, &*address.resource, &*address.action);
-        if actor.action_answer_in(workspace, app, target, &need, now)
-            == tilo_action_policy::Answer::Deny
+        if !Self::member_own_offered(workspace, actor, &action.contract)
+            && actor.action_answer_in(workspace, app, target, &need, now)
+                == tilo_action_policy::Answer::Deny
         {
             action.contract.availability = tilo_actions::Availability::not_allowed(None);
             return actor.is_agent().then_some(action);

@@ -497,6 +497,10 @@ struct Answering {
     /// answer later is stopped by when the caller gives up waiting
     /// ([`EffectCx::cancel_by`]).
     cancel_by: Option<Arc<AtomicBool>>,
+    /// The effect is a member-own one ([`tilo_actions::MEMBER_OWN_TAG`]): the workspace's host
+    /// runs it for the member it acts for, as them, so what it applies as the app is theirs, and
+    /// the app's own role binds those writes no more.
+    member: bool,
 }
 
 impl Answering {
@@ -512,6 +516,7 @@ impl Answering {
             target: None,
             place: None,
             cancel_by: None,
+            member: false,
         }
     }
 }
@@ -631,6 +636,13 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         }
     }
 
+    /// This effect is the member's own ([`tilo_actions::MEMBER_OWN_TAG`]), run by the workspace's
+    /// host for them: what it applies as the app ([`Self::apply_own`]) is their change.
+    pub(crate) fn for_member(mut self, member: bool) -> Self {
+        self.inv.member = member;
+        self
+    }
+
     /// Where the invoker asked this effect to act (its `#[param(place)]`
     /// argument): act there instead of at their caret. Once it succeeds
     /// for a presence, they land there ([`Live::place_of`]).
@@ -680,17 +692,32 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.env.dispatch.clone()
     }
 
-    /// The person this invocation runs for: its invoker, when a host
-    /// delivered it for someone, else the presence the view is for.
-    /// `None` for a bot, an agent or an app acting, and in a past version.
-    /// An effect that answers or changes what is someone's own ("my link")
-    /// reads whose it is here, never from the view.
+    /// The person this invocation runs for: the person its invoker acts for, or the invoker
+    /// itself when it is one, else the presence the view is for. `None` for a bot, an agent
+    /// acting for nobody, a visitor or an app acting for no one, and in a past version. An
+    /// effect that answers or changes what is someone's own ("my link") reads whose it is here,
+    /// never from the view.
     pub fn person(&self) -> Option<String> {
         match ui_core::invocation_scope::current_invoker() {
-            Some(invoker) => invoker.acting.by.member_id().cloned(),
-            None => self.env.dispatch.me().cloned(),
+            Some(invoker) => invoker
+                .acting
+                .acted_for_person()
+                .map(str::to_owned)
+                .or_else(|| {
+                    invoker
+                        .acting
+                        .by
+                        .member_id()
+                        .and_then(tilo_actions::MemberId::person_id)
+                        .map(str::to_owned)
+                }),
+            None => self
+                .env
+                .dispatch
+                .me()
+                .and_then(tilo_actions::MemberId::person_id)
+                .map(str::to_owned),
         }
-        .and_then(|member| member.person_id().map(str::to_owned))
     }
 
     /// Who the invocation this work continues was admitted for, acting for the person at this
@@ -736,6 +763,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// the invoker may make that change themselves: the app never widens what they could do.
     /// It lands in the window's next settle pass, as nobody's undo step.
     ///
+    /// A member-own effect's write is that member's instead: the workspace's host runs the effect
+    /// for them, so the change is theirs, decided by their grants, as what the host does for them.
+    ///
     /// # Errors
     /// The action does not build, is not the app's own, the record is not the app's record of
     /// the workspace, or the invoker may not make the change; nothing is written then.
@@ -743,11 +773,24 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         let invoke = submit.into_invoke()?;
         let action = invoke.build(tilo_resource::origin_now_ms())?;
         let dispatch = self.env.dispatch.clone();
-        dispatch
-            .may_apply_own(&action)
-            .map_err(|error| error.to_string())?;
+        // A member-own effect is the member's, run by the workspace's host for them: the app
+        // applies its own record's change as that member, and the workspace decides it by their
+        // grants.
+        let as_member = if self.inv.member {
+            dispatch
+                .may_apply_own_for_member(&action)
+                .map_err(|error| error.to_string())?;
+            self.person().map(|person| {
+                tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::person(person))
+            })
+        } else {
+            dispatch
+                .may_apply_own(&action)
+                .map_err(|error| error.to_string())?;
+            None
+        };
         self.env.settling.borrow_mut().push(Settlement {
-            apply: Box::new(move |edits| dispatch.apply_own_now(edits, &action)),
+            apply: Box::new(move |edits| dispatch.apply_own_now(edits, &action, as_member)),
             waiting: None,
         });
         self.env.wake.wake();
@@ -1541,7 +1584,8 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 tilo_actions::ActionOutput::default(),
             )));
         }
-        let mut cx = EffectCx::invoked(self.env.clone(), invocation_parts(op, doc, place.clone()));
+        let mut cx = EffectCx::invoked(self.env.clone(), invocation_parts(op, doc, place.clone()))
+            .for_member(declaration.as_ref().is_some_and(|decl| decl.member));
         let mut handling = Some((handle, effect));
         let answer = run_under(Some(request.invocation), &mut || match handling.take() {
             Some((handle, effect)) => handle(host, effect, &mut cx),
@@ -1718,6 +1762,7 @@ fn invocation_parts(
         target: op.target().cloned(),
         place,
         cancel_by: None,
+        member: false,
     }
 }
 

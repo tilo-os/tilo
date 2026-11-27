@@ -389,3 +389,70 @@ fn a_link_keeps_the_names_and_unlinking_mine_takes_only_mine() {
         .collect();
     assert_eq!(links, ["43"]);
 }
+
+/// A sign-in Tilo started is the offer of the member who started it: another member holding its
+/// token takes nothing, and its words say whose it is.
+#[test]
+fn another_members_own_offer_is_never_taken_with_their_token() {
+    let mut app = connected();
+    app.call_by(bot(), crate::KIND, "set-sign-in", json!({"page": PAGE}))
+        .unwrap();
+    let ada = ui::tilo_resource::MemberId::person("ada");
+    let start: ui::linked_accounts::LinkStart = serde_json::from_value(
+        app.effect_by(&ada, &DiscordEffect::ConnectAccount)
+            .unwrap()
+            .value
+            .unwrap(),
+    )
+    .unwrap();
+    let state = start.url.rsplit_once("&state=").unwrap().1.to_owned();
+    let token = "ADA-CAME-BACK";
+    // Discord answers the round trip with her account: the offer it leaves is hers alone.
+    app.call_by(
+        bot(),
+        crate::KIND,
+        "offer-sign-in",
+        json!({
+            "check": link_check(&link_proof(token)),
+            "discord_user": "42",
+            "user_name": "ada.l",
+            "display_name": "",
+            "avatar": "",
+            "state_sha256": sha256_hex(state.as_bytes()),
+        }),
+    )
+    .unwrap();
+    let refused = app
+        .effect_by(
+            &ui::tilo_resource::MemberId::person("bo"),
+            &DiscordEffect::AcceptLink {
+                token: token.into(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        format!("{refused:?}").contains("another Tilo account"),
+        "the offer is Ada's: {refused:?}"
+    );
+    assert!(
+        app.state().links.iter().all(|link| link.person != "bo"),
+        "nothing linked to the member who was refused"
+    );
+
+    // The member it was started by takes it.
+    app.effect_by(
+        &ada,
+        &DiscordEffect::AcceptLink {
+            token: token.into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        app.state()
+            .links
+            .iter()
+            .filter(|link| link.person == "ada")
+            .count(),
+        1
+    );
+}

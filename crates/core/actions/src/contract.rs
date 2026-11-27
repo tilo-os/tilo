@@ -1061,6 +1061,12 @@ impl ActionContract {
         self.is_own_device() || self.is_attended()
     }
 
+    /// Whether any member of a workspace may ask its host to run the action for
+    /// themselves on the workspace's record. See [`MEMBER_OWN_TAG`].
+    pub fn is_member_own(&self) -> bool {
+        self.tags.iter().any(|tag| tag == MEMBER_OWN_TAG)
+    }
+
     /// Whether an effect under this contract only changes what is on the
     /// screen it is invoked on, as its app declares ([`SCREEN_TAG`]): a form it
     /// opens, a panel or a place it shows. Only the person at that screen

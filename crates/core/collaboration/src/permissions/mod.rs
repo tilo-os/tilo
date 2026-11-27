@@ -801,6 +801,12 @@ impl PermissionContext {
         resource_id: &str,
         action: &tilo_actions::ActionSpec,
     ) -> Answer {
+        // Any member may ask the workspace's host to run a member-own action for themselves, as
+        // them: what the app itself may do with the record decides nothing about it. Admission of
+        // one the host runs still decides each call.
+        if action.contract.is_member_own() {
+            return Answer::Allow;
+        }
         self.need_answer(
             app_id,
             resource_kind,
@@ -938,6 +944,11 @@ impl PermissionContext {
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> WindowAnswer {
+        // A member-own action runs for whoever is a member of the workspace: the app's own
+        // context does not keep it from them, and the host admits each call.
+        if action.contract.is_member_own() {
+            return WindowAnswer::of(Answer::Allow);
+        }
         if let Some(answer) = self.shown_answer(resource, &action.id) {
             return WindowAnswer::of(answer);
         }
@@ -1079,12 +1090,15 @@ impl ActionDecider<'_> {
         resource_id: &str,
         action: &tilo_actions::ActionSpec,
     ) -> bool {
-        self.permits_need(
-            resource_kind,
-            resource_id,
-            &action.id,
-            &action.contract.need(),
-        )
+        // A member-own action is published whatever the app itself may do with the record: it
+        // runs on the workspace's host, for whoever asked, as them.
+        action.contract.is_member_own()
+            || self.permits_need(
+                resource_kind,
+                resource_id,
+                &action.id,
+                &action.contract.need(),
+            )
     }
 
     /// [`Self::permits`] for one invocation of `action_id` that is what `need` is: an edit a
@@ -1283,7 +1297,15 @@ fn sift_actions(
     let mut allowed: Vec<Permitted> = resource
         .actions
         .iter()
-        .map(|action| permits(action, &action.contract.need()))
+        .map(|action| {
+            if action.contract.is_member_own() {
+                // Offered to every member, and kept whatever the actor may do here: the host
+                // runs it for them, as them, and admits each call.
+                Ok(())
+            } else {
+                permits(action, &action.contract.need())
+            }
+        })
         .collect();
     offer_carriers(resource, &mut allowed, &mut permits);
     // What a carrier beside them names is cut by these same answers: an action dropped here,
@@ -2145,5 +2167,41 @@ mod tests {
                 assert!(!app.check(&PermissionScope::path("/etc/shadow", Access::Read)));
             }
         }
+    }
+
+    /// A member-own action stays on a resource whatever the context itself may do with it: the
+    /// workspace's host runs it for a member, as them, so a reader's own context publishes it too,
+    /// and each call is admitted on its own.
+    #[test]
+    fn a_member_own_action_is_published_whatever_the_actor_may_do_with_the_record() {
+        let mut contract = tilo_actions::ActionContract {
+            kind: ActionKind::Undoable,
+            ..tilo_actions::ActionContract::default()
+        };
+        contract.tags.push(tilo_actions::MEMBER_OWN_TAG.to_owned());
+        let connect = tilo_actions::ActionSpec::operation(
+            "connect",
+            "connect",
+            tilo_actions::OperationKind::Effect,
+            "discord.effects",
+            &(),
+        )
+        .unwrap()
+        .with_contract(contract);
+        let mut resource =
+            tilo_actions::ResourceSpec::new("discord.guild", "discord.guild", "Discord server");
+        resource.actions.push(connect);
+
+        let reader = PermissionContext::member(
+            &crate::permissions::MemberId::person("reader"),
+            Role::Viewer,
+        );
+        let kept = reader
+            .permitted_resource("discord", resource)
+            .expect("the reader keeps the member-own action");
+        assert!(
+            kept.actions.iter().any(|action| action.id == "connect"),
+            "a member-own action is published to a reader"
+        );
     }
 }

@@ -1232,20 +1232,35 @@ impl<R: Resource> Dispatcher<R> {
     /// # Errors
     /// Why not, in the words a person reads.
     pub(crate) fn may_apply_own(&self, action: &R::Action) -> Result<(), ActionError> {
-        if !R::by_app(action) {
-            return Err(ActionError::Refused(
-                "an app applies as itself only what it keeps for itself".into(),
-            ));
-        }
-        self.core.applies_own(R::APP_ID)?;
+        self.applies_own_checks(action)?;
         if !self.may_apply(action) {
             return Err(self.not_allowed(action));
         }
         Ok(())
     }
 
+    /// [`Self::may_apply_own`] for the handler of a member-own effect
+    /// ([`tilo_actions::MEMBER_OWN_TAG`]): the workspace's host runs it for the member it acts for,
+    /// as them, so the app applies the member's own change and the workspace decides it again.
+    /// The app's own role here binds it no more.
+    pub(crate) fn may_apply_own_for_member(&self, action: &R::Action) -> Result<(), ActionError> {
+        self.applies_own_checks(action)
+    }
+
+    /// The checks both of the above make, of an action applied as the app itself: what it keeps
+    /// for itself, and only on its own record of the workspace.
+    fn applies_own_checks(&self, action: &R::Action) -> Result<(), ActionError> {
+        if !R::by_app(action) {
+            return Err(ActionError::Refused(
+                "an app applies as itself only what it keeps for itself".into(),
+            ));
+        }
+        self.core.applies_own(R::APP_ID)
+    }
+
     /// Apply `action`, which [`Self::may_apply_own`] admits, to the document `edits` lends, as
-    /// the app itself: the app's own write, which is no step of the person's.
+    /// the app itself: the app's own write, which is no step of the person's. One a member-own
+    /// effect applies is that member's (`as_member`), decided by their grants.
     ///
     /// # Errors
     /// As [`Self::may_apply_own`], or the action's own refusal; nothing is written either way.
@@ -1253,14 +1268,18 @@ impl<R: Resource> Dispatcher<R> {
         &self,
         edits: &mut Edits<'_>,
         action: &R::Action,
+        as_member: Option<ActionInvoker>,
     ) -> Result<(), ActionError> {
-        self.may_apply_own(action)?;
-        let app = tilo_actions::Acting::by_app(self.core.app_id);
-        let context = self
-            .core
-            .context()
-            .with_invoker(ActionInvoker::admitted(&app));
-        self.apply_now_with(edits, action, context, true, Some(false))
+        let context = self.core.context();
+        let (context, for_member) = if let Some(member) = as_member {
+            self.may_apply_own_for_member(action)?;
+            (context.with_invoker(member), true)
+        } else {
+            self.may_apply_own(action)?;
+            let app = tilo_actions::Acting::by_app(self.core.app_id);
+            (context.with_invoker(ActionInvoker::admitted(&app)), false)
+        };
+        self.apply_now_with(edits, action, context, true, Some(false), for_member)
     }
 
     /// Invoke one of the app's effects (`dispatcher.effect(&Backups::BackUp)`)
@@ -1765,7 +1784,7 @@ impl<R: Resource> Dispatcher<R> {
             .core
             .context()
             .with_change(tilo_actions::ChangeKind::External);
-        self.apply_now_with(edits, action, context, true, Some(false))
+        self.apply_now_with(edits, action, context, true, Some(false), false)
     }
 
     /// [`Self::apply_now`] of an action the person already confirmed, as
@@ -1805,11 +1824,14 @@ impl<R: Resource> Dispatcher<R> {
         context: ActionContext,
         confirmed: bool,
     ) -> Result<(), ActionError> {
-        self.apply_now_with(edits, action, context, confirmed, None)
+        self.apply_now_with(edits, action, context, confirmed, None, false)
     }
 
     /// [`Self::apply_now_as`], as a step of the person's unless `step` says
     /// otherwise: content from outside is no step of theirs.
+    /// `for_member` says the app applies the action of a member-own effect's handler: the
+    /// workspace's host admitted it for the member, as them, and its decision stands in place of
+    /// the app's own role here.
     fn apply_now_with(
         &self,
         edits: &mut Edits<'_>,
@@ -1817,12 +1839,15 @@ impl<R: Resource> Dispatcher<R> {
         context: ActionContext,
         confirmed: bool,
         step: Option<bool>,
+        for_member: bool,
     ) -> Result<(), ActionError> {
         #[cfg(debug_assertions)]
         not_painting();
         let _nonlocal = capture_nonlocal();
         self.core.applies_now()?;
-        if !self.may_apply(action) {
+        // A member-own effect applies for the member the workspace's host admitted it for: the
+        // app's own role binds those writes no more.
+        if !for_member && !self.may_apply(action) {
             return Err(self.not_allowed(action));
         }
         // Applying now never skips the person's consent: an action that
