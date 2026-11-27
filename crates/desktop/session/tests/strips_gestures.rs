@@ -255,8 +255,10 @@ fn a_tab_let_go_over_another_window_lands_in_it() {
     until(&mut session, "the window's tabs", |session| {
         places_of(session, source) == [first, third]
     });
-    let pill = middle(pill_of(&mut session, &shown_as(&session, TITLES[2])));
-    let landing = middle(bar_of(&mut session, &shown_as(&session, TITLES[1])));
+    let carried = shown_as(&session, TITLES[2]);
+    let pill = middle(pill_of(&mut session, &carried));
+    let onto = shown_as(&session, TITLES[1]);
+    let landing = middle(bar_of(&mut session, &onto));
     // The pill is carried out of its bar and let go over the other window's bar, which the shell
     // owns and which takes what is dropped on it.
     drag(&mut session, pill, landing);
