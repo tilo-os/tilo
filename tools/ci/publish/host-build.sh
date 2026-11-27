@@ -5,6 +5,11 @@
 # set the desktop image uses, with Firecracker. The layer is a copying build, so a change to one
 # program or one unit file costs the compile and this build, not a package install.
 #
+# BOOTC is the OS tools image the OS image's desktop layer takes its bootc from (os-tools-ARCH,
+# os/image/helpers/bootc-builder.Containerfile): the base's own release with the patches in
+# os/external-assets/bootc-runtime/, loaded here and copied onto the base in place of its stock
+# binary. One build serves both images.
+#
 # With --dev it builds the development server image instead (t's image-host-dev), on the same base
 # and with the same stages, then the additions of os/Containerfile.host-dev on their last one
 # (t's image-host-dev programs, server-binaries.sh `host host-dev`, are built without LTO): the
@@ -26,16 +31,17 @@
 # (bootc#2334), which seal-host (seal-host-dev for the development image) does before anything is
 # signed.
 #
-# usage: host-build.sh [--dev] BINARIES BASE GENERATION OUT
+# usage: host-build.sh [--dev] BINARIES BASE BOOTC GENERATION OUT
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: host-build.sh [--dev] BINARIES BASE GENERATION OUT'
+usage='usage: host-build.sh [--dev] BINARIES BASE BOOTC GENERATION OUT'
 dev=0
 case ${1:-} in --dev) dev=1; shift ;; esac
 binaries=${1:?$usage}
 base=${2:?$usage}
-generation_file=${3:?$usage}
-out=${4:?$usage}
+bootc=${3:?$usage}
+generation_file=${4:?$usage}
+out=${5:?$usage}
 read -r generation < "$generation_file"
 [[ $generation =~ ^[1-9][0-9]*$ ]] || die "$generation_file holds no generation: '$generation'"
 cd "$repo_root"
@@ -69,6 +75,11 @@ b tag "$base_image" localhost/tilo-host-base:built
 [[ $(archive_digest "$base/uki-tools/image.oci.tar") == "$(cat "$base/uki-tools/digest")" ]] \
   || die "$base/uki-tools/image.oci.tar is not the image $base/uki-tools/digest names"
 b tag "$(b pull -q "oci-archive:$base/uki-tools/image.oci.tar")" localhost/tilo-host-uki-tools:built
+# The OS tools image, as this store's image: the layer copies its bootc onto the base. It comes
+# as the layout its check left, so nothing pulls it from a registry.
+[[ -f $bootc/image-tool-stages/oci/index.json ]] \
+  || die "$bootc holds no image-tool-stages layout: it is not an os-tools build"
+b tag "$(b pull -q "oci:$bootc/image-tool-stages/oci:tilo")" localhost/tilo-host-bootc-tools:built
 # The context is what the image copies and nothing else, so no checkout metadata reaches the
 # build and a one-crate change moves one file in it. Source bytes and the cached base decide the
 # image; a commit time is no input (the date is source-date-host's, or source-date-host-dev's,
@@ -114,6 +125,7 @@ cp -r keys/release/. "$context/keys/release/"
 args=(--platform linux/amd64
       --build-arg "HOST_BASE=localhost/tilo-host-base:built"
       --build-arg "UKI_TOOLS=localhost/tilo-host-uki-tools:built"
+      --build-arg "BOOTC_TOOLS=localhost/tilo-host-bootc-tools:built"
       --build-arg "TILO_GENERATION=$generation"
       --build-arg "TILO_CFS_DIGEST=$(printf '0%.0s' {1..128})")
 if (( dev )); then

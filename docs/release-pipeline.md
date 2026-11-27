@@ -298,7 +298,8 @@ change at a relink), `image-host` lays them on the cached base, `test-image-host
 image in a container, `seal-host` seals it, and `host-assurance-x86_64` signs it with throwaway
 keys, installs it and boots it under Secure Boot, proving the verified boot, the services, the
 health verdict and the rollback. Nothing is signed with a release key or published on this
-path. A local machine builds the same two layers with `os/build-host.sh`.
+path. A local machine builds the same layers with `os/build-host.sh`, which takes the patched
+bootc the image ships from `os-tools-x86_64`'s output, the one build the desktop image uses too.
 
 The development server image a dev VM runs as a server is that path's own, and never waits for
 the release image: `image-host-dev` builds the server image's stages on the cached `host-base`

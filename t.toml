@@ -8837,11 +8837,12 @@ default = false
 
 [[check]]
 name = "image-host"
-# No network: the base and the sealing tools come from host-base's archives, loaded into this
-# step's store, and the layer copies programs and files the tree holds. A commit that changes none
-# of them, and a series that has not moved on, is served from t's cache.
-run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-build.sh /target/publish/host/binaries /target/publish/host-base /target/generation-host/generation /target/publish/host"
-needs = ["source-date-host", "host-base", "host-binaries", "generation-host"]
+# No network: the base and the sealing tools come from host-base's archives, the bootc the image
+# installs comes from os-tools-x86_64's layout (the OS image's own build of it), and the layer
+# copies programs and files the tree holds. A commit that changes none of them, and a series that
+# has not moved on, is served from t's cache.
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-build.sh /target/publish/host/binaries /target/publish/host-base /target/os/x86_64/tools /target/generation-host/generation /target/publish/host"
+needs = ["source-date-host", "host-base", "host-binaries", "generation-host", "os-tools-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -8851,10 +8852,11 @@ default = false
 
 [[check]]
 name = "test-image-host"
-# No network: it pulls the image out of the archive image-host left and runs what is in it.
+# No network: it pulls the image out of the archive image-host left and runs what is in it, and
+# compares its bootc with the one os-tools-x86_64 built.
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash os/tests/host_image.sh /target/publish/host/image.oci.tar"
-needs = ["image-host"]
+run = "bash os/tests/host_image.sh /target/publish/host/image.oci.tar /target/os/x86_64/tools"
+needs = ["image-host", "os-tools-x86_64"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1800
@@ -8925,10 +8927,10 @@ default = false
 
 [[check]]
 name = "image-host-dev"
-# No network: the base and the sealing tools come from host-base's archives, loaded into this
-# step's store, and the layer copies programs and files the tree holds.
-run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host-dev)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-build.sh --dev /target/publish/host-dev/binaries /target/publish/host-base /target/generation-host/generation /target/publish/host-dev"
-needs = ["source-date-host-dev", "host-base", "host-binaries-dev", "generation-host"]
+# No network: the base, the sealing tools and the bootc come from host-base's archives and
+# os-tools-x86_64's layout, and the layer copies programs and files the tree holds.
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host-dev)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-build.sh --dev /target/publish/host-dev/binaries /target/publish/host-base /target/os/x86_64/tools /target/generation-host/generation /target/publish/host-dev"
+needs = ["source-date-host-dev", "host-base", "host-binaries-dev", "generation-host", "os-tools-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -8952,10 +8954,11 @@ default = false
 
 [[check]]
 name = "test-image-host-dev"
-# No network: it pulls the sealed image out of seal-host-dev's archive and runs what is in it.
+# No network: it pulls the sealed image out of seal-host-dev's archive, runs what is in it, and
+# compares its bootc with the one os-tools-x86_64 built.
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash os/tests/host_image.sh --dev /target/publish/host-dev-sealed/image.oci.tar"
-needs = ["seal-host-dev"]
+run = "bash os/tests/host_image.sh --dev /target/publish/host-dev-sealed/image.oci.tar /target/os/x86_64/tools"
+needs = ["seal-host-dev", "os-tools-x86_64"]
 requires = ["arch=x86_64"]
 isolation = "vm"
 timeout_secs = 1800

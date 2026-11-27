@@ -39,7 +39,12 @@ The server image is the Fedora bootc base with the server's programs laid on it
 Fedora kernel, but is sealed by the desktop's own stages: `host-build.sh`
 appends `os/image/boot.Containerfile` to the server's Containerfile and builds it
 with the desktop's `uki-tools` stage, which `host-base.sh` builds from the same
-base and snapshot. It shares the early-boot unlock chain (`91tilo-rollback`),
+base and snapshot. Its bootc is the desktop's own patched build too, taken from
+the OS tools image (`os/image/helpers/bootc-builder.Containerfile`) rather than
+the base's stock binary: a server stages updates and can lose power between
+writing a boot entry and flushing it, needs only the layers it lacks, and can
+have another operating system's ESP on its disk, which the base's release does
+not survive. It shares the early-boot unlock chain (`91tilo-rollback`),
 the update path (`tilo-verified-update`), the release's boot signing
 (`os-release.sh sign-boot`, `os/dev/sign-target-prediction.sh`) and the
 container signature policy. A server must boot unattended, so every item below

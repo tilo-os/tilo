@@ -36,7 +36,15 @@ ARG HOST_BASE=localhost/tilo-host-base:latest
 # The sealing tools, the desktop's `uki-tools` stage built with the base
 # (host-base.sh), as an image: this build has no RPM snapshot to install them from.
 ARG UKI_TOOLS=localhost/tilo-host-uki-tools:latest
+# The bootc the desktop image ships, out of the OS tools image (os-tools-ARCH,
+# os/image/helpers/bootc-builder.Containerfile): the base's own release rebuilt with
+# os/external-assets/bootc-runtime/. A server updates itself from images the way the
+# desktop does, on the same base, so it needs the same fixes: it stages an update and
+# then may lose power (0009), and its disk can hold another operating system's ESP
+# (0001) and another image's layers (0003).
+ARG BOOTC_TOOLS=localhost/tilo-host-bootc-tools:latest
 FROM ${UKI_TOOLS} AS uki-tools
+FROM ${BOOTC_TOOLS} AS bootc-tools
 
 # NetworkManager's resolver file, restored as the image's last layer (as the
 # desktop image does): the base leaves a placeholder there, because a RUN with
@@ -52,6 +60,14 @@ LABEL org.opencontainers.image.title="Tilo server" \
       org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       sh.tilo.image.flavour="server"
+
+# ---- bootc -------------------------------------------------------------------
+# The tools image's build, replacing the base's stock binary of the same release:
+# every bootc unit and helper of this image, and the sealing stages appended below
+# (os/image/boot.Containerfile), then run it. Its licence record comes with it; the
+# base shipped the same program without one.
+COPY --from=bootc-tools /bootc/usr/bin/bootc /usr/bin/bootc
+COPY --from=bootc-tools /bootc/usr/share/licenses/tilo-bootc/ /usr/share/licenses/tilo-bootc/
 
 # ---- Programs ---------------------------------------------------------------
 # Host image ships the server, the authenticated filesystem replica and the enroll

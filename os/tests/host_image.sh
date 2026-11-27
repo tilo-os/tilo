@@ -14,17 +14,19 @@
 # base.json naming the check image, target, toolchain and Cargo.lock the
 # server's own programs were built with.
 #
-# usage: host_image.sh [--dev] ARCHIVE
+# usage: host_image.sh [--dev] ARCHIVE TOOLS
 # ARCHIVE is an OCI archive as t's image build writes it (the check image-host,
-# or seal-host-dev with --dev). It runs in the buildah image, without a daemon,
-# as root in a micro-VM step.
+# or seal-host-dev with --dev). TOOLS is the OS tools image os-tools-ARCH built, as
+# an OCI layout (os/image/build-layer.sh), whose bootc the server image must carry.
+# It runs in the buildah image, without a daemon, as root in a micro-VM step.
 set -euo pipefail
 dev=0
 if [[ ${1:-} == --dev ]]; then
   dev=1
   shift
 fi
-archive=${1:?usage: host_image.sh [--dev] ARCHIVE}
+archive=${1:?usage: host_image.sh [--dev] ARCHIVE TOOLS}
+tools=${2:?usage: host_image.sh [--dev] ARCHIVE TOOLS}
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/lib.sh"
 use_buildah host-test
 image=$(b pull --quiet "oci-archive:$archive")
@@ -32,6 +34,26 @@ container=$(b from --quiet "$image")
 trap 'b rm "$container" >/dev/null 2>&1 || true' EXIT
 root=$(b mount "$container")
 inside() { b run "$container" -- "$@"; }
+
+# The bootc on the image is the OS tools image's build, not the base's stock binary:
+# a server stages its updates with it and may lose power in between, and the base's
+# release then leaves boot entries every later `bootc status` fails to parse. The
+# content is compared with the tools image's own, so the image is held to the build
+# the OS image ships and not to what its own build says it installed.
+[[ -f $tools/image-tool-stages/oci/index.json ]] \
+  || die "no image-tool-stages layout in $tools: it is not an os-tools build"
+tools_image=$(b pull --quiet "oci:$tools/image-tool-stages/oci:tilo")
+tools_container=$(b from --quiet "$tools_image")
+trap 'b rm "$container" >/dev/null 2>&1 || true; b rm "$tools_container" >/dev/null 2>&1 || true' EXIT
+tools_root=$(b mount "$tools_container")
+[[ -f $tools_root/bootc/usr/bin/bootc ]] \
+  || die "the OS tools image in $tools carries no bootc"
+cmp -s "$tools_root/bootc/usr/bin/bootc" "$root/usr/bin/bootc" \
+  || die 'the image ships another bootc than the one the OS tools stage built'
+[[ -f $root/usr/share/licenses/tilo-bootc/NOTICE ]] \
+  || die "the image ships no record of the bootc it carries, so that is the base's stock binary"
+b umount "$tools_container" >/dev/null 2>&1 || true
+b rm "$tools_container" >/dev/null 2>&1 || true
 
 # Every Tilo image is Fedora, the OS included: a server trusts the same
 # libraries and certificates the desktop does.
@@ -46,6 +68,16 @@ inside skopeo --version >/dev/null || die 'no skopeo'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside setpriv --help >/dev/null || die 'no setpriv'
 inside bootc --version >/dev/null || die 'no bootc'
+# It runs on this image's own libraries, and lints the image it ships in, as the
+# update units and the boot-entry maintenance that call it do on an installed server.
+if ! linked=$(inside ldd /usr/bin/bootc 2>&1) || grep -q 'not found' <<<"$linked"; then
+  printf '%s\n' "$linked" >&2
+  die "bootc's libraries are not all on this image"
+fi
+if ! lint=$(inside bootc container lint 2>&1); then
+  printf '%s\n' "$lint" >&2
+  die 'the bootc the image carries does not lint it'
+fi
 inside efibootmgr --version >/dev/null || die 'no efibootmgr, so a server cannot change its boot order'
 
 # The programs, at the paths their units and scripts name.
