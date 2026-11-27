@@ -927,9 +927,9 @@ impl HostOperations {
     /// The certificate the signed invocation `request` carries, checked as a host checks one:
     /// signed by its device, fresh, and not revoked. The invitation into a workspace is signed
     /// for that one ([`tilo_server_protocol::workspaces::invitation_scope`]), and an agent's grant
-    /// proves its key for it only where its root-signed scope reaches that workspace. Every other
-    /// operation is signed for no workspace, and what a grant asks there beyond its scope waits
-    /// for its person's approval.
+    /// proves its key for it only where its root-signed scope reaches that workspace. The host's
+    /// other workspace operations are signed for no workspace, and each holds a grant to what it
+    /// reaches. Anything else asked of the host is for a key that reaches every workspace.
     fn certificate(
         &self,
         request: &tilo_actions::remote::InvokeRequest,
@@ -947,8 +947,20 @@ impl HostOperations {
                 &revocations,
                 now,
             ),
-            None => {
+            // The host's own workspace operations, each of which holds a grant to what it reaches
+            // ([`crate::service_authority::ServiceOperation::permits`]).
+            None if request.target.provider
+                == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
+                && request.target.address.resource
+                    == tilo_server_protocol::workspaces::HOST_WORKSPACES_RESOURCE =>
+            {
                 tilo_server_protocol::invocation::verify_host_invocation(request, &revocations, now)
+            }
+            // Anything else asked of the host itself (answering a person's question, its MCP
+            // server, the person's account and formats) is no workspace's, and only a key that
+            // reaches every workspace of its person's asks it.
+            None => {
+                tilo_server_protocol::invocation::verify_invocation("", request, &revocations, now)
             }
         }
         .map_err(|error| tilo_actions::remote::ActionCallError::Refused {

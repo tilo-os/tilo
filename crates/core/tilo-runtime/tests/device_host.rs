@@ -457,6 +457,56 @@ async fn a_revoked_key_reads_the_persons_workspace_no_more() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_key_for_one_workspace_asks_the_host_for_nothing_but_its_workspace_operations() {
+    let root = SigningKey::from_bytes(&[0x14; 32]);
+    let device = device_host(&root).await;
+    // A key its person made for their programs acts as them, within the one workspace it reaches.
+    let one = certified(
+        &root,
+        12,
+        "one workspace",
+        DeviceCapabilities::own_key_grant(AgentScope::parse(&device.workspace).unwrap()),
+    );
+    let key = session(&device, &one).await;
+    // The host's own workspace operations hold the key to what it reaches; anything else asked
+    // of the host itself is no workspace's, and reaches past the one this key's person gave it:
+    // answering their questions, the host's MCP server, their account and their formats.
+    let asked = [
+        tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_actions::remote::WORKSPACE_INVOCATIONS_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                "tilo.invocations",
+                tilo_actions::remote::asked::RESOLVE,
+            ),
+        },
+        tilo_action_services::mcp_server::target(tilo_action_services::mcp_server::STOP),
+        tilo_action_services::server_account::target(tilo_action_services::server_account::ACCOUNT),
+        tilo_actions::remote::RemoteActionTarget {
+            provider: formats::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(formats::RESOURCE, formats::READ),
+        },
+    ];
+    for target in asked {
+        let refused = key
+            .ask_host(
+                tilo_session_client::session::HOST_ITSELF,
+                target.clone(),
+                serde_json::Map::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "refused", "{target:?}: {refused:?}");
+        assert!(
+            refused
+                .message
+                .contains("grant does not reach this workspace"),
+            "{target:?}: {refused:?}"
+        );
+    }
+    key.close();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_grant_for_one_workspace_is_invited_into_that_one_alone() {
     let root = SigningKey::from_bytes(&[0x13; 32]);
     let device = device_host(&root).await;
