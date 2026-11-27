@@ -528,18 +528,32 @@ fn a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens()
 const WORKSPACES_TEST: &str = "device::local::tests::the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other";
 
 /// The provider whose one action asks its person first, as its contract says.
-const ASKS: &str = "so.tilo.probe";
+pub(crate) const ASKS: &str = "so.tilo.probe";
 
 /// A provider offering `probe#publish`, which asks its person before it runs.
 fn asking() -> Arc<tilo_actions::remote::TestProvider> {
     probe(tilo_actions::ConfirmationPolicy::Confirm)
 }
 
+/// A provider offering `probe#publish` as an action of the person's own device that asks them
+/// first, and refuses every call for want of their yes as its own code does: the shape of a
+/// question a program raises through the shell.
+pub(crate) fn own_device_asking() -> Arc<tilo_actions::remote::TestProvider> {
+    use tilo_actions::remote::{ActionCallError, Pending};
+    Arc::new(
+        catalogue(ASKS, tilo_actions::ConfirmationPolicy::Confirm, true).answering(
+            |_, _request| {
+                Pending::ready(Err(ActionCallError::ConfirmationRequired(Box::default())))
+            },
+        ),
+    )
+}
+
 /// A provider offering `probe#publish`, confirmed as `confirmation` says.
 fn probe(
     confirmation: tilo_actions::ConfirmationPolicy,
 ) -> Arc<tilo_actions::remote::TestProvider> {
-    probe_named(ASKS, confirmation)
+    Arc::new(catalogue(ASKS, confirmation, false))
 }
 
 /// [`probe`], offered as the provider `named`.
@@ -547,9 +561,25 @@ fn probe_named(
     named: &'static str,
     confirmation: tilo_actions::ConfirmationPolicy,
 ) -> Arc<tilo_actions::remote::TestProvider> {
+    Arc::new(catalogue(named, confirmation, false))
+}
+
+/// A provider offering `probe#publish`, whose action is one of the person's own device when
+/// `own_device`: decided by the device for the person, not by a workspace, and asked of them
+/// where its contract says so.
+fn catalogue(
+    named: &'static str,
+    confirmation: tilo_actions::ConfirmationPolicy,
+    own_device: bool,
+) -> tilo_actions::remote::TestProvider {
     use tilo_actions::remote::TestProvider;
     use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow};
-    Arc::new(TestProvider::new().with_catalogue(move |caller, query| {
+    let tags = if own_device {
+        vec![tilo_actions::OWN_DEVICE_SCOPE.to_owned()]
+    } else {
+        Vec::new()
+    };
+    TestProvider::new().with_catalogue(move |caller, query| {
         let row = CatalogueRow::for_action(
             named,
             named,
@@ -568,6 +598,7 @@ fn probe_named(
                 kind: tilo_actions::OperationKind::Effect,
                 contract: tilo_actions::ActionContract {
                     confirmation: confirmation.clone(),
+                    tags: tags.clone(),
                     ..tilo_actions::ActionContract::default()
                 },
                 input: tilo_actions::InputSpec::None,
@@ -586,11 +617,11 @@ fn probe_named(
             });
         }
         Ok(page)
-    }))
+    })
 }
 
 /// What `pending` answers, within the hang bound.
-fn answered<T: Send + 'static>(pending: tilo_actions::remote::Pending<T>) -> T {
+pub(crate) fn answered<T: Send + 'static>(pending: tilo_actions::remote::Pending<T>) -> T {
     pending
         .wait_timeout(tilo_test_env::hang_bound())
         .ok()

@@ -3826,6 +3826,79 @@ fn an_own_keys_run_is_the_agent_its_workspace_lists() {
     assert!(page.is_ok(), "the agent's run lists: {page:?}");
 }
 
+const SHELL_LINK_PROVIDER_TEST: &str =
+    "device::services::tests::the_shell_links_own_call_reaches_the_providers_the_device_serves";
+
+/// The link the daemon made for the person's shell carries their own calls: one of an action a
+/// provider on this device serves reaches that provider as theirs, and what it refuses for want
+/// of their yes is kept as their asked record, which their answer runs. An agent named on the
+/// link is not the person's own call, and reaches none of these providers this way.
+#[test]
+fn the_shell_links_own_call_reaches_the_providers_the_device_serves() {
+    use tilo_actions::remote::{ActionCallError, InvocationReceipt, ReceiptStatus};
+
+    let Some(root) = isolated_root(SHELL_LINK_PROVIDER_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let probe = crate::device::local::tests::own_device_asking();
+    daemon.provide(crate::device::local::tests::ASKS, Arc::clone(&probe) as _);
+    let person = daemon.person().unwrap();
+    let dispatch = person.provider(&workspace).unwrap();
+    let shell = person.caller(&workspace);
+    assert!(
+        shell.acting().agent_id().is_none() && shell.device_public_key().is_none(),
+        "the shell link's caller is the plain person: {shell:?}"
+    );
+    let call = || {
+        super::InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: crate::device::local::tests::ASKS.into(),
+                address: tilo_actions::ActionAddress::new("probe", "publish"),
+            },
+            serde_json::Map::new(),
+        )
+    };
+
+    // The person's own call is the provider's: what it refuses for their yes is kept as their
+    // asked record, and nothing of it ran.
+    let receipt = crate::device::local::tests::answered(
+        tilo_actions::remote::ActionProvider::invoke(&dispatch, &shell, call()),
+    )
+    .expect("the device answers its person's own call");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Accepted),
+        "the call waits for the person as its asked record: {receipt:?}"
+    );
+    assert_eq!(probe.asked().len(), 1, "the provider was asked once");
+
+    // An agent the shell names is not the person's own call, even on their link.
+    let cert = daemon.workspaces.device_cert();
+    let agent = Caller::delegated_agent("scout", cert.user_public_key, cert.device_public_key)
+        .named("Scout")
+        .in_workspace(workspace);
+    let refused = crate::device::local::tests::answered(
+        tilo_actions::remote::ActionProvider::invoke(&dispatch, &agent, call()),
+    );
+    assert!(
+        match &refused {
+            Ok(InvocationReceipt { status, .. }) => {
+                !matches!(status, ReceiptStatus::Completed { .. })
+            }
+            Err(ActionCallError::ConfirmationRequired(_)) => false,
+            Err(_) => true,
+        },
+        "an agent's call reaches no provider the shell serves this way: {refused:?}"
+    );
+    assert_eq!(
+        probe.asked().len(),
+        1,
+        "the provider was asked by the person alone: {:?}",
+        probe.callers()
+    );
+}
+
 const SHELL_AGENT_TEST: &str =
     "device::services::tests::an_agent_the_shell_names_lists_in_a_run_of_its_own";
 

@@ -6914,6 +6914,41 @@ impl RuntimeActionProvider {
         session.provider.invoke(&runs_as, request)
     }
 
+    /// The person's own call of an action a provider the shell serves answers
+    /// ([`Self::invoke`]'s own-device branch): recorded as their invocation, and kept as their
+    /// asked record where the provider asks for their yes in its own call, which their answer
+    /// then runs. A confirmation this call wrote itself is none: only their answer of the asked
+    /// record runs what asks them.
+    fn answered_at_own_device(
+        &self,
+        registered: &tilo_workspace_service::workspaces::providers::Registered,
+        caller: &Caller,
+        mut request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        if !matches!(
+            request.confirmation.as_ref(),
+            Some(tilo_actions::remote::Confirmation::Asked(_))
+        ) {
+            request.confirmation = None;
+        }
+        let route = (Arc::clone(&registered.answers), caller.clone());
+        if let Some(asked) = &self.asked {
+            let run = super::asked::Run::Own {
+                workspace: self.workspace.clone(),
+                pressed: None,
+            };
+            return asked.send(run, caller, route, request);
+        }
+        self.invocations.record(
+            caller,
+            caller,
+            &request,
+            Some(&self.workspace),
+            route.clone(),
+        );
+        registered.answers.invoke(caller, request)
+    }
+
     /// The run the person's own call waits on as its asked record: the press it came from,
     /// where a view pressed it.
     fn own_run(
@@ -7197,6 +7232,19 @@ fn on_this_device(caller: &Caller) -> Caller {
     caller.clone().from_foreign_device(true)
 }
 
+/// Whether `caller` is the plain person and nobody else: no agent acting or named, no app they
+/// launched, no key of theirs, and no device certificate of their own. What a call on the link
+/// this device made for their shell is, as a call on their own daemon's connection is.
+fn the_plain_person(caller: &Caller) -> bool {
+    caller.device_public_key().is_none()
+        && caller.user_public_key().is_none()
+        && caller.acting().agent_id().is_none()
+        && caller.acting_for_person().is_none()
+        && caller.agent_called().is_none()
+        && caller.launched_app().is_none()
+        && caller.key().is_none()
+}
+
 /// One answer for either of two waits: resolves when the first of them does, with what it
 /// answered, so a watch woken by either reads again.
 fn whichever_first(
@@ -7385,7 +7433,7 @@ impl ActionProvider for RuntimeActionProvider {
     fn invoke(
         &self,
         caller: &Caller,
-        mut request: InvokeRequest,
+        request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
             return Pending::ready(Err(refused));
@@ -7426,46 +7474,56 @@ impl ActionProvider for RuntimeActionProvider {
         // this device answers it, as it does before their services run, because what the action
         // changes is this computer's own and no workspace's. An agent, a key or another device is
         // answered on the workspace's admission, as before.
-        if caller.is_own_connection()
+        //
+        // The link the daemon made for the person's shell carries their own calls too, as the
+        // plain person and never a named agent or an app: their shell's press of one of these
+        // actions reaches the provider the same way their own connection does.
+        let person = hex::encode(self.workspaces.device_cert().user_public_key);
+        let the_persons_own = caller.is_own_connection()
+            || (the_plain_person(caller) && caller.acting().person_id() == Some(person.as_str()));
+        if the_persons_own
             && !caller.is_system()
+            // Their answer to an asked record is the record's own action, which this device's
+            // asked dispatch answers below: never one of the providers it serves.
+            && !tilo_actions::remote::asked::is_resolve(&request.target)
             && let Some(registered) = self
                 .workspaces
                 .copies()
                 .providers()
                 .get(&request.target.provider)
-            && let Some(verdict) = self.broker.state().own_device_verdict(
+        {
+            let providers = self.workspaces.copies().providers();
+            let described = providers
+                .descriptor(
+                    &registered,
+                    caller,
+                    &request.target.address,
+                    request.argument.to_slot().as_deref(),
+                )
+                .is_some();
+            // The person's own rules still decide it: the workspace's verdict, made with their
+            // own connection answering what it asks of them, and never an approval this call
+            // wrote.
+            let verdict = self.broker.state().own_device_verdict(
                 caller,
                 &self.workspace,
                 &registered,
                 &request,
-            )
-        {
-            // The person's own rules still decide it: the workspace's verdict, made with their
-            // own connection answering what it asks of them, and never an approval this call
-            // wrote. Where it asks the person first, the call falls through to the admission,
-            // which keeps it as its asked record for their prompt to answer.
+            );
             match verdict {
-                Ok(()) => {
-                    self.invocations.record(
-                        caller,
-                        caller,
-                        &request,
-                        Some(&self.workspace),
-                        (Arc::clone(&registered.answers), caller.clone()),
-                    );
-                    return registered.answers.invoke(caller, request);
+                // It runs, or waits for the person as its asked record where the provider asks
+                // for their yes in its own call: a question a program raises, a press that asks.
+                Some(Ok(()) | Err(ActionCallError::ConfirmationRequired(_))) => {
+                    return self.answered_at_own_device(&registered, caller, request);
                 }
-                Err(ActionCallError::ConfirmationRequired(_)) => {
-                    // The person is asked: their answer is the asked record the admission keeps
-                    // for it, and a confirmation this call wrote itself is none.
-                    if !matches!(
-                        request.confirmation.as_ref(),
-                        Some(tilo_actions::remote::Confirmation::Asked(_))
-                    ) {
-                        request.confirmation = None;
-                    }
+                Some(Err(refused)) => return Pending::ready(Err(refused)),
+                // A provider that lists no row for the action — a question it raises itself,
+                // which nobody is offered — answers the person's own call, and refuses what it
+                // does not serve.
+                None if !described => {
+                    return self.answered_at_own_device(&registered, caller, request);
                 }
-                Err(refused) => return Pending::ready(Err(refused)),
+                None => {}
             }
         }
         let origin_writes = |caller: &Caller, origin: &Origin| {
