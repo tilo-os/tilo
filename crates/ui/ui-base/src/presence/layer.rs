@@ -11,12 +11,13 @@
 //!   damages nothing.
 //! - **Inside the widgets**, carets, selections, typing marks, "… is
 //!   typing" lines, focus rings and presence dots are painted by whichever
-//!   widget owns the content. No widget reports damage for them, so a
-//!   change to anything a widget can paint from ([`WidgetPresence`])
-//!   repaints the window, exactly as before.
-//!   While widgets show marks placed from their content (a caret and its
-//!   name chip), a frame in which any widget changed repaints the window
-//!   too ([`WidgetPresence::marks_follow_content`]).
+//!   widget owns the content. Each paint is noted where it stands
+//!   ([`PresenceCtx::presence_paint`]), so a change that moves only those
+//!   marks — a caret following a keystroke — damages where the last frame
+//!   painted them and where this one does
+//!   ([`WidgetPresence::differs_only_in_marks`]), and a frame whose content
+//!   changed under marks damages them too. A change no mark bounds (a peer
+//!   on a widget, a name, semantic activity) repaints the window.
 //!
 //! Peer pointers are the frequent case (a moving pointer publishes at
 //! ~30 Hz), and those frames keep to the pointer's own pixels.
@@ -71,6 +72,33 @@ impl WidgetPresence {
             || self.carets.values().any(|list| !list.is_empty())
             || self.selections.values().any(|list| !list.is_empty())
             || self.typing.values().any(|marks| !marks.is_empty())
+    }
+
+    /// Whether `previous` and this frame differ only in the carets,
+    /// selections and typing marks widgets paint from their own content,
+    /// and the fade step of those marks.
+    ///
+    /// Those are painted where [`PresenceCtx::presence_paint`] noted them,
+    /// so a frame can damage where the last one painted presence and where
+    /// this one does, and nothing else. Everything else widgets paint from
+    /// presence — who is on a widget, the roster's names, semantic activity
+    /// — has no bounds a frame can name, and repaints the window.
+    #[must_use]
+    pub fn differs_only_in_marks(&self, previous: &Self) -> bool {
+        self.here == previous.here
+            && self.color_overrides == previous.color_overrides
+            && self.names == previous.names
+            && self.statuses == previous.statuses
+            && self.composing == previous.composing
+            && self.views == previous.views
+            && self.own == previous.own
+            && self.self_member == previous.self_member
+            && self.surface == previous.surface
+            && self.animating == previous.animating
+            && (self.carets != previous.carets
+                || self.selections != previous.selections
+                || self.typing != previous.typing
+                || self.typing_steps != previous.typing_steps)
     }
 }
 

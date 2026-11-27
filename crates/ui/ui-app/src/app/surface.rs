@@ -1426,8 +1426,11 @@ impl App {
         // What a window of its own repaints whole: a rebuilt tree, moved
         // geometry, another record, and what paints over the widgets.
         // Carets, selections and marks widgets paint from presence carry no
-        // widget damage (`draw_presence_layer`).
-        let presence_changed =
+        // widget damage (`draw_presence_layer`), so a change to them damages
+        // where the last frame painted presence and where this one does —
+        // unless the change is one no marks bound (a peer joining a widget,
+        // a name, semantic activity), which still repaints the window.
+        let presence =
             damage.widgets_presence_changed(self.presence_ctx.widget_presence(crate::time::now()));
         let hud = self
             .profiler
@@ -1462,7 +1465,13 @@ impl App {
             (self.debug_mode, "debug outlines"),
             (self.palette_open(), "the action palette"),
             (hud, "the profiler HUD"),
-            (presence_changed, "presence marks"),
+            (
+                // A host that draws only this frame's damage leaves marks it
+                // does not draw unpainted, and their notes with them: the
+                // frame cannot name where the last one painted them either.
+                presence.unbounded(damage.culls),
+                "presence marks",
+            ),
         ]
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
@@ -1573,6 +1582,10 @@ impl App {
                 .is_some_and(|peers| peers.changed.is_none())
                 .then_some("presence marks")
         });
+        // Where this frame painted what presence places over and inside the
+        // widgets, in scene pixels: the damage a change to those marks names,
+        // with the last frame's (`SurfaceDamage::presence_paint`).
+        let presence = presence.with_paint(self.presence_ctx.presence_paint());
         let plan_scale = (scale, damage.copy_scale);
         let plan_size = (
             device_extent(size.width, damage.copy_scale),
@@ -1581,7 +1594,7 @@ impl App {
         #[cfg(test)]
         let damage_probe = crate::frame_probe::span("frame.damage");
         let copies_before = damage.copies.len();
-        damage.frame(full, &drawn, scale, peers.as_ref(), |regions| {
+        damage.frame(full, &drawn, scale, peers.as_ref(), presence, |regions| {
             let root = self.root_widget.as_ref();
             if !copying {
                 collect_submitted_widget_damage(root, regions);
@@ -1759,6 +1772,49 @@ pub struct SurfaceDamage {
     /// Whether the host repaints only each frame's damage from that
     /// frame's scene ([`Self::drawing_only_damage`]).
     culls: bool,
+    /// Where the last frame painted what presence places over and inside the
+    /// widgets, in scene pixels, and whether that frame's marks are any: the
+    /// old carets and chips a frame whose marks moved repaints
+    /// ([`PresenceChange::with_paint`]).
+    presence_painted: Vec<KurboRect>,
+}
+
+/// How what widgets paint from presence changed since the last frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PresenceChange {
+    /// Nothing changed.
+    #[default]
+    None,
+    /// Only the marks widgets paint from their own content moved: where the
+    /// last frame painted them and where this one does is the damage.
+    Marks,
+    /// A change no mark bounds (a peer on a widget, a name, semantic
+    /// activity): the surface repaints.
+    Unbounded,
+}
+
+impl PresenceChange {
+    /// Whether the surface must repaint rather than damage the marks: the
+    /// change is one no mark bounds, or the host draws only this frame's
+    /// damage, so marks its damage leaves out are neither drawn nor noted.
+    const fn unbounded(self, culls: bool) -> bool {
+        matches!(self, Self::Unbounded) || (culls && matches!(self, Self::Marks))
+    }
+
+    /// This frame's paint of those marks, in scene pixels.
+    fn with_paint(self, painted: Vec<KurboRect>) -> PresencePaint {
+        PresencePaint {
+            change: self,
+            painted,
+        }
+    }
+}
+
+/// One frame's presence change and where it painted the marks, in scene
+/// pixels.
+struct PresencePaint {
+    change: PresenceChange,
+    painted: Vec<KurboRect>,
 }
 
 impl Default for SurfaceDamage {
@@ -1774,6 +1830,7 @@ impl Default for SurfaceDamage {
             copy_scale: 1.0,
             peers: None,
             culls: false,
+            presence_painted: Vec::new(),
         }
     }
 }
@@ -1887,33 +1944,50 @@ impl SurfaceDamage {
         self.repainted = Some(why);
     }
 
-    /// Whether what widgets paint from presence changed, or follows their
-    /// content (a peer's caret or selection, fresh typing): either moves
-    /// marks no widget reports.
+    /// How what widgets paint from presence changed: nothing, marks that a
+    /// frame's presence paint bounds (a caret or selection moving, a typing
+    /// mark fading), or a change no mark bounds (a peer on a widget, a name,
+    /// semantic activity), which repaints the surface.
     fn widgets_presence_changed(
         &mut self,
         widgets: tilo_ui_base::presence::WidgetPresence,
-    ) -> bool {
-        let changed = widgets.marks_follow_content() || self.widgets.as_ref() != Some(&widgets);
+    ) -> PresenceChange {
+        let change = match &self.widgets {
+            // Nothing on screen to compare a first frame with.
+            None => PresenceChange::Unbounded,
+            Some(previous) => {
+                if previous == &widgets {
+                    PresenceChange::None
+                } else if widgets.differs_only_in_marks(previous) {
+                    PresenceChange::Marks
+                } else {
+                    PresenceChange::Unbounded
+                }
+            }
+        };
         self.widgets = Some(widgets);
-        changed
+        change
     }
 
     /// Add one drawn frame: repainted whole for the reason `full` gives,
     /// when a layer is painted over the widgets or was last frame, and
     /// otherwise the widget damage `collect` reports (logical, scaled by
     /// `scale` to the scene) with the tooltip where it was and where it is,
-    /// and the copies and damage of the scrolls it planned (in the scene).
+    /// where the last frame and this one painted presence (`presence`, in
+    /// the scene), and the copies and damage of the scrolls it planned.
     fn frame(
         &mut self,
         full: Option<&'static str>,
         drawn: &DrawnFrame,
         scale: f64,
         peers: Option<&PeerFrame>,
+        presence: PresencePaint,
         collect: impl FnOnce(&mut Vec<KurboRect>) -> tilo_ui_base::scroll_copy::CopyPlan,
     ) {
         let layer_shown = std::mem::replace(&mut self.top_layer_drawn, drawn.top_layer.is_some());
         let tooltip_shown = std::mem::replace(&mut self.tooltip, drawn.tooltip);
+        let PresencePaint { change, painted } = presence;
+        let painted = std::mem::replace(&mut self.presence_painted, painted);
         let full = full
             .or(drawn.top_layer)
             .or_else(|| layer_shown.then_some("a layer gone from over the widgets"));
@@ -1927,6 +2001,7 @@ impl SurfaceDamage {
         };
         let mut regions = Vec::new();
         let planned = collect(&mut regions);
+        let content_changed = !regions.is_empty();
         // Planned, carried and kept in the host's device pixels; pending in
         // the scene's.
         let unit = self.copy_scale;
@@ -1935,6 +2010,25 @@ impl SurfaceDamage {
             .into_iter()
             .map(|rect| Affine::scale(scale * unit).transform_rect_bbox(rect))
             .collect();
+        // Carets, selection bands, typing washes and the chips that name
+        // them are painted from the widgets' content and from presence: a
+        // frame whose marks moved, or that changed content they stand on,
+        // repaints where the last frame painted presence and where this one
+        // does, and nothing else.
+        if change == PresenceChange::Marks
+            || (content_changed && !(painted.is_empty() && self.presence_painted.is_empty()))
+        {
+            changed.extend(
+                painted
+                    .iter()
+                    .chain(self.presence_painted.iter())
+                    .map(|rect| {
+                        to_device
+                            .transform_rect_bbox(rect.expand())
+                            .inflate(1.0, 1.0)
+                    }),
+            );
+        }
         // The tooltip paints over the widgets: a label that changes in
         // place has no other damage. Nor do the members' marks.
         let peer_changed = peers
@@ -2068,6 +2162,140 @@ mod tests {
             assert_eq!(
                 changed_boxes(&[(a, header), (child, chip)], &[(a, header), (child, chip)]),
                 Vec::<KurboRect>::new()
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn presence_marks_damage_where_they_were_and_are;
+
+        phase a_caret_moving_is_a_marks_change_and_a_peer_is_not;
+        {
+            let mut damage = SurfaceDamage::default();
+            let mut presence = tilo_ui_base::presence::PresenceCtx::default();
+            let key = tilo_ui_base::presence::PresenceKey::widget(&[
+                tilo_ui_base::presence::PathSegment::Field("title".into()),
+            ])
+            .expect("a widget key");
+            let member = tilo_ui_base::permissions::MemberId::person("ada");
+            let now = crate::time::now();
+            presence.set_caret(&key, member.clone(), 3);
+            // Nothing on screen to compare the first frame with.
+            assert_eq!(
+                damage.widgets_presence_changed(presence.widget_presence(now)),
+                PresenceChange::Unbounded
+            );
+            // The same presence again is nothing to draw.
+            assert_eq!(
+                damage.widgets_presence_changed(presence.widget_presence(now)),
+                PresenceChange::None
+            );
+            // A caret moving is only the marks, wherever it moved to.
+            presence.set_caret(&key, member.clone(), 9);
+            assert_eq!(
+                damage.widgets_presence_changed(presence.widget_presence(now)),
+                PresenceChange::Marks
+            );
+            assert!(!PresenceChange::Marks.unbounded(false));
+            assert!(PresenceChange::Marks.unbounded(true));
+            // A peer standing on a widget is painted from presence no mark
+            // bounds: the surface repaints.
+            presence.here.insert(key, vec![member]);
+            assert_eq!(
+                damage.widgets_presence_changed(presence.widget_presence(now)),
+                PresenceChange::Unbounded
+            );
+        }
+
+        phase a_frame_repaints_where_it_painted_presence_and_where_the_last_one_did;
+        {
+            let window = KurboRect::new(0.0, 0.0, 640.0, 400.0);
+            let drawn = DrawnFrame {
+                transform: Affine::IDENTITY,
+                window_rect: window,
+                draw_us: 0,
+                top_layer: None,
+                tooltip: None,
+                painted_over: false,
+            };
+            // Where a caret and its chip stood, and where they stand now.
+            let was = KurboRect::new(40.0, 40.0, 41.0, 56.0);
+            let is = KurboRect::new(88.0, 40.0, 89.0, 56.0);
+            let covers = |damage: &mut SurfaceDamage, mark: KurboRect| {
+                let taken = damage.take().expect("the frame could be described");
+                assert!(
+                    taken.iter().any(|rect| rect.contains(mark.center())),
+                    "{mark:?} is not repainted: {taken:?}"
+                );
+                let other = if mark == was { is } else { was };
+                assert!(
+                    !taken.iter().any(|rect| {
+                        rect.contains(KurboRect::new(other.x0, 0.0, other.x0, 1.0).center())
+                    }),
+                    "{other:?} is repainted before it was painted: {taken:?}"
+                );
+            };
+            let mut damage = SurfaceDamage::default();
+            let _ = damage.take();
+            // The frame that first paints the caret repaints it.
+            let first = PresenceChange::Marks.with_paint(vec![was]);
+            damage.frame(None, &drawn, 1.0, None, first, |_| {
+                tilo_ui_base::scroll_copy::CopyPlan::default()
+            });
+            covers(&mut damage, was);
+            // The caret moved: where it was and where it is, and no further.
+            let moved = PresenceChange::Marks.with_paint(vec![is]);
+            damage.frame(None, &drawn, 1.0, None, moved, |_| {
+                tilo_ui_base::scroll_copy::CopyPlan::default()
+            });
+            let taken = damage.take().expect("the frame could be described");
+            for mark in [was, is] {
+                assert!(
+                    taken.iter().any(|rect| rect.contains(mark.center())),
+                    "{mark:?} is not repainted: {taken:?}"
+                );
+            }
+            assert!(
+                taken.iter().all(|rect| rect.width() < window.width() / 4.0),
+                "a caret repainted half the window: {taken:?}"
+            );
+        }
+
+        phase content_changing_under_marks_repaints_the_marks_too;
+        {
+            let window = KurboRect::new(0.0, 0.0, 640.0, 400.0);
+            let drawn = DrawnFrame {
+                transform: Affine::IDENTITY,
+                window_rect: window,
+                draw_us: 0,
+                top_layer: None,
+                tooltip: None,
+                painted_over: false,
+            };
+            let mark = KurboRect::new(40.0, 40.0, 41.0, 56.0);
+            let typed = KurboRect::new(40.0, 40.0, 160.0, 72.0);
+            let mut damage = SurfaceDamage::default();
+            let _ = damage.take();
+            let presence = PresenceChange::Marks.with_paint(vec![mark]);
+            damage.frame(None, &drawn, 1.0, None, presence, |_| {
+                tilo_ui_base::scroll_copy::CopyPlan::default()
+            });
+            let _ = damage.take();
+            // The presence is the same; a widget typed under the mark, which
+            // moves it without presence changing.
+            let same = PresenceChange::None.with_paint(vec![mark]);
+            damage.frame(None, &drawn, 1.0, None, same, |regions| {
+                regions.push(typed);
+                tilo_ui_base::scroll_copy::CopyPlan::default()
+            });
+            let taken = damage.take().expect("the frame could be described");
+            assert!(
+                taken.iter().any(|rect| rect.contains(mark.center())),
+                "the mark under the edit is not repainted: {taken:?}"
+            );
+            assert!(
+                taken.iter().any(|rect| rect.contains(typed.center())),
+                "the edit is not repainted: {taken:?}"
             );
         }
     }

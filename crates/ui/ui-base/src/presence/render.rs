@@ -130,21 +130,27 @@ impl PresenceCtx {
             selection: false,
             saying: None,
         });
+        let mut painted = rect;
         if !user.is_person() {
+            let badge = Rect::new(
+                rect.center().x - 4.5,
+                rect.y0 - 7.5,
+                rect.center().x + 4.5,
+                rect.y0 + 1.5,
+            );
             draw_agent_identity_mark(
                 scene,
                 transform,
-                Rect::new(
-                    rect.center().x - 4.5,
-                    rect.y0 - 7.5,
-                    rect.center().x + 4.5,
-                    rect.y0 + 1.5,
-                ),
+                badge,
                 color,
                 theme,
                 AgentIdentityStyle::Solid,
             );
+            painted = painted.union(badge);
         }
+        // Where it was painted, for the frame that repaints only what presence
+        // moved (`PresenceCtx::presence_paint`).
+        self.note_presence_paint(transform.transform_rect_bbox(painted));
     }
 
     pub fn draw_peer_selection(
@@ -165,6 +171,7 @@ impl PresenceCtx {
             selection: true,
             saying: None,
         });
+        self.note_presence_paint(transform.transform_rect_bbox(rect));
     }
 
     /// Draw a soft "indicative mist" glow over `rect` in the peer's colour —
@@ -245,6 +252,7 @@ impl PresenceCtx {
             selection: false,
             saying: None,
         });
+        self.note_presence_paint(transform.transform_rect_bbox(caret_rect.union(chip_rect)));
     }
 
     /// [`Self::draw_peer_caret_labeled_in`] for the caret of an action writing
@@ -316,6 +324,8 @@ impl PresenceCtx {
             &shape,
         );
         scene.stroke(&Stroke::new(2.0), transform, color, None, &shape);
+        // The stroke stands half outside the object's own box.
+        self.note_presence_paint(transform.transform_rect_bbox(rect.inflate(2.0, 2.0)));
     }
 
     /// [`Self::draw_peer_outline`] with the peer's name chipped above the
@@ -474,6 +484,7 @@ impl PresenceCtx {
             // still drops on schedule — only the animation is removed.
             let fade = if theme.reduce_motion { 1.0 } else { *alpha };
             self.draw_wash(scene, theme, user, *rect, fade);
+            self.note_presence_paint(*rect);
         }
     }
 
@@ -501,6 +512,7 @@ impl PresenceCtx {
         let color = color_for(self, user, theme);
         let strip = Rect::new(rect.x0 - 4.0, rect.y0, rect.x0 - 1.0, rect.y1);
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &strip);
+        self.note_presence_paint(strip);
     }
 }
 

@@ -491,6 +491,11 @@ pub struct PresenceCtx {
     /// coordinates, and what the words drawn with it say of them. What a
     /// reader is told of a peer writing in text ([`Self::mark_words`]).
     presence_marks: std::cell::RefCell<Vec<PresenceMark>>,
+    /// Everywhere this frame painted presence over or inside a widget — carets,
+    /// selection bands, typing washes, focus strips, outlines and their name
+    /// chips — in scene coordinates: [`Self::presence_paint`]. It is the
+    /// damage a presence change that only moves widgets' marks can name.
+    presence_paint: std::cell::RefCell<Vec<vello::kurbo::Rect>>,
     /// The authority the subtree being drawn holds, scoped by whoever hands
     /// it one (a host, a bound component) through [`Self::with_permissions`]
     /// and read by guarded widgets through [`Self::permits`]. `None` checks
@@ -667,6 +672,29 @@ impl PresenceCtx {
 
     pub fn note_presence_mark(&self, mark: PresenceMark) {
         self.presence_marks.borrow_mut().push(mark);
+    }
+
+    /// Forget where the presence drawn over and inside widgets was painted so far: a host calls
+    /// it before a frame that draws its widgets again.
+    pub fn clear_presence_paint(&self) {
+        self.presence_paint.borrow_mut().clear();
+    }
+
+    /// Where the frame drawn since [`Self::clear_presence_paint`] painted what presence places
+    /// over and inside widgets, in scene coordinates: carets, selection bands, typing washes,
+    /// focus strips, outlines and the chips that name them.
+    ///
+    /// A frame keeps the last one's and damages both, so a keystroke that moves a caret repaints
+    /// where the caret was and where it is, never the window.
+    pub fn presence_paint(&self) -> Vec<vello::kurbo::Rect> {
+        self.presence_paint.borrow().clone()
+    }
+
+    /// Note what presence just painted where `rect` says, in scene coordinates.
+    pub fn note_presence_paint(&self, rect: vello::kurbo::Rect) {
+        if rect.width() > 0.0 && rect.height() > 0.0 {
+            self.presence_paint.borrow_mut().push(rect);
+        }
     }
 
     /// Where the notes of the frame being drawn end now: a widget that keeps a drawing of its own

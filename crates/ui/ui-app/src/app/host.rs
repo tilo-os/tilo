@@ -166,6 +166,7 @@ fn draw_frame_content_owning(
     // step there was taken for wearing its tag already and drew none.
     app.presence_ctx.clear_caret_tags();
     app.presence_ctx.clear_presence_marks();
+    app.presence_ctx.clear_presence_paint();
     if app_live {
         // What stands over the widgets and takes the keys (an open menu, a
         // dialog, the send box) holds the keyboard: the field under it keeps
