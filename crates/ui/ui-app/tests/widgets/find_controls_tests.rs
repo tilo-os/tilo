@@ -258,16 +258,33 @@ fn the_open_field_holds_the_keyboard() {
     );
 }
 
-/// With nothing to step to, the stepper and the replacement do not run; with matches, both do.
+/// With nothing to step to, the stepper and the replacement read as unavailable and run nothing;
+/// with matches, both stand ready.
 #[test]
 fn nothing_to_step_to_disables_the_stepper() {
+    let disabled = |harness: &Driver, named: &str| {
+        let id = harness
+            .a11y_node_named(named)
+            .unwrap_or_else(|| panic!("the bar shows {named:?}"));
+        harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(node, _)| *node == id)
+            .is_some_and(|(_, node)| node.is_disabled())
+    };
     let (mut harness, queue) = controls(900, |props| {
         props.replaces = true;
         props.replacing = true;
         props.current = Some(0);
         props.total = Some(0);
     });
-    // The control stands where it always does, and pressing it runs nothing.
+    for part in ["Next match", "Previous match", "Replace"] {
+        assert!(
+            disabled(&harness, part),
+            "with nothing found, {part:?} reads as unavailable"
+        );
+    }
+    // Each control stands where it always does, and pressing it runs nothing.
     harness
         .click_named("find.next")
         .expect("the stepper stands");
@@ -279,6 +296,12 @@ fn nothing_to_step_to_disables_the_stepper() {
         props.replaces = true;
         props.replacing = true;
     });
+    for part in ["Next match", "Previous match", "Replace"] {
+        assert!(
+            !disabled(&harness, part),
+            "with matches, {part:?} stands ready"
+        );
+    }
     harness
         .click_named("find.next")
         .expect("a match to step to");

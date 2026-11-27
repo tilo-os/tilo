@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
         assert_eq!(given(bar.props.get("regex")), Some(&Value::Bool(true)));
         assert_eq!(
             given(bar.props.get("match_case")),
-            Some(&Value::Bool(false)),
+            Some(&Value::Bool(true)),
             "the app runs its find as the person last left it"
         );
     }
