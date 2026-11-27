@@ -521,6 +521,53 @@ fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_there() {
     });
 }
 
+/// Someone the workspace lets read and nothing more opens its desktop page and presses a window's
+/// Close: the layout's close runs in their page's run as them, decided on what the workspace
+/// grants them, so the window stays, though the computer serving the page could close it. The
+/// person, whose workspace it is, closes it with the same press.
+#[test]
+fn a_press_on_the_desktop_page_changes_only_what_its_person_may() {
+    host::run_with(&["shell", "tasks"], |host| async move {
+        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
+        let computer = Computer::of(&daemon, &workspace);
+        computer.open_first(host.person(), (TASKS, "Tasks")).await;
+
+        let viewer = host
+            .other_browser(
+                "Bo's browser",
+                &workspace,
+                tilo_peer_state::join::Role::Viewer,
+            )
+            .await;
+        let theirs = Page::of(&daemon, &workspace, &viewer).await;
+        let shown = theirs
+            .until("the viewer's page shows the window", |html| {
+                button_in_window(html, "Tasks", "Close").is_some()
+            })
+            .await;
+        let close = button_in_window(&shown, "Tasks", "Close").unwrap();
+        theirs.act(Some((close, PageAction::Activate))).await;
+        theirs.act(None).await;
+        assert_eq!(
+            computer.window_apps().await,
+            [TASKS],
+            "a viewer's press closes nothing"
+        );
+        theirs.close();
+
+        let page = Page::of(&daemon, &workspace, &browser(&host)).await;
+        let shown = page
+            .until("the person's page shows the window", |html| {
+                button_in_window(html, "Tasks", "Close").is_some()
+            })
+            .await;
+        let close = button_in_window(&shown, "Tasks", "Close").unwrap();
+        page.act(Some((close, PageAction::Activate))).await;
+        computer.shows(&[]).await;
+        page.close();
+    });
+}
+
 /// The person's agent shows Tasks: the view stands on their layout through the layout's own
 /// `place`, and the desktop page their browser opens shows its window, Tasks' own page in the
 /// well.

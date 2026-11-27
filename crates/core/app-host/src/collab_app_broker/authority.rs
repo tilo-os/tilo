@@ -214,11 +214,82 @@ impl AppBrokerState {
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
     ) -> Result<AdmittedJoinIdentity, BrokerError> {
+        // A restriction the admission was given beside its certificate's own (a key that is not
+        // this device) is kept: the certificate read again never lifts it.
+        let verified = match &admitted.certificate {
+            Some(cert) => VerifiedJoinIdentity::of(
+                cert,
+                cert.capabilities.foreign || admitted.verified.capped,
+            ),
+            None => admitted.verified.clone(),
+        };
+        let certificate = admitted
+            .certificate
+            .as_ref()
+            .map(|cert| (cert, admitted.link_verified));
+        self.admit_verified(route, certificate, verified, |current| {
+            current
+                .worker_registration
+                .clone_from(&admitted.worker_registration);
+            if let Some(agent_id) = &admitted.agent_id {
+                let roster = self
+                    .services
+                    .agents
+                    .as_deref()
+                    .ok_or("this host reads no workspace's agents")?;
+                admit_listed_agent(roster, &route.cluster_id, current, agent_id).map_err(
+                    |error| format!("certified agent session is no longer admitted: {error}"),
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The member whose key `certificate` certifies, as the link that carries its calls verified
+    /// it, in `route`'s workspace now, its certificate's restriction raised by `capped`: what a
+    /// run of that key carries as its original caller ([`Self::certified_key_run`]).
+    pub(super) fn admit_certificate(
+        &self,
+        route: &CrdtRoute,
+        certificate: &tilo_user_identity::DeviceCert,
+        capped: bool,
+    ) -> Result<AdmittedJoinIdentity, BrokerError> {
+        let verified =
+            VerifiedJoinIdentity::of(certificate, certificate.capabilities.foreign || capped);
+        self.admit_verified(route, Some((certificate, true)), verified, |_| Ok(()))
+    }
+
+    /// `verified` admitted to `route`'s workspace now, `certificate` checked current first, and
+    /// `then` applied on the same sample of the workspace. A certificate a link verified
+    /// (`(certificate, true)`) names a key, not a device the workspace enrolled: it is checked
+    /// current and unrevoked, and its person's place in the workspace decides; any other is
+    /// checked as an enrolled device by the host's certificate authority.
+    fn admit_verified(
+        &self,
+        route: &CrdtRoute,
+        certificate: Option<(&tilo_user_identity::DeviceCert, bool)>,
+        verified: VerifiedJoinIdentity,
+        then: impl FnOnce(&mut AdmittedJoinIdentity) -> Result<(), String>,
+    ) -> Result<AdmittedJoinIdentity, BrokerError> {
         let now = self.policy_now_ns().map_err(BrokerError::failed)?;
-        if let Some(cert) = &admitted.certificate {
+        if let Some((cert, link_verified)) = certificate {
             tilo_user_identity::verify_device_cert_at(cert, now)
                 .map_err(|_| BrokerError::failed("certificate no longer valid".into()))?;
-            if let Some(authority) = self.certificate_authority.get() {
+            if link_verified {
+                let revoked = self
+                    .membership
+                    .as_ref()
+                    .and_then(|membership| membership.workspace_revocations(&route.cluster_id))
+                    .ok_or_else(|| {
+                        BrokerError::failed(
+                            "this device holds no revocations of the workspace".into(),
+                        )
+                    })?
+                    .is_revoked(&cert.user_public_key, &cert.device_public_key);
+                if revoked {
+                    return Err(BrokerError::failed("the key was revoked".into()));
+                }
+            } else if let Some(authority) = self.certificate_authority.get() {
                 let workspace = uuid::Uuid::parse_str(&route.cluster_id)
                     .map_err(|_| BrokerError::failed("invalid exact workspace".into()))?;
                 authority
@@ -231,11 +302,6 @@ impl AppBrokerState {
         })?;
         // The certificate was checked above; its connection ceiling must also
         // reflect current governance, not just governance at the original join.
-        let verified = match &admitted.certificate {
-            Some(cert) => VerifiedJoinIdentity::of(cert, cert.capabilities.foreign),
-            None => admitted.verified.clone(),
-        };
-        let agents = self.services.agents.as_deref();
         // The person and any delegated agent are revalidated on one sample.
         membership
             .decide_in_workspace(&route.cluster_id, |workspace| {
@@ -246,16 +312,9 @@ impl AppBrokerState {
                                 "certified collaboration session is no longer admitted: {error}"
                             )
                         })?;
-                current.certificate.clone_from(&admitted.certificate);
-                current
-                    .worker_registration
-                    .clone_from(&admitted.worker_registration);
-                if let Some(agent_id) = &admitted.agent_id {
-                    let roster = agents.ok_or("this host reads no workspace's agents")?;
-                    admit_listed_agent(roster, &route.cluster_id, &mut current, agent_id).map_err(
-                        |error| format!("certified agent session is no longer admitted: {error}"),
-                    )?;
-                }
+                current.certificate = certificate.map(|(cert, _)| cert.clone());
+                current.link_verified = certificate.is_some_and(|(_, link)| link);
+                then(&mut current)?;
                 Ok::<_, String>(current)
             })
             .and_then(std::convert::identity)

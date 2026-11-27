@@ -173,18 +173,26 @@ impl crate::key_sessions::Sessions for KeptRuns {
 
 /// The run of `key`, `whose` it is, in `workspace` through `provider`: a key of the person's as
 /// an agent of `actor`'s named after the key, a member's device as that member.
-fn key_run(
+///
+/// The key's agent is named as the workspace lists every agent of its person's devices
+/// ([`tilo_actions::remote::device_agent_id`]): the run is admitted as the agent the record
+/// keeps, never as one it has no entry for.
+pub(super) fn key_run(
     provider: &RuntimeActionProvider,
     workspace: &str,
     (key, whose): (&DeviceCert, Whose),
     (actor, policy_time): (&str, &tilo_app_host::policy_clock::PolicyTime),
 ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
+    let name = match key.device_label.trim() {
+        "" => "agent",
+        label => label,
+    };
     let (run, caller) = match whose {
         Whose::Own => provider
-            .agent_session(workspace, actor, policy_time, |_| {
+            .agent_session(workspace, actor, policy_time, |person| {
                 (
-                    tilo_mcp::devices::agent_id("agent", key),
-                    key.device_label.clone(),
+                    tilo_actions::remote::device_agent_id(person, name),
+                    name.to_owned(),
                 )
             })
             .map(|(run, caller, _, _)| (run, caller)),

@@ -615,6 +615,19 @@ impl AppActionBroker {
         self.state.certified_agent_run(caller, presentation, agent)
     }
 
+    /// The calls of the person whose key `certificate` certifies, as a link verified it: a run
+    /// of that member's, its host actions owned by them and decided on their grants
+    /// ([`AppBrokerState::certified_key_run`]). No device is enrolled and no grant is minted.
+    ///
+    /// [`AppBrokerState::certified_key_run`]: crate::collab_app_broker::AppBrokerState::certified_key_run
+    pub fn certified_key_run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>, String> {
+        self.state.certified_key_run(caller, certificate)
+    }
+
     /// Reuse the checked signed personal-cluster admission for native owner checks.
     pub fn certified_person_context(
         &self,

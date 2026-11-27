@@ -78,6 +78,11 @@ pub(crate) struct AdmittedJoinIdentity {
     /// MCP client): it carries the delegation a device gives its agents,
     /// not grants the workspace holds for it.
     pub(super) session_delegated: bool,
+    /// Admitted on the certificate the link that carries the calls verified (a key's run, a
+    /// page's), not on a device the workspace enrolled: revalidated as that certificate, current
+    /// and its person's root's, and that person's place in the workspace, never as an enrolled
+    /// device.
+    pub(super) link_verified: bool,
 }
 
 impl AdmittedJoinIdentity {
@@ -259,6 +264,7 @@ pub(super) fn admit_verified_join_at(
             role,
             agent_id: None,
             session_delegated: false,
+            link_verified: false,
         });
     }
     let workspace = workspace
@@ -280,6 +286,7 @@ pub(super) fn admit_verified_join_at(
         role,
         agent_id: None,
         session_delegated: false,
+        link_verified: false,
     })
 }
 

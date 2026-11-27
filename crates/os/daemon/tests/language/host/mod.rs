@@ -918,6 +918,35 @@ impl Host {
     /// shared with other people has among its members. Answered with their person's root, by
     /// which the owner names them.
     pub async fn other_person(&self, label: &str, workspace: &str) -> (Member, [u8; 32]) {
+        let (key, cert) = self
+            .other_person_as(label, workspace, tilo_peer_state::join::Role::Editor)
+            .await;
+        (self.dial(key, workspace).await, cert.user_public_key)
+    }
+
+    /// The browser of another person than this computer's, `label`, whom the workspace's owner
+    /// added to `workspace` as `role`, as a page's link verified it: the caller the link takes it
+    /// as, and the certificate it proved.
+    pub async fn other_browser(
+        &self,
+        label: &str,
+        workspace: &str,
+        role: tilo_peer_state::join::Role,
+    ) -> (Caller, DeviceCert) {
+        let (_, cert) = self.other_person_as(label, workspace, role).await;
+        let caller =
+            tilo_workspace_service::service::local_caller(&cert).in_workspace(workspace.to_owned());
+        (caller, cert)
+    }
+
+    /// A device of another person than this computer's, `label`, whom the workspace's owner added
+    /// to `workspace` as `role`, the device listed there: its key and certificate.
+    async fn other_person_as(
+        &self,
+        label: &str,
+        workspace: &str,
+        role: tilo_peer_state::join::Role,
+    ) -> (SigningKey, DeviceCert) {
         use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
 
         let (root, user) = tilo_user_identity::UserIdentity::generate(label, 1);
@@ -947,7 +976,7 @@ impl Host {
                 AddMemberRequest {
                     request_id: *blake3::hash(&user.public_key).as_bytes(),
                     user_public_key: user.public_key,
-                    place: MemberPlace::Role(tilo_peer_state::join::Role::Editor),
+                    place: MemberPlace::Role(role),
                     name: Some(label.to_owned()),
                 },
             )
@@ -957,7 +986,7 @@ impl Host {
             .enter(workspace, (&cert, &key))
             .await
             .expect("their device lists itself");
-        (self.dial(key, workspace).await, user.public_key)
+        (key, cert)
     }
 
     /// The workspace's owner removes the person `user` from `workspace`, and every device of

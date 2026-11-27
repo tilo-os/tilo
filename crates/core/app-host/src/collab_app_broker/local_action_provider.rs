@@ -270,6 +270,50 @@ impl AppBrokerState {
         )))
     }
 
+    /// The calls of the person whose key `certificate` certifies, as the link that carries them
+    /// verified it: a run of that member's in `caller`'s workspace, carrying them and the
+    /// certificate as its origin, so a host action it reaches is owned by that member on that
+    /// key and decided on their grants, capped as `caller` is. This host's own identity never
+    /// stands in for them. The certificate and the member's place in the workspace are checked
+    /// again on every revalidation; no device is enrolled and no grant is minted.
+    ///
+    /// # Errors
+    /// `caller` is not the person the certificate names on its key, or the workspace does not
+    /// admit them now.
+    pub fn certified_key_run(
+        self: &Arc<Self>,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<Arc<dyn ActionProvider + Send + Sync>, String> {
+        let workspace = caller
+            .workspace()
+            .ok_or("an exact admitted workspace is required")?;
+        let person = super::person_id_for_root(certificate.user_public_key);
+        if caller.acting().person_id() != Some(person.as_str())
+            || caller.user_public_key() != Some(&certificate.user_public_key)
+            || caller.device_public_key() != Some(&certificate.device_public_key)
+        {
+            return Err("caller is not the person its link verified".into());
+        }
+        let time = self
+            .registered_policy_time()?
+            .ok_or("original policy clock unavailable")?;
+        let route = super::CrdtRoute::cluster(workspace);
+        let admitted = self
+            .admit_certificate(&route, certificate, caller.is_foreign_device())
+            .map_err(|error| error.to_string())?;
+        let origin = InvocationCaller::Local {
+            route,
+            admitted: Box::new(admitted),
+            time: Some(time),
+            pressed: false,
+        };
+        Ok(Arc::new(super::action_provider::BrokerApi::for_run(
+            Arc::clone(self),
+            Some(origin),
+        )))
+    }
+
     /// Preserve native physical intent without dropping the signed session.
     /// Network, app and delegated-MCP servers never select this entrypoint.
     #[allow(

@@ -6619,6 +6619,17 @@ impl RuntimeActionProvider {
             block_on_owned(async move { copies.admit_key(&named, &cert, Vec::new()).await })
                 .map_err(io::Error::other)?;
         let caller = admission.caller().clone();
+        // A member is the run's original caller, with the certificate their link verified as
+        // its evidence: what a host action the run reaches is owned by and decided as, never
+        // this device. An agent's grant has no such evidence of a person, so what it reaches
+        // that needs one is refused.
+        let provider = if caller.acting().is_person() {
+            self.broker
+                .certified_key_run(&caller, key)
+                .map_err(io::Error::other)?
+        } else {
+            self.broker.device_host()
+        };
         let run = Self {
             broker: self.broker.clone(),
             workspace: self.workspace.clone(),
@@ -6626,7 +6637,7 @@ impl RuntimeActionProvider {
             apps: self.apps.clone(),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: policy_time.clone(),
-                provider: self.broker.device_host(),
+                provider,
                 admission,
                 agent: None,
                 projection: None,

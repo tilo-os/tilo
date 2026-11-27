@@ -507,6 +507,7 @@ impl LocalDirectoryFixture {
                     role: CapRole::Editor,
                     agent_id: None,
                     session_delegated: false,
+                    link_verified: false,
                 }
             }),
             resource_type: None,

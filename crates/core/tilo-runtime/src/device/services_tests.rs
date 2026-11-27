@@ -3721,6 +3721,66 @@ fn a_runtimes_endpoint_relays_as_the_server_it_logged_in_to() {
     assert!(n0_dns);
 }
 
+const OWN_KEY_AGENT_TEST: &str =
+    "device::services::tests::an_own_keys_run_is_the_agent_its_workspace_lists";
+
+/// A key of the person's that reaches this computer runs as an agent of theirs named after the
+/// key: the workspace lists that agent as it lists every agent of its person's devices, the run
+/// is admitted as it, and its calls are answered.
+#[test]
+fn an_own_keys_run_is_the_agent_its_workspace_lists() {
+    use tilo_actions::remote::{ActionProvider as _, CatalogueQuery};
+
+    let Some(root) = isolated_root(OWN_KEY_AGENT_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let dir = super::this_accounts_root_dir().unwrap();
+    let record = tilo_identity::store::resolve_active_identity(&dir).unwrap();
+    let identity = tilo_identity::store::load_from_path(record).unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[0x4b; 32]);
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: identity.group_public_key(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Ada's backend".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::AllWorkspaces,
+        ),
+        issued_at_ns: now.saturating_sub(60_000_000_000),
+        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &identity).unwrap();
+    let time = daemon.policy_origin.capture().unwrap();
+
+    let (run, caller) = super::super::host_runs::key_run(
+        &daemon.provider_for(&workspace).unwrap(),
+        &workspace,
+        (&cert, crate::personal_devices::Whose::Own),
+        (&daemon.actor, &time),
+    )
+    .expect("the key's run is admitted as its agent");
+    let agent = tilo_actions::remote::device_agent_id(&cert.user_public_key, "Ada's backend");
+    let listed = tilo_rt::app()
+        .handle()
+        .block_on(daemon.workspaces.copies().agent_name(&workspace, &agent));
+    assert_eq!(
+        listed.as_deref(),
+        Some("Ada's backend"),
+        "the workspace lists the key's agent by the id its person's devices name it by"
+    );
+    let page = run
+        .query(&caller, CatalogueQuery::default())
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the run answers");
+    assert!(page.is_ok(), "the agent's run lists: {page:?}");
+}
+
 const SHELL_AGENT_TEST: &str =
     "device::services::tests::an_agent_the_shell_names_lists_in_a_run_of_its_own";
 
