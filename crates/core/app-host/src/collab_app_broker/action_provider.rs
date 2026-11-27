@@ -278,6 +278,11 @@ impl tilo_actions::remote::ActionProvider for BrokerApi {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        // A shortcut's run takes the steps this device offers: its saved steps were held to that
+        // catalogue, and a step that reaches this device alone is still one this device runs.
+        if matches!(self.origin, Some(super::InvocationCaller::Shortcut(_))) {
+            return self.state.action_query_on_device(caller, &query);
+        }
         self.state.action_query(caller, &query)
     }
 
@@ -350,7 +355,7 @@ impl tilo_actions::remote::ActionProvider for AppCalls {
         let Some(state) = self.state.upgrade() else {
             return Pending::ready(Err(Self::unavailable()));
         };
-        state.query_here(caller, None, &query, false)
+        state.query_here(caller, None, &query, false, false)
     }
 
     fn invoke(
@@ -1234,7 +1239,20 @@ impl AppBrokerState {
         caller: &Caller,
         scope: RowScope<'_>,
     ) -> (Vec<CatalogueRow>, Vec<CatalogueProvider>) {
-        self.eager_catalogue_with_origin(caller, None, scope)
+        self.eager_catalogue_with_origin(caller, None, scope, false)
+    }
+
+    /// [`Self::eager_catalogue`] for a caller that acts on this device whatever path brought the
+    /// call: the shortcut library, whose saves are shortcuts this device runs. A call from the
+    /// person's own shell carries this device's key, which alone does not say the call is local
+    /// ([`super::provided::is_local_host_caller`]); a shortcut save is, because the daemon that
+    /// saves it is the one that will run it, so its steps are held to what this device offers.
+    pub(super) fn device_catalogue(
+        &self,
+        caller: &Caller,
+        scope: RowScope<'_>,
+    ) -> (Vec<CatalogueRow>, Vec<CatalogueProvider>) {
+        self.eager_catalogue_with_origin(caller, None, scope, true)
     }
 
     #[expect(
@@ -1246,6 +1264,7 @@ impl AppBrokerState {
         caller: &Caller,
         origin: Option<&super::InvocationCaller>,
         scope: RowScope<'_>,
+        on_this_device: bool,
     ) -> (Vec<CatalogueRow>, Vec<CatalogueProvider>) {
         // Retained surfaces of closed apps are the launchable catalogue's,
         // and only the providers whose rows are built need their actions.
@@ -1267,7 +1286,7 @@ impl AppBrokerState {
         // alone does not establish that this is a local rather than remote api.
         // A provider reaching this device alone is offered only to its own processes, and one
         // only they ask for is taken, never offered.
-        let local = super::provided::is_local_host_caller(caller, origin);
+        let local = on_this_device || super::provided::is_local_host_caller(caller, origin);
         let registered: Vec<_> = self
             .services
             .providers
@@ -1813,7 +1832,18 @@ impl AppBrokerState {
         origin: Option<&super::InvocationCaller>,
         query: &CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        self.query_here(caller, origin, query, true)
+        self.query_here(caller, origin, query, true, false)
+    }
+
+    /// [`Self::action_query`] for a caller acting on this device whatever path brought the call:
+    /// a shortcut's run, whose steps are the actions this device offers, the ones that reach this
+    /// device alone among them.
+    fn action_query_on_device(
+        self: &Arc<Self>,
+        caller: &Caller,
+        query: &CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        self.query_here(caller, None, query, true, true)
     }
 
     /// [`Self::action_query_with_origin`]; a provider the device's registry names is asked
@@ -1825,6 +1855,7 @@ impl AppBrokerState {
         origin: Option<&super::InvocationCaller>,
         query: &CatalogueQuery,
         registered: bool,
+        on_this_device: bool,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
@@ -1890,7 +1921,8 @@ impl AppBrokerState {
             return self.query_directory(caller, &root, query);
         }
         let scope = RowScope::asked(query);
-        let (rows, providers) = self.eager_catalogue_with_origin(caller, origin, scope);
+        let (rows, providers) =
+            self.eager_catalogue_with_origin(caller, origin, scope, on_this_device);
         // Nothing at all may mean the workspace holds nothing, or that this
         // agent cannot reach it: only the first is an empty page.
         if rows.is_empty()

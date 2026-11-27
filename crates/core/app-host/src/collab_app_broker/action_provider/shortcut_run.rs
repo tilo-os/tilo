@@ -52,7 +52,7 @@ impl AppBrokerState {
         // call waits in its asked record, and their approve brings it back to run.
         let asking = tilo_automation::asks_before_running(
             &shortcut,
-            &tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0),
+            &tilo_automation::ActionCatalog::new(self.device_catalogue(caller, RowScope::All).0),
             Some(workspace),
         );
         if !asking.is_empty() {
@@ -265,7 +265,7 @@ impl AppBrokerState {
             });
         }
         let catalog =
-            tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0);
+            tilo_automation::ActionCatalog::new(self.device_catalogue(caller, RowScope::All).0);
         let others = self
             .decide_for(caller, workspace, |workspace, _, _| {
                 tilo_automation::decode_saved(&workspace.shortcuts)

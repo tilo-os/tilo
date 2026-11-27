@@ -381,7 +381,7 @@ impl AppBrokerState {
         let operation = crate::automation::decode_library(&request.target.address.action, argument)
             .map_err(|reason| ActionCallError::InvalidRequest { reason })?;
         let catalog = tilo_automation::ActionCatalog::new(
-            self.eager_catalogue(caller, super::action_provider::RowScope::All)
+            self.device_catalogue(caller, super::action_provider::RowScope::All)
                 .0,
         );
         let keymap = library.keymap();
@@ -418,7 +418,7 @@ impl AppBrokerState {
                 crate::automation::decode_library(&request.target.address.action, argument)
                     .map_err(|reason| ActionCallError::InvalidRequest { reason })?;
             let catalog = tilo_automation::ActionCatalog::new(
-                self.eager_catalogue(caller, super::action_provider::RowScope::All)
+                self.device_catalogue(caller, super::action_provider::RowScope::All)
                     .0,
             );
             let keymap = library.keymap();

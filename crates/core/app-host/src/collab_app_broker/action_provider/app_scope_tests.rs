@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueQuery, CatalogueRow, MAX_CATALOGUE_PAGE,
-    PendingPoll, workspace_provider,
+    Pending, PendingPoll, workspace_provider,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind,
@@ -653,4 +653,100 @@ async fn a_numeric_directory_answers_its_own_apps_query() {
             drop(fixture);
         })
         .await;
+}
+
+/// A step provider registered for turns: the session's own actions, which a
+/// person's shortcut may run on this device.
+#[derive(Default)]
+struct TurnStep;
+
+impl tilo_actions::remote::Admits for TurnStep {
+    const PROVIDER: &'static str = tilo_actions::remote::session_actions::PROVIDER;
+    const APP: &'static str = tilo_actions::remote::session_actions::PROVIDER;
+
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        tilo_actions::remote::admitted::top_level(vec![ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: ActionAddress::new("desktop:chrome", "new-strip"),
+            resource_kind: "desktop".into(),
+            resource_label: "The shell".into(),
+            action_label: "New strip".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: ExecutionLocus::default(),
+            kind: OperationKind::Effect,
+            contract: tilo_actions::ActionContract {
+                kind: tilo_actions::ActionKind::Outside,
+                ..tilo_actions::ActionContract::default()
+            },
+            input: InputSpec::None,
+            params: vec![tilo_actions::params::ActionParam::optional(
+                "name",
+                tilo_actions::params::ParamType::Text,
+                "What to call the strip",
+            )],
+            view: None,
+        }])
+    }
+
+    fn start(
+        &self,
+        _caller: &Caller,
+        _request: &tilo_actions::remote::InvokeRequest,
+        _admitted: &tilo_actions::remote::Admitted,
+    ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::Outcome>, String> {
+        Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
+    }
+}
+
+/// A shortcut saved from this device's own shell runs here, so its steps are held
+/// to what this device offers: a step only turns reach is offered to a caller from
+/// the shell, whose device key alone does not say the call is local, where a
+/// shortcut save lists this device's providers.
+#[tokio::test(flavor = "current_thread")]
+async fn a_shortcut_saves_a_step_only_this_device_offers() {
+    let user = [51; 32];
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(91), "Shortcut saves");
+    workspace.policy.set_owner(hex::encode(user));
+    let workspace_id = workspace.id().to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.workspaces.push(workspace);
+    let providers = tilo_workspace_service::workspaces::providers::Providers::default();
+    providers.provide(
+        tilo_actions::remote::session_actions::PROVIDER,
+        tilo_actions::remote::session_actions::PROVIDER,
+        tilo_workspace_service::workspaces::providers::Reach::Turns,
+        Arc::new(TurnStep) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    );
+    let (state, _bridge_rx) = AppBrokerState::test_state(
+        Some(tree.shared().authority()),
+        ProcessServices {
+            providers: Some(providers),
+            ..Default::default()
+        },
+    );
+    // The person's own shell: the device's key, and no app or turn origin.
+    let caller = Caller::authenticated(user, [52; 32]).in_workspace(workspace_id);
+    let offers_strip = |rows: Vec<CatalogueRow>| {
+        rows.iter().any(|row| {
+            row.app_id == tilo_actions::remote::session_actions::PROVIDER
+                && row
+                    .action
+                    .as_ref()
+                    .is_some_and(|action| action.address.action == "new-strip")
+        })
+    };
+    let (listed, _) = state.eager_catalogue(&caller, super::RowScope::All);
+    assert!(
+        !offers_strip(listed),
+        "a call carrying a device key alone lists no turn step"
+    );
+    let (listed, _) = state.device_catalogue(&caller, super::RowScope::All);
+    assert!(
+        offers_strip(listed),
+        "a shortcut saved here lists the steps this device runs"
+    );
 }
