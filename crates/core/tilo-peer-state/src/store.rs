@@ -2351,7 +2351,9 @@ const WORKSPACES: &str = "workspaces";
 /// The layout of the frames a store keeps: segments of records, each frame one
 /// [`NeighbourMsg`] whose claims carry the caller's signed call, which the claim's signature
 /// covers, and whose identity hello may name a placed device's certificate or a placement grant
-/// ([`tilo_user_identity::DeviceCapabilities::records`]). Version 11 is version 10's layout,
+/// ([`tilo_user_identity::DeviceCapabilities::records`]). Version 12 is version 11's layout,
+/// whose claims name the types they store by the crates those types lived in before they moved
+/// below the policy, which changes no byte a frame holds; version 11 is version 10's layout,
 /// whose identity hello may name an agent's grant that names its agent by its id
 /// ([`tilo_user_identity::AgentScope::Agent`]), which a build of version 10 refuses; version 10
 /// is version 9's layout, whose
@@ -2360,10 +2362,10 @@ const WORKSPACES: &str = "workspaces";
 /// build of version 9 refuses; version 9 is version 8's, whose messages may be the content asked
 /// for and answered with many at a time ([`NeighbourMsg::DocumentContentWants`] and
 /// [`NeighbourMsg::DocumentContentPieces`]); version 8 is version 7's, whose identity hello a
-/// build of version 7 refuses. A store of version 7 to 10 is relabelled as it opens, its frames
+/// build of version 7 refuses. A store of version 7 to 11 is relabelled as it opens, its frames
 /// left as they are; one of version 1 to 6 has its frames written again ([`WRITTEN_AGAIN`]). A
 /// store of a later version is refused as it opens, by its version, and left as it is.
-pub(crate) const FRAMES_VERSION: u32 = 11;
+pub(crate) const FRAMES_VERSION: u32 = 12;
 /// The versions whose frames' claims name no call: 5, and 6, which differs from it only in the
 /// definitions a certificate's capabilities are pinned by. A store of either is written again as
 /// it opens, every frame kept with the signature its author made ([`Store::pack_earlier`]).
@@ -4156,6 +4158,40 @@ mod tests {
                 store.replay(workspace(), &[], Budget::default()).unwrap().frames,
                 frames.iter().map(|frame| frame.message.clone()).collect::<Vec<_>>(),
                 "every frame of version 10 is served"
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
+                FRAMES_VERSION.to_string()
+            );
+            assert_eq!(fs::read(&path).unwrap(), segment, "the segment is kept as it was");
+        }
+
+        phase a_store_of_version_11_is_relabelled_and_keeps_its_segments;
+        {
+            // Version 11's frames are this build's bytes: the types their claims name moved
+            // below the policy, which changes none of them, so a store of version 11 records the
+            // newer version and serves its frames from the segments they are in.
+            let dir = tempfile::tempdir().unwrap();
+            let key = device(5);
+            let frames: Vec<Frame> = (1..=3)
+                .map(|seq| frame(&key, seq, ContentRetention::Delta))
+                .collect();
+            let mut segment = Vec::new();
+            for frame in &frames {
+                segment.extend(
+                    frame_record(frame, &postcard::to_allocvec(&frame.message).unwrap()).unwrap(),
+                );
+            }
+            let path = segment_path(dir.path(), workspace(), 0, 0);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, &segment).unwrap();
+            fs::write(dir.path().join(FRAMES_VERSION_FILE), b"11").unwrap();
+
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(
+                store.replay(workspace(), &[], Budget::default()).unwrap().frames,
+                frames.iter().map(|frame| frame.message.clone()).collect::<Vec<_>>(),
+                "every frame of version 11 is served"
             );
             assert_eq!(
                 fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
