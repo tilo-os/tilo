@@ -297,6 +297,9 @@ on = ["dispatch"]
 [[check]]
 name = "flows/{flow}"
 on = ["idle", "stable"]
+# `t test flows/<flow> --test <name>` runs one test of the flow instead of all of them: each
+# command reads the names in T_TESTS and runs only those (tools/ci/test_selection.py).
+tests = "env"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-agent-session --test it -E 'test(workspace_actions::flow_customer_workspaces::)'\n"
 timeout_secs = 1800
