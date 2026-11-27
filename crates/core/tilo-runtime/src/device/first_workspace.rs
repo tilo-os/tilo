@@ -168,17 +168,23 @@ impl FirstWorkspace {
         // This device is listed with its person's, and their root marked, once it holds the
         // workspace: one write, from [`Self::settle`].
         self.settle().await?;
-        Ok(workspace.to_string())
+        // Answered as here only once this device's workspace service holds it: a call of the
+        // person's in it reaches that service, and one it does not hold yet is refused.
+        let named = workspace.to_string();
+        self.bound(&named).await?;
+        Ok(named)
     }
 
     /// The person's workspace held here, settled ([`Self::settle`]).
     ///
     /// # Errors
     /// This computer holds the person's root but not their workspace, which only the device that
-    /// made the root founds; or settling it failed.
+    /// made the root founds; settling it failed; or this device's workspace service does not hold
+    /// it yet, so a call of theirs in it would be refused.
     pub(crate) async fn here(&self) -> Result<String, String> {
         let workspace = self.get().ok_or_else(not_held)?.to_owned();
         self.settle().await?;
+        self.bound(&workspace).await?;
         Ok(workspace)
     }
 
@@ -190,7 +196,37 @@ impl FirstWorkspace {
         let workspace = self.get().ok_or_else(not_held)?.to_owned();
         // One that came in from the person's desktop is settled by the first that reaches it.
         self.settle_blocking()?;
+        self.bound_blocking(&workspace)?;
         Ok(workspace)
+    }
+
+    /// Whether this device's workspace service holds `workspace`, which is what admitting a call
+    /// of the person's in it takes: a workspace founded or settled but not bound here yet is not
+    /// answered as done, so the call that comes next is not refused.
+    async fn bound(&self, workspace: &str) -> Result<(), String> {
+        self.workspaces
+            .copies()
+            .workspace(workspace)
+            .await
+            .map(drop)
+            .map_err(|error| {
+                format!(
+                    "this device's workspace service does not hold your own workspace yet: {error}"
+                )
+            })
+    }
+
+    /// [`Self::bound`], from a caller that does not run on the runtime.
+    fn bound_blocking(self: &Arc<Self>, workspace: &str) -> Result<(), String> {
+        let copies = Arc::clone(&self.workspaces);
+        let named = workspace.to_owned();
+        super::workspaces::block_on_owned(async move { copies.copies().workspace(&named).await })
+            .map(drop)
+            .map_err(|error| {
+                format!(
+                    "this device's workspace service does not hold your own workspace yet: {error}"
+                )
+            })
     }
 
     /// Settle the person's workspace when `workspace` names it on a computer with no login: what

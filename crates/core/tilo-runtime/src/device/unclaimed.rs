@@ -120,6 +120,9 @@ pub(crate) struct Founding {
     running: std::sync::atomic::AtomicBool,
     /// The person's services, and the person they serve, once they run.
     serving: std::sync::Mutex<Option<([u8; 32], Arc<super::ticket::Tickets>)>>,
+    /// Why the founding that waits for them ended without their workspace bound here, once it did:
+    /// the call hears this instead of waiting for services that will not answer it.
+    failed: std::sync::Mutex<Option<String>>,
     /// What sets up this device's boot key, once the person's services run.
     enrolling: std::sync::Mutex<Option<Arc<super::boot_unlock::BootUnlock>>>,
     /// Told when they do.
@@ -165,6 +168,14 @@ impl Founding {
         self.announced.notify_waiters();
     }
 
+    /// End the founding that waits for this device's person with `why`, as what it was founded
+    /// for did not happen: their own workspace is not bound here, so no call of theirs in it would
+    /// be admitted.
+    pub(crate) fn failed(&self, why: String) {
+        *self.failed.lock_recover() = Some(why);
+        self.announced.notify_waiters();
+    }
+
     /// Have `enrolling` enrol this device's boot key from now on: the person's services run.
     pub(crate) fn enrolling(&self, enrolling: Arc<super::boot_unlock::BootUnlock>) {
         *self.enrolling.lock_recover() = Some(enrolling);
@@ -190,13 +201,17 @@ impl Founding {
     /// The person's services run, as `reporting` is told the stage under way again every
     /// [`REPORTING`] meanwhile: no fixed wait ends this, the caller following the call decides
     /// when a stage has stopped reporting.
-    async fn until_serving(&self, mut reporting: impl FnMut(&str)) {
+    async fn until_serving(&self, mut reporting: impl FnMut(&str)) -> Result<(), String> {
         loop {
             let heard = self.announced.notified();
             tokio::pin!(heard);
             heard.as_mut().enable();
+            let failed = self.failed.lock_recover().clone();
+            if let Some(why) = failed {
+                return Err(why);
+            }
             if self.running.load(std::sync::atomic::Ordering::Acquire) {
-                return;
+                return Ok(());
             }
             if tokio::time::timeout(REPORTING, heard).await.is_err() {
                 reporting(FOUNDING_FOUNDING);
@@ -211,15 +226,20 @@ impl Founding {
         &self,
         person: [u8; 32],
         mut reporting: impl FnMut(&str),
-    ) -> Arc<super::ticket::Tickets> {
+    ) -> Result<Arc<super::ticket::Tickets>, String> {
         loop {
             let heard = self.announced.notified();
             tokio::pin!(heard);
             heard.as_mut().enable();
-            if let Some((serving, tickets)) = self.serving.lock_recover().clone()
+            let failed = self.failed.lock_recover().clone();
+            if let Some(why) = failed {
+                return Err(why);
+            }
+            let serving = self.serving.lock_recover().clone();
+            if let Some((serving, tickets)) = serving
                 && serving == person
             {
-                return tickets;
+                return Ok(tickets);
             }
             // The person's part starts: no fixed wait ends this, the caller following the call
             // decides when a stage has stopped reporting.
@@ -239,7 +259,7 @@ impl Founding {
         kinds: &[String],
         mut reporting: impl FnMut(&str),
     ) -> Result<Value, String> {
-        let tickets = self.until_serving_tickets(person, &mut reporting).await;
+        let tickets = self.until_serving_tickets(person, &mut reporting).await?;
         let mut issued = Vec::with_capacity(kinds.len());
         for kind in kinds {
             reporting(FOUNDING_ISSUING);
@@ -819,9 +839,15 @@ impl DeviceOnly {
         let (done, answer) = tilo_actions::remote::pending();
         let answering = self.clone();
         self.0.runtime.spawn(async move {
-            answering.0.founding.until_serving(|_| {}).await;
-            let update = succeeded(invocation, serde_json::json!({ "person": person }));
-            done.complete(Ok(answering.keep(invocation, update)));
+            match answering.0.founding.until_serving(|_| {}).await {
+                Ok(()) => {
+                    let update = succeeded(invocation, serde_json::json!({ "person": person }));
+                    done.complete(Ok(answering.keep(invocation, update)));
+                }
+                // The founding ends with what kept the person's workspace from being bound:
+                // answered as the refusal it is, never as a person whose workspace is here.
+                Err(why) => done.complete(Err(ActionCallError::refused(why))),
+            }
         });
         answer
     }

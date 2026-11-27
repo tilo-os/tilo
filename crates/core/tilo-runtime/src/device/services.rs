@@ -394,6 +394,11 @@ impl Daemon {
 /// How long an app's join of a call may take: its keys may have to arrive first.
 const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// How long a founding waits for the person's own workspace to be kept in this device's
+/// workspace service before the call ends as not founded: the signal that it is arrives when the
+/// service takes it into the workspaces it holds, and no wait looks for it again.
+const BINDING: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The services a profile is served as: the person's own runtime, or the same
 /// in development.
 #[derive(Clone, Copy)]
@@ -2824,12 +2829,37 @@ impl Daemon {
             speakers: &speakers,
         });
         // A founding call that asked for the person's first tickets is answered them from here
-        // on: the tickets, the endpoint they name and what serves it are up, and nothing the
-        // rest of the part opens is needed to issue one. The founder waits for a start, not for
-        // every service of it.
+        // on, once their own workspace is kept in this device's workspace service: the first
+        // call of theirs in it reaches that service, and one it does not hold yet is refused
+        // rather than waited for. Founding waits on the service saying it kept the workspace;
+        // one that cannot happen ends the call with why instead of as done.
         let founding_for_unlock = founding;
         if let Some(founding) = founding {
-            founding.serving(identity.cert.user_public_key, Arc::clone(&tickets));
+            let admittance = match founded {
+                Some(workspace) => {
+                    let copies = Arc::clone(&workspaces);
+                    let named = workspace.to_string();
+                    block_on_owned(async move {
+                        match tokio::time::timeout(BINDING, copies.copies().workspace_kept(&named))
+                            .await
+                        {
+                            Ok(held) => held,
+                            Err(_) => Err(format!(
+                                "this device's workspace service did not keep your own workspace \
+                                 within {} seconds",
+                                BINDING.as_secs()
+                            )),
+                        }
+                    })
+                }
+                None => Ok(()),
+            };
+            match admittance {
+                Ok(()) => founding.serving(identity.cert.user_public_key, Arc::clone(&tickets)),
+                Err(why) => founding.failed(format!(
+                    "your own workspace is not bound on this computer, so it is not founded: {why}"
+                )),
+            }
         }
         // Only the devices that record still certifies are heard, and a device the person takes
         // back leaves the local network's answer at once.
