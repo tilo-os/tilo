@@ -2264,22 +2264,37 @@ impl Core {
         let author = self.module_of_frame()?;
         let read =
             self.journaled_read(|| Ok(self.read_value(&res.target, &info, Some(&author))?))?;
-        let Value::List(entries) = read else {
-            return trap("a map reads as a list of entries");
+        // A map's entries, whatever shape the read answers: a store answers a map field as the
+        // list of its entries, and a map the record was made without — one a reading leaves out
+        // — reads as the empty map a view is handed ([`whole_map`]). Both name the same entries,
+        // so `keys()` and `get(key)` answer a map field either way.
+        let pairs: Vec<(Value, Value)> = match read {
+            Value::List(entries) => entries
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    Value::Tuple(mut kv) if kv.len() == 2 => {
+                        let val = kv.pop()?;
+                        let name = kv.pop()?;
+                        Some((name, val))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            Value::Map(entries) => entries,
+            other => {
+                return trap(format!(
+                    "`{}` of `{}` reads as {}, not a map",
+                    info.name,
+                    res.target.id_string(),
+                    other.kind_name()
+                ));
+            }
         };
         if let Some(vs) = self.frames.borrow_mut().view_mut() {
             vs.reads.push((res.target.id_string(), info.id));
         }
-        let pairs = entries.into_iter().filter_map(|entry| match entry {
-            Value::Tuple(mut kv) if kv.len() == 2 => {
-                let val = kv.pop()?;
-                let name = kv.pop()?;
-                Some((name, val))
-            }
-            _ => None,
-        });
         if imp == Imp::MapKeys {
-            return self.ret_h(Value::List(pairs.map(|(k, _)| k).collect()));
+            return self.ret_h(Value::List(pairs.into_iter().map(|(k, _)| k).collect()));
         }
         let key = self.text(a.h(2)?)?;
         let found = pairs

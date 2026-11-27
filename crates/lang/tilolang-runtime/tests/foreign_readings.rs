@@ -588,6 +588,27 @@ view note(n: other.Note) {
 }
 "#;
 
+    /// A view that asks a note's reactions by their keys, and one key for its value, as a view
+    /// that counts a message's reactions does.
+    const REACTED_KEYS_VIEW: &str = r#"app test.reactions "Reactions"
+
+use other as other
+
+view reactions(n: other.Note) {
+  stack {
+    for k in n.reactions.keys() {
+      ui.Text(k)
+    }
+    if let _ = n.reactions.get("thumbs") {
+      ui.Text("has thumbs")
+    }
+    if n.reactions.keys().is_empty() {
+      ui.Text("no reactions")
+    }
+  }
+}
+"#;
+
     /// The app whose notes this view reads: what a note says, and who reacted to it by emoji.
     fn reacted_notes() -> Meta {
         meta(json!({
@@ -1035,6 +1056,45 @@ view window(ws: device.WindowsApps) {
                     dump(opened.tree())
                 );
             }
+        }
+
+        phase a_map_a_reading_leaves_out_answers_its_keys_and_its_get;
+        {
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            let other = reacted_notes();
+            rt.load_foreign(other.clone()).unwrap();
+            let view = App::compile(REACTED_KEYS_VIEW, std::slice::from_ref(&other));
+            view.load(&rt);
+            let note = ResourceRef::parse_id("note-1", "other#Note").expect("a resource id");
+            // A note written before its app kept reactions: the map its reading leaves out reads
+            // as the empty map a view is handed, and `keys()` and `get(key)` ask it as they ask a
+            // map a store holds — the view draws, rather than failing on the shape.
+            rt.set_reading(&note, r#"{"text": "Groceries"}"#)
+                .expect("a reading of the note");
+            let mut opened = rt
+                .open_view(&me(), &view.view("reactions"), vec![Value::resource(&note)])
+                .unwrap_or_else(|why| panic!("{why}"));
+            assert_eq!(
+                drawn(&opened),
+                ["no reactions"],
+                "an emptied map answers no keys and no entry: {}",
+                dump(opened.tree())
+            );
+
+            // Its app writes a reaction: the view runs again over the reading, and draws the key
+            // its map now holds.
+            rt.set_reading(
+                &note,
+                r#"{"text": "Groceries", "reactions": {"list": [{"tuple": ["thumbs", {"list": []}]}]}}"#,
+            )
+            .expect("a reading of the note");
+            opened.poll_patches().unwrap();
+            assert_eq!(
+                drawn(&opened),
+                ["thumbs", "has thumbs"],
+                "the key its reading holds, asked as a field's map: {}",
+                dump(opened.tree())
+            );
         }
 
         phase a_view_over_an_absent_reading_reads_the_empty_state;
