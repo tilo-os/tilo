@@ -172,8 +172,9 @@ struct DeclaredNet {
 
 /// The program `dir`'s `app.toml` declares, `None` when the package declares none. A declared
 /// entrypoint names a script, the runtime whose binary runs it and the interpreter inside that
-/// runtime; a declared package id or kind must be the app's own.
-fn source_program(dir: &Path, meta: &PackageMeta) -> Result<Option<SourceProgram>, String> {
+/// runtime; a declared package id or kind must be the app's own (`app`, the id its manifest
+/// names, which a development build keeps while its module compiles as the device's copy of it).
+fn source_program(dir: &Path, app: &str) -> Result<Option<SourceProgram>, String> {
     let path = dir.join("app.toml");
     if !path.is_file() {
         return Ok(None);
@@ -183,11 +184,10 @@ fn source_program(dir: &Path, meta: &PackageMeta) -> Result<Option<SourceProgram
         toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
     let fail = |why: String| format!("{}: {why}", path.display());
     if let Some(id) = &declared.package.id
-        && id != &meta.app
+        && id != app
     {
         return Err(fail(format!(
-            "its package id is {id:?}, not the app's {:?}",
-            meta.app
+            "its package id is {id:?}, not the app's {app:?}"
         )));
     }
     if let Some(kind) = &declared.package.kind
@@ -1404,7 +1404,7 @@ fn assembled(
             .0
             .unwrap_or_else(|| meta.app.clone());
         let accessibility = source_accessibility(&package.dir)?;
-        let program = source_program(&package.dir, meta)?;
+        let program = source_program(&package.dir, &id)?;
         let files = match &program {
             Some(program) => program_files(&package.dir, program)?,
             None => Vec::new(),

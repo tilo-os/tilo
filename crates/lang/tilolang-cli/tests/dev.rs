@@ -125,6 +125,52 @@ fn a_build_for_the_device_is_compiled_as_the_id_it_runs_under() {
     );
 }
 
+/// A package that carries an `app.toml` names in it the app its sources declare, not the device's
+/// development copy of it: a development build accepts the declaration and still compiles the
+/// module as the id it runs under there.
+#[test]
+fn a_development_build_accepts_the_app_its_app_toml_names() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("counter");
+    copy_package(&packages().join("counter"), &source);
+    std::fs::write(
+        source.join("app.toml"),
+        "[package]\nid = \"so.tilo.lang.counter\"\nkind = \"app\"\n",
+    )
+    .unwrap();
+    let options = BuildOptions {
+        dir: source,
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: package::DEFAULT_TILO_RUNTIME.into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
+        version: "0.1.0".into(),
+        locked: false,
+    };
+    let of = "so.tilo.lang.counter";
+    let dev = "so.tilo.lang.counter.dev.0123456789abcdef";
+    let compile_as = [(of.to_owned(), dev.to_owned())];
+    let staged = package::stage_dev(&options, &compile_as)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .pop()
+        .unwrap();
+    assert_eq!(staged.app, of, "the manifest names the app it builds");
+    assert_eq!(staged.meta.app, dev, "the module is the device's own copy");
+    // A declaration of an app those sources do not declare is still refused.
+    std::fs::write(
+        options.dir.join("app.toml"),
+        "[package]\nid = \"so.tilo.lang.other\"\n",
+    )
+    .unwrap();
+    let Err(refused) = package::stage_dev(&options, &compile_as) else {
+        panic!("another app is refused");
+    };
+    assert!(
+        refused.contains("so.tilo.lang.other") && refused.contains(of),
+        "{refused}"
+    );
+}
+
 /// A development build of an app that imports another tilolang app resolves that import, which is
 /// staged as a development build too: the importer names the id the imported package is installed
 /// under, while its `use` names the id the sources declare.
