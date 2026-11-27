@@ -735,6 +735,7 @@ impl<'a> Caller<'a> {
     /// bytes=<from>-<to?>` asks for part of it, which a caller downloading a
     /// large file does a piece at a time.
     async fn content(&self) -> Result<Answer, ApiError> {
+        use base64::Engine as _;
         let hash = self.params.get("hash").to_owned();
         let content = contents::reference(&hash).ok_or_else(|| contents::bad_address(&hash))?;
         let asked = self
@@ -743,21 +744,27 @@ impl<'a> Caller<'a> {
             .and_then(|value| value.to_str().ok())
             .and_then(range_of);
         let from = asked.map_or(0, |(from, _)| from);
+        let until = asked.and_then(|(_, until)| until);
         // The first piece is asked for now: content the workspace no longer
         // holds is refused as every other route refuses it, never answered
         // as a file of no bytes.
-        let (size, mut first) = self.first_piece(&content, from).await?;
-        let until = asked.and_then(|(_, until)| until);
-        if let Some(end) = until {
-            let wanted = end.saturating_add(1).saturating_sub(from);
-            first.truncate(usize::try_from(wanted).unwrap_or(usize::MAX));
-        }
-        let sent = first.len() as u64;
+        let first = self
+            .call(
+                "tilo_get",
+                json!({"content": &content, "offset": from, "length": length_until(from, until)}),
+            )
+            .await?;
+        let size = first.get("size").and_then(Value::as_u64).unwrap_or(0);
+        let first = first
+            .get("bytes")
+            .and_then(Value::as_str)
+            .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
+            .ok_or_else(|| ApiError::malformed("a file", "no bytes"))?;
+        let next = from.saturating_add(first.len() as u64);
         let (sender, pieces) = tokio::sync::mpsc::channel::<Bytes>(4);
         if !first.is_empty() {
             let _ = sender.try_send(Bytes::from(first));
         }
-        let next = from.saturating_add(sent);
         if next < size && until.is_none_or(|end| next <= end) {
             let session = Arc::clone(&self.session);
             let workspace = self.workspace();
@@ -770,14 +777,7 @@ impl<'a> Caller<'a> {
                 sender,
             ));
         }
-        let stream = futures_util::stream::unfold(pieces, |mut pieces| async move {
-            let piece = pieces.recv().await?;
-            Some((
-                Ok::<_, std::convert::Infallible>(Frame::data(piece)),
-                pieces,
-            ))
-        });
-        let body = http_body_util::BodyExt::boxed(http_body_util::StreamBody::new(stream));
+        let body = chunked_body(pieces);
         match asked {
             None => Ok(Answer::File {
                 content_type: "application/octet-stream".to_owned(),
@@ -790,22 +790,6 @@ impl<'a> Caller<'a> {
                 body,
             }),
         }
-    }
-
-    /// The length of `content` and its bytes from `offset`: the first piece
-    /// of a download, asked before any of it is answered.
-    async fn first_piece(&self, content: &str, offset: u64) -> Result<(u64, Vec<u8>), ApiError> {
-        use base64::Engine as _;
-        let piece = self
-            .call("tilo_get", json!({"content": content, "offset": offset}))
-            .await?;
-        let bytes = piece
-            .get("bytes")
-            .and_then(Value::as_str)
-            .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
-            .ok_or_else(|| ApiError::malformed("a file", "no bytes"))?;
-        let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
-        Ok((size, bytes))
     }
 }
 
@@ -854,7 +838,11 @@ async fn stream_content(
     use base64::Engine as _;
     let mut offset = from;
     loop {
-        let asked = json!({"content": content, "offset": offset});
+        let asked = json!({
+            "content": content,
+            "offset": offset,
+            "length": length_until(offset, until),
+        });
         let in_workspace = Some(workspace.as_str()).filter(|workspace| !workspace.is_empty());
         let piece = match session.typed(in_workspace, "tilo_get", asked, None).await {
             Ok(piece) => piece,
@@ -863,16 +851,11 @@ async fn stream_content(
                 return;
             }
         };
-        let mut decoded = piece
+        let decoded = piece
             .get("bytes")
             .and_then(Value::as_str)
             .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
             .unwrap_or_default();
-        // A range ends where it was asked to, never with the rest of a piece.
-        if let Some(end) = until {
-            let wanted = end.saturating_add(1).saturating_sub(offset);
-            decoded.truncate(usize::try_from(wanted).unwrap_or(usize::MAX));
-        }
         let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
         if decoded.is_empty() {
             if offset < size {
@@ -889,6 +872,12 @@ async fn stream_content(
             return;
         }
     }
+}
+
+/// How many bytes a piece asked at `offset` takes when its range ends at `until` (none: as many
+/// as one call carries), as `tilo_get` takes a length.
+fn length_until(offset: u64, until: Option<u64>) -> u64 {
+    until.map_or(0, |end| end.saturating_add(1).saturating_sub(offset))
 }
 
 /// `Range: bytes=<from>-<to>` as the two ends a reader wants, the second one

@@ -20,7 +20,9 @@ use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionCallError, Caller, ContentGets, ContentPiece, MAX_CONTENT_FRAME_BYTES,
 };
-use tilo_fs::content::{Manifest, SealedChunks, is_manifest, whole_with};
+use tilo_fs::content::{
+    MANIFEST_PREFIX_LEN, Manifest, SealedChunks, begins_manifest, is_manifest, whole_with,
+};
 use tilo_fs::namespace::{MOST_LISTED, Namespace};
 use tilo_server_protocol::WorkspaceId;
 
@@ -451,35 +453,40 @@ impl ContentGets for OpenedFiles {
             0 => most,
             length => length.min(most),
         };
-        let stored = self
-            .read(workspace, hash)
-            .ok_or_else(|| invalid(format!("this workspace has no {content}")))?;
-        let manifest = if is_manifest(&stored) {
-            Some(
+        let missing = || invalid(format!("this workspace has no {content}"));
+        let (scope, kept) = self.source(workspace, hash).ok_or_else(missing)?;
+        // A file of the tree is named by a manifest, which its first bytes tell from content
+        // kept whole; a piece of that content reads its range from the store, never the whole.
+        let begins = self
+            .shelf
+            .read_range(&scope, hash, 0, MANIFEST_PREFIX_LEN)
+            .unwrap_or_default();
+        let stored = begins_manifest(&begins)
+            .then(|| self.shelf.read(&scope, hash))
+            .flatten();
+        let manifest = stored
+            .filter(|stored| is_manifest(stored))
+            .map(|stored| {
                 Manifest::decode(&stored).map_err(|error| ActionCallError::Unavailable {
                     reason: format!("{content} does not read: {error}"),
-                })?,
-            )
-        } else {
-            None
-        };
-        let size = manifest.as_ref().map_or_else(
-            || u64::try_from(stored.len()).unwrap_or(u64::MAX),
-            Manifest::total_len,
-        );
+                })
+            })
+            .transpose()?;
+        let size = manifest.as_ref().map_or(kept, Manifest::total_len);
         if offset > size {
             return Err(invalid(format!(
                 "the content is {size} bytes: an offset of {offset} is past its end"
             )));
         }
         let end = offset.saturating_add(length).min(size);
-        let bytes = if let Some(manifest) = manifest {
-            self.file_range(workspace, &manifest, offset..end, content)
+        let bytes = if let Some(manifest) = &manifest {
+            self.file_range(workspace, manifest, offset..end, content)
                 .map_err(|reason| ActionCallError::Unavailable { reason })?
         } else {
-            let start = usize::try_from(offset).unwrap_or(usize::MAX);
-            let end = usize::try_from(end).unwrap_or(usize::MAX);
-            stored.get(start..end).unwrap_or_default().to_vec()
+            let len = usize::try_from(end.saturating_sub(offset)).unwrap_or(usize::MAX);
+            self.shelf
+                .read_range(&scope, hash, offset, len)
+                .ok_or_else(missing)?
         };
         Ok(ContentPiece {
             size,

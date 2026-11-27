@@ -184,9 +184,7 @@ suite("a daemon", () => {
     expect(content.startsWith("tilo.content:")).toBe(true);
     expect(back.length).toBe(bytes.length);
     expect(Buffer.from(back).equals(Buffer.from(bytes))).toBe(true);
-    // The workspace reads the whole stored file for each piece it answers, so a download of
-    // this size takes over a minute.
-  }, 180_000);
+  });
 });
 
 /**

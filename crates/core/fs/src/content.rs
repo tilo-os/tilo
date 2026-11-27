@@ -5,8 +5,9 @@
 //! described by a self-contained `HashSeq` manifest.
 
 pub use fs_content::{
-    ChunkRef, ChunkStats, ChunkTier, DecodeError, MAX_CHUNK_LEN, Manifest, RangeSet, SealedChunks,
-    Streamed, build, build_reader, is_manifest, rebuild, whole_with,
+    ChunkRef, ChunkStats, ChunkTier, DecodeError, MANIFEST_PREFIX_LEN, MAX_CHUNK_LEN, Manifest,
+    RangeSet, SealedChunks, Streamed, begins_manifest, build, build_reader, is_manifest, rebuild,
+    whole_with,
 };
 
 /// Content larger than this lives in the store's file-backed area; smaller
