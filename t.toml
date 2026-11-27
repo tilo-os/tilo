@@ -960,6 +960,18 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked -p tilolang-tilo --test it -- shell_compiles::"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
+# Pictures of the shell on two displays, in both themes: the display in use drawing its own
+# strip's window and the whole bar, and the other display drawing its own strip's window and the
+# compact bar. The captures of the test that holds each part to one window. Only when named.
+[[check]]
+name = "shell-displays-shots"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "rm -rf /target/shell-displays-shots\nTILO_SHELL_DISPLAY_SHOTS=/target/shell-displays-shots cargo test --locked -p tilolang-tilo --test it -- shell_displays_shot::\n"
+env = { CARGO_PROFILE_DEV_DEBUG = "0" }
+outputs = ["/target/shell-displays-shots/**"]
+timeout_secs = 3600
+default = false
+
 # Pictures of a dock magnifying under the pointer, on the foot and up the leading edge, in both
 # themes: the captures of the tests that assert the item under the pointer grows past its
 # neighbours and the run gives it the room. Only when named.

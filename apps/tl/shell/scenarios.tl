@@ -2334,6 +2334,10 @@ scenario "a window alone in the shell" -> Layout {
 /// carries the whole bar while the other carries the compact one. This is the display in use,
 /// its strip the front one.
 scenario "two displays, the one in use" -> Layout {
+    // The shell a person starts with: touching its record makes it, and the platform seeds its
+    // bar and dock as it is made, so the captures show the whole bar this display carries.
+    let s = shell
+    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Layout
@@ -2362,6 +2366,10 @@ scenario "two displays, the one in use" -> Layout {
 
 /// Two displays, the one that is not in use: its own strip, and the compact bar it carries.
 scenario "two displays, the other one" -> Layout {
+    // The shell a person starts with: touching its record makes it, and the platform seeds its
+    // bar and dock as it is made, so the captures show the compact bar this display carries.
+    let s = shell
+    s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Layout
