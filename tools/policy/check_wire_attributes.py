@@ -666,11 +666,13 @@ def main(argv: list[str] | None = None) -> int:
     found = problems(root, unreadable)
     if comparing:
         found += default_problems(base, root, unreadable)
+    # A declaration this cannot read leaves every type it carries unjudged, so it fails here as
+    # well: a source moved out from under the runtime interface once left its kept caller's
+    # skipped field unjudged, and every shell lost its daemon link to the short frame.
     for error in dict.fromkeys(unreadable):
-        print(
-            f"note: {error}; the wire types it declares are left unjudged until "
-            "`python3 tools/policy/check_interfaces.py check` passes",
-            file=sys.stderr,
+        found.append(
+            f"{error}; the wire types it declares cannot be judged until "
+            "`python3 tools/policy/check_interfaces.py check` passes"
         )
     for problem in found:
         print(f"::error::{problem}", file=sys.stderr)

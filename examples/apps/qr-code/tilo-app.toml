@@ -28,8 +28,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@55"
-tilo-fs = "optional@55"
+collab = "optional@56"
+tilo-fs = "optional@56"
 
 [entrypoint]
 bin = "bin/example-qr-code"

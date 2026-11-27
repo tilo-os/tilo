@@ -14,7 +14,7 @@ script = "main.js"
 connection = true
 
 [sandbox.services]
-native = "required@55"
+native = "required@56"
 
 # What a device must give before it takes the held connection.
 [capabilities]

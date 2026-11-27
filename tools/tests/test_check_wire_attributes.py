@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
@@ -173,6 +175,14 @@ pub enum Settings {
         self.assertEqual(attributes.problems(root, unreadable), [])
         self.assertEqual(len(unreadable), 1, unreadable)
         self.assertIn("Nowhere", unreadable[0])
+
+    def test_a_declaration_that_does_not_read_fails_the_check(self):
+        """A source moved out from under an interface leaves its wire unjudged, so the check
+        fails on it rather than passing with a note."""
+        root = self.tree(row('#[serde(skip_serializing_if = "Option::is_none")]'), roots='"Nowhere"')
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            self.assertEqual(attributes.main([str(root)]), 1)
+        self.assertIn("Nowhere", said.getvalue())
 
 
 STORED = '''#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

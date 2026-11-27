@@ -913,9 +913,9 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.services]
-collab = "optional@55"
+collab = "optional@56"
 # The daemon the app asks for another instance of itself.
-native = "optional@55"
+native = "optional@56"
 
 [entrypoint]
 bin = "app"
