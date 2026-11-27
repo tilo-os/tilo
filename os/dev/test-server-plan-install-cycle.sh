@@ -599,19 +599,29 @@ await_owner_unlock_ask() {
 }
 # The machine's daemon has the person's root certify its boot key, so the owner's device asks the
 # person (`devices#certifyKey`) in an asked record: its invocation and the workspace it waits in,
-# once it waits. The listing is kept as evidence of what asked.
+# once it waits. The person has more than one workspace and the owner logged in to no server, so
+# each workspace of theirs is read by its id. The listings, and what refused them, are kept as
+# evidence of what asked.
 await_owner_certify_ask() {
-  local label=$1 listed="$out/owner-asked-$1.json" found=""
+  local label=$1 listed="$out/owner-asked-$1" found="" workspace
   local deadline=$((SECONDS + ${TILO_SERVER_CYCLE_ASK_SECONDS:-1200}))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    owner_cmd tilo read invocations/workspace --json > "$listed" 2>/dev/null || true
-    found="$(jq -r '[.items // [] | .[]
-        | select(.status == "waiting")
-        | select((.asked.action // .action // "") | endswith("#certifyKey"))][0]
-        | select(.) | "\(.id) \(.asked.workspace)"' "$listed" 2>/dev/null || true)"
-    [ -z "$found" ] || { printf '%s\n' "$found"; return 0; }
+    owner_cmd tilo do 'account/workspaces#list' --json > "$listed-workspaces.json" \
+      2> "$listed-workspaces.err" || true
+    for workspace in $(jq -r '.result.workspaces // [] | .[].id' "$listed-workspaces.json" \
+        2>/dev/null || true); do
+      owner_cmd tilo invocations -w "$workspace" --limit 200 --json \
+        > "$listed-$workspace.json" 2> "$listed-$workspace.err" || true
+      found="$(jq -r '[.items // [] | .[]
+          | select(.status == "waiting")
+          | select((.asked.action // .action // "") | endswith("#certifyKey"))
+          | select((.asked.workspace // "") != "")][0]
+          | select(.) | "\(.id) \(.asked.workspace)"' "$listed-$workspace.json" 2>/dev/null || true)"
+      [ -z "$found" ] || { printf '%s\n' "$found"; return 0; }
+    done
     sleep 1
   done
+  cat "$listed"-*.err >&2 2>/dev/null || true
   [ ! -f "$server_dir/serial.log" ] \
     || tr -d '\000' < "$server_dir/serial.log" | grep -viE 'recovery[ _-]?key' | tail -n 60 >&2 || true
   die "the owner was never asked to certify the machine's boot key ($label)"
@@ -629,7 +639,9 @@ answer_owner() {
 # the owner's daemon serves: the person approved it when they planned the
 # machine, so nobody is asked. Only a machine that joined can ask for the
 # unlock keyslot, so that question is the join's proof.
-read -r certify_invocation certify_workspace <<<"$(await_owner_certify_ask sibling)"
+# The wait's own failure ends the cycle here: a here-string would hand `read` an empty line.
+certify_ask="$(await_owner_certify_ask sibling)"
+read -r certify_invocation certify_workspace <<<"$certify_ask"
 mark_step 07-joined ok
 note "the owner approves the machine's unlock keyslot: $certify_invocation"
 owner_cmd tilo do --in-person "invocations/workspace/$certify_invocation#resolve" \
