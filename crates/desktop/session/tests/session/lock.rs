@@ -518,8 +518,6 @@ fn control_picture(
             "path": path.to_str().expect("a path the socket carries"),
         }),
     );
-    // The answer also says whether the picture is of the lock screen, which is what the lock's own
-    // tests read of it.
     assert_eq!(
         asked["ok"]["frame"], 0,
         "the test control draws {name}: {asked}"
@@ -529,10 +527,25 @@ fn control_picture(
         .to_rgba8()
 }
 
-/// The lock the session holds is what the displays show, and a check reads it
-/// there: the test control's snapshot draws the lock screen the app put on the display,
-/// while a copy of the display that leaves the session is the one placeholder.
-/// Unlocking puts the shell back in both.
+/// The colours the session's own look at `display` shows now: the displays as the person in front
+/// of them sees them, nothing withheld. A locked session takes no picture through its development
+/// socket, so a check of the lock screen reads it here, the way a locked session allows.
+#[track_caller]
+fn shown_colours(session: &mut Session, display: &str) -> std::collections::BTreeSet<[u8; 4]> {
+    session
+        .compositor()
+        .read_back_shown(&tilo_compositor::capture::Target::output(display))
+        .expect("the session's own look at the display")
+        .rgba
+        .chunks_exact(4)
+        .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+        .collect()
+}
+
+/// The lock the session holds is what the displays show, and a check reads it the way a locked
+/// session allows: the session's own look at its displays draws the lock screen the app put there,
+/// while a copy that leaves the session is the one placeholder and the development socket takes no
+/// picture at all. Unlocking puts the shell back in both, and the socket draws again.
 #[test]
 fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_back() {
     const DISPLAY: &str = "HEADLESS-1";
@@ -568,15 +581,33 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_
     );
 
     // The lock screen is on the display, drawn by the app: more than a placeholder's one colour,
-    // and not the placeholder a copy gets.
-    let locked = control_picture(&mut session, &control, home.path(), "lock-screen");
+    // and not the placeholder a copy gets. A locked session takes no picture through its
+    // development socket, so a check reads the display the way a locked session allows: the
+    // session's own look at it, the lock screen it shows and nothing behind it.
+    let refused = crate::common::control(
+        &mut session,
+        &control,
+        &serde_json::json!({
+            "op": "snapshot",
+            "path": home.path().join("refused.png").to_str().expect("a path the socket carries"),
+        }),
+    );
+    assert_eq!(
+        refused["err"]["code"], "session_locked",
+        "a locked session takes no picture through its development socket: {refused}"
+    );
     assert!(
-        colours(&locked).len() > 8,
+        !home.path().join("refused.png").exists(),
+        "nothing was written for the refused picture"
+    );
+    let locked = shown_colours(&mut session, DISPLAY);
+    assert!(
+        locked.len() > 8,
         "the lock screen is on the display: {} colours in it",
-        colours(&locked).len()
+        locked.len()
     );
     assert_ne!(
-        colours(&locked),
+        locked,
         colours(&shots),
         "the display shows the lock screen, not the shots it covered"
     );
@@ -590,9 +621,8 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_
         .collect();
     assert_eq!(copy.len(), 1, "a copy withholds the lock screen: {copy:?}");
     assert_ne!(
-        colours(&locked),
-        copy,
-        "the test control draws the display, not the copy's placeholder"
+        locked, copy,
+        "the session's own look draws the lock screen, not the copy's placeholder"
     );
 
     // The right password unlocks it, and the shell comes back to the test control and to a copy of the
