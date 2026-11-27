@@ -266,6 +266,9 @@ pub struct EngineConnector {
     /// meanwhile is no fetch at all: it would read the folder again from the state last taken
     /// in, as one never read, and its mail would be no news.
     fetches: BTreeMap<Request, (String, String)>,
+    /// The folders a fetch was asked for while one was under way: asked for again as the fetch
+    /// answers, so mail that came meanwhile is read by the next one and not lost.
+    missed: BTreeSet<(String, String)>,
     /// What is answered before the engine is asked: the mail another mail program kept on this
     /// computer, which the OS installer brought over.
     ready: Vec<Event>,
@@ -296,6 +299,7 @@ impl EngineConnector {
             keys: HashMap::new(),
             pending: BTreeMap::new(),
             fetches: BTreeMap::new(),
+            missed: BTreeSet::new(),
             ready: Vec::new(),
             kept_taken: HashSet::new(),
             kept_root: kept_mail_root(),
@@ -316,6 +320,7 @@ impl EngineConnector {
             keys: HashMap::new(),
             pending: BTreeMap::new(),
             fetches: BTreeMap::new(),
+            missed: BTreeSet::new(),
             ready: Vec::new(),
             kept_taken: HashSet::new(),
             kept_root: kept_mail_root(),
@@ -525,6 +530,7 @@ impl MailConnector for EngineConnector {
         let config = self.config(account)?;
         let folder = Folder::from_key(mailbox)?;
         if self.fetching(account, mailbox) {
+            self.missed.insert((account.to_owned(), mailbox.to_owned()));
             return None;
         }
         let known = self
@@ -547,6 +553,7 @@ impl MailConnector for EngineConnector {
         let config = self.config(account)?;
         let folder = Folder::from_key(mailbox)?;
         if self.fetching(account, mailbox) {
+            self.missed.insert((account.to_owned(), mailbox.to_owned()));
             return None;
         }
         let known = self
@@ -728,6 +735,7 @@ impl EngineConnector {
             "{WHY}: its requests are answered unsent"
         );
         self.fetches.clear();
+        self.missed.clear();
         for (request, (kind, account, _)) in std::mem::take(&mut self.pending) {
             out.push(match kind {
                 EngineRequestKind::Send => Event::Unsent {
@@ -826,7 +834,15 @@ impl EngineConnector {
                 ..
             } => {
                 self.fetches.remove(&request_id);
-                self.took_fetched(account_id, folder, &synced, out);
+                self.took_fetched(account_id.clone(), folder, &synced, out);
+                // A folder asked for while this fetch ran is read now, with what it took in:
+                // mail that came meanwhile is news, not lost to a fetch that never ran.
+                if self
+                    .missed
+                    .remove(&(account_id.clone(), folder.as_key().to_owned()))
+                {
+                    self.changes(&account_id, folder.as_key());
+                }
             }
             EngineEvent::Found {
                 account_id,
