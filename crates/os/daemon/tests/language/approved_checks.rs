@@ -467,7 +467,7 @@ fn manager_said() -> String {
         }
     }
     if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        for name in ["manager.log", "bus-broker.log"] {
+        for name in ["manager.log", "account-bus.log"] {
             let log = Path::new(&runtime).join(name);
             if let Ok(text) = std::fs::read_to_string(&log) {
                 let mut keep: Vec<&str> = text.lines().rev().take(40).collect();
@@ -675,17 +675,17 @@ fn start_user_manager() -> UserManager {
     let runtime = std::env::var("XDG_RUNTIME_DIR").expect("the test names its runtime directory");
     std::fs::create_dir_all("/run/systemd/system").expect("a session's system directory");
     // The manager starts the account's own bus as a login's does, on the account's own daemon:
-    // the broker it starts by default wants the journal socket this micro-VM has none of. A bus
-    // that stops says why in its own log, which the check reads when no unit starts.
+    // the bus service it starts by default wants the journal socket this micro-VM has none of.
+    // A bus that stops says why in its own log, which the check reads when no unit starts.
     let config = match std::env::var_os("XDG_CONFIG_HOME").filter(|dir| !dir.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => Path::new(&std::env::var("HOME").expect("the test names its home")).join(".config"),
     };
     let units = config.join("systemd/user");
     std::fs::create_dir_all(&units).expect("the account's user units");
-    let broker_log = Path::new(&runtime).join("bus-broker.log");
+    let account_bus_log = Path::new(&runtime).join("account-bus.log");
     let drop_in = units.join("dbus-broker.service.d");
-    std::fs::create_dir_all(&drop_in).expect("the broker's own directory");
+    std::fs::create_dir_all(&drop_in).expect("the bus service's own directory");
     std::fs::write(
         drop_in.join("override.conf"),
         format!(
@@ -693,8 +693,8 @@ fn start_user_manager() -> UserManager {
              ExecStart=/usr/bin/dbus-daemon --session --address=systemd: --nofork --nopidfile \\
              --systemd-activation\n\
              StandardOutput=file:{}\nStandardError=file:{}\n",
-            broker_log.display(),
-            broker_log.display()
+            account_bus_log.display(),
+            account_bus_log.display()
         ),
     )
     .expect("the account's bus is named");
@@ -810,7 +810,7 @@ fn start_user_manager() -> UserManager {
                 probe.as_ref().is_ok_and(|probe| probe.status.success()),
                 "the account's manager starts no unit: {probe:?}\nits log:\n{}\nits bus:\n{}",
                 std::fs::read_to_string(&manager_log).unwrap_or_default(),
-                std::fs::read_to_string(&broker_log).unwrap_or_default()
+                std::fs::read_to_string(&account_bus_log).unwrap_or_default()
             );
             // And one with the bounds a check's service asks for, unit for unit: what a manager
             // refuses is then the property it refused, not a check that observed nothing.
