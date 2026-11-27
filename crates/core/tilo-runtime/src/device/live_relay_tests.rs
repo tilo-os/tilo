@@ -53,25 +53,6 @@ fn admits(peer: [u8; 32], grant: &grant::Native, devices: &[Device], now_ns: u64
 tilo_test_env::scenario! {
     fn the_daemons_relay_admits_the_devices_its_certificates_and_grants_name;
 
-    phase the_device_serving_the_workspace_relays_while_it_is_a_member;
-    {
-        let devices = vec![device([1; 32], None), device([2; 32], Some(10))];
-        assert!(relays_here(Some(Held::Hosts), &devices, [1; 32], 10));
-        assert!(
-            !relays_here(Some(Held::MemberCopy), &devices, [1; 32], 10),
-            "a member copy of a workspace another device serves relays nothing"
-        );
-        assert!(!relays_here(None, &devices, [1; 32], 10), "a workspace not held relays nothing");
-        assert!(
-            !relays_here(Some(Held::Hosts), &devices, [2; 32], 10),
-            "a serving device whose certificate expired relays nothing"
-        );
-        assert!(
-            !relays_here(Some(Held::Hosts), &devices, [7; 32], 10),
-            "a device that is no member relays nothing"
-        );
-    }
-
     phase a_device_that_relays_nothing_turns_every_grant_away;
     {
         let workspace = WorkspaceId::new();
@@ -267,6 +248,62 @@ tilo_test_env::scenario! {
         let devices = vec![device([1; 32], None), device([2; 32], None)];
         assert_eq!(name_of(&devices, [2; 32]), "device 2");
         assert_eq!(name_of(&devices, [7; 32]), "");
+    }
+}
+
+/// What a session of the workspace called `name` is offered, as `device` and as a browser
+/// environment's device when `environment`.
+fn tracks(name: &str, device: [u8; 32], environment: bool) -> Tracks {
+    let scope = Scope::workspace(name);
+    Tracks {
+        workspace: name.to_owned(),
+        scope: scope.id(),
+        publication: Namespace::new(&scope, device).path(),
+        prefix: live::devices(&scope),
+        device,
+        to: None,
+        environment,
+    }
+}
+
+/// One device's namespace in the workspace called `name`.
+fn names(name: &str, device: [u8; 32]) -> Namespace {
+    Namespace::new(&Scope::workspace(name), device)
+}
+
+tilo_test_env::scenario! {
+    fn a_session_is_offered_its_own_tracks_and_the_scope_it_hears;
+
+    phase a_member_hears_every_device_of_its_workspace;
+    {
+        let offered = tracks("ws-1", [1; 32], false);
+        assert_eq!(offered.heard(), Some(offered.prefix.as_str()));
+        let offered_to = |direction, name: &Namespace| offered.current(direction, name, |_| true);
+        assert!(offered_to(Direction::Subscribe, &names("ws-1", [2; 32])));
+        assert!(offered_to(Direction::Publish, &names("ws-1", [1; 32])));
+        assert!(
+            !offered_to(Direction::Publish, &names("ws-1", [2; 32])),
+            "nobody publishes in another device's name"
+        );
+    }
+
+    phase a_browser_environment_publishes_its_window_and_hears_nobody;
+    {
+        let offered = tracks("ws-1", [1; 32], true);
+        assert_eq!(
+            offered.publication(),
+            names("ws-1", [1; 32]).path(),
+            "it publishes its own window's page"
+        );
+        assert_eq!(
+            offered.heard(),
+            None,
+            "no track of the workspace is offered to it: no call, camera, screen or other window"
+        );
+        let offered_to = |direction, name: &Namespace| offered.current(direction, name, |_| true);
+        assert!(!offered_to(Direction::Subscribe, &names("ws-1", [2; 32])));
+        assert!(!offered_to(Direction::Subscribe, &names("ws-1", [1; 32])));
+        assert!(offered_to(Direction::Publish, &names("ws-1", [1; 32])));
     }
 }
 

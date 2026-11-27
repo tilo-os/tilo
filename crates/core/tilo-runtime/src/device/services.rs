@@ -2624,7 +2624,7 @@ impl Daemon {
             let _entered = tilo_rt::app().handle().enter();
             super::live_relay::Live::new(
                 &workspaces,
-                kept.as_ref().and_then(super::keep::Kept::live_relay),
+                kept.as_ref().and_then(super::keep::Kept::live_session),
                 &fanout,
             )
         };

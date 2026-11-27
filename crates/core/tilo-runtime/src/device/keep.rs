@@ -547,10 +547,10 @@ pub(crate) struct On<'a> {
 }
 
 impl Kept {
-    /// The relay of the live session this server keeps: the one the device's live session runs
-    /// on, so the relay's protocol is answered once.
-    pub(crate) fn live_relay(&self) -> Option<tilo_live::relay::Relay> {
-        self.server.as_ref().and_then(Server::live_relay)
+    /// The live session this server keeps: the one the device's live session runs on, so the
+    /// relay and its protocol are answered once.
+    pub(crate) fn live_session(&self) -> Option<crate::device::live_relay::LiveSession> {
+        self.server.as_ref().and_then(Server::live_session)
     }
 }
 

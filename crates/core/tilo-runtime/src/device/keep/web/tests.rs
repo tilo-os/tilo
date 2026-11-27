@@ -108,7 +108,10 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         )),
         fetch: None,
         grants: Arc::default(),
-        presence: Arc::new(live::Authority::new(server.web_context().server.clone())),
+        presence: server
+            .live_session()
+            .expect("the server runs a live session")
+            .shared(),
         page_errors: page_errors::PageErrors::default(),
         site: site.and_then(Site::new),
         state_root: server.state_root().to_path_buf(),

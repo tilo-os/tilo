@@ -141,8 +141,8 @@ pub struct Server {
     sessions: tilo_workspace_service::service::ServiceSessions,
     /// Only the browser listener publishes this public navigation origin.
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
-    /// The server's live session, which its browsers serve and its devices dial.
-    pub(crate) live_origin: Option<crate::device::keep::web::live::LiveOrigin>,
+    /// The live session this server runs, which its browsers serve and its devices dial.
+    pub(crate) live: Option<crate::device::live_relay::LiveSession>,
     /// Whether this device serves its own web UI, and how to serve it again: the
     /// setting `web.serve` switches, on by default.
     pub(crate) web_ui: Arc<crate::device::keep::web::control::Control>,
@@ -546,9 +546,14 @@ impl Server {
         // The live session belongs to the server: every key holder, a page
         // included, reaches it over the device's own iroh endpoint, and all
         // land in one origin whether or not browsers are served.
-        let mut live_origin = Some(crate::device::keep::web::live::LiveOrigin::start(
-            handler.clone(),
-        ));
+        let live_session =
+            crate::device::live_relay::LiveSession::start(crate::device::live_relay::Shared::new(
+                service.workspaces(),
+                keys.clone(),
+                identity.device_cert.clone(),
+                handler.environments.clone(),
+                Some(handler.clone()),
+            ));
         // A server enrolled into its person's identity: a host of theirs alone.
         let enrolled_server = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
         // The pages this host serves are served their tickets by the device's one set of
@@ -568,19 +573,12 @@ impl Server {
             #[cfg(all(test, feature = "agents"))]
             apple_through: Arc::default(),
         });
-        let protocols: Protocols = Vec::new();
-        let protocols = {
-            let mut protocols = protocols;
-            if let Some(origin) = live_origin.as_ref() {
-                protocols.push(origin.protocol());
-            }
-            protocols
-        };
+        let protocols: Protocols = vec![live_session.protocol()];
         let background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> = Arc::default();
-        if let Some(origin) = live_origin.as_mut() {
+        {
             let mut tasks = lock_background_tasks(&background_tasks);
             tasks.extend(
-                origin
+                live_session
                     .tasks()
                     .into_iter()
                     .map(|task| AbortOnDrop(Some(task))),
@@ -682,7 +680,7 @@ impl Server {
                 service,
                 sessions,
                 browser_origin: Arc::new(std::sync::RwLock::new(None)),
-                live_origin,
+                live: Some(live_session),
                 web_ui,
                 background_tasks,
                 web,
@@ -749,13 +747,11 @@ impl Server {
         Ok(())
     }
 
-    /// The relay this server's live session runs on: what a part of the host
-    /// that takes part in a workspace's calls joins, as the server's own device.
+    /// The live session this server runs, which what takes part in a workspace's calls, and the
+    /// device's own daemon, join as the server's own device.
     #[must_use]
-    pub fn live_relay(&self) -> Option<tilo_live::relay::Relay> {
-        self.live_origin
-            .as_ref()
-            .map(crate::device::keep::web::live::LiveOrigin::origin)
+    pub(crate) fn live_session(&self) -> Option<crate::device::live_relay::LiveSession> {
+        self.live.clone()
     }
 
     /// Whether this server currently counts `device` as subscribed to

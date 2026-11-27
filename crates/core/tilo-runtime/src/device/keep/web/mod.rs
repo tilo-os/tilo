@@ -15,7 +15,6 @@ mod envelopes;
 mod fetch;
 pub mod install;
 mod link;
-pub(crate) mod live;
 mod page;
 mod page_errors;
 #[cfg(test)]
@@ -211,7 +210,7 @@ struct Web {
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
     grants: Arc<tilo_workspace_service::fetch_grants::Grants>,
     /// The live session: the one account of who is here.
-    presence: Arc<live::Authority>,
+    presence: Arc<crate::device::live_relay::Shared>,
     /// The page errors the entry logs.
     page_errors: page_errors::PageErrors,
     /// The site this host belongs to, when it knows one: where a browser that
@@ -569,10 +568,7 @@ impl Server {
     fn web_parts(&self, config: WebConfig, also: Vec<String>) -> WebParts {
         WebParts {
             context: self.web_context().clone(),
-            live: self
-                .live_origin
-                .as_ref()
-                .map(crate::device::keep::web::live::LiveOrigin::served),
+            live: self.live.clone(),
             endpoint: self.endpoint(),
             node_addr: self.node_addr(),
             state_root: self.state_root().to_path_buf(),
@@ -589,8 +585,8 @@ impl Server {
 #[derive(Clone)]
 pub(crate) struct WebParts {
     context: WebContext,
-    /// The live origin this server runs, when it runs one.
-    live: Option<live::Served>,
+    /// The live session this server runs, when it runs one.
+    live: Option<crate::device::live_relay::LiveSession>,
     endpoint: iroh::Endpoint,
     node_addr: iroh::EndpointAddr,
     state_root: std::path::PathBuf,
@@ -689,7 +685,7 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
         )),
         fetch: fetch.proxy,
         grants: context.server.fetch_grants.clone(),
-        presence: live.authority(),
+        presence: live.shared(),
         page_errors: page_errors::PageErrors::default(),
         site: config.site.as_deref().and_then(Site::new),
         state_root: state_root.clone(),
@@ -745,7 +741,7 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
         link_listener,
         link::Serving {
             server: context.server.clone(),
-            live_origin: live.relay(),
+            live_session: live.relay(),
         },
     )));
     tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));

@@ -38,7 +38,7 @@ use tilo_workspace_service::service::ServerProtocol;
 #[derive(Clone)]
 pub(crate) struct Serving {
     pub(crate) server: ServerProtocol,
-    pub(crate) live_origin: tilo_live::relay::Relay,
+    pub(crate) live_session: tilo_live::relay::Relay,
 }
 
 /// Which paths are served, and the subprotocol each answers: the live session's
@@ -136,6 +136,29 @@ async fn serve_join(protocol: &ServerProtocol, session: tilo_net::webtransport::
     }
 }
 
+/// Serve one WebTransport session at the live session's path: the device proves
+/// itself with the relay handshake on the session's first stream (the
+/// transport does not say who dialled it, as iroh's does), then the session is
+/// the live session's, admitted by the device's grant as every session is.
+async fn serve_live(
+    origin: &tilo_live::relay::Relay,
+    protocol: &ServerProtocol,
+    session: tilo_net::webtransport::Session,
+) {
+    let link = Link::web(session.clone());
+    let Ok((mut send, mut recv)) = link.accept_bi().await else {
+        return;
+    };
+    let Ok(device) = protocol.authenticate_member(&mut recv, &mut send).await else {
+        link.close("the device did not prove itself");
+        return;
+    };
+    send.finish();
+    origin
+        .serve_session(session, tilo_live::relay::Peer(device.device_public_key))
+        .await;
+}
+
 /// Serve `listener` until it is dropped.
 pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: Serving) {
     listener
@@ -144,8 +167,8 @@ pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: S
             async move {
                 match path.as_str() {
                     LINK_LIVE_SESSION_PATH => {
-                        super::live::serve_web(
-                            &serving.live_origin,
+                        serve_live(
+                            &serving.live_session,
                             &serving.server,
                             live_session(session),
                         )
