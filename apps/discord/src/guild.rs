@@ -504,6 +504,24 @@ impl Guild {
 }
 
 impl Guild {
+    /// Whether this resource may be bound to the server `guild_id`, bridging only `only_channel`
+    /// of it when one is named: it is bound to none yet, and both are Discord ids.
+    ///
+    /// # Errors
+    /// Why not, in the words a person reads.
+    pub fn bindable(&self, guild_id: &str, only_channel: Option<&str>) -> Result<(), Refusal> {
+        if !self.guild_id.is_empty() {
+            return Err(Refusal::new(
+                "this resource is already connected to a server",
+            ));
+        }
+        let snowflake = |id: &str| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit());
+        if !snowflake(guild_id) || !only_channel.is_none_or(snowflake) {
+            return Err(Refusal::new("a server or channel id is a number"));
+        }
+        Ok(())
+    }
+
     /// `op`, when this bridge may queue it: one confined to a channel acts
     /// only in that channel and the threads it mapped there.
     fn admit(&self, op: DiscordOp) -> Result<DiscordOp, Refusal> {
@@ -557,14 +575,15 @@ impl Guild {
     read_content = Guild::read_document
 )]
 impl Guild {
-    /// Connect a Discord server.
+    /// Bind this resource to a Discord server.
     ///
-    /// Binds this resource to one server, mirrored in the workspace's chat.
-    /// The server's layout stays the truth until the import has run.
-    #[action(housekeeping)]
-    pub fn connect(
+    /// The app's own write behind [`DiscordEffect::Connect`](crate::effects::DiscordEffect):
+    /// the record is the app's, so the app binds it, under the grant installing it gave it, for
+    /// the person who connected the server. The server's layout stays the truth until the
+    /// import has run.
+    #[action(housekeeping, by_app)]
+    pub fn bind(
         &mut self,
-        cx: &mut ActionCx,
         #[param("The server's id")] guild_id: String,
         #[param("The server's name")] name: String,
         #[param("Bridge only this channel of the server, by its id")] only_channel: Option<String>,
@@ -573,16 +592,7 @@ impl Guild {
         >,
         #[param("Keep Tilo's roles as roles the bridge owns in Discord")] map_roles: Option<bool>,
     ) -> Result<(), Refusal> {
-        guard::person(cx)?;
-        if !self.guild_id.is_empty() {
-            return Err(Refusal::new(
-                "this resource is already connected to a server",
-            ));
-        }
-        let snowflake = |id: &str| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit());
-        if !snowflake(&guild_id) || !only_channel.as_deref().is_none_or(snowflake) {
-            return Err(Refusal::new("a server or channel id is a number"));
-        }
+        self.bindable(&guild_id, only_channel.as_deref())?;
         self.guild_id = guild_id;
         self.only_channel = only_channel;
         self.mirror_channels = mirror_channels.unwrap_or(false);

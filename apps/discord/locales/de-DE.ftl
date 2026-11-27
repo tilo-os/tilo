@@ -148,6 +148,7 @@ discord-connect-expires-ms = Geändert, wann eine Anmeldung mit Discord abläuft
 
 ## Actions
 
+discord-effects-connect = Einen Discord-Server verbinden
 discord-effects-connect-account = Mein Konto verbinden
 discord-effects-my-link = Mein verknüpftes Konto lesen
 discord-effects-link-offer = Verknüpfungsangebot lesen
@@ -157,7 +158,7 @@ discord-effects-set-bot-token = Bot-Token setzen
 discord-effects-find-servers = Server des Bots finden
 discord-effects-plan-event = Termin planen
 discord-guild = Discord-Server
-discord-guild-connect = Server verbinden
+discord-guild-bind = An einen Server binden
 discord-guild-observe-layout = Layout erfassen
 discord-guild-map = Discord zuordnen
 discord-guild-unmap = Zuordnung vergessen
@@ -199,3 +200,4 @@ discord-guild-report-voice = Sprachübertragung melden
 
 ## What the app is called in a window and in the launcher
 discord-app-title = Discord
+discord-connect-people-only = Nur eine Person verbindet einen Discord-Server.

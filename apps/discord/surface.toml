@@ -75,17 +75,6 @@ fields = [
 ]
 
 [[resources.verbs]]
-id = "connect"
-kind = "undoable"
-params = [
-  { name = "guild_id", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
-  { name = "only_channel", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "mirror_channels", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
-  { name = "map_roles", type = { option = "bool" }, required = false, schema = { type = ["boolean", "null"] } },
-]
-
-[[resources.verbs]]
 id = "observe-layout"
 kind = "undoable"
 params = [

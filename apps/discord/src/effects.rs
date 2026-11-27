@@ -4,8 +4,10 @@
 //! event means ([`crate::bridge`]) and answers the lists
 //! the program loops over, one per verb to invoke. The linking effects
 //! are a person's, run by the workspace's host for them
-//! ([`ui::linked_accounts`]): `my-link` says whether they linked their
-//! account, `connect` starts a sign-in on Discord's consent page,
+//! ([`ui::linked_accounts`]): `connect` binds the workspace's record to a
+//! server, which the app writes as its own, `my-link` says whether they
+//! linked their account, `connect-account` starts a sign-in on Discord's
+//! consent page,
 //! `link-offer` and `accept-link` show and take the account a one-time
 //! token offers, and `unlink-mine` unlinks it. `set-bot-token` keeps the
 //! bot token in the host's secret store.
@@ -14,7 +16,7 @@ use discord_wire::event::{link_check, link_proof, sha256_hex};
 use serde_json::Value;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::linked_accounts::{AccountName, LinkStart, OfferReading, Reading};
-use ui::tilo_resource::{self, Effect, Id};
+use ui::tilo_resource::{self, Effect, Id, Refusal};
 
 use crate::bridge;
 use crate::guild::{Guild, LinkOffer};
@@ -36,6 +38,24 @@ pub enum DiscordEffect {
     /// page's address, for the asking device alone.
     #[effect(returns, kind = "undoable", member)]
     ConnectAccount,
+    /// Connect a Discord server
+    ///
+    /// Binds this workspace's Discord record to one server, mirrored in the
+    /// workspace's chat. The record is the app's, so the app writes it, for
+    /// the person who connects the server.
+    #[effect(kind = "undoable", member)]
+    Connect {
+        #[param("The server's id")]
+        guild_id: String,
+        #[param("The server's name")]
+        name: String,
+        #[param("Bridge only this channel of the server, by its id")]
+        only_channel: Option<String>,
+        #[param("Make channels created in Tilo later in Discord too")]
+        mirror_channels: Option<bool>,
+        #[param("Keep Tilo's roles as roles the bridge owns in Discord")]
+        map_roles: Option<bool>,
+    },
     /// Read my linked account
     ///
     /// Whether this workspace is bridged to a Discord server, and the Discord
@@ -126,7 +146,8 @@ pub enum DiscordEffect {
 #[must_use]
 pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
     match effect {
-        DiscordEffect::ConnectAccount
+        DiscordEffect::Connect { .. }
+        | DiscordEffect::ConnectAccount
         | DiscordEffect::MyLink
         | DiscordEffect::LinkOffer { .. }
         | DiscordEffect::AcceptLink { .. }
@@ -254,6 +275,29 @@ pub fn answer(effect: DiscordEffect, cx: &mut EffectCx<Guild>) -> EffectAnswer {
         return Ok(Effected::value(value));
     }
     match effect {
+        DiscordEffect::Connect {
+            guild_id,
+            name,
+            only_channel,
+            mirror_channels,
+            map_roles,
+        } => {
+            if cx.person().is_none() {
+                return Err(CATALOG.t("discord-connect-people-only"));
+            }
+            guild
+                .bindable(&guild_id, only_channel.as_deref())
+                .map_err(Refusal::into_reason)?;
+            // The record is the app's: the app binds it as itself, for the person.
+            cx.apply_own(Guild::BIND.with(crate::guild::guild::Bind {
+                guild_id,
+                name,
+                only_channel,
+                mirror_channels,
+                map_roles,
+            }))?;
+            Ok(Effected::done())
+        }
         DiscordEffect::ConnectAccount => {
             if guild.guild_id.is_empty() {
                 return Err(CATALOG.t("discord-not-bridged"));

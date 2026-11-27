@@ -1012,7 +1012,7 @@ fn catalog() -> tilo_automation::ActionCatalog {
     let chat = chat_record();
     let mut guild = TestApp::<Discord>::new().unwrap();
     guild
-        .invoke(Guild::CONNECT.with(discord::guild::guild::Connect {
+        .invoke(Guild::BIND.with(discord::guild::guild::Bind {
             guild_id: "1".into(),
             name: "Tilo".into(),
             only_channel: None,
@@ -1083,7 +1083,7 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
     let mut ada = Replica::<Guild>::new()
         .in_app("so.tilo.model", "Model")
         .as_author("u_ada");
-    ada.apply(Guild::CONNECT.with(guild::Connect {
+    ada.apply(Guild::BIND.with(guild::Bind {
         guild_id: "1".into(),
         name: "Tilo".into(),
         only_channel: None,

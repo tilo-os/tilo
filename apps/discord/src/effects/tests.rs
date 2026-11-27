@@ -2,20 +2,66 @@ use serde_json::json;
 use tilo_app_test_host::TestApp;
 
 use super::*;
-use crate::guild::guild;
 use crate::resource::Discord;
+
+/// A person connects the workspace's server through the app: the app binds its own record, which
+/// no caller writes directly, and a second server, a malformed id or a caller who is no person is
+/// refused before anything is written.
+#[test]
+fn a_person_connects_the_server_and_the_app_binds_its_own_record() {
+    let mut app = TestApp::<Discord>::new().unwrap();
+    let malformed = app.effect(&connect("not-a-number")).unwrap_err();
+    assert!(format!("{malformed:?}").contains("number"), "{malformed:?}");
+    assert!(app.state().guild_id.is_empty());
+
+    let refused = app
+        .effect_by(&ui::tilo_resource::MemberId::bot("bridge"), &connect("1"))
+        .unwrap_err();
+    assert!(format!("{refused:?}").contains("person"), "{refused:?}");
+    assert!(app.state().guild_id.is_empty(), "a bot connects nothing");
+
+    app.effect(&connect("1")).unwrap();
+    assert_eq!(
+        (app.state().guild_id.as_str(), app.state().name.as_str()),
+        ("1", "Tilo")
+    );
+    let again = app.effect(&connect("2")).unwrap_err();
+    assert!(format!("{again:?}").contains("already"), "{again:?}");
+    assert_eq!(app.state().guild_id, "1");
+
+    // The binding is the app's own write: offered to no caller, and taken from none.
+    assert!(
+        app.actions()
+            .unwrap()
+            .iter()
+            .all(|entry| entry.address.action != "bind"),
+        "nothing offers the app's own binding"
+    );
+    let direct = app.call_by(
+        ui::tilo_actions::ActionInvoker::person("someone"),
+        crate::KIND,
+        "bind",
+        json!({"guild_id": "3", "name": "Elsewhere"}),
+    );
+    assert!(direct.is_err(), "{direct:?}");
+    assert_eq!(app.state().guild_id, "1");
+}
 
 fn connected() -> TestApp<Discord> {
     let mut app = TestApp::<Discord>::new().unwrap();
-    app.invoke(Guild::CONNECT.with(guild::Connect {
-        guild_id: "1".into(),
+    app.effect(&connect("1")).unwrap();
+    app
+}
+
+/// Connecting the server `guild_id`, as a person asks it.
+fn connect(guild_id: &str) -> DiscordEffect {
+    DiscordEffect::Connect {
+        guild_id: guild_id.into(),
         name: "Tilo".into(),
         only_channel: None,
         mirror_channels: None,
         map_roles: None,
-    }))
-    .unwrap();
-    app
+    }
 }
 
 const PAGE: &str = "https://discord.com/oauth2/authorize?response_type=code&client_id=1234&scope=identify\
@@ -226,6 +272,7 @@ fn the_linking_actions_are_offered_to_every_member_through_the_host() {
         own,
         [
             "accept-link",
+            "connect",
             "connect-account",
             "link-offer",
             "my-link",
