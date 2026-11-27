@@ -46,7 +46,7 @@ fn field_gap(theme: &Theme, density: Effective<Density>) -> Effective<f32> {
         },
     )
 }
-fn column_style(gap: f32) -> Style {
+pub(crate) fn column_style(gap: f32) -> Style {
     Style {
         display: taffy::Display::Grid,
         grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],

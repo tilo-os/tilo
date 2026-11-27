@@ -3910,11 +3910,6 @@
           "name": "fills_height",
           "doc": "Take the height the surface leaves (a card held to its height) instead of the height of what it holds.",
           "type": "bool"
-        },
-        {
-          "name": "standalone",
-          "doc": "Stand alone on a window's ground, on the readable column and the page's own gutter, rather than in a surface that already measures it (a card's body).",
-          "type": "bool"
         }
       ],
       "parts": [

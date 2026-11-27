@@ -1,5 +1,5 @@
 //! Shared retained-child lifecycle only; each composition owns its policy.
-use super::{Element, TaffyTreeExt, Widget};
+use super::{Element, StructureChange, TaffyTreeExt, Widget};
 use crate::theme::Theme;
 use crate::widget::DrawChild;
 use std::collections::HashMap;
@@ -11,6 +11,9 @@ pub struct Parts {
     pub children: Vec<Element>,
     pub nodes: Vec<NodeId>,
     pub rect: Rect,
+    /// A change the composition itself made to what stands where, which its parts cannot report:
+    /// a host inserted, removed or replaced one of them.
+    pub structure: StructureChange,
 }
 
 impl Parts {
@@ -19,7 +22,13 @@ impl Parts {
             children,
             nodes: Vec::new(),
             rect: Rect::ZERO,
+            structure: StructureChange::None,
         }
+    }
+
+    /// What stands where changed: the host that holds this composition builds its tree again.
+    pub fn described(&mut self) {
+        self.structure = self.structure.join(StructureChange::Described);
     }
 
     pub fn build(
@@ -143,14 +152,14 @@ macro_rules! retained_parts {
             }
         }
         fn take_structure_dirty(&mut self) -> bool {
-            let mut dirty = false;
+            let mut dirty = std::mem::take(&mut self.$($path).+.structure).rebuilds();
             for child in &mut self.$($path).+.children {
                 dirty |= child.take_structure_dirty();
             }
             dirty
         }
         fn take_structure_change(&mut self) -> $crate::widget::StructureChange {
-            let mut change = $crate::widget::StructureChange::None;
+            let mut change = std::mem::take(&mut self.$($path).+.structure);
             for child in &mut self.$($path).+.children {
                 change = change.join(child.take_structure_change());
             }

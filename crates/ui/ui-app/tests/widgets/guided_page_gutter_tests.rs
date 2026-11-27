@@ -49,12 +49,9 @@ fn the_body_keeps_one_width_whichever_step_shows() {
         (f64::from(short) - kept).abs() < 0.5,
         "the body keeps the bar's gutter: {short} wide, {kept} expected"
     );
-}
 
-/// A page in a card that holds it to its height scrolls its own step: the card's body keeps one
-/// width as the steps change, as a page alone on a window does.
-#[test]
-fn a_card_holds_the_body_at_one_width_across_its_steps() {
+    // A page in a card that holds it to its height scrolls its own step, and the card's body
+    // keeps one width as the steps change, as a page alone on a window does.
     let short = body_width(GuidedPage::new(Spacer::new()).embedded().fills_height());
     let tall = body_width(GuidedPage::new(tall_page()).embedded().fills_height());
     assert!(

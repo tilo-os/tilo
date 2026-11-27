@@ -1362,6 +1362,42 @@ mod tests {
 
     }
 
+    /// A face whose header and footer slots hold their parts stands one group gap taller at each
+    /// end than the slots' own 8 + 8 insets, and one surface draws no hairline between its own
+    /// parts.
+    #[test]
+    fn a_face_with_its_own_parts_stands_one_group_apart_and_draws_no_rule() {
+        use tilo_ui_base::tokens::Rhythm;
+        let theme = Theme::light();
+        let group = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+        let (header, page, footer) = (36.0, 320.0, 40.0);
+        let slots = FloatingPanelFace::new()
+            .header(header)
+            .footer(footer)
+            .height_for(page, &theme);
+        let face =
+            FloatingPanelFace::new().height_for(header + page + footer + 2.0 * group, &theme);
+        assert!(
+            (face - slots - 16.0).abs() < 0.01,
+            "the face stands one group gap taller at each end than the slots' 8 + 8: {face} \
+             against {slots}"
+        );
+        let old = FloatingPanelFace::new()
+            .header(header)
+            .footer(footer)
+            .layout(Rect::from_origin_size(Point::ZERO, (400.0, slots)), &theme);
+        let new = FloatingPanelFace::new()
+            .layout(Rect::from_origin_size(Point::ZERO, (400.0, face)), &theme);
+        assert!(
+            old.rule.is_some(),
+            "a header slot draws the face's hairline over its body"
+        );
+        assert!(
+            new.rule.is_none(),
+            "one surface draws no hairline between its own parts"
+        );
+    }
+
     /// A card shrinking to a shorter page moves inside its window, which keeps its height until
     /// the card rests and then takes the card's in one step: resized each frame, the window
     /// would trail the card and cut off what it shows.

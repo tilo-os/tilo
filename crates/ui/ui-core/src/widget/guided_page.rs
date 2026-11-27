@@ -18,19 +18,18 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::style_helpers::{auto, fr, length, minmax, percent};
-use taffy::{AlignContent, AlignItems, NodeId, Style, TaffyTree};
-use vello::kurbo::{Point, Rect};
+use taffy::{AlignItems, NodeId, Size, Style, TaffyTree};
+use vello::kurbo::Point;
 
 use tilo_ui_base::component::{Component, Described, Event, PartViews};
 use tilo_ui_base::draw::DrawCtx;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::{Rhythm, TextRole};
+use tilo_ui_base::widget::composition_parts::Parts;
 use tilo_ui_base::widget::layout::insets_all;
-use tilo_ui_base::widget::{
-    DrawChild, Effective, Element, LayoutInfo, LayoutOrigin, PageLayout, StructureChange,
-    TaffyTreeExt, Widget,
-};
+use tilo_ui_base::widget::{Effective, Element, LayoutInfo, LayoutOrigin, PageLayout, Widget};
 
+use crate::widget::form_composition::column_style;
 use crate::widget::stepper::Stepper;
 use crate::widget::{Column, ProgressBar, Row, Scrollable, Spacer, Text};
 
@@ -73,29 +72,31 @@ pub struct GuidedPageProps {
     /// Take the height the surface leaves (a card held to its height) instead of the height of
     /// what it holds.
     pub fills_height: bool,
-    /// Stand alone on a window's ground, on the readable column and the page's own gutter, rather
-    /// than in a surface that already measures it (a card's body).
-    pub standalone: bool,
 }
 
 /// See the module docs.
 pub struct GuidedPage {
-    header: Option<Element>,
-    scroll: Scrollable,
-    notice: Option<Element>,
-    actions: Option<Element>,
+    /// The parts in the order they stand: where the person is (if named), the page that scrolls,
+    /// what needs attention (if any), and the ways forward (if any).
+    parts: Parts,
+    /// Where the page that scrolls stands among the parts: after the account of where the person
+    /// is, or first when there is none.
+    scroll_at: usize,
+    notice: bool,
+    actions: bool,
     /// Stand alone on a window's ground, on the readable column, rather than in a surface that
     /// already measures it.
     standalone: bool,
     /// Take the height the surface leaves.
     fills_height: bool,
-    header_node: Option<NodeId>,
-    scroll_node: Option<NodeId>,
-    notice_node: Option<NodeId>,
-    actions_node: Option<NodeId>,
-    rect: Rect,
+    shows_bar: bool,
+    reveals_focus: bool,
+    scroll_label: Option<String>,
+    /// Centre a short page in the room under its header.
+    center: bool,
+    cursor: Option<Point>,
+    offset: Option<Rc<Cell<(f32, f32)>>>,
     page: Option<PageLayout>,
-    structure: StructureChange,
     /// The part a host is changing.
     editing: Option<Part>,
 }
@@ -107,29 +108,12 @@ enum Part {
     Actions,
 }
 
-/// The rows a page lays its parts out in: each part its own row, the page a row that takes the
-/// room left when the surface holds a height and its content's height when it does not, and a
-/// group's space between them.
-fn stack_rows(rows: Vec<taffy::GridTemplateComponent<String>>, gap: f32) -> Style {
-    Style {
-        display: taffy::Display::Grid,
-        grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],
-        grid_template_rows: rows,
-        grid_auto_rows: vec![auto()],
-        align_content: Some(AlignContent::Start),
-        gap: taffy::Size {
-            width: length(0.0_f32),
-            height: length(gap),
-        },
-        flex_shrink: 0.0,
-        ..Default::default()
-    }
-}
-
 impl GuidedPage {
     /// A page alone on a window's ground, showing `body`, on the readable column.
     pub fn new(body: impl Widget + 'static) -> Self {
-        Self::of(Some(Box::new(body)), true, true)
+        let mut page = Self::bare(true, true);
+        page.put_scroll(Some(Box::new(body)));
+        page
     }
 
     /// A page in a surface that already measures it (a card's body): it takes the room it is
@@ -137,7 +121,7 @@ impl GuidedPage {
     #[must_use]
     pub fn embedded(mut self) -> Self {
         self.standalone = false;
-        self.rebuild_scroll();
+        self.reseat();
         self
     }
 
@@ -146,58 +130,46 @@ impl GuidedPage {
     #[must_use]
     pub fn fills_height(mut self) -> Self {
         self.fills_height = true;
-        self.rebuild_scroll();
+        self.reseat();
         self
     }
 
     /// Where the person is, as named stations.
     #[must_use]
     pub fn stepper(mut self, stepper: Stepper) -> Self {
-        self.header = Some(Box::new(stepper));
-        self
-    }
-
-    /// Where the person is, as a track: what is being set up, which step of how many, how far
-    /// along, and what a reader hears it say.
-    #[must_use]
-    pub fn stage_track(mut self, stage: &str, position: &str, progress: f32, name: &str) -> Self {
-        let name = (!name.is_empty()).then_some(name);
-        self.header = Some(stage_track(Some(stage), Some(position), progress, name));
+        self.set_header(Some(Box::new(stepper)));
         self
     }
 
     /// Keep the page's scroll position in `offset` across rebuilds.
     #[must_use]
     pub fn offset(mut self, offset: Rc<Cell<(f32, f32)>>) -> Self {
-        self.scroll = self.scroll.with_persisted_offset(offset);
+        self.offset = Some(offset);
+        self.reseat();
         self
     }
 
     /// Seed the pointer position when the page is rebuilt every frame.
     #[must_use]
     pub fn cursor(mut self, cursor: Point) -> Self {
-        self.scroll = self.scroll.with_cursor(cursor);
+        self.cursor = Some(cursor);
+        self.reseat();
         self
     }
 
     /// What needs attention, above the ways forward and outside the scroll.
     #[must_use]
-    pub fn notice(mut self, notice: impl Widget + 'static) -> Self {
-        self.notice = Some(Box::new(notice));
-        self
-    }
-
-    /// [`Self::notice`] for a notice the caller may have none of.
-    #[must_use]
     pub fn maybe_notice(mut self, notice: Option<Box<dyn Widget>>) -> Self {
-        self.notice = notice;
+        if let Some(notice) = notice {
+            self.put(Part::Notice, notice);
+        }
         self
     }
 
     /// The ways forward, under the page and outside the scroll.
     #[must_use]
     pub fn actions(mut self, actions: impl Widget + 'static) -> Self {
-        self.actions = Some(Box::new(actions));
+        self.put(Part::Actions, Box::new(actions));
         self
     }
 
@@ -205,7 +177,10 @@ impl GuidedPage {
     /// rather than one that floats at the top.
     #[must_use]
     pub fn center_short_body(mut self) -> Self {
-        self.scroll = center(self.scroll, true);
+        if !self.center {
+            self.center = true;
+            self.reseat();
+        }
         self
     }
 
@@ -215,163 +190,177 @@ impl GuidedPage {
         Box::new(self)
     }
 
-    fn of(body: Option<Element>, standalone: bool, fills_height: bool) -> Self {
-        let scroll = page_scroll(Scroll {
-            fills: standalone || fills_height,
-            shows_bar: true,
-            reveals_focus: true,
-            label: None,
-            center: false,
-        });
+    fn bare(standalone: bool, fills_height: bool) -> Self {
         Self {
-            header: None,
-            scroll: put(scroll, body),
-            notice: None,
-            actions: None,
+            parts: Parts::new(Vec::new()),
+            scroll_at: 0,
+            notice: false,
+            actions: false,
             standalone,
             fills_height,
-            header_node: None,
-            scroll_node: None,
-            notice_node: None,
-            actions_node: None,
-            rect: Rect::ZERO,
+            shows_bar: true,
+            reveals_focus: true,
+            scroll_label: None,
+            center: false,
+            cursor: None,
+            offset: None,
             page: None,
-            structure: StructureChange::None,
             editing: None,
         }
     }
 
-    /// Rebuild the scroll with the current flags, keeping its page.
-    fn rebuild_scroll(&mut self) {
-        let body = self
-            .scroll
-            .child_mut()
-            .map(|body| std::mem::replace(body, Box::new(Spacer::new()) as Element));
-        let scroll = page_scroll(Scroll {
-            fills: self.standalone || self.fills_height,
-            shows_bar: true,
-            reveals_focus: true,
-            label: None,
-            center: false,
+    /// The scrolling page, built from the flags this page carries and holding `body`.
+    fn make_scroll(&self, body: Option<Element>) -> Scrollable {
+        let mut scroll = Scrollable::new_vertical();
+        if self.shows_bar {
+            // The page under the account is one of several, each a step of the same sequence:
+            // the bar's gutter stays kept whichever step fits and whichever overflows, so a
+            // control stands where it stood on the last page.
+            scroll = scroll.always_visible().with_stable_vertical_gutter();
+        }
+        if self.reveals_focus {
+            scroll = scroll.with_focus_reveal();
+        }
+        if let Some(label) = &self.scroll_label {
+            scroll = scroll.with_label(label.clone());
+        }
+        if self.standalone || self.fills_height {
+            scroll = scroll.fill_parent_height();
+        }
+        if let Some(offset) = &self.offset {
+            scroll = scroll.with_persisted_offset(Rc::clone(offset));
+        }
+        if let Some(cursor) = self.cursor {
+            scroll = scroll.with_cursor(cursor);
+        }
+        let Some(body) = body else {
+            return scroll;
+        };
+        if !self.center {
+            return scroll.with_child(body);
+        }
+        // The page stands in a row that fills the viewport, centred in it.
+        scroll
+            .with_content_min_viewport_height()
+            .with_child(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_padding_rhythm(None, None)
+                    .with_align_items(AlignItems::Center)
+                    .push(body),
+            ))
+    }
+
+    /// Put a scrolling page holding its current body back in place, keeping its options.
+    fn reseat(&mut self) {
+        let body = self.scroll_mut().and_then(|scroll| {
+            scroll
+                .child_mut()
+                .map(|body| std::mem::replace(body, Box::new(Spacer::new()) as Element))
         });
-        self.scroll = put(scroll, body);
+        self.put_scroll(body);
     }
 
-    fn described(&mut self) {
-        self.structure = self.structure.join(StructureChange::Described);
+    fn put_scroll(&mut self, body: Option<Element>) {
+        let scroll: Element = Box::new(self.make_scroll(body));
+        let at = self.scroll_at;
+        if at < self.parts.children.len() {
+            self.parts.children[at] = scroll;
+        } else {
+            self.parts.children.push(scroll);
+        }
     }
 
-    /// The room a page alone on a window stands in: the readable column, centred, a group's
-    /// gutter round it.
-    fn page_style(theme: &Theme, rows: Vec<taffy::GridTemplateComponent<String>>) -> Style {
+    fn set_header(&mut self, header: Option<Element>) {
+        match (header, self.scroll_at) {
+            (Some(header), 1) => self.parts.children[0] = header,
+            (Some(header), _) => {
+                self.parts.children.insert(0, header);
+                self.scroll_at = 1;
+            }
+            (None, _) => {}
+        }
+    }
+
+    fn scroll_ref(&self) -> Option<&Scrollable> {
+        self.parts
+            .children
+            .get(self.scroll_at)?
+            .as_any()?
+            .downcast_ref()
+    }
+
+    fn scroll_mut(&mut self) -> Option<&mut Scrollable> {
+        self.parts
+            .children
+            .get_mut(self.scroll_at)?
+            .as_any_mut()?
+            .downcast_mut()
+    }
+
+    /// The views of the page that scrolls.
+    fn body(&mut self) -> Option<&mut dyn PartViews> {
+        <Scrollable as Described>::part_views(self.scroll_mut()?, "content")
+    }
+
+    /// Where a part stands, when it holds one.
+    fn index(&self, part: Part) -> Option<usize> {
+        match part {
+            Part::Body => Some(self.scroll_at),
+            Part::Notice => self.notice.then_some(self.scroll_at + 1),
+            Part::Actions => self.actions.then(|| self.parts.children.len() - 1),
+        }
+    }
+
+    /// Put `view` where `part` stands, or first when it held none.
+    fn put(&mut self, part: Part, view: Element) {
+        if let Some(at) = self.index(part) {
+            if let Some(slot) = self.parts.children.get_mut(at) {
+                *slot = view;
+            }
+        } else {
+            let at = match part {
+                Part::Body => self.scroll_at,
+                Part::Notice => {
+                    self.notice = true;
+                    self.scroll_at + 1
+                }
+                Part::Actions => {
+                    self.actions = true;
+                    self.parts.children.len()
+                }
+            };
+            self.parts.children.insert(at, view);
+        }
+    }
+
+    /// The room a page stands in: the readable column, centred, a group's gutter round it alone
+    /// on a window's ground, or the room a surface offers it.
+    fn page_style(&self, theme: &Theme, rows: Vec<taffy::GridTemplateComponent<String>>) -> Style {
         let group = theme.tokens.spacing.rhythm.get(Rhythm::Group);
-        Style {
-            padding: insets_all(group),
-            size: taffy::Size {
+        let mut style = column_style(group);
+        style.grid_template_rows = rows;
+        if self.standalone {
+            style.padding = insets_all(group);
+            style.size = Size {
                 width: percent(1.0_f32),
                 height: percent(1.0_f32),
-            },
-            max_size: taffy::Size {
+            };
+            style.max_size = Size {
                 width: length(theme.tokens.metrics.readable_width + 2.0 * group),
                 height: auto(),
-            },
-            margin: taffy::Rect {
+            };
+            style.margin = taffy::Rect {
                 left: auto(),
                 right: auto(),
                 top: length(0.0_f32),
                 bottom: length(0.0_f32),
-            },
-            ..stack_rows(rows, group)
+            };
+        } else if self.fills_height {
+            style.size.height = percent(1.0_f32);
         }
+        style
     }
-
-    /// The room a page in a surface takes: the width it is offered, and the height when the
-    /// surface holds it to one.
-    fn embedded_style(
-        &self,
-        theme: &Theme,
-        rows: Vec<taffy::GridTemplateComponent<String>>,
-    ) -> Style {
-        let group = theme.tokens.spacing.rhythm.get(Rhythm::Group);
-        Style {
-            size: taffy::Size {
-                width: percent(1.0_f32),
-                height: if self.fills_height {
-                    percent(1.0_f32)
-                } else {
-                    auto()
-                },
-            },
-            min_size: taffy::Size {
-                width: length(0.0_f32),
-                height: auto(),
-            },
-            ..stack_rows(rows, group)
-        }
-    }
-}
-
-/// What a page's scroll is built with: its bar, focus reveal, label and whether it takes the
-/// room left under the header.
-#[derive(Clone, Default)]
-struct Scroll {
-    fills: bool,
-    shows_bar: bool,
-    reveals_focus: bool,
-    label: Option<String>,
-    center: bool,
-}
-
-fn page_scroll(options: Scroll) -> Scrollable {
-    let mut scroll = Scrollable::new_vertical();
-    if options.shows_bar {
-        // The page under the track is one of several, each a step of the same account: the bar's
-        // gutter stays kept whichever step fits and whichever overflows, so a control stands
-        // where it stood on the last page.
-        scroll = scroll.always_visible().with_stable_vertical_gutter();
-    }
-    if options.reveals_focus {
-        scroll = scroll.with_focus_reveal();
-    }
-    if let Some(label) = options.label {
-        scroll = scroll.with_label(label);
-    }
-    if options.fills {
-        scroll = scroll.fill_parent_height();
-    }
-    center(scroll, options.center)
-}
-
-/// Wrap a short page so it fills the viewport and stands centred in the room, rather than at the
-/// top of a tall window.
-fn center(mut scroll: Scrollable, center: bool) -> Scrollable {
-    if !center {
-        return scroll;
-    }
-    // The page stands in a row that fills the viewport, centred in it. The row goes in before
-    // the scroll is told its content fills the viewport, so that wrapper is the one round it.
-    let body = scroll
-        .child_mut()
-        .map(|body| std::mem::replace(body, Box::new(Spacer::new()) as Element));
-    let Some(body) = body else {
-        return scroll;
-    };
-    scroll
-        .with_content_min_viewport_height()
-        .with_child(Box::new(
-            Row::new()
-                .no_wrap()
-                .with_padding_rhythm(None, None)
-                .with_align_items(AlignItems::Center)
-                .push(body),
-        ))
-}
-
-fn put(mut scroll: Scrollable, body: Option<Element>) -> Scrollable {
-    if let Some(body) = body {
-        scroll = scroll.with_child(body);
-    }
-    scroll
 }
 
 /// Where the person is, as a track: the stage's name on the leading edge, which step of how many
@@ -414,81 +403,81 @@ fn stage_track(
     )
 }
 
+/// Where the person is, from the props that say it: a stepper of named stations, or a track.
+fn header_of(props: &mut GuidedPageProps) -> Option<Element> {
+    let station = std::mem::take(&mut props.station);
+    if props.steps.is_empty() {
+        return props.progress.map(|progress| {
+            stage_track(
+                props.stage.as_deref(),
+                props.position.as_deref(),
+                tilo_ui_base::num::f32_of_f64(progress),
+                props.progress_name.as_deref(),
+            )
+        });
+    }
+    let steps = std::mem::take(&mut props.steps);
+    let mut stepper =
+        Stepper::new(steps).current(props.current.and_then(|index| usize::try_from(index).ok()));
+    if !station.is_none() {
+        stepper = stepper.on_station(move |index| {
+            station.fire(Some(tilo_ui_base::component::Value::Int(
+                i64::try_from(index).unwrap_or(i64::MAX),
+            )));
+        });
+    }
+    Some(Box::new(stepper) as Element)
+}
+
 impl Described for GuidedPage {
     type Props = GuidedPageProps;
 
-    fn from_props(_key: &str, props: GuidedPageProps) -> Self {
-        let GuidedPageProps {
-            steps,
-            current,
-            station,
-            stage,
-            position,
-            progress,
-            progress_name,
-            body,
-            notice,
-            actions,
-            shows_bar,
-            reveals_focus,
-            scroll_label,
-            fills_height,
-            standalone,
-        } = props;
-        let header = if steps.is_empty() {
-            progress.map(|progress| {
-                stage_track(
-                    stage.as_deref(),
-                    position.as_deref(),
-                    tilo_ui_base::num::f32_of_f64(progress),
-                    progress_name.as_deref(),
-                )
-            })
-        } else {
-            let mut stepper =
-                Stepper::new(steps).current(current.and_then(|index| usize::try_from(index).ok()));
-            if !station.is_none() {
-                stepper = stepper.on_station(move |index| {
-                    station.fire(Some(tilo_ui_base::component::Value::Int(
-                        i64::try_from(index).unwrap_or(i64::MAX),
-                    )));
-                });
-            }
-            Some(Box::new(stepper) as Element)
-        };
-        let mut scroll = page_scroll(Scroll {
-            fills: standalone || fills_height,
-            shows_bar,
-            reveals_focus,
-            label: scroll_label,
-            center: false,
-        });
-        if let Some(body) = body {
-            scroll = scroll.with_child(body);
+    fn from_props(_key: &str, mut props: GuidedPageProps) -> Self {
+        let header = header_of(&mut props);
+        let mut page = Self::bare(false, props.fills_height);
+        page.shows_bar = props.shows_bar;
+        page.reveals_focus = props.reveals_focus;
+        page.scroll_label = props.scroll_label.take();
+        page.set_header(header);
+        page.put_scroll(props.body.take());
+        if let Some(notice) = props.notice.take() {
+            page.put(Part::Notice, notice);
         }
-        Self {
-            header,
-            scroll,
-            notice,
-            actions,
-            standalone,
-            fills_height,
-            header_node: None,
-            scroll_node: None,
-            notice_node: None,
-            actions_node: None,
-            rect: Rect::ZERO,
-            page: None,
-            structure: StructureChange::None,
-            editing: None,
+        if let Some(actions) = props.actions.take() {
+            page.put(Part::Actions, actions);
         }
+        page
     }
 
-    /// What it takes is set when it is built: where the person is, how tall the page stands and
-    /// how it scrolls are the surface's, and a change of them builds it again. What its parts
-    /// hold changes where they stand.
-    fn set_props(&mut self, _props: GuidedPageProps) -> bool {
-        false
+    /// The account of where the person is and the room the page stands in are the props': they
+    /// are taken here, where the page stands, so a person's field, press or open menu in the page
+    /// that scrolls stays. A part a host hands with them takes its place; absent, the part it
+    /// already holds stays.
+    fn set_props(&mut self, mut props: GuidedPageProps) -> bool {
+        let header = header_of(&mut props);
+        let others = self.shows_bar != props.shows_bar
+            || self.reveals_focus != props.reveals_focus
+            || self.fills_height != props.fills_height
+            || self.scroll_label != props.scroll_label;
+        self.shows_bar = props.shows_bar;
+        self.reveals_focus = props.reveals_focus;
+        self.fills_height = props.fills_height;
+        self.scroll_label = props.scroll_label.take();
+        self.set_header(header);
+        if others {
+            self.reseat();
+        }
+        if let Some(body) = props.body.take() {
+            self.put_scroll(Some(body));
+        }
+        if let Some(notice) = props.notice.take() {
+            self.put(Part::Notice, notice);
+        }
+        if let Some(actions) = props.actions.take() {
+            self.put(Part::Actions, actions);
+        }
+        self.parts.described();
+        true
     }
 
     fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
@@ -502,28 +491,23 @@ impl Described for GuidedPage {
     }
 }
 
-/// A part that holds one view or none.
-fn slot(held: &mut Option<Element>, index: usize) -> Option<&mut Element> {
-    (index == 0).then_some(held).and_then(Option::as_mut)
-}
-
 impl PartViews for GuidedPage {
     fn len(&self) -> usize {
         match self.editing {
-            Some(Part::Body) => <Scrollable as PartViews>::len(&self.scroll),
-            Some(Part::Notice) => usize::from(self.notice.is_some()),
-            Some(Part::Actions) => usize::from(self.actions.is_some()),
+            Some(Part::Body) => self.scroll_ref().map_or(0, <Scrollable as PartViews>::len),
+            Some(Part::Notice) => usize::from(self.notice),
+            Some(Part::Actions) => usize::from(self.actions),
             None => 0,
         }
     }
 
     fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
         match self.editing {
-            Some(Part::Body) => {
-                <Scrollable as Described>::part_views(&mut self.scroll, "content")?.view_mut(index)
+            Some(Part::Body) => self.body()?.view_mut(index),
+            Some(part) => {
+                let at = self.index(part)?;
+                self.parts.children.get_mut(at)
             }
-            Some(Part::Notice) => slot(&mut self.notice, index),
-            Some(Part::Actions) => slot(&mut self.actions, index),
             None => None,
         }
     }
@@ -531,58 +515,59 @@ impl PartViews for GuidedPage {
     fn insert(&mut self, index: usize, view: Element) {
         match self.editing {
             Some(Part::Body) => {
-                if let Some(body) =
-                    <Scrollable as Described>::part_views(&mut self.scroll, "content")
-                {
+                if let Some(body) = self.body() {
                     body.insert(index, view);
                 }
             }
-            Some(Part::Notice) => self.notice = Some(view),
-            Some(Part::Actions) => self.actions = Some(view),
+            Some(part) => self.put(part, view),
             None => return,
         }
-        self.described();
+        self.parts.described();
     }
 
     fn remove(&mut self, index: usize) {
         match self.editing {
             Some(Part::Body) => {
-                if let Some(body) =
-                    <Scrollable as Described>::part_views(&mut self.scroll, "content")
-                {
+                if let Some(body) = self.body() {
                     body.remove(index);
                 }
             }
-            Some(Part::Notice) => self.notice = None,
-            Some(Part::Actions) => self.actions = None,
+            Some(part) => {
+                let Some(at) = self.index(part) else {
+                    return;
+                };
+                self.parts.children.remove(at);
+                match part {
+                    Part::Notice => self.notice = false,
+                    Part::Actions => self.actions = false,
+                    Part::Body => {}
+                }
+            }
             None => return,
         }
-        self.described();
+        self.parts.described();
     }
 
     fn move_view(&mut self, from: usize, to: usize) {
         if self.editing == Some(Part::Body)
-            && let Some(body) = <Scrollable as Described>::part_views(&mut self.scroll, "content")
+            && let Some(body) = self.body()
         {
             body.move_view(from, to);
-            self.described();
+            self.parts.described();
         }
     }
 
     fn replace(&mut self, index: usize, view: Element) {
         match self.editing {
             Some(Part::Body) => {
-                if let Some(body) =
-                    <Scrollable as Described>::part_views(&mut self.scroll, "content")
-                {
+                if let Some(body) = self.body() {
                     body.replace(index, view);
                 }
             }
-            Some(Part::Notice) => self.notice = Some(view),
-            Some(Part::Actions) => self.actions = Some(view),
+            Some(part) => self.put(part, view),
             None => return,
         }
-        self.described();
+        self.parts.described();
     }
 }
 
@@ -591,10 +576,6 @@ impl Widget for GuidedPage {
 
     fn name(&self) -> &'static str {
         "GuidedPage"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn layout_info(&self) -> Option<LayoutInfo> {
@@ -608,44 +589,16 @@ impl Widget for GuidedPage {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let group = theme.tokens.spacing.rhythm.get(Rhythm::Group);
-        self.header_node = self
-            .header
-            .as_mut()
-            .map(|header| header.build_layout(taffy, theme, map));
-        self.scroll_node = Some(self.scroll.build_layout(taffy, theme, map));
-        self.notice_node = self
-            .notice
-            .as_mut()
-            .map(|notice| notice.build_layout(taffy, theme, map));
-        self.actions_node = self
-            .actions
-            .as_mut()
-            .map(|actions| actions.build_layout(taffy, theme, map));
-        // Each part is a row of its own, the page the one that takes the room left: the
-        // header, the page, what needs attention, the ways forward.
-        let mut nodes = Vec::with_capacity(4);
-        let mut rows: Vec<taffy::GridTemplateComponent<String>> = Vec::with_capacity(4);
-        for (node, page) in [
-            (self.header_node, false),
-            (self.scroll_node, true),
-            (self.notice_node, false),
-            (self.actions_node, false),
-        ] {
-            let Some(node) = node else {
-                continue;
-            };
-            nodes.push(node);
-            rows.push(if page {
-                minmax(length(0.0_f32), fr(1.0_f32))
-            } else {
-                auto()
-            });
-        }
-        let style = if self.standalone {
-            Self::page_style(theme, rows)
-        } else {
-            self.embedded_style(theme, rows)
-        };
+        // Each part is a row of its own, the page the one that takes the room left.
+        let rows = (0..self.parts.children.len())
+            .map(|at| {
+                if at == self.scroll_at {
+                    minmax(length(0.0_f32), fr(1.0_f32))
+                } else {
+                    auto()
+                }
+            })
+            .collect();
         self.page = self.standalone.then(|| PageLayout {
             max_content_width: Effective::new(
                 theme.tokens.metrics.readable_width,
@@ -653,122 +606,17 @@ impl Widget for GuidedPage {
             ),
             gutter: Effective::new(group, LayoutOrigin::Theme),
         });
-        let node = taffy.parent_node(style, &nodes);
+        let style = self.page_style(theme, rows);
+        let node = self.parts.build(style, taffy, theme, map);
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
-        let at = self.rect.origin();
-        if let (Some(header), Some(header_node)) = (&mut self.header, self.header_node) {
-            header.apply_layout(taffy, header_node, at);
-        }
-        if let Some(scroll_node) = self.scroll_node {
-            self.scroll.apply_layout(taffy, scroll_node, at);
-        }
-        if let (Some(notice), Some(notice_node)) = (&mut self.notice, self.notice_node) {
-            notice.apply_layout(taffy, notice_node, at);
-        }
-        if let (Some(actions), Some(actions_node)) = (&mut self.actions, self.actions_node) {
-            actions.apply_layout(taffy, actions_node, at);
-        }
-    }
-
     fn draw(&mut self, ctx: &mut DrawCtx<'_>) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
-        let (scene, transform, text, theme, mut env) = ctx.parts();
-        if let Some(header) = &mut self.header {
-            header.draw_child(scene, transform, text, theme, &env);
-        }
-        self.scroll.draw_child(scene, transform, text, theme, &env);
-        if let Some(notice) = &mut self.notice {
-            notice.draw_child(scene, transform, text, theme, &env);
-        }
-        if let Some(actions) = &mut self.actions {
-            actions.draw_child(scene, transform, text, theme, &env);
-        }
+        self.parts.draw(ctx);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &tilo_ui_base::winit::event::WindowEvent,
-        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
-    ) {
-        if let (Some(header), Some(node)) = (&mut self.header, self.header_node) {
-            let path = ctx.path;
-            header.handle_event(event, &mut ctx.reborrow(path, node));
-        }
-        if !*ctx.handled
-            && let Some(node) = self.scroll_node
-        {
-            let path = ctx.path;
-            self.scroll
-                .handle_event(event, &mut ctx.reborrow(path, node));
-        }
-        if !*ctx.handled
-            && let (Some(notice), Some(node)) = (&mut self.notice, self.notice_node)
-        {
-            let path = ctx.path;
-            notice.handle_event(event, &mut ctx.reborrow(path, node));
-        }
-        if !*ctx.handled
-            && let (Some(actions), Some(node)) = (&mut self.actions, self.actions_node)
-        {
-            let path = ctx.path;
-            actions.handle_event(event, &mut ctx.reborrow(path, node));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = Vec::with_capacity(4);
-        if let Some(header) = &self.header {
-            children.push(header.as_ref());
-        }
-        children.push(&self.scroll);
-        if let Some(notice) = &self.notice {
-            children.push(notice.as_ref());
-        }
-        if let Some(actions) = &self.actions {
-            children.push(actions.as_ref());
-        }
-        children
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(4);
-        if let Some(header) = &mut self.header {
-            children.push(header.as_mut());
-        }
-        children.push(&mut self.scroll);
-        if let Some(notice) = &mut self.notice {
-            children.push(notice.as_mut());
-        }
-        if let Some(actions) = &mut self.actions {
-            children.push(actions.as_mut());
-        }
-        children
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = std::mem::take(&mut self.structure).rebuilds();
-        for child in self.children_mut() {
-            dirty |= child.take_structure_dirty();
-        }
-        dirty
-    }
-
-    fn take_structure_change(&mut self) -> StructureChange {
-        let mut change = std::mem::take(&mut self.structure);
-        for child in self.children_mut() {
-            change = change.join(child.take_structure_change());
-        }
-        change
-    }
+    tilo_ui_base::retained_parts!(lifecycle: parts);
 }
 
 #[cfg(test)]
@@ -781,7 +629,6 @@ mod tests {
 
     use super::*;
     use crate::component_testing::Node;
-    use crate::widget::FloatingPanelFace;
     use tilo_ui_base::component::Value;
 
     /// The page's parts change where they stand, between the track above and the ways forward
@@ -814,41 +661,6 @@ mod tests {
             page.children().len(),
             4,
             "a notice stands between the page and the ways forward"
-        );
-    }
-
-    /// A guided page in a card stands its parts a group apart, as every guided page's do, where
-    /// the panel's own header, body and footer slots stood two section insets (8 + 8) apart; and
-    /// one surface draws no hairline between its own parts.
-    #[test]
-    fn a_guided_page_in_a_panel_stands_one_group_apart_and_draws_no_rule() {
-        let theme = Theme::light();
-        let group = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
-        let (header, page, footer) = (36.0, 320.0, 40.0);
-        let slots = FloatingPanelFace::new()
-            .header(header)
-            .footer(footer)
-            .height_for(page, &theme);
-        let guided =
-            FloatingPanelFace::new().height_for(header + page + footer + 2.0 * group, &theme);
-        assert!(
-            (guided - slots - 16.0).abs() < 0.01,
-            "the card stands one group gap taller at each end than the slots' 8 + 8: {guided} \
-             against {slots}"
-        );
-        let old = FloatingPanelFace::new()
-            .header(header)
-            .footer(footer)
-            .layout(Rect::from_origin_size(Point::ZERO, (400.0, slots)), &theme);
-        let new = FloatingPanelFace::new()
-            .layout(Rect::from_origin_size(Point::ZERO, (400.0, guided)), &theme);
-        assert!(
-            old.rule.is_some(),
-            "a header slot draws the panel's hairline over its body"
-        );
-        assert!(
-            new.rule.is_none(),
-            "one surface draws no hairline between its own parts"
         );
     }
 
