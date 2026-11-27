@@ -211,6 +211,38 @@
       "budget_ms": 20000
     },
     {
+      "id": "devices",
+      "said": "Open Devices and access, and take the code a new computer joins with",
+      "dark": true,
+      "ops": [
+        {
+          "press": "Devices and access"
+        },
+        {
+          "wait_for": "Everything that can act as you"
+        },
+        {
+          "must": [
+            "Add a device",
+            "Everything that can act as you"
+          ]
+        },
+        {
+          "press": "Add a device"
+        },
+        {
+          "must": {
+            "see": [
+              "The new device's code",
+              "Copy code"
+            ],
+            "within": 20
+          }
+        }
+      ],
+      "budget_ms": 30000
+    },
+    {
       "id": "about",
       "said": "Open About and see the system it runs and the hardware it found",
       "ops": [
