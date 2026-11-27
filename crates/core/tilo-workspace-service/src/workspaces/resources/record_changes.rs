@@ -700,10 +700,19 @@ impl Workspaces {
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        // Read, changed and kept under one hold of the workspace's copy: a second write of the
-        // record from this device waits for the first, so two changes of one record are never
-        // built on the same heads and one number is never given to two changes. Only a wait for
-        // keys this device does not hold yet lets the hold go before the changes are kept.
+        // Read, changed and kept in one turn of the record: a second write of the record from
+        // this device waits for the first, so two changes of one record are never built on the
+        // same heads and one number is never given to two changes. The workspace's copy is held
+        // from the read on too, and only a wait for keys this device does not hold yet lets that
+        // hold go before the changes are kept: the record's turn lasts through it, so a second
+        // write never reads the record from before a first one founded it.
+        let turn = record_turn(
+            &self.signing_device().cert.device_public_key,
+            workspace,
+            kind,
+            record,
+        )
+        .await;
         let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
         let (mut doc, heads) = {
             let mut store = self.store_of(&mut hosted);
@@ -774,6 +783,9 @@ impl Workspaces {
             waits.wait(unkept).await?;
             hosted = std::sync::Arc::clone(&state).lock_owned().await;
         }
+        // Kept: the next write of the record reads it with these changes. Whoever this write
+        // wakes may write the record in turn.
+        drop(turn);
         // Whoever follows the record hears of it by its id, as of a member's write.
         self.wrote(workspace, app, record);
         // The keys this host refuses and the person's devices are read from two records of their
@@ -2146,4 +2158,39 @@ mod tests {
             "the old title is gone from search"
         );
     }
+}
+
+/// This device's turn to write the record `record` of `kind` in `workspace`, as `device`: one
+/// write of a record at a time, from its read until its changes are kept, including any wait for
+/// keys between them.
+async fn record_turn(
+    device: &[u8; 32],
+    workspace: &str,
+    kind: &str,
+    record: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    type Turns = std::collections::HashMap<
+        ([u8; 32], String, String, String),
+        std::sync::Weak<tokio::sync::Mutex<()>>,
+    >;
+    static TURNS: std::sync::LazyLock<std::sync::Mutex<Turns>> =
+        std::sync::LazyLock::new(Default::default);
+    let turn = {
+        let mut turns = tilo_lock::MutexRecover::lock_recover(&*TURNS);
+        turns.retain(|_, turn| turn.strong_count() > 0);
+        let key = (
+            *device,
+            workspace.to_owned(),
+            kind.to_owned(),
+            record.to_owned(),
+        );
+        if let Some(turn) = turns.get(&key).and_then(std::sync::Weak::upgrade) {
+            turn
+        } else {
+            let turn = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+            turns.insert(key, std::sync::Arc::downgrade(&turn));
+            turn
+        }
+    };
+    turn.lock_owned().await
 }
