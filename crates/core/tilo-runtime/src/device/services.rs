@@ -4568,6 +4568,12 @@ impl tilo_api::session::Here for DaemonHere {
             .unwrap_or_default()
     }
 
+    fn not_here(&self, key: &DeviceCert) -> Vec<tilo_api::session::Workspace> {
+        self.daemon()
+            .map(|daemon| tilo_api::session::Here::not_here(&*daemon, key))
+            .unwrap_or_default()
+    }
+
     fn enter(
         &self,
         workspace: &str,
@@ -4683,6 +4689,22 @@ impl tilo_api::session::Here for Daemon {
         // The one this computer enters through first: what a command that names none acts in.
         kept.sort_by_key(|workspace| workspace.id != self.workspace);
         kept
+    }
+
+    fn not_here(&self, key: &DeviceCert) -> Vec<tilo_api::session::Workspace> {
+        if hex::encode(key.user_public_key) != self.actor {
+            return Vec::new();
+        }
+        self.workspaces
+            .copies()
+            .not_here()
+            .into_iter()
+            .map(|missing| tilo_api::session::Workspace {
+                kept_here: false,
+                not_here: Some(missing.why),
+                ..tilo_api::session::held(missing.workspace, missing.name)
+            })
+            .collect()
     }
 
     fn enter(
@@ -4805,11 +4827,13 @@ impl tilo_api::session::Here for Daemon {
     fn workspaces_changed(&self) -> Option<Pending<()>> {
         let held = self.workspaces.entered();
         let mut changes = self.workspaces.copies().governance_changes();
+        let mut missing = self.workspaces.copies().not_here_changed();
         let (done, answer) = tilo_actions::remote::pending();
         tilo_rt::app().handle().spawn(async move {
             tokio::select! {
                 () = held.notified() => {}
                 _ = changes.recv() => {}
+                _ = missing.changed() => {}
             }
             done.complete(());
         });

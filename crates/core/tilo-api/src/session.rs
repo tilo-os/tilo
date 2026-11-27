@@ -264,6 +264,13 @@ pub trait Here: Send + Sync {
         Box::pin(async { Err(ServerError::NoAccountHere.to_string()) })
     }
 
+    /// The workspaces `key`'s person's list shows on this device that it holds no copy of yet,
+    /// each with why ([`Workspace::not_here`]): none for a key of a person it does not know. It
+    /// takes them in by itself, trying again until it has them.
+    fn not_here(&self, _key: &tilo_user_identity::DeviceCert) -> Vec<Workspace> {
+        Vec::new()
+    }
+
     /// Answered the next time the workspaces this host keeps change; `None` when it cannot tell.
     fn workspaces_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
         None
@@ -392,6 +399,7 @@ pub fn held(id: String, name: String) -> Workspace {
         unattended: false,
         own: true,
         kept_here: true,
+        not_here: None,
         address: None,
     }
 }

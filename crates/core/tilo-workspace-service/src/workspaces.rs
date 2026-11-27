@@ -1176,6 +1176,9 @@ struct WorkspacesInner {
     web_ui: std::sync::RwLock<Option<Arc<dyn WebUi>>>,
     /// Each record write of a member the host's copy took in.
     document_writes: tokio::sync::broadcast::Sender<ResourceWrite>,
+    /// The workspaces the person's list shows here that this device could not take in yet
+    /// ([`Workspaces::not_here`]).
+    not_here: tokio::sync::watch::Sender<Vec<servers::keeping::NotHere>>,
     /// How many writes each workspace's list of its agents has begun, by workspace: moved
     /// before the write lands, so a list read before it is known to be behind
     /// ([`Workspaces::agents_written`]).
@@ -1647,6 +1650,7 @@ impl Workspaces {
                 person_names: std::sync::RwLock::default(),
                 web_ui: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
+                not_here: tokio::sync::watch::channel(Vec::new()).0,
                 agents_written: std::sync::Mutex::default(),
                 content: content::ContentSlot::default(),
                 channel_notices: std::sync::Mutex::default(),

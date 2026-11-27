@@ -148,11 +148,17 @@ async fn a_server_keeps_each_listed_workspace_until_its_entry_says_not() {
     drop(desk);
 }
 
-/// A device of the person's that is no server of theirs enters each workspace their list shows on
-/// it, told by the list's change: the daemon takes in what the person made on another device,
-/// and the desktop shows what it holds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_that_is_no_server_enters_what_the_list_shows_on_it() {
+/// The desk, which founded a workspace and says where it serves it, and a laptop of the same
+/// person that is no server of theirs and has their own workspace, which lists nothing yet.
+struct DeskAndLaptop {
+    desk: TestHost,
+    made: String,
+    hint: tilo_peer_state::join::TransportHint,
+    laptop: TestHost,
+    _state: [tempfile::TempDir; 2],
+}
+
+async fn desk_and_laptop() -> DeskAndLaptop {
     let desk_state = tempfile::tempdir().unwrap();
     let laptop_state = tempfile::tempdir().unwrap();
     let (desk_key, desk_cert) = hosting_device();
@@ -195,18 +201,84 @@ async fn a_device_that_is_no_server_enters_what_the_list_shows_on_it() {
             .is_none(),
         "the laptop is no server of the person's"
     );
+    DeskAndLaptop {
+        desk,
+        made: made.workspace,
+        hint,
+        laptop,
+        _state: [desk_state, laptop_state],
+    }
+}
 
-    list_workspace(workspaces, &made.workspace, "Desk", &hint).await;
+/// A device of the person's that is no server of theirs enters each workspace their list shows on
+/// it, told by the list's change: the daemon takes in what the person made on another device,
+/// and the desktop shows what it holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_that_is_no_server_enters_what_the_list_shows_on_it() {
+    let devices = desk_and_laptop().await;
+    let workspaces = devices.laptop.workspaces();
+
+    list_workspace(workspaces, &devices.made, "Desk", &devices.hint).await;
     keeps(
         workspaces,
-        &made.workspace,
+        &devices.made,
         true,
         "the laptop enters the workspace its person's list gained",
     )
     .await;
     assert!(
-        workspaces.is_member(&made.workspace).await.unwrap(),
+        workspaces.is_member(&devices.made).await.unwrap(),
         "it entered as a device of the person, as a member copy of the desk's"
     );
-    drop(desk);
+    assert!(
+        workspaces.not_here().is_empty(),
+        "{:?}",
+        workspaces.not_here()
+    );
+}
+
+/// A workspace the list shows on a device while the device keeping it is away is not here yet,
+/// and the device says so, with why, where it lists the person's workspaces. It tries again by
+/// itself, and once the device keeping it answers again it holds it, with nothing asked of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listed_workspace_whose_device_is_away_is_not_here_with_why_until_it_answers() {
+    let devices = desk_and_laptop().await;
+    let workspaces = devices.laptop.workspaces();
+    devices.desk.away();
+
+    list_workspace(workspaces, &devices.made, "Desk", &devices.hint).await;
+    let not_here = {
+        let mut said = workspaces.not_here_changed();
+        let made = devices.made.clone();
+        tilo_test_env::within(
+            "the laptop says the workspace is not here yet",
+            said.wait_for(|missing| missing.iter().any(|missing| missing.workspace == made)),
+        )
+        .await
+        .expect("the laptop keeps saying what it misses")
+        .clone()
+    };
+    let [missing] = not_here.as_slice() else {
+        panic!("one workspace is not here: {not_here:?}");
+    };
+    assert_eq!(missing.name, "Desk", "{missing:?}");
+    assert!(!missing.why.trim().is_empty(), "it says why: {missing:?}");
+    assert!(workspaces.state(&devices.made).await.is_none());
+
+    devices.desk.back();
+    keeps(
+        workspaces,
+        &devices.made,
+        true,
+        "the laptop takes the workspace in once the desk answers again",
+    )
+    .await;
+    tilo_test_env::within(
+        "the laptop no longer says the workspace is not here",
+        workspaces
+            .not_here_changed()
+            .wait_for(std::vec::Vec::is_empty),
+    )
+    .await
+    .expect("the laptop keeps saying what it misses");
 }

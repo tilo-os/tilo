@@ -2890,6 +2890,14 @@ async fn listed_here(
             }
         }
     }
+    // One the list shows here that this device has not taken in yet says why, beside the rest.
+    for missing in here.not_here(key) {
+        match workspaces.iter_mut().find(|row| row.id == missing.id) {
+            Some(row) if !row.kept_here => row.not_here = missing.not_here,
+            Some(_) => {}
+            None => workspaces.push(missing),
+        }
+    }
     workspaces.retain(|workspace| labelled(workspace, &labels));
     Outcome::Ok(json!({"workspaces": workspaces, "hosts": host_rows(server)}))
 }

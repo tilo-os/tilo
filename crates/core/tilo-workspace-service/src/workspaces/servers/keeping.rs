@@ -4,7 +4,8 @@
 //! (`identity.workspaces`, a [`WorkspaceList`]). Every device of theirs enters
 //! each workspace the list shows on it, as a member copy at the address the
 //! list keeps for it ([`crate::workspaces::Workspaces::hold_as_members`]): the
-//! device's daemon does, and the desktop session shows what it holds. A server
+//! device's daemon does, every device of theirs holding any copy of their own
+//! workspace, and the desktop session shows what it holds. A server
 //! with an entry among their servers ([`super::SERVERS`]) keeps each workspace
 //! the list names instead, unless its entry turned keeping off for it
 //! ([`Server::keeps_not`]). One its entry no longer keeps it lets go of
@@ -17,13 +18,17 @@
 //! desktop session.
 //!
 //! It learns of a change from the change itself: a write to the list or to
-//! the servers' document, or the person's workspace reaching this device
-//! ([`Workspaces::follow_person_list`]). Nothing reads either on a timer.
+//! the servers' document, or a workspace reaching this device
+//! ([`Workspaces::follow_person_list`]). While a workspace the list shows here
+//! is not taken in, it tries again, sooner first and then about once a minute,
+//! and says which and why ([`Workspaces::not_here`]); with none missing,
+//! nothing reads on a timer.
 //!
 //! What it keeps is each workspace's to say: `copies.read` (`…/servers#keeps`)
 //! names the devices keeping it.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tilo_peer_state::join::TransportHint;
 use tilo_server_protocol::WorkspaceId;
@@ -31,7 +36,7 @@ use tilo_server_protocol::workspaces::IDENTITY_LIST;
 use tilo_user_identity::WorkspaceList;
 
 use super::{SERVERS, person_workspace_id, read};
-use crate::workspaces::person_workspace::{self, holds_person_workspace};
+use crate::workspaces::person_workspace;
 use crate::workspaces::{HostedWorkspace, RELEASED, Workspaces};
 
 /// What one pass over the person's list did, by workspace id.
@@ -41,7 +46,27 @@ pub struct Kept {
     pub entered: Vec<String>,
     /// The workspaces it let go of.
     pub released: Vec<String>,
+    /// The workspaces the list shows here that this device could not take in, and why.
+    pub missing: Vec<NotHere>,
 }
+
+/// A workspace of the person's list that shows on this device and that it holds no copy of yet,
+/// with why: what the person's list of workspaces on this device says of it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NotHere {
+    /// The workspace's id.
+    pub workspace: String,
+    /// The name the person's list gives it.
+    pub name: String,
+    /// Why this device does not hold it yet, as the device a person reads it on says it.
+    pub why: String,
+}
+
+/// How long the first attempt again waits after a workspace the list shows here was not taken
+/// in; each next waits twice as long, up to [`LAST_RETRY`].
+const FIRST_RETRY: Duration = Duration::from_secs(2);
+/// The longest a workspace not taken in waits for the next attempt.
+const LAST_RETRY: Duration = Duration::from_secs(60);
 
 impl Kept {
     /// Whether the pass changed nothing.
@@ -53,8 +78,11 @@ impl Kept {
 
 /// Enter every workspace of this device's person's list that shows on this
 /// device, or, on a server of theirs, that its entry among their servers keeps,
-/// letting go of each that entry keeps no longer: one pass. Every device first
-/// enters as itself what it holds as the device it was copied from.
+/// letting go of each that entry keeps no longer: one pass, on any device that
+/// holds a copy of the person's own workspace, kept or a member's. Every device
+/// first enters as itself what it holds as the device it was copied from. What
+/// it could not enter it answers in [`Kept::missing`] and says in
+/// [`Workspaces::not_here`].
 ///
 /// # Errors
 /// The servers' document or the list could not be read, or a workspace could
@@ -65,8 +93,9 @@ pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
     // What this device holds as the device it was copied from it enters as itself, at the device
     // serving it: every device of the person's, listed or not, and never its desktop session.
     let mut kept = enter_as_this_device(workspaces).await;
-    if !holds_person_workspace(workspaces).await {
+    if workspaces.state(&person).await.is_none() {
         tracing::debug!("this device holds no copy of its person's own workspace: no list to keep");
+        workspaces.say_not_here(Vec::new());
         return Ok(kept);
     }
     // A server keeps what its entry keeps; every other device what the list shows on it.
@@ -81,7 +110,8 @@ pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
         }
     }
     let mut entering = Vec::new();
-    for (workspace, hint, shown) in
+    let mut names = std::collections::BTreeMap::new();
+    for (workspace, name, hint, shown) in
         listed(workspaces, &own.user_public_key, &own.device_public_key).await?
     {
         let id = workspace.to_string();
@@ -94,21 +124,40 @@ pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
             continue;
         }
         match hint {
-            Some(hint) => entering.push((workspace, hint)),
+            Some(hint) => {
+                names.insert(workspace, name);
+                entering.push((workspace, hint));
+            }
             // The device that made it says where it is reached once it holds it: that write
             // to the list brings another pass.
-            None => {
-                tracing::debug!(workspace = %id, "the person's list says nowhere yet this device reaches a workspace of theirs");
-            }
+            None => kept.missing.push(NotHere {
+                workspace: id,
+                name,
+                why: "none of your devices has said yet where it is kept".to_owned(),
+            }),
         }
     }
-    workspaces.hold_as_members(entering.iter().cloned()).await;
+    let failed = workspaces.hold_as_members(entering.iter().cloned()).await;
     for (workspace, _) in entering {
         let id = workspace.to_string();
         if workspaces.state(&id).await.is_some() {
             kept.entered.push(id);
+        } else {
+            let why = failed
+                .iter()
+                .find(|(failed, _)| *failed == workspace)
+                .map_or_else(
+                    || "its copy did not reach this device".to_owned(),
+                    |(_, why)| why.clone(),
+                );
+            kept.missing.push(NotHere {
+                workspace: id,
+                name: names.remove(&workspace).unwrap_or_default(),
+                why,
+            });
         }
     }
+    workspaces.say_not_here(kept.missing.clone());
     Ok(kept)
 }
 
@@ -127,14 +176,14 @@ async fn enter_as_this_device(workspaces: &Workspaces) -> Kept {
     kept
 }
 
-/// Each workspace of `person`'s list, with the address the list keeps for it
+/// Each workspace of `person`'s list, with its name, the address the list keeps for it
 /// (`None` for one no device of theirs said where it is kept) and whether it
 /// shows on `device`.
 async fn listed(
     workspaces: &Workspaces,
     person: &[u8; 32],
     device: &[u8; 32],
-) -> Result<Vec<(WorkspaceId, Option<TransportHint>, bool)>, String> {
+) -> Result<Vec<(WorkspaceId, String, Option<TransportHint>, bool)>, String> {
     let list = person_workspace::read_on::<WorkspaceList>(
         workspaces,
         &person_workspace_id(person),
@@ -151,7 +200,12 @@ async fn listed(
                     postcard::from_bytes::<TransportHint>(&bytes).ok()
                 )
             });
-            Some((workspace, hint, listed.shows_on(device)))
+            Some((
+                workspace,
+                listed.name.clone(),
+                hint,
+                listed.shows_on(device),
+            ))
         })
         .collect())
 }
@@ -191,42 +245,81 @@ async fn keep_again(workspaces: &Workspaces, workspace: &str) -> Result<bool, St
 }
 
 impl Workspaces {
+    /// The workspaces the person's list shows on this device that it could not take in yet, each
+    /// with why, as the last pass over the list found them ([`keep_listed`]).
+    #[must_use]
+    pub fn not_here(&self) -> Vec<NotHere> {
+        self.inner.not_here.borrow().clone()
+    }
+
+    /// Moves whenever [`Self::not_here`] says something else.
+    #[must_use]
+    pub fn not_here_changed(&self) -> tokio::sync::watch::Receiver<Vec<NotHere>> {
+        self.inner.not_here.subscribe()
+    }
+
+    fn say_not_here(&self, missing: Vec<NotHere>) {
+        self.inner.not_here.send_if_modified(|said| {
+            let changed = *said != missing;
+            *said = missing;
+            changed
+        });
+    }
+
     /// Keep the person's list as this device's entry among their servers
     /// says, now and again after each change to the list, to the servers'
-    /// document, or to the person's workspace here, for as long as this
-    /// device keeps its workspaces.
+    /// document, or to what this device holds; and, while a workspace the list
+    /// shows here is not taken in, again after a wait that grows from
+    /// [`FIRST_RETRY`] to [`LAST_RETRY`].
     pub(crate) fn follow_person_list(&self) {
         let mut writes = self.document_writes();
         let mut governance = self.governance_changes();
+        let mut holds = self.holds_changed();
         let workspaces = Arc::downgrade(&self.inner);
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
         let person = person_workspace_id(&self.device_cert().user_public_key);
         runtime.spawn(async move {
+            let mut wait = FIRST_RETRY;
             loop {
-                {
+                let unsettled = {
                     let Some(inner) = workspaces.upgrade() else {
                         return;
                     };
                     match Box::pin(keep_listed(&Self { inner })).await {
-                        Ok(kept) if !kept.none() => {
-                            tracing::info!(?kept, "this device keeps the person's list");
+                        Ok(kept) => {
+                            if !kept.none() {
+                                tracing::info!(?kept, "this device keeps the person's list");
+                            }
+                            !kept.missing.is_empty()
                         }
-                        Ok(_) => {}
+                        // What it could not read it reads again, as it takes in what it missed.
                         Err(error) => {
-                            tracing::warn!(%error, "this server's keeping of the person's list was not applied");
+                            tracing::warn!(%error, "this device's keeping of the person's list was not applied");
+                            true
                         }
                     }
-                }
+                };
+                let again = if unsettled {
+                    let again = wait;
+                    wait = wait.saturating_mul(2).min(LAST_RETRY);
+                    Some(again)
+                } else {
+                    wait = FIRST_RETRY;
+                    None
+                };
+                let retry = after(again);
+                tokio::pin!(retry);
                 loop {
                     use tokio::sync::broadcast::error::RecvError;
                     let changed = tokio::select! {
                         write = writes.recv() => match write {
+                            // A member copy names what it took in by the store's documents,
+                            // not by the record: any write of the list's app or the servers'.
                             Ok(write) => {
                                 write.workspace == person
-                                    && ((write.app == IDENTITY_LIST.0 && write.record == IDENTITY_LIST.1)
-                                        || write.app == SERVERS.0)
+                                    && (write.app == IDENTITY_LIST.0 || write.app == SERVERS.0)
                             }
                             Err(RecvError::Lagged(_)) => true,
                             Err(RecvError::Closed) => return,
@@ -236,12 +329,28 @@ impl Workspaces {
                             Err(RecvError::Lagged(_)) => true,
                             Err(RecvError::Closed) => return,
                         },
+                        held = holds.changed() => {
+                            if held.is_err() {
+                                return;
+                            }
+                            true
+                        }
+                        () = &mut retry => break,
                     };
                     if changed {
+                        wait = FIRST_RETRY;
                         break;
                     }
                 }
             }
         });
+    }
+}
+
+/// Answered `wait` from now, or never for `None`.
+async fn after(wait: Option<Duration>) {
+    match wait {
+        Some(wait) => tokio::time::sleep(wait).await,
+        None => std::future::pending().await,
     }
 }

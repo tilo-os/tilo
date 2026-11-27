@@ -648,6 +648,8 @@ mod tests {
     #[derive(Default)]
     struct Device {
         kept: std::sync::Mutex<Vec<(String, String)>>,
+        /// What the person's list shows here that it has not taken in, and why.
+        missing: std::sync::Mutex<Vec<(String, String)>>,
     }
 
     const SHARED: &str = "0a6c1f5e-9d84-4b0e-8f2d-4c3a1b2e7d90";
@@ -709,6 +711,19 @@ mod tests {
                 .collect()
         }
 
+        fn not_here(&self, _: &tilo_user_identity::DeviceCert) -> Vec<crate::session::Workspace> {
+            self.missing
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, why)| crate::session::Workspace {
+                    kept_here: false,
+                    not_here: Some(why.clone()),
+                    ..crate::session::held(id.clone(), String::new())
+                })
+                .collect()
+        }
+
         fn enter(
             &self,
             workspace: &str,
@@ -739,13 +754,14 @@ mod tests {
 
     /// A device with no login that founds no workspace itself answers the person's account
     /// itself: with no device of theirs that founds their workspaces it makes none, and never
-    /// asks their server to, its list says which of theirs it keeps, and it enters and leaves
-    /// one shared with them at their word.
+    /// asks their server to, its list says which of theirs it keeps and why one it does not is
+    /// not here yet, and it enters and leaves one shared with them at their word.
     #[tokio::test]
     async fn a_device_that_founds_nothing_lists_enters_and_leaves_workspaces_from_its_own_state() {
         let (key, cert) = ada_laptop(13);
+        let device = std::sync::Arc::new(Device::default());
         let direct = Direct::here(
-            std::sync::Arc::new(Device::default()),
+            std::sync::Arc::clone(&device) as std::sync::Arc<dyn crate::session::Here>,
             key,
             cert,
             "Ada's laptop",
@@ -808,10 +824,31 @@ mod tests {
             [(SHARED.to_owned(), false, false)],
             "{listed}"
         );
+        assert!(
+            listed["workspaces"][0].get("not_here").is_none(),
+            "{listed}"
+        );
+
+        // One the person's list shows here that the device could not take in says why, on the row
+        // of the list it is in, and nowhere once the device keeps it.
+        let away = "the device keeping it did not answer within 30 seconds";
+        let made_elsewhere = "7c2e9a41-5b3d-4f8e-a1c6-0d9e8f7a6b5c";
+        device.missing.lock().unwrap().extend([
+            (SHARED.to_owned(), away.to_owned()),
+            (made_elsewhere.to_owned(), away.to_owned()),
+        ]);
+        let listed = ask("list", serde_json::json!({})).await;
+        let rows = listed["workspaces"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{listed}");
+        assert!(rows.iter().all(|row| row["not_here"] == away), "{listed}");
 
         let entered = ask("enter", serde_json::json!({"workspace": SHARED})).await;
         assert_eq!(entered["kept_here"], true, "{entered}");
         let listed = ask("list", serde_json::json!({})).await;
+        assert!(
+            listed["workspaces"][0].get("not_here").is_none(),
+            "one kept here says nothing is missing: {listed}"
+        );
         assert!(
             kept(&listed).contains(&(SHARED.to_owned(), false, true)),
             "{listed}"

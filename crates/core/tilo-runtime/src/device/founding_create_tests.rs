@@ -1,7 +1,8 @@
 //! A workspace asked for on a device of the person's that founds none, made on the one that does,
 //! over the action service both serve, each asking in the person's own workspace: asked through
-//! the account the device answers its person's programs with, taken in by the asking device from
-//! the person's list, put to the person on the founding device where their grants say so,
+//! the account the device answers its person's programs with, taken in from the person's list by
+//! the asking device and every other device of theirs, by itself, put to the person on the
+//! founding device where their grants say so,
 //! refused to another person's device and to an agent, and refused in plain words, in time, when
 //! the founding device is away.
 
@@ -90,6 +91,13 @@ async fn founding_and_desk() -> TwoDevices {
     devices.first.offer_workspaces_here("Laptop");
     keep(&devices.first, &devices.second_cert).await;
     FoundingCreate::new(&devices.first).register(&devices.first.copies().providers());
+    holds_person_workspace(&devices, &devices.second).await;
+    devices
+}
+
+/// `device`, one of the person's that the founding device's record lists, holds the person's own
+/// workspace as a member copy of the founding device's, as every other device of theirs does.
+async fn holds_person_workspace(devices: &TwoDevices, device: &ServiceWorkspaces) {
     let own = person_workspace_id(&devices.person);
     let hint = devices
         .first
@@ -101,15 +109,44 @@ async fn founding_and_desk() -> TwoDevices {
         .find(|hint| hint.host.device_public_key == devices.first_cert.device_public_key)
         .expect("it says where it serves it");
     tilo_test_env::within(
-        "the desk holds the person's own workspace",
-        devices
-            .second
+        "the device holds the person's own workspace",
+        device
             .copies()
             .hold_as_member(WorkspaceId::parse(&own).unwrap(), &hint),
     )
     .await
-    .expect("the desk holds the person's own workspace");
-    devices
+    .expect("the device holds the person's own workspace");
+}
+
+/// A third device of the person's, certified by their root and listed in their devices record,
+/// which holds only their own workspace, as a member copy, and asks nothing of anyone.
+async fn studio(devices: &TwoDevices) -> Arc<ServiceWorkspaces> {
+    let root = ticket_tests::root_in(devices.state.path().to_path_buf())()
+        .expect("the root reads")
+        .expect("the issuer keeps the person's root");
+    let key = SigningKey::from_bytes(&[0x75; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: devices.person,
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Studio".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).expect("the root certifies it");
+    keep(&devices.first, &cert).await;
+    let studio = ServiceWorkspaces::open_for_test(
+        &devices.state.path().join("studio"),
+        &key,
+        &cert,
+        &tilo_server_client::ServerAddress::at(devices.first.endpoint().addr()),
+    )
+    .await
+    .expect("the studio's service opens");
+    holds_person_workspace(devices, &studio).await;
+    studio
 }
 
 /// Mark the first device in the person's record as the one keeping their root, signed by that
@@ -242,6 +279,25 @@ async fn opens(workspaces: &ServiceWorkspaces, workspace: &str) -> bool {
         && workspaces.copies().state(workspace).await.is_some()
 }
 
+/// Wait until `workspaces` lists `workspace` and opens it ([`opens`]), which its follower of the
+/// person's list brings about by itself.
+async fn opened(workspaces: &ServiceWorkspaces, workspace: &str, what: &str) {
+    let deadline = tilo_test_env::hang_deadline();
+    while !opens(workspaces, workspace).await {
+        assert!(
+            Instant::now() < deadline,
+            "waited for: {what}; not here: {:?}",
+            workspaces.copies().not_here()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        workspaces.copies().is_member(workspace).await,
+        Ok(true),
+        "it holds it as the person's other devices hold theirs, a member copy: {what}"
+    );
+}
+
 /// The one question waiting on the founding device in the person's own workspace, once it is
 /// there.
 async fn the_question(devices: &TwoDevices) -> tilo_remote_actions::asked::Waiting {
@@ -312,10 +368,12 @@ async fn a_workspace_asked_for_on_a_device_that_founds_none_is_made_on_the_one_t
         tilo_identity::provisioning::TILO_OS_PLATFORM,
     );
     let devices = founding_and_desk().await;
+    let studio = studio(&devices).await;
     mark_founding(&devices).await;
 
-    // The person asks on the desk: the founding device makes it, and the desk hands its answer on
-    // once it holds the workspace too, taken in from the person's list.
+    // The person asks on the desk: the founding device makes it and answers once it has. Each
+    // other device of theirs, the desk and the studio, takes it in from the person's list by
+    // itself; the studio is asked nothing and does nothing.
     let id = uuid::Uuid::new_v4().to_string();
     let made = create_on_desk(
         Arc::clone(&devices.second),
@@ -330,15 +388,19 @@ async fn a_workspace_asked_for_on_a_device_that_founds_none_is_made_on_the_one_t
         opens(&devices.first, &id).await,
         "the founding device keeps the workspace it made"
     );
-    assert!(
-        opens(&devices.second, &id).await,
-        "the desk lists the workspace it asked for and opens it"
-    );
-    assert_eq!(
-        devices.second.copies().is_member(&id).await,
-        Ok(true),
-        "the desk holds it as the person's other devices hold theirs: a member copy"
-    );
+    opened(
+        &devices.second,
+        &id,
+        "the desk lists the workspace it asked for and opens it",
+    )
+    .await;
+    opened(
+        &studio,
+        &id,
+        "the studio lists the workspace made from the desk and opens it",
+    )
+    .await;
+    assert!(studio.copies().not_here().is_empty());
     assert!(
         devices
             .first
@@ -428,6 +490,7 @@ async fn a_workspace_asked_for_on_a_device_that_founds_none_is_made_on_the_one_t
         );
     }
     theirs.shutdown().await;
+    studio.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -461,10 +524,12 @@ async fn a_workspace_a_device_off_tilo_os_asks_for_waits_for_the_persons_yes_on_
         .expect("the founding device makes the workspace once the person says yes");
     assert_eq!(made["workspace"]["id"], id, "{made}");
     assert!(opens(&devices.first, &id).await, "{made}");
-    assert!(
-        opens(&devices.second, &id).await,
-        "the desk lists the workspace it asked for and opens it"
-    );
+    opened(
+        &devices.second,
+        &id,
+        "the desk lists the workspace it asked for and opens it",
+    )
+    .await;
 
     // The person says no: nothing is made, and the desk says so in plain words.
     let declined_id = uuid::Uuid::new_v4().to_string();

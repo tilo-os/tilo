@@ -129,6 +129,8 @@ pub fn device_cert(
 pub struct TestHost {
     host: Arc<WorkspaceService>,
     router: Router,
+    /// Whether it is away ([`Self::away`]): it answers no new connection.
+    away: Arc<std::sync::atomic::AtomicBool>,
     /// The relay its endpoint took as its home ([`reached_through`]), closed
     /// after the endpoint that reaches it.
     #[cfg(test)]
@@ -165,6 +167,17 @@ impl TestHost {
     #[must_use]
     pub fn node_addr(&self) -> iroh_base::EndpointAddr {
         self.host.node_addr()
+    }
+
+    /// Answer no new connection until [`Self::back`], as a device that is off or off the network:
+    /// whoever dials it is not answered. What is linked already stays.
+    pub fn away(&self) {
+        self.away.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Answer connections again after [`Self::away`].
+    pub fn back(&self) {
+        self.away.store(false, std::sync::atomic::Ordering::Release);
     }
 
     /// Stop the host, then its router and endpoint.
@@ -1035,14 +1048,51 @@ async fn host_on_with(
         .expect("the host opens"),
     );
     let mut router = Router::builder(endpoint);
+    let away = Arc::new(std::sync::atomic::AtomicBool::new(false));
     for (alpn, handler) in host.protocols() {
-        router = router.accept(alpn, handler);
+        router = router.accept(
+            alpn,
+            Unless {
+                away: Arc::clone(&away),
+                handler,
+            },
+        );
     }
     TestHost {
         host,
         router: router.spawn(),
+        away,
         #[cfg(test)]
         _home: home,
+    }
+}
+
+/// A protocol of a [`TestHost`], answered unless the host is away ([`TestHost::away`]).
+struct Unless {
+    away: Arc<std::sync::atomic::AtomicBool>,
+    handler: Box<dyn iroh::protocol::DynProtocolHandler>,
+}
+
+impl std::fmt::Debug for Unless {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Unless").finish_non_exhaustive()
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for Unless {
+    async fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> Result<(), iroh::protocol::AcceptError> {
+        if self.away.load(std::sync::atomic::Ordering::Acquire) {
+            connection.close(0u32.into(), b"away");
+            return Ok(());
+        }
+        self.handler.accept(connection).await
+    }
+
+    async fn shutdown(&self) {
+        self.handler.shutdown().await;
     }
 }
 

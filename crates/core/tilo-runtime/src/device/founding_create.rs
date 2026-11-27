@@ -5,10 +5,11 @@
 //! to make a workspace (`account/workspaces#create`) over the action service both already serve
 //! (`tilo-actions/1`), signed as itself, in the person's own workspace, and hands the person its
 //! answer as it came ([`ask`]). Nothing falls back to their server: a server founds none of their
-//! workspaces for a device. The asking device then holds the new workspace as a device of theirs
-//! holds any workspace of their list: the founding device lists it there, with where it is
-//! reached, and the asking device enters it at that address as a member once its copy of the list
-//! says so, so it opens there as soon as the answer comes.
+//! workspaces for a device. It answers once the founding device has made the workspace. The
+//! asking device takes it in as every device of the person takes in each workspace of their
+//! list: the founding device lists it there, with where it is reached, and each device's
+//! follower of that list enters it there as a member, trying again until it has it
+//! (`tilo_workspace_service::workspaces::servers::keeping`).
 //!
 //! The founding device answers only the person's own other devices ([`FoundingCreate`]), asking
 //! as the person: the certificate the connection verified names the same person, and their
@@ -35,14 +36,10 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionParam, InvocationId, InvocationUpdate};
 use tilo_api::session::{Creating, NotFounded};
-use tilo_peer_state::join::TransportHint;
-use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_server_protocol::workspaces::IDENTITY_LIST;
 use tilo_user_identity::DeviceCert;
-use tilo_user_identity::WorkspaceList;
 use tilo_workspace_service::workspaces::asking::approved_or_asks;
-use tilo_workspace_service::workspaces::person_workspace::{self, devices};
+use tilo_workspace_service::workspaces::person_workspace::devices;
 use tilo_workspace_service::workspaces::providers::{
     Answered, Answering, Providers, WorkspaceAnswers, WorkspaceCall,
 };
@@ -350,7 +347,7 @@ pub(crate) async fn ask(
     // device decide, and the person answers there what they leave to them.
     let asking = Caller::authenticated(person, own.device_public_key).in_workspace(workspace);
     let update = settled(&remote, &asking, request).await?;
-    let made = match update {
+    let mut made = match update {
         Ok(InvocationUpdate::Succeeded { output, .. }) => output.value.unwrap_or(Value::Null),
         Ok(InvocationUpdate::Failed { error, .. }) => {
             return Err(NotFounded::Refused(error.message));
@@ -374,7 +371,15 @@ pub(crate) async fn ask(
         // Stopped before it answered, or answered nothing that ends it: nothing says it made one.
         Ok(_) | Err(_) => return Err(NotFounded::Unreached { waited: WAITED }),
     };
-    held_here(workspaces, &made).await;
+    // The founding device answers what it keeps; this device takes the workspace in by itself
+    // as its copy of the person's list names it, so it says what this one holds now.
+    if let Some(answered) = made.get_mut("workspace").and_then(Value::as_object_mut) {
+        let held = match answered.get("id").and_then(Value::as_str) {
+            Some(id) => workspaces.copies().state(id).await.is_some(),
+            None => false,
+        };
+        answered.insert("kept_here".to_owned(), Value::Bool(held));
+    }
     Ok(made)
 }
 
@@ -466,79 +471,6 @@ async fn followed(
             _ => return Err(ActionCallError::Unanswered),
         }
     }
-}
-
-/// Hold the workspace the founding device `made` here, [`WAITED`] at most: the founding device
-/// lists it in the person's list, in their own workspace, with where it is reached, and once that
-/// reaches this device's copy it is entered there as a member, as a device of theirs enters any
-/// workspace of their list it does not hold yet ([`tilo_api::session::Here::keep`]). One that is
-/// not held in time is said, and stays in the list for the next time it is kept.
-async fn held_here(workspaces: &ServiceWorkspaces, made: &Value) {
-    let Some(id) = made
-        .get("workspace")
-        .and_then(|workspace| workspace.get("id"))
-        .and_then(Value::as_str)
-    else {
-        return;
-    };
-    let Some(workspace) = WorkspaceId::parse(id) else {
-        return;
-    };
-    let copies = workspaces.copies();
-    if copies.state(id).await.is_some() {
-        return;
-    }
-    let own = person_workspace_id(&workspaces.device_cert().user_public_key);
-    let mut writes = copies.document_writes();
-    let held = tokio::time::timeout(WAITED, async {
-        loop {
-            if let Some(hint) = listed_at(copies, &own, id).await {
-                return copies.hold_as_member(workspace, &hint).await.map(drop);
-            }
-            // The list moves as the founding device's write reaches this device's copy.
-            loop {
-                match writes.recv().await {
-                    Ok(write)
-                        if write.workspace == own
-                            && write.app == IDENTITY_LIST.0
-                            && write.record == IDENTITY_LIST.1 =>
-                    {
-                        break;
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        return Err("this device stopped keeping its workspaces".to_owned());
-                    }
-                }
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| {
-        Err("the person's list did not say where it is reached in time".to_owned())
-    });
-    if let Err(why) = held {
-        tracing::warn!(workspace = %id, %why, "a workspace made on the founding device is not held here yet");
-    }
-}
-
-/// Where the person's list, as this device's copy of their own workspace `own` holds it, says
-/// `workspace` is reached, once it says so.
-async fn listed_at(
-    copies: &tilo_workspace_service::workspaces::Workspaces,
-    own: &str,
-    workspace: &str,
-) -> Option<TransportHint> {
-    let list = person_workspace::read_on::<WorkspaceList>(copies, own, IDENTITY_LIST)
-        .await
-        .ok()?;
-    let address = list
-        .listed()
-        .find(|(listed, _)| listed.to_string() == workspace)?
-        .1
-        .address()?;
-    postcard::from_bytes(&address).ok()
 }
 
 #[cfg(test)]

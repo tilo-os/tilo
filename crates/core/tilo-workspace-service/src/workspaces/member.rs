@@ -918,22 +918,29 @@ impl Workspaces {
 
     /// Hold each of `held`, a workspace and where the device hosting it serves it, as a member
     /// copy synced with that device: the workspaces this device takes part in that its service
-    /// does not hold yet. One that is not taken in is said and left for the next call.
+    /// does not hold yet. Each that is not taken in is answered with why, and left for the next
+    /// call.
     pub async fn hold_as_members(
         &self,
         held: impl IntoIterator<Item = (WorkspaceId, TransportHint)>,
-    ) {
+    ) -> Vec<(WorkspaceId, String)> {
+        let mut missing = Vec::new();
         for (workspace, hint) in held {
-            match tokio::time::timeout(HOLD_WITHIN, self.enter_as_member(workspace, &hint)).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(error)) => {
-                    tracing::warn!(%error, %workspace, "a workspace this device takes part in is not held on its service");
-                }
-                Err(_) => {
-                    tracing::warn!(%workspace, "a workspace's member copy did not arrive on this device's service in time");
-                }
-            }
+            let why =
+                match tokio::time::timeout(HOLD_WITHIN, self.enter_as_member(workspace, &hint))
+                    .await
+                {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(error)) => error,
+                    Err(_) => format!(
+                        "the device keeping it did not answer within {} seconds",
+                        HOLD_WITHIN.as_secs()
+                    ),
+                };
+            tracing::warn!(%why, %workspace, "a workspace this device takes part in is not held on its service");
+            missing.push((workspace, why));
         }
+        missing
     }
 
     /// Hold `bootstrap` as a member copy of the workspace it answers, synced

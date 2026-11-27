@@ -60,6 +60,10 @@ pub struct Workspace {
     /// Whether the device answering keeps a copy of it.
     #[serde(default)]
     pub kept_here: bool,
+    /// Why the device answering holds no copy yet of one its person's list shows on it: it
+    /// takes it in by itself, trying again until it has it. Absent for every other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_here: Option<String>,
     /// Where the device keeping it is reached, as the person's list says.
     #[serde(skip)]
     pub address: Option<tilo_server_protocol::workspaces::KeepingDeviceAddress>,
@@ -75,6 +79,7 @@ impl Workspace {
             host: listed.host.as_ref().map(|host| host.name.clone()),
             own: listed.role.as_deref() == Some(tilo_server_protocol::workspaces::OWNER_ROLE),
             kept_here: false,
+            not_here: None,
             role: listed.role,
             labels: listed.labels,
             unattended: listed.unattended,
@@ -93,6 +98,7 @@ impl Workspace {
             host,
             own: listing.role.as_deref() == Some("owner"),
             kept_here: false,
+            not_here: None,
             role: listing.role.clone(),
             labels: listing.labels.clone(),
             unattended: listing.unattended,
