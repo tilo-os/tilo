@@ -184,6 +184,9 @@ UPSTREAM_SUFFICES = {
     "zbus": "one worker thread for the blocking API's runtime instead of one per CPU; same API, "
     "an app on the release keeps more idle threads after a blocking D-Bus call",
     "libspa-sys": "Fedora 44 PipeWire header fix; only the optional `pipewire` feature builds it",
+    "ndk-context": "Android only: a context published over another keeps it underneath "
+    "(vendor/ndk-context/TILO-PATCH.md); an Android app on the release that publishes its "
+    "application's context before the activity's still meets the original's assert",
     "serde_json": "code size only: generic `Value` code compiled once, in serde_json, for apps that "
     "share one runtime library; same API and behaviour (vendor/serde_json/TILO-PATCH.md)",
     "rustls-native-certs": "Tilo OS's single trust bundle; the original's discovery is right elsewhere",

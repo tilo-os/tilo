@@ -184,6 +184,7 @@ toolkit_reaches = [
     "tilo-key-group",                   # crates/core/key-group
     "tilo-local-identity",              # crates/platform/local-identity
     "tilo-lock",                        # crates/platform/tilo-lock
+    "tilo-machine",                     # crates/platform/tilo-machine
     "tilo-media",                       # crates/engines/tilo-media
     "tilo-mime",                        # crates/platform/tilo-mime
     "tilo-model-client",                # crates/sdk/model-client

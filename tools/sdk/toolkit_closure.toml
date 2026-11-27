@@ -5,6 +5,7 @@
 # that joins it is a UI or platform crate the toolkit may use, never part of Tilo's model.
 allowed = [
     "hexane",
+    "ndk-context",
     "regex-syntax",
     "rustls-native-certs",
     "serde_json",
