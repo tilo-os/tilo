@@ -194,8 +194,10 @@ fn build_band(bands: &Bands, index: usize, gap: Rhythm, range: &GridRange) -> El
     // The band's cards are read before the rows are borrowed to read them: the range is the
     // band's own, worked out from the same rows.
     let band = bands.band(index);
+    let columns = bands.columns.get().max(1);
     let rows = Rc::clone(&bands.rows);
     let mut held = rows.borrow_mut();
+    let mut placed = 0usize;
     for at in band {
         let Some(key) = held.key_at(at) else {
             continue;
@@ -228,6 +230,15 @@ fn build_band(bands: &Bands, index: usize, gap: Rhythm, range: &GridRange) -> El
             index: at,
         });
         let mut part = Part::new(Box::new(card) as Element);
+        part.fit = Fit::hug().width(Sizing::fill(1.0));
+        line = line.push_part(part);
+        placed = placed.saturating_add(1);
+    }
+    // A band short of the grid's columns keeps each of its cards a column wide: the row shares
+    // its width between its parts, so the places a card does not stand in are kept empty rather
+    // than the band's few cards spreading over the whole row.
+    for _ in placed..columns {
+        let mut part = Part::new(Box::new(tilo_ui_base::widget::Spacer::new()) as Element);
         part.fit = Fit::hug().width(Sizing::fill(1.0));
         line = line.push_part(part);
     }

@@ -2201,6 +2201,14 @@ impl Widget for MediaGrid {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         if let Some(inner) = self.inner.as_mut() {
             inner.apply_layout(taffy, node, origin);
+            // The width the grid was finally laid out at, not the space it was offered while
+            // the solve read it: a hosted grid's bands read how many columns fit here, and a
+            // width the solve measured without one leaves every band a single card wide.
+            let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
+            if let Some(cell) = &self.columns {
+                cell.set(self.columns_for_width(rect.width()).max(1));
+            }
+            self.rect = rect;
             return;
         }
         self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
@@ -2322,6 +2330,81 @@ impl Widget for MediaGrid {
             return inner.needs_redraw();
         }
         tilo_ui_base::widget::redraw_or_children(self.dirty, self)
+    }
+
+    // A grid a host renders stands in the tree for its list: the list's rows, its scroll and the
+    // pages it asks for are the grid's, so the frames that pull a list's model into it — a page
+    // of rows arriving, the columns a new width holds — reach the list through the grid, never
+    // around it.
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.sync(state, path);
+            return;
+        }
+        for card in &mut self.cards {
+            card.sync(state, path);
+        }
+    }
+
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
+        if let Some(inner) = self.inner.as_mut() {
+            return inner.update(state, path);
+        }
+        let mut changed = false;
+        for card in &mut self.cards {
+            changed |= card.update(state, path);
+        }
+        changed
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        if let Some(inner) = self.inner.as_mut() {
+            return inner.take_structure_dirty();
+        }
+        let mut dirty = false;
+        for card in &mut self.cards {
+            dirty |= card.take_structure_dirty();
+        }
+        dirty
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        if let Some(inner) = &self.inner {
+            return inner.needs_animation_frame();
+        }
+        self.cards.iter().any(|card| card.needs_animation_frame())
+    }
+
+    fn next_wake_deadline(&self) -> Option<tilo_ui_base::time::Instant> {
+        if let Some(inner) = &self.inner {
+            return inner.next_wake_deadline();
+        }
+        self.cards
+            .iter()
+            .filter_map(|card| card.next_wake_deadline())
+            .min()
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        if let Some(inner) = &self.inner {
+            return inner.has_pending_visual_work();
+        }
+        self.cards.iter().any(|card| card.has_pending_visual_work())
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        if let Some(inner) = &self.inner {
+            return inner.layout_needs_measure();
+        }
+        self.cards.iter().any(|card| card.layout_needs_measure()) || self.is_layout_dirty()
     }
 
     fn name(&self) -> &'static str {
