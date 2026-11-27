@@ -1009,7 +1009,8 @@ fn cuts(windows: &[Window<'_>], mut k: usize) -> Vec<usize> {
     }
 }
 
-/// Each content address the fields of `stored` name ([`tilo_actions::named_content`]).
+/// Each content address the fields of `stored` name anywhere in them
+/// ([`tilo_actions::contents_named_in`]).
 fn named_content(stored: &Indexed) -> BTreeSet<String> {
     stored
         .fields
@@ -1018,11 +1019,19 @@ fn named_content(stored: &Indexed) -> BTreeSet<String> {
             Cell::One(value) => vec![value],
             Cell::Set(members) => members.iter().collect(),
         })
-        .filter_map(|value| match value {
-            Value::Text(text) => tilo_actions::named_content(text),
-            _ => None,
+        .flat_map(|value| match value {
+            Value::Text(text) => tilo_actions::contents_named_in(text).collect(),
+            _ => Vec::new(),
         })
         .collect()
+}
+
+/// What the content document of one resource names ([`Index::name_in_content`]).
+#[derive(Clone, Debug, Default)]
+struct ContentNames {
+    kind: String,
+    id: String,
+    addresses: BTreeSet<String>,
 }
 
 /// What the index knows of one document.
@@ -1041,6 +1050,12 @@ pub struct Index {
     /// Per kind, a table per reader set.
     kinds: HashMap<String, HashMap<String, Table>>,
     docs: HashMap<String, Held>,
+    /// Per content document, the resource whose content it holds and every content address its
+    /// rich text, lists and maps name, as its last write left them.
+    content_docs: HashMap<String, ContentNames>,
+    /// Per content address, the resources whose content documents name it: the other half of
+    /// what [`Self::naming_content`] answers, beside the fields each table indexes.
+    named_in_content: HashMap<String, BTreeSet<(String, String)>>,
 }
 
 impl Index {
@@ -1147,14 +1162,78 @@ impl Index {
         &'a self,
         address: &'a str,
     ) -> impl Iterator<Item = (&'a str, &'a str, &'a str)> + 'a {
-        self.kinds.iter().flat_map(move |(kind, tables)| {
+        let in_fields = self.kinds.iter().flat_map(move |(kind, tables)| {
             tables.iter().flat_map(move |(readers, table)| {
                 table.content.get(address).into_iter().flat_map(move |ids| {
                     ids.iter()
                         .map(move |id| (kind.as_str(), id.as_str(), readers.as_str()))
                 })
             })
-        })
+        });
+        // A resource whose content names it is read by the readers it is filed under; one the
+        // index no longer holds names nothing.
+        let in_content = self
+            .named_in_content
+            .get(address)
+            .into_iter()
+            .flatten()
+            .filter_map(move |(kind, id)| {
+                Some((kind.as_str(), id.as_str(), self.filed(kind, id)?))
+            });
+        in_fields.chain(in_content)
+    }
+
+    /// Note that the content document `doc`, holding the content of the resource `id` of `kind`,
+    /// names `addresses` anywhere in its rich text, lists and maps, as its latest write left it:
+    /// what it named before and names no more is taken back.
+    pub(crate) fn name_in_content(
+        &mut self,
+        doc: &str,
+        (kind, id): (&str, &str),
+        addresses: BTreeSet<String>,
+    ) {
+        self.unname_content(doc);
+        if addresses.is_empty() {
+            return;
+        }
+        for address in &addresses {
+            self.named_in_content
+                .entry(address.clone())
+                .or_default()
+                .insert((kind.to_owned(), id.to_owned()));
+        }
+        self.content_docs.insert(
+            doc.to_owned(),
+            ContentNames {
+                kind: kind.to_owned(),
+                id: id.to_owned(),
+                addresses,
+            },
+        );
+    }
+
+    /// The content addresses the content document `doc` names ([`Self::name_in_content`]).
+    pub(crate) fn named_in(&self, doc: &str) -> impl Iterator<Item = &str> {
+        self.content_docs
+            .get(doc)
+            .into_iter()
+            .flat_map(|names| names.addresses.iter().map(String::as_str))
+    }
+
+    /// Take back what the content document `doc` named.
+    fn unname_content(&mut self, doc: &str) {
+        let Some(names) = self.content_docs.remove(doc) else {
+            return;
+        };
+        let resource = (names.kind, names.id);
+        for address in names.addresses {
+            if let Some(naming) = self.named_in_content.get_mut(&address) {
+                naming.remove(&resource);
+                if naming.is_empty() {
+                    self.named_in_content.remove(&address);
+                }
+            }
+        }
     }
 
     /// The resources `doc` holds, by kind and id.
@@ -1545,6 +1624,7 @@ impl Index {
 
     /// Takes out everything stored in `doc`: a document this store no longer keeps.
     pub fn forget(&mut self, doc: &str) {
+        self.unname_content(doc);
         let Some(held) = self.docs.remove(doc) else {
             return;
         };

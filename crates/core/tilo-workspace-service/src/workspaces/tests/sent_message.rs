@@ -69,9 +69,26 @@ fn put(
 /// [`put`], read by `readers` alone.
 fn put_for(
     readers: &str,
-    (kind, id, parent): (&str, &str, Option<&str>),
+    resource: (&str, &str, Option<&str>),
     fields: &[(&str, &str)],
     invoker: &str,
+) -> Command {
+    let stamp = tilo_resource_store::Stamp {
+        verb: "send".to_owned(),
+        invoker: invoker.to_owned(),
+        invocation: format!("send-{}", resource.1),
+        at: SENT_AT.to_owned(),
+        ..tilo_resource_store::Stamp::default()
+    };
+    put_stamped(readers, resource, fields, stamp)
+}
+
+/// Puts the resource `kind`/`id` for `readers` under `parent`, recorded with `stamp`.
+fn put_stamped(
+    readers: &str,
+    (kind, id, parent): (&str, &str, Option<&str>),
+    fields: &[(&str, &str)],
+    stamp: tilo_resource_store::Stamp,
 ) -> Command {
     Command::Put {
         kind: kind.to_owned(),
@@ -85,13 +102,7 @@ fn put_for(
                 .map(|(name, value)| ((*name).to_owned(), Cell::One(Value::from(*value))))
                 .collect::<BTreeMap<_, _>>(),
         },
-        stamp: tilo_resource_store::Stamp {
-            verb: "send".to_owned(),
-            invoker: invoker.to_owned(),
-            invocation: format!("send-{id}"),
-            at: SENT_AT.to_owned(),
-            ..tilo_resource_store::Stamp::default()
-        },
+        stamp,
     }
 }
 
@@ -349,5 +360,119 @@ async fn content_is_named_by_the_resources_its_reader_reads_as_writes_leave_them
     assert_eq!(
         naming(&workspace, &person, ELSEWHERE).await,
         attached("file-1")
+    );
+}
+
+/// The app a document is written in: its words are rich text, a picture placed in them.
+const WRITER: &str = "test.writer";
+const DOCUMENT: &str = "tl.test.writer.Document";
+
+/// A picture placed in a document's words.
+const PICTURE: &str = "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6";
+
+/// The writer's surface: a document with a title and its words.
+fn writer_surface() -> Vec<u8> {
+    let verbs = serde_json::json!([{"id": "write", "kind": "undoable"}]);
+    collab_types::surface::canonical(&serde_json::json!({
+        "resources": [{
+            "kind": DOCUMENT, "label": "Document", "version": 1, "verbs": verbs,
+            "fields": [
+                {"path": "title", "type": "text"},
+                {"path": "body", "type": "rich_text"},
+            ],
+        }],
+    }))
+    .into_bytes()
+}
+
+/// A picture placed in the words of a document is read through the document: its readers find
+/// the document naming it, and whoever the document is sealed from finds nothing, as for content
+/// nothing names. Once the words no longer hold it, nothing names it.
+#[tokio::test]
+async fn a_picture_in_a_documents_words_is_named_for_the_documents_readers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    crate::workspaces::fixtures::declare_app(&server, WRITER, &writer_surface());
+    let workspace = workspaces.create("Writing").await.unwrap().workspace;
+    let person = hex::encode(workspaces.signing_device().cert.user_public_key);
+    let stranger = "d4".repeat(32);
+    let stamp = |invocation: &str| tilo_resource_store::Stamp {
+        verb: "write".to_owned(),
+        invoker: person.clone(),
+        invocation: invocation.to_owned(),
+        at: SENT_AT.to_owned(),
+        ..tilo_resource_store::Stamp::default()
+    };
+    let words = format!("The hall:\n![the hall]({})\n", blob(PICTURE));
+    let edit = |insert: &str, at: usize, delete: usize, invocation: &str| Command::Edit {
+        kind: DOCUMENT.to_owned(),
+        id: "plan".to_owned(),
+        edits: vec![collab_types::store::wire::Edit::Splice {
+            field: "body".to_owned(),
+            at,
+            delete,
+            insert: insert.to_owned(),
+        }],
+        stamp: stamp(invocation),
+    };
+    write(
+        &workspaces,
+        &workspace,
+        Command::Batch(vec![
+            put_stamped(
+                &person,
+                (DOCUMENT, "plan", None),
+                &[("title", "Plan")],
+                stamp("start-plan"),
+            ),
+            edit(&words, 0, 0, "write-plan"),
+        ]),
+    )
+    .await
+    .expect("the document is written");
+    let document = vec![NamingResource {
+        app: WRITER.to_owned(),
+        kind: DOCUMENT.to_owned(),
+        id: "plan".to_owned(),
+    }];
+    assert_eq!(
+        workspaces
+            .store_naming_content(&workspace, &person, PICTURE)
+            .await,
+        document,
+        "the document's reader finds it naming the picture in its words"
+    );
+    assert_eq!(
+        workspaces
+            .store_naming_content(&workspace, &stranger, PICTURE)
+            .await,
+        workspaces
+            .store_naming_content(&workspace, &stranger, &"e5".repeat(32))
+            .await,
+        "whoever the document is sealed from finds what they find of content nothing names"
+    );
+    assert!(
+        workspaces
+            .store_naming_content(&workspace, &stranger, PICTURE)
+            .await
+            .is_empty()
+    );
+
+    // The words no longer hold the picture: nothing names it.
+    write(
+        &workspaces,
+        &workspace,
+        edit("", 0, words.chars().count(), "clear-plan"),
+    )
+    .await
+    .expect("the words are cleared");
+    assert!(
+        workspaces
+            .store_naming_content(&workspace, &person, PICTURE)
+            .await
+            .is_empty(),
+        "words that no longer hold the picture name nothing"
     );
 }

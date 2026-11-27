@@ -45,6 +45,27 @@ pub fn named_content(value: &str) -> Option<String> {
     tilo_content::content_address(reference)
 }
 
+/// Every content address `text` names anywhere in it ([`named_content`]): a `tilo-blob://` link
+/// or a `tilo.content:` address standing alone, or inside a page's words, as a picture placed in
+/// a document is (`![plan](tilo-blob://<hash>)`).
+pub fn contents_named_in(text: &str) -> impl Iterator<Item = String> + '_ {
+    const CONTENT_ADDRESS: &str = "tilo.content:";
+    [tilo_content::BLOB_SCHEME, CONTENT_ADDRESS]
+        .into_iter()
+        .flat_map(move |prefix| {
+            text.match_indices(prefix).filter_map(move |(at, _)| {
+                let rest = text.get(at.saturating_add(prefix.len())..)?;
+                // A reference is its hash and, for sealed content, the key after a `.`.
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')))
+                    .unwrap_or(rest.len());
+                let reference = rest.get(..end)?.trim_end_matches('.');
+                tilo_content::content_address(reference)
+                    .or_else(|| tilo_content::content_address(reference.get(..64)?))
+            })
+        })
+}
+
 pub use tilo_action_types::InvocationId;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

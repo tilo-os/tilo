@@ -7,7 +7,8 @@ use crate::index::{Change, Index};
 use collab_types::store::Cell;
 
 /// The layout of a snapshot: one of another is never read, and the document is loaded instead.
-const FORMAT: u32 = 1;
+/// 2 keeps what a content document names.
+const FORMAT: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct Saved {
@@ -15,6 +16,8 @@ struct Saved {
     readers: String,
     heads: Vec<[u8; 32]>,
     resources: Vec<SavedResource>,
+    /// The content addresses a content document names ([`Index::named_in`]).
+    names: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -31,6 +34,8 @@ pub struct Restored {
     pub readers: String,
     pub heads: Vec<ChangeHash>,
     pub changes: Vec<Change>,
+    /// The content addresses the document names, for a content document.
+    pub names: Vec<String>,
 }
 
 /// `doc` as `index` holds it, saved; `None` for a document it has not seen.
@@ -57,6 +62,7 @@ pub fn save(index: &Index, doc: &str) -> Option<Vec<u8>> {
         readers: index.readers(doc)?.to_owned(),
         heads: index.heads(doc)?.iter().map(|head| head.0).collect(),
         resources,
+        names: index.named_in(doc).map(str::to_owned).collect(),
     };
     postcard::to_allocvec(&saved).ok()
 }
@@ -78,5 +84,6 @@ pub fn read(bytes: &[u8]) -> Option<Restored> {
                 fields: resource.fields.into_iter().collect(),
             })
             .collect(),
+        names: saved.names,
     })
 }

@@ -54,6 +54,7 @@ use crate::index::{Change, Commit, CommitHook as _, Index};
 use crate::schema::{MIGRATE_VERB, Schema};
 use tilo_actions::remote::argument_parts::Held as Kept;
 
+mod named;
 mod past;
 mod readers;
 mod recent;
@@ -727,19 +728,23 @@ impl Store {
             .then_some(held)
     }
 
-    /// Every resource whose fields name the content at `address` and whose readers `may_read`
-    /// admits, by its kind and id ([`Index::naming_content`]): whoever reads one of them reads that
-    /// content by its address, and nobody else does.
+    /// Every resource whose fields or content (its rich text, lists and maps) name the content at
+    /// `address` and whose readers `may_read` admits, by its kind and id
+    /// ([`Index::naming_content`]): whoever reads one of them reads that content by its address,
+    /// and nobody else does.
     #[must_use]
     pub fn naming_content(
         &self,
         address: &str,
         may_read: &dyn Fn(&str) -> bool,
     ) -> Vec<(String, String)> {
+        // A resource naming it in a field and in its content is one resource.
         self.index
             .naming_content(address)
             .filter(|(_, _, readers)| may_read(readers))
             .map(|(kind, id, _)| (kind.to_owned(), id.to_owned()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect()
     }
 
@@ -1733,6 +1738,7 @@ impl Store {
             heads: &heads,
             changes: &[],
         });
+        self.note_named_content(&doc_id);
         // The resource changed when its content did: it is indexed again with the time.
         if let Some(held) = self.index.get(kind, id).cloned() {
             let heads = self
@@ -1812,6 +1818,8 @@ impl Store {
         let copied = new
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
+        self.note_named_content(&old_id);
+        self.note_named_content(&new_id);
         self.note_group(&old_id, stamp);
         self.note_group(&new_id, stamp);
         self.kept_call(&old_id, &emptying);
@@ -3060,6 +3068,8 @@ impl Store {
                 self.know_document(doc_id, readers, parent.as_deref().unwrap_or(kind), count);
             }
         }
+        // A content document holds no resources: what its content names is noted instead.
+        self.note_named_content(doc_id);
         self.commit(&Commit {
             doc: doc_id,
             readers,
@@ -3266,6 +3276,12 @@ impl Store {
             heads,
             changes: &restored.changes,
         });
+        // A content document is read only once a write needs it: what it names is the snapshot's.
+        if let Some((kind, id)) = content_resource(doc) {
+            let (kind, id) = (kind.to_owned(), id.to_owned());
+            self.index
+                .name_in_content(doc, (&kind, &id), restored.names.into_iter().collect());
+        }
         true
     }
 

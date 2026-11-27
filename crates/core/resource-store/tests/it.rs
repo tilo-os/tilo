@@ -5082,6 +5082,119 @@ mod store {
             "and what kind it was, by its id alone"
         );
     }
+
+    /// A picture placed in a document's words, or kept in a map of its content, is named by the
+    /// document as each write leaves it: a local edit and a peer's change name it, its readers
+    /// alone find it, an edit that takes it out of the words names it no more, the snapshot a
+    /// start reads keeps what the content names, and a document gone names nothing.
+    #[test]
+    fn a_picture_in_a_documents_content_is_named_by_the_document() {
+        use collab_types::store::wire::{Command, Edit};
+        use serde_json::json;
+        use tilo_resource_store::wire::write;
+
+        let (picture, kept) = ("a1".repeat(32), "b2".repeat(32));
+        let (before, link) = ("Plan\n", format!("![the hall](tilo-blob://{picture})"));
+        let words = format!("{before}{link}\nBook it.");
+        let mut here = issues();
+        let mut there = issues();
+        let made = write(
+            &mut here,
+            Command::Batch(vec![
+                Command::Put {
+                    kind: ISSUE.to_owned(),
+                    id: "doc".to_owned(),
+                    resource: read_by("ada", "board", "a0", "Plan", "open"),
+                    stamp: stamp("make", "i1"),
+                },
+                Command::Edit {
+                    kind: ISSUE.to_owned(),
+                    id: "doc".to_owned(),
+                    edits: vec![
+                        Edit::Splice {
+                            field: "body".to_owned(),
+                            at: 0,
+                            delete: 0,
+                            insert: words,
+                        },
+                        Edit::MapPut {
+                            field: "images".to_owned(),
+                            key: format!("tilo-blob://{kept}"),
+                            value: json!("hall.jpg"),
+                        },
+                    ],
+                    stamp: stamp("make", "i1"),
+                },
+            ]),
+        )
+        .unwrap();
+        send(&made, &mut there);
+        let ada = |readers: &str| readers == "ada";
+        let bo = |readers: &str| readers == "bo";
+        let doc = vec![(ISSUE.to_owned(), "doc".to_owned())];
+        for (store, whose) in [(&here, "the writer's"), (&there, "a peer's")] {
+            assert_eq!(store.naming_content(&picture, &ada), doc, "{whose} words");
+            assert_eq!(store.naming_content(&kept, &ada), doc, "{whose} map");
+            assert!(
+                store.naming_content(&picture, &bo).is_empty(),
+                "{whose}: who does not read the document finds nothing"
+            );
+        }
+
+        // The picture leaves the words: nothing names it, the map still names its key.
+        let edited = write(
+            &mut here,
+            Command::Edit {
+                kind: ISSUE.to_owned(),
+                id: "doc".to_owned(),
+                edits: vec![Edit::Splice {
+                    field: "body".to_owned(),
+                    at: before.chars().count(),
+                    delete: link.chars().count(),
+                    insert: String::new(),
+                }],
+                stamp: stamp("edit", "i2"),
+            },
+        )
+        .unwrap();
+        send(&edited, &mut there);
+        for (store, whose) in [(&here, "the writer's"), (&there, "a peer's")] {
+            assert!(store.naming_content(&picture, &ada).is_empty(), "{whose}");
+            assert_eq!(store.naming_content(&kept, &ada), doc, "{whose}");
+        }
+
+        // A start reads the snapshot of the content document, never the document itself.
+        let content = here.content_doc(ISSUE, "doc").unwrap();
+        let snapshot = here.snapshot(&content).unwrap();
+        let mut started = issues();
+        for write in &made {
+            if write.doc != content {
+                send(std::slice::from_ref(write), &mut started);
+            }
+        }
+        let heads = there
+            .content_document(ISSUE, "doc")
+            .unwrap()
+            .unwrap()
+            .get_heads();
+        assert!(
+            started.restore(&content, &snapshot, &heads),
+            "the snapshot is taken"
+        );
+        assert_eq!(
+            started.naming_content(&kept, &ada),
+            doc,
+            "the snapshot keeps it"
+        );
+        assert!(started.naming_content(&picture, &ada).is_empty());
+
+        // The document is removed: its content names nothing any more.
+        here.remove(ISSUE, "doc", &stamp("remove", "i3")).unwrap();
+        assert!(
+            here.naming_content(&kept, &ada).is_empty(),
+            "a removed document"
+        );
+    }
 }
 
 /// An app's records, as a window that runs with no workspace keeps and reads them: through the
