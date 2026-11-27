@@ -974,11 +974,10 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
 /// Mode the device key is stored with: owner read/write, nothing for anyone
 /// else.
 ///
-/// Only the device's daemon reads the key. It runs as the account that owns
-/// the key's directory — `tilo` on a desktop, `tilo-server` on a server image
-/// — never as root, so the key is that account's and nobody else's; the
-/// directory is that account's alone, so a program of any other account cannot
-/// even reach the file. Every other program signs through the daemon
+/// Only the device's daemon reads the key. It runs as [`DEVICE_DAEMON_ACCOUNT`]
+/// on every computer, never as root, so the key is that account's and nobody
+/// else's; the directory is that account's alone, so a program of any other
+/// account cannot even reach the file. Every other program signs through the daemon
 /// (`devices#sign`) and never opens the key.
 pub const DEVICE_KEY_MODE: u32 = 0o600;
 

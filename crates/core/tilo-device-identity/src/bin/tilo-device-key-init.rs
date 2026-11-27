@@ -129,8 +129,6 @@ mod branch {
     };
     use tilo_device_identity::persist::IdentityPaths;
 
-    /// Where the server keeps its state, its workspaces' group state among it.
-    const SERVER_STATE: &str = "/var/lib/tilo-server";
     /// Each person's Secret Service, which re-seals their vault as them.
     const SECRET_SERVICE: &str = "/usr/libexec/tilo/tilo-secret-service";
     const PASSWD: &str = "/etc/passwd";
@@ -145,9 +143,6 @@ mod branch {
         let people = people(Path::new(PASSWD));
         let vaults: Vec<PersonVault<'_>> =
             people.iter().map(|person| PersonVault { person }).collect();
-        let server = ServerGroups {
-            root: PathBuf::from(SERVER_STATE),
-        };
         let names = MachineNames {
             machine_id: PathBuf::from(MACHINE_ID),
             ssh: PathBuf::from(SSH_DIR),
@@ -159,7 +154,6 @@ mod branch {
                 stores: vaults
                     .iter()
                     .map(|vault| vault as &dyn SealedStore)
-                    .chain([&server as &dyn SealedStore])
                     .collect(),
                 machine: Some(&names),
                 now_ns: std::time::SystemTime::now()
@@ -295,48 +289,6 @@ mod branch {
         }
     }
 
-    /// Each workspace's group state: sealed under a key the device key
-    /// derives, and every group in it names the source's device as its
-    /// member, so no re-seal makes it this device's. Its member files are
-    /// dropped, and the server joins its workspaces' groups as this device,
-    /// admitted by their key holders.
-    struct ServerGroups {
-        root: PathBuf,
-    }
-
-    impl ServerGroups {
-        /// The directory the server keeps each workspace's group state in.
-        fn groups(&self) -> PathBuf {
-            self.root.join("groups")
-        }
-    }
-
-    impl SealedStore for ServerGroups {
-        fn name(&self) -> String {
-            format!("the server's group state in {}", self.root.display())
-        }
-
-        fn reseal(&self, _: &[SigningKey], _: &SigningKey) -> Result<Resealed, String> {
-            let mut dropped = false;
-            let Ok(entries) = std::fs::read_dir(self.groups()) else {
-                return Ok(Resealed::Absent);
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "peer") {
-                    std::fs::remove_file(&path)
-                        .map_err(|error| format!("{}: {error}", path.display()))?;
-                    dropped = true;
-                }
-            }
-            Ok(if dropped {
-                Resealed::Reset
-            } else {
-                Resealed::Absent
-            })
-        }
-    }
-
     /// The machine-wide names a copied disk shares with its source.
     struct MachineNames {
         machine_id: PathBuf,
@@ -385,7 +337,7 @@ mod branch {
         use super::*;
 
         tilo_test_env::scenario! {
-            fn a_branch_finds_its_people_resets_the_server_and_renames_the_machine;
+            fn a_branch_finds_its_people_and_renames_the_machine;
 
             phase people_are_the_login_accounts;
             {
@@ -394,7 +346,7 @@ mod branch {
                 std::fs::write(
                     &passwd,
                     "root:x:0:0:root:/root:/bin/bash\n\
-                 tilo-server:x:985:985::/var/lib/tilo-server:/sbin/nologin\n\
+                 tilo:x:985:985::/var/lib/tilo/state:/sbin/nologin\n\
                  you:x:1000:1000:You:/var/home/you:/bin/bash\n\
                  broken:x:abc:1000::/home/broken:/bin/sh\n\
                  nobody:x:65534:65534:Kernel Overflow User:/:/sbin/nologin\n",
@@ -406,27 +358,6 @@ mod branch {
                 assert_eq!((people[0].uid, people[0].gid), (1000, 1000));
                 assert_eq!(people[0].home, Path::new("/var/home/you"));
                 assert!(super::people(&dir.path().join("missing")).is_empty());
-            }
-
-            phase the_servers_group_members_are_dropped_and_its_other_files_kept;
-            {
-                let dir = tempfile::tempdir().unwrap();
-                let server = ServerGroups {
-                    root: dir.path().to_path_buf(),
-                };
-                let key = SigningKey::from_bytes(&[1; 32]);
-                assert_eq!(server.reseal(&[], &key).unwrap(), Resealed::Absent);
-                let groups = dir.path().join("groups");
-                std::fs::create_dir(&groups).unwrap();
-                assert_eq!(server.reseal(&[], &key).unwrap(), Resealed::Absent);
-                let member = groups.join("ws-1.peer");
-                let kept = groups.join("notes");
-                std::fs::write(&member, "member").unwrap();
-                std::fs::write(&kept, "notes").unwrap();
-                assert_eq!(server.reseal(&[], &key).unwrap(), Resealed::Reset);
-                assert!(!member.exists());
-                assert!(kept.exists());
-                assert_eq!(server.reseal(&[], &key).unwrap(), Resealed::Absent);
             }
 
             phase a_branch_gets_a_machine_id_and_ssh_host_keys_of_its_own;
@@ -552,7 +483,7 @@ mod tests {
         );
         for before in [
             "fs.service",
-            "tilo-server.service",
+            "tilo-runtime.service",
             "greetd.service",
             "NetworkManager.service",
             "sshd-keygen.target",

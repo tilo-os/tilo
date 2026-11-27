@@ -8,7 +8,7 @@ Documentation=https://code.tilo.so/tilo/tilo/src/branch/main/docs/architecture/w
 # renews those names, before anything reads them.
 DefaultDependencies=no
 After=local-fs.target systemd-tmpfiles-setup.service tilo-device-key-init.service
-Before=sysinit.target tilo-firstboot.service greetd.service fs.service tilo-server.service
+Before=sysinit.target tilo-firstboot.service greetd.service fs.service tilo-runtime.service
 Before=NetworkManager.service systemd-networkd.service sshd-keygen.target sshd.service
 Before=systemd-user-sessions.service
 Conflicts=shutdown.target
@@ -36,9 +36,6 @@ ReadWritePaths=/etc
 # their home.
 ProtectHome=no
 ReadWritePaths=-/home -/var/home
-# The server's channel state names the old device and is dropped; it is the
-# server account's, so removing it takes overriding its directories' modes.
-ReadWritePaths=-/var/lib/tilo-server
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
