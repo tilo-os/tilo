@@ -1,11 +1,15 @@
 //! What the workspace service answered is on disk before it answered: a part
 //! that ends as a killed process ends loses nothing it said was done.
 
+#[cfg(feature = "device-keys")]
 use automerge::ReadDoc as _;
 
-use super::fixtures::{hosting_device, test_host, test_host_keyed, write_record};
+use super::fixtures::{hosting_device, test_host};
+#[cfg(feature = "device-keys")]
+use super::fixtures::{test_host_keyed, write_record};
 
 /// The record `(app, record)` of `workspace` as this service holds it now, opened.
+#[cfg(feature = "device-keys")]
 async fn read_record(
     workspaces: &super::Workspaces,
     workspace: &str,
