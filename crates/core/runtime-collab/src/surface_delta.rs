@@ -620,13 +620,19 @@ fn shape_of(
     known: &mut KnownShapes,
     shape: ExportedAction,
 ) -> (ShapeId, std::sync::Arc<ExportedAction>) {
-    let same = known.entry(shape.action.clone()).or_default();
-    if let Some((held, id)) = same.iter().find(|(held, _)| **held == shape) {
+    // Most shapes are known already, from the rows shown before: their action's name is looked
+    // up without copying it.
+    if let Some(same) = known.get(&shape.action)
+        && let Some((held, id)) = same.iter().find(|(held, _)| **held == shape)
+    {
         return (*id, std::sync::Arc::clone(held));
     }
     let id = shape_id(&shape);
     let shape = std::sync::Arc::new(shape);
-    same.push((std::sync::Arc::clone(&shape), id));
+    known
+        .entry(shape.action.clone())
+        .or_default()
+        .push((std::sync::Arc::clone(&shape), id));
     (id, shape)
 }
 
