@@ -215,10 +215,11 @@ start_lounge() {
       sh "$lounge_here/install-apps.sh" "$lounge_apps/packages" "$volume/apps" >&2 \
       || lounge_fail 'could not install the apps the workspace runs'
     # The runtimes the apps execute, where a device keeps the ones it fetched:
-    # this person's own data directory, under the names a Tilo program resolves
-    # without being told.
-    mkdir -p "$work/.local/share"
-    ln -sfn "$lounge_apps/runtimes" "$work/.local/share/tilo-runtime"
+    # the data directory of the server's runtime profile, which the image's
+    # entry point makes its volume and the daemon names its data directory
+    # itself, under the names a Tilo program resolves without being told.
+    mkdir -p -m 0700 "$volume" "$volume/data"
+    ln -sfn "$lounge_apps/runtimes" "$volume/data/tilo-runtime"
   fi
 
   # This Lounge's server configuration: its web UI and packet relay on this

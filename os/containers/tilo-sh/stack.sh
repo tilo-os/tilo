@@ -2212,11 +2212,13 @@ start_native_server() {
     server_env "$name"
   } > "$runs/$name.env"
   # The runtimes the apps execute, where a device keeps the ones it fetched:
-  # this server's own data directory, under the names a Tilo program resolves
-  # without being told. (`TILO_RUNTIME_BUNDLE_DIR` names another root, and a
-  # released program honours it in a developer build alone.)
-  mkdir -p "$runs/$name/data"
-  ln -sfn "$lounge/runtimes" "$runs/$name/data/tilo-runtime"
+  # the data directory of the server's runtime profile, which the image's entry
+  # point makes its state and the daemon names its data directory itself
+  # (whatever XDG_DATA_HOME it was started with), under the names a Tilo
+  # program resolves without being told. (`TILO_RUNTIME_BUNDLE_DIR` names
+  # another root, and a released program honours it in a developer build alone.)
+  mkdir -p -m 0700 "$state/$name" "$state/$name/data"
+  ln -sfn "$lounge/runtimes" "$state/$name/data/tilo-runtime"
   run_native "$name" "$state/$name" sh "$lounge/entrypoint.sh"
 }
 

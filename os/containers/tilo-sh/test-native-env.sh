@@ -10,6 +10,8 @@
 #   - the server starts with the environment the stack wrote for it;
 #   - the person's own server is started the same way, on a state of its own, and joins with
 #     the server ticket the person's founding issued;
+#   - each server finds the runtimes its apps execute in the data directory of its runtime
+#     profile, which the daemon names itself whatever XDG_DATA_HOME it was started with;
 #   - a variable the stack hands a service whose image does not set it stops
 #     the start, instead of being left out without a word;
 #   - the web entry's image sets the two folders its start hands it, so it is
@@ -40,14 +42,21 @@ trap 'rm -rf "$work" "$(stack_runtimes)"' EXIT
 told=$runs
 mkdir -p "$state"/{logs,server,secrets} "$native" "$told"
 
-# The Lounge as its image's context lays it out: the image's own entry point,
-# and a tilo-runtime that says what it was started with.
+# The Lounge as its image's context lays it out: the image's own entry point, one runtime
+# bundle, and a tilo-runtime that says what it was started with and whether that bundle is where
+# the daemon looks for it: its profile's data directory (tilo-runtime's profile.rs).
 lounge=$work/lounge
-mkdir -p "$lounge"/{bin,surfaces,fonts}
+mkdir -p "$lounge"/{bin,surfaces,fonts} "$lounge/runtimes/2026.07+test"
+: > "$lounge/runtimes/2026.07+test/bundle.toml"
 cp "$repo/os/containers/tilo-lounge/entrypoint.sh" "$lounge/entrypoint.sh"
 cat > "$lounge/bin/tilo-runtime" <<'STAND_IN'
 #!/bin/sh
 printf 'TILO_WORKSPACES_STATE=%s\n' "${TILO_WORKSPACES_STATE-}"
+if [ -f "${TILO_RUNTIME_PROFILE-}/data/tilo-runtime/2026.07+test/bundle.toml" ]; then
+  echo 'runtime bundle found'
+else
+  echo "no runtime bundle under ${TILO_RUNTIME_PROFILE-}/data/tilo-runtime"
+fi
 STAND_IN
 chmod +x "$lounge/bin/tilo-runtime"
 # The apps the workspace runs are installed by the image's own script, which its own test holds:
@@ -91,12 +100,16 @@ run_native() {
 (start_native_server) || fault "stack.sh did not start the server: $(cat "$work/server.said" 2>/dev/null)"
 grep -Fqx "TILO_WORKSPACES_STATE=$state/server" "$work/server.said" 2>/dev/null \
   || fault "the program the entry point started was not told its state: $(cat "$work/server.said" 2>/dev/null)"
+grep -Fqx 'runtime bundle found' "$work/server.said" 2>/dev/null \
+  || fault "the server finds no runtime its apps execute: $(cat "$work/server.said" 2>/dev/null)"
 
 # -- the person's own server ---------------------------------------------------
 
 (start_native_server home) || fault "stack.sh did not start the person's server: $(cat "$work/home.said" 2>/dev/null)"
 grep -Fqx "TILO_WORKSPACES_STATE=$state/home" "$work/home.said" 2>/dev/null \
   || fault "the person's server was not told a state of its own: $(cat "$work/home.said" 2>/dev/null)"
+grep -Fqx 'runtime bundle found' "$work/home.said" 2>/dev/null \
+  || fault "the person's server finds no runtime its apps execute: $(cat "$work/home.said" 2>/dev/null)"
 grep -Fqx 'TILO_TICKET=tilo1test' "$told/home.env" \
   || fault "the person's server was not handed the server ticket their founding issued"
 ! grep -q '^TILO_TICKET=' "$told/server.env" \
