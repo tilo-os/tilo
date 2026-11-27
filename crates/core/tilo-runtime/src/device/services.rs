@@ -4830,8 +4830,7 @@ impl tilo_api::session::Here for Daemon {
         creating: tilo_api::session::Creating,
     ) -> tilo_api::session::FoundingAnswer<'_> {
         let workspaces = Arc::clone(&self.workspaces);
-        let person = person_workspace_id(&self.cert.user_public_key);
-        Box::pin(async move { super::founding_create::ask(&workspaces, &person, creating).await })
+        Box::pin(async move { super::founding_create::ask(&workspaces, creating).await })
     }
 }
 

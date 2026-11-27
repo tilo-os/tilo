@@ -92,6 +92,8 @@ so-tilo-clipboard-receive = Take what another device copied
 ## Workspaces the device that founds them makes for the person's other devices
 
 so-tilo-founding-create = Make a workspace another of your devices asked for
+founding-create-question = Make the workspace “{ $name }” that { $device } asked for?
+founding-create-another-device = another of your devices
 
 ## The actions of this device's server settings
 

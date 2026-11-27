@@ -2527,6 +2527,10 @@ pub const NO_FOUNDING_DEVICE: &str = "no_founding_device";
 /// What it answers a create with when the person's device that founds their workspaces did not
 /// answer in time: the code of its refusal.
 pub const FOUNDING_DEVICE_UNREACHED: &str = "founding_device_unreached";
+/// What it answers a create with when that device asked the person first and they said no.
+pub const FOUNDING_DECLINED: &str = "founding_declined";
+/// What it answers a create with when that device asked the person first and nobody answered.
+pub const FOUNDING_UNANSWERED: &str = "founding_unanswered";
 
 /// Make the workspace `args` asks for on the person's device that founds their workspaces, as
 /// [`crate::session::Here::create_where_founded`] asks it: its answer as that device gave it.
@@ -2561,6 +2565,19 @@ async fn create_where_founded(here: &dyn Here, args: &Value) -> Outcome {
                 waited.as_secs()
             ),
             "turn that device on and connect it to a network, then try again",
+        ),
+        Err(crate::session::NotFounded::Declined) => failed(
+            FOUNDING_DECLINED,
+            "you said no to making it on the device that makes your workspaces",
+            "make it again and say yes there",
+        ),
+        Err(crate::session::NotFounded::Unanswered { waited }) => failed(
+            FOUNDING_UNANSWERED,
+            format!(
+                "nobody answered on the device that makes your workspaces within {} minutes",
+                waited.as_secs().div_ceil(60)
+            ),
+            "make it again and answer the question on that device",
         ),
         Err(crate::session::NotFounded::Refused(why)) => failed(
             "refused",

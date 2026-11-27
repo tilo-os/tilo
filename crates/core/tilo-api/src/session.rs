@@ -329,6 +329,13 @@ pub enum NotFounded {
         /// How long it was waited for.
         waited: std::time::Duration,
     },
+    /// It asked the person first, and they said no there.
+    Declined,
+    /// It asked the person first, and nobody answered there within `waited`.
+    Unanswered {
+        /// How long the answer was waited for.
+        waited: std::time::Duration,
+    },
     /// It answered, and made none, saying why.
     Refused(String),
 }
