@@ -658,13 +658,14 @@ mod cases {
                 vec![Value::resource(&s.root), Value::text("retention")],
             );
             let window = s.window();
-            let headers: Vec<String> = of_kind(window.tree(), "ui.ObjectHeader")
-                .iter()
-                .map(|header| prop(header, "title"))
-                .collect();
-            assert!(
-                headers.iter().any(|title| title == "Retention"),
-                "the retention page is the one shown: {headers:?}"
+            let shell = of_kind(window.tree(), "ui.NavShell")
+                .into_iter()
+                .next()
+                .expect("the window's shell");
+            assert_eq!(
+                prop(shell, "title"),
+                "Retention",
+                "the retention page is the one shown"
             );
             let facts: Vec<String> = of_kind(window.tree(), "ui.Fact")
                 .iter()

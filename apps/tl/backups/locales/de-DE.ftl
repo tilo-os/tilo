@@ -626,7 +626,6 @@ d-6lykvoui = Zielseite
     .w-its-snapshots = Seine Stände
 
 d-76vcytvk = Aufbewahrungsseite
-    .w-retention = Aufbewahrung
     .w-a-backup-keeps-this-many-snapshots = Eine Sicherung behält so viele Stände je Klasse, und den neuesten von allen.
     .w-kept = Aufbewahrt
     .w-hourly = stündlich

@@ -1075,7 +1075,7 @@ view setup(b: Backups) {
 /// The window: the places down one side, the timeline or the chosen place beside them.
 view shell(b: Backups) {
     ui.NavShell(
-        content_kind: .document,
+        content_kind: .page,
         title: page_title(b),
         sidebar_title: "Backups",
         overview_title: "All backups",
@@ -1128,7 +1128,7 @@ view shell(b: Backups) {
             }
         }
         content: {
-            stack(gap: .related) {
+            std.document_page {
                 if busy(b) {
                     working_line(b)
                 }
@@ -1225,6 +1225,7 @@ view timeline(b: Backups) {
                 "No snapshots yet",
                 message: "Back up the folder to make the first one.",
                 icon: .archive,
+                inline: true,
             )
         } else {
             ui.VirtualList(selection_follows_focus: true, in_column: false) {
@@ -1429,10 +1430,9 @@ view destination_page(b: Backups) {
 
 /// The retention policy: how many snapshots of each class a backup keeps.
 view retention_page(b: Backups) {
-    ui.ObjectHeader(
-        title: "Retention",
-        caption: "A backup keeps this many snapshots of each class, and the newest of all.",
-        icon: .hourglass,
+    ui.Text(
+        "A backup keeps this many snapshots of each class, and the newest of all.",
+        secondary: true,
     )
     ui.Section(title: "Kept") {
         policy_row(b, "hourly", "Hourly", b.policy.hourly)

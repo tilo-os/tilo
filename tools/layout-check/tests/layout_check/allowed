@@ -11,3 +11,9 @@ coded-name settings › settings_window › appearance_pane [ListRow]
 overflow onboarding › setup › stack [Container]
 overlap onboarding › intro_page › ui.Text [Text]
 cramped-gutter onboarding › setup › setup_card [ListRow]
+
+# A failed snapshot's line says nothing changed, and its size is zero: "0 B" reads as a
+# number and a one-letter unit, which the words rule reads as code.
+coded-name backups › shell › source_page [ListRow]
+coded-name backups › shell › timeline [DescribedList]
+coded-name backups › snapshot_row › ui.ListRow [SwipeRow]
