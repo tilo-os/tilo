@@ -3130,8 +3130,19 @@ mod tests {
         call: Option<tilo_actions::remote::SignedInvocation>,
     }
 
-    /// What the build that wrote the step signed: the op's fields, its claims written as today's
-    /// runs are, the step's `rewrite` left out.
+    /// A claim as that build signed it: one change each, as an op's signing bytes write its claims,
+    /// never as the runs its frame carries them in.
+    #[derive(serde::Serialize)]
+    struct BeforeWholeClaim {
+        change: [u8; 32],
+        action: BeforeWholeAction,
+        units: Vec<collab_types::UnitPath>,
+        invoker: Option<String>,
+        call: Option<tilo_actions::remote::SignedInvocation>,
+    }
+
+    /// What the build that wrote the step signed: the op's fields, its claims written one change
+    /// each as today's signing bytes write them, the step's `rewrite` left out.
     #[derive(serde::Serialize)]
     struct BeforeWholeSigning {
         #[serde(with = "serde_bytes")]
@@ -3143,7 +3154,7 @@ mod tests {
         timestamp: SystemTime,
         seq: u64,
         encryption: Option<EncryptionMetadata>,
-        claims: Vec<BeforeWholeRun>,
+        claims: Vec<BeforeWholeClaim>,
         surface: Option<[u8; 32]>,
         governance: Vec<[u8; 4]>,
     }
@@ -3190,8 +3201,8 @@ mod tests {
         let attestation_id = AttestationId::new();
         let timestamp = at(9);
         let encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
-        let run = BeforeWholeRun {
-            changes: vec![change],
+        let claim = BeforeWholeClaim {
+            change,
             action: BeforeWholeAction::History(BeforeWholeMigrate::Migrate { to }),
             units: vec![Vec::new()],
             invoker: None,
@@ -3206,7 +3217,7 @@ mod tests {
             timestamp,
             seq: 9,
             encryption,
-            claims: vec![run],
+            claims: vec![claim],
             surface: None,
             governance: Vec::new(),
         })
