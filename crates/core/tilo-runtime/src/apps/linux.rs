@@ -15,7 +15,7 @@ use crate::daemon::Sockets;
 use app_catalogue::apps::InstalledApp;
 use std::{
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -360,16 +360,37 @@ fn service_directory(sockets: &Sockets) -> io::Result<PathBuf> {
                 ),
             ));
         }
-        if std::fs::read_link(&link).ok().as_deref() != Some(target.as_path()) {
-            match std::fs::remove_file(&link) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-            std::os::unix::fs::symlink(target, &link)?;
-        }
+        link_service(target, &link)?;
     }
     Ok(runtime_dir)
+}
+
+/// Make `link` name `target`. The services are one set for the device, so two launches of an app
+/// side by side ask for the same links: a link already there to `target` is the one this launch
+/// needs, and an entry at the name that is no such link is refused rather than taken for one.
+fn link_service(target: &Path, link: &Path) -> io::Result<()> {
+    if is_link_to(link, target) {
+        return Ok(());
+    }
+    match std::fs::remove_file(link) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    match std::os::unix::fs::symlink(target, link) {
+        Ok(()) => Ok(()),
+        // Another launch of the same app made the link this one needs between its look and its
+        // link.
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && is_link_to(link, target) => {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether `link` is a link to exactly `target`.
+fn is_link_to(link: &Path, target: &Path) -> bool {
+    std::fs::read_link(link).ok().as_deref() == Some(target)
 }
 
 /// The first launcher binary that exists.
@@ -508,6 +529,78 @@ mod tests {
                 error.to_string().contains("too long for"),
                 "{error}"
             );
+        }
+
+        phase a_link_another_launch_made_to_the_same_target_is_this_launches_link;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let target = temp.path().join("collab.sock");
+            std::fs::write(&target, b"").unwrap();
+            let link = temp.path().join("services/collab.sock");
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            // Another launch made the link this one needs: the same target, taken as it is.
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(is_link_to(&link, &target));
+            link_service(&target, &link).unwrap();
+            assert_eq!(std::fs::read_link(&link).unwrap(), target);
+            // An entry that is no link to the target is never one this launch made.
+            let other = temp.path().join("other.sock");
+            std::fs::write(&other, b"").unwrap();
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink(&other, &link).unwrap();
+            assert!(!is_link_to(&link, &target));
+            let plain = temp.path().join("plain");
+            std::fs::write(&plain, b"").unwrap();
+            assert!(!is_link_to(&plain, &target));
+            let directory = temp.path().join("directory");
+            std::fs::create_dir(&directory).unwrap();
+            assert!(!is_link_to(&directory, &target));
+            assert!(!is_link_to(&temp.path().join("missing"), &target));
+            // A stale link is replaced by the one this launch needs.
+            link_service(&target, &link).unwrap();
+            assert_eq!(std::fs::read_link(&link).unwrap(), target);
+            // An entry that cannot be a link refuses the launch rather than passing it on.
+            let refusal = temp.path().join("refusal/collab.sock");
+            std::fs::create_dir_all(refusal.parent().unwrap()).unwrap();
+            std::fs::create_dir(&refusal).unwrap();
+            assert!(link_service(&target, &refusal).is_err());
+        }
+
+        phase launches_side_by_side_share_the_services_they_made;
+        {
+            // Two situations of one app start side by side, so each launch makes the same links:
+            // the ones that lose the race find the link another made instead of failing.
+            let temp = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(temp.path()).unwrap();
+            let sockets = Sockets {
+                collab: root.join("collab.sock"),
+                identity: root.join("identity.sock"),
+                blobs: root.join("blobs.sock"),
+                native: root.join("native.sock"),
+            };
+            let _collab = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
+            let _identity = std::os::unix::net::UnixListener::bind(&sockets.identity).unwrap();
+            let _native = std::os::unix::net::UnixListener::bind(&sockets.native).unwrap();
+            let together = std::sync::Barrier::new(4);
+            std::thread::scope(|scope| {
+                for _ in 0..4 {
+                    scope.spawn(|| {
+                        for _ in 0..50 {
+                            together.wait();
+                            service_directory(&sockets).expect("a launch finds the services");
+                        }
+                    });
+                }
+            });
+            let services = root.join(LAUNCH_RUNTIME_DIR).join("tilo/services");
+            for (name, target) in [
+                (launcher::services::COLLAB_SERVICE, &sockets.collab),
+                (launcher::services::IDENTITY_SERVICE, &sockets.identity),
+                (launcher::services::NATIVE_SERVICE, &sockets.native),
+            ] {
+                let link = services.join(format!("{name}.sock"));
+                assert_eq!(&std::fs::read_link(&link).unwrap(), target);
+            }
         }
 
         phase no_launcher_binary_refuses_rather_than_running_unconfined;
