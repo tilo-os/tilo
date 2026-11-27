@@ -358,17 +358,17 @@ impl Decorator for RootWidget {
     // The save status's deadline is the sync's, and so is the end of the window's wait for
     // its declared documents; the view serves its own.
     fn serve_deadline(&mut self, now: ui_core::time::Instant) -> bool {
-        if self
+        // The window's own deadlines are served by the sync this frame runs; the view's are served
+        // by serving it, whatever the window owes beside them.
+        let own = self
             .0
             .save_indicator()
             .next_wake_deadline()
             .into_iter()
             .chain(self.0.gives_up_at())
-            .any(|due| due <= now)
-        {
-            return true;
-        }
-        self.0.view_mut().serve_deadline(now)
+            .any(|due| due <= now);
+        let view = self.0.view_mut().serve_deadline(now);
+        own || view
     }
 
     fn next_wake_deadline(&self) -> Option<ui_core::time::Instant> {

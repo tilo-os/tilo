@@ -339,6 +339,16 @@ pub fn next_wake_deadline(each: EachChild<'_>) -> Option<Instant> {
     earliest
 }
 
+/// Serve every child's due deadline: a subtree serves its own by serving its children's, as it asks
+/// them for the earliest one ([`next_wake_deadline`]).
+pub fn serve_deadline(children: ChildrenMut<'_>, now: Instant) -> bool {
+    let mut served = false;
+    for child in children {
+        served |= child.serve_deadline(now);
+    }
+    served
+}
+
 pub fn holds_frame_until(each: EachChild<'_>, now: Instant) -> Option<Instant> {
     let mut latest = None;
     each(&mut |child| {

@@ -1668,7 +1668,7 @@ mod component_adapter {
                 .component
                 .root
                 .as_deref_mut()
-                .is_none_or(|root| root.serve_deadline(now));
+                .is_some_and(|root| root.serve_deadline(now));
             if served {
                 self.owes_sync = true;
                 binding.note_input();

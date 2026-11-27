@@ -710,6 +710,94 @@ fn the_keyboards_keys_are_listed_and_pressed_through_the_sessions_api() {
     );
 }
 
+/// The variants a long press offers are the device's: the keyboard asks it for the forms of the
+/// letters it shows, and a finger held on a letter then slid to one of them types that form. The
+/// letter is one with room beside it, so the variants stand where a slide to the next one reaches
+/// it.
+#[test]
+fn a_long_press_on_a_letter_types_the_variant_it_chose() {
+    const APP: &str = "org.example.Notes";
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let home = own_home();
+    let mut session = keyboard_session(&home.runtime().join("collab.sock"), OnScreenKeyboard::Auto);
+    let mut client = mapped(&mut session, APP);
+    let (_, rect) = resting_window(&mut session, APP);
+    let on = display_of(&mut session, rect);
+    let display = display_rect(&mut session, &on);
+    // A finger into the window's field: the keyboard comes up for it, keys and all.
+    finger(&mut session, middle(rect));
+    pump(&mut session, &mut [&mut client], |session, _| {
+        session.keyboard_runs()
+    });
+    type_until_the_keyboard_is_up(&mut session, &mut client);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        !keys_on(session, display).is_empty()
+    });
+    let (_, (x, y, w, h)) = keys_on(&session, display)
+        .into_iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("c"))
+        .expect("the letters layout has the c key");
+    let centre = (x + w / 2.0, y + h / 2.0);
+    let keys_before = still(&mut session, &[&on]).remove(0);
+
+    // A finger rests on the letter: after the hold, the forms it has in the typing language stand
+    // over it, the plain letter first.
+    session
+        .compositor()
+        .input(InputEvent::TouchDown {
+            slot: 0,
+            x: centre.0,
+            y: centre.1,
+        })
+        .expect("a touch");
+    session
+        .compositor()
+        .input(InputEvent::TouchFrame)
+        .expect("a frame");
+    let hold = Instant::now() + Duration::from_millis(700);
+    while Instant::now() < hold {
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    let holding = still(&mut session, &[&on]).remove(0);
+    let shown = apart(&holding, &keys_before);
+    assert!(
+        shown > CLOSE,
+        "the letter's forms stand over the keys while it is held: {shown:.0} of 255 from the keys \
+         as they were"
+    );
+
+    // Slid one key to the right, where the letter's next form stands, and lifted: that form is
+    // typed, not the plain letter.
+    let along = (centre.0 + w, centre.1);
+    for event in [
+        InputEvent::TouchMotion {
+            slot: 0,
+            x: along.0,
+            y: along.1,
+        },
+        InputEvent::TouchFrame,
+        InputEvent::TouchUp { slot: 0 },
+        InputEvent::TouchFrame,
+    ] {
+        session.compositor().input(event).expect("a touch");
+        session.step(REFRESH).expect("a turn of the session");
+    }
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        client.exchange();
+        session.step(REFRESH).expect("a turn of the session");
+        client.exchange();
+        let typed = format!("{}{}", client.seen.committed, client.seen.composed);
+        if typed.ends_with('ç') {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the form the finger chose is typed: the field holds {typed:?}"
+        );
+    }
+}
+
 /// A keyboard up for a field of `client`'s window that takes what `purpose` and `hint` say,
 /// in a session that brings it up for any field.
 fn typing_for(

@@ -247,6 +247,20 @@ impl Decorator for Kept {
         }
     }
 
+    // It adds no structure of its own, so what it reported as due is served by what it keeps:
+    // the view's own wake is the sync this frame runs, and the widgets the view lays out are
+    // served here, as they would be without the wrapper.
+    fn serve_deadline(&mut self, now: Instant) -> bool {
+        let own = self
+            .upkeep
+            .next_wake
+            .as_ref()
+            .and_then(|next| next())
+            .is_some_and(|due| due <= now);
+        let served = self.content.serve_deadline(now);
+        own || served
+    }
+
     fn has_pending_visual_work(&self) -> bool {
         self.upkeep
             .pending

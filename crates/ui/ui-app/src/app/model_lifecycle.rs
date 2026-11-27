@@ -185,7 +185,18 @@ impl super::App {
             // A widget that changed asks for the sync; one that moved nothing leaves the frame
             // quiet.
             let changed = self.update_model();
-            report.updated = taken_up || changed;
+            // What a widget kept for a moment of its own — a key held until its forms open, a
+            // caret that repeats, a save gone quiet — is due now, so it is served here, as a
+            // window's own loop serves it. A pump that only woke for the deadline would sync a
+            // tree whose widget never heard of it, and the deadline would come due again.
+            let now = crate::time::now();
+            let served = self
+                .root_widget
+                .next_wake_deadline()
+                .is_some_and(|deadline| deadline <= now)
+                && self.root_widget.serve_deadline(now);
+            force_sync |= served;
+            report.updated = taken_up || changed || served;
             // A model-dirty wake raised while draining joins this sync. It
             // is left pending as well: the host prepares a frame only for a
             // wake it can see, so taking it here would leave the work it

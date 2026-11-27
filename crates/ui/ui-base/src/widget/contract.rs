@@ -1305,9 +1305,11 @@ pub trait Widget {
     }
 
     /// A deadline this subtree asked for ([`Self::next_wake_deadline`]) is due at `now`: do the work it
-    /// was for, and say whether anything changed.
-    fn serve_deadline(&mut self, _now: Instant) -> bool {
-        true
+    /// was for, and say whether anything changed. A subtree asks its children for the deadline, so
+    /// it serves it by serving theirs: a widget that keeps a moment of its own hears of it however
+    /// deep it stands.
+    fn serve_deadline(&mut self, now: Instant) -> bool {
+        defaults::serve_deadline(self.children_mut(), now)
     }
 
     /// `Some(rect)` when this subtree holds an *open* modal, its panel box.
