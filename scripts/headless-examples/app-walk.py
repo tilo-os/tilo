@@ -602,14 +602,20 @@ class MachineDaemon:
         self.apps = apps
         self.tapps = list(tapps)
         self.account = real_apps.session_account()
+        #: The store the daemon and the session share, and the paths beside it, once the daemon
+        #: starts: what the session is told so both install into, and launch from, one store.
+        self.store_env: dict = {}
         self.proc: subprocess.Popen | None = None
         self.log = None
         #: Why the machine's daemon, or the login, did not come up, for the walk's report.
         self.trouble: str | None = None
 
     def env(self) -> dict:
-        """What the session is told so it starts no daemon of its own."""
-        return {"TILO_SESSION_MACHINE_DAEMON": "1"}
+        """What the session is told so it starts no daemon of its own, and the store both it and
+        the daemon install apps into: a device's user store, which the shell and the daemon that
+        serves it share, so a style the person installs in their session is one the daemon
+        publishes in their workspace without a restart."""
+        return {"TILO_SESSION_MACHINE_DAEMON": "1", **self.store_env}
 
     def failure(self) -> str | None:
         return self.trouble
@@ -640,45 +646,56 @@ class MachineDaemon:
         self.PROFILE.chmod(0o700)
         logs = self.out / "logs"
         logs.mkdir(parents=True, exist_ok=True)
-        system, publishers = self._own_store()
+        system, publishers, user = self._own_store()
         env = {**os.environ,
                # The unit's own environment, over the walk's identity root.
                "HOME": str(self.PROFILE),
                "TILO_IDENTITY_ROOT": str(self.state / "identity"),
-               # The image's system store, which every account reads (/usr/share/tilo-apps on
-               # a device), and the publishers the image trusts.
+               # The store the session installs into and launches from, as a device's user store,
+               # the system store every account reads (/usr/share/tilo-apps on a device), and the
+               # publishers the image trusts.
+               "TILO_APPS_DATA_DIR": str(user),
                "TILO_APPS_SYSTEM_DIR": str(system),
+               "TILO_RUNTIME_BUNDLE_DIR": str(user / "runtimes"),
                "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE": str(publishers),
                "XDG_RUNTIME_DIR": str(self.RUNTIME),
                "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_runtime=info")}
-        # The daemon's runtimes and the person's apps are its own store's, in its profile's data
-        # directory (the XDG_DATA_HOME its profile sets), as on a device: it never reads the
-        # person's private state, which a process it starts in a sandbox of its own could not
-        # reach.
-        for name in ("TILO_APPS_DATA_DIR", "TILO_RUNTIME_BUNDLE_DIR", "XDG_DATA_HOME"):
-            env.pop(name, None)
+        # What the session is told to read and write the store by, as a device's login is: the
+        # one store the shell installs into is the one the daemon publishes from.
+        self.store_env = {
+            "TILO_APPS_DATA_DIR": str(user),
+            "TILO_APPS_SYSTEM_DIR": str(system),
+            "TILO_RUNTIME_BUNDLE_DIR": str(user / "runtimes"),
+            "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE": str(publishers),
+        }
+        env.pop("XDG_DATA_HOME", None)
         self.log = (logs / "machine-daemon.log").open("w")
         self.proc = subprocess.Popen([str(BUILD / "bin/tilo-runtime"),
                                       "--profile", str(self.PROFILE)],
                                      stdout=self.log, stderr=subprocess.STDOUT,
-                                     env=env, start_new_session=True)
+                                     env=env, start_new_session=True,
+                                     # The person's store is the daemon's group's to write: what
+                                     # the daemon installs there, the session can replace.
+                                     umask=0o007)
         until("the machine's device daemon",
               lambda: self.NATIVE.exists()
               or (self.proc.poll() is not None and self._died()), self.START_WITHIN, 0.1)
 
-    #: Where the daemon keeps what a device's image ships beside it: the system store (the
-    #: image's /usr/share/tilo-apps) and the publishers it trusts, outside its profile, which
+    #: Where the daemon keeps what a device's image ships beside it: the user and system stores
+    #: (the image's /usr/share/tilo-apps) and the publishers it trusts, outside its profile, which
     #: each start begins anew.
     IMAGE = Path("/var/lib/tilo/walk-image")
 
-    def _own_store(self) -> tuple[Path, Path]:
-        """Put what the session prepared into the daemon's own directories, as a device's image
-        and the daemon's own installs put them: the runtimes and installed apps in its
-        profile's data directory, the system store and the trusted publishers in a directory of
-        the image's, each the daemon's account's. The session prepared them in
-        the person's state, which is the person's alone (0700); a device's daemon reads none
-        of it. The session's apps and the walk's packages are installed first, so the store
-        holds every app the person has. Answers the system store and the publishers file."""
+    def _own_store(self) -> tuple[Path, Path, Path]:
+        """Put what the session prepared into the device's stores, as a device's image and the
+        daemon's own installs put them: the installed apps and runtimes in the user store both
+        the session and the daemon write, the system store and the trusted publishers where every
+        account reads them. The session prepared them in the person's state, which is the
+        person's alone (0700); a device's login and daemon share the user store, so what the
+        session installs is what the daemon publishes (`$TILO_APPS_DATA_DIR`). The store's
+        directories are the daemon's group's to write, and the daemon runs with the umask that
+        makes what it writes there the session's to replace. Answers the system store, the
+        publishers file and the user store."""
         # Everything the session will run installed first, as its own start installs it, so the
         # copy below holds every app the person has, not only those an earlier step prepared.
         argv = [str(real_apps.SESSION), "--no-build", "--prepare-only", "--headless",
@@ -686,15 +703,12 @@ class MachineDaemon:
         for tapp in self.tapps:
             argv += ["--install-tapp", str(tapp)]
         run(argv, cwd=real_apps.REPO)
-        data = self.PROFILE / "data"
-        # The session's store carries its runtimes (`runtimes/<version>`, where its launcher and
-        # this daemon both look), so the one copy puts the device's store in the daemon's data
-        # directory.
-        store = data / "tilo-apps"
         if self.IMAGE.exists():
             shutil.rmtree(self.IMAGE)
-        system, publishers = self.IMAGE / "system", self.IMAGE / "keys/runtime-publishers.txt"
-        for source, target in ((self.state / "apps", store),
+        user, system = self.IMAGE / "user", self.IMAGE / "system"
+        publishers = self.IMAGE / "keys/runtime-publishers.txt"
+        self.IMAGE.mkdir(parents=True, exist_ok=True)
+        for source, target in ((self.state / "apps", user),
                                (self.state / "system", system)):
             if source.is_dir():
                 shutil.copytree(source, target, symlinks=True)
@@ -705,14 +719,20 @@ class MachineDaemon:
             shutil.copyfile(self.state / "keys/runtime-publishers.txt", publishers)
         else:
             publishers.touch()
-        for root in (data, self.IMAGE):
-            for path in [root, *root.rglob("*")]:
-                os.chown(path, 0, 0, follow_symlinks=False)
-                if not path.is_symlink():
-                    path.chmod(path.stat().st_mode | (0o555 if path.is_dir() else 0o444))
-        # The profile's directories are the daemon's alone, as it makes them itself.
-        data.chmod(0o700)
-        return system, publishers
+        # The daemon's group writes the user store; every account reads the system store. What
+        # the image ships stays the image's, and the daemon's own files keep its umask.
+        group = self.account.pw_gid if self.account is not None else 0
+        for path in [self.IMAGE, *self.IMAGE.rglob("*")]:
+            os.chown(path, 0, group, follow_symlinks=False)
+            if path.is_symlink():
+                continue
+            within_user = path == user or user in path.parents
+            if path.is_dir():
+                path.chmod(0o770 if within_user else 0o750)
+            else:
+                path.chmod(0o660 if within_user else 0o440)
+        self.IMAGE.chmod(0o750)
+        return system, publishers, user
 
     def _died(self):
         said = self.log_path().read_text(errors="replace") if self.log_path().is_file() else ""
@@ -1142,12 +1162,14 @@ def hover(session: Session, selector: str, deadline: float = 20.0) -> dict:
 
 # --- a person's other devices -----------------------------------------------------------------
 
-# The sheet a device of the person's is added from, on the resource the device publishes its
-# invitations on, and what its requester prints for the person to compare with the device they
-# already have shows. The walk names the address and the desktop says which provider lists it: a
-# session a device's daemon runs need not answer it as the session's own provider.
-SHOW_PAIR_DEVICE = ("session:invite", "show-pair-device")
-ADD_DEVICE_CODE = "Pairing code: "
+# The one-use code a new device of the person's joins with, as the device's daemon issues it: the
+# action Settings' Add a device asks the daemon for. The walk names the resource and action and
+# the desktop says which provider lists them: a device's daemon need not answer as the session's
+# own provider.
+DEVICE_TICKET = ("devices", "issue")
+# The credential a device's daemon spends at its first start to become its person's: the name the
+# unit hands it in `$CREDENTIALS_DIRECTORY`.
+TICKET_CREDENTIAL = "tilo.ticket"
 
 
 def devices_of(spec: dict) -> list[dict]:
@@ -1272,15 +1294,14 @@ def filled(arg, kept: dict):
 class Devices:
     """The person's devices a walk drives: one headless session each, of the same person, on
     this host. The first is the walk's own session; each further one is a session on a state
-    of its own, with its own device key, enrolled as the person's next device the way a person
-    adds one (the shell's Add a device sheet, its link, the pairing code approved on the first
-    device), and shown the workspace the first one is in. They meet over the local network, as
-    two devices of one person on one network do."""
+    of its own, with its own device key, added the way a person adds one (Add a device on the
+    first, the one-use code it prints spent as the new device's ticket at its first start), and
+    shown the workspace the first one is in. They meet over the local network, as two devices of
+    one person on one network do."""
 
     def __init__(self, first: str, session: Session):
         self.order = [first]
         self.sessions: dict[str, Session] = {first: session}
-        self.joining: subprocess.Popen | None = None
         # What fell short of making the devices one person's in one workspace: every step after
         # it says what that leaves out, so the walk goes on and this is kept in its report.
         self.trouble: list[str] = []
@@ -1309,66 +1330,46 @@ class Devices:
 
     def add(self, name: str, state: Path, *, apps: str, tapps: list[Path], out: Path, tag: str,
             session_args: list[str] | None, env: dict | None = None) -> Session:
-        """Enroll `name` as the person's next device and start its session on `state`, which
-        `prepare_state` has made: the first device shows the link, the new device's requester
-        takes it and prints its code, the person approves that code on the first device, and
-        the new device's session starts as that person, in the workspace the first one shows."""
+        """Add `name` as the person's next device and start its session on `state`, which
+        `prepare_state` has made: the first device prints the one-use code a new computer joins
+        with, and the new device's daemon spends it as its `tilo.ticket` credential at its first
+        start, as a machine set up without anyone at it does. Its session then starts as that
+        person, in the workspace the first one shows."""
         first = self.sessions[self.first]
         logs = out / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         began = time.monotonic()
-        adding = until_value("the desktop to offer adding a device",
-                             lambda: row_for(first.actions(""), *SHOW_PAIR_DEVICE), 15)
-        first.invoke_row(adding, {})
-        until_value("the Add a device sheet's Copy link", lambda: control(first, "Copy link"), 15)
-        first.click_named("Copy link")
-        link = until_value("the device link on the clipboard",
-                           lambda: (first.state_dump() or {}).get("clipboard"), 10)
-        if not str(link).startswith("tilo://pair-device?"):
-            raise Failed("Add a device did not copy a device link")
-        # The link stays out of every log and argument: it is read from a private file.
-        link_file = state / "device-link"
-        link_file.touch(mode=0o600)
-        link_file.write_text(link)
-        said = logs / f"pair-{tag}.log"
-        try:
-            with said.open("w") as log:
-                self.joining = subprocess.Popen(
-                    [str(BUILD / "bin/tilo-session"), "--pair-device-link-file", str(link_file)],
-                    stdout=log, stderr=subprocess.STDOUT,
-                    env={**os.environ, "HOSTNAME": name,
-                         "XDG_CONFIG_HOME": str(state / "config"),
-                         "TILO_IDENTITY_ROOT": str(state / "identity")})
-
-            def code() -> str | None:
-                text = said.read_text(errors="replace")
-                if self.joining.poll() not in (None, 0):
-                    raise Failed(f"the {name} could not pair: {text.strip()[-2000:]}")
-                for line in text.splitlines():
-                    if line.startswith(ADD_DEVICE_CODE):
-                        return line[len(ADD_DEVICE_CODE):].strip()
-                return None
-
-            shown = until_value(f"the {name} to show a pairing code", code, 20)
-            approve = f"Approve {name} with code {shown}"
-            until_value(f"{approve!r} on the {self.first}", lambda: control(first, approve), 20)
-            first.click_named(approve)
-            if self.joining.wait(timeout=30) != 0:
-                raise Failed(f"the {name} did not finish pairing: {said.read_text()[-2000:]}")
-        finally:
-            if self.joining is not None and self.joining.poll() is None:
-                self.joining.kill()
-                self.joining.wait()
-            self.joining = None
-            link_file.unlink(missing_ok=True)
-        root = "identity/user-identity/pubkey.bin"
-        if (state / root).read_bytes() != (first.state / root).read_bytes():
-            raise Failed(f"the {name} joined as a different person")
+        # The code the daemon prints for a new device of the person's: the device action Settings'
+        # Add a device runs, asked through the desktop's own dispatch. A walk joins devices without
+        # opening the page, and the page and the walk ask the same daemon for the same kind of
+        # one-use code.
+        row = until_value("the desktop to offer a new device's code",
+                          lambda: row_for(first.actions(""), *DEVICE_TICKET), 15)
+        answer = first.invoke_row(row, {})
+        ticket = value_of(answer)
+        if isinstance(ticket, dict):
+            ticket = ticket.get("ticket")
+        if not str(ticket).startswith("tilo1"):
+            raise Failed(
+                f"the new device's code: Add a device answered {json.dumps(answer)[:300]}")
+        if not str(ticket).startswith("tilo1"):
+            raise Failed("Add a device copied no ticket")
+        # The ticket stays out of every log and argument: it is handed to the new device's daemon
+        # as the credential it spends once, from a private directory.
+        credentials = state / "credentials"
+        credentials.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ticket_file = credentials / TICKET_CREDENTIAL
+        ticket_file.touch(mode=0o600)
+        ticket_file.write_text(str(ticket))
         began = self.lap(name, "pair", began)
         session = Session(state)
         session.start(apps=apps, fresh=True, out=logs, tag=tag, tapps=tapps,
-                      session_args=session_args, env=env)
+                      session_args=session_args,
+                      env={**(env or {}), "CREDENTIALS_DIRECTORY": str(credentials)})
         began = self.lap(name, "start", began)
+        root = "identity/user-identity/pubkey.bin"
+        if (state / root).read_bytes() != (first.state / root).read_bytes():
+            raise Failed(f"the {name} joined as a different person")
         self.order.append(name)
         self.sessions[name] = session
         # The sheet the person added the device from is closed, as they close it.
