@@ -971,7 +971,7 @@ fn a_process_an_app_started_is_judged_as_that_app_and_never_its_person() {
     daemon.apps().record_started(app.id(), APP, &workspace);
     assert_eq!(
         daemon.apps().attested(helper),
-        Some((APP.to_owned(), workspace.clone())),
+        Some((APP.to_owned(), workspace)),
         "the helper runs as the app it descends from"
     );
 

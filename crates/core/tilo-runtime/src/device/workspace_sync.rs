@@ -97,8 +97,8 @@ impl WorkspaceSync {
 
     /// Say whether `workspace`'s link is `up`, and publish the reading if it moved.
     fn note(&self, workspace: &str, up: bool) {
-        let mut states = self.states.lock_recover();
-        let tracked = states.entry(workspace.to_owned()).or_insert(Tracked {
+        let mut held = self.states.lock_recover();
+        let tracked = held.entry(workspace.to_owned()).or_insert(Tracked {
             linked_before: up,
             status: Status::Connecting,
         });
@@ -114,7 +114,7 @@ impl WorkspaceSync {
             return;
         }
         tracked.status = status;
-        drop(states);
+        drop(held);
         self.moved
             .send_modify(|moved| *moved = moved.wrapping_add(1));
     }
@@ -143,6 +143,7 @@ impl WorkspaceSync {
                 )
             })
             .collect();
+        drop(states);
         serde_json::to_value(Reading { workspaces }).unwrap_or_else(|error| {
             tracing::warn!(%error, "where the member workspaces stand does not encode");
             Value::Null

@@ -224,7 +224,7 @@ fn an_app_makes_changes_and_lists_environments() {
 
     // A caller in another workspace reads none of this workspace's environments.
     let elsewhere = AppCaller {
-        app_id: app.app_id.clone(),
+        app_id: app.app_id,
         workspace: "00000000-0000-4000-8000-000000000000".to_owned(),
     };
     assert!(
