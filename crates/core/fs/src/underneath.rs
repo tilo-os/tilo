@@ -139,3 +139,42 @@ fn untakeable(at: &Path) -> io::Error {
         at.display()
     ))
 }
+
+/// The plain directory a folder is about to be mounted over, opened before the mount: what is
+/// written into it after the mount's take-in looked, and before the mount covered it, is still
+/// read through it.
+pub struct Underneath(fs::File);
+
+impl Underneath {
+    /// Open the directory `root`, before anything is mounted over it.
+    ///
+    /// # Errors
+    ///
+    /// `root` could not be opened as a directory.
+    pub fn open(root: &Path) -> io::Result<Self> {
+        let dir = fs::File::open(root)?;
+        if !dir.metadata()?.is_dir() {
+            return Err(io::Error::other(format!(
+                "{} is not a folder",
+                root.display()
+            )));
+        }
+        Ok(Self(dir))
+    }
+
+    /// Whether anything is in it now, mounted over or not.
+    ///
+    /// # Errors
+    ///
+    /// The directory could not be read.
+    pub fn holds_anything(&self) -> io::Result<bool> {
+        for entry in rustix::fs::Dir::read_from(&self.0)? {
+            let entry = entry?;
+            let name = entry.file_name().to_bytes();
+            if name != b"." && name != b".." {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}

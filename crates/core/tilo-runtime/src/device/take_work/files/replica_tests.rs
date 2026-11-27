@@ -1049,10 +1049,11 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
     let mut first = start(1, "first");
     let started = std::time::Instant::now();
     let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
-    while !folder.is_dir() {
+    // The workspace's files are shown once the folder is mounted.
+    while !tilo_fs::fuse_session::is_mounted(&folder) {
         assert!(
             started.elapsed() <= bound,
-            "the member never held the workspace's files:\n{}",
+            "the member never showed the workspace's files:\n{}",
             said("first")
         );
         std::thread::sleep(Duration::from_millis(100));

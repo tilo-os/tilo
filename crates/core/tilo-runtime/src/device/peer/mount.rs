@@ -180,10 +180,6 @@ pub(crate) fn show(
 ) -> std::io::Result<Showing> {
     // A mount a peer that ended left behind answers ENOTCONN, which no mount can be made at.
     tilo_fs::fuse_session::clear_stale_mount(at)?;
-    std::fs::create_dir_all(at)?;
-    // Mounting needs the folder underneath writable; while nothing is mounted it refuses writes
-    // ([`Showing`]'s drop).
-    set_mode(at, WHILE_SHOWN)?;
     if !tilo_fs::fuse_session::mountable(
         Path::new("/dev/fuse"),
         std::env::var_os("PATH").as_deref(),
@@ -194,21 +190,36 @@ pub(crate) fn show(
              /dev/fuse and fusermount3 are missing",
         ));
     }
-    let fs = make()?;
-    // What was written into the folder while nothing was mounted there is the person's: it goes
-    // into the workspace before the mount covers it, never hidden underneath.
-    let taken = off_the_worker(|| tilo_fs::underneath::take_in(&fs, at, &state.join("taking-in")))?;
-    if taken > 0 {
-        tracing::info!(taken, at = %at.display(), "the files written into the folder while it was not shown are the workspace's now");
+    loop {
+        // The folder takes writes only from here until it is mounted over: while the workspace
+        // starts it is not there yet, or refuses them as it does while nothing is shown there.
+        let fs = make()?;
+        std::fs::create_dir_all(at)?;
+        // Mounting needs the folder underneath writable ([`Showing`]'s drop makes it refuse
+        // writes again).
+        set_mode(at, WHILE_SHOWN)?;
+        let underneath = tilo_fs::underneath::Underneath::open(at)?;
+        // What was written into the folder while nothing was mounted there is the person's: it
+        // goes into the workspace before the mount covers it, never hidden underneath.
+        let taken =
+            off_the_worker(|| tilo_fs::underneath::take_in(&fs, at, &state.join("taking-in")))?;
+        if taken > 0 {
+            tracing::info!(taken, at = %at.display(), "the files written into the folder while it was not shown are the workspace's now");
+        }
+        let activity = fs.activity();
+        let showing = Showing {
+            at: at.to_path_buf(),
+            shown: Shown::Mounted,
+            activity,
+            view: View::Mount(Some(mounted(fs, at)?)),
+        };
+        // A file written after the take-in looked and before the mount covered the folder is
+        // underneath it now: the folder is shown again, which takes it in.
+        if !underneath.holds_anything()? {
+            return Ok(showing);
+        }
+        tracing::info!(at = %at.display(), "a file was written into the folder as the workspace was shown there; it is shown again to take it in");
     }
-    let activity = fs.activity();
-    let session = mounted(fs, at)?;
-    Ok(Showing {
-        at: at.to_path_buf(),
-        shown: Shown::Mounted,
-        activity,
-        view: View::Mount(Some(session)),
-    })
 }
 
 /// Show the filesystem `make` makes at `at` as a synced folder: macOS's until its file provider
