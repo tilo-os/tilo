@@ -118,7 +118,6 @@ class Situation:
 @dataclass
 class Plan:
     app: str
-    binary: str
     app_id: str
     situations: list
     # What the person already has in their home before the app opens:
@@ -130,13 +129,10 @@ class Plan:
     repositories: list = field(default_factory=list)
     # Sizes beyond `VIEWPORTS` its pictures are taken at (`EXTRA_VIEWPORTS`).
     sizes: list = field(default_factory=list)
-    # A tilolang package is installed by the daemon from `<out>/install/<app>`; a native app has
-    # its own binary instead.
-    tilolang: bool = False
 
 
 def catalog() -> list[dict]:
-    """The default collection's apps: name (directory), binary, id and manifest."""
+    """The default collection's apps: name (directory), kind, id and manifest."""
     out = subprocess.run(
         [sys.executable, str(REPO / "tools/apps/app_release.py"), "--collection", "default"],
         check=True, capture_output=True, text=True,
@@ -204,8 +200,7 @@ def load_plan(entry: dict) -> Plan:
         except (ValueError, TypeError) as error:
             raise ValueError(f"{path}: a seeded file's base64 does not decode: {error}") from error
     return Plan(
-        entry["name"], entry["binary"], entry.get("id", entry["name"]), situations,
-        files, repositories, sizes, entry["kind"] == "tilolang",
+        entry["name"], entry.get("id", entry["name"]), situations, files, repositories, sizes,
     )
 
 
