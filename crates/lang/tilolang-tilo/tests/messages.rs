@@ -1243,6 +1243,12 @@ fn a_setup_that_stopped_returns_to_choosing_a_service() {
     assert_shows(&window.window(), "Link a WhatsApp account");
 }
 
+/// Press the button labelled `label` on a group's page, as the person does: the change it makes
+/// leaves the system, so their yes answers the confirm the system raises.
+fn press_group_change(window: &Window, shown: &ViewInstance, label: &str) {
+    press_confirmed(&window.host, shown, &person(ADA), "Button", label);
+}
+
 /// The private groups of a `WhatsApp` account: listed, opened with their members' roles and what
 /// was said, written to, and changed — an administrator removes someone else and adds a
 /// reviewed contact; anyone leaves.
@@ -1304,13 +1310,7 @@ fn private_groups_are_listed_opened_written_to_and_changed() {
         "Add Bo Diaz using WhatsApp from Ada's WhatsApp to 4915550100@s.whatsapp.net",
     );
 
-    press_confirmed(
-        &window.host,
-        &shown,
-        &person(ADA),
-        "Button",
-        "Remove cy@s.whatsapp.net",
-    );
+    press_group_change(&window, &shown, "Remove cy@s.whatsapp.net");
     let (_, asked) = window.device.last("group_change");
     assert_eq!(asked["change"], "remove", "{asked}");
     assert_eq!(asked["member"], "cy@s.whatsapp.net", "{asked}");
@@ -1320,11 +1320,9 @@ fn private_groups_are_listed_opened_written_to_and_changed() {
     );
 
     let shown = window.window();
-    press_confirmed(
-        &window.host,
+    press_group_change(
+        &window,
         &shown,
-        &person(ADA),
-        "Button",
         "Add Bo Diaz using WhatsApp from Ada's WhatsApp to 4915550100@s.whatsapp.net",
     );
     let (_, asked) = window.device.last("group_change");
