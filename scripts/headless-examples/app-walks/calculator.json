@@ -187,14 +187,20 @@
     },
     {
       "id": "history",
-      "said": "The calculations just worked out stand in the app's record",
+      "said": "The calculation just worked out stands in the app's record, in the pane of the ones before it",
       "ops": {
         "tl": [
           {
             "wait_for": "actions"
           },
           {
-            "actions": true
+            "must": {
+              "see": [
+                {
+                  "prefix": "7*8"
+                }
+              ]
+            }
           }
         ]
       }

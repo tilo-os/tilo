@@ -16,6 +16,10 @@ _spec = importlib.util.spec_from_file_location("app_walk", HERE / "app-walk.py")
 walk = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(walk)
 
+#: The ops whose value is the query a person typed, read as text (`op_actions`'s
+#: `query.lower()`): a flag there is no query, and stops the driver mid-walk.
+QUERY_OPS = ("actions", "search")
+
 
 def steps():
     """Every step file in `app-walks/`: the walks themselves, not the record
@@ -114,6 +118,28 @@ class TheStepFiles(unittest.TestCase):
                 for variant, name, _value in ops_of(step):
                     with self.subTest(walk=path.stem, step=step["id"], variant=variant, op=name):
                         self.assertIn(name, driver)
+
+    def test_a_query_op_is_asked_a_query(self):
+        """An op whose value is the query a person typed reads it as text (`query.lower()`):
+        a step that hands one a flag does not fail as that step, it stops the driver mid-walk
+        and takes the whole family's run with it. The form an op declares is held here, in
+        seconds, beside the one that holds an op's name."""
+        for path, spec in steps():
+            for step in spec["steps"]:
+                for _variant, name, value in ops_of(step):
+                    if name not in QUERY_OPS:
+                        continue
+                    for asked in self.asked(value):
+                        with self.subTest(walk=path.stem, step=step["id"], op=name):
+                            self.assertIsInstance(asked, str, f"{name} in {step['id']} takes text")
+                            self.assertTrue(asked.strip())
+
+    def asked(self, value):
+        """Each value `value` means: the value itself, or one per version for an op that names
+        them that way (`{"search": {"tl": "GitHub"}}`)."""
+        if isinstance(value, dict) and set(value) & set(walk.VARIANTS):
+            return [value[name] for name in walk.VARIANTS if name in value]
+        return [value]
 
     def test_every_step_says_what_a_person_is_doing(self):
         for path, spec in steps():
