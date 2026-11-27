@@ -2183,9 +2183,15 @@ impl Host {
     }
 
     /// The next instant strictly after `now` at which a trigger has something to run: what the
-    /// host waits for, so nothing polls for it. `None` when no trigger will come due again.
+    /// host waits for, so nothing polls for it. `None` when no trigger will come due again, and
+    /// while the workspace's members have not been read: a due trigger waits for that reading,
+    /// and the store's notice that the members' record moved wakes the host when it arrives, so
+    /// no window wakes for a run that cannot happen yet.
     #[must_use]
     pub fn next_trigger(&self, now: i64) -> Option<i64> {
+        if !self.members_known() {
+            return None;
+        }
         crate::triggers::next_due(self, &self.inner.triggers, now)
     }
 
