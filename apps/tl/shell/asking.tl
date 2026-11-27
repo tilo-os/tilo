@@ -312,7 +312,10 @@ view asked_card(q: invocations.Invocation) {
 /// The question `a`, answered at `key`, and here or on the device that asked it.
 view question(key: Text, here: Bool, a: invocations.Asked) {
     ui.Card {
-        question_body(key, here, a, if a.words != "" { a.words } else { a.name })
+        // The card says the action's name on the answer that runs it: its headline carries only
+        // what the asker says of its own, so the name is no word beside a control that a press
+        // by that name would land on instead.
+        question_body(key, here, a, a.words)
     }
 }
 
