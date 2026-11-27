@@ -474,6 +474,12 @@ impl WorkspaceView {
         self.person
     }
 
+    /// The device this view is of.
+    #[must_use]
+    pub const fn device(&self) -> [u8; 32] {
+        self.device
+    }
+
     /// Found `workspace` as `name` on this device: the daemon makes it and keeps it, and it is
     /// here once its reading arrives.
     ///

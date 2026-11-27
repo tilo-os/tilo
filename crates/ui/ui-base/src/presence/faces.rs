@@ -374,8 +374,9 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
     }
 }
 
-/// How wide the eye that says a face follows the person looking is, against the face's side.
-const FOLLOWS_YOU: f64 = 0.5;
+/// How wide the eye that says a face follows the person looking is, against the face's side: on
+/// the face's lower edge, clear of the initials it stands beside.
+const FOLLOWS_YOU: f64 = 0.42;
 
 /// The eye on the lower right of the face in `rect`: a disc in the face's `colour`, separated from
 /// it by `ground`, with the eye drawn in `ground` on it.
@@ -397,7 +398,9 @@ fn paint_follows_you(ctx: &mut PaintCtx<'_>, rect: Rect, colour: Color, ground: 
         None,
         &Circle::new(center, radius),
     );
-    let glyph = Rect::from_center_size(center, (radius * 1.5, radius * 1.5));
+    // The eye sits inside the disc it is drawn on, clear of its rim at the smallest face a bar
+    // draws, so it reads as an eye rather than a hole in a ring.
+    let glyph = Rect::from_center_size(center, (radius * 1.4, radius * 1.4));
     crate::icons::Icon::Eye.draw(ctx.scene, transform, glyph, ground);
 }
 

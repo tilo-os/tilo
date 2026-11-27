@@ -602,8 +602,10 @@ impl Shell {
         };
         self.members_seen = Some((workspace.to_owned(), revision));
         // The name each person here goes by, by their root and by the device their presence
-        // speaks from: whom the workspace keeps no name for is named by theirs.
+        // speaks from: whom the workspace keeps no name for is named by theirs. The person at
+        // this device is named both by their root and by the device their session speaks from.
         let mine = hex::encode(view.person());
+        let this_device = hex::encode(view.device());
         let mut named: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         if let Some(people) = people {
             let rows = people
@@ -624,8 +626,12 @@ impl Shell {
                 }
                 // A row of the person at this device names them `self`, and every other row its
                 // person's root or, where their presence named none, the device it speaks from.
-                let key = if key == "self" { mine.as_str() } else { key };
-                named.insert(key.to_owned(), name.to_owned());
+                if key == "self" {
+                    named.insert(mine.clone(), name.to_owned());
+                    named.insert(this_device.clone(), name.to_owned());
+                } else {
+                    named.insert(key.to_owned(), name.to_owned());
+                }
             }
         }
         let people: Vec<Value> = members

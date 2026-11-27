@@ -2571,3 +2571,10 @@ d-racosa5u-w = Fenster
 
 d-racosa5u-text = Text
 
+
+d-h6k54m33 = Jemanden an ihrem Namen erkennen
+    .w-someone = Jemand
+
+d-frnkdv3w = Dein Winken ist angekommen
+    .w-someone = Jemand
+    .w-you-waved-at = Du hast { $name } gewunken

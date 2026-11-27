@@ -122,8 +122,13 @@ fn face_of(p: device.Person) -> Option<Actor> {
 }
 
 /// The actor named `name` here, where the workspace lists that name: a face on a button or a chip.
+/// Someone nobody named has no name to be found by: they are the member the workspace keeps no
+/// name for, and their face is still theirs.
 fn face_named(name: Text) -> Option<Actor> {
-    return workspace.members.people.filter(m -> m.name() == name).first()
+    let unnamed = name == "" or name == std.say("Someone")
+    return workspace.members.people
+        .filter(m -> if unnamed { m.name() == "" } else { m.name() == name })
+        .first()
 }
 
 /// An agent here, as its presence: a chip that opens its menu. The menu says what it is doing and
@@ -266,12 +271,18 @@ view roster(board: device.People, tall: Float) {
         mark: if board.following != "" { .eye } else { .user },
     ) {
         avatar: {
-            ui.Avatar(
-                name: board.me.name,
-                colour: board.me.colour,
-                status: presence_status(board.me),
-                call: board.me.call != "",
-            )
+            // The same face the bar draws for them: a member's face is theirs, in one colour
+            // wherever it stands.
+            if let me = face_of(board.me) {
+                ui.Avatar(me, status: presence_status(board.me), call: board.me.call != "")
+            } else {
+                ui.Avatar(
+                    name: board.me.name,
+                    colour: board.me.colour,
+                    status: presence_status(board.me),
+                    call: board.me.call != "",
+                )
+            }
         }
         on activate: device.show_person(device.people, person: "self")
     }
@@ -411,8 +422,11 @@ view person_row(p: device.Person, board: device.People, mirror: Float) {
         } else if p.agent { .bot } else if is_follower(p) { .users } else { .user },
     ) {
         avatar: {
-            // Someone in a call wears the arc sweeping round their face, as they do on the bar.
-            if p.agent {
+            // Someone in a call wears the arc sweeping round their face, as they do on the bar; a
+            // face is theirs, in one colour on the bar and in the roster alike.
+            if let face = face_of(p) {
+                ui.Avatar(face, status: presence_status(p), call: p.call != "")
+            } else if p.agent {
                 ui.Avatar(name: p.name, colour: p.colour, square: true, glyph: .bot)
             } else {
                 ui.Avatar(
@@ -884,7 +898,6 @@ view card_head(p: device.Person) {
         if let face = face_of(p) {
             ui.Avatar(
                 who: face,
-                colour: p.colour,
                 status: if p.agent { "" } else { presence_status(p) },
                 square: p.agent,
             )
@@ -1194,8 +1207,35 @@ view clock_or_news(compact: Bool) {
                 wave_notice()
             }
         }
+    } else if board.waved_to != "" {
+        if compact {
+            waved_notice()
+        } else {
+            row(gap: .related, align: .center) {
+                clock()
+                waved_notice()
+            }
+        }
     } else {
         clock()
+    }
+}
+
+/// A wave this person sent went: who it went to, in the bar's glance, for as long as their row
+/// says it went. The person sees their own step answered where they took it, without opening
+/// anyone's card.
+view waved_notice() {
+    let board = device.people
+    if board.waved_to != "" {
+        if let who = board.rows.find(p -> p.key == board.waved_to) {
+            let name = if who.name != "" { who.name } else { std.say("Someone") }
+            let label = std.say("You waved at {name}")
+            if let face = face_of(who) {
+                ui.Chip(label, faces: [face], tone: .success, live: .polite)
+            } else {
+                ui.Chip(label, icon: .hand, tone: .success, live: .polite)
+            }
+        }
     }
 }
 
