@@ -208,11 +208,25 @@ impl DesktopPass {
                         .push((strip, group));
                 }
                 RowOp::Pan(strip, offset) => {
+                    // As far as the row really scrolls: the extent the strips style draws, not
+                    // the strip's own cells, so a wheel or an agent never pans past the windows.
+                    let focused = self.handle.shared.borrow().tree.outputs.focused_display();
+                    let max = {
+                        let shared = self.handle.shared.borrow();
+                        shared
+                            .pans
+                            .iter()
+                            .find(|((panned, display), _)| {
+                                *panned == strip && (display.is_none() || *display == focused)
+                            })
+                            .map(|(_, pan)| {
+                                super::shown::row_extent(&shared, strip, pan.viewport).1
+                            })
+                    };
                     let mut shared = self.handle.shared.borrow_mut();
-                    let focused = shared.tree.outputs.focused_display();
                     for ((panned, display), pan) in &mut shared.pans {
                         if *panned == strip && (display.is_none() || *display == focused) {
-                            pan.scroll = offset.max(0.0);
+                            pan.scroll = offset.clamp(0.0, max.unwrap_or(pan.max));
                         }
                     }
                     shared.wake.wake();

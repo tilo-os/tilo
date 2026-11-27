@@ -478,19 +478,119 @@ pub fn present_pan(shared: &mut Shared) {
                 .iter()
                 .find_map(|((shown, _), pan)| (*shown == strip).then_some(*pan))
         });
+    // The row is drawn as the shell draws it — each window at the share of the row its width
+    // names, never narrower than the `44rem` its bar, its tabs and an app need, with the `1.5rem`
+    // gap between two — so the pan beside the tree measures the extent the row really scrolls,
+    // whatever the strip's own cells resolve to.
     let mut next = shared.presentation.clone();
-    next.pan = pan.map(|pan| crate::desktop::navigation::DesktopPan {
-        workspace: shared.tree.active.to_string(),
-        strip: strip.0.to_string(),
-        offset: pan.scroll,
-        viewport: pan.viewport,
-        content: pan.content,
-        max: pan.max,
-        // The strip's motion is the shell's own drawing now: the desktop has no frame to coast it
-        // into, so it presents where the pan stands, never a motion in flight.
-        moving: false,
+    next.pan = pan.map(|pan| {
+        let (content, max) = row_extent(shared, strip, pan.viewport);
+        crate::desktop::navigation::DesktopPan {
+            workspace: shared.tree.active.to_string(),
+            strip: strip.0.to_string(),
+            offset: pan.scroll.clamp(0.0, max),
+            viewport: pan.viewport,
+            content,
+            max,
+            // The strip's motion is the shell's own drawing now: the desktop has no frame to
+            // coast it into, so it presents where the pan stands, never a motion in flight.
+            moving: false,
+        }
     });
     shared.present(next);
+}
+
+/// How wide the row `strip` is drawn, and how far it scrolls, on a view `viewport` wide: the
+/// extent the strips style draws and the extent it pans, so the navigation snapshot's `max` is
+/// what the row really scrolls.
+pub(crate) fn row_extent(shared: &Shared, strip: StripId, viewport: f64) -> (f64, f64) {
+    let weights: Vec<f64> = floats::workspace_with(&shared.tree, strip)
+        .and_then(|workspace| workspace.strips.iter().find(|held| held.id == strip))
+        .map(|held| {
+            held.window_groups
+                .iter()
+                .filter(|group| !is_floating(&shared.tree, group.id))
+                .map(|group| f64::from(group.width.permille()))
+                .collect()
+        })
+        .unwrap_or_default();
+    row_extent_of(&weights, viewport, f64::from(shared.pan_rem))
+}
+
+/// [`row_extent`] over the row's windows' `weights`.
+fn row_extent_of(weights: &[f64], viewport: f64, rem: f64) -> (f64, f64) {
+    let shares = row_shares(weights, viewport, rem);
+    let content = shares.last().map_or(0.0, |(at, wide)| at + wide);
+    (content, (content - viewport).max(0.0))
+}
+
+/// Whether `group` floats over its row: a floated window stands over the shell, not in the row,
+/// and names no width of the row's.
+fn is_floating(tree: &tilo_desktop_model::Layout, group: GroupId) -> bool {
+    tree.workspaces
+        .iter()
+        .any(|workspace| workspace.layout.float_of(group).is_some())
+}
+
+/// The widest a window of a row is drawn, in rem: the `44rem` the strips style keeps every window
+/// it shares out.
+const ROW_WINDOW_LEAST_REM: f64 = 44.0;
+/// The room between two windows of a row, in rem: the strips style's `1.5rem` gap.
+const ROW_GAP_REM: f64 = 1.5;
+
+/// The windows of a row across `viewport`, by their `weights`, in order: each takes its weight's
+/// share of the room the gaps leave, and a window whose share falls under the least the row keeps
+/// is held at it, the rest sharing what is left — what a flex row with those floors draws. A rem
+/// is `rem` pixels. Each window's left edge and width, in the row's pixels.
+fn row_shares(weights: &[f64], viewport: f64, rem: f64) -> Vec<(f64, f64)> {
+    let gap = ROW_GAP_REM * rem;
+    let least = ROW_WINDOW_LEAST_REM * rem;
+    let n = weights.len();
+    let gaps = f64::from(u32::try_from(n.saturating_sub(1)).unwrap_or(u32::MAX));
+    let mut room = (viewport - gap * gaps).max(0.0);
+    let mut widths: Vec<f64> = vec![0.0; n];
+    let mut open: Vec<usize> = (0..n).collect();
+    while !open.is_empty() {
+        let left: f64 = open.iter().filter_map(|at| weights.get(*at)).sum();
+        let share = |weight: f64| {
+            if left > 0.0 {
+                room * weight / left
+            } else {
+                0.0
+            }
+        };
+        let (floored, sharing): (Vec<usize>, Vec<usize>) = open.iter().copied().partition(|at| {
+            weights
+                .get(*at)
+                .is_some_and(|weight| share(*weight) < least)
+        });
+        if floored.is_empty() {
+            for at in sharing {
+                if let (Some(weight), Some(width)) = (weights.get(at), widths.get_mut(at)) {
+                    *width = share(*weight);
+                }
+            }
+            open.clear();
+            break;
+        }
+        for at in &floored {
+            if let Some(width) = widths.get_mut(*at) {
+                *width = least;
+            }
+        }
+        let frozen = f64::from(u32::try_from(floored.len()).unwrap_or(u32::MAX));
+        room = (room - least * frozen).max(0.0);
+        open = sharing;
+    }
+    let mut x = 0.0;
+    widths
+        .into_iter()
+        .map(|wide| {
+            let at = x;
+            x += wide + gap;
+            (at, wide)
+        })
+        .collect()
 }
 
 /// `at`, a place on the canvas of the work area `area`, in the surface's coordinates.

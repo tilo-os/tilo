@@ -103,6 +103,7 @@ impl Shared {
             viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
             displays: Vec::new(),
             pans: HashMap::new(),
+            pan_rem: tilo_ui_base::tokens::REFERENCE_BODY_PX,
             reveal_asked: Vec::new(),
             top_overlay: 0.0,
             replaced: false,

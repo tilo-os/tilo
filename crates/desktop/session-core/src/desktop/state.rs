@@ -272,6 +272,10 @@ pub struct Shared {
     /// Where each strip shown on a display is panned to, by strip and display (`None` on one
     /// display), and the window last brought into view there ([`shown::lay_out`]).
     pub pans: HashMap<(StripId, Option<u32>), shown::StripPan>,
+    /// What one `rem` is in the shell's pixels, as the shell drawing the windows sets it: the
+    /// strips style keeps every window of a row at `44rem` and the gap between two at `1.5rem`,
+    /// and the pan it presents measures the row in those same pixels.
+    pub pan_rem: f32,
     /// The windows asked into view since the last layout: each one opened, restored or moved.
     pub reveal_asked: Vec<(StripId, GroupId)>,
     /// How much of the shell's top edge the desktop bar overlays now
@@ -670,6 +674,21 @@ impl DesktopHandle {
     /// shows over the windows under an auto-hiding bar, else zero. Every window moves down by it,
     /// whole, so the controls on its own bar stand below the bar instead of under it — where the
     /// bar's clock would read across a window's title on a phone.
+    /// Tell the desktop what one `rem` is in the shell's pixels, as the shell that draws its
+    /// rows sets it: the pan beside the tree measures each window of a row at least `44rem` wide
+    /// and the gap between two at `1.5rem`, in the row's own pixels. Whether that changed
+    /// anything.
+    pub fn set_pan_rem(&self, rem: f32) -> bool {
+        let rem = rem.max(1.0);
+        let mut shared = self.shared.borrow_mut();
+        if (shared.pan_rem - rem).abs() <= f32::EPSILON {
+            return false;
+        }
+        shared.pan_rem = rem;
+        shared.presented = shared.presented.wrapping_add(1);
+        true
+    }
+
     pub fn set_top_overlay_inset(&self, inset: f64) -> bool {
         let inset = inset.max(0.0);
         let mut shared = self.shared.borrow_mut();

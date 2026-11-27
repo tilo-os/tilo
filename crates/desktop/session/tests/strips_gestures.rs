@@ -492,6 +492,25 @@ fn three_windows_keep_their_least_width_and_stand_wider_than_the_display() {
         past > f64::from(WIDTH) + 100.0,
         "the row stands wider than the display it is drawn on: {drawn:?}"
     );
+    // The pan the desktop presents beside the tree is the row it draws: its extent and the room
+    // it scrolls are the drawn windows' own, in pixels, so a wheel or an agent pans as far as the
+    // row really goes and no further.
+    let first = drawn.iter().map(|rect| rect.0).fold(f64::MAX, f64::min);
+    let content = past - first;
+    let viewport = f64::from(WIDTH);
+    let pan = session
+        .handle()
+        .snapshot("check", vec![])
+        .desktop_pan
+        .expect("the row in front presents its pan");
+    assert!(
+        (pan.viewport - viewport).abs() <= 0.5 && (pan.content - content).abs() <= 1.0,
+        "the pan measures the row the shell draws: {pan:?} against {drawn:?}"
+    );
+    assert!(
+        (pan.max - (content - viewport).max(0.0)).abs() <= 1.0,
+        "the row scrolls exactly as far as the pan says: {pan:?} against {drawn:?}"
+    );
 }
 
 /// A row wider than the screen settles on a window's edge after it is scrolled: a wheel's step

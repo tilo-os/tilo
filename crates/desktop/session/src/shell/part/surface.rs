@@ -374,13 +374,16 @@ impl super::ShellPart {
     /// reports the offset it was taken to, and that is the pan the desktop keeps for the strip, so
     /// the row the person sees and the pan beside the tree are one state.
     fn present_pan_asks(&mut self) {
+        let Some(desktop) = &self.floats else {
+            return;
+        };
+        // The row's own pixels: the pan beside the tree measures each window of the row at least
+        // `44rem` and the gap between two at `1.5rem`, and a rem is what the shell draws text at.
+        desktop.set_pan_rem(ui::widget::arrange::rem_of(self.widgets.theme()));
         let asked = self.widgets.take_pan_asks();
         if asked.is_empty() {
             return;
         }
-        let Some(desktop) = &self.floats else {
-            return;
-        };
         let Some(pan) = desktop.presentation().pan else {
             return;
         };
