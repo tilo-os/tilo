@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use tilo_net::http::fetch;
 
 use crate::model::{Source, TiloRelease};
+use crate::verified_cache::{Cache, message as cache_message};
 
 const BUNDLED_CATALOG: &str = include_str!(concat!(env!("OUT_DIR"), "/release-catalog.json"));
 
@@ -535,22 +536,6 @@ fn cache_root() -> PathBuf {
         .join("tilo-imager")
 }
 
-fn sha256_controlled(
-    path: &Path,
-    expected_size: u64,
-    control: &DownloadControl,
-) -> Result<String, String> {
-    let mut file =
-        File::open(path).map_err(|error| format!("Could not open downloaded data: {error}"))?;
-    imager_backend::write::hash_source_exact(
-        &mut file,
-        expected_size,
-        &|| control.is_cancelled(),
-        |_| {},
-    )
-    .map_err(|error| format!("Could not verify downloaded data: {error}"))
-}
-
 fn download_archive(
     downloader: &tilo_net::http::fetch::Downloader,
     url: reqwest::Url,
@@ -605,27 +590,7 @@ fn download_archive(
     ) {
         let _ = fs::remove_file(archive_part);
     }
-    result.map_err(archive_error)
-}
-
-/// What the person sees when a download did not produce the signed installer.
-fn archive_error(error: fetch::Error) -> String {
-    match error {
-        fetch::Error::Cancelled => "Tilo installer download cancelled.".into(),
-        fetch::Error::Digest => {
-            "The downloaded Tilo installer did not match its signed catalog.".into()
-        }
-        fetch::Error::Size { .. } => "The Tilo installer download has an unexpected size.".into(),
-        fetch::Error::Incomplete(_) | fetch::Error::Paused => {
-            "The Tilo installer download was interrupted before it completed.".into()
-        }
-        fetch::Error::Io(error) => format!("Could not save the Tilo installer: {error}"),
-        fetch::Error::Client(detail) => format!("Could not initialize the downloader: {detail}"),
-        fetch::Error::Trusted(detail) | fetch::Error::Protocol(detail) => {
-            format!("Could not download the Tilo installer: {detail}")
-        }
-        fetch::Error::Hook(detail) => format!("Could not save the Tilo installer: {detail}"),
-    }
+    result.map_err(|error| crate::verified_cache::fetch_error("Tilo installer", error))
 }
 
 pub fn verified_image_observed(
@@ -639,33 +604,33 @@ pub fn verified_image_observed(
         return Err("The Tilo installer has invalid download metadata.".into());
     }
     let root = cache_root().join(&release.image_sha256);
-    fs::create_dir_all(&root)
-        .map_err(|error| format!("Could not create the download cache: {error}"))?;
-    let image = root.join("tilo-installer.img");
-    if image.is_file() {
+    let cache = Cache::open(&root).map_err(|error| cache_message("Tilo installer", error))?;
+    let name = "tilo-installer.img";
+    if root.join(name).is_file() {
         notify(DownloadEvent::Verifying);
-        if sha256_controlled(&image, release.size, control)
-            .is_ok_and(|digest| digest == release.image_sha256)
+    }
+    match cache.verified(name, release.size, &release.image_sha256, &control.0) {
+        Ok(Some(image)) => return source_for(release, &image),
+        Ok(None) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+            ) =>
         {
-            return source_for(release, &image);
+            let _ = fs::remove_file(root.join(name));
         }
-        if control.is_cancelled() {
-            return Err("Tilo installer download cancelled.".into());
-        }
-        fs::remove_file(&image)
-            .map_err(|error| format!("Could not replace an invalid cached installer: {error}"))?;
+        Err(error) => return Err(cache_message("Tilo installer", error)),
     }
 
     let archive_part = root.join("tilo-installer.img.zst.part");
-    let image_part = root.join("tilo-installer.img.part");
     let trusted_origin = reqwest::Url::parse("https://code.tilo.so/")
         .map_err(|error| format!("Could not initialize the trusted release origin: {error}"))?;
-    let downloader = fetch::Downloader::new(
+    let downloader = crate::verified_cache::downloader(
         trusted_origin,
         std::time::Duration::from_secs(60 * 60),
-        Some("Tilo-Imager/1"),
-    )
-    .map_err(|error| format!("Could not initialize the downloader: {error}"))?;
+        "Tilo-Imager/1",
+    )?;
     let url = reqwest::Url::parse(&release.url)
         .map_err(|error| format!("The Tilo installer has an invalid download URL: {error}"))?;
     download_archive(
@@ -681,13 +646,14 @@ pub fn verified_image_observed(
     let compressed = File::open(&archive_part)
         .map_err(|error| format!("Could not open the verified installer: {error}"))?;
     let mut decoder = ZstdFrames::new(BufReader::new(compressed));
-    let mut expanded = File::create(&image_part)
-        .map_err(|error| format!("Could not create the expanded installer: {error}"))?;
+    let mut staging = cache
+        .staging()
+        .map_err(|error| cache_message("Tilo installer", error))?;
+    let expanded = &mut staging.file;
     let mut expanded_size = 0_u64;
     let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
     while expanded_size <= release.size {
         if control.is_cancelled() {
-            let _ = fs::remove_file(&image_part);
             return Err("Tilo installer download cancelled.".into());
         }
         let allowed = release
@@ -723,21 +689,23 @@ pub fn verified_image_observed(
         .flush()
         .map_err(|error| format!("Could not save the expanded installer: {error}"))?;
     notify(DownloadEvent::Verifying);
-    let verified = sha256_controlled(&image_part, release.size, control)
-        .is_ok_and(|digest| digest == release.image_sha256);
-    if control.is_cancelled() {
-        let _ = fs::remove_file(&image_part);
-        return Err("Tilo installer download cancelled.".into());
-    }
-    if expanded_size != release.size
-        || expanded.metadata().map_or(0, |meta| meta.len()) != release.size
-        || !verified
-    {
-        let _ = fs::remove_file(&image_part);
+    if expanded_size != release.size {
         return Err("The expanded Tilo installer did not match its signed catalog.".into());
     }
-    fs::rename(&image_part, &image)
-        .map_err(|error| format!("Could not publish the verified installer cache: {error}"))?;
+    let image = cache
+        .publish(
+            staging,
+            name,
+            release.size,
+            &release.image_sha256,
+            &control.0,
+        )
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::InvalidData => {
+                "The expanded Tilo installer did not match its signed catalog.".into()
+            }
+            _ => cache_message("Tilo installer", error),
+        })?;
     let _ = fs::remove_file(&archive_part);
     source_for(release, &image)
 }
