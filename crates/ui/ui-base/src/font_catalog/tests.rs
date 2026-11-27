@@ -748,3 +748,66 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// A catalog the image signs is listed from its manifest alone: its files are covered by the
+/// signature that admitted them, so the boot path measures none of them. A catalog from anywhere
+/// else still refuses a file that is not its pinned size.
+#[test]
+fn a_signed_catalog_is_listed_without_measuring_its_files() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("manifest.toml"),
+        tilo_font_catalog::MANIFEST,
+    )
+    .unwrap();
+    let asset = tilo_font_catalog::manifest()
+        .unwrap()
+        .font
+        .iter()
+        .find(|asset| asset.scope.fixtures())
+        .unwrap();
+    let path = asset.path_in(dir.path()).unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, [0_u8; 1]).unwrap();
+
+    let listed = verify_bundle_trusting(dir.path(), true, true).unwrap();
+    assert_eq!(listed.db.faces().count(), 41);
+    let Err(refused) = verify_bundle_trusting(dir.path(), true, false) else {
+        panic!("a catalog from outside the image must check its files");
+    };
+    assert!(
+        refused.problem.contains("expected regular file"),
+        "{refused}"
+    );
+}
+
+/// A signed catalog lists and reads only the files its compiled-in manifest names, so a font file
+/// placed beside the image's catalog is never loaded, and a catalog whose manifest is not this
+/// build's is refused however it was installed.
+#[test]
+fn a_signed_catalog_lists_only_the_faces_its_manifest_names() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("manifest.toml"),
+        tilo_font_catalog::MANIFEST,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("Unsigned.ttf"), b"not a font").unwrap();
+    let listed = verify_bundle_trusting(dir.path(), true, true).unwrap();
+    let files: Vec<String> = listed
+        .db
+        .faces()
+        .filter_map(|face| match &face.source {
+            fontdb::Source::File(path) => Some(path.file_name()?.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    assert!(!files.is_empty(), "the catalog's own faces are listed");
+    assert!(
+        !files.iter().any(|name| name == "Unsigned.ttf"),
+        "{files:?}"
+    );
+
+    std::fs::write(dir.path().join("manifest.toml"), "schema = 1\n").unwrap();
+    assert!(verify_bundle_trusting(dir.path(), true, true).is_err());
+}

@@ -5296,6 +5296,9 @@ impl App {
         // runs on a loop of its own, which needs no display at all: a server runs the app's
         // code for the calls that reach it.
         if crate::process::environment().no_window() {
+            // No first frame of this process will come to start the find its construction
+            // deferred, and a server app sets text in the system's fonts as it always did.
+            tilo_ui_base::font_catalog::find_system_fonts_now();
             return self.run_no_window();
         }
         // Everything from here to the window's creation is marked: Notes spent

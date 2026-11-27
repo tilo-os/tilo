@@ -15,6 +15,17 @@ fn the_checkout_holds_the_pinned_catalog() {
 }
 
 #[test]
+fn the_image_s_catalogs_are_signed_and_a_checkout_is_not() {
+    assert!(image_signed(Path::new(INSTALLED_ROOT)));
+    assert!(image_signed(Path::new(
+        "/usr/share/tilo/font-catalogs/f00d"
+    )));
+    assert!(image_signed(Path::new("/run/tilo-fonts")));
+    assert!(!image_signed(Path::new("/run/tilo-fonts-elsewhere")));
+    assert!(!image_signed(Path::new("/tmp/catalog")));
+}
+
+#[test]
 fn a_different_manifest_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("manifest.toml"), "schema = 1\n").unwrap();

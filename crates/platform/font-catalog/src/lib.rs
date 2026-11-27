@@ -10,7 +10,9 @@
 //! text find the same bytes. This crate owns the manifest's schema and the
 //! checks that tie an installed directory to the build that reads it: the
 //! installed manifest must be byte-identical to the one compiled in here, and
-//! every file a reader uses must have its pinned size. The manifest also
+//! a catalog from outside the image has every file checked against its pinned
+//! size. A catalog the image or a signed SDK installs is covered by the
+//! signature that admitted it ([`image_signed`]). The manifest also
 //! states each face's family, style and weight, so a reader lists the faces
 //! without opening a file; the SHA-256 pins are checked where a catalog is
 //! prepared and where a browser delivers bytes.
@@ -87,6 +89,18 @@ pub fn checkout_root() -> PathBuf {
         find_root(beside_program.chain(prepared_here)).unwrap_or_else(|| named.to_path_buf())
     })
     .clone()
+}
+
+/// Whether `root` is a catalog the signature that admitted it covers: the image installs one at
+/// [`INSTALLED_ROOT`] and, named by its manifest digest, under `/usr/share/tilo/font-catalogs`,
+/// and the launcher mounts the selected signed SDK's catalog at `/run/tilo-fonts`. `/usr` on a
+/// booted image is verified by dm-verity when it is mounted, so a reader accepts such a root's
+/// files as they are; a catalog from a checkout, an app bundle or a cache is checked file by file.
+#[must_use]
+pub fn image_signed(root: &Path) -> bool {
+    root == Path::new(INSTALLED_ROOT)
+        || root.starts_with("/usr/share/tilo/font-catalogs")
+        || root == Path::new("/run/tilo-fonts")
 }
 
 /// `TILO_FONT_CATALOG`: the catalog to read instead of the compiled-in
@@ -346,7 +360,8 @@ impl Asset {
 
     /// Check the file under `root` against its pinned size and SHA-256 and
     /// return its path: what preparing a catalog proves of every file. A
-    /// process that sets text checks only the size ([`Asset::sized_in`]).
+    /// process that sets text checks only the size ([`Asset::sized_in`]), and
+    /// only in a catalog the image does not sign ([`image_signed`]).
     pub fn verify(&self, root: &Path) -> Result<PathBuf, Error> {
         let path = self.sized_in(root)?;
         let actual = sha256_file(&path).map_err(|e| Error::at(&path, e))?;

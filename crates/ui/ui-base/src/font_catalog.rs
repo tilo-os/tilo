@@ -72,9 +72,6 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     // pinned catalog, built and mapped once per process as the product's is.
     let fixtures = cfg!(feature = "test-support");
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
-    // The catalog's faces and the system's, once a launch with no saved list of the system's fonts
-    // has found them.
-    static FOUND: OnceLock<fontdb::Database> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
         let font_system = if fixtures {
             fixture_font_system()
@@ -91,25 +88,15 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
                     return None;
                 }
             };
-            if !held.get() {
+            if held.get() {
+                // Nothing to find this launch: a deferral has nothing to start.
+                FIND_DEFERRED.store(false, std::sync::atomic::Ordering::Relaxed);
+            } else if !FIND_DEFERRED.load(std::sync::atomic::Ordering::Relaxed) {
                 // Finding the system's fonts parses every face it has: text is set in the
                 // catalog's faces meanwhile, and the font systems made once they are found have
-                // both.
-                let locale = locale.clone();
-                let find = move || {
-                    let system = index::find_system_fonts(recorded.as_deref());
-                    let discover = |db: &mut fontdb::Database| index::add_faces(&system, db);
-                    if let Ok(font_system) = load_first_catalog(&catalog_roots(), &locale, discover)
-                    {
-                        let _ = FOUND.set(mapped(font_system.db()));
-                    }
-                };
-                if crate::background::Background::current()
-                    .spawn("font-find", find)
-                    .is_err()
-                {
-                    tracing::warn!("the system's fonts are not found this launch");
-                }
+                // both. A window's process defers it past its first frame
+                // (`defer_system_font_find_until_first_frame`).
+                find_system_fonts_in_background(locale.clone());
             }
             font_system
         };
@@ -121,6 +108,83 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
         .get()
         .or(database.as_ref())
         .map(|db| system_over(locale, db.clone()))
+}
+
+/// The catalog's faces and the system's, once a launch with no saved list of the system's fonts
+/// has found them.
+#[cfg(not(test))]
+static FOUND: OnceLock<fontdb::Database> = OnceLock::new();
+
+/// Whether this process asked for the system's fonts to be found after its first frame.
+#[cfg(not(test))]
+static FIND_DEFERRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether one launch started finding the system's fonts, so a deferral and the first use of a
+/// font system after it cannot run the scan twice.
+#[cfg(not(test))]
+static FINDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Do not find the system's fonts while this process draws its first frame: finding them parses
+/// every installed face, seconds of cold disk the window's first frame must never wait on. The
+/// catalog's faces set text until [`find_system_fonts_after_first_frame`] starts it.
+///
+/// A process that draws no window, and so calls neither, finds them as it always did.
+#[cfg(not(test))]
+pub fn defer_system_font_find_until_first_frame() {
+    // A test-support build sets text in the fixture catalog and finds no system fonts.
+    if cfg!(feature = "test-support") {
+        return;
+    }
+    FIND_DEFERRED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Find the system's fonts now, undoing a deferral: what a process that draws no window does,
+/// since no first frame of its own will come to start it. A find already started is not repeated.
+#[cfg(not(test))]
+pub fn find_system_fonts_now() {
+    if cfg!(feature = "test-support") {
+        return;
+    }
+    FIND_DEFERRED.store(false, std::sync::atomic::Ordering::Relaxed);
+    find_system_fonts_in_background(crate::i18n::I18nManager::current_locale());
+}
+
+/// Start the find [`defer_system_font_find_until_first_frame`] deferred, on a background thread:
+/// the window has shown its first frame, and the font systems made after this one hold both the
+/// catalog's faces and the system's. Finding them again is not repeated.
+#[cfg(not(test))]
+pub fn find_system_fonts_after_first_frame() {
+    if cfg!(feature = "test-support") {
+        return;
+    }
+    if !FIND_DEFERRED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    find_system_fonts_in_background(crate::i18n::I18nManager::current_locale());
+}
+
+/// Find the system's fonts on a background thread, once per process, and build the database text
+/// is set from afterwards with the catalog's faces and the system's.
+#[cfg(not(test))]
+fn find_system_fonts_in_background(locale: String) {
+    if FINDING.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let find = move || {
+        let recorded = index::location();
+        let system = index::find_system_fonts(recorded.as_deref());
+        let discover = |db: &mut fontdb::Database| index::add_faces(&system, db);
+        if let Ok(font_system) = load_first_catalog(&catalog_roots(), &locale, discover) {
+            let _ = FOUND.set(mapped(font_system.db()));
+        }
+    };
+    if crate::background::Background::current()
+        .spawn("font-find", find)
+        .is_err()
+    {
+        FINDING.store(false, std::sync::atomic::Ordering::Relaxed);
+        tracing::warn!("the system's fonts are not found this launch");
+    }
 }
 
 #[cfg_attr(
@@ -961,13 +1025,29 @@ fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, F
 }
 
 /// The catalog at `root` as the manifest compiled into this build lists it:
-/// its manifest must be this build's byte for byte and every file it uses must
-/// have its pinned size. No font is opened: the manifest states each face's
-/// names, style and weight (`listed_faces_are_what_the_files_hold` holds it to
-/// what the files say), and a face's bytes are read when text first needs it.
-/// The pinned hashes were checked where the catalog was prepared; hashing it
-/// again read all 55 MB of it before the first frame on a cold disk.
+/// its manifest must be this build's byte for byte, and a catalog from outside
+/// the image must have every file's pinned size. No font is opened: the
+/// manifest states each face's names, style and weight
+/// (`listed_faces_are_what_the_files_hold` holds it to what the files say), and
+/// a face's bytes are read when text first needs it. The pinned hashes were
+/// checked where the catalog was prepared; hashing it again read all 55 MB of
+/// it before the first frame on a cold disk.
+///
+/// A catalog the image or a signed SDK installs ([`tilo_font_catalog::image_signed`]) is
+/// covered by the signature that admitted those bytes, so its files are listed
+/// without being opened or measured: only the files the compiled-in manifest
+/// names are ever read, and `/usr` was verified when it was mounted.
 fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCatalogError> {
+    verify_bundle_trusting(root, fixtures, tilo_font_catalog::image_signed(root))
+}
+
+/// [`verify_bundle`] with the image's trust made explicit: a root at `signed` has its files
+/// listed from the manifest alone; any other has each checked against its pinned size.
+fn verify_bundle_trusting(
+    root: &Path,
+    fixtures: bool,
+    signed: bool,
+) -> Result<VerifiedBundle, FontCatalogError> {
     tilo_font_catalog::check_manifest(root)?;
     let manifest = tilo_font_catalog::manifest()?;
     let mut db = fontdb::Database::new();
@@ -982,7 +1062,12 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
             continue;
         }
         reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
-        let path = asset.sized_in(root)?;
+        let path = if signed {
+            // The signature covers the bytes; the manifest names which are ours.
+            asset.path_in(root)?
+        } else {
+            asset.sized_in(root)?
+        };
         for face in &asset.faces {
             canonical.insert(db.push_face_info(listed(face, fontdb::Source::File(path.clone()))));
         }

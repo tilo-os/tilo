@@ -73,6 +73,16 @@ splash() {
   python3 os/dev/check-boot-splash.py --arch "$arch" --out "$out/boot-splash" "oci:$image/oci:tilo"
 }
 tracks=(devices desktop splash)
+# A run asked for some of the tracks boots those (`--input tracks=desktop`); the default boots all.
+if [[ -n ${T_INPUT_TRACKS:-} ]]; then
+  read -r -a tracks <<< "$T_INPUT_TRACKS"
+fi
+for track in "${tracks[@]}"; do
+  case $track in
+    devices|desktop|splash) ;;
+    *) die "unknown track: $track" ;;
+  esac
+done
 pids=()
 for track in "${tracks[@]}"; do
   ( set -o pipefail; "$track" 2>&1 | tee "$out/$track.log" | sed -u "s/^/[$track] /" ) &

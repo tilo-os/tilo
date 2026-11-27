@@ -1263,6 +1263,9 @@ fn render_one_frame(
     });
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-present-done");
+        // The first frame is drawn, so the process may now find the system's fonts: the scan
+        // parses every installed face, and the window no longer waits on it.
+        tilo_ui_base::font_catalog::find_system_fonts_after_first_frame();
     }
     if present_dbg {
         let present_us = t_present.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e6);

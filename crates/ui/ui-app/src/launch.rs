@@ -716,6 +716,11 @@ fn run_parsed(
     // A process started with no window makes none until the shell asks for
     // one: nothing is drawn, so nothing is prepared to draw.
     let shows = opens_native_window(&args) && !crate::process::environment().windowless;
+    if shows {
+        // A window finds the system's fonts once its first frame is presented, never in front of
+        // it: the preparation below would otherwise scan every installed face here.
+        tilo_ui_base::font_catalog::defer_system_font_find_until_first_frame();
+    }
     // The font database is built on its own thread, so the app's first text
     // renderer finds the catalog verified and the fonts read. It starts
     // first: the renderer preparation below also opens the early window on

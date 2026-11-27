@@ -323,6 +323,10 @@ impl Host {
                 }
                 if let Some(presented) = presented.take() {
                     presented();
+                    // The first frame is on screen, so the process may now find the system's
+                    // fonts: the scan parses every installed face, and this frame waited on none
+                    // of it.
+                    tilo_ui_base::font_catalog::find_system_fonts_after_first_frame();
                 }
             }
             self.wait(app, wants, next_frame)?;

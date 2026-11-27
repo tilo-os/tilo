@@ -1598,6 +1598,10 @@ impl App {
         root_widget: Box<dyn Widget>,
         inputs: AppConstructionInputs,
     ) -> Box<Self> {
+        // Before the assembly resolves the app's font system below: a window's process finds the
+        // system's fonts once its first frame is presented (`find_system_fonts_after_first_frame`
+        // at the hosts), never in front of it.
+        tilo_ui_base::font_catalog::defer_system_font_find_until_first_frame();
         retirement_assembly::assemble(retirement_assembly::AppAssemblyOwnership {
             #[cfg(feature = "model")]
             retirement: None,

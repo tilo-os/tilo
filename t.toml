@@ -6434,6 +6434,8 @@ git = true
 timeout_secs = 10800
 on = ["dispatch", "idle", "stable"]
 heavy = true
+# The tracks a run boots; the default is all of them, and `--input tracks=desktop` runs one.
+dispatch_inputs = { tracks = "devices desktop splash" }
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 

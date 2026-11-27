@@ -770,6 +770,9 @@ impl Worker {
         if !self.first_presented {
             self.first_presented = true;
             tilo_startup_metrics::mark("first-frame-presented");
+            // The first frame is drawn, so the process may now find the system's fonts: the scan
+            // parses every installed face, and the window no longer waits on it.
+            tilo_ui_base::font_catalog::find_system_fonts_after_first_frame();
             tilo_startup_metrics::dump();
             if let Some(line) = tilo_startup_metrics::summary_line(&super::startup_app_name()) {
                 tilo_ui_base::diag!("{line}");
