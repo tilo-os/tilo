@@ -59,17 +59,17 @@ const WELCOME_WAIT: Duration = Duration::from_secs(10);
 /// back after that many later ones is not going to be applied.
 const MAX_HELD_FRAMES: usize = 8;
 
-/// The widest a device's wait to create a group's group spreads past
-/// [`REQUEST_FIRST`], in milliseconds: devices that hold no state for the same
-/// group wait within these of each other, so one creates the group and the
-/// others hear of it in time.
+/// The spread past [`REQUEST_FIRST`] that a device's wait for a group's genesis
+/// allows for a key holder answering its request, in milliseconds: one ask goes
+/// out within [`REQUEST_FIRST`], and an answer that crosses a slow link is
+/// still read as one.
 const FOUNDING_SPREAD_MS: u64 = 2_000;
 
-/// The longest a device that holds no state for a group waits for its genesis
-/// (from the workspace's retained frames, or a key holder answering its
-/// request) before it creates the group itself: [`REQUEST_FIRST`] plus the
-/// widest spread between devices. Whoever waits for a fresh group's keys
-/// waits longer than this, or it gives up on a group about to be created.
+/// The longest a device that holds no keys of a group waits for its genesis
+/// (from the workspace's retained frames, or the device that creates it
+/// answering its request): [`REQUEST_FIRST`] plus the widest spread between
+/// devices. Whoever waits for a fresh group's keys waits longer than this, or
+/// it gives up on a group about to be created.
 #[must_use]
 pub const fn founding_wait() -> Duration {
     REQUEST_FIRST.saturating_add(Duration::from_millis(FOUNDING_SPREAD_MS))
@@ -84,24 +84,6 @@ pub const fn founding_wait() -> Duration {
 #[must_use]
 pub const fn asking_again_wait() -> Duration {
     REQUEST_LONGEST.saturating_add(REQUEST_FIRST)
-}
-
-/// How long a device that took a group up for another one that asked
-/// ([`PeerEntry::wanted`]) waits to create its group, once no genesis is on
-/// its way: the asker creates it at once if it can, this one only for an
-/// asker that cannot (a reader). Each device waits its own while, set by its
-/// key and the group, so one creates the group and the others hear of it.
-fn found_after(device: &Ed25519PublicKey, workspace: WorkspaceId) -> Duration {
-    let spread = device
-        .as_bytes()
-        .iter()
-        .zip(workspace.as_uuid().as_bytes())
-        .fold(0_u64, |acc, (device, workspace)| {
-            acc.wrapping_mul(31)
-                .wrapping_add(u64::from(device ^ workspace))
-        })
-        % FOUNDING_SPREAD_MS;
-    REQUEST_FIRST.saturating_add(Duration::from_millis(spread))
 }
 
 impl PeerEntry {
@@ -571,16 +553,6 @@ impl Backoff {
     }
 }
 
-/// When this device may create a group's group itself.
-struct Founding {
-    /// When a device that took the group up for another one creates the
-    /// group, if no genesis has arrived.
-    at: Instant,
-    /// Whether the policy, when last read, let this device read the group
-    /// and so create its group.
-    allowed: bool,
-}
-
 /// One group this device takes part in.
 struct PeerEntry {
     workspace: WorkspaceId,
@@ -606,7 +578,6 @@ struct PeerEntry {
     /// An endpoint opened the route after this device was removed: ask
     /// again, and the policy decides whether access resumes.
     rejoin: bool,
-    founding: Founding,
     /// An endpoint of this device opened the route. A group taken up only
     /// because another device asked is left once a genesis arrives.
     wanted: bool,
@@ -825,6 +796,12 @@ impl WorkspaceKeys {
     /// The key group of `readers` in `workspace` ([`collab_types::reader_group`]), which
     /// [`Self::access`] then answers for: this device settles it from now on as it settles the
     /// workspace's own. `None` when `readers` names no set.
+    /// Whether this device creates `group` itself ([`Self::creates`]).
+    #[must_use]
+    pub fn creates_group(&self, group: WorkspaceId, wall: u64) -> bool {
+        self.creates(group, wall)
+    }
+
     pub fn reader_group(&mut self, workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
         let known = self.directory.kept().len();
         let group = self.directory.group(workspace, readers)?;
@@ -1054,6 +1031,12 @@ impl WorkspaceKeys {
         self.peers
             .get(&workspace)
             .and_then(|entry| entry.peer.content_keys())
+    }
+
+    /// Whether `workspace`'s group stands as its policy has it: a frame that moved it has been
+    /// reconciled, so its keys are not one a frame still to come replaces.
+    fn settled(&self, workspace: WorkspaceId) -> bool {
+        self.peers.get(&workspace).is_some_and(|entry| !entry.dirty)
     }
 
     /// `workspace`'s keys as this device holds them, opening, joining or
@@ -1364,18 +1347,6 @@ impl WorkspaceKeys {
                 asking.then_some(entry.retry.due)
             })
             .min();
-        let founding = self
-            .peers
-            .iter()
-            .filter(|(workspace, entry)| {
-                !entry.wanted
-                    && entry.founding.allowed
-                    && entry.founding.at > now
-                    && !entry.peer.knows_group()
-                    && !self.groups_seen.contains(workspace)
-            })
-            .map(|(_, entry)| entry.founding.at)
-            .min();
         let unopened = self
             .unopened
             .values()
@@ -1391,7 +1362,6 @@ impl WorkspaceKeys {
             .chain(welcome)
             .chain(turn)
             .chain(asking)
-            .chain(founding)
             .chain(unopened)
             .min()
     }
@@ -1805,6 +1775,20 @@ impl WorkspaceKeys {
     }
 
     fn reconcile(&mut self, workspace: WorkspaceId, now: Instant, wall: u64) {
+        let Some(settles) = self.peers.get(&workspace).map(|entry| entry.dirty) else {
+            return;
+        };
+        self.reconcile_group(workspace, now, wall);
+        if settles {
+            // The group stood as the policy has it when this pass began: whoever waits for its
+            // keys reads them now, or why they are not here.
+            self.bump(workspace);
+        }
+    }
+
+    /// The pass [`Self::reconcile`] makes over `workspace`: what the policy has the group do,
+    /// judged against the state that pass began with.
+    fn reconcile_group(&mut self, workspace: WorkspaceId, now: Instant, wall: u64) {
         if !self.peers.contains_key(&workspace) {
             return;
         }
@@ -2035,6 +2019,19 @@ impl WorkspaceKeys {
     /// Create `group`'s group when this device created the workspace
     /// ([`KeyDirectory::founds`]) and holds its keys. A device that has
     /// seen a genesis never creates one.
+    /// Whether this device creates `group` when it has none: the workspace's own group is the
+    /// work of the device that founds it, and every other group of the lowest of the devices its
+    /// readers are, which each device reads the same from the workspace's governance.
+    fn creates(&self, group: WorkspaceId, wall: u64) -> bool {
+        if self.directory.carrier(group) == group {
+            return self.directory.founds(group);
+        }
+        self.allowed_devices(group, wall)
+            .and_then(|allowed| allowed.iter().next().copied())
+            .zip(self.device())
+            .is_some_and(|(creator, device)| creator == device)
+    }
+
     fn found(&mut self, workspace: WorkspaceId, now: Instant, wall: u64) {
         let Some(entry) = self.peers.get(&workspace) else {
             return;
@@ -2046,7 +2043,13 @@ impl WorkspaceKeys {
         {
             return;
         }
-        let due = self.directory.founds(workspace) && (entry.wanted || now >= entry.founding.at);
+        // A group is created by one device: the device that founds the workspace's own group, for
+        // that group, and the lowest of a group's devices for any other. Each device reads the
+        // same governance, so one creates it and the others ask and join, never racing a genesis
+        // whose loser lets go of the keys a write was told had arrived.
+        if !self.creates(workspace, wall) {
+            return;
+        }
         let reads = self
             .allowed_devices(workspace, wall)
             .zip(self.device())
@@ -2058,9 +2061,7 @@ impl WorkspaceKeys {
         else {
             return;
         };
-        // Looked at again on every pass, a policy re-check's included.
-        entry.founding.allowed = reads;
-        if !reads || !due {
+        if !reads {
             return;
         }
         match entry.peer.stage_found() {
@@ -2152,9 +2153,6 @@ impl WorkspaceKeys {
 
     fn insert_peer(&mut self, workspace: WorkspaceId, peer: GroupPeer, now: Instant) {
         let seal_check = peer.seal_check();
-        let found_at = now
-            .checked_add(found_after(&peer.device(), workspace))
-            .unwrap_or(now);
         self.peers.insert(
             workspace,
             PeerEntry {
@@ -2168,10 +2166,6 @@ impl WorkspaceKeys {
                 turn_at: None,
                 committed_at: None,
                 rejoin: false,
-                founding: Founding {
-                    at: found_at,
-                    allowed: self.settles(workspace),
-                },
                 wanted: true,
                 held: Vec::new(),
                 welcome: None,
@@ -2394,7 +2388,24 @@ impl SharedKeys {
         self.inner.lock().ok()?.wire_scope(group)
     }
 
+    /// Whether `workspace`'s group stands as its policy has it ([`WorkspaceKeys::settled`]); false
+    /// when the service is unavailable.
+    #[must_use]
+    pub fn settled(&self, workspace: WorkspaceId) -> bool {
+        self.with_service(|service| service.settled(workspace))
+            .unwrap_or(false)
+    }
+
     /// See [`WorkspaceKeys::reader_group`]; `None` also when the service is unavailable.
+    /// Whether this device creates `group` itself ([`WorkspaceKeys::creates_group`]); false when
+    /// the service is unavailable.
+    #[must_use]
+    pub fn creates_group(&self, group: WorkspaceId) -> bool {
+        let wall = tilo_clock::unix_now();
+        self.with_service(|service| service.creates_group(group, wall))
+            .unwrap_or(false)
+    }
+
     pub fn reader_group(&self, workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
         self.inner.lock().ok()?.reader_group(workspace, readers)
     }
@@ -2785,6 +2796,11 @@ impl KeyProvider {
         workspace: WorkspaceId,
         wait: Duration,
     ) -> Option<Result<ContentKeys, String>> {
+        // Whether this device may create the group itself, or must be answered by the one that
+        // keeps the workspace: what a wait that ends unsanswered says.
+        let creates = self
+            .get()
+            .is_some_and(|access| access.creates_group(workspace));
         let deadline = tilo_clock::now()
             .checked_add(wait)
             .unwrap_or_else(Instant::now);
@@ -2794,8 +2810,11 @@ impl KeyProvider {
             let after = access.workspace_change(workspace);
             let (state, _) = access.access(workspace);
             match state {
-                KeyAccess::Ready(keys) => return Some(Ok(keys)),
-                KeyAccess::Waiting => {}
+                // The keys are the group's once the group stands as the policy has it: a frame
+                // still to be reconciled, as a genesis another device's settles against, is no
+                // answer to give a write.
+                KeyAccess::Ready(keys) if access.settled(workspace) => return Some(Ok(keys)),
+                KeyAccess::Ready(_) | KeyAccess::Waiting => {}
                 KeyAccess::Removed => {
                     return Some(Err(
                         "this device was removed from the workspace's group".into()
@@ -2805,10 +2824,10 @@ impl KeyProvider {
             }
             let remaining = deadline.saturating_duration_since(tilo_clock::now());
             if remaining.is_zero() {
-                return Some(Err(not_ready(wait)));
+                return Some(Err(not_ready(wait, creates)));
             }
             if !within(remaining, self.workspace_changed(workspace, after)).await {
-                return Some(Err(not_ready(wait)));
+                return Some(Err(not_ready(wait, creates)));
             }
         }
     }
@@ -2848,9 +2867,17 @@ async fn within<F: std::future::Future>(wait: Duration, changed: F) -> bool {
 
 /// What a caller waiting `wait` for a group's keys is told when they never
 /// arrived: how long it waited, so whoever reads it knows what the wait was
-/// and that nothing more is coming.
-fn not_ready(wait: Duration) -> String {
-    format!("the group's keys did not arrive within {}s", wait.as_secs())
+/// and that nothing more is coming. A device that cannot create a group
+/// itself waits on the one that does, and says so.
+fn not_ready(wait: Duration, creates: bool) -> String {
+    if creates {
+        format!("the group's keys did not arrive within {}s", wait.as_secs())
+    } else {
+        format!(
+            "the device that creates this group has not answered with its keys within {}s",
+            wait.as_secs()
+        )
+    }
 }
 
 /// The identity service's route keys, from this host's key service once

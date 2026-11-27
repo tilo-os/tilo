@@ -543,3 +543,76 @@ fn a_persons_own_reader_set_is_read_by_their_devices_alone() {
         "the workspace's own keys, which every member holds, open none of it"
     );
 }
+
+/// A reader set's group is created by one of its devices, and that device's peers ask it for the
+/// keys and join what it made. Both devices come to the group at once with a write that needs its
+/// keys; the one that is not the group's creator publishes no genesis of its own, and both hold
+/// the group the creator made.
+#[test]
+fn a_member_device_joins_the_reader_groups_group_its_creation_made() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let policy = people_policy([1, 4]);
+    let dirs = [(); 2].map(|()| tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    // Ada's laptop creates the workspace; Ada's phone joined it.
+    let mut ada = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
+    let mut phone = device(&workspace, workspace_id, 1, 4, &policy, dirs[1].path());
+    assert!(ready_epoch(&create(&mut ada, workspace_id, now)).is_some());
+    let readers = collab_types::Readers::people([person_of(1), person_of(4)])
+        .unwrap()
+        .text();
+    let group = collab_types::reader_group(workspace_id, &readers).unwrap();
+
+    // Both come to the group at once. Only the lowest of its devices creates it, Ada's (her key
+    // sorts below her phone's): nothing the phone publishes is a genesis, only the request its
+    // keys are answered from.
+    reader_access(&mut ada, workspace_id, &readers, now);
+    reader_access(&mut phone, workspace_id, &readers, now);
+    pump_for(&mut [&mut phone], &mut now, 1);
+    assert!(
+        !published_genesis(&workspace, &public(4)),
+        "the device that is not the group's creator makes no group of its own"
+    );
+
+    pump_for(&mut [&mut ada, &mut phone], &mut now, 60);
+    let settled = reader_keys(&mut ada, workspace_id, &readers, now).epoch();
+    assert_eq!(
+        reader_keys(&mut phone, workspace_id, &readers, now).epoch(),
+        settled,
+        "the phone holds the group its creator made"
+    );
+    let genesis_of = |device: &mut Device| {
+        device
+            .service
+            .frames_for(group, &public(4), 0, 1_000)
+            .into_iter()
+            .next()
+            .map(|frame| frame.signed_by)
+    };
+    assert_eq!(
+        genesis_of(&mut ada),
+        Some(public(1)),
+        "the lowest of the group's devices created it"
+    );
+}
+
+/// Whether the workspace's transport carried a genesis the device `device` made: what a device
+/// publishes when it creates a group of its own.
+fn published_genesis(workspace: &Arc<Workspace>, device: &collab_types::Ed25519PublicKey) -> bool {
+    workspace
+        .queues
+        .lock()
+        .unwrap()
+        .values()
+        .flatten()
+        .any(|governance| match governance {
+            InboundGovernance::Frame { frame, .. } => {
+                matches!(&frame.action, collab_types::MlsGovernanceAction::Genesis)
+                    && frame.signed_by == *device
+            }
+            InboundGovernance::AccessRequest { .. }
+            | InboundGovernance::DocumentFrame { .. }
+            | InboundGovernance::DocumentAccessRequest { .. } => false,
+        })
+}

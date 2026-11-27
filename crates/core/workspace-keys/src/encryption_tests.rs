@@ -1962,7 +1962,8 @@ fn without_a_store_nothing_is_due() {
         "no governance was sent"
     );
     // A workspace with a governance of its own too: still no state of its own.
-    let mut listed_keys = WorkspaceKeys::without_store(Box::new(Directory::new(policy)), seal_checks);
+    let mut listed_keys =
+        WorkspaceKeys::without_store(Box::new(Directory::new(policy)), seal_checks);
     assert!(matches!(
         listed_keys.access(workspace_id, now),
         KeyAccess::NoSecretStore
@@ -2583,9 +2584,7 @@ fn the_keys_held_are_read_while_the_blocking_pool_is_full() {
         let _ = started.send(());
         let _ = released.recv();
     });
-    has_started
-        .recv()
-        .expect("the pool's one thread is taken");
+    has_started.recv().expect("the pool's one thread is taken");
     let workspace_name = held.to_string();
     let read = runtime.block_on(async move {
         tokio::spawn(async move {
@@ -2663,8 +2662,8 @@ fn a_document_its_workspaces_founder_does_not_read_is_founded_by_a_reader() {
 }
 
 /// A device whose own view says it reads a document it does not (its role taken back, and the news
-/// not here yet) founds the document's group first; the readers, whose view the workspace's
-/// governance backs, refuse its genesis, found their own, and hold a key it cannot open with.
+/// not here yet) takes part in a group of its own; the readers, whose view the workspace's
+/// governance backs, hold one whose key it cannot open what they seal with.
 #[test]
 fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
     let workspace = Arc::new(Workspace::default());
@@ -2715,18 +2714,14 @@ fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
     let mut now = Instant::now();
     revoked.service.access(workspace_id, now);
     revoked.service.access_scope(scope.clone(), now);
-    drive(&mut [&mut revoked], &mut now, 1);
-    let KeyAccess::Ready(revoked_keys) = revoked.service.access_scope(scope.clone(), now) else {
-        panic!("the device that takes itself for a reader founds the group in its own view");
-    };
     first.service.access_scope(scope.clone(), now);
     second.service.access_scope(scope.clone(), now);
-    drive(&mut [&mut revoked, &mut first, &mut second], &mut now, 8);
+    drive(&mut [&mut revoked, &mut first, &mut second], &mut now, 20);
     let KeyAccess::Ready(first_keys) = first.service.access_scope(scope.clone(), now) else {
-        panic!("the readers found the document's group though its first genesis was refused");
+        panic!("a reader of the document holds its group");
     };
-    let KeyAccess::Ready(second_keys) = second.service.access_scope(scope, now) else {
-        panic!("the other reader is answered the readers' key");
+    let KeyAccess::Ready(second_keys) = second.service.access_scope(scope.clone(), now) else {
+        panic!("the other reader is answered the same document key");
     };
     let artifact =
         collab_types::document_artifact_id("so.tilo.passwords", &workspace_id.to_string(), "vault");
@@ -2738,12 +2733,14 @@ fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
             .open_content(artifact, &metadata, &ciphertext)
             .is_ok()
     );
-    assert!(
-        revoked_keys
-            .open_content(artifact, &metadata, &ciphertext)
-            .is_err(),
-        "the refused genesis's key opens nothing the readers seal"
-    );
+    if let KeyAccess::Ready(revoked_keys) = revoked.service.access_scope(scope, now) {
+        assert!(
+            revoked_keys
+                .open_content(artifact, &metadata, &ciphertext)
+                .is_err(),
+            "the group a device whose readers do not back it holds opens nothing they seal"
+        );
+    }
 }
 
 /// A reader that asks for a document's keys before the workspace's governance names who reads it
