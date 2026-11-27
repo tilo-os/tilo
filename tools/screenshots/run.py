@@ -411,11 +411,12 @@ class Session:
     def _start(self) -> tuple[object, str]:
         args, plan, tmp = self.args, self.plan, self.tmp
         runtime = args.bin_dir.parent
+        # A tilolang app is built for this device below; a native app's build is staged whole.
         source = staging_source(runtime, plan)
-        if source is None:
+        native = runtime / "install" / plan.app
+        if source is None and not (native / "tilo-app.toml").is_file():
             return "no staged build", (
-                f"{runtime}/apps.tsv names no sources for {plan.app}: rerun tools/screenshots/build.sh")
-        source_dir, runtime_id = source
+                f"{runtime} stages no build of {plan.app}: rerun tools/screenshots/build.sh")
         env = self.env
         # The person's own device, as a computer's first command founds it: no profile named
         # apart, and no certificate made before it starts, so the connection to its socket is the
@@ -463,22 +464,26 @@ class Session:
         if founded:
             return "no person", founded + "\n" + daemon_tail(self.log)
         self._phase("found", started)
-        # The development build is compiled for the id this device's daemon names for it, which
-        # only that daemon answers: `tilolang build --dev` asks it, in this profile's environment.
-        started = time.monotonic()
-        built = subprocess.run(
-            [str(args.bin_dir / "tilolang"), "build", str(source_dir), "--dev",
-             "--search", str(source_dir.parent), "--out", str(tmp),
-             "--tilo-runtime", runtime_id],
-            # From the app's own directory: the tool finds this checkout, and the packages the
-            # app reads, by it.
-            env=env, cwd=source_dir, capture_output=True, text=True, timeout=900,
-        )
-        if built.returncode != 0:
-            # The build's own words last: a log keeps its end, and the daemon's is long.
-            return "could not build", (
-                daemon_tail(self.log) + "\n— the build's own output —\n" + built.stdout + built.stderr)
-        self._phase("build", started)
+        if source is not None:
+            # The development build is compiled for the id this device's daemon names for it,
+            # which only that daemon answers: `tilolang build --dev` asks it, in this profile's
+            # environment.
+            source_dir, runtime_id = source
+            started = time.monotonic()
+            built = subprocess.run(
+                [str(args.bin_dir / "tilolang"), "build", str(source_dir), "--dev",
+                 "--search", str(source_dir.parent), "--out", str(tmp),
+                 "--tilo-runtime", runtime_id],
+                # From the app's own directory: the tool finds this checkout, and the packages the
+                # app reads, by it.
+                env=env, cwd=source_dir, capture_output=True, text=True, timeout=900,
+            )
+            if built.returncode != 0:
+                # The build's own words last: a log keeps its end, and the daemon's is long.
+                return "could not build", (
+                    daemon_tail(self.log) + "\n— the build's own output —\n"
+                    + built.stdout + built.stderr)
+            self._phase("build", started)
         # The device answers its installs before its person's part runs, but an app starts in
         # the workspace that part serves, and a development build is installed there too only
         # while it serves it: the builds are installed once it does, which it began while the
@@ -494,14 +499,17 @@ class Session:
         # device names it: all of them are installed, as `tilolang dev` installs them, and the
         # app is the one of its own id.
         started = time.monotonic()
-        app_dir = plan.app_id.rsplit(".", 1)[-1]
-        staged = sorted(
-            path for path in (tmp / "dev").glob("*") if (path / "tilo-app.toml").is_file()
-        )
-        if not any(path.name == app_dir for path in staged):
-            return "no staged build", (
-                f"{(tmp / 'dev') / app_dir} is not the app's staging; the build wrote "
-                f"{[path.name for path in staged]}\n" + built.stdout + built.stderr)
+        if source is None:
+            app_dir, staged = native.name, [native]
+        else:
+            app_dir = plan.app_id.rsplit(".", 1)[-1]
+            staged = sorted(
+                path for path in (tmp / "dev").glob("*") if (path / "tilo-app.toml").is_file()
+            )
+            if not any(path.name == app_dir for path in staged):
+                return "no staged build", (
+                    f"{(tmp / 'dev') / app_dir} is not the app's staging; the build wrote "
+                    f"{[path.name for path in staged]}\n" + built.stdout + built.stderr)
         ids = {}
         # The person's part starts beside the daemon: the installer is asked again while it does,
         # rather than failing a capture the daemon is ready for a moment later.

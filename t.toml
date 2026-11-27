@@ -3849,6 +3849,9 @@ dispatch_inputs = { app = "", size = "", shots = "false", press = "", dump = "fa
 
 [[check]]
 name = "app-screenshots"
+# Each capture runs in the app its device's daemon starts, in the app's own sandbox: the job starts
+# sandboxes of its own.
+isolation = "nested"
 # The pinned CEF archive (SHA-256 in scripts/browser/cef-lock.json), which builds the
 # Chromium engine Browser's pictures need, and the build scripts' pinned assets.
 egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
