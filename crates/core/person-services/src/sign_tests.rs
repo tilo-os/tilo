@@ -544,7 +544,9 @@ async fn what_signs_is_an_ssh_key_for_its_own_server_asked_by_a_turn() {
         "nothing refused is written down"
     );
 
-    // Callers that are no turn this server carries out.
+    // Callers that are no turn this server carries out ask no signature. A caller on a device
+    // of somebody else's is refused for what is theirs to ask, never told the vault is not
+    // there; an agent on a turn the server does not carry out is told the action is unknown.
     let wanted = signing(&ssh_key, SERVER, COMMIT, "git");
     for (who, asking) in not_hosted_turns(&ada, &workspace) {
         let turn = HostedTurn {
@@ -554,7 +556,7 @@ async fn what_signs_is_an_ssh_key_for_its_own_server_asked_by_a_turn() {
         };
         let refused = dispatched(workspaces, &turn, &wanted).await;
         assert!(
-            matches!(refused, Err(UnknownAction | Refused { .. })),
+            matches!(refused, Err(UnknownAction | NotPermitted | Refused { .. })),
             "{who}: {refused:?}"
         );
     }

@@ -774,7 +774,9 @@ async fn only_a_hosted_turn_makes_a_call() {
     );
     let scout = on_turn(&ada, &workspace, "scout");
 
-    // A person asking for themselves is no turn this server carries out.
+    // A person asking for themselves is no turn this server carries out, and Ada is a member
+    // of somebody else's workspace asking this device: she is refused for what is not hers to
+    // ask, rather than told the call is not there.
     let herself = HostedTurn {
         workspace: workspace_id,
         caller: &as_ada,
@@ -783,7 +785,7 @@ async fn only_a_hosted_turn_makes_a_call() {
     assert!(workspaces.calls_offered(&herself).await.is_empty());
     assert_eq!(
         dispatched(workspaces, &herself, &own_with(&paying, &item)).await,
-        Err(UnknownAction)
+        Err(NotPermitted)
     );
     // An agent that something narrows holds no rule that names the call.
     let elsewhere = narrowed_elsewhere(&workspace);

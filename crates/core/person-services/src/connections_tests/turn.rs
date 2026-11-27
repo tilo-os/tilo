@@ -459,8 +459,8 @@ async fn the_turn_calls_what_only_reads(team: &Team, service: &StandIn, id: &str
 
 /// Another member's agent, acting for them, reaches the connections the
 /// workspace keeps as this one does: they are the workspace's, not Ada's.
-/// The agent Ada asks reaches them when Bo asks it too, and a caller that is
-/// no turn is told nothing.
+/// The agent Ada asks reaches them when Bo asks it too, and a caller no turn
+/// carries reaches none of them.
 async fn another_members_turn_reaches_what_the_workspace_connected(
     team: &Team,
     service: &StandIn,
@@ -485,7 +485,9 @@ async fn another_members_turn_reaches_what_the_workspace_connected(
     let theirs = done(team.takes(&for_bo, &of(LIST, json!({}))).await);
     assert_eq!(theirs["connections"][0]["id"], id, "{theirs}");
 
-    // The person's own device is no turn.
+    // A caller that is no turn, on a device that is not theirs: this host answers for the
+    // person it belongs to, and Ada is another member, so what she asks of the connections is
+    // refused for what is not hers to ask, never answered as if they were not there.
     let strange = team.turn_of(&team.as_ada);
     for asked in [
         of(LIST, json!({})),
@@ -493,7 +495,7 @@ async fn another_members_turn_reaches_what_the_workspace_connected(
         of(PROPOSE, json!({"address": service.address()})),
     ] {
         let refused = team.takes(&strange, &asked).await;
-        assert_eq!(refused, Err(Refused::UnknownAction));
+        assert_eq!(refused, Err(Refused::NotPermitted), "{asked:?}");
     }
     assert!(team.finds(&strange).await.is_empty());
     assert!(
@@ -506,7 +508,7 @@ async fn another_members_turn_reaches_what_the_workspace_connected(
 /// the workspace's connections, finds each command in its listing with
 /// whether it asks first, and calls a command that only reads. What only a
 /// person does is not a turn's, another member's turn reaches the same
-/// connections, and no caller that is not the turn's own is answered.
+/// connections, and a caller no turn carries reaches none of them.
 #[tokio::test]
 async fn a_turn_with_no_device_reads_the_workspaces_connections_and_no_other_caller_does() {
     let dir = tempfile::tempdir().unwrap();

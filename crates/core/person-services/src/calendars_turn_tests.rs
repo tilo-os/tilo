@@ -168,7 +168,9 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
         Err(ActionCallError::NotPermitted | ActionCallError::UnknownAction)
     ));
 
-    // A caller that is no turn this server carries out is answered nothing.
+    // A caller that is no turn this server carries out is answered nothing. Ada is a member of
+    // somebody else's workspace asking this device, which is not hers: she is refused for what
+    // is not hers to ask, rather than told the calendars are not there.
     let herself =
         Caller::authenticated(ada.user_public_key, ada.device_public_key).in_workspace(&workspace);
     let no_turn = turn(workspace_id, &herself, None);
@@ -181,7 +183,7 @@ async fn a_members_turn_chooses_the_calendars_their_account_reads() {
             json!({"account": ACCOUNT, "calendars": ["work"]})
         )
         .await,
-        Err(ActionCallError::UnknownAction)
+        Err(ActionCallError::NotPermitted)
     ));
 }
 
