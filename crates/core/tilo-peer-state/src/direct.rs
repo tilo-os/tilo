@@ -3017,7 +3017,8 @@ impl DirectSync {
             // however much of it an earlier link brought: what waits for this
             // link to catch up knows it is not in hand until this one says so.
             self.0.caught_up.send_replace(false);
-            self.ask_store(&mut control).await?;
+            self.ask_store(&mut control, remote, answering.clone().as_ref())
+                .await?;
             history_in_hand.send_replace(true);
             // The history is in hand: the frames from here on are the live
             // ones the link brings. A write this device let go unapplied
@@ -3034,7 +3035,9 @@ impl DirectSync {
             self.0.caught_up.send_replace(true);
             loop {
                 tokio::select! {
-                    () = self.0.replay.notified() => self.ask_store(&mut control).await?,
+                    () = self.0.replay.notified() => {
+                        self.ask_store(&mut control, remote, answering.clone().as_ref()).await?
+                    }
                     Some((cursors, answer)) = asked.recv() => {
                         let fetched = Self::fetch_history(&mut control, cursors).await;
                         let failed = fetched.as_ref().err().cloned();
@@ -3197,7 +3200,12 @@ impl DirectSync {
     /// store keeps follow; each frame is judged under the device the round
     /// names as its author. A frame still waiting for history after that waits
     /// for what the other device lacks too: asking again would bring nothing.
-    async fn ask_store(&self, control: &mut Control) -> Result<(), String> {
+    async fn ask_store(
+        &self,
+        control: &mut Control,
+        remote: [u8; 32],
+        answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
+    ) -> Result<(), String> {
         let mut cursors = self.cursors();
         let mut taken = 0_usize;
         write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
@@ -3217,7 +3225,21 @@ impl DirectSync {
             if more {
                 write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
             }
-            self.admit_history(frames).await;
+            let acknowledged = frames
+                .iter()
+                .filter(|(author, _)| *author == remote)
+                .map(|(_, message)| message)
+                .cloned()
+                .collect::<Vec<_>>();
+            let lacked = self.admit_history(frames).await;
+            if !lacked {
+                // The other device's own writes this one took in are answered
+                // here as the ones a link brings live are: the store keeps
+                // them, and their author stops sending them once it knows.
+                for message in acknowledged {
+                    self.answer_kept(answering, remote, message);
+                }
+            }
             if !more {
                 tracing::debug!(
                     workspace = ?self.workspace().ok(),
@@ -3341,7 +3363,7 @@ impl DirectSync {
         // Whether this ask was answered the state: a tell answers the link's
         // first ask, and every ask after it is answered the state again, so a
         // change the device let go finds what it waited for.
-        let mut state_sent = *opening.answered.borrow_and_update();
+        let mut state_sent = *opening.answered.borrow();
         // The state an ask opens with that earlier answers had not allocated.
         let mut state = std::collections::VecDeque::new();
         let own = self.device();
@@ -4248,6 +4270,42 @@ impl DirectSync {
                 member.answer(&node, tilo_action_policy::ActionKind::Undoable, &cx)
                     == tilo_action_policy::Answer::Allow
             })
+    }
+
+    /// Answer `message`, the link's device's own write this one took in from
+    /// the other device's history, as a live write of its is answered: its
+    /// frame's hash and sequence, kept durably here.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn answer_kept(
+        &self,
+        answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
+        remote: [u8; 32],
+        message: NeighbourMsg,
+    ) {
+        let (Some(answering), Some(store)) = (answering, &self.0.store) else {
+            return;
+        };
+        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+            return;
+        };
+        let (Ok(workspace), Ok(frame)) = (self.workspace(), Frame::of(&message)) else {
+            return;
+        };
+        if envelope.author.as_bytes() != &remote
+            || !store.holds_frame(workspace, &frame).unwrap_or(false)
+        {
+            return;
+        }
+        let write = postcard::to_allocvec(&message)
+            .ok()
+            .map(|bytes| *blake3::hash(&bytes).as_bytes());
+        if let Some(write) = write {
+            let _ = answering.send(Answered {
+                write,
+                seq: envelope.seq,
+                kept: Kept::Durable,
+            });
+        }
     }
 
     /// Take in one frame the other device sent live on the link.
