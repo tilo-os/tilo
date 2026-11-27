@@ -784,6 +784,8 @@ pub mod swapped;
 pub use swapped::Swapped;
 pub mod stepper;
 pub use {stepper::Stepper, stepper::StepperFace, stepper::StepperProps};
+pub mod guided_page;
+pub use {guided_page::GuidedPage, guided_page::GuidedPageProps};
 pub mod property_list;
 pub use {
     property_list::Property, property_list::PropertyColumn, property_list::PropertyList,

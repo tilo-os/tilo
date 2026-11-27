@@ -3840,6 +3840,110 @@
       }
     },
     {
+      "name": "GuidedPage",
+      "doc": "Where a person is in a short sequence, the page that step shows, and the ways forward under it: a stepper or a progress track, a body that scrolls, an optional notice and the page's actions, all in view under it.",
+      "props": [
+        {
+          "name": "steps",
+          "doc": "The steps of the sequence, in order; empty when the page shows a progress track instead.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "current",
+          "doc": "Which step is current, counted from 0. None before the first step starts.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "stage",
+          "doc": "What the sequence is setting up, beside the track: \"Tilo identity setup\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "position",
+          "doc": "Which step it is among them, in words: \"Step 2 of 4\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "progress",
+          "doc": "How far the track is, from 0 to 1; absent, no track shows where no stepper does.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "progress_name",
+          "doc": "What assistive technology hears the track say: the whole stage, in words.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "shows_bar",
+          "doc": "Show the scroll bar whenever the page is longer than the room.",
+          "type": "bool"
+        },
+        {
+          "name": "reveals_focus",
+          "doc": "Scroll a control the keyboard reaches into view: a form held to a card's height.",
+          "type": "bool"
+        },
+        {
+          "name": "scroll_label",
+          "doc": "What the scrolling page holds, for assistive technology, where Tab stops on it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "fills_height",
+          "doc": "Take the height the surface leaves (a card held to its height) instead of the height of what it holds.",
+          "type": "bool"
+        },
+        {
+          "name": "standalone",
+          "doc": "Stand alone on a window's ground, on the readable column and the page's own gutter, rather than in a surface that already measures it (a card's body).",
+          "type": "bool"
+        }
+      ],
+      "parts": [
+        {
+          "name": "body",
+          "doc": "The page, which scrolls when it is taller than the room.",
+          "accepts": "view",
+          "default": true
+        },
+        {
+          "name": "notice",
+          "doc": "What needs attention, above the ways forward and outside the scroll: a banner.",
+          "accepts": "view"
+        },
+        {
+          "name": "actions",
+          "doc": "The ways forward, under the page and outside the scroll.",
+          "accepts": "view"
+        }
+      ],
+      "events": [
+        {
+          "name": "station",
+          "doc": "The step gone back to: carries its index. Without it, no station takes the pointer.",
+          "value": "int"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "stage"
+      }
+    },
+    {
       "name": "Heatmap",
       "doc": "How a value varies across two axes at once: a week by weekday and hour, a year by month and region. Each cell's colour places it between the lowest and the highest value in the theme's ramp; pointing at it reads its value.",
       "props": [

@@ -594,6 +594,7 @@ same geometry:
 | Content still loading | `Skeleton` / `SkeletonFace` |
 | A countdown, progress or level ring | `ProgressRing` / `ProgressRingFace` |
 | Wizard steps | `Stepper` / `StepperFace` |
+| A wizard's page: where the person is (a stepper or a track), the page that scrolls, a notice and the ways forward | `GuidedPage` |
 | Nothing here yet, or something failed | `EmptyState` (`EmptyState::error`) |
 | A person's picture or initials | `Avatar` / `AvatarFace` |
 | A whole tile that opens something | `Container::interactive` |

@@ -128,6 +128,27 @@ view controls(g: Gallery) {
             ui.Stepper(steps: ["Draft", "Review", "Send"], current: step) {
                 on station(i): set(step, i)
             }
+            // A page of a short sequence: where it stands, the page that scrolls, and the ways
+            // forward under it.
+            ui.GuidedPage(
+                steps: ["Draft", "Review", "Send"],
+                current: step,
+                scroll_label: "The report",
+                shows_bar: true,
+            ) {
+                on station(i): set(step, i)
+                body: {
+                    ui.Text(
+                        "Where the page holds more than the card does, it scrolls under the track.",
+                        secondary: true,
+                    )
+                }
+                actions: {
+                    ui.Button("Continue", role: .primary) {
+                        on press: set(step, (step + 1) % 3)
+                    }
+                }
+            }
         }
         ui.Section("Meters") {
             ui.BarGauge(0.36, label: "Storage", readout: "91 of 256 GB", neutral: true)
