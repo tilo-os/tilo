@@ -10,6 +10,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use key_group::ContentKeys;
+use std::sync::Arc;
 use std::time::Duration;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
@@ -366,4 +367,263 @@ async fn the_device_dialled_answers_each_write_it_takes_in() {
     .await
     .expect("A answers B's write");
     assert_eq!(answered.kept, Kept::Durable);
+}
+
+/// Two devices of one person linked directly: `a` hosts the workspace and
+/// keeps its store; `b` joined it, and keeps a store of its own.
+struct Hosted {
+    a: DirectSync,
+    a_cert: tilo_user_identity::DeviceCert,
+    /// The keys the workspace's members seal its records under.
+    keys: key_group::ContentKeys,
+    b: DirectSync,
+    a_key: SigningKey,
+    b_key: SigningKey,
+    store: Arc<tilo_peer_state::store::Store>,
+    /// The stores' directories, kept for the test's duration.
+    a_dir: tempfile::TempDir,
+    b_dir: tempfile::TempDir,
+    host_endpoint: iroh::Endpoint,
+    b_endpoint: iroh::Endpoint,
+    router: iroh::protocol::Router,
+    link: tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
+}
+
+impl Hosted {
+    /// A founds the workspace and writes eight changes to its record; B joins
+    /// holding nothing, and takes them in over its first link.
+    async fn start() -> Self {
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let (a_key, a_cert) = device(&root, 20);
+        let (b_key, b_cert) = device(&root, 21);
+        let roster = vec![a_cert.clone(), b_cert];
+        let now = SystemTime::now();
+        let mut a = StatePeer::new(
+            WORKSPACE,
+            a_cert.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        a.select_exact_admissions().unwrap();
+        tilo_peer_state::fixture::found(&mut a, (&a_key, &a_cert), &roster, Vec::new(), now);
+        let b = StatePeer::from_join(WORKSPACE, a_cert.clone(), roster, &[], now).unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            tilo_peer_state::store::Store::open(
+                store_dir.path(),
+                tilo_peer_state::store::Appetite::StoreAll,
+            )
+            .unwrap(),
+        );
+        let a = DirectSync::new(a, a_key.clone()).with_store(Arc::clone(&store));
+        let keys = members_keys(WORKSPACE);
+        let person = a_cert.user_public_key;
+        for round in 0..8 {
+            seed(&a, &keys, &a_key, &person, &format!("from a {round}"));
+        }
+        let b_dir = tempfile::tempdir().unwrap();
+        let b = stored(&DirectSync::new(b, b_key.clone()), &b_dir);
+        let host_endpoint = localhost_endpoint(&a_key).await;
+        let router = iroh::protocol::Router::builder(host_endpoint.clone())
+            .accept(DIRECT_ALPN, a.clone())
+            .spawn();
+        let b_endpoint = localhost_endpoint(&b_key).await;
+        let link = tokio::spawn({
+            let (b, b_endpoint, a_addr) = (b.clone(), b_endpoint.clone(), addr(&host_endpoint));
+            async move { b.connect(&b_endpoint, a_addr).await }
+        });
+        let held = heads(&a, &keys);
+        until(&b, "B holds what A wrote", |b| {
+            opened_heads(b, &keys, (APP, RECORD)) == held
+        })
+        .await;
+        Self {
+            a,
+            a_cert,
+            keys,
+            b,
+            a_key,
+            b_key,
+            store,
+            a_dir: store_dir,
+            b_dir,
+            host_endpoint,
+            b_endpoint,
+            router,
+            link,
+        }
+    }
+
+    /// Link `device` to the host again, answering what the link brought.
+    fn again(&self, device: &DirectSync) -> tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>> {
+        tokio::spawn({
+            let (device, b_endpoint, a_addr) =
+                (device.clone(), self.b_endpoint.clone(), addr(&self.host_endpoint));
+            async move { device.connect(&b_endpoint, a_addr).await }
+        })
+    }
+
+    async fn stop(self) {
+        self.link.abort();
+        self.router.shutdown().await.unwrap();
+        self.b_endpoint.close().await;
+    }
+}
+
+/// Every frame `reader` takes in over `window`, by its kind, with each kind's
+/// count and bytes.
+async fn taken_in(
+    mut reader: tilo_peer_state::direct::Reader,
+    window: Duration,
+) -> std::collections::BTreeMap<&'static str, (usize, usize)> {
+    let mut taken: std::collections::BTreeMap<&'static str, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    let end = tokio::time::Instant::now() + window;
+    while let Ok(Some(heard)) = tokio::time::timeout_at(end, reader.recv()).await {
+        let bytes = postcard::to_allocvec(&heard.message).map_or(0, |bytes| bytes.len());
+        let entry = taken.entry(heard.message.kind()).or_default();
+        entry.0 = entry.0.saturating_add(1);
+        entry.1 = entry.1.saturating_add(bytes);
+    }
+    taken
+}
+
+/// A device that links to its host again after one new change is sent that
+/// change alone: the workspace's history and state it already holds are not
+/// sent again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_links_again_is_sent_only_what_it_lacks() {
+    let hosted = Box::pin(Hosted::start()).await;
+    let (keys, b) = (&hosted.keys, &hosted.b);
+    hosted.link.abort();
+
+    // One change, made while the link was down, and the device links again.
+    let person = hosted.a.read(StatePeer::owner);
+    seed(
+        &hosted.a,
+        keys,
+        &hosted.a_key,
+        &person,
+        "after the break",
+    );
+    let held = heads(&hosted.a, keys);
+    let before = b.traffic();
+    let reader = b.reader();
+    let again = hosted.again(b);
+    until(b, "B holds the new change", |b| {
+        opened_heads(b, keys, (APP, RECORD)) == held
+    })
+    .await;
+    let taken = taken_in(reader, Duration::from_millis(500)).await;
+    let received = b.traffic().received - before.received;
+    again.abort();
+    hosted.stop().await;
+
+    // The one change crosses, and nothing else of the records: not the eight
+    // changes the device already held, and no checkpoint of them.
+    assert_eq!(
+        taken.get("AppDocument").copied().unwrap_or_default().0,
+        1,
+        "the device is sent the one change it lacks: {taken:?}"
+    );
+    // Its certificate, the change, and the link's own frames: the state the
+    // device holds is not sent again.
+    assert!(
+        received < 1600,
+        "a reconnect after one change carries that change alone, {received} bytes taken in: {taken:?}"
+    );
+}
+
+/// A device that holds nothing of the workspace is sent all of it: every
+/// record's history and the workspace's whole state.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_holds_nothing_is_sent_everything() {
+    let hosted = Box::pin(Hosted::start()).await;
+    let keys = &hosted.keys;
+    hosted.link.abort();
+    let held = heads(&hosted.a, keys);
+
+    // A second device of the same person joins holding nothing, and links.
+    let joined = StatePeer::from_join(
+        WORKSPACE,
+        hosted.a_cert.clone(),
+        hosted.a.read(|a| a.certificates()),
+        &[],
+        SystemTime::now(),
+    )
+    .unwrap();
+    let fresh = DirectSync::new(joined, hosted.b_key.clone());
+    let before = fresh.traffic();
+    let reader = fresh.reader();
+    let again = hosted.again(&fresh);
+    until(&fresh, "the fresh device holds what A wrote", |fresh| {
+        opened_heads(fresh, keys, (APP, RECORD)) == held
+    })
+    .await;
+    let taken = taken_in(reader, Duration::from_millis(500)).await;
+    let received = fresh.traffic().received - before.received;
+    again.abort();
+    // The device that only caught up earlier was sent one change, and fewer
+    // bytes than the whole history this one takes in.
+    assert_eq!(value(&fresh, keys), "from a 7");
+    assert_eq!(
+        taken.get("AppDocument").copied().unwrap_or_default().0,
+        8,
+        "every change the device holds nothing of is sent: {taken:?}"
+    );
+    assert!(
+        received > 8 * 890,
+        "a device that holds nothing takes in every change, {received} bytes: {taken:?}"
+    );
+    hosted.stop().await;
+}
+
+/// A device whose history the host compacted converges still: the host keeps
+/// what that device told it it holds, and sends the changes after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_behind_a_compacted_history_converges() {
+    let hosted = Box::pin(Hosted::start()).await;
+    let (keys, b) = (&hosted.keys, &hosted.b);
+    hosted.link.abort();
+    let workspace = tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
+    let person = hosted.a.read(StatePeer::owner);
+
+    // The device says where it stands, as a link does, and the host's store
+    // keeps only that: the changes it no longer needs are retired.
+    hosted
+        .store
+        .holds(
+            workspace,
+            hosted.b_key.verifying_key().to_bytes(),
+            &b.cursors(),
+        )
+        .unwrap();
+    let retired = hosted
+        .store
+        .compact(workspace, tilo_clock::unix_now_ns())
+        .unwrap();
+    assert!(
+        retired.frames > 0,
+        "the device's history is compacted past what the link last sent"
+    );
+    seed(&hosted.a, keys, &hosted.a_key, &person, "after compaction");
+    let held = heads(&hosted.a, keys);
+    let reader = b.reader();
+    let again = hosted.again(b);
+    until(b, "B holds the change after the compaction", |b| {
+        opened_heads(b, keys, (APP, RECORD)) == held
+    })
+    .await;
+    let taken = taken_in(reader, Duration::from_millis(500)).await;
+    again.abort();
+    let converged = value(b, keys);
+    hosted.stop().await;
+    assert_eq!(converged, "after compaction");
+    assert_eq!(
+        taken.get("AppDocument").copied().unwrap_or_default().0,
+        1,
+        "the compacted history is not sent again: {taken:?}"
+    );
 }

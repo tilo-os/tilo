@@ -929,6 +929,36 @@ enum OnlyHere {
     Answer,
 }
 
+/// What a link's device said of itself as the link opened: the peer version
+/// its hello named, and the workspace document's heads it holds, which a
+/// device that works this build's tell names right after its hello
+/// ([`DirectSync::tell`]). What it says decides what the link sends it: the
+/// changes it lacks, or its whole state when it says nothing.
+///
+/// A device that said nothing is answered everything, exactly as builds
+/// before the tell were: the tell only ever takes bytes away.
+#[derive(Clone)]
+struct Opening {
+    /// The peer version the other device's hello named, once it came.
+    protocol: watch::Sender<Option<u32>>,
+    /// The workspace document's heads it said it holds: `None` for a device
+    /// that named none, and every change is its to take.
+    holds: Arc<std::sync::Mutex<Option<Vec<automerge::ChangeHash>>>>,
+    /// Whether this link already answered the other device's state: the tell's
+    /// answer, or the whole state on its first ask. The state is sent once.
+    answered: watch::Sender<bool>,
+}
+
+impl Opening {
+    fn new() -> Self {
+        Self {
+            protocol: watch::channel(None).0,
+            holds: Arc::default(),
+            answered: watch::channel(false).0,
+        }
+    }
+}
+
 /// Two devices of one workspace in one process, paired from the moment this
 /// was made ([`DirectSync::pairing`]): their link, ready to sync.
 #[cfg(not(target_arch = "wasm32"))]
@@ -2853,11 +2883,21 @@ impl DirectSync {
             )
         )]
         let mut catch_up = self.link_catch_up(dialing)?;
+        // What this device holds of the workspace's own history, said as the
+        // link opens: the device it dialled answers only the changes it lacks
+        // ([`Self::holds_tell`]).
+        if dialing {
+            catch_up.push(self.holds_tell());
+        }
         // This device's writes no device keeping the workspace answered yet go
         // once more, after what the link opens with: the other device answers
-        // each, so a write made while it was away reaches it and says so.
+        // each, so a write made while it was away reaches it and says so. A
+        // device keeping a store answers the other one's ask from that store,
+        // which already holds them: sending them here would send each twice.
         #[cfg(not(target_arch = "wasm32"))]
-        catch_up.extend(self.unreached());
+        if dialing || self.0.store.is_none() {
+            catch_up.extend(self.unreached());
+        }
         tracing::debug!(
             workspace = ?self.workspace().ok(),
             remote = %short(&remote),
@@ -2887,6 +2927,10 @@ impl DirectSync {
         let (content_link, content_queue) = ContentLink::new(remote);
         let _content_link = ContentLinked::new(self, content_link);
         let content_out = Box::pin(write_content(self, content_send, remote, content_queue));
+        // What the device at the link's other end said of itself as it opened:
+        // its peer version and what it holds, and whether its state was
+        // answered here yet ([`Opening`]).
+        let opening = Opening::new();
         // What this link alone carries, besides what every link does: this
         // device's asks for the other's state, and its answers to the other's.
         let (own, only_here) = tokio::sync::mpsc::unbounded_channel();
@@ -2913,6 +2957,7 @@ impl DirectSync {
                 catch_up,
                 first_answer,
                 opened: Arc::clone(&opened),
+                opening: opening.clone(),
             },
             live,
             only_here,
@@ -2930,6 +2975,7 @@ impl DirectSync {
                 sender: answering.as_ref(),
             },
             admit.clone(),
+            opening.clone(),
         ));
         let history = async {
             #[cfg(not(target_arch = "wasm32"))]
@@ -2943,6 +2989,7 @@ impl DirectSync {
                     admit.scope.clone(),
                     opens,
                     &opened,
+                    &opening,
                 )
                 .await?;
                 self.0.caught_up.send_replace(true);
@@ -3182,8 +3229,10 @@ impl DirectSync {
     ///
     /// Each ask's first round opens with this device's state, its catch-up
     /// ([`Self::catch_up`]): history, which the other device judges as such
-    /// however old what it carries. `answered` is set once the first round is
-    /// written.
+    /// however old what it carries. A device that told this one what it holds
+    /// as the link opened has had the state it lacks answered by that tell
+    /// ([`Self::state_since`]), so its first ask is answered the history
+    /// alone. `answered` is set once the first round is written.
     #[cfg(not(target_arch = "wasm32"))]
     async fn answer_store(
         &self,
@@ -3193,6 +3242,7 @@ impl DirectSync {
         scope: LinkScope,
         opens: bool,
         opened: &RwLock<BTreeSet<[u8; 32]>>,
+        opening: &Opening,
     ) -> Result<(), String> {
         // The history this answers is decided by the other device against the
         // governance it has not been sent yet: it arrives with the catch-up,
@@ -3205,8 +3255,46 @@ impl DirectSync {
                 return Ok(());
             }
         }
-        self.answer_asks(control, remote, Some(answered), scope, opens, opened)
-            .await
+        self.await_opening(opening).await;
+        self.answer_asks(
+            control,
+            remote,
+            Some(answered),
+            scope,
+            opens,
+            opened,
+            opening,
+        )
+        .await
+    }
+
+    /// Wait until the device at the link's other end has said how it opens.
+    /// Its hello, which every device sends first, names its peer version; one
+    /// that works this build's tell names what it holds right after it
+    /// ([`Self::holds_tell`]), and its state is answered there rather than
+    /// again with its first ask. A device that said nothing is answered its
+    /// state with that ask, exactly as builds that know no tell are.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn await_opening(&self, opening: &Opening) {
+        let mut protocol = opening.protocol.subscribe();
+        loop {
+            let version = *protocol.borrow_and_update();
+            match version {
+                None => {
+                    if protocol.changed().await.is_err() {
+                        return;
+                    }
+                }
+                Some(version) if version < neighbour_wire::PEER_PROTOCOL_VERSION => return,
+                Some(_) => break,
+            }
+        }
+        let mut answered = opening.answered.subscribe();
+        while !*answered.borrow_and_update() {
+            if answered.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     /// Answer each ask of the device `remote` on `control` until it asks no
@@ -3225,6 +3313,7 @@ impl DirectSync {
         scope: LinkScope,
         opens: bool,
         opened: &RwLock<BTreeSet<[u8; 32]>>,
+        opening: &Opening,
     ) -> Result<(), String> {
         let mut opens_an_ask = true;
         // The state an ask opens with that earlier answers had not allocated.
@@ -3277,7 +3366,7 @@ impl DirectSync {
             {
                 opened.write_recover().extend(eager.followed());
             }
-            if opens_an_ask {
+            if opens_an_ask && !*opening.answered.borrow() {
                 // The store's frames follow the state, from where the device
                 // asking stands.
                 state.extend(
@@ -3299,6 +3388,9 @@ impl DirectSync {
             // its order (its governance before the records it admits); the
             // store's frames follow once it is all sent.
             let with_state = !state.is_empty();
+            if with_state {
+                opening.answered.send_replace(true);
+            }
             let mut frames = Vec::new();
             let mut bytes = 0_u64;
             while let Some((_, message)) = state.front() {
@@ -3588,8 +3680,18 @@ impl DirectSync {
         }
         write_link(&mut control.send, &LinkFrame::Ready).await?;
         let opened = RwLock::new(BTreeSet::new());
-        self.answer_asks(&mut control, remote, None, scope, false, &opened)
-            .await
+        self.answer_asks(
+            &mut control,
+            remote,
+            None,
+            scope,
+            false,
+            &opened,
+            // A device taking this one's store names no tell: its first ask
+            // is answered the whole state.
+            &Opening::new(),
+        )
+        .await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3713,56 +3815,128 @@ impl DirectSync {
     /// sequence, which the same key may be writing elsewhere.
     fn catch_up(&self, history: bool) -> Result<Vec<Authored>, String> {
         let device = self.device();
-        let (hello, bootstraps) = {
+        let hello = self.hello()?;
+        let bootstraps = {
             let replica = self.0.replica.lock();
-            // A holder of the workspace is no member, and is named by the
-            // address it signed among those keeping it: the same name a
-            // member device is in the roster by ([`certified`]). A device
-            // placed to serve one record without a roster row comes with the
-            // certificate its host placed it with.
-            let cert = certified(&replica, device)
-                .or_else(|| self.0.placed.clone())
-                .ok_or("this device is not in the workspace roster")?;
-            let revocations = replica
-                .revocations()
-                .into_iter()
-                .filter(|entry| entry.user_public_key == cert.user_public_key)
-                .collect();
-            let hello = NeighbourMsg::IdentityHello {
-                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(cert),
-                revocations,
-            };
             // Only a holder of the workspace sends its governance and history: a member
             // device's link is to a holder, which has every write the member made.
-            (
-                hello,
-                self.0.admission.is_none()
-                    && replica.has_governance()
-                    && replica.signed_by_administrator(&device),
-            )
+            self.0.admission.is_none()
+                && replica.has_governance()
+                && replica.signed_by_administrator(&device)
         };
         let mut messages = vec![hello];
         if bootstraps {
-            messages.push(self.0.replica.lock().workspace_message());
+            let authored = |message: NeighbourMsg| Authored {
+                from: author_of(&message).unwrap_or(device),
+                message,
+                published: false,
+            };
+            messages.push(authored(self.0.replica.lock().workspace_message()));
             // A page keeps no store of its own to send history from.
             #[cfg(not(target_arch = "wasm32"))]
             if history {
-                messages.extend(self.kept()?);
+                messages.extend(self.kept()?.into_iter().map(authored));
             }
             #[cfg(target_arch = "wasm32")]
             let _ = history;
         }
-        // A frame the store keeps names its own author; one that does not is
-        // this device's.
-        Ok(messages
+        Ok(messages)
+    }
+
+    /// This device's hello: its certificate and the revocations its person
+    /// signed, which every link sends first and no change can carry.
+    ///
+    /// # Errors
+    ///
+    /// This device is not in the workspace's roster.
+    fn hello(&self) -> Result<Authored, String> {
+        let device = self.device();
+        let replica = self.0.replica.lock();
+        // A holder of the workspace is no member, and is named by the address
+        // it signed among those keeping it: the same name a member device is
+        // in the roster by ([`certified`]). A device placed to serve one
+        // record without a roster row comes with the certificate its host
+        // placed it with.
+        let cert = certified(&replica, device)
+            .or_else(|| self.0.placed.clone())
+            .ok_or("this device is not in the workspace roster")?;
+        let revocations = replica
+            .revocations()
             .into_iter()
-            .map(|message| Authored {
-                from: author_of(&message).unwrap_or(device),
-                message,
+            .filter(|entry| entry.user_public_key == cert.user_public_key)
+            .collect();
+        Ok(Authored {
+            from: device,
+            message: NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                cert: Box::new(cert),
+                revocations,
+            },
+            published: false,
+        })
+    }
+
+    /// What this device holds of the workspace's own history, said to the
+    /// device it dials as the link opens: the workspace document's heads,
+    /// which the engine already keeps ([`StatePeer::workspace_heads`]).
+    /// A device that holds nothing names none, and is sent every change.
+    ///
+    /// The heads travel in [`NeighbourMsg::SyncReq`]'s `since`, which a device
+    /// that does not know the tell ignores as it always did.
+    fn holds_tell(&self) -> Authored {
+        let heads: Vec<[u8; 32]> = self.read(|peer| {
+            peer.workspace_heads()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|head| head.0)
+                .collect()
+        });
+        Authored {
+            from: self.device(),
+            message: NeighbourMsg::SyncReq {
+                since: postcard::to_allocvec(&heads).unwrap_or_default(),
+                workspace: self.0.replica.workspace(),
+                invite_id: None,
+                nonce: now_ns(),
+            },
+            published: true,
+        }
+    }
+
+    /// The heads a [`Self::holds_tell`] names, when `since` is one: what that
+    /// device already holds of the workspace's own history. `None` for a
+    /// device that said nothing, and for a SyncReq that asks for the state.
+    fn told(since: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
+        if since.is_empty() {
+            return None;
+        }
+        let heads: Vec<[u8; 32]> = postcard::from_bytes(since).ok()?;
+        Some(heads.into_iter().map(automerge::ChangeHash).collect())
+    }
+
+    /// The state a tell asks for: this device's hello, then the workspace's
+    /// changes the device that told lacks. Heads this device's change graph
+    /// cannot place — another epoch's, or a history compacted past them —
+    /// answer every change, so the device is never left behind: that decision
+    /// is the change graph's, in the one place changes are read from a version
+    /// ([`StatePeer::workspace_changes_since`]).
+    fn state_since(&self, heads: &[automerge::ChangeHash]) -> Vec<Authored> {
+        let mut messages = Vec::new();
+        if let Ok(hello) = self.hello() {
+            messages.push(hello);
+        }
+        let changes = self.read(|peer| peer.workspace_changes_since(heads));
+        if !changes.is_empty() {
+            messages.push(Authored {
+                from: self.device(),
+                message: NeighbourMsg::SyncResp {
+                    changes,
+                    workspace: self.0.replica.workspace(),
+                },
                 published: false,
-            })
-            .collect())
+            });
+        }
+        messages
     }
 
     /// Admit every frame the other device sends until its stream ends. A
@@ -3786,6 +3960,7 @@ impl DirectSync {
         history: watch::Receiver<bool>,
         answering: Answering<'_>,
         admit: LinkAdmit,
+        opening: Opening,
     ) -> Result<(), String> {
         let (frames_stream, frames_accepted) = tokio::sync::oneshot::channel();
         let (answers_stream, answers_accepted) = tokio::sync::oneshot::channel();
@@ -3809,8 +3984,15 @@ impl DirectSync {
             }
             Ok::<(), String>(())
         };
-        let admitting =
-            self.admit_in_order(remote, link, answering.sender, frames, history, &admit);
+        let admitting = self.admit_in_order(
+            remote,
+            link,
+            answering.sender,
+            frames,
+            history,
+            &admit,
+            &opening,
+        );
         let received = async {
             tokio::try_join!(reading, async {
                 admitting.await;
@@ -3952,6 +4134,7 @@ impl DirectSync {
         mut frames: tokio::sync::mpsc::Receiver<Authored>,
         mut history: watch::Receiver<bool>,
         admit: &LinkAdmit,
+        opening: &Opening,
     ) {
         let mut waiting = Vec::new();
         loop {
@@ -3966,7 +4149,7 @@ impl DirectSync {
             let in_hand = *history.borrow();
             if in_hand {
                 for authored in std::mem::take(&mut waiting) {
-                    self.receive_live(remote, link, answering, authored, admit)
+                    self.receive_live(remote, link, answering, authored, admit, opening)
                         .await;
                 }
             }
@@ -3977,7 +4160,7 @@ impl DirectSync {
                 waiting.push(authored);
                 continue;
             }
-            self.receive_live(remote, link, answering, authored, admit)
+            self.receive_live(remote, link, answering, authored, admit, opening)
                 .await;
         }
     }
@@ -4061,6 +4244,7 @@ impl DirectSync {
         answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
         authored: Authored,
         admit: &LinkAdmit,
+        opening: &Opening,
     ) {
         // What a link from a device that does not keep the workspace carries:
         // its own frames, and none but those a device that opens the records
@@ -4076,10 +4260,20 @@ impl DirectSync {
             );
             return;
         }
+        // The version the other device's hello names, and what its tell says
+        // it holds: the link answers only what that device lacks.
+        if let NeighbourMsg::IdentityHello { protocol, .. } = &authored.message {
+            if authored.from == remote {
+                opening.protocol.send_replace(Some(*protocol));
+            }
+        }
         // An ask another device made reached this one only because a
         // host forwarded it, and is not this device's to answer.
-        if matches!(authored.message, NeighbourMsg::SyncReq { .. }) {
+        if let NeighbourMsg::SyncReq { since, .. } = &authored.message {
             if authored.from == remote {
+                if let Some(heads) = Self::told(since) {
+                    *opening.holds.lock_recover() = Some(heads);
+                }
                 let _ = link.send(OnlyHere::Answer);
             }
             return;
@@ -5185,6 +5379,9 @@ struct Sending {
     /// The records the device on the other end opened ([`LinkFrame::Open`]):
     /// their writes reach it from then on.
     opened: Arc<RwLock<BTreeSet<[u8; 32]>>>,
+    /// What the device on the other end said of itself as it opened: the
+    /// state it holds, which a tell names ([`Opening`]).
+    opening: Opening,
 }
 
 /// Whether `message`, a write this link would send, is one the device at its
@@ -5242,6 +5439,7 @@ async fn send_authored(
         catch_up,
         mut first_answer,
         opened,
+        opening,
     } = sending;
     let reaches = link.reach_of(remote, scope);
     let takes = |message: &NeighbourMsg| reaches(message) && opened_admits(message, opens, &opened);
@@ -5255,9 +5453,20 @@ async fn send_authored(
         write_authored(&mut send, authored).await?;
     }
     link.0.catch_up_written.send_replace(true);
+    // The device that told this one what it holds is answered before this
+    // device's first history answer: that answer waits for the tell's, so the
+    // state it carries is the changes the other device lacks alone.
     while !*first_answer.borrow_and_update() {
-        if first_answer.changed().await.is_err() {
-            return Ok(());
+        tokio::select! {
+            changed = first_answer.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+            }
+            Some(first) = only_here.recv() => {
+                let waiting = gather(&mut only_here, first);
+                answer_only_here(link, &mut send, dialing, &waiting, &takes, &opening).await?;
+            }
         }
     }
     loop {
@@ -5266,27 +5475,8 @@ async fn send_authored(
                 if link.removed(remote) {
                     return Err(REMOVED.into());
                 }
-                let mut waiting = vec![first];
-                while let Ok(more) = only_here.try_recv() {
-                    waiting.push(more);
-                }
-                // The device that dialled reads the other one's state with its
-                // history, judged as history; the one that accepted asks on
-                // this stream.
-                if waiting.contains(&OnlyHere::Ask) {
-                    if dialing {
-                        link.ask_replay();
-                    } else {
-                        write_authored(&mut send, &link.state_request()).await?;
-                    }
-                }
-                if waiting.contains(&OnlyHere::Answer) {
-                    for state in link.answer_state_request(true) {
-                        if takes(&state.message) {
-                            write_authored(&mut send, &state).await?;
-                        }
-                    }
-                }
+                let waiting = gather(&mut only_here, first);
+                answer_only_here(link, &mut send, dialing, &waiting, &takes, &opening).await?;
                 continue;
             }
             next = live.recv() => next,
@@ -5311,6 +5501,65 @@ async fn send_authored(
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
         }
     }
+}
+
+/// `first`, and every other ask already waiting with it: they go out as one
+/// answer.
+fn gather(
+    only_here: &mut tokio::sync::mpsc::UnboundedReceiver<OnlyHere>,
+    first: OnlyHere,
+) -> Vec<OnlyHere> {
+    let mut waiting = vec![first];
+    while let Ok(more) = only_here.try_recv() {
+        waiting.push(more);
+    }
+    waiting
+}
+
+/// Answer what the device at a link's other end asked on `send`: this device's
+/// state, its own ask carried on, and the state a tell names only what that
+/// device lacks.
+async fn answer_only_here(
+    link: &DirectSync,
+    send: &mut StreamSend,
+    dialing: bool,
+    waiting: &[OnlyHere],
+    takes: &impl Fn(&NeighbourMsg) -> bool,
+    opening: &Opening,
+) -> Result<(), String> {
+    // The device that dialled reads the other one's state with its history,
+    // judged as history; the one that accepted asks on this stream.
+    if waiting.contains(&OnlyHere::Ask) {
+        if dialing {
+            link.ask_replay();
+        } else {
+            write_authored(send, &link.state_request()).await?;
+        }
+    }
+    if waiting.contains(&OnlyHere::Answer) {
+        // A tell says what its device holds: it is sent the workspace's
+        // changes it lacks, and none of its history again. A device that said
+        // nothing, and one that lost what it was sent, is sent the whole
+        // state.
+        let told = opening
+            .holds
+            .lock_recover()
+            .clone()
+            .filter(|_| !*opening.answered.borrow());
+        let states = match &told {
+            Some(heads) => link.state_since(heads),
+            None => link.answer_state_request(true),
+        };
+        for state in &states {
+            if takes(&state.message) {
+                write_authored(send, state).await?;
+            }
+        }
+        if told.is_some() {
+            opening.answered.send_replace(true);
+        }
+    }
+    Ok(())
 }
 
 /// Write `authored` as this link's next record: the device that authored it,
@@ -5799,8 +6048,9 @@ mod tests {
             drop(live);
         };
         let admit = LinkAdmit::dialling();
+        let opening = Opening::new();
         tokio::join!(
-            member.admit_in_order(host_device, &asks, None, frames, history, &admit),
+            member.admit_in_order(host_device, &asks, None, frames, history, &admit, &opening),
             reading_history
         );
 
