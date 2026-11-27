@@ -2033,36 +2033,65 @@ fn a_confined_daemons_connection_is_no_person() {
     let Some(root) = isolated_root(CONFINED_CONNECTION_TEST) else {
         return;
     };
-    // The identity this account founded, whose root signs the confined certificate, and the
-    // device key this computer holds, taken as its daemon takes it until the daemon starts.
+    // The identity this account founded, whose root places the device, and the key this computer
+    // holds, taken as its daemon takes it until the daemon starts.
     let daemon_key = taking_the_device_key();
     let dir = super::this_accounts_root_dir().unwrap();
     let record = tilo_identity::store::resolve_active_identity(&dir).unwrap();
     let identity = tilo_identity::store::load_from_path(record).unwrap();
     let keys = tilo_api::calls::device_keys();
     let key = daemon_key.key().clone();
-    let now = tilo_clock::unix_now_ns();
-    let mut confined = tilo_user_identity::DeviceCert {
-        user_public_key: identity.group_public_key(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "Confined".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::workspace_device(
-            *uuid::Uuid::new_v4().as_bytes(),
-        ),
-        issued_at_ns: now.saturating_sub(60_000_000_000),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut confined, &identity).unwrap();
+    // The device its person's root placed for one workspace's records (a workspace's VM, a
+    // hosted browser's environment): it holds no keys of its own.
+    let workspace = tilo_desktop_model::WorkspaceId::new();
+    let records = tilo_workspace_service::environment::vm_placed_records(workspace)
+        .expect("the workspace's records");
+    let confined = crate::device::confined::placed_cert(
+        &identity,
+        key.verifying_key().to_bytes(),
+        records,
+        "The VM",
+    );
     let place = tilo_device_identity::login::Place::here(keys).unwrap();
     tilo_device_identity::login::file_certificate(&place, &confined).unwrap();
-    tilo_api::daemon::enter::adopt(&place, &confined).unwrap();
+    // The login that placed it entered through a host, which answers every action of the one
+    // workspace's records: the entry is what a daemon that starts again reads to reach it.
+    tilo_device_identity::login::file_entry(
+        &place,
+        &tilo_device_identity::login::Device {
+            site: "https://tilo.test/".into(),
+            host_origin: "https://eu1.tilo.test".into(),
+            workspace: workspace.to_string(),
+            workspace_name: Some("The VM's".into()),
+            agent: String::new(),
+            cert: confined.clone(),
+            server_cert: confined.clone(),
+            server_address: Some(tilo_device_identity::login::ServerAddress {
+                endpoint_addr: iroh::EndpointAddr::new(
+                    iroh::SecretKey::from_bytes(&[0x3c; 32]).public(),
+                ),
+                relay_url: None,
+                web: None,
+            }),
+        },
+    )
+    .unwrap();
     drop(daemon_key);
 
-    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    // A real daemon serves this device: it takes the login's entry, serves the person, and
+    // reaches the one workspace through its host.
+    let running = crate::daemon::Running::start(&root).unwrap();
+    let daemon = running
+        .services(Duration::from_secs(120))
+        .expect("the person's services start");
     assert_eq!(
-        daemon.cert.capabilities.workspace, confined.capabilities.workspace,
+        daemon
+            .cert
+            .capabilities
+            .records
+            .as_ref()
+            .map(|records| *records.workspace()),
+        Some(*workspace.as_uuid().as_bytes()),
         "this daemon is its record's tenant"
     );
     let (_, caller) = daemon.connection_tree_in(None).unwrap();
@@ -2071,10 +2100,13 @@ fn a_confined_daemons_connection_is_no_person() {
         "the same account's connection is no person's own act here: {caller:?}"
     );
     assert_eq!(
-        caller.acting().person_id(),
-        Some(hex::encode(confined.user_public_key).as_str()),
-        "it still acts for the person it is the tenant of"
+        caller
+            .placed_records()
+            .map(|placed| hex::encode(placed.person())),
+        Some(hex::encode(confined.user_public_key)),
+        "it still is the person's placed device, which history names them for"
     );
+    running.stop().unwrap();
 }
 
 const MIGRATION_RUN_TEST: &str =

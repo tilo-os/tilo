@@ -1899,7 +1899,26 @@ impl Daemon {
             let host = super::confined::forwarded(&self.workspaces, workspace)
                 .map_err(io::Error::other)?;
             let api = self.api()?;
-            let caller = Caller::visitor(self.cert.device_public_key).in_workspace(&named);
+            // The tenant's calls are its placed certificate's: its device's key alone, with the
+            // person whose host placed it and the channels it reaches, decided by the records the
+            // certificate names. Never the person themselves.
+            let caller = self
+                .cert
+                .capabilities
+                .records
+                .as_ref()
+                .map_or_else(
+                    || Caller::visitor(self.cert.device_public_key),
+                    |records| {
+                        Caller::placed(
+                            self.cert.device_public_key,
+                            self.cert.user_public_key,
+                            named.clone(),
+                            records.channels().iter().copied(),
+                        )
+                    },
+                )
+                .in_workspace(&named);
             let joined = block_on_owned(async move { api.joined(&named, host).await })
                 .map_err(io::Error::other)?;
             return Ok((joined, caller));
@@ -2556,12 +2575,24 @@ impl Daemon {
         ));
         // The workspace a ticket login named is entered and kept here now, before this part
         // answers anyone: the person's list and their apps read what the part holds, and a login
-        // that answers before its workspace is here leaves both showing none of it.
+        // that answers before its workspace is here leaves both showing none of it. A host that
+        // does not answer costs this start what any wait on the device keeping a workspace costs
+        // ([`crate::daemon::WAITED_WITHIN`]), never the part itself: a computer whose host is
+        // away still starts serving its person.
         if let Some(login) = entering {
             let (entering_with, cert) = (Arc::clone(&workspaces), identity.cert.clone());
             stage("entering the workspace the login named");
             super::workspaces::block_on_owned(async move {
-                super::home::entered_while_running(&entering_with, &cert, &login).await
+                let entering = super::home::entered_while_running(&entering_with, &cert, &login);
+                match tokio::time::timeout(crate::daemon::WAITED_WITHIN, entering).await {
+                    Ok(entered) => entered,
+                    Err(_) => Err(format!(
+                        "the workspace {} this computer logged into is not here yet: the device \
+                         keeping it did not answer within {} seconds",
+                        login.workspace,
+                        crate::daemon::WAITED_WITHIN.as_secs()
+                    )),
+                }
             })
             .unwrap_or_else(
                 |why| tracing::warn!(%why, "the workspace this login named is not kept here yet"),
