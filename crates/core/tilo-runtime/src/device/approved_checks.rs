@@ -857,16 +857,11 @@ impl CheckJobs {
         );
     }
 
-    /// A check that did not run to its end: its record says why where every job's record says it
-    /// (`detail.why`), so the app that asked and the invocation it holds read the reason rather
-    /// than only that the job failed.
+    /// A check that did not run to its end: its record says why under `detail.why`, where every
+    /// job's detail says it, so the app that asked and the invocation it holds read the reason
+    /// rather than only that the job failed.
     fn failed(&self, job: &str, why: &str) {
-        self.end(
-            job,
-            "failed",
-            &serde_json::json!({ "error": why }),
-            Some(why),
-        );
+        self.end(job, "failed", &serde_json::Value::Null, Some(why));
     }
 
     fn end(&self, job: &str, state: &str, done: &serde_json::Value, why: Option<&str>) {

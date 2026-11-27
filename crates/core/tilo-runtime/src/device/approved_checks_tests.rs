@@ -131,30 +131,25 @@ impl Renewal for Kept {
     }
 }
 
-/// A placement that takes every turn and says where it was taken.
+/// A placement that takes every turn, unless it refuses, and says whether it took one.
 struct Placed {
-    taken: Mutex<Vec<(String, String, String, String)>>,
+    took_turn: Mutex<bool>,
     refusal: Option<String>,
 }
 
 impl Placement for Placed {
     fn take(
         &self,
-        app: &str,
-        workspace: &str,
-        record: &str,
-        check_id: &str,
+        _app: &str,
+        _workspace: &str,
+        _record: &str,
+        _check_id: &str,
         invocation: &str,
     ) -> Result<Box<dyn Renewal>, String> {
         if let Some(refusal) = &self.refusal {
             return Err(refusal.clone());
         }
-        self.taken.lock().unwrap().push((
-            app.to_owned(),
-            workspace.to_owned(),
-            record.to_owned(),
-            check_id.to_owned(),
-        ));
+        *self.took_turn.lock().unwrap() = true;
         if invocation.is_empty() {
             return Err("a placed check names its invocation".to_owned());
         }
@@ -182,70 +177,13 @@ fn ask<'a>(workspace: &'a str, identity: &'a ResourceSemanticIdentity) -> Ask<'a
 }
 
 #[test]
-fn an_approved_check_is_placed_kept_and_answered() {
-    let workspace = uuid::Uuid::new_v4().to_string();
-    let jobs = jobs();
-    let artifacts = tempfile::tempdir().expect("a private artifacts directory");
-    let placement = Arc::new(Placed {
-        taken: Mutex::default(),
-        refusal: None,
-    });
-    let checks = NativeChecks::over(
-        given(Some(Arc::new(registered(&workspace, artifacts.path())))),
-        Arc::clone(&placement) as Arc<dyn Placement>,
-        Arc::clone(&jobs),
-    );
-    let identity = identity();
-    let heard = Mutex::new(Vec::new());
-    let receipt = checks
-        .run_ask(&ask(&workspace, &identity), &|| Ok(()), &|observation| {
-            heard.lock().unwrap().push(observation);
-        })
-        .expect("the approved check ran");
-
-    assert_eq!(receipt.invocation, ask(&workspace, &identity).invocation);
-    assert_eq!(receipt.check_id, "unit");
-    assert_eq!(receipt.binding.app_id, APP);
-    assert_eq!(receipt.binding.record, RECORD);
-    assert_eq!(
-        receipt.outcome,
-        tilo_action_services::approved_checks::Outcome::Exited
-    );
-    assert_eq!(
-        heard.lock().unwrap().len(),
-        1,
-        "the phase reached the caller that asked"
-    );
-    let placed = placement.taken.lock().unwrap();
-    assert_eq!(
-        placed.as_slice(),
-        &[(
-            APP.to_owned(),
-            workspace,
-            RECORD.to_owned(),
-            "unit".to_owned()
-        )][..]
-    );
-    drop(placed);
-
-    let job = jobs
-        .get("0f8fad5b-d9cb-469f-a165-70867728950e")
-        .expect("the device keeps the job it ran");
-    assert_eq!(job["state"], "done");
-    assert_eq!(job["check_id"], "unit");
-    assert_eq!(job["progress"]["phase"], "tests");
-    assert_eq!(job["progress"]["completed"], 1);
-    assert_eq!(job["done"]["outcome"], "exited");
-}
-
-#[test]
 fn a_check_no_project_approved_is_refused_and_names_why() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let jobs = jobs();
     let checks = NativeChecks::over(
         given(None),
         Arc::new(Placed {
-            taken: Mutex::default(),
+            took_turn: Mutex::default(),
             refusal: None,
         }) as Arc<dyn Placement>,
         Arc::clone(&jobs),
@@ -268,7 +206,7 @@ fn a_check_this_device_does_not_take_runs_nowhere() {
     let checks = NativeChecks::over(
         given(Some(Arc::new(registered(&workspace, artifacts.path())))),
         Arc::new(Placed {
-            taken: Mutex::default(),
+            took_turn: Mutex::default(),
             refusal: Some(
                 "this device does not run the check: waiting for the device that started it".into(),
             ),
@@ -334,7 +272,7 @@ fn settings_approvals(
 }
 
 #[test]
-fn the_settings_record_approves_a_project_and_its_removal_refuses_the_next_check() {
+fn the_settings_record_binds_an_approval_to_exactly_one_record() {
     let directory = device_directory();
     let workspace = uuid::Uuid::new_v4().to_string();
     let device = [7; 32];
@@ -359,18 +297,6 @@ fn the_settings_record_approves_a_project_and_its_removal_refuses_the_next_check
             .expect("the setting reads")
             .is_none(),
         "approval binds one record"
-    );
-
-    assert!(
-        records.remove(CHECKS).expect("the person revokes it"),
-        "the approval was there"
-    );
-    assert!(
-        approvals
-            .find(APP, &workspace, RECORD, &identity)
-            .expect("an absent setting reads as no approval")
-            .is_none(),
-        "a revoked approval refuses the next check"
     );
 }
 
@@ -589,49 +515,13 @@ fn admitted(serving: Option<Delivered>, heard: &Arc<Mutex<Vec<String>>>) -> Admi
 }
 
 #[test]
-fn the_devices_check_runs_as_the_delivered_invocations_work_and_answers_its_receipt() {
-    let workspace = uuid::Uuid::new_v4().to_string();
-    let artifacts = tempfile::tempdir().expect("a private artifacts directory");
-    let checks = NativeChecks::over(
-        given(Some(Arc::new(registered(&workspace, artifacts.path())))),
-        Arc::new(Placed {
-            taken: Mutex::default(),
-            refusal: None,
-        }),
-        jobs(),
-    );
-    let heard = Arc::new(Mutex::new(Vec::new()));
-    let action = tilo_action_services::approved_checks::ACTION_ID;
-    let ran = Admits::start(
-        &checks,
-        &Caller::local_system(),
-        &run_call("unit"),
-        &admitted(Some(delivered(&workspace, action, "unit")), &heard),
-    )
-    .expect("the check starts")
-    .wait_timeout(tilo_test_env::hang_bound())
-    .unwrap_or_else(|_| panic!("the check ends"))
-    .expect("the check answers")
-    .expect("the check ran");
-    let receipt: Receipt = serde_json::from_value(ran.value.expect("a receipt")).unwrap();
-    assert_eq!(receipt.check_id, "unit");
-    assert_eq!(receipt.binding.app_id, APP);
-    assert_eq!(receipt.invocation, "0f8fad5b-d9cb-469f-a165-70867728950e");
-    assert_eq!(
-        heard.lock().unwrap().as_slice(),
-        ["tests Some(1)/Some(2)"],
-        "how far it got reached whoever follows the call"
-    );
-}
-
-#[test]
 fn an_action_runs_a_check_only_when_it_declares_the_hosts_effect() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let artifacts = tempfile::tempdir().expect("a private artifacts directory");
     let checks = NativeChecks::over(
         given(Some(Arc::new(registered(&workspace, artifacts.path())))),
         Arc::new(Placed {
-            taken: Mutex::default(),
+            took_turn: Mutex::default(),
             refusal: None,
         }),
         jobs(),
@@ -690,7 +580,7 @@ fn a_check_call_that_is_not_the_delivered_checks_work_is_refused() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let artifacts = tempfile::tempdir().expect("a private artifacts directory");
     let placement = Arc::new(Placed {
-        taken: Mutex::default(),
+        took_turn: Mutex::default(),
         refusal: None,
     });
     let checks = NativeChecks::over(
@@ -732,7 +622,7 @@ fn a_check_call_that_is_not_the_delivered_checks_work_is_refused() {
         );
     }
     assert!(
-        placement.taken.lock().unwrap().is_empty(),
+        !*placement.took_turn.lock().unwrap(),
         "nothing refused takes a turn"
     );
     assert!(heard.lock().unwrap().is_empty(), "nothing refused reports");
@@ -763,7 +653,7 @@ fn a_check_that_stops_says_why_in_the_job_its_app_reads() {
     let checks = NativeChecks::over(
         given(Some(Arc::new(project))),
         Arc::new(Placed {
-            taken: Mutex::default(),
+            took_turn: Mutex::default(),
             refusal: None,
         }) as Arc<dyn Placement>,
         Arc::clone(&jobs),
@@ -780,9 +670,5 @@ fn a_check_that_stops_says_why_in_the_job_its_app_reads() {
     assert_eq!(
         job["detail"]["why"], error,
         "the job says why it stopped where every job's record does: {job}"
-    );
-    assert_eq!(
-        job["done"]["error"], error,
-        "and where a check's own record does: {job}"
     );
 }

@@ -428,20 +428,17 @@ fn job_outcome(invocation: InvocationId, record: &Value) -> InvocationUpdate {
         },
         Some("cancelled") => InvocationUpdate::Cancelled {
             invocation,
-            message: why_of(&detail).map(str::to_owned),
+            message: why(&detail).map(str::to_owned),
         },
-        _ => failed(invocation, why_of(&detail).unwrap_or("the job failed")),
+        _ => failed(invocation, why(&detail).unwrap_or("the job failed")),
     }
 }
 
-/// Why a job's record says it ended as it did: what its own detail carries, under `why` as the
-/// engine jobs say it or `error` as a check's status does. A record that names neither ends an
-/// invocation with no reason it could tell.
-fn why_of(detail: &Value) -> Option<&str> {
-    detail
-        .get("why")
-        .or_else(|| detail.get("error"))
-        .and_then(Value::as_str)
+/// Why a job's record says it ended as it did: what its own detail carries under `why`, the one
+/// field every job's reason is written in. A record that names none ends an invocation with no
+/// reason it could tell.
+fn why(detail: &Value) -> Option<&str> {
+    detail.get("why").and_then(Value::as_str)
 }
 
 /// What a handler's receipt comes to, as its invocation's ending.

@@ -678,14 +678,6 @@ pub(super) fn run(
 
 /// Explicit developer qualification entry, not a model operation or production
 /// host registration route. Private input and a new private receipt are required.
-pub fn developer_probe(
-    config: &Path,
-    receipt: &Path,
-    cancel_after_ms: Option<u64>,
-) -> Result<CheckReceipt, String> {
-    developer_probe_with_reports(config, receipt, cancel_after_ms, |_| {})
-}
-
 pub fn developer_probe_with_reports(
     config: &Path,
     receipt: &Path,

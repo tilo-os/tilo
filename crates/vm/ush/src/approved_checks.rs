@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 mod execution;
 mod reports;
 pub use execution::{
-    CgroupObservation, CheckOutcome, CheckReceipt, developer_probe, developer_probe_with_reports,
-    run_guest, run_init,
+    CgroupObservation, CheckOutcome, CheckReceipt, developer_probe_with_reports, run_guest,
+    run_init,
 };
 pub use reports::{CheckReport, CheckReportRefusal, ReportedCheckEvent, ReportedCheckPhase};
 
