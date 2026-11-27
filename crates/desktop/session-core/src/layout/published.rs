@@ -771,16 +771,3 @@ pub(super) fn place_label(words: &Words, place: &PlaceReading) -> String {
         place.name.clone()
     }
 }
-
-/// Feed what `specs` publish into `hasher` : each resource's id, kind and label, and its
-/// children's, so two revisions are equal exactly when the action API publishes the same.
-pub(super) fn hash_resources(specs: &[ResourceSpec], hasher: &mut std::hash::DefaultHasher) {
-    use std::hash::{Hash as _, Hasher as _};
-    for spec in specs {
-        spec.id.0.hash(hasher);
-        spec.kind.hash(hasher);
-        spec.label.hash(hasher);
-        hash_resources(&spec.children, hasher);
-    }
-    hasher.write_u8(0);
-}

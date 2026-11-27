@@ -32,8 +32,8 @@ use sizing::canvas_size;
 use sizing::width_in_view;
 mod published;
 use published::{
-    LayoutRow, LayoutStrip, Place, hash_resources, history_resource, layout_resource, place_label,
-    row_label, strip_label,
+    LayoutRow, LayoutStrip, Place, history_resource, layout_resource, place_label, row_label,
+    strip_label,
 };
 pub use published::{place_kind_resource, resources, row_kind_resource, strip_kind_resource};
 mod queries;
@@ -1677,13 +1677,28 @@ impl Layout {
         ]
     }
 
-    /// Where what it publishes stands ([`Published::revision`]): what it publishes and the layout's
-    /// own revision, so a place, strip or row that came, went or was renamed changes it.
+    /// Where what it publishes stands ([`Published::revision`]): the key and label of each row,
+    /// strip, place and query [`Self::resources`] publishes, and the layout's own revision, so one
+    /// that came, went or was renamed changes it. Their actions follow from their kinds alone, and
+    /// what the layout and its history are called from the locale the reader keys on, so neither
+    /// is built to be told apart.
     #[must_use]
     pub fn revision(&self) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::hash::DefaultHasher::new();
-        hash_resources(&self.resources(), &mut hasher);
+        let reading = self.reading();
+        for row in &reading.rows {
+            (0_u8, &row.key, row_label(row)).hash(&mut hasher);
+        }
+        for strip in &reading.strips {
+            (1_u8, &strip.key, strip_label(&self.words, strip)).hash(&mut hasher);
+        }
+        for place in &reading.places {
+            (2_u8, &place.key, place_label(&self.words, place)).hash(&mut hasher);
+        }
+        for query in &reading.queries {
+            (3_u8, &query.key, &query.text).hash(&mut hasher);
+        }
         self.handle.revision().hash(&mut hasher);
         hasher.finish()
     }
