@@ -44,6 +44,9 @@ pub fn register_all() {
             crate::db_engine::register();
             crate::containers_engine::register();
             crate::files_engine::register();
+            // The Hex Editor's bytes: a window read and changed on this device answers here, as
+            // a session's own process answers it for the windows it hosts.
+            hex_engine::register();
             // Maps' kept areas are this device's pictures, which a window may already have drawn.
             tilo_maps_engine::register();
             // The App Store's sources and the changes a person asks for: what a window asks by
