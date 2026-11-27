@@ -13,8 +13,9 @@ pub const MAX_HELD_INPUTS: usize = 64;
 /// Most encoded bytes of app messages one workspace holds for a prerequisite.
 pub const MAX_HELD_BYTES: usize = 4 * 1024 * 1024;
 /// Most app messages of one writer held at once while some wait for the
-/// governance they were written under: a writer naming governance that never
-/// comes fills no more of the queue than this.
+/// governance or the apps they were written under: a writer naming governance
+/// that never comes, or an app the workspace never installs, fills no more of
+/// the queue than this.
 pub const MAX_HELD_FOR_GOVERNANCE_PER_WRITER: usize = 16;
 
 /// How a message is held: what it waits for, and the admission context it
@@ -47,6 +48,9 @@ pub(super) struct Missed {
     /// ([`MAX_HELD_FOR_GOVERNANCE_PER_WRITER`]), as a peer that has not
     /// taken in the workspace's governance yet sees every write of a replay.
     governance: Option<Vec<[u8; 32]>>,
+    /// A write waiting for the apps the workspace runs was let go: it is asked for again once
+    /// this copy reads other apps ([`StatePeer::redecide_set_aside`]).
+    apps: bool,
     /// Something else was missing, or too much to tell apart: any change
     /// that lands asks for a replay.
     anything: bool,
@@ -161,17 +165,19 @@ impl StatePeer {
         let full = |held: usize, held_bytes: usize| {
             held >= MAX_HELD_INPUTS || held_bytes.saturating_add(bytes) > MAX_HELD_BYTES
         };
-        // Let go, not refused: the governance it waits for may simply not be here yet (a replay
-        // to a peer that just started reaches it ahead of the workspace's governance). Its server
-        // is asked for it again once the governance moves.
-        let over_share = prerequisite == MissingPrerequisite::Rules
-            && self
-                .core
-                .pending
-                .iter()
-                .filter(|(author, ..)| author == &source)
-                .count()
-                >= MAX_HELD_FOR_GOVERNANCE_PER_WRITER;
+        // Let go, not refused: the governance or apps it waits for may simply not be here yet (a
+        // replay to a peer that just started reaches it ahead of the workspace's governance). Its
+        // server is asked for it again once they move.
+        let over_share = matches!(
+            prerequisite,
+            MissingPrerequisite::Rules | MissingPrerequisite::AppSurface
+        ) && self
+            .core
+            .pending
+            .iter()
+            .filter(|(author, ..)| author == &source)
+            .count()
+            >= MAX_HELD_FOR_GOVERNANCE_PER_WRITER;
         let mut let_go = if bytes > MAX_HELD_BYTES {
             Some(DropReason::TooLarge)
         } else {
@@ -256,6 +262,7 @@ impl StatePeer {
     /// report, released writes included.
     pub fn redecide_set_aside(&mut self, now: SystemTime) -> AdmissionReport {
         let mut report = AdmissionReport::metadata(ReceiveOutcome::default());
+        report.summary.replay_wanted = std::mem::take(&mut self.missed.apps);
         if !self.core.pending.is_empty() {
             self.retry_held(&mut report, now, false);
         }
@@ -416,6 +423,7 @@ impl StatePeer {
                     self.missed.governance = Some(self.governance().heads());
                 }
             }
+            Some(MissingPrerequisite::AppSurface) => self.missed.apps = true,
             _ => self.missed.anything = true,
         }
         if self

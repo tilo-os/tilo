@@ -1607,6 +1607,38 @@ fn an_apps_own_records_are_its_while_it_is_installed() {
     );
 }
 
+/// The guest's `seq`th write of the record's value as `to`, made by the test app itself.
+fn app_write(peer: &StatePeer, key: &SigningKey, to: &'static str, seq: u64) -> NeighbourMsg {
+    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    doc.put(ROOT, "value", to).unwrap();
+    let context = ActionContext {
+        what: Some(edit_value()),
+        ..ActionContext::for_resource("tab:1", KIND, "Test")
+    }
+    .with_invoker(tilo_actions::ActionInvoker::admitted(
+        &tilo_member_types::Acting::by_app(APP),
+    ));
+    doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
+    signed_write_at(&mut doc, &heads, key, seq)
+}
+
+/// The test app's release installed by the owner, in `apps`.
+fn installed_in(apps: &crate::WorkspaceApps) -> crate::WorkspaceApps {
+    let (_, owner) = owner();
+    apps.installing(
+        APP,
+        Some(crate::state::InstalledApp {
+            release: release_of(PINNED, "1.0.0"),
+            installed_by: hex::encode(owner.user_public_key),
+            installed_at_ns: 0,
+        }),
+    )
+}
+
 /// A copy that keeps no store decides an app's own writes by the apps its host last told it: it
 /// takes in one the app made while installed, and sets the next one aside once the uninstall
 /// reaches it, never refusing it, as it cannot tell whether the app wrote it before.
@@ -1614,39 +1646,14 @@ fn an_apps_own_records_are_its_while_it_is_installed() {
 fn a_copy_takes_an_installed_apps_write_and_sets_one_aside_once_the_uninstall_reaches_it() {
     // An app writes no more than the member whose device runs it may, and only while installed.
     let (mut peer, key, guest) = workspace_with(Role::Editor);
-    let as_app = |peer: &StatePeer, to: &'static str, seq: u64| {
-        let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
-        let heads = doc.get_heads();
-        doc.put(ROOT, "value", to).unwrap();
-        let context = ActionContext {
-            what: Some(edit_value()),
-            ..ActionContext::for_resource("tab:1", KIND, "Test")
-        }
-        .with_invoker(tilo_actions::ActionInvoker::admitted(
-            &tilo_member_types::Acting::by_app(APP),
-        ));
-        doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
-        signed_write_at(&mut doc, &heads, &key, seq)
-    };
-    let (_, owner) = owner();
-    let installed = peer.apps().installing(
-        APP,
-        Some(crate::state::InstalledApp {
-            release: release_of(PINNED, "1.0.0"),
-            installed_by: hex::encode(owner.user_public_key),
-            installed_at_ns: 0,
-        }),
-    );
+    let installed = installed_in(&peer.apps());
     let _read = peer.read_apps(installed.clone(), now());
-    let write = as_app(&peer, "x", 1);
+    let write = app_write(&peer, &key, "x", 1);
     receive(&mut peer, &guest, write).expect("an installed app keeps its own records");
     assert_eq!(value(&peer), "\"x\"");
 
     let _read = peer.read_apps(installed.installing(APP, None), now());
-    let write = as_app(&peer, "y", 2);
+    let write = app_write(&peer, &key, "y", 2);
     let held = peer
         .receive_from(
             TransportOrigin::ServerDelta(guest.device_public_key),
@@ -1656,6 +1663,83 @@ fn a_copy_takes_an_installed_apps_write_and_sets_one_aside_once_the_uninstall_re
         .expect("set aside, not refused");
     assert!(held.deferred, "the uninstall sets the app's write aside");
     assert_eq!(value(&peer), "\"x\"", "and merges nothing of it");
+}
+
+/// A copy whose apps trail the install sets the app's own write aside rather than refusing it,
+/// and takes it in once the apps it reads show the app installed.
+#[test]
+fn an_apps_own_write_waits_for_the_install_a_copy_has_not_read() {
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
+    let write = app_write(&peer, &key, "x", 1);
+    let held = peer
+        .receive_from(
+            TransportOrigin::ServerDelta(guest.device_public_key),
+            write,
+            now(),
+        )
+        .expect("set aside, not refused");
+    assert!(held.deferred, "the copy has not read the install yet");
+    assert_eq!(value(&peer), "\"seed\"");
+    let installed = installed_in(&peer.apps());
+    let _read = peer.read_apps(installed, now());
+    assert_eq!(value(&peer), "\"x\"", "reading the install takes it in");
+}
+
+/// An op names no heads of the apps it was written under, so a copy cannot tell an install it
+/// has not read from an app id the workspace never installed: a writer naming one fills no more
+/// than its share of what waits, the rest is let go, never refused, and asked for again once the
+/// copy reads other apps.
+#[test]
+fn an_app_the_copy_never_read_installed_fills_no_more_than_its_writers_share() {
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
+    let count = u64::try_from(crate::MAX_HELD_FOR_GOVERNANCE_PER_WRITER).unwrap() + 4;
+    let writes: Vec<_> = (1..=count)
+        .map(|seq| app_write(&peer, &key, "x", seq))
+        .collect();
+    let origin = TransportOrigin::ServerDelta(guest.device_public_key);
+    let mut let_go = Vec::new();
+    for write in &writes {
+        let report = peer
+            .receive_from(origin, write.clone(), now())
+            .expect("never refused");
+        assert!(
+            report
+                .dropped
+                .iter()
+                .all(|dropped| !matches!(dropped.reason, crate::DropReason::Refused(_))),
+            "let go to be asked for again, never refused"
+        );
+        let_go.extend(report.dropped.clone());
+    }
+    assert!(!let_go.is_empty(), "past its share a write is let go");
+    let read = peer.read_apps(installed_in(&peer.apps()), now()).unwrap();
+    assert!(
+        read.replay_wanted,
+        "reading other apps asks for what was let go"
+    );
+    assert_eq!(value(&peer), "\"x\"", "what waited is taken in");
+    for dropped in &let_go {
+        let replayed = &writes[usize::try_from(dropped.sequence).unwrap() - 1];
+        let report = peer.receive_from(origin, replayed.clone(), now()).unwrap();
+        assert!(
+            !report.deferred && report.dropped.is_empty(),
+            "applies once replayed"
+        );
+    }
+}
+
+/// Only the app's own writes wait for its install: a member writing the app's records without
+/// the right to is refused, installed or not.
+#[test]
+fn a_members_write_without_the_right_is_refused_whatever_the_apps() {
+    let (mut peer, key, guest) = workspace_with(Role::Viewer);
+    let write = edit_to(&peer, &key, "x", 1);
+    receive(&mut peer, &guest, write).expect_err("a viewer edits nothing");
+    let installed = installed_in(&peer.apps());
+    let _read = peer.read_apps(installed, now());
+    let write = edit_to(&peer, &key, "y", 2);
+    receive(&mut peer, &guest, write).expect_err("installing the app gives the viewer nothing");
+    assert_eq!(value(&peer), "\"seed\"");
 }
 
 /// The test app's surface after a version that took its title away: everything else as before.

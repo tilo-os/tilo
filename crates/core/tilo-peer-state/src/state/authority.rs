@@ -191,6 +191,26 @@ fn allowing<'a>(
     }
 }
 
+/// `allows`, noting in `own` when it refuses the app `app` acting by itself: the right an app has
+/// to its own records is whether the workspace runs it ([`sets_aside_refused`]).
+fn noting_own_refusal<'a>(
+    allows: impl Fn(Option<&tilo_member_types::Acting>, &TreePath, ActionKind) -> bool + 'a,
+    app: &'a str,
+    own: &'a std::cell::Cell<bool>,
+) -> impl Fn(Option<&tilo_member_types::Acting>, &TreePath, ActionKind) -> bool + 'a {
+    move |invoker, node, kind| {
+        let allowed = allows(invoker, node, kind);
+        if !allowed
+            && invoker
+                .and_then(|acting| acting.by.app())
+                .is_some_and(|by| by == app)
+        {
+            own.set(true);
+        }
+        allowed
+    }
+}
+
 /// Who a device is, apart from the workspace's policy: its person, whether
 /// its device is foreign, the delegation it holds, and the one workspace its
 /// person's root confined it to, if any.
@@ -1562,14 +1582,24 @@ impl StatePeer {
         })
     }
 
-    /// Whether `envelope` is a change of an app the workspace ran and runs no more: one its
-    /// policy refuses is set aside, never refused, as whether it was written while the app ran is
-    /// not something a change of its records says, and the apps this copy read may trail the
-    /// workspace's. It is decided again when the workspace runs the app again.
-    fn ran_and_stopped(&self, app_id: &str, envelope: &SignedOp) -> bool {
+    /// Whether a change of `app_id` the policy refused waits for the apps instead
+    /// ([`sets_aside_refused`]): `own_refused` when the app itself was refused its own records.
+    fn refusal_waits(&self, app_id: &str, envelope: &SignedOp, own_refused: bool) -> bool {
         envelope.kind == collab_types::OpKind::Change
-            && self.governance().app_version(app_id).is_none()
-            && self.ran_app(app_id)
+            && sets_aside_refused(
+                own_refused,
+                self.governance().app_version(app_id).is_some(),
+                || self.ran_app(app_id),
+            )
+    }
+
+    /// [`Self::surface_gate`] for a change; anything else is decided as it stands.
+    fn change_gate(&self, app_id: &str, envelope: &SignedOp) -> SurfaceGate {
+        if envelope.kind == collab_types::OpKind::Change {
+            self.surface_gate(app_id, envelope.surface)
+        } else {
+            SurfaceGate::Decide
+        }
     }
 
     /// [`Self::authorize_document`] by the governance this peer holds.
@@ -1594,11 +1624,7 @@ impl StatePeer {
         // the workspace's version, and the same changes then name that version's surface. What
         // the workspace ran is read as the write was written, and only grows: a version going
         // back, or the app being uninstalled, lets in no change naming a surface it never ran.
-        let gate = if envelope.kind == collab_types::OpKind::Change {
-            self.surface_gate(app_id, envelope.surface)
-        } else {
-            SurfaceGate::Decide
-        };
+        let gate = self.change_gate(app_id, envelope);
         if gate == SurfaceGate::SetAside {
             return Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface));
         }
@@ -1637,7 +1663,10 @@ impl StatePeer {
         // but the caller was not: the node and kind the claim was decided at,
         // as the one builder of decision nodes names them.
         let caller_refused = std::cell::RefCell::new(None);
+        // Whether the app itself was refused the right to its own records.
+        let own_refused = std::cell::Cell::new(false);
         let allows = allowing(caller.as_ref(), &member, &cx, &caller_refused);
+        let allows = noting_own_refusal(allows, app_id, &own_refused);
         // A write of a history one of the person's devices imported: what it made naming no one
         // is the person's, as the import step said.
         let imported = self
@@ -1650,9 +1679,8 @@ impl StatePeer {
         } else {
             collab_admission::decide_opened
         };
-        // The invocations the changes keep, and the calls a host made them
-        // for, are checked above as they are read: this decides their grants
-        // and units, once.
+        // The invocations the changes keep, and the calls a host made them for, are checked above
+        // as they are read: this decides their grants and units, once.
         let written = collab_types::WrittenDocument {
             workspace: &self.core.workspace,
             app: app_id,
@@ -1700,7 +1728,7 @@ impl StatePeer {
             Ok(collab_types::Receipt::Hold) => {
                 Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
             }
-            Err(_) if self.ran_and_stopped(app_id, envelope) => {
+            Err(_) if self.refusal_waits(app_id, envelope, own_refused.get()) => {
                 Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
             }
             Err(refusal) => {
@@ -2289,6 +2317,27 @@ pub(crate) fn surface_gate(
             }
         }
     }
+}
+
+/// Whether a change the workspace's policy refused is set aside instead, by what this copy's apps
+/// say of its app: the one place a refusal waits for the apps. While the app is installed a
+/// refusal stands. While it is not, the app's own write (`own_refused`: the app itself was
+/// refused the right to its own records) waits, as this copy's apps may not show its install
+/// yet; so does any change of an app the workspace `ran`, whose write may predate its
+/// uninstall. Reading the apps again decides them once more. Anything else is refused.
+///
+/// `own_refused` is set when any check of the change refuses the app itself, so a change that
+/// also has a part its member had no right to waits too, and is refused once the apps show the
+/// app installed. An op names no heads of the apps it was written under, so a copy cannot tell
+/// an install it has not read from an app that was never installed: what waits is bounded by
+/// its writer's share of the queue ([`crate::MAX_HELD_FOR_GOVERNANCE_PER_WRITER`]), past which
+/// a write is let go and asked for again once this copy reads other apps.
+pub(crate) fn sets_aside_refused(
+    own_refused: bool,
+    installed: bool,
+    ran: impl FnOnce() -> bool,
+) -> bool {
+    !installed && (own_refused || ran())
 }
 
 /// `surfaces`, each surface a change names read together with `running`'s: what both declare.

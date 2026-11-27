@@ -1702,8 +1702,11 @@ impl DirectSync {
             .0
             .replica
             .write(|peer| peer.read_apps(apps, tilo_clock::wall()));
-        if read.is_some() {
+        if let Some(report) = read {
             self.0.changed.send_modify(bump);
+            if report.replay_wanted {
+                self.ask_replay();
+            }
         }
     }
 
