@@ -12,7 +12,7 @@
 //! calls run with, and the person's clock. The engine holds no authority of its own.
 //!
 //! The engines this device ships are the ones whose code an app asks for and no other app maps:
-//! Typst's typesetting, and the ones that follow it.
+//! Typst's typesetting, the Video Editor's decoders and renderer, and the ones that follow them.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -44,6 +44,9 @@ pub const BROWSER_APP: &str = "so.tilo.browser";
 /// The app whose Grayjay link `libtilo_grayjay_engine.so` answers.
 pub const GRAYJAY_APP: &str = "so.tilo.tube";
 
+/// The app whose stills, probes, renders and live plays `libtilo_video_editor_engine.so` answers.
+pub const VIDEO_EDITOR_APP: &str = "so.tilo.video-editor";
+
 /// The app whose setup links, pictures and keys `libtilo_totp_engine.so` answers.
 pub const TOTP_APP: &str = "so.tilo.totp";
 
@@ -66,6 +69,7 @@ fn library_of(app: &str) -> Option<&'static str> {
         GRAYJAY_APP => Some("libtilo_grayjay_engine.so"),
         BROWSER_APP => Some("libtilo_browser_engine.so"),
         TOTP_APP => Some("libtilo_totp_engine.so"),
+        VIDEO_EDITOR_APP => Some("libtilo_video_editor_engine.so"),
         REMOTE_APP => Some("libtilo_remote_engine.so"),
         MESSAGES_APP => Some("libtilo_messaging_engine.so"),
         _ => None,

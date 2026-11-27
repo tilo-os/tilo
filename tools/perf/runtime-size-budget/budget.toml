@@ -31,7 +31,7 @@ architectures = ["x86_64", "aarch64"]
 # a tilolang package. A native app is checked through its own binary; a tilolang
 # app through tilolang-process, the one binary every tilolang app runs, and
 # through the engines its code opens ([engine_users]).
-apps_without_media = ["clocks", "notes", "totp", "weather"]
+apps_without_media = ["calculator", "clocks", "notes", "totp", "weather"]
 
 # What the runtime should cost: at most 150 MB, relocation tables
 # under 1 MB, at most 4 MB of relocation-dirtied memory per app process, and
@@ -110,7 +110,10 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # aarch64 run measures them there. libtilo_remote_engine.so (2869448 bytes),
 # Remote's SSH and VNC clients, was measured on x86_64 at its introduction; its
 # budget is the one that run printed, on both architectures until an aarch64 run
-# measures it there.
+# measures it there. libtilo_video_editor_engine.so, Video Editor's decoders,
+# mixer and renderer (which link GStreamer and GLib, so tilolang-process loads
+# neither at exec), is an estimate on both architectures until the first run
+# prints what to lower it to.
 
 # The apps of apps_without_media that use an engine library
 # (crates/engines/loadable/), by library: a native app links it, so the loader
@@ -157,6 +160,7 @@ symbol_relocations = 6592
 "libtilo_theme_painter_engine.so" = 65536
 "libtilo_totp_engine.so" = 524288
 "libtilo_typst_engine.so" = 34406400
+"libtilo_video_editor_engine.so" = 8388608
 "libtilo_wasm_engine.so" = 65536
 "libtilo_youtube_engine.so" = 4554752
 
@@ -175,5 +179,6 @@ symbol_relocations = 6592
 "libtilo_theme_painter_engine.so" = 131072
 "libtilo_totp_engine.so" = 2097152
 "libtilo_typst_engine.so" = 41418752
+"libtilo_video_editor_engine.so" = 8388608
 "libtilo_wasm_engine.so" = 2621440
 "libtilo_youtube_engine.so" = 4554752

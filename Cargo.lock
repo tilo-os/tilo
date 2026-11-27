@@ -21932,6 +21932,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-video-editor-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "video-editor-engine",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-video-picture"
 version = "0.1.0"
 dependencies = [
@@ -22864,8 +22874,6 @@ dependencies = [
  "tilo-tiles",
  "tilo-ui",
  "tilo-ui-base",
- "tilo-video-edit",
- "tilo-video-picture",
  "tilo-wake",
  "tilo-workspace-search",
  "tilolang",
@@ -24714,6 +24722,21 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "video-editor-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-engine-loader",
+ "tilo-resource",
+ "tilo-ui-base",
+ "tilo-video-edit",
+ "tilo-video-picture",
+ "uuid",
+ "workspace-hack",
+]
 
 [[package]]
 name = "vte"

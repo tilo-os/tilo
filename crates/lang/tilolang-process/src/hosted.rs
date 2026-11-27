@@ -885,7 +885,6 @@ impl HostPlatform {
             any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
         ))]
         {
-            crate::video_engine::register(self.store());
             crate::print_centre_engine::register(self.store());
         }
         #[cfg(feature = "app-launch")]

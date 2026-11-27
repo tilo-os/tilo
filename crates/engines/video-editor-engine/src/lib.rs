@@ -1,10 +1,16 @@
-//! The Video Editor's engine, as a package reaches it: `engine.call` and `engine.start` answered
-//! for `so.tilo.video-editor` by the editing and picture engines on this device.
+//! The Video Editor's engine, as a package reaches it: `engine.call`, `engine.start` and
+//! `engine.stream` answered for `so.tilo.video-editor` by the editing and picture engines on this
+//! device.
 //!
 //! The app runs sandboxed with no decoder and no renderer, so it asks by name. A request carries
 //! the cut as JSON the app wrote; the answer is JSON the app reads back into its own records. A
 //! still, a waveform and a probe answer now; a render starts as a job whose progress is asked by
-//! its id and which can be stopped.
+//! its id and which can be stopped; a live play is a stream whose frames reach the app's window.
+//!
+//! The decoders and the renderer link `GStreamer`, so none of this is code of the process every
+//! tilolang app runs: `libtilo_video_editor_engine.so` (crates/engines/loadable/video-editor)
+//! answers with [`API`], opened the first time the app asks. What a call reads and keeps goes
+//! through the [`Device`] it is handed: the app's content store, under the app's own grants.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,10 +20,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Deserialize;
 
 use serde_json::json;
-use tilo_content::ContentStore;
+use tilo_engine_loader::{Device, EngineApi, Frames, JobOp, JobSink, Needs};
 use tilo_resource::{Keyed, Ordered};
-use tilolang_engine::{self as engine, JobOp, JobSink, Needs, Provider, Running, State};
-use tilolang_engine::{Frame as LiveFrame, Push};
 use video_edit::model;
 use video_edit::param::{ClipAnimation, Interp, Param};
 use video_picture::export::{Container, ExportSettings, FrameRate, Resolution};
@@ -29,69 +33,181 @@ pub const APP: &str = "so.tilo.video-editor";
 /// file as it ends.
 const JOBS: &[JobOp] = &[JobOp::new("render", Needs::APP_STATE)];
 
-/// Video Editor's engine, keeping what it makes in `store`.
-struct Engine {
-    store: ContentStore,
+/// The Video Editor's engine, as its library exports it.
+pub static API: EngineApi = EngineApi {
+    app: APP,
+    jobs,
+    call,
+    start,
+    status,
+    stream,
+    cancel,
+};
+
+fn jobs() -> &'static [JobOp] {
+    JOBS
 }
 
-/// Register Video Editor's engine over the app's content store `store`.
-pub fn register(store: &ContentStore) {
-    engine::register(
-        APP,
-        Arc::new(Engine {
-            store: store.clone(),
-        }),
-    );
-}
-
-impl Provider for Engine {
-    fn jobs(&self) -> &'static [JobOp] {
-        JOBS
-    }
-
-    fn call(&self, op: &str, input: &str) -> Result<String, String> {
-        let store = &self.store;
-        match op {
-            "probe" => probe(store, input),
-            "still" => still(store, input),
-            "thumb" => thumb(store, input),
-            "waveform" => waveform(store, input),
-            "sample" => sample(store, input),
-            "mix" => mix(store, input),
-            "scrub" => scrub(store, input),
-            "cut" => recut(store, input),
-            other => Err(format!("`{other}` is no op this device runs for {APP}")),
-        }
-    }
-
-    fn start(&self, job: &str, op: &str, input: &str, moved: JobSink) -> Result<(), String> {
-        match op {
-            "render" => render(&self.store, job, input, moved),
-            other => Err(format!("`{other}` is no op this device runs for {APP}")),
-        }
-    }
-
-    fn stream(&self, op: &str, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
-        match op {
-            "play" => play(&self.store, input, push),
-            other => Err(format!("`{other}` is no stream this device runs for {APP}")),
-        }
-    }
-
-    fn cancel(&self, job: &str) -> bool {
-        let Some((render, _)) = running().get(job) else {
-            return stop_play(job);
-        };
-        render.store(true, Ordering::Relaxed);
-        running().end(job, State::Cancelled, json!({ "url": "", "why": "" }));
-        true
+/// One `engine.call`: what answers now.
+///
+/// # Errors
+///
+/// The op is unknown, an input does not read, or the work cannot be done.
+fn call(device: &Device, op: &str, input: &str) -> Result<String, String> {
+    match op {
+        "probe" => probe(device, input),
+        "still" => still(device, input),
+        "thumb" => thumb(device, input),
+        "waveform" => waveform(device, input),
+        "sample" => sample(device, input),
+        "mix" => mix(device, input),
+        "scrub" => scrub(device, input),
+        "cut" => recut(device, input),
+        other => Err(format!("`{other}` is no op this device runs for {APP}")),
     }
 }
 
-/// The renders running now, each by what stops it.
-fn running() -> &'static Running<AtomicBool> {
-    static RUNNING: OnceLock<Running<AtomicBool>> = OnceLock::new();
-    RUNNING.get_or_init(Running::default)
+/// One `engine.start`: a render, run as the job the host names.
+///
+/// # Errors
+///
+/// An op this engine does not start, or the input does not read.
+fn start(device: &Device, job: &str, op: &str, input: &str, moved: &JobSink) -> Result<(), String> {
+    match op {
+        "render" => render(*device, job, input, *moved),
+        other => Err(format!("`{other}` is no op this device runs for {APP}")),
+    }
+}
+
+/// One `engine.stream`: the cut played live, its frames handed to the window as they are drawn.
+///
+/// # Errors
+///
+/// An op that is no stream, or a cut that cannot be played.
+fn stream(device: &Device, op: &str, input: &str, frames: &Frames) -> Result<String, String> {
+    match op {
+        "play" => play(device, input, *frames),
+        other => Err(format!("`{other}` is no stream this device runs for {APP}")),
+    }
+}
+
+/// How far a render or a live play has got, as JSON.
+///
+/// # Errors
+///
+/// No such job runs on this device.
+fn status(_device: &Device, job: &str) -> Result<String, String> {
+    if let Some(render) = renders().get(job) {
+        return Ok(json!({
+            "state": "running",
+            "done": render.done.load(Ordering::Relaxed),
+            "total": render.total.load(Ordering::Relaxed),
+            "url": "",
+            "why": "",
+        })
+        .to_string());
+    }
+    let play = plays()
+        .lock()
+        .map_err(|_| "the play table is unreadable".to_owned())?
+        .get(job)
+        .cloned();
+    let Some(play) = play else {
+        return Err(format!("no job `{job}` runs on this device"));
+    };
+    let error = play.error.lock().ok().and_then(|error| error.clone());
+    Ok(json!({
+        "state": if error.is_some() { "failed" } else { "running" },
+        "done": play.done.load(Ordering::Relaxed),
+        "total": play.total.load(Ordering::Relaxed),
+        "why": error.unwrap_or_default(),
+    })
+    .to_string())
+}
+
+/// Stop a render or a live play: false when neither runs by that name.
+fn cancel(_device: &Device, job: &str) -> bool {
+    let Some(render) = renders().take(job) else {
+        return stop_play(job);
+    };
+    render.cancel.store(true, Ordering::Relaxed);
+    render.tell("cancelled", &json!({ "url": "", "why": "" }));
+    true
+}
+
+/// One render running now: what stops it, how far it has got, and where it tells its moves.
+struct Render {
+    cancel: Arc<AtomicBool>,
+    done: AtomicU64,
+    total: AtomicU64,
+    moved: JobSink,
+}
+
+impl Render {
+    fn tell(&self, state: &str, detail: &serde_json::Value) {
+        self.moved.moved(state, &detail.to_string());
+    }
+}
+
+/// The renders running now, by their job: a render's end is told once, by whoever takes it out.
+#[derive(Default)]
+struct Renders(Mutex<BTreeMap<String, Arc<Render>>>);
+
+impl Renders {
+    fn held(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Arc<Render>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn keep(&self, job: &str, render: Arc<Render>) {
+        self.held().insert(job.to_owned(), render);
+    }
+
+    fn get(&self, job: &str) -> Option<Arc<Render>> {
+        self.held().get(job).cloned()
+    }
+
+    /// The render `job`, no longer kept: `None` once its end was told.
+    fn take(&self, job: &str) -> Option<Arc<Render>> {
+        self.held().remove(job)
+    }
+}
+
+fn renders() -> &'static Renders {
+    static RENDERS: OnceLock<Renders> = OnceLock::new();
+    RENDERS.get_or_init(Renders::default)
+}
+
+/// Proves this engine runs against the runtime it is built with: a cut with a clip and a marker
+/// reads into the editing model, and its mix, which holds no sound, is measured with no decoder.
+///
+/// # Errors
+///
+/// What did not read or answer.
+pub fn self_check() -> Result<String, String> {
+    let cut = json!({
+        "name": "Check",
+        "tracks": [json!({ "id": "t1", "name": "V1", "kind": "video" }).to_string()],
+        "clips": [json!({ "id": "c1", "track": "t1", "media": "m1", "out_point": 2.0 }).to_string()],
+        "markers": [json!({ "id": "k1", "t": 1.0, "name": "Beat" }).to_string()],
+    })
+    .to_string();
+    let project = reads::<Shot>(&cut)?.into_project(None)?;
+    if project.clips.len() != 1 || project.markers.len() != 1 {
+        return Err("the cut did not read into the model".to_owned());
+    }
+    let answer = call(
+        &Device::none(),
+        "mix",
+        &json!({ "project": cut }).to_string(),
+    )?;
+    let mix: serde_json::Value =
+        serde_json::from_str(&answer).map_err(|error| error.to_string())?;
+    if mix.get("over_db").and_then(serde_json::Value::as_f64) != Some(0.0) {
+        return Err(format!("a cut with no sound measured {answer}"));
+    }
+    Ok("read a cut and measured its mix".to_owned())
 }
 
 /// The media type of a render written to `path`.
@@ -104,7 +220,7 @@ fn media_of(path: &Path) -> &'static str {
 }
 
 /// The still the app asked for at `at`, kept as a picture in the content store.
-fn still(store: &ContentStore, input: &str) -> Result<String, String> {
+fn still(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         project: String,
@@ -113,20 +229,20 @@ fn still(store: &ContentStore, input: &str) -> Result<String, String> {
         height: u32,
     }
     let ask: Ask = reads(input)?;
-    let project = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(device))?;
     let settings = video_picture::render::AgentFrameSettings {
         at: ask.at,
         width: ask.width.clamp(16, 4096),
         height: ask.height.clamp(16, 4096),
     };
     let png = video_picture::render::render_still(&project, &settings)?;
-    let kept = crate::files::keep(store, "frame.png", "image/png", &png)?;
+    let kept = device.keep_content("frame.png", "image/png", &png)?;
     Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
 }
 
 /// One source's picture at `at`, kept as a picture in the content store: a bin swatch or a
 /// filmstrip frame.
-fn thumb(store: &ContentStore, input: &str) -> Result<String, String> {
+fn thumb(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         url: String,
@@ -137,7 +253,7 @@ fn thumb(store: &ContentStore, input: &str) -> Result<String, String> {
     let ask: Ask = reads(input)?;
     let mut project = model::Project::new("thumb");
     project.set_frame_size(ask.width.clamp(16, 4096), ask.height.clamp(16, 4096));
-    let path = media_path(store, &ask.url)?;
+    let path = media_path(device, &ask.url)?;
     let probed = video_edit::probe::probe_file(&path).map_err(|e| format!("{e:?}"))?;
     let media = model::MediaItem {
         id: uuid::Uuid::from_u128(1),
@@ -180,18 +296,18 @@ fn thumb(store: &ContentStore, input: &str) -> Result<String, String> {
         height: ask.height.clamp(16, 4096),
     };
     let png = video_picture::render::render_still(&project, &settings)?;
-    let kept = crate::files::keep(store, "thumb.png", "image/png", &png)?;
+    let kept = device.keep_content("thumb.png", "image/png", &png)?;
     Ok(serde_json::json!({ "url": format!("tilo-blob://{}", kept.hash) }).to_string())
 }
 
 /// What the file at `url` really is.
-fn probe(store: &ContentStore, input: &str) -> Result<String, String> {
+fn probe(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         url: String,
     }
     let ask: Ask = reads(input)?;
-    let path = media_path(store, &ask.url)?;
+    let path = media_path(device, &ask.url)?;
     let probed = video_edit::probe::probe_file(&path).map_err(|e| format!("{e:?}"))?;
     Ok(serde_json::json!({
         "kind": probed.kind.as_str(),
@@ -206,14 +322,14 @@ fn probe(store: &ContentStore, input: &str) -> Result<String, String> {
 }
 
 /// The source's peaks, as fractions of full scale.
-fn waveform(store: &ContentStore, input: &str) -> Result<String, String> {
+fn waveform(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         url: String,
         buckets: Option<usize>,
     }
     let ask: Ask = reads(input)?;
-    let path = media_path(store, &ask.url)?;
+    let path = media_path(device, &ask.url)?;
     let buckets = ask.buckets.unwrap_or(512).clamp(16, 4096);
     let peaks = video_edit::waveform::peaks_from_file(&path, buckets)
         .ok_or_else(|| "no samples could be read from that source".to_owned())?;
@@ -226,13 +342,13 @@ fn waveform(store: &ContentStore, input: &str) -> Result<String, String> {
 /// A mix is a sum, so the report is about the sum, not one track: two tracks at two-thirds each
 /// are over without either being over alone. `tracks` names the ones that were over on their
 /// own, which is what a person looks at first.
-fn mix(store: &ContentStore, input: &str) -> Result<String, String> {
+fn mix(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         project: String,
     }
     let ask: Ask = reads(input)?;
-    let cut = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
+    let cut = reads::<Shot>(&ask.project)?.into_project(Some(device))?;
     let (over_db, overs, hot) = measure_mix(&cut, mix_sources());
     Ok(serde_json::json!({
         "over_db": over_db,
@@ -300,7 +416,7 @@ fn measure_blocks(
 }
 
 /// The colour of the cut's frame at (x, y), a fraction of its box each.
-fn sample(store: &ContentStore, input: &str) -> Result<String, String> {
+fn sample(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         project: String,
@@ -309,7 +425,7 @@ fn sample(store: &ContentStore, input: &str) -> Result<String, String> {
         y: f64,
     }
     let ask: Ask = reads(input)?;
-    let project = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(device))?;
     let (width, height) = (480_u32, 270_u32);
     let mut compositor = video_picture::gpu::HeadlessCompositor::new()
         .map_err(|error| format!("this device cannot draw the frame: {error}"))?;
@@ -340,8 +456,8 @@ fn axis_index(fraction: f64, extent: u32) -> usize {
 }
 
 /// Start a cut's render as the job `job`: its frames done of how many are told as it goes, and
-/// the finished file is kept in `store` as it ends.
-fn render(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Result<(), String> {
+/// the finished file is kept through `device`, which lasts until the job tells that it ended.
+fn render(device: Device, job: &str, input: &str, moved: JobSink) -> Result<(), String> {
     #[derive(Deserialize)]
     struct Ask {
         project: String,
@@ -352,7 +468,7 @@ fn render(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Resul
         name: Option<String>,
     }
     let ask: Ask = reads(input)?;
-    let project = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(&device))?;
     let resolution = match ask.resolution.as_deref() {
         Some("720") => Resolution::P720,
         Some("2160" | "4k") => Resolution::P2160,
@@ -381,60 +497,75 @@ fn render(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Resul
     let id = uuid::Uuid::new_v4().simple().to_string();
     let name = ask.name.unwrap_or_else(|| format!("cut-{id}.{extension}"));
     let path = scratch_dir().join(format!("render-{id}.{extension}"));
-    let cancel = Arc::new(AtomicBool::new(false));
-    moved.moved(
-        State::Running,
-        json!({ "done": 0, "total": 0, "url": "", "why": "" }),
+    let render = Arc::new(Render {
+        cancel: Arc::new(AtomicBool::new(false)),
+        done: AtomicU64::new(0),
+        total: AtomicU64::new(0),
+        moved,
+    });
+    render.tell(
+        "running",
+        &json!({ "done": 0, "total": 0, "url": "", "why": "" }),
     );
-    running().keep(job, Arc::clone(&cancel), moved.clone());
-    let (named, store) = (job.to_owned(), store.clone());
+    renders().keep(job, Arc::clone(&render));
+    let named = job.to_owned();
     let spawned = std::thread::Builder::new()
         .name("video-editor-render".to_owned())
         .spawn(move || {
-            let total = Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let counted = Arc::clone(&total);
+            let counted = Arc::clone(&render);
             let outcome = video_picture::export::render_to(
                 &project,
                 settings,
                 &path,
-                cancel,
+                Arc::clone(&render.cancel),
                 move |done, of| {
-                    counted.store(of, Ordering::Relaxed);
-                    moved.moved(
-                        State::Running,
-                        json!({ "done": done, "total": of, "url": "", "why": "" }),
+                    counted.done.store(done, Ordering::Relaxed);
+                    counted.total.store(of, Ordering::Relaxed);
+                    counted.tell(
+                        "running",
+                        &json!({ "done": done, "total": of, "url": "", "why": "" }),
                     );
                 },
             );
-            let total = total.load(Ordering::Relaxed);
-            let kept = outcome.and_then(|_| {
-                let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-                crate::files::keep(&store, &name, media_of(&path), &bytes)
-            });
+            let kept = outcome.and_then(|_| kept_render(&device, &render, &path, &name));
             let _ = std::fs::remove_file(&path);
+            // A render stopped while it ran told its end already.
+            let Some(render) = renders().take(&named) else {
+                return;
+            };
+            let total = render.total.load(Ordering::Relaxed);
             match kept {
-                Ok(kept) => running().end(
-                    &named,
-                    State::Done,
-                    json!({
-                        "done": total,
-                        "total": total,
-                        "url": format!("tilo-blob://{}", kept.hash),
-                        "why": "",
-                    }),
+                Ok(url) => render.tell(
+                    "done",
+                    &json!({ "done": total, "total": total, "url": url, "why": "" }),
                 ),
-                Err(error) => running().end(
-                    &named,
-                    State::Failed,
-                    json!({ "done": 0, "total": total, "url": "", "why": error }),
+                Err(error) => render.tell(
+                    "failed",
+                    &json!({ "done": 0, "total": total, "url": "", "why": error }),
                 ),
             }
         });
     if spawned.is_err() {
-        running().forget(job);
+        renders().take(job);
         return Err("could not start the render".to_owned());
     }
     Ok(())
+}
+
+/// The file a finished render wrote at `path`, kept as `name` through `device`: its address.
+/// A render stopped while it ran keeps nothing, since the device it kept through is no longer its
+/// own.
+fn kept_render(
+    device: &Device,
+    render: &Render,
+    path: &Path,
+    name: &str,
+) -> Result<String, String> {
+    if render.cancel.load(Ordering::Relaxed) {
+        return Err("the render was stopped".to_owned());
+    }
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    Ok(device.keep_content(name, media_of(path), &bytes)?.url())
 }
 
 /// One live play running now: the cut it shows, and what stops it.
@@ -491,7 +622,7 @@ struct Playing {
 ///
 /// The frames are the window's, pushed as they are drawn and shown by `tilo-live://<job>`; the
 /// sound is the device's, mixed ahead of the playhead, so an edit is heard almost at once.
-fn play(store: &ContentStore, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+fn play(device: &Device, input: &str, frames: Frames) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         /// The cut, as `json.encode(shot(p))` writes it.
@@ -511,7 +642,7 @@ fn play(store: &ContentStore, input: &str, push: Arc<dyn Push>) -> Result<String
         sound: bool,
     }
     let ask: Ask = reads(input)?;
-    let project = reads::<Shot>(&ask.project)?.into_project(Some(store))?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(device))?;
     let rate = if ask.rate.abs() < 1e-9 {
         1.0
     } else {
@@ -552,7 +683,7 @@ fn play(store: &ContentStore, input: &str, push: Arc<dyn Push>) -> Result<String
     let spawned = std::thread::Builder::new()
         .name("video-editor-play".to_owned())
         .spawn(move || {
-            let outcome = run_play(&playing, &worker, &push, &slot);
+            let outcome = run_play(&playing, &worker, &frames, &slot);
             if let Err(error) = outcome
                 && let Ok(mut slot) = worker.error.lock()
             {
@@ -573,12 +704,7 @@ fn play(store: &ContentStore, input: &str, push: Arc<dyn Push>) -> Result<String
 ///
 /// The cut is read from the job each frame, so an edit made while it plays is shown and heard
 /// from the next frame on.
-fn run_play(
-    playing: &Playing,
-    worker: &Play,
-    push: &Arc<dyn Push>,
-    slot: &str,
-) -> Result<f64, String> {
+fn run_play(playing: &Playing, worker: &Play, push: &Frames, slot: &str) -> Result<f64, String> {
     let Playing {
         from,
         rate,
@@ -642,13 +768,7 @@ fn run_play(
         reached = now;
         let rgba = compositor.frame(&cut, now, width, height, &mut sources);
         generation = generation.wrapping_add(1);
-        push.frame(LiveFrame {
-            slot: slot.to_owned(),
-            generation,
-            width,
-            height,
-            pixels: Arc::new(rgba),
-        });
+        push.frame(slot, generation, width, height, &rgba);
         if let Some(monitor) = monitor.as_mut() {
             // The device's monitor keeps its own clock from the samples it played, so it is
             // started once and let run, and brought back to the playhead only when the two
@@ -729,7 +849,7 @@ fn swapped(worker: &Play) -> Option<Arc<model::Project>> {
 
 /// The cut a live play shows, replaced by an edit: what makes an edit seen as it is made rather
 /// than at the next play.
-fn recut(store: &ContentStore, input: &str) -> Result<String, String> {
+fn recut(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         /// The live play to change.
@@ -738,7 +858,7 @@ fn recut(store: &ContentStore, input: &str) -> Result<String, String> {
         project: String,
     }
     let ask: Ask = reads(input)?;
-    let cut = Arc::new(reads::<Shot>(&ask.project)?.into_project(Some(store))?);
+    let cut = Arc::new(reads::<Shot>(&ask.project)?.into_project(Some(device))?);
     let state = plays()
         .lock()
         .map_err(|_| "the play table is unreadable".to_owned())?
@@ -775,7 +895,7 @@ fn scrubber() -> &'static Mutex<Option<Scrubbing>> {
 }
 
 /// A short piece of the cut's sound at `at`: what dragging the playhead sounds like.
-fn scrub(store: &ContentStore, input: &str) -> Result<String, String> {
+fn scrub(device: &Device, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Ask {
         /// The cut, as `json.encode(shot(p))` writes it.
@@ -786,7 +906,7 @@ fn scrub(store: &ContentStore, input: &str) -> Result<String, String> {
         seconds: f64,
     }
     let ask: Ask = reads(input)?;
-    let project = Arc::new(reads::<Shot>(&ask.project)?.into_project(Some(store))?);
+    let project = Arc::new(reads::<Shot>(&ask.project)?.into_project(Some(device))?);
     let asked = ScrubAsk {
         project,
         at: ask.at.max(0.0),
@@ -882,7 +1002,7 @@ fn reads<T: for<'de> Deserialize<'de>>(input: &str) -> Result<T, String> {
 
 /// A source's bytes as a file this device can decode: what a `tilo-blob://` address names,
 /// laid out once, or a path already here.
-fn media_path(store: &ContentStore, url: &str) -> Result<PathBuf, String> {
+fn media_path(device: &Device, url: &str) -> Result<PathBuf, String> {
     let hash = url.strip_prefix("tilo-blob://");
     let Some(hash) = hash else {
         let path = Path::new(url);
@@ -896,8 +1016,9 @@ fn media_path(store: &ContentStore, url: &str) -> Result<PathBuf, String> {
     if file.exists() {
         return Ok(file);
     }
-    let bytes = crate::files::read(store, hash)
-        .ok_or_else(|| "that source's bytes are not on this device yet".to_owned())?;
+    let bytes = device
+        .read(url)
+        .map_err(|_| "that source's bytes are not on this device yet".to_owned())?;
     std::fs::write(&file, bytes)
         .map_err(|error| format!("the source cannot be laid out: {error}"))?;
     Ok(file)
@@ -1254,7 +1375,7 @@ fn effect_of(name: &str) -> Option<model::EffectKind> {
 
 impl Shot {
     /// The model this cut is, with every source laid out where this device can decode it.
-    fn into_project(self, store: Option<&ContentStore>) -> Result<model::Project, String> {
+    fn into_project(self, device: Option<&Device>) -> Result<model::Project, String> {
         let mut project = model::Project::new(&self.name);
         project.set_frame_size(self.width, self.height);
         project.fps = self.fps.clamp(model::MIN_FPS, model::MAX_FPS);
@@ -1262,7 +1383,7 @@ impl Shot {
         project.mark_out = (self.mark_out >= 0.0).then_some(self.mark_out);
         for media in self.media {
             let media: ShotMedia = reads(&media)?;
-            project.media.push(media_item(media, store));
+            project.media.push(media_item(media, device));
         }
         for track in self.tracks {
             let track: ShotTrack = reads(&track)?;
@@ -1283,9 +1404,9 @@ impl Shot {
 /// The media `media` names, laid out where this device can decode it: the content store's bytes
 /// laid out, or a path that is already here. An address this device cannot read stays as the app
 /// wrote it, which the picture draws from the source's own fill.
-fn media_item(media: ShotMedia, store: Option<&ContentStore>) -> model::MediaItem {
-    let path = store
-        .and_then(|store| media_path(store, &media.path).ok())
+fn media_item(media: ShotMedia, device: Option<&Device>) -> model::MediaItem {
+    let path = device
+        .and_then(|device| media_path(device, &media.path).ok())
         .map_or_else(
             || media.path.clone(),
             |at| at.to_string_lossy().into_owned(),
@@ -1530,21 +1651,46 @@ mod tests {
         states: Mutex<Vec<String>>,
     }
 
-    impl Push for Recording {
-        fn frame(&self, frame: LiveFrame) {
-            let want = usize::try_from(frame.width)
-                .unwrap_or(0)
-                .saturating_mul(usize::try_from(frame.height).unwrap_or(0))
-                .saturating_mul(4);
-            assert_eq!(frame.pixels.len(), want, "a frame is its whole picture");
-            self.frames
-                .lock()
-                .expect("the recorder")
-                .push(frame.generation);
+    impl Recording {
+        /// The frames a play hands the window, told to this recording.
+        fn frames(self: &Arc<Self>) -> Frames {
+            Frames::new(
+                Arc::as_ptr(self).cast_mut().cast::<std::ffi::c_void>(),
+                Self::frame,
+                Self::state,
+            )
         }
 
-        fn state(&self, _slot: &str, state: &str) {
-            self.states
+        /// The recording a callback's context names.
+        fn behind<'a>(context: *mut std::ffi::c_void) -> &'a Self {
+            // SAFETY: the context is the test's `Recording`, which the test holds until the play
+            // it was handed to returns.
+            unsafe { &*context.cast::<Self>() }
+        }
+
+        fn frame(
+            context: *mut std::ffi::c_void,
+            _slot: &str,
+            generation: u64,
+            width: u32,
+            height: u32,
+            pixels: &[u8],
+        ) {
+            let want = usize::try_from(width)
+                .unwrap_or(0)
+                .saturating_mul(usize::try_from(height).unwrap_or(0))
+                .saturating_mul(4);
+            assert_eq!(pixels.len(), want, "a frame is its whole picture");
+            Self::behind(context)
+                .frames
+                .lock()
+                .expect("the recorder")
+                .push(generation);
+        }
+
+        fn state(context: *mut std::ffi::c_void, _slot: &str, state: &str) {
+            Self::behind(context)
+                .states
                 .lock()
                 .expect("the recorder")
                 .push(state.to_owned());
@@ -1603,7 +1749,7 @@ mod tests {
     fn a_live_play_draws_the_cut_as_it_goes_and_says_where_it_has_got() {
         let job = playing(cut(1.5));
         let heard = Arc::new(Recording::default());
-        let push: Arc<dyn Push> = Arc::clone(&heard) as Arc<dyn Push>;
+        let push = heard.frames();
         let playing = Playing {
             from: 0.0,
             rate: 1.0,

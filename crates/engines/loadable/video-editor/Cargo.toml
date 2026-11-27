@@ -1,0 +1,50 @@
+[package]
+name = "tilo-video-editor-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Video Editor's device work as a loadable engine library beside the shared runtime: libtilo_video_editor_engine.so, shipped in the runtime bundle and opened the first time the app asks for a still, a probe, a render or a live play."
+
+# A runtime engine: code one app needs that no other app should map. The
+# editor's decoders and renderer link GStreamer and GLib, which the process
+# every tilolang app runs must not load at exec. It is a Rust dylib chained on
+# libruntime_dylib.so, built in the same Cargo graph as the runtime and the
+# apps (os/scripts/build-thin-apps.sh), shipped under the runtime bundle's
+# lib/, and opened through tilo-engine-loader the first time the app calls it.
+#
+# Everything sits behind `thin`, which only that build enables: a Rust dylib
+# that links another Rust dylib needs `-C prefer-dynamic`, which only
+# tools/ci/rustc-thin-app-wrapper.sh gives it. Any other build of this crate is
+# an empty library.
+[lib]
+name = "tilo_video_editor_engine"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+
+# Built with every runtime, whichever apps a release selects: build-thin-apps.sh
+# runs it to prove the engine loads and runs against the runtime it ships with.
+[[bin]]
+name = "tilo-video-editor-engine-check"
+path = "src/check.rs"
+required-features = ["thin"]
+
+[features]
+thin = [
+    "dep:runtime-dylib",
+    "dep:video-editor-engine",
+    "dep:workspace-hack",
+]
+
+[dependencies]
+runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
+# The editor's device work: the cut read, drawn, mixed, rendered and played.
+video-editor-engine = { version = "0.1.0", path = "../../video-editor-engine", optional = true }
+# The one way an engine library is declared and opened.
+tilo-engine-loader = { version = "0.1.0", path = "../../../core/engine-loader" }
+# Optional like everything else: an empty build must not link the hack's whole
+# dependency set into a shared object.
+workspace-hack = { version = "0.1", optional = true }
+
+[lints]
+workspace = true

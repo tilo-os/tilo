@@ -247,6 +247,7 @@ members = [
     "crates/engines/video-edit",
     "crates/engines/store-engine",
     "crates/engines/video-picture",
+    "crates/engines/video-editor-engine",
     "crates/engines/wet-media",
 
     # Packaging
@@ -389,6 +390,7 @@ members = [
     "crates/engines/loadable/theme-painter",
     "crates/engines/loadable/totp",
     "crates/engines/loadable/typst",
+    "crates/engines/loadable/video-editor",
     "crates/engines/loadable/wasm",
     "crates/engines/loadable/youtube",
     "crates/core/runtime-fs",

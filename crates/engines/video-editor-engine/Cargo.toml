@@ -1,0 +1,26 @@
+[package]
+name = "video-editor-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Video Editor's device work: a cut's stills, waveforms, probes, mix checks, renders and live play, answered as an app engine"
+
+[dependencies]
+# The one shape an app's engine answers in, and the device it reads and keeps through.
+tilo-engine-loader = { version = "0.1.0", path = "../../core/engine-loader" }
+# The cut's model, its sound mixed and measured, and its sources probed and decoded.
+video-edit = { package = "tilo-video-edit", path = "../video-edit", default-features = false }
+# The cut's pictures: a still, a live frame and a render, drawn and encoded through GStreamer.
+video-picture = { package = "tilo-video-picture", path = "../video-picture", default-features = false, features = ["decode", "gst"] }
+# A cut's effects and markers, in the collections the model keeps them in.
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+# Counts and seconds converted without a lossy cast.
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
