@@ -171,7 +171,7 @@ mod tests {
     use std::sync::Mutex;
 
     use serde::Deserialize;
-    use tilo_action_line::serve_lines;
+    use tilo_action_line_serve::serve_lines;
     use tilo_actions::ActionOutput;
     use tilo_actions::remote::{
         ActionProvider, CataloguePage, CatalogueQuery, HostedContentPuts, InvocationReceipt,

@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value as Json, json};
-use tilo_action_line::{LineClient, serve_lines_with};
+use tilo_action_line::LineClient;
+use tilo_action_line_serve::serve_lines_with;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, HostedContentPuts,
@@ -181,10 +182,10 @@ fn supervisor(dir: &Path) -> PathBuf {
 fn line_to(control: &'static ControlLine) -> LineClient {
     let (app, daemon) = UnixStream::pair().unwrap();
     let writer = Mutex::new(daemon.try_clone().unwrap());
-    let out: tilo_action_line::shells::Out = Arc::new(move |line: String| {
+    let out: tilo_action_line_serve::shells::Out = Arc::new(move |line: String| {
         let _ = writeln!(writer.lock().unwrap(), "{line}");
     });
-    let shells = tilo_action_line::shells::AppShells::new(
+    let shells = tilo_action_line_serve::shells::AppShells::new(
         "",
         Ok(()),
         Arc::new(|| Ok(())),

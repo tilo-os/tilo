@@ -1,7 +1,7 @@
 //! Endpoints, and the queue between them and the app.
 //!
 //! Each endpoint reads one line at a time: a frame of the action wire
-//! ([`remote::RemoteActionFrame`]), answered through [`tilo_action_line::answer_line`] with this
+//! ([`remote::RemoteActionFrame`]), answered through [`tilo_action_line_serve::answer_line`] with this
 //! server as the [`ActionProvider`], or `{"op":"state_dump"}`, answered `{"state": ..}`: the
 //! framing a session's control socket uses. Listener threads never touch app state. What a
 //! line asks is queued as one [`Asked`], the app is woken (on the live medium: a winit
@@ -237,7 +237,7 @@ impl ConsoleServer {
             }
         };
         match request.get("op").and_then(Value::as_str) {
-            None if request.get("version").is_some() => tilo_action_line::answer_line(
+            None if request.get("version").is_some() => tilo_action_line_serve::answer_line(
                 self,
                 &Caller::local_app(self.app),
                 line.as_bytes(),

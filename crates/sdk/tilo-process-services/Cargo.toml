@@ -77,6 +77,10 @@ tilo-media = { version = "0.1.0", path = "../../engines/tilo-media", optional = 
 # App-scoped secrets, with each target's store.
 tilo-secrets.workspace = true
 
+[dev-dependencies]
+# The daemon's side of an app's own connection, which the vault's tests answer on.
+tilo-action-line-serve = { path = "../../core/action-line-serve" }
+
 [target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
 # MPRIS needs a Unix session bus; p2p supports hermetic tests.
 zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }

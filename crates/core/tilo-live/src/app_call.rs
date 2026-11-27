@@ -32,7 +32,8 @@ use crate::presence::{BridgedMember, Call, LiveCall};
 use crate::speaker::Speaker;
 use crate::voice::{FRAME_SAMPLES, SAMPLE_RATE, VoiceObject};
 use collab_types::presence::{Bridged, CallPresence};
-use tilo_action_line::{CallLanes, Take, frame_line};
+use tilo_action_line::frame_line;
+use tilo_action_line_serve::{CallLanes, Take};
 use tilo_actions::remote::call::{
     BridgedCall as WireBridgedCall, CallReport as SaidReport, CallStatus, MAX_CALL_AUDIO_BYTES,
 };

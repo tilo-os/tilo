@@ -18,7 +18,8 @@ use tilo_actions::remote::shell::{
 };
 use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
 
-use super::{CallLanes, Take, frame_line};
+use crate::{CallLanes, Take};
+use tilo_action_line::frame_line;
 
 /// How many shells one app's connection keeps open at once.
 const MAX_SHELLS: usize = 8;

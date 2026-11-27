@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use tilo_lock::MutexRecover as _;
 
-use super::{LOOK_SLACK, answer_whenever, frame_line, line_refusal};
+use crate::{LOOK_SLACK, answer_whenever};
 use tilo_action_calls::serve;
+use tilo_action_line::{frame_line, line_refusal};
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::refuse;
 use tilo_actions::remote::{
@@ -519,10 +520,10 @@ fn store_line(correlation: u64, result: Result<serde_json::Value, ActionCallErro
 #[cfg(unix)]
 mod tests {
     use super::*;
-    use crate::LineClient;
     use std::collections::HashMap;
     use std::io::BufReader;
     use std::os::unix::net::UnixStream;
+    use tilo_action_line::LineClient;
     use tilo_actions::api::ActionAddress;
     use tilo_actions::outcome::{ActionOutput, InvocationId};
     use tilo_actions::remote::TestProvider;

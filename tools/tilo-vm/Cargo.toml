@@ -52,6 +52,7 @@ zeroize.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+tilo-action-line-serve = { path = "../../crates/core/action-line-serve" }
 tilo-automerge-isolate.workspace = true
 tilo-peer-state = { path = "../../crates/core/tilo-peer-state", features = ["test-support"] }
 tilo-user-identity = { path = "../../crates/core/tilo-user-identity" }

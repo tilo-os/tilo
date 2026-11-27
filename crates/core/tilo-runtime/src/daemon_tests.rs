@@ -3903,7 +3903,7 @@ fn a_sign_in_as_someone_else_answers_the_calls_in_flight_and_hands_nothing_on() 
                 )));
         })
     };
-    while tilo_action_line::Ending::ending(&*adas).is_none() {
+    while tilo_action_line_serve::Ending::ending(&*adas).is_none() {
         std::thread::sleep(Duration::from_millis(5));
     }
     let refused_why = |status: &ReceiptStatus| {

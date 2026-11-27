@@ -3,12 +3,12 @@
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use tilo_action_line::{CallLanes as _, Take};
+use tilo_action_line_serve::{CallLanes as _, Take};
 use tilo_actions::remote::RemoteActionMessage;
 use tilo_actions::remote::shell::ShellOpen;
 
 use crate::control_line::ControlLine;
-use tilo_action_line::shells::{Allowed, AppShells, Out};
+use tilo_action_line_serve::shells::{Allowed, AppShells, Out};
 
 /// What the lane answers the app's open with, once it has.
 fn answer_to_open(allowed: Allowed) -> serde_json::Value {

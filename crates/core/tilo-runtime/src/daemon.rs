@@ -2305,7 +2305,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             let ending = self
                 .connections
                 .as_deref()
-                .map(|connections| connections as &dyn tilo_action_line::Ending);
+                .map(|connections| connections as &dyn tilo_action_line_serve::Ending);
             return self.frames.serve(stream, line, input, ending);
         }
         if line == tilo_api::daemon::AGENT_LINE.as_bytes() {
@@ -2589,7 +2589,7 @@ impl Connections {
     }
 }
 
-impl tilo_action_line::Ending for Connections {
+impl tilo_action_line_serve::Ending for Connections {
     fn ending(&self) -> Option<tilo_actions::remote::ActionCallError> {
         self.ending.lock_recover().clone()
     }

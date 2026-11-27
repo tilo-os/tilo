@@ -14,6 +14,7 @@ test-support = []
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../action-services" }
 tilo-action-line = { version = "0.1.0", path = "../action-line" }
+tilo-action-line-serve = { version = "0.1.0", path = "../action-line-serve" }
 # The client's errors, as the programs that call it report them.
 anyhow.workspace = true
 base64.workspace = true

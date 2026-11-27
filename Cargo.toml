@@ -69,6 +69,7 @@ members = [
     "crates/core/session-actions",
     "crates/core/action-services",
     "crates/core/action-line",
+    "crates/core/action-line-serve",
     "crates/core/action-calls",
     "crates/lang/tilolang",
     "crates/lang/tilolang-lex",

@@ -227,7 +227,7 @@ mod tests {
     use std::collections::HashMap;
     use std::io::BufReader;
     use std::sync::Mutex;
-    use tilo_action_line::serve_lines;
+    use tilo_action_line_serve::serve_lines;
     use tilo_actions::ActionOutput;
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, CataloguePage, CatalogueQuery, Completer,

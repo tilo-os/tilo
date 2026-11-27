@@ -32,6 +32,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
+tilo-action-line-serve = { path = "../../core/action-line-serve" }
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 blake3.workspace = true
 key-group = { package = "tilo-key-group", path = "../../core/key-group" }

@@ -69,6 +69,7 @@ no-workspace-copy = ["test-support"]
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
+tilo-action-line-serve = { version = "0.1.0", path = "../../core/action-line-serve" }
 # The device's published resources: their readings, verbs and surfaces.
 tilo-device-surfaces = { path = "../device-surfaces" }
 anyhow.workspace = true

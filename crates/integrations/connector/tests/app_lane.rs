@@ -151,7 +151,7 @@ fn serve(stream: UnixStream, lane: Arc<AppLane>, written: Arc<Mutex<UnixStream>>
         let _entered = runtime.enter();
         let provider = Arc::new(TestProvider::new());
         let uploads = tilo_actions::remote::HostedContentPuts::default();
-        tilo_action_line::serve_lines_with(
+        tilo_action_line_serve::serve_lines_with(
             |_: &RemoteActionFrame| {
                 Ok((
                     Arc::clone(&provider),
@@ -163,7 +163,7 @@ fn serve(stream: UnixStream, lane: Arc<AppLane>, written: Arc<Mutex<UnixStream>>
             BufReader::new(stream),
             output,
             None,
-            Some(lane.as_ref() as &dyn tilo_action_line::CallLanes),
+            Some(lane.as_ref() as &dyn tilo_action_line_serve::CallLanes),
         );
     });
 }

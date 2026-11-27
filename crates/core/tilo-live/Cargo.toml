@@ -30,6 +30,7 @@ iroh = ["live_session", "dep:iroh", "dep:bytes", "dep:serde_json"]
 
 [dependencies]
 tilo-action-line = { version = "0.1.0", path = "../action-line" }
+tilo-action-line-serve = { version = "0.1.0", path = "../action-line-serve" }
 # The scope of a track is a channel of an app's record.
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # An app's call lane speaks the action wire its connection carries, and the call's own messages.

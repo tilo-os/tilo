@@ -32,7 +32,7 @@ test-workspace = []
 
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
-tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
+tilo-action-line-serve = { version = "0.1.0", path = "../../core/action-line-serve" }
 getrandom.workspace = true
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "time"], optional = true }

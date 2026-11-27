@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Read as _, Write as _};
 use std::sync::Arc;
 use std::time::Duration;
-use tilo_action_line::shells::AppShells;
+use tilo_action_line_serve::shells::AppShells;
 use tilo_socket::Stream;
 
 use tilo_actions::remote::{
@@ -228,7 +228,7 @@ impl Frames {
     }
 
     /// Answer `stream`'s frames, `first` and then each line `input` reads, until it ends
-    /// ([`tilo_action_line::serve_lines`]), each in the workspace it names: admitted there
+    /// ([`tilo_action_line_serve::serve_lines`]), each in the workspace it names: admitted there
     /// once, on its first frame. `ending`, when the part serves the connection, counts each call
     /// it answers until its answer (a part that ends waits for those, never for the connection a
     /// shell keeps open after them) and says when the part takes no new call.
@@ -241,7 +241,7 @@ impl Frames {
         mut stream: Stream,
         first: &[u8],
         input: impl BufRead,
-        ending: Option<&dyn tilo_action_line::Ending>,
+        ending: Option<&dyn tilo_action_line_serve::Ending>,
     ) {
         // The tree's actions run their steps on the process's runtime, as they do for MCP.
         let _runtime = tilo_rt::app().handle().enter();
@@ -353,7 +353,7 @@ impl Frames {
             presence: presence.as_ref(),
             shells,
         });
-        tilo_action_line::serve_lines_with(
+        tilo_action_line_serve::serve_lines_with(
             in_workspace,
             &self.uploads,
             Some(first.to_vec()),
@@ -362,7 +362,7 @@ impl Frames {
             ending,
             lanes
                 .as_ref()
-                .map(|lanes| lanes as &dyn tilo_action_line::CallLanes),
+                .map(|lanes| lanes as &dyn tilo_action_line_serve::CallLanes),
         );
     }
 }
@@ -377,48 +377,53 @@ struct Lanes<'a> {
     shells: Option<AppShells>,
 }
 
-impl tilo_action_line::CallLanes for Lanes<'_> {
-    fn take(&self, message: &RemoteActionMessage) -> tilo_action_line::Take {
+impl tilo_action_line_serve::CallLanes for Lanes<'_> {
+    fn take(&self, message: &RemoteActionMessage) -> tilo_action_line_serve::Take {
         if let Some(presence) = self.presence {
-            match tilo_action_line::CallLanes::take(presence, message) {
-                tilo_action_line::Take::NotCall => {}
+            match tilo_action_line_serve::CallLanes::take(presence, message) {
+                tilo_action_line_serve::Take::NotCall => {}
                 taken => return taken,
             }
         }
         if let Some(media) = self.media {
-            match tilo_action_line::CallLanes::take(media, message) {
-                tilo_action_line::Take::NotCall => {}
+            match tilo_action_line_serve::CallLanes::take(media, message) {
+                tilo_action_line_serve::Take::NotCall => {}
                 taken => return taken,
             }
         }
         if let Some(shells) = &self.shells {
-            match tilo_action_line::CallLanes::take(shells, message) {
-                tilo_action_line::Take::NotCall => {}
+            match tilo_action_line_serve::CallLanes::take(shells, message) {
+                tilo_action_line_serve::Take::NotCall => {}
                 taken => return taken,
             }
         }
         if let Some(audio) = self.audio {
-            match tilo_action_line::CallLanes::take(audio, message) {
-                tilo_action_line::Take::NotCall => {}
+            match tilo_action_line_serve::CallLanes::take(audio, message) {
+                tilo_action_line_serve::Take::NotCall => {}
                 taken => return taken,
             }
         }
         self.call
             .as_ref()
-            .map_or(tilo_action_line::Take::NotCall, |call| {
-                tilo_action_line::CallLanes::take(call.as_ref(), message)
+            .map_or(tilo_action_line_serve::Take::NotCall, |call| {
+                tilo_action_line_serve::CallLanes::take(call.as_ref(), message)
             })
     }
 
     fn body_len(&self, message: &RemoteActionMessage) -> Option<usize> {
         self.audio
-            .and_then(|audio| tilo_action_line::CallLanes::body_len(audio, message))
+            .and_then(|audio| tilo_action_line_serve::CallLanes::body_len(audio, message))
     }
 
-    fn take_body(&self, message: &RemoteActionMessage, body: &[u8]) -> tilo_action_line::Take {
-        self.audio.map_or(tilo_action_line::Take::NotCall, |audio| {
-            tilo_action_line::CallLanes::take_body(audio, message, body)
-        })
+    fn take_body(
+        &self,
+        message: &RemoteActionMessage,
+        body: &[u8],
+    ) -> tilo_action_line_serve::Take {
+        self.audio
+            .map_or(tilo_action_line_serve::Take::NotCall, |audio| {
+                tilo_action_line_serve::CallLanes::take_body(audio, message, body)
+            })
     }
 }
 
