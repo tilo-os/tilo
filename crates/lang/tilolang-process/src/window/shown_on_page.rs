@@ -11,7 +11,7 @@
 
 use tilo_server_protocol::page::window::{self, WindowAnswer, WindowAsk};
 use tilo_server_protocol::page::{PageAction, PagePatch, PointerEvent, PointerKind};
-use ui::a11y::Action;
+use ui::a11y::{Action, names_one_resource};
 use ui::composition::Composition;
 use ui::composition::page::{PAGE_CSS, Page, Patch, theme_css};
 use ui::headless::Driver;
@@ -267,33 +267,6 @@ fn widget_of_target(composition: &Composition, target: &str) -> Option<(String, 
         .find_map(|node| find(node, target))
 }
 
-/// Whether the targets `one` and `other` name the same resource: the same name, a published
-/// address and the id inside it (`tl:<app>:<id>` and `<id>`), or a row's target, which carries
-/// the id of the item it presents after the list's own key (`key:<widget>~<widget>/<id>`).
-fn names_one_resource(one: &str, other: &str) -> bool {
-    if one == other {
-        return true;
-    }
-    let (carried, named) = (inside_address(one), inside_address(other));
-    if carried == named {
-        return true;
-    }
-    // A list row's target is the list's key, then `~`, then the widget's own key, then the id
-    // of the item the row presents.
-    let row = carried.split_once('~').map_or(carried, |(_, after)| after);
-    let item = row.split_once('/').map_or(row, |(_, item)| item);
-    item == named
-}
-
-/// `name` without the app a published address carries (`tl:<app>:<id>` is `<id>`); a name that is
-/// no published address is itself.
-fn inside_address(name: &str) -> &str {
-    name.strip_prefix("tl:")
-        .and_then(|rest| rest.split_once(':'))
-        .filter(|(app, id)| !app.is_empty() && !id.is_empty())
-        .map_or(name, |(_, id)| id)
-}
-
 /// Lay `frame` out at its page's size, `width` by `height` CSS pixels (kept between 240 and 8192
 /// on a side), as a window lays out at the size it is given: a narrow page shows the view as a
 /// narrow window does, and what a node's bounds say is where the page shows it.
@@ -407,14 +380,12 @@ pub fn serve_from_env(named: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{inside_address, names_one_resource};
+    use super::*;
 
     /// A page address naming a resource by its published address opens the row the app names by
     /// its own id inside it, and either form names the one resource.
     #[test]
     fn a_published_address_and_the_id_inside_it_name_one_resource() {
-        assert_eq!(inside_address("tl:so.tilo.migrate:root-a/i1"), "root-a/i1");
-        assert_eq!(inside_address("root-a/i1"), "root-a/i1");
         assert!(names_one_resource(
             "tl:so.tilo.migrate:root-a/i1",
             "root-a/i1"
@@ -427,7 +398,6 @@ mod tests {
             "tl:so.tilo.migrate:root-a/i1",
             "root-a/i2"
         ));
-        assert_eq!(inside_address("devices/abc/migrate"), "devices/abc/migrate");
     }
 
     /// A list row names the item it presents after the list's own key and the widget's, so a
@@ -446,6 +416,5 @@ mod tests {
             "key:list.t142.body~list.for3/root-a/i1",
             "tl:so.tilo.migrate:root-a/i2"
         ));
-        assert!(!names_one_resource("root-a/i1/check", "root-a/i1"));
     }
 }

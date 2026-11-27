@@ -572,7 +572,41 @@ impl AccessNode {
         }
         self
     }
+}
 
+/// Whether the targets `one` and `other` name the same resource: the same name, a published
+/// address and the id inside it (`tl:<app>:<id>` and `<id>`), or a row's target, which carries
+/// the id of the item it presents after the list's own key (`key:<widget>~<widget>/<id>`).
+///
+/// A node that presents an item, runs an action on one, or is itself that item names it one of
+/// these ways; a caller that knows the resource it means finds it by this rule.
+#[must_use]
+pub fn names_one_resource(one: &str, other: &str) -> bool {
+    if one == other {
+        return true;
+    }
+    let (carried, named) = (inside_address(one), inside_address(other));
+    if carried == named {
+        return true;
+    }
+    // A list row's target is the list's key, then `~`, then the widget's own key, then the id
+    // of the item the row presents.
+    let row = carried.split_once('~').map_or(carried, |(_, after)| after);
+    let item = row.split_once('/').map_or(row, |(_, item)| item);
+    item == named
+}
+
+/// `name` without the app a published address carries (`tl:<app>:<id>` is `<id>`); a name that is
+/// no published address is itself.
+#[must_use]
+pub fn inside_address(name: &str) -> &str {
+    name.strip_prefix("tl:")
+        .and_then(|rest| rest.split_once(':'))
+        .filter(|(app, id)| !app.is_empty() && !id.is_empty())
+        .map_or(name, |(_, id)| id)
+}
+
+impl AccessNode {
     /// Say which item of its collection this node shows ([`Self::item`]).
     pub fn with_item(mut self, item: impl Into<String>) -> Self {
         self.item = Some(item.into()).filter(|item| !item.is_empty());
@@ -1181,6 +1215,28 @@ mod tests {
             let blue = relative_luminance(Color::from_rgb8(0, 0, 255));
             assert!(green > red && red > blue);
         }
+    }
+
+    /// A resource is named by its published address as by the id inside it, and a list row's
+    /// target names the item it presents.
+    #[test]
+    fn a_resource_is_named_by_its_address_or_the_id_or_the_row_that_presents_it() {
+        assert_eq!(inside_address("tl:so.tilo.migrate:root-a/i1"), "root-a/i1");
+        assert_eq!(inside_address("root-a/i1"), "root-a/i1");
+        assert_eq!(inside_address("devices/abc/migrate"), "devices/abc/migrate");
+        assert!(names_one_resource(
+            "tl:so.tilo.migrate:root-a/i1",
+            "root-a/i1"
+        ));
+        assert!(names_one_resource(
+            "key:list.t142.body~list.for3/root-a/i1",
+            "tl:so.tilo.migrate:root-a/i1"
+        ));
+        assert!(!names_one_resource(
+            "key:list.t142.body~list.for3/root-a/i1",
+            "tl:so.tilo.migrate:root-a/i2"
+        ));
+        assert!(!names_one_resource("root-a/i1/check", "root-a/i1"));
     }
 }
 

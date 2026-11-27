@@ -4,11 +4,13 @@
 Each app's plan (`tools/screenshots/<app>.toml`) lists situations: a name, a
 one-line description, and the steps that set the situation up, in the
 `--headless-drive` grammar (`invoke` a published action by resource and
-action, `bind` its answer for later steps; `wait_for_named`; `expect`), with
-dates written relative to the day of the run (`${TODAY+1}`, `${MON+2}`: this
-week's Wednesday). No pointer or keyboard steps: a
-situation is reached through the app's resources and actions, the action API every
-other caller uses. An app without a plan gets one situation, the window as it
+action, `bind` its answer for later steps; `press` a control by the name a
+person reads it by, or the resource a list row presents; `wait_for_named`;
+`expect`), with dates written relative to the day of the run (`${TODAY+1}`,
+`${MON+2}`: this week's Wednesday). No pointer or keyboard steps: a situation is
+reached through the app's resources and actions, or through the controls its
+window offers by name — the same addresses a walk presses — never by a point
+on a picture. An app without a plan gets one situation, the window as it
 opens. An app that shows the machine it runs on (its journal, processes,
 drives, files) is built from one of its own scenarios instead: each of its
 situations names one (`scenario`), and the app refuses a capture without.
@@ -77,8 +79,8 @@ EXTRA_VIEWPORTS = {"large": (2560, 1440)}
 # A run past this is stuck (waiting on a service a fresh profile does not
 # have), and is reported as such rather than holding the whole runner.
 RUN_SECONDS = 240
-# Steps a plan may use: the action-driven part of the drive grammar.
-ALLOWED_STEPS = {"invoke", "wait_for_named", "expect", "perform"}
+# Steps a plan may use: the action-driven and control-driven part of the drive grammar.
+ALLOWED_STEPS = {"invoke", "wait_for_named", "expect", "perform", "press"}
 
 
 # Dates in a plan relative to the day the shots are taken, so a calendar

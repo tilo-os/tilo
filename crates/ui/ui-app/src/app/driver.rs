@@ -2445,6 +2445,77 @@ impl Driver {
         Ok(())
     }
 
+    /// Press the control a person finds by `press`'s address — the name it answers to, what it
+    /// does, or the resource a list row presents — as a pointer or an assistive technology presses
+    /// it: the same route [`Self::perform_a11y_action`] takes, so a row opens its own item rather
+    /// than a widget's id standing in for the press.
+    ///
+    /// # Errors
+    /// When no control answers to the address, or the one that does takes no such press.
+    pub fn press_control(&mut self, press: &crate::headless::Press) -> Result<(), String> {
+        use tilo_ui_base::a11y::Action;
+        let action = match press.verb {
+            crate::headless::PressVerb::Activate => Action::Activate,
+            crate::headless::PressVerb::ShowContextMenu => Action::ShowContextMenu,
+        };
+        let wanted = tilo_ui_base::accesskit_bridge::map_action(&action);
+        let target = if let Some(identity) = &press.identity {
+            self.a11y_nodes()
+                .into_iter()
+                .find(|(_, described)| {
+                    described.author_id() == Some(identity.as_str())
+                        && described.supports_action(wanted)
+                })
+                .map(|(id, _)| id)
+                .ok_or_else(|| format!("no control does {identity:?} in this window"))?
+        } else if let Some(resource) = &press.resource {
+            let shown = self.control_node_of_resource(resource)?;
+            let id = accesskit::NodeId(u64::from(shown).saturating_add(1));
+            if !self
+                .a11y_nodes()
+                .iter()
+                .any(|(exported, _)| *exported == id)
+            {
+                return Err(format!("no control shows {resource:?} in this window"));
+            }
+            id
+        } else {
+            let name = press.name.as_deref().unwrap_or_default();
+            self.a11y_nodes_named(name)
+                .into_iter()
+                .find(|id| {
+                    self.a11y_node(*id)
+                        .is_some_and(|described| described.supports_action(wanted))
+                })
+                .ok_or_else(|| format!("no control named {name:?} is offered"))?
+        };
+        self.perform_a11y_action(target, &action)
+    }
+
+    /// The laid-out widget whose own words or target name the resource `resource`: the row of a
+    /// list that presents it, addressed as the page a browser draws addresses one.
+    fn control_node_of_resource(&self, resource: &str) -> Result<NodeId, String> {
+        for &node in self.app.layout.node_map.keys() {
+            let Ok(Some(access)) = self.app.inspect_node(node, |widget| widget.accessibility())
+            else {
+                continue;
+            };
+            let names = [
+                access.item.as_deref(),
+                access.action_target.as_deref(),
+                access.action.as_deref(),
+            ];
+            if names
+                .into_iter()
+                .flatten()
+                .any(|name| tilo_ui_base::a11y::names_one_resource(name, resource))
+            {
+                return Ok(node);
+            }
+        }
+        Err(format!("no control shows {resource:?} in this window"))
+    }
+
     /// The window's semantics tree as it stands now: every node a person, a reader and an agent
     /// reach, with its role, name, state, bounds and the actions it offers. A renderer that
     /// presents the window from its semantics reads it here and runs a node's action with
@@ -3277,6 +3348,7 @@ impl Driver {
                 self.perform_semantic_named(target, semantic_target.as_deref(), &action)
             }
             Action::Invoke(invocation) => self.perform_invocation(invocation).map(drop),
+            Action::Press(press) => self.press_control(press),
         }
     }
 

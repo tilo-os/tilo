@@ -39,6 +39,23 @@ pub(crate) fn action_description(action: &Action) -> String {
         Action::Invoke(invocation) => {
             format!("invoke {} on {:?}", invocation.action, invocation.resource)
         }
+        Action::Press(press) => press
+            .name
+            .as_deref()
+            .map(|name| format!("press {name:?}"))
+            .or_else(|| {
+                press
+                    .identity
+                    .as_deref()
+                    .map(|identity| format!("press what does {identity:?}"))
+            })
+            .or_else(|| {
+                press
+                    .resource
+                    .as_deref()
+                    .map(|resource| format!("press the row of {resource:?}"))
+            })
+            .unwrap_or_else(|| "press".into()),
     }
 }
 
@@ -449,5 +466,36 @@ mod tests {
         assert_eq!(shown(&driver), "hello");
         assert!(!outcome.targets.is_empty());
         assert_eq!(outcome.document, read_document(&mut driver));
+    }
+
+    #[test]
+    fn a_press_reaches_the_control_a_person_names() {
+        use crate::widget::{Button, Column};
+        let pressed = std::rc::Rc::new(std::cell::Cell::new(0));
+        let tally = std::rc::Rc::clone(&pressed);
+        let column = Column::new().push(Box::new(
+            Button::new("save", "Save").on_click(move || tally.set(tally.get() + 1)),
+        ));
+        let mut driver = Driver::new(State::new(), Box::new(column), (400, 240));
+        let outcome = drive(
+            &mut driver,
+            &steps_of(&spec(serde_json::json!([{ "press": "Save" }]))),
+        );
+        assert!(outcome.is_pass(), "{:?}", outcome.steps);
+        assert_eq!(pressed.get(), 1, "the button a person names is pressed");
+    }
+
+    #[test]
+    fn a_press_of_a_name_no_control_offers_fails() {
+        use crate::widget::{Button, Column};
+        let column = Column::new().push(Box::new(Button::new("save", "Save").on_click(|| {})));
+        let mut driver = Driver::new(State::new(), Box::new(column), (400, 240));
+        let outcome = drive(
+            &mut driver,
+            &steps_of(&spec(serde_json::json!([{ "press": "Publish" }]))),
+        );
+        let failure = outcome.failure().expect("nothing answers to Publish");
+        let error = failure.error.as_deref().unwrap_or_default();
+        assert!(error.contains("Publish"), "{error}");
     }
 }

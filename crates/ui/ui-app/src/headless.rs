@@ -62,7 +62,8 @@ pub(crate) use crate::inspection::{
 pub use crate::launch::DEFAULT_VIEWPORT;
 
 pub use tilo_headless_schema::{
-    Action, Capture, Invocation, SemanticAction, SemanticExpectation, Spec, parse_spec,
+    Action, Capture, Invocation, Press, PressVerb, SemanticAction, SemanticExpectation, Spec,
+    parse_spec,
 };
 
 /// The widget at a desktop-sized window, laid out in the light theme: a described component's

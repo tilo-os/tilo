@@ -95,9 +95,48 @@ pub enum Action {
         semantic_target: Option<String>,
         action: SemanticAction,
     },
+    /// Press one control by what a person finds it by, through the same path as a live
+    /// accessibility request: the name it answers to, what it does, or the resource a list row
+    /// presents. A row opened this way is a row a person opens, its own activation and nothing
+    /// a widget's id would reach.
+    Press(Press),
     /// Invoke one published action by address, through the same resolution, availability,
     /// confirmation and strict binding the live host applies.
     Invoke(Invocation),
+}
+
+/// One control to press, as a person finds it: its name, what it does, or the resource a row of a
+/// list presents.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Press {
+    /// The words a control answers to: its accessible name, or a list row's own title.
+    pub name: Option<String>,
+    /// What the control does, as the stable identity an action's control carries.
+    pub identity: Option<String>,
+    /// The resource a list row presents, as the app publishes it (`tl:<app>:<id>`) or as the app
+    /// names it (`<id>`).
+    pub resource: Option<String>,
+    pub verb: PressVerb,
+}
+
+/// What a press does to the control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PressVerb {
+    /// Click, tap or press Enter on it: what a person's press does.
+    Activate,
+    /// Open its context menu without a point aimed at where it is drawn.
+    ShowContextMenu,
+}
+
+impl PressVerb {
+    /// The wire name a scenario uses for this verb.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Activate => "activate",
+            Self::ShowContextMenu => "show-context-menu",
+        }
+    }
 }
 
 /// Invoke one action the app publishes, by its `(resource, action)` address, through the same action API
@@ -510,6 +549,7 @@ fn parse_action(value: &serde_json::Value) -> Result<Action, String> {
         "wait_for_named" => parse_wait_for_named(argument),
         "expect" => parse_expectation(argument).map(Action::Expect),
         "perform" => parse_semantic_action(argument),
+        "press" => parse_press(argument).map(Action::Press),
         "invoke" => parse_invocation(argument).map(Action::Invoke),
         other => Err(format!("unknown action {other:?}")),
     }
@@ -1016,6 +1056,63 @@ fn parse_semantic_action(value: &serde_json::Value) -> Result<Action, String> {
     })
 }
 
+/// `press` takes the words a control answers to (`"press": "Bookmarks"`), or an object naming the
+/// one thing to press — `name`, `identity` or `resource` — and optionally the `verb`.
+fn parse_press(value: &serde_json::Value) -> Result<Press, String> {
+    const FIELDS: &[&str] = &["name", "identity", "resource", "verb"];
+    if let serde_json::Value::String(name) = value {
+        if name.is_empty() {
+            return Err("press takes a non-empty name".to_owned());
+        }
+        return Ok(Press {
+            name: Some(name.clone()),
+            identity: None,
+            resource: None,
+            verb: PressVerb::Activate,
+        });
+    }
+    let object = value
+        .as_object()
+        .ok_or("press takes a control's name or an object naming one")?;
+    if let Some(unknown) = object.keys().find(|key| !FIELDS.contains(&key.as_str())) {
+        return Err(format!("unknown field {unknown:?} for press"));
+    }
+    let named = |field: &str| -> Result<Option<String>, String> {
+        object
+            .get(field)
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("press.{field} must be a non-empty string"))
+            })
+            .transpose()
+    };
+    let press = Press {
+        name: named("name")?,
+        identity: named("identity")?,
+        resource: named("resource")?,
+        verb: match object.get("verb").and_then(serde_json::Value::as_str) {
+            None | Some("activate") => PressVerb::Activate,
+            Some("show-context-menu") => PressVerb::ShowContextMenu,
+            Some(other) => {
+                return Err(format!(
+                    "press.verb is \"activate\" or \"show-context-menu\", not {other:?}"
+                ));
+            }
+        },
+    };
+    let addressed = [&press.name, &press.identity, &press.resource]
+        .into_iter()
+        .filter(|found| found.is_some())
+        .count();
+    if addressed != 1 {
+        return Err("press names one of name, identity or resource".to_owned());
+    }
+    Ok(press)
+}
+
 fn required_index(
     object: &serde_json::Map<String, serde_json::Value>,
     name: &str,
@@ -1135,6 +1232,47 @@ mod tests {
                     .as_deref(),
                 Some("r.json")
             );
+        }
+    }
+
+    /// A press names the control a person presses, one way, and the verb is one it knows.
+    #[test]
+    fn a_press_names_the_control_a_person_presses() {
+        let actions = parse_actions(
+            r#"[{"press":"Merge of config.toml"},{"press":{"resource":"tl:so.tilo.migrate:root-a/i1"}},{"press":{"name":"Bookmarks","verb":"show-context-menu"}},{"press":{"identity":"so.tilo.notes.Notebook\u001fnew_note"}}]"#,
+        )
+        .unwrap();
+        let Action::Press(by_name) = &actions[0] else {
+            panic!("not a press");
+        };
+        assert_eq!(by_name.name.as_deref(), Some("Merge of config.toml"));
+        assert_eq!(by_name.verb, PressVerb::Activate);
+        let Action::Press(by_resource) = &actions[1] else {
+            panic!("not a press");
+        };
+        assert_eq!(
+            by_resource.resource.as_deref(),
+            Some("tl:so.tilo.migrate:root-a/i1")
+        );
+        let Action::Press(menu) = &actions[2] else {
+            panic!("not a press");
+        };
+        assert_eq!(menu.name.as_deref(), Some("Bookmarks"));
+        assert_eq!(menu.verb, PressVerb::ShowContextMenu);
+        let Action::Press(by_identity) = &actions[3] else {
+            panic!("not a press");
+        };
+        assert!(by_identity.identity.is_some());
+        // One control, named one way; and the verb is one the press knows.
+        for wrong in [
+            r#"[{"press":{}}]"#,
+            r#"[{"press":{"name":"a","resource":"b"}}]"#,
+            r#"[{"press":{"name":""}}]"#,
+            r#"[{"press":{"name":"a","verb":"hover"}}]"#,
+            r#"[{"press":{"name":"a","role":"button"}}]"#,
+            r#"[{"press":""}]"#,
+        ] {
+            assert!(parse_actions(wrong).is_err(), "{wrong}");
         }
     }
 
