@@ -135,8 +135,24 @@ pub struct ServerSettings {
     /// Where this device's server keeps its state: the heartbeat Settings
     /// reads to say whether the server is running.
     pub state_root: String,
+    /// The web page it serves browsers, as its configuration places it.
+    pub web: Web,
     pub work: Work,
     pub services: Services,
+}
+
+/// The web page a device's server serves browsers: the domain name they reach
+/// it by, when one is set.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Web {
+    /// The domain name browsers reach it by, when the certificate it serves is
+    /// one that names a domain. Without one, the certificate is one a CA under
+    /// the person's root issues: their devices trust it, and a browser
+    /// elsewhere does not.
+    pub domain: Option<String>,
 }
 
 impl ServerSettings {

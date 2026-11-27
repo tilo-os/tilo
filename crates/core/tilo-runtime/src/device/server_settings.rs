@@ -27,7 +27,8 @@ pub mod resource;
 
 pub use resource::surface;
 use resource::{
-    ServerSettings, ServerSettingsAction, ServerSettingsReading, Services, Work, WorkFrom, WorkWhen,
+    ServerSettings, ServerSettingsAction, ServerSettingsReading, Services, Web, Work, WorkFrom,
+    WorkWhen,
 };
 
 use tilo_actions::{ActionOutput, ApiError, ResourceSpec};
@@ -210,6 +211,9 @@ fn settings_of(
         configured,
         problem,
         state_root: config.state_root.display().to_string(),
+        web: Web {
+            domain: domain_of(&config.web_tls),
+        },
         work: Work {
             from: contract_from(&config.work.from),
             when: WorkWhen {
@@ -221,6 +225,17 @@ fn settings_of(
         services: Services {
             app_serving: config.app_serving,
         },
+    }
+}
+
+/// The domain name the certificate browsers get from this server names, when
+/// it names one: the name the configuration's certificate files are for. A
+/// certificate the person's own CA issues names none, and only their devices
+/// trust it.
+fn domain_of(tls: &tilo_server_protocol::config::WebTls) -> Option<String> {
+    match tls {
+        tilo_server_protocol::config::WebTls::Files { host, .. } => host.clone(),
+        tilo_server_protocol::config::WebTls::Local => None,
     }
 }
 

@@ -74,6 +74,24 @@ view device_server_pane() {
             "app_serving",
         )
     }
+    let web = s.web
+    ui.Section("The web page it serves") {
+        if let domain = web.domain {
+            ui.PropertyList {
+                ui.Property("Domain name", domain)
+            }
+        } else {
+            ui.StatusLine(
+                "Browsers outside your workspace will warn that this server's certificate is not trusted.",
+                status: .warning,
+            )
+            ui.Text(
+                "Set a domain name for this server to fix that.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+    }
 }
 
 /// One service of this device, with what offering it means and the control that offers or

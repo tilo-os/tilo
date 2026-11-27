@@ -124,6 +124,7 @@ mod settings_network;
 mod settings_notifications;
 mod settings_panes;
 mod settings_permissions;
+mod settings_server;
 mod settings_shell;
 mod settings_sound;
 mod settings_storage;

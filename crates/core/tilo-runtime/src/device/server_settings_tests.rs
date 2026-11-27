@@ -247,3 +247,61 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+tilo_test_env::scenario! {
+    fn the_web_page_a_server_serves_says_whether_it_has_a_domain_name;
+
+    phase a_server_with_no_domain_name_serves_a_certificate_its_own_ca_issues;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        existing(&path);
+        let published = Published::new(Served::at(path));
+        assert_eq!(
+            reading(&published).web.domain,
+            None,
+            "no domain name is set, so the certificate is one its own CA issues"
+        );
+    }
+
+    phase the_domain_name_its_certificate_names_is_the_one_browsers_reach;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        tilo_server_protocol::config::ServerConfig {
+            work: tilo_server_protocol::WorkSetting::none(),
+            web_tls: tilo_server_protocol::config::WebTls::Files {
+                chain: Path::new("/etc/tilo/web-chain.pem").to_path_buf(),
+                key: Path::new("/etc/tilo/web-key.pem").to_path_buf(),
+                host: Some("home.example.org".to_owned()),
+            },
+            ..tilo_server_protocol::config::ServerConfig::default()
+        }
+        .save(&path)
+        .unwrap();
+        let published = Published::new(Served::at(path));
+        assert_eq!(
+            reading(&published).web.domain.as_deref(),
+            Some("home.example.org")
+        );
+    }
+
+    phase a_certificate_from_files_that_names_no_domain_is_no_domain_name;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.toml");
+        tilo_server_protocol::config::ServerConfig {
+            work: tilo_server_protocol::WorkSetting::none(),
+            web_tls: tilo_server_protocol::config::WebTls::Files {
+                chain: Path::new("/etc/tilo/web-chain.pem").to_path_buf(),
+                key: Path::new("/etc/tilo/web-key.pem").to_path_buf(),
+                host: None,
+            },
+            ..tilo_server_protocol::config::ServerConfig::default()
+        }
+        .save(&path)
+        .unwrap();
+        let published = Published::new(Served::at(path));
+        assert_eq!(reading(&published).web.domain, None);
+    }
+}
