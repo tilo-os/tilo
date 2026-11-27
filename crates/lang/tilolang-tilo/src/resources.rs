@@ -2524,11 +2524,16 @@ impl ResourceStore {
         };
         let mut written = Written::default();
         if ids_written(&command, &mut written) {
-            self.freeze_listings(&written.reshaped);
+            // What the store held of each is in the cache until the store takes what is sent now.
+            self.freeze_listings(
+                &written.reshaped,
+                |id| self.inner.cache.borrow().get(id).cloned(),
+                |id| local.get(id).cloned(),
+            );
             // A resource only edited (a note's body as a person types it) neither joins, leaves
             // nor moves in a listing: only one ordered or filtered by when it last changed reads
             // differently.
-            let updated = |key: &str| key.contains(tilo_resource_store::UPDATED);
+            let updated = |key: &str, _: &Pages| key.contains(tilo_resource_store::UPDATED);
             self.freeze_where(&written.edited_only(), updated);
         } else {
             self.forget_listings(None);
@@ -2842,14 +2847,23 @@ impl ResourceStore {
             // one ordered or filtered by when its items last changed reads differently.
             // Freezing every listing of the kind would read each again, whole, at every key.
             Some(kind) if held.is_some() && held_before && !indexed => {
-                let updated = |key: &str| key.contains(tilo_resource_store::UPDATED);
+                let updated = |key: &str, _: &Pages| key.contains(tilo_resource_store::UPDATED);
                 self.freeze_where(
                     &BTreeMap::from([(kind, BTreeSet::from([id.to_owned()]))]),
                     updated,
                 );
             }
             Some(kind) => {
-                self.freeze_listings(&BTreeMap::from([(kind, BTreeSet::from([id.to_owned()]))]));
+                let was = self.txn_mut(txn, |state| match state.before.get(id) {
+                    Some(Before::Was(was)) => Some(was.clone()),
+                    _ => None,
+                })?;
+                let was = was.or_else(|| self.inner.cache.borrow().get(id).cloned());
+                self.freeze_listings(
+                    &BTreeMap::from([(kind, BTreeSet::from([id.to_owned()]))]),
+                    |_| was.clone(),
+                    |_| Some(held.clone()),
+                );
             }
             None => self.forget_listings(None),
         }
@@ -2860,7 +2874,7 @@ impl ResourceStore {
             .and_then(|held| held.parent.clone())
             .or_else(|| self.parent_held(id));
         if let Some(holder) = holder {
-            let updated = |key: &str| key.contains(tilo_resource_store::UPDATED);
+            let updated = |key: &str, _: &Pages| key.contains(tilo_resource_store::UPDATED);
             let kinds: Vec<String> = match self.kind_held(&holder) {
                 Some(kind) => vec![kind],
                 None => self
@@ -2904,22 +2918,68 @@ impl ResourceStore {
     /// with the listing read after the write, and moves the rows the write moved: where each
     /// resource the write names stood in it is read from the store's index now, while the
     /// store holds it as it was, and the listing reads nothing more.
-    fn freeze_listings(&self, written: &BTreeMap<String, BTreeSet<String>>) {
-        self.freeze_where(written, |_| true);
+    ///
+    /// Only the listings the write reaches: one the written resources match, as they stood
+    /// before (`was`) or as they are written (`now`). A task checked off leaves the list of
+    /// another task's subtasks as it was, so a list showing a row per task reads none of them
+    /// again. A resource whose standing either way is not known here reaches every listing of
+    /// its kind, and so does any write a listing ordered or filtered by update time.
+    fn freeze_listings(
+        &self,
+        written: &BTreeMap<String, BTreeSet<String>>,
+        was: impl Fn(&str) -> Option<Option<Held>>,
+        now: impl Fn(&str) -> Option<Option<Held>>,
+    ) {
+        // Each written resource as the index holds it, before and after: `None` where that is
+        // not known.
+        let standing: BTreeMap<&str, Option<[Option<Indexed>; 2]>> = written
+            .values()
+            .flatten()
+            .map(|id| {
+                let known = was(id).zip(now(id)).map(|(was, now)| {
+                    [was, now].map(|held| {
+                        held.map(|held| Indexed {
+                            doc: String::new(),
+                            parent: held.parent,
+                            order: held.order,
+                            fields: held.fields,
+                        })
+                    })
+                });
+                (id.as_str(), known)
+            })
+            .collect();
+        self.freeze_where(written, |key, pages| {
+            key.contains(tilo_resource_store::UPDATED)
+                || written.get(&pages.kind).is_none_or(|ids| {
+                    ids.iter().any(|id| {
+                        standing.get(id.as_str()).is_none_or(|standing| {
+                            standing.as_ref().is_none_or(|both| {
+                                both.iter().flatten().any(|stood| {
+                                    pages.query.filters.iter().all(|filter| filter.holds(stood))
+                                })
+                            })
+                        })
+                    })
+                })
+        });
     }
 
-    /// [`Self::freeze_listings`] for the listings `which` names of the kinds `written` names.
+    /// [`Self::freeze_listings`] for the listings `which` names, by their key and pages, of the
+    /// kinds `written` names: each of them all the same.
     fn freeze_where(
         &self,
         written: &BTreeMap<String, BTreeSet<String>>,
-        which: impl Fn(&str) -> bool,
+        which: impl Fn(&str, &Pages) -> bool,
     ) {
         let frozen: Vec<(String, Rc<Pages>)> = {
             let mut listings = self.inner.listings.borrow_mut();
             let keys: Vec<String> = listings
-                .keys()
-                .filter(|key| which(key) && written.keys().any(|kind| listing_of(key, kind)))
-                .cloned()
+                .iter()
+                .filter(|(key, (_, pages))| {
+                    written.keys().any(|kind| listing_of(key, kind)) && which(key, pages)
+                })
+                .map(|(key, _)| key.clone())
                 .collect();
             keys.into_iter()
                 .filter_map(|key| listings.remove(&key).map(|(_, pages)| (key, pages)))
@@ -4797,10 +4857,22 @@ impl ResourceStore {
         filters: Vec<Filter>,
         order: Order,
     ) -> Rc<Listing> {
+        self.paged_pages(at, field, kind, filters, order).0
+    }
+
+    /// [`Self::paged`], with the pages it reads.
+    fn paged_pages(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        kind: &str,
+        filters: Vec<Filter>,
+        order: Order,
+    ) -> (Rc<Listing>, Rc<Pages>) {
         let filters = self.held_in(at, field, filters);
         let key = format!("{kind}#{}#{field}#{filters:?}#{order:?}", id_of(at));
-        if let Some((listing, _)) = self.inner.listings.borrow().get(&key) {
-            return Rc::clone(listing);
+        if let Some((listing, pages)) = self.inner.listings.borrow().get(&key) {
+            return (Rc::clone(listing), Rc::clone(pages));
         }
         let query = Query {
             kind: kind.to_owned(),
@@ -4825,8 +4897,8 @@ impl ResourceStore {
         self.inner
             .listings
             .borrow_mut()
-            .insert(key, (Rc::clone(&listing), pages));
-        listing
+            .insert(key, (Rc::clone(&listing), Rc::clone(&pages)));
+        (listing, pages)
     }
 
     /// The listing of the collection `field` of `at` the index holds to `filters`, in its
@@ -4851,7 +4923,7 @@ impl ResourceStore {
         if self.places_written(kind, &holder) {
             return Ok(None);
         }
-        let base = self.paged(at, field, kind, filters, Order::default());
+        let (base, pages) = self.paged_pages(at, field, kind, filters, Order::default());
         let written: Vec<String> = self
             .inner
             .local
@@ -4876,7 +4948,7 @@ impl ResourceStore {
                 (None, _) => return Ok(None),
                 (Some(Some(stands)), false) => gone.push(stands),
                 (Some(None), true) => {
-                    let Some(slot) = self.slot_in(&base, &at.doc, &id) else {
+                    let Some(slot) = self.slot_in(&pages, &at.doc, &id) else {
                         return Ok(None);
                     };
                     come.push((slot, Rc::from(item_id)));
@@ -4899,7 +4971,7 @@ impl ResourceStore {
     /// How many items of `base`, a listing in the index's order of places, stand before the
     /// resource `id`: where it stands among them. Read by halving the listing, a page or so at
     /// each step; `None` when a place is not known.
-    fn slot_in(&self, base: &Listing, doc: &str, id: &str) -> Option<usize> {
+    fn slot_in(&self, base: &Pages, doc: &str, id: &str) -> Option<usize> {
         let key = |id: &str| -> Option<(Value, String)> {
             let cache = self.inner.cache.borrow();
             let held = cache.get(id)?.as_ref()?;
@@ -4916,10 +4988,10 @@ impl ResourceStore {
                 id.to_owned(),
             )
         };
-        let (mut low, mut high) = (0, base.len());
+        let (mut low, mut high) = (0, PagedItems::len(base));
         while low < high {
             let mid = low.midpoint(high);
-            let other = format!("{doc}/{}", base.get(mid)?);
+            let other = format!("{doc}/{}", base.probe(mid)?);
             if key(&other)? < own {
                 low = mid.saturating_add(1);
             } else {
@@ -5378,6 +5450,36 @@ impl Pages {
                 .entry(id.clone())
                 .or_insert_with(|| Some(Held::of(&self.kind, indexed.clone())));
         }
+    }
+
+    /// The item at `at`, for a search halving the listing: from what was read already, or from a
+    /// few items read where it stands. A search through three thousand items then reads a dozen
+    /// small pages, not a full page at each step.
+    fn probe(&self, at: usize) -> Option<Rc<str>> {
+        /// How many items a probe reads around the one it asks for: the last steps of a search
+        /// land among them.
+        const PROBE: usize = 16;
+        if let Some(item) = self.ids.borrow().get(at) {
+            return Some(Rc::clone(item));
+        }
+        if let Some(item) = self.far.borrow().get(&at) {
+            return Some(Rc::clone(item));
+        }
+        let inner = self.store.upgrade()?;
+        let mut query = self.query.clone();
+        query.limit = PROBE;
+        let Ok(Reply::Page(page)) = inner.port.command(Command::PageAt { query, at }) else {
+            return None;
+        };
+        let mut cache = inner.cache.borrow_mut();
+        let mut far = self.far.borrow_mut();
+        for (offset, (id, indexed)) in page.resources.iter().enumerate() {
+            far.insert(at.saturating_add(offset), Rc::from(item_of(id)));
+            cache
+                .entry(id.clone())
+                .or_insert_with(|| Some(Held::of(&self.kind, indexed.clone())));
+        }
+        far.get(&at).cloned()
     }
 
     /// Reads the next page; false when there is none.
