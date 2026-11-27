@@ -376,8 +376,10 @@ pub const SHELL_PROVIDERS: &str = "session.";
 /// The providers a shell serves under the ids apps have always called them by, each with the
 /// application the dispatch admits its calls under (the one whose window offers them). Each needs
 /// the person's seat, so the desktop session answers it: the activity the shell shows, the person's
-/// settings and model keys on this computer, the account this computer is signed in to, the
-/// machines it plans, and the workspace's events, which read the shortcuts this session saves.
+/// settings on this computer, the account this computer is signed in to, the machines it plans,
+/// and the workspace's events, which read the shortcuts this session saves. The workspace's model
+/// providers and their keys are the person's services' to list and answer, and are kept from
+/// every other program as the seat's are.
 pub const SEAT_PROVIDERS: &[(&str, &str)] = {
     use tilo_actions::remote::{
         MACHINES_PROVIDER, MODELS_PROVIDER, SERVER_ACCOUNT_PROVIDER, WORKSPACE_EVENTS_PROVIDER,

@@ -245,7 +245,6 @@ pub(crate) fn start_app_wire(
         crate::session_providers::SeatProviders {
             activity: std::sync::Arc::clone(&activity_wire),
             machines: crate::machine_steps::MachineSteps::session(view.clone()),
-            models: crate::model_steps::ModelSteps::session(view.clone()),
             settings: settings_steps,
         },
     );
