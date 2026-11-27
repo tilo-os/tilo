@@ -1876,24 +1876,26 @@ mod store {
         assert_eq!(old.length(automerge::ROOT), 0, "the old content is emptied");
     }
 
-    /// A record whose id is bound to a sealed kind (Terminal's history) is refused under any other
-    /// kind on its first write, while the same write of an unbound id lands.
+    /// A record whose id is bound to a sealed kind (Mail's root, which Mail declares sealed) is
+    /// refused under any other kind on its first write, while the same write of an unbound id
+    /// lands.
     #[test]
     fn a_first_write_naming_another_kind_for_a_sealed_id_is_refused() {
-        let history = collab_types::workspace_document_id("terminal.history");
+        let mailbox = collab_types::workspace_document_id("tl.so.tilo.mail");
+        assert!(collab_types::is_sealed_kind("tl.so.tilo.mail"));
         let mut here = issues();
         let mut there = issues();
         let sealed = put(
             &mut here,
-            &history,
+            &mailbox,
             resource("board", "a0", "Draft", "open"),
         );
         assert!(
             matches!(
                 &deliver(&sealed, &mut there, &|_: &Proposal<'_>| true)[..],
-                [Refusal::Undeclared(why)] if why.contains("terminal.history")
+                [Refusal::Undeclared(why)] if why.contains("tl.so.tilo.mail")
             ),
-            "an issue cannot be what the history's id names"
+            "an issue cannot be what the mailbox's id names"
         );
         // Written where nothing was refused before it: what follows a refused change is refused
         // with it.
