@@ -393,6 +393,13 @@ impl Instances {
         }
     }
 
+    /// Whether this device ever started a tilolang process, for a test that must see that
+    /// nothing of an app ran: asking for the processes here never starts one.
+    #[cfg(test)]
+    pub(crate) fn started_a_process(&self) -> bool {
+        self.processes.get().is_some()
+    }
+
     /// The tilolang processes, through the launcher found first.
     pub(crate) fn processes(&self) -> Result<&Arc<Processes>, String> {
         if let Some(processes) = self.processes.get() {

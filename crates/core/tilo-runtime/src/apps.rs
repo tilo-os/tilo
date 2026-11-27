@@ -42,6 +42,8 @@ pub(crate) mod capture;
 mod carried;
 mod connection;
 pub(crate) mod connectors;
+mod failures;
+pub(crate) use failures::{Failures, Retry};
 mod instances;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -153,12 +155,24 @@ pub struct Apps {
     instances: instances::Instances,
     /// The origin connectors this device runs for its tilolang apps' instances.
     connectors: connectors::Connectors,
+    /// Why each app's long-lived connection is not running here, and when this device tries it
+    /// again.
+    failures: Arc<Failures>,
+    /// How a start that failed is retried.
+    retry: Retry,
 }
 impl Apps {
     /// Hand each origin connector this device starts the connection to its dispatch through
     /// `actions` from now on.
     pub(crate) fn hand_actions(&self, actions: Box<connectors::Actions>) {
         self.connectors.hand_actions(actions);
+    }
+
+    /// Why each app's long-lived connection does not run here, and when this device tries it
+    /// again: what a device's package rows say of an app that stopped starting.
+    #[must_use]
+    pub(crate) fn failures(&self) -> Arc<Failures> {
+        Arc::clone(&self.failures)
     }
 }
 
@@ -251,6 +265,8 @@ impl Apps {
             #[cfg(target_os = "macos")]
             data_home,
             connectors: connectors::Connectors::default(),
+            failures: Arc::default(),
+            retry: Retry::default(),
             #[cfg(target_os = "linux")]
             launcher_candidates,
             launched,
@@ -658,12 +674,17 @@ impl Apps {
         if !crate::device::package_runs::runs_in_process(app) {
             return Ok(None);
         }
+        if let Some(reason) = self.needs_runtime(app) {
+            return Err(reason);
+        }
         let Some(origin) = crate::device::package_runs::origin_of(app)? else {
             return Ok(None);
         };
         let (instance, theirs) = runtime_portal::origin_connector::connection()
             .map_err(|error| format!("no connection to {app}'s {origin} connector: {error}"))?;
         self.attach_origin(app, &origin, workspace, &theirs)?;
+        // Its connector came up: what stopped coming up here is tried again from a clean slate.
+        self.failures.forget(workspace, app);
         Ok(Some(instance))
     }
 
@@ -717,6 +738,9 @@ impl Apps {
             .into_iter()
             .find(|app| app.app_id == app_id)
             .ok_or_else(|| format!("{app_id} is not installed"))?;
+        if let Some(reason) = self.needs_runtime(app_id) {
+            return Err(reason);
+        }
         #[cfg(target_os = "linux")]
         {
             let sockets = self.sockets.clone();
@@ -1078,6 +1102,11 @@ impl Apps {
         } else {
             self.launchable(app_id)?
         };
+        // A runtime its signed manifest names and this device lacks stops the launch here, with
+        // a reason a person can act on, rather than in the sandbox's own words later.
+        if let Some(reason) = self.needs_runtime(app_id) {
+            return Err(reason);
+        }
         // The record the app is asked to open, as a window of the session asks for one.
         let open_uri = open
             .map(|record| {
@@ -1140,6 +1169,8 @@ impl Apps {
             launch.kill();
             return Err(format!("could not let {app_id}'s launcher go on: {error}"));
         }
+        // A person opening the app is a change: what stopped coming up here is tried again.
+        self.failures.forget(workspace, app_id);
         Ok(launch)
     }
 

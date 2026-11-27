@@ -146,6 +146,10 @@ fn run_held(kind: &str, code: std::sync::Arc<dyn tilolang_tilo::held::Kind>) -> 
         Ok(None) => return Ok(()),
         Err(error) => return Err(format!("the {kind} connections' socket: {error}")),
     }
+    // It holds its socket and its dispatch: the device that started it may count it as up.
+    if let Err(error) = origin_connector::say_ready(&socket) {
+        tracing::warn!(%error, "the held connections could not say they are up");
+    }
     // Nothing held for anyone ends the process: its socket is shut, so the daemon starts it
     // again when an instance needs it, and the process stops taking instances and returns.
     let ending = std::os::unix::net::UnixStream::from(

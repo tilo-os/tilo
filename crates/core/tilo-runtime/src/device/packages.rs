@@ -86,6 +86,9 @@ struct Rows {
     root: PathBuf,
     /// The packages on their way, by app.
     fetching: Mutex<BTreeMap<String, PackageRow>>,
+    /// Why an app's connection did not come up and this device stopped starting it
+    /// ([`crate::apps::Failures`]): what its row says beyond being installed.
+    failures: Mutex<Option<Arc<crate::apps::Failures>>>,
     /// Moves on with every change to the rows.
     revision: tokio::sync::watch::Sender<u64>,
 }
@@ -96,8 +99,19 @@ impl Rows {
         let catalog =
             package_store::Catalog::at(&self.root, package_store::SystemStore::from_env());
         let fetching: Vec<PackageRow> = self.fetching.lock_recover().values().cloned().collect();
-        package_actions::rows::rows(&catalog, fetching)
+        let failed = self
+            .failures
+            .lock_recover()
+            .as_ref()
+            .map_or_else(Vec::new, |failures| failures.stopped_rows());
+        package_actions::rows::rows(&catalog, fetching, failed)
             .map_err(|reason| ActionCallError::Unavailable { reason })
+    }
+
+    /// Read the rows `app`'s connection failures as this device keeps them from now on.
+    fn watch_failures(&self, failures: Arc<crate::apps::Failures>) {
+        *self.failures.lock_recover() = Some(failures);
+        self.moved();
     }
 
     /// Wake every watch of the rows.
@@ -209,11 +223,22 @@ impl ResourceReads for Rows {
                 return Ok(());
             }
             let mut seen = self.revision.subscribe();
+            let mut failed = self
+                .failures
+                .lock_recover()
+                .as_ref()
+                .map(|failures| failures.watch());
             let wake = wake.clone();
             tilo_rt::app().spawn(async move {
-                if seen.changed().await.is_ok() {
-                    wake.wake();
+                if let Some(failed) = failed.as_mut() {
+                    tokio::select! {
+                        _ = seen.changed() => {}
+                        _ = failed.changed() => {}
+                    }
+                } else {
+                    let _ = seen.changed().await;
                 }
+                wake.wake();
             });
             Ok(())
         })
@@ -443,6 +468,7 @@ impl PackageCache {
             resource: resource.clone(),
             root: root.to_owned(),
             fetching: Mutex::default(),
+            failures: Mutex::default(),
             revision: tokio::sync::watch::Sender::new(0),
         });
         Self {
@@ -515,6 +541,22 @@ impl PackageCache {
                 tracing::warn!(%error, "the development builds are not installed in the workspace");
             })
             .ok()
+    }
+
+    /// Read the failures of the apps' connections this device keeps into its rows from now on:
+    /// an app that stopped coming up says why in its row, and reads as installed still.
+    pub(crate) fn watch_app_failures(&self, failures: Arc<crate::apps::Failures>) {
+        self.writer.rows.watch_failures(failures);
+    }
+
+    /// The rows as every view of them reads them, for a test that must see what an app's row
+    /// says.
+    #[cfg(test)]
+    pub(crate) fn rows_for_test(&self) -> Result<Vec<PackageRow>, String> {
+        self.writer
+            .rows
+            .now()
+            .map_err(|_| "the cache's rows cannot be read now".to_owned())
     }
 
     /// Record that `app` was opened, as the cache's `opened` change does: what was used last is

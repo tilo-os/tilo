@@ -40,6 +40,37 @@ struct Attach {
     actions: bool,
 }
 
+/// What a connector says once it is up: it holds the socket the launcher handed it and the
+/// connection to its device's dispatch, and reads for readers. A device that starts a connector
+/// waits for this, so a launch that fails before it comes up is answered with what it said
+/// instead of counting as started.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Ready {
+    /// The connector's own word for which start answered: what a later protocol makes of it.
+    version: u8,
+}
+
+impl crate::packet::Packet for Ready {}
+
+/// Tell the device behind `socket` that this connector is up ([`Ready`]).
+///
+/// # Errors
+/// The socket's error.
+#[cfg(any(unix, windows))]
+pub fn say_ready(socket: &Descriptor) -> io::Result<()> {
+    Ready { version: 1 }.send(socket)
+}
+
+/// Wait for the connector behind `socket` to say it is up ([`Ready`]): `None` when it let go of
+/// the socket first, as one that ended does.
+///
+/// # Errors
+/// The socket's error, or a message that is no [`Ready`].
+#[cfg(any(unix, windows))]
+pub fn heard_ready(socket: &Descriptor) -> io::Result<Option<u8>> {
+    Ok(Ready::receive(socket)?.map(|ready| ready.version))
+}
+
 /// What the session handed the connector.
 #[cfg(any(unix, windows))]
 #[derive(Debug)]

@@ -206,6 +206,8 @@ pub(super) fn connector(
     (origin, socket): (&str, std::os::fd::BorrowedFd<'_>),
 ) -> Result<std::process::Child, String> {
     let (mut command, launcher) = command(apps, app, workspace, sockets, original, None)?;
+    // What a launch that fails says is read here, to answer why it did not come up.
+    command.stderr(std::process::Stdio::piped());
     // A connector draws nothing, opens nothing and reads no record: no display goes with it.
     command.arg("--tilolang-connector").arg(origin);
     let hold = launcher::launch_hold::install(&mut command)

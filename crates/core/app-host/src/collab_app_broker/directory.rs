@@ -940,6 +940,11 @@ impl AppBrokerState {
             .unwrap_or_default();
         roots.sort_by_key(|root| root.peer_id);
         if let Ok(mut snapshot) = self.action_directory_root_snapshot.lock() {
+            // A listing's revision names what the catalogue holds: a rebuild that holds the
+            // same roots moves nothing, so a page walk is not retired for nothing.
+            if snapshot.roots == roots {
+                return;
+            }
             snapshot.roots = roots;
             snapshot.generation = snapshot.generation.wrapping_add(1);
             tracing::debug!(

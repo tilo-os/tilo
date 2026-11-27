@@ -36,7 +36,7 @@ use crate::fixtures::{
 
 use crate::vault_release::AppProcess;
 use tilo_workspace_service::own_device::KeyService;
-use tilo_workspace_service::work::{HostConnections, Order, Turn, takes_turn_in};
+use tilo_workspace_service::work::{HostConnections, Order, StartRefusal, Turn, takes_turn_in};
 use tilo_workspace_service::workspaces::{MemberDevice, PreAdmitRequest};
 
 /// The mail account both members read.
@@ -985,7 +985,8 @@ impl tilo_workspace_service::work::HostConnections for HeldBridge {
         &'a self,
         _: &'a str,
         _: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StartRefusal>> + Send + 'a>>
+    {
         Box::pin(async { Ok(()) })
     }
     fn runs(&self, _: &str, _: &str) -> bool {
@@ -1120,7 +1121,8 @@ impl HostConnections for MailHeld {
         &'a self,
         _: &'a str,
         _: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StartRefusal>> + Send + 'a>>
+    {
         Box::pin(async { Ok(()) })
     }
     fn runs(&self, _: &str, _: &str) -> bool {

@@ -18,6 +18,13 @@ pub struct Verified {
     pub module: runtime_portal::process_link::Module,
 }
 
+/// Whether the runtime `raw` (`<name>/<version>`) is here: installed as a bundle a launch finds,
+/// or carried by this device's own runtime, as a phone carries the one its apps run on.
+#[must_use]
+pub fn runtime_installed(raw: &str) -> bool {
+    package_store::runtime_installed(raw) || runtime_bundle::carried(raw).is_some()
+}
+
 /// Whether the installed app `app` is a tilolang app: its payload carries the module its records
 /// and views are, on a tilolang runtime it names. Its entrypoint may be the binary of that
 /// runtime, or a program's runtime (`bun`) that the app also carries; either way its code runs in

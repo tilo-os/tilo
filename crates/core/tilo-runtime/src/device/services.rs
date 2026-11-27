@@ -3144,6 +3144,8 @@ impl Daemon {
         // So is its package cache, the one it answered before the login too.
         match super::packages::PackageCache::this_device(&identity.key) {
             Ok(cache) => {
+                // An app whose connection stopped coming up says why in its row.
+                cache.watch_app_failures(apps.failures());
                 super::packages::follow(&cache, Arc::clone(&workspaces));
                 // Builds installed while this start ran are installed in the workspace on a
                 // thread of their own.

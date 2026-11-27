@@ -25,8 +25,8 @@ use crate::collab_app_broker::AppBrokerState;
 use crate::services::ConnectionActions;
 use crate::triggers::{Firing, Runner, StartRun};
 use tilo_workspace_service::work::{
-    ConnectionCall, HostConnections, Ineligible, NotTaken, Order, Turn, connection_call,
-    connection_holder, takes_turn,
+    ConnectionCall, HostConnections, Ineligible, NotTaken, Order, StartRefusal, Turn,
+    connection_call, connection_holder, takes_turn,
 };
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{TestHost, device_cert};
@@ -127,7 +127,8 @@ impl HostConnections for Device {
         &'a self,
         workspace: &'a str,
         app: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StartRefusal>> + Send + 'a>>
+    {
         Box::pin(async move {
             let mut starts = locked(&self.starts);
             *starts = starts.saturating_add(1);

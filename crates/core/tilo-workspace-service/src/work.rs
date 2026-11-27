@@ -72,6 +72,7 @@
 //! caller signed it, and none starts the app for it.
 
 use std::fmt;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -924,6 +925,19 @@ pub trait HostLinux: Send + Sync {
     fn runs(&self) -> Arc<dyn ActionProvider + Send + Sync>;
 }
 
+/// Why a device could not start an app's connection, and when it may try again: a start that
+/// fails is retried after `again`, which the device doubles while the same failure repeats and
+/// caps, so a failing app is not started in a loop. An app that stopped failing is still asked
+/// after the cap: a reinstall or a runtime it needs installed is found that way, and nothing is
+/// started before then.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartRefusal {
+    /// Why it did not come up, as the app or its launcher said it: its first error lines.
+    pub reason: String,
+    /// How long before this device may try again.
+    pub again: Duration,
+}
+
 /// The apps whose long-lived connection this device runs ([`Turn::Connection`]):
 /// what [`takes_turn`] asks before it lets the device take one, and what the
 /// device that holds the lease starts and stops the app's process with.
@@ -945,12 +959,12 @@ pub trait HostConnections: Send + Sync {
     /// there already, answering once the app is up.
     ///
     /// # Errors
-    /// Why the process did not start.
+    /// Why the process did not start ([`StartRefusal`]), and when this device may try again.
     fn start<'a>(
         &'a self,
         workspace: &'a str,
         app: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StartRefusal>> + Send + 'a>>;
 
     /// Whether the process this device started for `app` in `workspace` runs.
     fn runs(&self, workspace: &str, app: &str) -> bool;

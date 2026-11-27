@@ -21,7 +21,7 @@ use tilo_workspace_records::vault as workspace_vault;
 use crate::fixtures::device_cert;
 use crate::fixtures::{member_service, shared_with};
 use crate::vault_release::AppProcess;
-use tilo_workspace_service::work::{HostConnections, Order, Turn, takes_turn_in};
+use tilo_workspace_service::work::{HostConnections, Order, StartRefusal, Turn, takes_turn_in};
 
 const BRIDGE: &str = "so.tilo.bridge";
 /// A made-up bot token: no service ever issued it.
@@ -47,7 +47,8 @@ impl HostConnections for Bridge {
         &'a self,
         _: &'a str,
         _: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StartRefusal>> + Send + 'a>>
+    {
         Box::pin(async { Ok(()) })
     }
     fn runs(&self, _: &str, _: &str) -> bool {

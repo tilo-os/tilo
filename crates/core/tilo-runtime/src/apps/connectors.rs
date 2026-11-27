@@ -20,13 +20,33 @@
 //! service of the person's desktop session) attaches over a connection of its own: one end is
 //! the reader's, the other is handed to the connector over the socket it took with its launch
 //! ([`runtime_portal::origin_connector`]).
+//!
+//! A start answers only once the connector is up: it says so on its socket once it holds the
+//! dispatch connection, and a launcher that ends before that is answered with the first of what
+//! it wrote, never counted as started.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 use runtime_portal::origin_connector;
 use runtime_portal::process_link::Descriptor;
 use tilo_lock::MutexRecover as _;
+
+/// How long a connector has to say it is up, or end, before its start counts as having come up.
+/// A connector that says nothing runs on, on a build older than the word, and a start is not
+/// held longer for it.
+#[cfg(target_os = "linux")]
+const UP_BY: Duration = Duration::from_secs(2);
+
+/// How long a connector that ended has to have written its last error line.
+#[cfg(target_os = "linux")]
+const SAID_BY: Duration = Duration::from_secs(2);
+
+/// How many of its first error lines a connector that did not come up is reported by.
+#[cfg(target_os = "linux")]
+const SAID_LINES: usize = 8;
 
 /// Which held connection: the app, its kind (an origin, or a kind of held connection) and the
 /// workspace.
@@ -106,6 +126,24 @@ impl Connectors {
             .map_err(|error| format!("no socket for {app}'s {origin} connector: {error}"))?;
         let mut child = start(&socket)?;
         drop(socket);
+        // What it writes as it starts is kept for why it did not come up; what it writes while
+        // it runs is the log's.
+        #[cfg(target_os = "linux")]
+        let said = child.stderr.take().map(|stderr| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let tag = format!("{app} {origin}");
+            match std::thread::Builder::new()
+                .name("connector-err".into())
+                .spawn(move || {
+                    let _ = sender.send(first_lines(stderr, &tag));
+                }) {
+                Ok(_) => receiver,
+                Err(error) => {
+                    tracing::debug!(%error, app, origin, "a connector's error output is not read");
+                    receiver
+                }
+            }
+        });
         #[cfg(target_os = "macos")]
         let child_pid = pid(&child).unwrap_or(0);
         #[cfg(not(target_os = "macos"))]
@@ -129,6 +167,38 @@ impl Connectors {
             let _ = child.kill();
             reap(child);
             return Err(error);
+        }
+        // A launcher that fails to start the app ends here, before it ever reads a reader: the
+        // start did not come up, and what it said is why. One that runs on past the wait is up.
+        if came_up(&mut child, &ours).is_err() {
+            #[cfg(target_os = "linux")]
+            {
+                // It may still be ending, its last words not written yet: wait a moment for its
+                // own end, whose status and words are the answer, before killing it short.
+                let by = std::time::Instant::now()
+                    .checked_add(SAID_BY)
+                    .unwrap_or_else(std::time::Instant::now);
+                let status = loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => break Some(status),
+                        Ok(None) if std::time::Instant::now() < by => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        _ => {
+                            let _ = child.kill();
+                            break child.wait().ok();
+                        }
+                    }
+                };
+                let lines = said
+                    .and_then(|receiver| receiver.recv_timeout(SAID_BY).ok())
+                    .unwrap_or_default();
+                return Err(connector_ended(app, origin, status, &lines));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                return Err(format!("{app}'s {origin} connector ended as it started"));
+            }
         }
         tracing::info!(app, origin, workspace, "an origin connector started");
         running.insert(
@@ -184,6 +254,111 @@ impl Drop for Connectors {
             reap(running.child);
         }
     }
+}
+
+/// Whether the connector behind `socket` came up: it said so ([`origin_connector::say_ready`]),
+/// or it ran on past [`UP_BY`] without ending, as a build older than the word does. `Err` when it
+/// ended first, which a start must not count as started.
+#[cfg(target_os = "linux")]
+fn came_up(child: &mut Process, socket: &Descriptor) -> Result<(), ()> {
+    use std::sync::mpsc::RecvTimeoutError;
+    // The word comes on the socket the connector was started with, read on a thread of its own
+    // so the wait can look at the process too.
+    let Ok(watcher) = socket.try_clone() else {
+        return Ok(());
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    if std::thread::Builder::new()
+        .name("connector-up".into())
+        .spawn(move || {
+            let _ = sender.send(origin_connector::heard_ready(&watcher));
+        })
+        .is_err()
+    {
+        return Ok(());
+    }
+    let by = std::time::Instant::now()
+        .checked_add(UP_BY)
+        .unwrap_or_else(std::time::Instant::now);
+    // Whether it let go of its socket, which it does as it ends: the wait then goes on for its
+    // end, whose status and last words are the answer, rather than killing it short of them.
+    let mut let_go = false;
+    loop {
+        match receiver.recv_timeout(Duration::from_millis(10)) {
+            Ok(Ok(Some(_))) => return Ok(()),
+            // It let go of its socket, or said something that is no word of being up: it ended.
+            Ok(Ok(None) | Err(_)) | Err(RecvTimeoutError::Disconnected) => return Err(()),
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if !alive(child) {
+            return Err(());
+        }
+        let_go |= runtime_portal::process_link::hung_up(socket);
+        if std::time::Instant::now() >= by {
+            return if let_go { Err(()) } else { Ok(()) };
+        }
+    }
+}
+
+/// [`came_up`] where a connector's own launch is not the Linux launcher's: a start is taken as
+/// it was.
+#[cfg(not(target_os = "linux"))]
+fn came_up(_: &mut Process, _: &Descriptor) -> Result<(), ()> {
+    Ok(())
+}
+
+/// Why a connector that did not come up is reported by: how it ended, and the first of its error
+/// lines.
+#[cfg(target_os = "linux")]
+fn connector_ended(
+    app: &str,
+    origin: &str,
+    status: Option<std::process::ExitStatus>,
+    lines: &[String],
+) -> String {
+    let status = status.map_or_else(
+        || "it did not say how it ended".to_owned(),
+        |s| s.to_string(),
+    );
+    let said = lines.join(" | ");
+    if said.is_empty() {
+        format!("{app}'s {origin} connector ended as it started ({status})")
+    } else {
+        format!("{app}'s {origin} connector ended as it started ({status}): {said}")
+    }
+}
+
+/// The first of what `stderr` says, up to [`SAID_LINES`] lines, logged as it comes and read to the
+/// end so the process is never held up by an unread pipe.
+#[cfg(target_os = "linux")]
+fn first_lines(mut stderr: impl std::io::Read, tag: &str) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let mut lines = wire_frame::BoundedLines::new(wire_frame::LINE_BYTES);
+    let mut keep = |bytes: &[u8], truncated: bool| {
+        let mut line = String::from_utf8_lossy(bytes).into_owned();
+        if truncated {
+            line.push_str("… [truncated]");
+        }
+        tracing::info!(
+            target: tilo_startup_metrics::APP_OUTPUT_TARGET,
+            "[connector {tag}] {line}"
+        );
+        if kept.len() < SAID_LINES {
+            kept.push(line);
+        }
+    };
+    loop {
+        let read = match stderr.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        lines.push(chunk.get(..read).unwrap_or_default(), &mut keep);
+    }
+    lines.finish(keep);
+    kept
 }
 
 /// Whether `process` still runs.

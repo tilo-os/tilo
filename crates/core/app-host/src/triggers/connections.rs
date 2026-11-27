@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use tilo_workspace_service::work::{
-    Claim, HostConnections, NotTaken, Order, Turn, eligible, takes_turn_in,
+    Claim, HostConnections, NotTaken, Order, StartRefusal, Turn, eligible, takes_turn_in,
 };
 use tilo_workspace_service::workspaces::Workspaces;
 
@@ -19,9 +19,6 @@ const RENEW: Duration = Duration::from_secs(15);
 /// silent claim ([`tilo_peer_state::CLOCK_SKEW_NS`]), so a device that slept or stalled stops
 /// before the device that takes over starts, and asks for the turn again.
 const LAPSED: Duration = Duration::from_secs(40);
-
-/// How long after a connection's process failed to start this device asks for the turn again.
-const AFTER_FAILURE: Duration = Duration::from_secs(30);
 
 /// Which connection: the workspace and the app.
 type Key = (String, String);
@@ -41,6 +38,9 @@ pub(super) struct Connections {
     free_since: BTreeMap<Key, i64>,
     /// When this device asks again for a connection whose process failed to start here.
     again_at_ms: BTreeMap<Key, i64>,
+    /// The reason each connection last failed with, so the same one is said in the log once
+    /// rather than on every look that waits it out.
+    reported: BTreeMap<Key, String>,
 }
 
 impl Connections {
@@ -108,11 +108,15 @@ impl Connections {
         }
         if !host.runs(&key.0, &key.1) {
             tracing::warn!(workspace = %key.0, app = %key.1, "an app's connection ended, so this device starts it again");
-            if let Err(error) = host.start(&key.0, &key.1).await {
-                tracing::error!(workspace = %key.0, app = %key.1, %error, "an app's connection did not start again");
-                self.again_at_ms
-                    .insert(key.clone(), now_ms.saturating_add(millis(AFTER_FAILURE)));
-                self.give_up(host, key, true).await;
+            match host.start(&key.0, &key.1).await {
+                Ok(()) => {
+                    self.again_at_ms.remove(key);
+                    self.reported.remove(key);
+                }
+                Err(refusal) => {
+                    self.refused(key, &refusal, now_ms);
+                    self.give_up(host, key, true).await;
+                }
             }
         }
     }
@@ -139,13 +143,13 @@ impl Connections {
         match takes_turn_in(workspaces, &key.0, &turn, order).await {
             Ok(claim) => {
                 self.free_since.remove(&key);
-                if let Err(error) = host.start(&key.0, &key.1).await {
-                    tracing::error!(workspace = %key.0, app = %key.1, %error, "this device took an app's connection but its process did not start");
-                    self.again_at_ms
-                        .insert(key, now_ms.saturating_add(millis(AFTER_FAILURE)));
+                if let Err(refusal) = host.start(&key.0, &key.1).await {
+                    self.refused(&key, &refusal, now_ms);
                     claim.release().await;
                     return;
                 }
+                self.again_at_ms.remove(&key);
+                self.reported.remove(&key);
                 tracing::info!(workspace = %key.0, app = %key.1, "this device holds an app's connection");
                 self.holding.insert(
                     key,
@@ -170,6 +174,23 @@ impl Connections {
                 tracing::warn!(workspace = %key.0, app = %key.1, %error, "this device could not claim an app's connection");
             }
         }
+    }
+
+    /// Wait out `refusal` before asking for `key` again, and say its reason the first time it is
+    /// seen: a start that keeps failing the same way is not restarted in a loop, and the reason
+    /// is not repeated in the log by every look that waits.
+    fn refused(&mut self, key: &Key, refusal: &StartRefusal, now_ms: i64) {
+        if self.reported.get(key) != Some(&refusal.reason) {
+            tracing::error!(
+                workspace = %key.0,
+                app = %key.1,
+                reason = %refusal.reason,
+                "an app's connection did not come up"
+            );
+            self.reported.insert(key.clone(), refusal.reason.clone());
+        }
+        self.again_at_ms
+            .insert(key.clone(), now_ms.saturating_add(millis(refusal.again)));
     }
 
     /// Stop the connection `key` held here, and let go of its claim when `release`: a claim

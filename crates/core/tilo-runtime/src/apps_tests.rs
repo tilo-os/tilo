@@ -180,7 +180,11 @@ fn launched(apps: &Apps, app: &str, workspace: &str) -> Result<Launch, String> {
 
 /// [`HostConnections::start`] waited for on a test's own thread: what a device's turn of a held
 /// connection answers.
-fn connection_started(apps: &Apps, workspace: &str, app: &str) -> Result<(), String> {
+fn connection_started(
+    apps: &Apps,
+    workspace: &str,
+    app: &str,
+) -> Result<(), tilo_workspace_service::work::StartRefusal> {
     use tilo_workspace_service::work::HostConnections;
     tilo_rt::app()
         .handle()
@@ -1293,6 +1297,14 @@ tilo_test_env::scenario! {
         environment
             .remove("TILO_APPS_SYSTEM_DIR")
             .set("TILO_APPS_DATA_DIR", &store.root);
+        // The runtimes its manifest names are installed, so the launch it stands in for is
+        // not refused for them.
+        let bundles = root.join("runtimes");
+        for version in ["2026.07", "1.0.0", "1.4.5+bun"] {
+            std::fs::create_dir_all(bundles.join(version)).unwrap();
+            std::fs::write(bundles.join(version).join("bundle.toml"), "").unwrap();
+        }
+        environment.set("TILO_RUNTIME_BUNDLE_DIR", &bundles);
         assert!(
             package_runs::runs_in_process(BRIDGE),
             "its payload carries the module its actions are"
@@ -1949,4 +1961,305 @@ fn a_start_that_waits_for_its_app_leaves_the_runtime_it_runs_on_going() {
         "the runtime went on with other work while the start waited"
     );
     assert!(apps.attested(launch.pid).is_some(), "the app runs");
+}
+
+/// A tilolang app that keeps a long-lived connection to an outside service through its
+/// origin's connector, on `runtime`.
+fn connecting_manifest(id: &str, runtime: &str) -> String {
+    format!(
+        r#"[package]
+id = "{id}"
+version = "0.1.0"
+kind = "app"
+optional-runtimes = ["{runtime}"]
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "probe"
+type = "gui"
+runtime = "{runtime}"
+origins = ["imap"]
+connection = true
+"#
+    )
+}
+
+/// A bundle directory naming `runtime` installed, and the environment set to read it: a start
+/// that names it runs on this test's own files.
+#[cfg(target_os = "linux")]
+fn installing_runtime(environment: &mut tilo_test_env::ScopedEnv, root: &Path, runtime: &str) {
+    let version = runtime
+        .split_once('/')
+        .expect("a runtime names its version")
+        .1;
+    let bundles = root.join("runtimes");
+    std::fs::create_dir_all(bundles.join(version)).expect("the bundle directory");
+    std::fs::write(bundles.join(version).join("bundle.toml"), "").expect("a bundle");
+    environment.set("TILO_RUNTIME_BUNDLE_DIR", &bundles);
+}
+
+/// A launcher standing in for `tilo-launcher`: it records each start in `started`, takes its
+/// launch hold, writes `said` to its error output, and ends as a launch that cannot start does.
+#[cfg(target_os = "linux")]
+fn failing_launcher(root: &Path, started: &Path, said: &str) -> tilo_test_env::StandIn {
+    tilo_test_env::stand_in(
+        root.join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\n\
+             dd bs=1 count=1 <&0 >/dev/null 2>&1\n\
+             printf '%s\\n' '{said}' >&2\n\
+             exit 1\n",
+            started = started.display(),
+            said = said,
+        ),
+    )
+    .expect("the launcher stands in")
+}
+
+/// A connection's start that keeps failing the same way is retried a bounded number of times,
+/// then stops: the app's row says why, in its launcher's words, and nothing of the app runs, so
+/// no process of it publishes anything the action catalogue would list.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_connection_that_exits_as_it_starts_is_retried_then_stops_with_its_reason() {
+    const FAILING: &str = "so.tilo.failing";
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    store.install(
+        FAILING,
+        &connecting_manifest(FAILING, "tilolang/0.0.1-test"),
+        &[("probe", b"binary")],
+    );
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment
+        .remove("TILO_APPS_SYSTEM_DIR")
+        .set("TILO_APPS_DATA_DIR", &store.root);
+    installing_runtime(&mut environment, &root, "tilolang/0.0.1-test");
+    let started = root.join("started");
+    let said = "bwrap: no such source path /var/tmp/apps/pkgs/abc: Permission denied";
+    let launcher = failing_launcher(&root, &started, said);
+    let mut apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+    // What a daemon hands every connector before a reader: the connection to its dispatch.
+    apps.hand_actions(Box::new(|_, _, _, _| Ok(())));
+    // No wait between attempts: the test asks again as soon as a start may run.
+    apps.retry = Retry {
+        first: std::time::Duration::ZERO,
+        cap: std::time::Duration::ZERO,
+        identical: 3,
+    };
+    let failures = apps.failures();
+    let cache = crate::device::packages::PackageCache::new(
+        &SigningKey::from_bytes(&[7; 32]),
+        false,
+        &store.root,
+        Arc::new(crate::device::control::DeviceContent::at(
+            &root.join("content"),
+        )),
+    );
+    cache.watch_app_failures(Arc::clone(&failures));
+
+    let mut tries = Vec::new();
+    for _ in 0..8 {
+        let refusal = connection_started(&apps, WORKSPACE, FAILING)
+            .expect_err("the app's connection never comes up");
+        tries.push(refusal);
+    }
+
+    let spawns = std::fs::read_to_string(&started).map_or(0, |written| written.lines().count());
+    assert_eq!(spawns, 3, "three starts, then this device stops: {tries:?}");
+    let last = tries.last().expect("a refusal");
+    assert!(
+        last.reason.contains(said),
+        "the reason is the launcher's own words: {last:?}"
+    );
+    assert!(
+        tries
+            .windows(2)
+            .all(|pair| pair[1].reason == pair[0].reason),
+        "every refusal says the same failure: {tries:?}"
+    );
+
+    // The app's row says why it is not running, and still that it is installed.
+    let rows = cache.rows_for_test().expect("the cache's rows");
+    let row = rows
+        .iter()
+        .find(|row| row.app == FAILING)
+        .expect("the app has a row");
+    assert_eq!(
+        row.failed(),
+        Some(last.reason.as_str()),
+        "the row says why it stopped"
+    );
+    assert!(row.installed(), "it is installed still: {row:?}");
+
+    // Nothing of the app ran: no process of it published a surface or a directory root for the
+    // action catalogue to list, which is what keeps a listing's revision still across attempts.
+    assert_eq!(
+        apps.instances.no_view_running(FAILING, WORKSPACE),
+        0,
+        "the app's code never ran"
+    );
+    assert!(
+        !apps.instances.started_a_process(),
+        "no tilolang process of the app ran to publish anything"
+    );
+}
+
+/// A runtime the app needs that this device does not have is refused at once, without starting
+/// anything, and reported once: the app's row says why, and asking again changes nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_connection_needing_a_runtime_that_is_missing_is_refused_once_without_starts() {
+    const NEEDS_BUN: &str = "so.tilo.needs-bun";
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    store.install(
+        NEEDS_BUN,
+        &connecting_manifest(NEEDS_BUN, "bun/0.0.1-test"),
+        &[("probe", b"binary")],
+    );
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment
+        .remove("TILO_APPS_SYSTEM_DIR")
+        .set("TILO_APPS_DATA_DIR", &store.root);
+    // The bundle root names nothing installed: `bun/0.0.1-test` is not here.
+    let bundles = root.join("runtimes");
+    std::fs::create_dir_all(&bundles).expect("the bundle root");
+    environment.set("TILO_RUNTIME_BUNDLE_DIR", &bundles);
+    let started = root.join("started");
+    let launcher = failing_launcher(&root, &started, "the app is never started");
+    let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+    let failures = apps.failures();
+    let cache = crate::device::packages::PackageCache::new(
+        &SigningKey::from_bytes(&[7; 32]),
+        false,
+        &store.root,
+        Arc::new(crate::device::control::DeviceContent::at(
+            &root.join("content"),
+        )),
+    );
+    cache.watch_app_failures(Arc::clone(&failures));
+
+    let mut reported = failures.watch();
+    let refusal = connection_started(&apps, WORKSPACE, NEEDS_BUN)
+        .expect_err("a runtime it needs is not installed");
+    assert!(
+        refusal
+            .reason
+            .contains("needs the runtime `bun/0.0.1-test`, which is not installed"),
+        "{}",
+        refusal.reason
+    );
+    assert!(
+        reported.has_changed().unwrap_or(false),
+        "the first refusal is reported"
+    );
+    let reason = *reported.borrow_and_update();
+    for _ in 0..4 {
+        let again = connection_started(&apps, WORKSPACE, NEEDS_BUN)
+            .expect_err("it is refused until the runtime is installed");
+        assert_eq!(again.reason, refusal.reason);
+    }
+    assert!(
+        !reported.has_changed().unwrap_or(false),
+        "a refusal already reported is not reported again"
+    );
+    assert_eq!(*reported.borrow(), reason);
+    assert!(
+        !started.exists(),
+        "nothing is started for an app whose runtime is missing"
+    );
+
+    let rows = cache.rows_for_test().expect("the cache's rows");
+    let row = rows
+        .iter()
+        .find(|row| row.app == NEEDS_BUN)
+        .expect("the app has a row");
+    assert_eq!(row.failed(), Some(refusal.reason.as_str()));
+}
+
+/// The action catalogue's revision stands still across a failing app's attempts: nothing of the
+/// app comes up, so no surface or directory root of it is ever published or withdrawn.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failing_apps_attempts_move_no_catalogue_revision() {
+    use crate::RuntimeServices as _;
+    const TEST: &str = "apps::tests::a_failing_apps_attempts_move_no_catalogue_revision";
+    const FAILING: &str = "so.tilo.failing";
+    let Some(root) = crate::device::services::tests::isolated_root(TEST) else {
+        return;
+    };
+    let mut store = Store::new(&root);
+    store.install(
+        FAILING,
+        &connecting_manifest(FAILING, "tilolang/0.0.1-test"),
+        &[("probe", b"binary")],
+    );
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment
+        .remove("TILO_APPS_SYSTEM_DIR")
+        .set("TILO_APPS_DATA_DIR", &store.root);
+    installing_runtime(&mut environment, &root, "tilolang/0.0.1-test");
+    let started = root.join("started");
+    let launcher = failing_launcher(
+        &root,
+        &started,
+        "bwrap: no such source path /var/tmp/apps/pkgs/abc: Permission denied",
+    );
+    environment.set("TILO_LAUNCHER_BIN", launcher.path());
+    let daemon = std::sync::Arc::new(
+        crate::device::services::Daemon::start_reporting(&root, &mut |_| {})
+            .expect("the daemon starts"),
+    );
+    let workspace = daemon
+        .workspace()
+        .expect("the daemon serves the person's workspace");
+    // The connection every connector is handed before a reader: what its session start hands
+    // it in a real daemon.
+    daemon.apps().hand_actions(Box::new(|_, _, _, _| Ok(())));
+    let broker = daemon
+        .app_action_broker()
+        .expect("the daemon runs a broker");
+    let revision = || {
+        (
+            broker.state().published_surfaces_generation(),
+            broker
+                .state()
+                .action_directory_root_page(None, 0)
+                .generation,
+        )
+    };
+    let before = revision();
+    let mut answers = Vec::new();
+    for _ in 0..5 {
+        match connection_started(daemon.apps(), &workspace, FAILING) {
+            Ok(()) => answers.push("it came up".to_owned()),
+            Err(refusal) => answers.push(refusal.reason),
+        }
+    }
+    assert!(
+        started.exists(),
+        "its start was tried, and failed, before this: {answers:?}"
+    );
+    assert_eq!(
+        revision(),
+        before,
+        "an app that never came up moved the catalogue's revision"
+    );
+    assert_eq!(
+        daemon.apps().instances.no_view_running(FAILING, &workspace),
+        0,
+        "nothing of the app ran to publish anything"
+    );
 }

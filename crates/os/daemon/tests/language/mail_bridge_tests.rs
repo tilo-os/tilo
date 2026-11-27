@@ -17,7 +17,7 @@ use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
 use tilo_actions::remote::Caller;
 use tilo_workspace_records::vault as workspace_vault;
 use tilo_workspace_service::work::{
-    HostConnections, Order, Turn, connection_holder, takes_turn_in,
+    HostConnections, Order, StartRefusal, Turn, connection_holder, takes_turn_in,
 };
 use tilo_workspace_service::workspaces::MemberDevice;
 use tilo_workspace_service::workspaces::fixtures::{
@@ -249,7 +249,8 @@ impl HostConnections for MailInstalled {
         &'a self,
         _: &'a str,
         _: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StartRefusal>> + Send + 'a>>
+    {
         Box::pin(async { Ok(()) })
     }
     fn runs(&self, _: &str, _: &str) -> bool {

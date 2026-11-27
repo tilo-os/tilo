@@ -40,7 +40,7 @@ const fn is_zero(bytes: &u64) -> bool {
 }
 
 /// Where one app's package stands on a device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum RowState {
     /// Its bytes are on their way, `bytes` of them here so far, of `total` when the place they
@@ -52,22 +52,35 @@ pub enum RowState {
     },
     /// It is installed: the app opens.
     Installed,
+    /// It is installed, and the connection it keeps did not come up, and this device stopped
+    /// starting it: `reason` says why, in the app's or its launcher's words. Opening the app,
+    /// reinstalling it or installing a runtime it needs starts it again.
+    Failed { reason: String },
 }
 
 impl PackageRow {
     /// The progress of its fetch, `(bytes, total)`, while it is on its way.
     #[must_use]
     pub const fn fetching(&self) -> Option<(u64, Option<u64>)> {
-        match self.state {
-            RowState::Fetching { bytes, total } => Some((bytes, total)),
-            RowState::Installed => None,
+        match &self.state {
+            RowState::Fetching { bytes, total } => Some((*bytes, *total)),
+            RowState::Installed | RowState::Failed { .. } => None,
         }
     }
 
     /// Whether the app opens from this device.
     #[must_use]
     pub const fn installed(&self) -> bool {
-        matches!(self.state, RowState::Installed)
+        !matches!(self.state, RowState::Fetching { .. })
+    }
+
+    /// Why the connection this app keeps did not come up here, when it did not and this device
+    /// stopped starting it.
+    pub fn failed(&self) -> Option<&str> {
+        match &self.state {
+            RowState::Failed { reason } => Some(reason),
+            RowState::Fetching { .. } | RowState::Installed => None,
+        }
     }
 }
 
@@ -143,13 +156,15 @@ fn about(path: &std::path::Path) -> Option<PackageAbout> {
 }
 
 /// The rows of what `catalog` has installed, with `fetching` (rows of packages on their way) in
-/// place of any installed version of the same app, ordered by app.
+/// place of any installed version of the same app, ordered by app. Each app in `failed`, by app
+/// and reason, is installed and says why a connection it keeps did not come up.
 ///
 /// # Errors
 /// The catalog of what is installed could not be read.
 pub fn rows(
     catalog: &package_store::Catalog,
     fetching: impl IntoIterator<Item = PackageRow>,
+    failed: impl IntoIterator<Item = (String, String)>,
 ) -> Result<Vec<PackageRow>, String> {
     let mut rows: BTreeMap<String, PackageRow> = catalog
         .list()
@@ -172,6 +187,13 @@ pub fn rows(
         .collect();
     for row in fetching {
         rows.insert(row.app.clone(), row);
+    }
+    for (app, reason) in failed {
+        if let Some(row) = rows.get_mut(&app)
+            && row.installed()
+        {
+            row.state = RowState::Failed { reason };
+        }
     }
     Ok(rows.into_values().collect())
 }

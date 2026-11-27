@@ -10,7 +10,7 @@
 use std::time::{Duration, Instant};
 
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::work::HostConnections;
+use tilo_workspace_service::work::{HostConnections, StartRefusal};
 
 use super::{Apps, Launched, Shows, process_start_time};
 
@@ -58,29 +58,50 @@ impl HostConnections for Apps {
         &'a self,
         workspace: &'a str,
         app: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StartRefusal>> + Send + 'a>>
+    {
         Box::pin(async move {
-            if crate::device::package_runs::runs_in_process(app) && !self.keeps_its_own_process(app)
-            {
-                // A tilolang app's outside connection is its origin's connector.
-                if crate::device::package_runs::origin_of(app)?.is_none() {
-                    return Err(format!(
-                        "{app} says it keeps a connection, but its manifest names no outside service \
-                         (`[entrypoint] origins`) to keep it to"
-                    ));
+            // The installed package this start runs: a reinstall of it is another one, and mends
+            // a failure the app stopped here.
+            let package = self
+                .installed()
+                .into_iter()
+                .find(|installed| installed.app_id == app)
+                .map_or_else(String::new, |installed| {
+                    installed.payload_root.display().to_string()
+                });
+            if let Some(refusal) = self.failures.waiting(
+                workspace,
+                app,
+                &package,
+                crate::device::package_runs::runtime_installed,
+                self.retry,
+            ) {
+                return Err(refusal);
+            }
+            // A runtime the app names and this device does not have is no failure time mends:
+            // the app is reported with that reason, and nothing is started for it until the
+            // runtime is installed or the app is reinstalled.
+            if let Some(runtime) = self.missing_runtime(app) {
+                let reason = self.needs_runtime(app).unwrap_or_default();
+                return Err(self.failures.failed(
+                    workspace,
+                    app,
+                    &package,
+                    reason,
+                    Some(runtime.as_str()),
+                    self.retry,
+                ));
+            }
+            match self.start_connection(app, workspace).await {
+                Ok(()) => {
+                    self.failures.started(workspace, app);
+                    Ok(())
                 }
-                let origin = self.origin_connection(app, workspace)?;
-                return self
-                    .instances
-                    .start_with_no_view(app, workspace, origin, self.access_for(workspace, app))
-                    .map(drop);
+                Err(reason) => Err(self
+                    .failures
+                    .failed(workspace, app, &package, reason, None, self.retry)),
             }
-            if self.launched.no_window_running(app, workspace, None) {
-                return Ok(());
-            }
-            self.start_watched(app, workspace, Shows::Connection, None)
-                .await
-                .map(drop)
         })
     }
 
@@ -92,6 +113,8 @@ impl HostConnections for Apps {
     }
 
     fn stop(&self, workspace: &str, app: &str) {
+        // A person stopping the connection asks for it again from a clean slate.
+        self.failures.forget(workspace, app);
         if crate::device::package_runs::runs_in_process(app) && !self.keeps_its_own_process(app) {
             self.connectors.stop(app, workspace);
             return;
@@ -101,6 +124,64 @@ impl HostConnections for Apps {
 }
 
 impl Apps {
+    /// Start `app`'s connection in `workspace`: [`HostConnections::start`] once a failure the app
+    /// stopped here is not in the way.
+    async fn start_connection(&self, app: &str, workspace: &str) -> Result<(), String> {
+        if crate::device::package_runs::runs_in_process(app) && !self.keeps_its_own_process(app) {
+            // A tilolang app's outside connection is its origin's connector.
+            if crate::device::package_runs::origin_of(app)?.is_none() {
+                return Err(format!(
+                    "{app} says it keeps a connection, but its manifest names no outside service \
+                     (`[entrypoint] origins`) to keep it to"
+                ));
+            }
+            let origin = self.origin_connection(app, workspace)?;
+            return self
+                .instances
+                .start_with_no_view(app, workspace, origin, self.access_for(workspace, app))
+                .map(drop);
+        }
+        if self.launched.no_window_running(app, workspace, None) {
+            return Ok(());
+        }
+        self.start_watched(app, workspace, Shows::Connection, None)
+            .await
+            .map(drop)
+    }
+
+    /// Why this device cannot start `app` now: a runtime its signed manifest names that is not
+    /// installed, which no retry mends and a person can act on.
+    pub(super) fn needs_runtime(&self, app: &str) -> Option<String> {
+        self.missing_runtime(app).map(|runtime| {
+            format!(
+                "{app} needs the runtime `{runtime}`, which is not installed; installing or \
+                 updating the app brings it"
+            )
+        })
+    }
+
+    /// The runtime the signed manifest of `app` names that this device does not have, or `None`
+    /// when it has every one it names.
+    pub(super) fn missing_runtime(&self, app: &str) -> Option<String> {
+        let installed = self
+            .installed()
+            .into_iter()
+            .find(|installed| installed.app_id == app)?;
+        let package = &installed.manifest.package;
+        let entrypoint = installed
+            .manifest
+            .entrypoint
+            .as_ref()
+            .and_then(|entrypoint| entrypoint.runtime.clone());
+        package
+            .runtime
+            .iter()
+            .chain(&package.required_runtimes)
+            .chain(entrypoint.iter())
+            .find(|runtime| !crate::device::package_runs::runtime_installed(runtime))
+            .cloned()
+    }
+
     /// Whether `app`'s held connection is its own process: a package that carries a program
     /// (`[entrypoint] script`) runs that program as the connection, beside the module its code
     /// runs from, where a tilolang app's connection is its origin's connector.

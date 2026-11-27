@@ -335,6 +335,24 @@ tilo_test_env::scenario! {
         assert!(after_disconnect.roots.is_empty());
         assert!(after_disconnect.generation > second.generation);
     }
+
+    // A listing's revision names what the catalogue lists: a rebuild of the same directory
+    // roots, as every connection that ends and comes back makes, moves it only when they differ.
+    phase a_rebuild_of_the_same_directory_roots_moves_no_revision;
+    {
+        let fixture = local_directory_fixture();
+        fixture.state.refresh_action_directory_root_snapshot();
+        let first = fixture.state.action_directory_root_page(None, 128);
+        assert!(!first.roots.is_empty(), "a directory root is published");
+        fixture.state.refresh_action_directory_root_snapshot();
+        fixture.state.refresh_action_directory_root_snapshot();
+        let again = fixture.state.action_directory_root_page(None, 128);
+        assert_eq!(again.roots, first.roots);
+        assert_eq!(
+            again.generation, first.generation,
+            "the same roots moved the revision of what the catalogue lists"
+        );
+    }
 }
 
 /// The visibility contract is the permission that discloses a container

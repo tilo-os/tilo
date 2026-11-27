@@ -24,7 +24,7 @@ use crate::fixtures::{hosting_device, test_host};
 use crate::hosted_use::turn_use_tests::on_turn;
 use crate::person_vault::vault_tests::{ask_at, files_holding};
 use crate::vault_release::{self as release, AppProcess};
-use tilo_workspace_service::work::{HostConnections, Order, Turn, takes_turn_in};
+use tilo_workspace_service::work::{HostConnections, Order, StartRefusal, Turn, takes_turn_in};
 
 /// The app whose own process asks for its key.
 const BRIDGE: &str = "so.tilo.bridge";
@@ -59,7 +59,8 @@ impl HostConnections for Bridge {
         &'a self,
         _: &'a str,
         _: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StartRefusal>> + Send + 'a>>
+    {
         Box::pin(async { Ok(()) })
     }
     fn runs(&self, _: &str, _: &str) -> bool {

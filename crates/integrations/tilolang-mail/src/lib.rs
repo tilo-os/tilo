@@ -134,6 +134,10 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
         Ok(None) => return Ok(()),
         Err(error) => return Err(format!("the mail connector's socket: {error}")),
     };
+    // It holds its socket and its dispatch: the device that started it may count it as up.
+    if let Err(error) = origin_connector::say_ready(&socket) {
+        tracing::warn!(%error, "the mail connector could not say it is up");
+    }
     let attachments = origin_connector::attachments(socket, |failed| match failed {
         None => tracing::info!("the session closed the mail connector's socket"),
         Some(error) => tracing::error!(%error, "the mail connector's socket failed for good"),
