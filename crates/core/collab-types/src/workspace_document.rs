@@ -24,6 +24,25 @@ pub fn workspace_document(app: &str, document: &str) -> Option<&'static Workspac
         .find(|known| known.app == app && known.kind == kind)
 }
 
+/// Whether `record` is one person's own record of a kind no declaration names: an id
+/// `tilo_action_policy::roles::member_record` derives (a version-8 uuid), which names neither its
+/// person nor its kind. Its id names no kind a declaration places and no readers, so no one
+/// reads it, no device keeps its keys, and no one writes it.
+#[must_use]
+pub fn is_person_record(record: &str) -> bool {
+    bound_kind(record).is_none() && person_record_id(record).is_some()
+}
+
+/// The id of the person's record `record` is or holds, when it is one [`is_person_record`] names:
+/// a version-8 uuid, which only `member_record` makes.
+fn person_record_id(record: &str) -> Option<&str> {
+    record.match_indices("uuid:").find_map(|(at, _)| {
+        let id = record.get(at..)?.get(..41)?;
+        let uuid = uuid::Uuid::try_parse(id.strip_prefix("uuid:")?).ok()?;
+        (uuid.get_version_num() == 8).then_some(id)
+    })
+}
+
 /// The kind the id `record` is bound to, whatever kind a write names for it: the kind a derived
 /// id names, or the kind a fixed id is declared for. `None` for an id that names no kind.
 #[must_use]

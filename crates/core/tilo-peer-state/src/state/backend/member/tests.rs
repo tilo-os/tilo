@@ -559,6 +559,47 @@ fn an_authors_own_records_are_sealed_for_their_devices_alone() {
     );
 }
 
+/// A person's record of a kind no package declares any more — an id `member_record` derives, as
+/// the old `DocumentId::of_member("messages.drafts")` — is read by no one and its keys kept by
+/// no device: the workspace's owner, another member, and the device that wrote it are refused.
+#[test]
+fn an_undeclared_person_record_is_read_by_no_one_and_kept_by_no_device() {
+    const APP: &str = "so.tilo.messages";
+    let (mut peer, owner_key, _, member, second, third, now) =
+        crate::admission_tests::seeded_editor_with_second_device();
+    put_member(&mut peer, &hex::encode(third.user_public_key), Role::Editor);
+    peer.select_exact_admissions().unwrap();
+    let drafts = collab_types::document::DocumentId::of_member(
+        &hex::encode(member.user_public_key),
+        "messages.drafts",
+    )
+    .expect("a member record")
+    .as_str()
+    .to_owned();
+    assert!(
+        collab_types::is_person_record(&drafts),
+        "an id member_record derives"
+    );
+    assert!(
+        collab_types::workspace_document(APP, &drafts).is_none(),
+        "the kind no package declares"
+    );
+    let holders = peer.document_key_holders(APP, &drafts, now).unwrap();
+    for (asks, who) in [
+        (owner_key.verifying_key().to_bytes(), "the owner's device"),
+        (third.device_public_key, "an editor's device"),
+        (member.device_public_key, "its writer's device"),
+        (second.device_public_key, "the writer's other device"),
+    ] {
+        assert!(
+            peer.check_document_read(asks, APP, &drafts, now).is_err(),
+            "{who} reads none of a record no declaration names"
+        );
+        assert!(!holders.contains(&asks), "{who} holds none of its keys");
+    }
+    assert!(holders.is_empty(), "no device holds its keys: {holders:?}");
+}
+
 /// The workspace's owner, and a member who may act anywhere in the workspace's records, ask for
 /// the keys of another member's private draft: each is given none of them. A record only its
 /// author reads is sealed for the author's devices alone, whatever else a caller may do beside it.

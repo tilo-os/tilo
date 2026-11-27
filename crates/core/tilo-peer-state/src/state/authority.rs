@@ -1083,7 +1083,23 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<(), String> {
         let member = self.read_access(device, app, document, now)?;
-        self.check_read_as(&member, (app, document), now)
+        if self.reads_document_as(&member, (app, document), now) {
+            Ok(())
+        } else {
+            Err(format!("document read forbidden: {app}/{document}"))
+        }
+    }
+
+    /// Whether `member` reads `document` of `app` now: what the policy allows, except for one
+    /// person's own record of a kind no declaration names, which has no reader.
+    pub(super) fn reads_document_as(
+        &self,
+        member: &MemberAccess,
+        (app, document): (&str, &str),
+        now: SystemTime,
+    ) -> bool {
+        !collab_types::is_person_record(document)
+            && self.check_read_as(member, (app, document), now).is_ok()
     }
 
     /// The access the device `device` reads `document` of `app` under now: a member device's own,
@@ -1140,6 +1156,11 @@ impl StatePeer {
         (app, document): (&str, &str),
         now: SystemTime,
     ) -> bool {
+        // One person's record of a kind no declaration names has no device keeping its keys: its
+        // id names no readers, so no role, owner or grant is given them.
+        if collab_types::is_person_record(document) {
+            return false;
+        }
         if self.check_read_as(member, (app, document), now).is_ok() {
             return true;
         }

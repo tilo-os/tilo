@@ -6021,6 +6021,70 @@ fn an_app_stamped_change_for_a_kind_with_no_declared_owner_is_refused() {
     );
 }
 
+/// A person's own record id — one `member_record` derives, naming neither a kind nor its readers
+/// — is no one's to write: every holder refuses a change that writes one, whoever carries it.
+#[test]
+fn a_change_writing_a_persons_own_record_is_refused() {
+    use tilo_actions::{Actor, MemberId, PersonId};
+    use tilo_resource_store::{Received, Refusal, Stamp};
+    const KIND: &str = "test.a.declared.record";
+    let mut writer = kind_without_owner(KIND);
+    let mut holder = kind_without_owner(KIND);
+    let person = "09".repeat(32);
+    let record = collab_types::document::DocumentId::of_member(&person, KIND)
+        .expect("a member record")
+        .as_str()
+        .to_owned();
+    assert!(collab_types::is_person_record(&record));
+    let stamp = Stamp {
+        invoked: String::new(),
+        verb: "save".to_owned(),
+        invoker: Stamp::by(&Actor::Member(MemberId::person(
+            PersonId::parse(&person).expect("a root key names a person"),
+        ))),
+        invocation: "i1".to_owned(),
+        ..Stamp::default()
+    };
+    let written = writer
+        .put(
+            KIND,
+            &record,
+            collab_types::store::Resource {
+                readers: "*".to_owned(),
+                parent: None,
+                order: None,
+                fields: BTreeMap::new(),
+            },
+            &stamp,
+        )
+        .expect("the writer makes it");
+    let refused = holder
+        .receive(
+            &written[0].doc,
+            &written[0].readers,
+            vec![Received {
+                change: written[0].change.clone(),
+                author: [7; 32],
+                claimed: None,
+            }],
+            &admits_everything,
+        )
+        .expect("the holder reads it");
+    assert!(
+        matches!(
+            refused.as_slice(),
+            [(_, Refusal::Undeclared(why))]
+                if why.contains(&record) && why.contains("no app's surface declares")
+        ),
+        "a change writing a person's own record is refused, not {refused:?}"
+    );
+    assert_eq!(
+        holder.index().ids_of(KIND).count(),
+        0,
+        "nothing of the refused change is kept"
+    );
+}
+
 /// A window writes a resource again with what the index told it of the resource's times
 /// (`$changed.<field>`, `$created`, `$updated`). Those times are the index's, not the
 /// resource's: reflecting them again would give every write a time of a time, and a resource

@@ -183,12 +183,22 @@ pub(crate) fn declared(
 /// an app writes its own kinds and never another app's, whoever carries the change, so every
 /// holder reaches the same refusal. A kind no schema here names an owner of is refused too: a
 /// holder takes no app's word for a kind it cannot place. A change no app made (a person's, an
-/// agent's, one the platform wrote) is no app's to own.
+/// agent's, one the platform wrote) is no app's to own. A person's own record names neither a
+/// kind nor its readers, so every write of one is refused whoever carries it.
 pub(crate) fn owned_by_its_app(
     schemas: &[&Schema],
     touched: &Touched,
     stamp: Option<&Stamp>,
 ) -> Result<(), String> {
+    if let Some(id) = touched
+        .resources
+        .keys()
+        .find(|id| collab_types::is_person_record(id))
+    {
+        return Err(format!(
+            "`{id}` is one person's record, which no app's surface declares"
+        ));
+    }
     let Some(app) = stamp
         .and_then(Stamp::invoked_by)
         .and_then(|actor| actor.app().cloned())
