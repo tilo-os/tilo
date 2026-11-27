@@ -28,6 +28,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use tilo_compositor::OutputConfig;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_session::{AppSocket, Options, Session};
@@ -57,15 +58,24 @@ const WAKES: u64 = 2;
 
 static WOKEN: AtomicBool = AtomicBool::new(false);
 
-/// The file store this process keeps its secrets in: a process opens the store
-/// `TILO_SECRETS_DIR` names once, so every session here keeps its channel keys in the one store.
-fn secrets() -> &'static std::path::Path {
-    static STORE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    STORE.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("tilo-test-secrets-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("the secret store's directory");
-        dir
-    })
+/// Stops the app's thread when it is dropped, whatever ended the test's own: an assertion, a
+/// panic, or the test's end.
+struct Stopping(Arc<AtomicBool>);
+
+impl Drop for Stopping {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Where the app's thread stands, for the test's own failure: what it was doing when the notebook
+/// did not open.
+fn at(stage: &std::sync::Mutex<String>, text: &str) {
+    let mut stage = stage
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    stage.clear();
+    stage.push_str(text);
 }
 
 /// The Notes package, as installed.
@@ -107,51 +117,55 @@ fn join(
     .map_err(|error| format!("the window's route is joined: {error:?}"))
 }
 
-/// A session that founds its workspace on its own service and holds it, its records sealed with
-/// the channel keys the device has, and the workspace it shows.
+/// A session as a computer starts one: the shell of a device daemon of its own
+/// ([`crate::common::on_its_daemon`]), which holds the person's own workspace and the keys its
+/// records are sealed with; that workspace; and the person, as the app's window names them.
 fn session(
-    home: &mut tilo_test_env::TestHome,
     root: &std::path::Path,
     launches: Arc<tilo_session::Launches>,
-) -> (Session, String) {
-    // The account's own store below the identity directory, where every reader looks, and the
-    // person's devices a certificate is checked against before anything signs with it.
-    tilo_identity::sources::test_trust::install();
-    let identity = tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
-    std::fs::create_dir_all(&identity).expect("the identity's directory");
-    let system = home.root().join("system");
-    home.env()
-        .set("TILO_IDENTITY_ROOT", &system)
-        .set("TILO_SECRETS_DIR", secrets());
-    // This process stands in for the machine's daemon: it takes the device key first, so the
-    // identity is sealed with it.
-    crate::common::take_device_key(&tilo_identity::provisioning::collaboration_identity_paths());
-    tilo_identity::provisioning::ensure_throwaway_test_identity(
-        &identity,
-        &tilo_identity::provisioning::collaboration_identity_paths(),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("the throwaway identity");
-    let mut session = crate::common::headless(Options {
-        person: crate::common::PERSON.to_owned(),
-        collab: true,
-        state: Some(home.state().to_path_buf()),
-        services: Vec::new(),
-        asks: Some(tilo_service::asks::channel()),
-        app_socket: AppSocket::At(root.join("app_wire.sock")),
-        mcp_server: Some(root.join("agent.sock")),
-        api_socket: Some(root.join("api.sock")),
-        launches,
-        ..Options::default()
+) -> (Session, String, String) {
+    let person = std::cell::RefCell::new(String::new());
+    let mut session = crate::common::on_its_daemon_with(
+        &[OutputConfig::new(
+            "HEADLESS-1",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )],
+        |device| {
+            person.replace(device.person.clone());
+            Options {
+                collab: true,
+                state: Some(root.join("state")),
+                // The development apps' records, kept where the daemon serves them: what the
+                // shell and the app's own package read through the device, as a seeded session
+                // has them.
+                services: crate::common::seeded_apps_of(device),
+                asks: Some(tilo_service::asks::channel()),
+                app_socket: AppSocket::At(root.join("app_wire.sock")),
+                mcp_server: Some(root.join("agent.sock")),
+                api_socket: Some(root.join("api.sock")),
+                launches,
+                ..Options::default()
+            }
+        },
+    );
+    // The shell shows its workspace, and the session's sockets and services are up with it.
+    crate::common::wait_for(&mut session, "the workspace the shell shows", |session| {
+        session.handle().read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        })
     });
-    let workspace =
-        crate::common::wait_for(&mut session, "the workspace the shell shows", |session| {
-            session.handle().read(|tree| {
-                tree.active_workspace()
-                    .map(|workspace| workspace.id().to_string())
-            })
-        });
-    (session, workspace)
+    // The apps' records stand in the workspace the daemon serves before an app reads them.
+    crate::common::kept_in_workspace(&mut session);
+    // The person's own workspace, which this device keeps and their daemon hosts: the one an app
+    // that keeps its records there founds on a computer that has none yet. A workspace the daemon
+    // only lists, at a host this device is not, answers an app's records nothing.
+    let person = person.into_inner();
+    let workspace = collab_types::person_workspace_of(&person)
+        .map(|workspace| workspace.to_string())
+        .expect("the person's own workspace, from their root key");
+    (session, workspace, person)
 }
 
 /// Run Notes in a workspace this device holds and seals, with nothing typed, and count what wakes
@@ -165,9 +179,37 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
         || {
             let _settled = tilo_ui_base::motion::testing::settled();
             let root = crate::common::private_home();
-            let mut home = tilo_test_env::TestHome::new().expect("a home");
+            // The apps this computer installed, before its daemon starts: the daemon serves an
+            // app's records from the package it reads there.
+            crate::common::app_store();
             let launches = Arc::new(tilo_session::Launches::default());
-            let (mut session, workspace) = session(&mut home, root.path(), Arc::clone(&launches));
+            let (mut session, workspace, person) = session(root.path(), Arc::clone(&launches));
+            // The notebook a person reads: the notes their seed wrote, and a note whose body says
+            // its sections, which they import themselves through the app's own action. The window
+            // shows the tree of notes and the outline of the one open beside them.
+            let notebook = session
+                .resources()
+                .into_iter()
+                .map(|spec| spec.id.as_str().to_owned())
+                .find(|id| id.starts_with(&format!("tl:{NOTES}:root-")))
+                .expect("the Notes root is published");
+            let imported = session
+                .invoke(
+                    &notebook,
+                    "import_text",
+                    serde_json::json!({
+                        "title": "Autumn plan",
+                        "markdown": "## Ship the editor\n\nOffline first, then sharing.\n\n\
+                                     ## Grow the garden\n\nTomatoes along the south wall.",
+                    })
+                    .as_object()
+                    .expect("an object"),
+                )
+                .unwrap_or_else(|error| panic!("the person imports a note: {error}"));
+            assert!(
+                imported.completed().is_some(),
+                "the note is in the workspace before its window opens"
+            );
             let socket = root.path().join("app_wire.sock");
             let workspace_id = uuid::Uuid::parse_str(&workspace).expect("a workspace id");
             let kind = format!("tl.{NOTES}.Notebook");
@@ -177,25 +219,58 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
             let (ready, frames) = std::sync::mpsc::channel::<u64>();
             let stop = Arc::new(AtomicBool::new(false));
             let app_stop = Arc::clone(&stop);
+            let stage = Arc::new(std::sync::Mutex::new("not started".to_owned()));
+            let app_stage = Arc::clone(&stage);
             launches.started(std::process::id(), NOTES, &workspace, true);
             std::thread::scope(|scope| {
+                // The app's thread ends with `stop`, which this lets go of even when an assertion
+                // below fails: a failed test reports instead of waiting on an app nobody stops.
+                let _stopping = Stopping(Arc::clone(&stop));
                 let app = scope.spawn(move || {
                     // The workspace's founding membership reaches the identity service a few
-                    // turns after the shell shows the workspace: until then the window's join is
-                    // refused, and it joins again.
-                    let until = Instant::now() + Duration::from_secs(120);
+                    // turns after the shell shows the workspace, and the daemon's holder takes
+                    // the workspace's records a moment after it starts: until either lands, the
+                    // window's join is refused, and it joins again.
+                    at(&app_stage, "joining the window");
+                    // The connection wakes the app's loop and its store's waits whenever it has
+                    // something new, as the process joins it: inside the wake scope bound to the
+                    // loop's wake.
+                    let wake = std::rc::Rc::new(Wake::new().expect("a wake"));
+                    let mut wakes = tilo_rt::wake::WakeScope::new();
+                    let woken = wake.waker();
+                    wakes
+                        .bind(move |_| woken())
+                        .expect("the app's wake scope binds");
+                    let until = tilo_test_env::hang_deadline();
+                    let mut last = String::new();
                     let manager = loop {
-                        match join(&socket, &workspace, workspace_id, &kind) {
+                        let joined = {
+                            let _in_scope = wakes.enter();
+                            join(&socket, &workspace, workspace_id, &kind)
+                        };
+                        match joined {
                             Ok(manager) => break manager,
-                            Err(why) if why.contains("not a member") && Instant::now() < until => {
-                                std::thread::park_timeout(Duration::from_millis(100));
+                            Err(why)
+                                if Instant::now() < until
+                                    && (why.contains("not a member")
+                                        || why.contains("not available on this device")
+                                        || why.contains("no identity to sign in with")) =>
+                            {
+                                if why != last {
+                                    eprintln!("the window's join is refused for now: {why}");
+                                    last = why;
+                                }
+                                std::thread::park_timeout(Duration::from_millis(250));
                             }
-                            Err(why) => panic!("{why}"),
+                            Err(why) => {
+                                at(&app_stage, &format!("the window's join is refused: {why}"));
+                                panic!("{why}");
+                            }
                         }
                     };
+                    at(&app_stage, "the window joined");
                     let connection =
                         tilolang_process::connection::Connection::new(manager).expect("joined");
-                    let wake = std::rc::Rc::new(Wake::new().expect("a wake"));
                     let store = ResourceStore::new(std::rc::Rc::new(
                         connection.port(Some(std::rc::Rc::clone(&wake))),
                     ));
@@ -209,12 +284,7 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                     let watched = std::os::fd::AsFd::as_fd(&ours)
                         .try_clone_to_owned()
                         .expect("the window's end");
-                    let spec = Spec::new(
-                        NOTES.to_owned(),
-                        workspace.clone(),
-                        1,
-                        crate::common::PERSON,
-                    );
+                    let spec = Spec::new(NOTES.to_owned(), workspace.clone(), 1, person);
                     host.add(
                         Hosted::new(
                             spec,
@@ -228,14 +298,6 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                         ),
                         Some(watched),
                     );
-                    // The notebook a person reads: a note whose body says its sections, as the
-                    // app's own scenario seeds one. The window shows the tree of notes and the
-                    // outline of the one open beside them.
-                    for instance in host.instances_mut() {
-                        instance
-                            .stage("the notebook and a note's outline")
-                            .unwrap_or_else(|why| panic!("{why}"));
-                    }
                     // The window is built from what the app sends, as the app process builds it:
                     // each batch it takes composes the view again, and what that asks of the app
                     // — a selection, the rows a list shows — goes back on the channel.
@@ -257,6 +319,7 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                     // window opens, so what is counted is what an idle app costs. A host that
                     // never stops owing one is measured too: it is the loop this test is about.
                     let settle_by = Instant::now() + Duration::from_secs(300);
+                    at(&app_stage, "opening the notebook");
                     loop {
                         let turned = host.turn();
                         if Instant::now() > settle_by {
@@ -275,6 +338,7 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                     }
                     // Frames an idle app owes over the window: none, unless something wakes it.
                     let mut ran = 0_u64;
+                    at(&app_stage, "settled");
                     ready.send(ran).expect("the sample");
                     while !app_stop.load(Ordering::Relaxed) {
                         let mut turned = host.turn();
@@ -294,14 +358,26 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                     }
                     let _ = ready.send(ran);
                 });
-                crate::common::steps_within(&mut session, Duration::from_secs(900), |_| {
-                    frames.try_recv().ok()
-                })
-                .expect("the notebook opens");
-                let pid = std::process::id();
-                // The session's own loop serves the app's store as it steps, as a running
-                // session's does: the session is stepped through the settle and the window alike,
+                // The app's records and frames are the device daemon's, served on the daemon's
+                // own threads: the session's loop steps again over the window this test counts,
                 // so what is counted is what the app and the broker do beside it.
+                let opens_within = tilo_test_env::hang_bound();
+                if let Err(why) = frames.recv_timeout(opens_within) {
+                    let stage = stage
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    match why {
+                        std::sync::mpsc::RecvTimeoutError::Timeout => panic!(
+                            "the notebook opens: the app's thread has been at {stage:?} for \
+                             {opens_within:?}"
+                        ),
+                        std::sync::mpsc::RecvTimeoutError::Disconnected => panic!(
+                            "the app's thread ended before the notebook opened: it was at {stage:?}"
+                        ),
+                    }
+                }
+                let pid = std::process::id();
                 let settling = Instant::now();
                 while settling.elapsed() < SETTLE {
                     session.step(Duration::from_millis(5)).expect("a frame");
