@@ -159,7 +159,7 @@ view notice_row(n: device.Notice) {
 /// (`banners_over`), never the banner's own width.
 view banner(roomy: Bool) {
     let centre = device.notifications
-    asked_banners()
+    asked_banners(roomy: roomy)
     if (centre.quiet ?? "") == "" {
         let ids = standing_banners(centre)
         if not ids.is_empty() {

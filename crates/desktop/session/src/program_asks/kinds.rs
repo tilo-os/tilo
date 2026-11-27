@@ -373,6 +373,12 @@ pub(crate) fn put(question: &Question, retry: Option<Retry>) -> Option<Put> {
     if matches!(facts.by, AskedBy::Program { .. }) || facts.by == AskedBy::default() {
         facts.by = by;
     }
+    // A question that names nothing it does says its yes: the record is read out by that word, and
+    // the person's answer is the plain permission the portal gives ("Allow"), never the call's own
+    // action, which is `answer` for every program's question.
+    if matches!(reply, Reply::Confirm) && facts.verb.is_empty() {
+        facts.verb = word("portal-allow");
+    }
     if retry.is_some() {
         facts.retry = retry;
     }

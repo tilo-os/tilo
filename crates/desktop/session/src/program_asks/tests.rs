@@ -599,6 +599,10 @@ async fn an_apps_network_question_is_asked_in_its_workspace_and_allowed() {
         .ask(network_question("tube", "so.tilo.tube"));
     let asked = device.asked().await;
     assert_eq!(device.raised_in(), ["tube"]);
+    assert_eq!(
+        asked.name, "Allow",
+        "the person's yes is the permission it is, never the call's own `answer`"
+    );
     let sites = asked.facts.facts.iter().skip(1).count();
     assert_eq!(sites, 2, "each site is shown: {asked:?}");
     device.resolve(&asked, approve(&[])).await.unwrap();

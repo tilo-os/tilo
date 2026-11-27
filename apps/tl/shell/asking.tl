@@ -240,11 +240,14 @@ fn skips_with_shift(a: invocations.Asked) -> Bool {
     return false
 }
 
-/// The questions that stand with the banners: the newest two no window here stands for.
-view asked_banners() {
+/// The questions that stand with the banners: the newest two no window here stands for. They are
+/// banners, so a question is a banner's width in the corner (`roomy`, as `banners_over` reads it):
+/// a card left to size itself there came out as wide as its own padding, and every line in it
+/// wrapped to nothing.
+view asked_banners(roomy: Bool) {
     let asked = asked_elsewhere()
     if not asked.is_empty() {
-        stack(gap: .related) {
+        stack(gap: .related, min: if roomy { 360dp } else { 0dp }) {
             for q in asked.take(2) {
                 asked_card(q)
             }
