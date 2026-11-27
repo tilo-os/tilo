@@ -323,6 +323,13 @@ impl AppBrokerState {
             );
             return Err(ActionCallError::UnknownAction);
         }
+        // The workspace's folder answers no revision of its own: a row is what its tree holds
+        // now, and a listing carries the revision of the page it answered. A caller naming one
+        // is naming a directory that has moved on, and is refused as a stale revision, as any
+        // host refuses one.
+        if request.revision.is_some() {
+            return Err(ActionCallError::StaleRevision);
+        }
         let arguments = read_arguments(
             request,
             named,
