@@ -901,8 +901,10 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
         install_in_workspace(&host, &workspace, &tapp, &surface).await;
         // The app runs as a window of its own, on the signed runtime, as a person opens it: its
         // view reaches the action that runs a check, so the app publishes that action on the
-        // project's record.
-        let (daemon, caller, viewing) = (host.daemon(), host.caller(), workspace.clone());
+        // project's record. The workspace's install reaches this device's store through the
+        // device's own follow of its workspace's apps, which may still be unpacking the package
+        // when the view opens: a view that ends for that is tried again, and the one it ends for
+        // is said.
         OPENING.store(true, std::sync::atomic::Ordering::Relaxed);
         let quiet = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let watching = {
@@ -917,80 +919,95 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
                 }
             })
         };
-        step("opening the fixture app's view");
-        let window = tokio::time::timeout(
-            Duration::from_secs(180),
-            tokio::task::spawn_blocking(move || -> Result<WindowLink, String> {
-                step("the daemon is opening the app's view");
-                let link = daemon.open_view(&caller, APP, &viewing, None, None)?;
-                step("the app's view is opened: its window is handed the page");
-                // The ask and its answer are steps of their own: whether the window was told,
-                // and whether it said anything back, are different places to wait.
-                let mut link = link;
-                tilo_server_protocol::page::window::send(
-                    &mut link,
-                    &tilo_server_protocol::page::window::WindowAsk::Open { show: None },
-                )
-                .map_err(|error| error.to_string())?;
-                step("the window was asked for its page");
-                let answered = tilo_server_protocol::page::window::receive::<
-                    tilo_server_protocol::page::window::WindowAnswer,
-                >(&mut link)
-                .map_err(|error| error.to_string())?;
-                step(&format!(
-                    "the window answered: {}",
-                    answered.as_ref().map_or("nothing", |answer| match answer {
-                        tilo_server_protocol::page::window::WindowAnswer::Shown {
-                            title, ..
-                        } => title.as_str(),
-                        tilo_server_protocol::page::window::WindowAnswer::Changed(_) => "changes",
-                    })
-                ));
-                if answered.is_none() {
-                    return Err("the window let go of its page".to_owned());
+        let deadline = Instant::now() + Duration::from_secs(180);
+        let mut last: String;
+        let window = loop {
+            let (daemon, caller, viewing) = (host.daemon(), host.caller(), workspace.clone());
+            step("opening the fixture app's view");
+            let attempt = tokio::time::timeout(
+                Duration::from_secs(60),
+                tokio::task::spawn_blocking(move || -> Result<WindowLink, String> {
+                    step("the daemon is opening the app's view");
+                    let link = daemon.open_view(&caller, APP, &viewing, None, None)?;
+                    step("the app's view is opened: its window is handed the page");
+                    // The ask and its answer are steps of their own: whether the window was told,
+                    // and whether it said anything back, are different places to wait.
+                    let mut link = link;
+                    tilo_server_protocol::page::window::send(
+                        &mut link,
+                        &tilo_server_protocol::page::window::WindowAsk::Open { show: None },
+                    )
+                    .map_err(|error| error.to_string())?;
+                    step("the window was asked for its page");
+                    let answered = tilo_server_protocol::page::window::receive::<
+                        tilo_server_protocol::page::window::WindowAnswer,
+                    >(&mut link)
+                    .map_err(|error| error.to_string())?;
+                    step(&format!(
+                        "the window answered: {}",
+                        answered.as_ref().map_or("nothing", |answer| match answer {
+                            tilo_server_protocol::page::window::WindowAnswer::Shown {
+                                title,
+                                ..
+                            } => title.as_str(),
+                            tilo_server_protocol::page::window::WindowAnswer::Changed(_) =>
+                                "changes",
+                        })
+                    ));
+                    if answered.is_none() {
+                        return Err("the window let go of its page".to_owned());
+                    }
+                    Ok(WindowLink::over(link))
+                }),
+            )
+            .await;
+            match attempt {
+                Ok(Ok(Ok(window))) => break window,
+                Ok(Ok(Err(error))) => {
+                    step(&format!("the app's view did not open: {error}"));
+                    last = error;
                 }
-                Ok(WindowLink::over(link))
-            }),
-        )
-        .await;
+                Ok(Err(error)) => panic!("the view's task ends: {error}"),
+                Err(_) => {
+                    step("the app's view did not answer within 60s");
+                    last = "it did not answer within 60s".to_owned();
+                }
+            }
+            if Instant::now() >= deadline {
+                // What the app does say is read before the dump: whether it published, and what
+                // record its project is.
+                let catalogue =
+                    tokio::time::timeout(Duration::from_secs(20), host::listed(&host, APP)).await;
+                let said = match catalogue {
+                    Ok(Ok(page)) => {
+                        let rows: Vec<String> = page
+                            .rows
+                            .iter()
+                            .map(|row| {
+                                let action = row
+                                    .action
+                                    .as_ref()
+                                    .map_or("-", |action| action.address.action.as_str());
+                                format!("{} {} {action}", row.provider, row.resource.id)
+                            })
+                            .collect();
+                        format!("{} rows: {rows:?}", page.rows.len())
+                    }
+                    Ok(Err(error)) => format!("its catalogue failed: {error}"),
+                    Err(_) => "it did not answer its catalogue within 20s".to_owned(),
+                };
+                let primary = primary_reading(&host, &workspace).await;
+                panic!(
+                    "the fixture app's view did not open within 180s ({last}); what the app \
+                     says: {said}; {primary}\nwhat ran:\n{}",
+                    describe_processes()
+                );
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        };
         quiet.store(true, std::sync::atomic::Ordering::Relaxed);
         OPENING.store(false, std::sync::atomic::Ordering::Relaxed);
         let _ = watching.join();
-        let window = match window {
-            Ok(Ok(Ok(window))) => Some(window),
-            _ => None,
-        };
-        if window.is_none() {
-            // What the app does say is read before the dump: whether it published, and what
-            // record its project is.
-            let catalogue =
-                tokio::time::timeout(Duration::from_secs(20), host::listed(&host, APP)).await;
-            let said = match catalogue {
-                Ok(Ok(page)) => {
-                    let rows: Vec<String> = page
-                        .rows
-                        .iter()
-                        .map(|row| {
-                            let action = row
-                                .action
-                                .as_ref()
-                                .map_or("-", |action| action.address.action.as_str());
-                            format!("{} {} {action}", row.provider, row.resource.id)
-                        })
-                        .collect();
-                    format!("{} rows: {rows:?}", page.rows.len())
-                }
-                Ok(Err(error)) => format!("its catalogue failed: {error}"),
-                Err(_) => "it did not answer its catalogue within 20s".to_owned(),
-            };
-            let primary = primary_reading(&host, &workspace).await;
-            panic!(
-                "the fixture app's view did not open within 180s; what the app says: {said}; \
-                 {primary}\nwhat ran:\n{}",
-                describe_processes()
-            );
-        }
-        let window = window.expect("the view opens");
         step("the fixture app's view is open");
         // The view stays open for the whole test: an app whose window closed stops.
         let _view = window;
