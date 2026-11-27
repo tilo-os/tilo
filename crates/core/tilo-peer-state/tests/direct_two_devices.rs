@@ -434,9 +434,9 @@ impl Hosted {
             let (b, b_endpoint, a_addr) = (b.clone(), b_endpoint.clone(), addr(&host_endpoint));
             async move { b.connect(&b_endpoint, a_addr).await }
         });
-        let held = heads(&a, &keys);
+        let written = heads(&a, &keys);
         until(&b, "B holds what A wrote", |b| {
-            opened_heads(b, &keys, (APP, RECORD)) == held
+            opened_heads(b, &keys, (APP, RECORD)) == written
         })
         .await;
         Self {

@@ -3868,8 +3868,8 @@ impl DirectSync {
         let hello = self.hello()?;
         let bootstraps = {
             let replica = self.0.replica.lock();
-            // Only a holder of the workspace sends its governance and history: a member
-            // device's link is to a holder, which has every write the member made.
+            // Only a device that keeps the workspace sends its governance and history: a member
+            // device's link is to a keeping device, which has every write the member made.
             self.0.admission.is_none()
                 && replica.has_governance()
                 && replica.signed_by_administrator(&device)
