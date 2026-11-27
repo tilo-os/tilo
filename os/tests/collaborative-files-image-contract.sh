@@ -287,8 +287,10 @@ if [ "$root" = / ]; then
   fs_help="$(/usr/bin/fs --help)" || die "shipped fs --help failed"
   grep -Fq 'serve' <<<"$fs_help" || die "shipped fs lacks serve"
   /usr/libexec/tilo/tilo-launcher --help >/dev/null || die "shipped launcher CLI failed"
+  # An image has no device daemon to ask, so the check writes and reads the
+  # store in its own process, as the image's own build does.
   TILO_APPS_DATA_DIR=/usr/share/tilo-apps \
-    /usr/libexec/tilo/tilo-install verify so.tilo.file-explorer >/dev/null \
+    /usr/libexec/tilo/tilo-install --offline-store /usr/share/tilo-apps verify so.tilo.file-explorer >/dev/null \
     || die "installed Files payload failed its recorded integrity check"
   /usr/libexec/tilo/tilo-runtime-bundle verify "/usr/lib/tilo-runtime/$runtime_version" \
     --require-publisher "$(cat /usr/share/tilo/runtime-bundle-publisher.hex)" >/dev/null \
