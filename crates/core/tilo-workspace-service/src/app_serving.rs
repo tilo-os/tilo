@@ -224,11 +224,12 @@ pub const LIVE_FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_mil
 /// A workspace's apps as web pages: each page an app's view of the
 /// workspace's document, as the member who opened it may see it.
 pub trait AppPages: Send + Sync {
-    /// Show `caller` the page `address` names in `workspace_id`.
+    /// Show `caller` the page `address` names in `workspace_id`: the device whose
+    /// `certificate` the page's link verified, and the page runs as that key's run there.
     fn open(
         &self,
         workspace_id: WorkspaceId,
-        caller: &Caller,
+        reader: (&Caller, &tilo_user_identity::DeviceCert),
         address: PageAddress,
     ) -> Pending<Result<OpenedPage, PageRefusal>>;
 

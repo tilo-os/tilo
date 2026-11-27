@@ -121,18 +121,6 @@ impl crate::key_sessions::Sessions for HostRuns {
             (&self.actor, &self.policy_time),
         )
     }
-
-    fn dispatch(&self, workspace: &str) -> Option<crate::key_sessions::SessionHost> {
-        if workspace != self.workspace {
-            return None;
-        }
-        let provider = self
-            .provider()
-            .inspect_err(|error| tracing::warn!(%error, "the person's workspace has no dispatch"))
-            .ok()?;
-        let host: crate::key_sessions::SessionHost = Arc::new(provider);
-        Some(host)
-    }
 }
 
 /// The workspaces a keeping server holds: the person's keys' runs and the pages of each, its
@@ -180,12 +168,6 @@ impl crate::key_sessions::Sessions for KeptRuns {
             (key, whose),
             (&self.actor, &self.policy_time),
         )
-    }
-
-    fn dispatch(&self, workspace: &str) -> Option<crate::key_sessions::SessionHost> {
-        let provider = self.provider(workspace).ok()?;
-        let host: crate::key_sessions::SessionHost = Arc::new(provider);
-        Some(host)
     }
 }
 

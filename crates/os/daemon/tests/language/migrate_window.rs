@@ -236,9 +236,9 @@ struct Window {
 impl Window {
     /// The page as it stands now, opened afresh.
     async fn body(&self) -> String {
-        let (daemon, caller, workspace, migration) = (
+        let (daemon, (caller, cert), workspace, migration) = (
             self.host.daemon(),
-            self.host.caller(),
+            self.host.browser(),
             self.host.workspace().to_owned(),
             self.migration.clone(),
         );
@@ -249,7 +249,7 @@ impl Window {
             let id = tilo_desktop_model::WorkspaceId::parse(&workspace).expect("a workspace id");
             let opened = settled(pages.open(
                 id,
-                &caller,
+                (&caller, &cert),
                 PageAddress {
                     workspace,
                     app: "migrate".to_owned(),
@@ -309,9 +309,9 @@ impl Window {
 
     /// Act on the control `find` picks on the page, as a click, Space or a screen reader does.
     async fn act(&self, what: &str, action: PageAction, find: fn(&str, &str) -> Option<u32>) {
-        let (daemon, caller, workspace, migration, what) = (
+        let (daemon, (caller, cert), workspace, migration, what) = (
             self.host.daemon(),
-            self.host.caller(),
+            self.host.browser(),
             self.host.workspace().to_owned(),
             self.migration.clone(),
             what.to_owned(),
@@ -324,7 +324,7 @@ impl Window {
             let id = tilo_desktop_model::WorkspaceId::parse(&workspace).expect("a workspace id");
             let opened = settled(pages.open(
                 id,
-                &caller,
+                (&caller, &cert),
                 PageAddress {
                     workspace,
                     app: "migrate".to_owned(),

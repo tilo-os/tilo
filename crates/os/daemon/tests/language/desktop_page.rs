@@ -27,7 +27,7 @@ use tilo_actions::remote::{Caller, Pending};
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
 use tilo_runtime::device::services::Daemon;
 use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
-use tilo_user_identity::DeviceCapabilities;
+use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::app_serving::PageAct;
 
 use crate::language::agent_fixture::act;
@@ -81,18 +81,18 @@ async fn answered<T: Send + 'static>(pending: Pending<T>) -> T {
     .unwrap()
 }
 
-/// A browser of the person's: a device their root certified, as a page's reader is.
-fn browser(host: &host::Host) -> Caller {
-    let (_, cert) = host.certify("Ada's browser", DeviceCapabilities::member());
-    Caller::authenticated(cert.user_public_key, cert.device_public_key)
+/// A browser of the person's: a device their root certified, as a page's reader is, and the
+/// certificate it proved on the page's link.
+fn browser(host: &host::Host) -> (Caller, DeviceCert) {
+    host.browser()
 }
 
-/// The workspace's desktop page, opened by `caller` in that workspace, as the server opens it
+/// The workspace's desktop page, opened by `reader` in that workspace, as the server opens it
 /// for a browser that proved itself to them.
 async fn open(
     daemon: &Arc<Daemon>,
     workspace: &str,
-    caller: &Caller,
+    (caller, cert): &(Caller, DeviceCert),
 ) -> Result<OpenedPage, PageRefusal> {
     let pages = daemon
         .pages()
@@ -100,7 +100,7 @@ async fn open(
     let caller = caller.clone().in_workspace(workspace.to_owned());
     answered(pages.open(
         collab_types::WorkspaceId::parse(workspace).unwrap(),
-        &caller,
+        (&caller, cert),
         PageAddress {
             workspace: workspace.to_owned(),
             app: "desktop".into(),
@@ -118,8 +118,8 @@ struct Page {
 }
 
 impl Page {
-    async fn of(daemon: &Arc<Daemon>, workspace: &str, caller: &Caller) -> Self {
-        let opened = open(daemon, workspace, caller)
+    async fn of(daemon: &Arc<Daemon>, workspace: &str, reader: &(Caller, DeviceCert)) -> Self {
+        let opened = open(daemon, workspace, reader)
             .await
             .expect("a member's desktop opens");
         Self {

@@ -82,16 +82,10 @@ impl Sessions for DeviceRuns {
             return Err(format!("no workspace {workspace} here"));
         }
         self.opened.lock().unwrap().push(key.clone());
-        let caller =
-            Caller::local_person("ada").delegated_to(tilo_mcp::devices::agent_id("agent", key));
+        let caller = Caller::local_person("ada")
+            .delegated_to(tilo_mcp::devices::agent_id("agent", key))
+            .in_workspace(workspace.to_owned());
         Ok((Arc::new(self.broker.clone()), caller))
-    }
-
-    fn dispatch(&self, workspace: &str) -> Option<SessionHost> {
-        if workspace != self.workspace {
-            return None;
-        }
-        Some(Arc::new(self.broker.clone()))
     }
 }
 
@@ -681,6 +675,9 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
     let pages = device.key_sessions.pages().unwrap();
     let workspace_id = WorkspaceId::parse(&device.workspace).unwrap();
     let ada = Caller::local_person("ada").in_workspace(device.workspace.clone());
+    // Her browser, which proved this certificate on the page's link.
+    let (_, browser) = certified(&root, 3, "Ada's browser", DeviceCapabilities::member());
+    let ada = (&ada, &browser);
     let act = |id, action| tilo_workspace_service::app_serving::PageAct {
         id,
         target: None,
@@ -694,7 +691,7 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
     };
 
     let home = pages
-        .open(workspace_id, &ada, address("", None))
+        .open(workspace_id, ada, address("", None))
         .await
         .unwrap()
         .unwrap();
@@ -710,7 +707,7 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
     );
 
     let search = pages
-        .open(workspace_id, &ada, address("search", Some("pin")))
+        .open(workspace_id, ada, address("search", Some("pin")))
         .await
         .unwrap()
         .unwrap();
@@ -754,9 +751,13 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
             .all(|caller| caller.workspace() == Some(device.workspace.as_str())),
         "every call went as the page's person in its workspace"
     );
+    assert!(
+        device.runs.opened.lock().unwrap().contains(&browser),
+        "the pages run in the run admitted for the browser's key"
+    );
 
     let notes = pages
-        .open(workspace_id, &ada, address("notes", Some("groceries")))
+        .open(workspace_id, ada, address("notes", Some("groceries")))
         .await
         .unwrap()
         .unwrap();
@@ -810,7 +811,7 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
     );
     assert_eq!(
         pages
-            .open(workspace_id, &ada, address("mail", None))
+            .open(workspace_id, ada, address("mail", None))
             .await
             .unwrap(),
         Err(tilo_server_protocol::page::PageRefusal::NoSuchApp),

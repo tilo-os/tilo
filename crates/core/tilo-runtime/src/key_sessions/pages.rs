@@ -12,11 +12,14 @@
 //! pointer's gestures on the shell reach the view's widgets as a device's do, so a window is
 //! moved and resized here through the same arranging actions as on a device.
 //!
+//! Every page runs in the run of the key that opened it, admitted by the certificate the page's
+//! link verified, as every call of that key's is ([`super::KeySessions`]): the view acts as that
+//! run's caller, and what the page asks the device goes through its run.
+//!
 //! The workspace's front page and its search are the device's own pages, and everything they
-//! show is asked of the device's dispatch as the page's person: the apps and actions they may
-//! use from its catalogue, what the workspace holds from its search, and who is here from its
-//! presence. A row's action runs as any caller's invocation does, admitted where every other
-//! one is.
+//! show is asked of that run: the apps and actions they may use from its catalogue, what the
+//! workspace holds from its search, and who is here from its presence. A row's action runs as
+//! any caller's invocation does, admitted where every other one is.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -41,8 +44,10 @@ use tilo_workspace_records::search::FOUND_FILE;
 use tilo_workspace_service::app_serving::{AppPages, FOLLOW_EVERY, LIVE_FOLLOW_EVERY, PageAct};
 use ui::composition::page::escape;
 
-use super::{SessionHost, Sessions};
+use super::{Runs, SessionHost};
 use collab_types::WorkspaceId;
+use tilo_actions::remote::ActionCallError;
+use tilo_user_identity::DeviceCert;
 
 /// The app name a page address carries for the workspace's search
 /// (`/w/<workspace>/search/<words>`): not an app but the system's own search over what the
@@ -86,10 +91,9 @@ pub struct Pages(Arc<Inner>);
 
 #[derive(Default)]
 struct Inner {
-    sessions: OnceLock<Arc<dyn Sessions>>,
-    /// Whose keys this device holds revoked: what a call a page's reader signed is checked
-    /// against.
-    devices: OnceLock<Arc<crate::personal_devices::PersonalDevices>>,
+    /// The runs of the keys that open pages: also whose keys this device holds revoked, what a
+    /// call a page's reader signed is checked against.
+    runs: OnceLock<Arc<Runs>>,
     views: OnceLock<Arc<dyn PageViews>>,
     /// The person's notifications, once the daemon keeps them in the record of their devices.
     notices: OnceLock<Arc<dyn PersonNotices>>,
@@ -145,14 +149,11 @@ enum Held {
 }
 
 impl Pages {
-    /// Ask the workspaces `sessions` answers for from now on.
-    pub(super) fn serve(
-        &self,
-        sessions: Arc<dyn Sessions>,
-        devices: Arc<crate::personal_devices::PersonalDevices>,
-    ) {
-        let _ = self.0.sessions.set(sessions);
-        let _ = self.0.devices.set(devices);
+    /// Pages each opened in the run `runs` keeps for the key that opened it.
+    pub(super) fn over(runs: Arc<Runs>) -> Self {
+        let pages = Self::default();
+        let _ = pages.0.runs.set(runs);
+        pages
     }
 
     /// Show apps' views through `views` from now on. A second call is ignored.
@@ -181,19 +182,30 @@ impl Pages {
 }
 
 impl Inner {
-    /// The workspace `workspace_id` names on this device, and its dispatch.
-    fn dispatch(&self, workspace_id: WorkspaceId) -> Result<(String, SessionHost), PageRefusal> {
-        let sessions = self
-            .sessions
+    /// The workspace `workspace_id` names on this device, and the run there of the key
+    /// `certificate` certifies, which the page's link verified: the host its calls go through,
+    /// and the caller they go as.
+    fn run(
+        &self,
+        workspace_id: WorkspaceId,
+        (caller, certificate): (&Caller, &DeviceCert),
+    ) -> Result<(String, SessionHost, Caller), PageRefusal> {
+        let runs = self
+            .runs
             .get()
             .ok_or_else(|| unavailable("this device's actions are not running yet"))?;
-        let workspace = sessions
-            .workspace(workspace_id)
-            .ok_or(PageRefusal::Elsewhere)?;
-        let dispatch = sessions
-            .dispatch(&workspace)
-            .ok_or_else(|| unavailable("this device answers no actions in that workspace"))?;
-        Ok((workspace, dispatch))
+        let workspace = runs.workspace(workspace_id).ok_or(PageRefusal::Elsewhere)?;
+        let (host, caller) =
+            runs.opened(workspace_id, (caller, certificate))
+                .map_err(|refusal| match refusal {
+                    ActionCallError::Refused { .. } | ActionCallError::NotPermitted => {
+                        tracing::info!(%refusal, "a page's key was not admitted to its workspace");
+                        PageRefusal::NotMember
+                    }
+                    ActionCallError::UnknownAction => PageRefusal::Elsewhere,
+                    other => unavailable(other),
+                })?;
+        Ok((workspace, host, caller))
     }
 
     fn hold(&self, held: Held) -> u64 {
@@ -207,10 +219,11 @@ impl Inner {
     fn open_page(
         &self,
         workspace_id: WorkspaceId,
-        caller: &Caller,
+        reader: (&Caller, &DeviceCert),
         address: &PageAddress,
     ) -> Result<OpenedPage, PageRefusal> {
-        let (workspace, dispatch) = self.dispatch(workspace_id)?;
+        let (workspace, dispatch, caller) = self.run(workspace_id, reader)?;
+        let caller = &caller;
         if address.is_home() {
             let (title, css, body) = home(workspace_id, &dispatch, caller)?;
             let page = self.hold(Held::Home);
@@ -395,9 +408,10 @@ impl Inner {
         asked: (u32, Option<&str>, &PageAction),
     ) -> Result<String, PageRefusal> {
         let revocations = self
-            .devices
+            .runs
             .get()
-            .map(|devices| devices.revocations())
+            .and_then(|runs| runs.devices())
+            .map(crate::personal_devices::PersonalDevices::revocations)
             .ok_or_else(|| unavailable("this device's actions are not running yet"))?;
         let cert = tilo_server_protocol::invocation::verify_page_call(
             call,
@@ -655,12 +669,12 @@ impl AppPages for Pages {
     fn open(
         &self,
         workspace_id: WorkspaceId,
-        caller: &Caller,
+        (caller, certificate): (&Caller, &DeviceCert),
         address: PageAddress,
     ) -> Pending<Result<OpenedPage, PageRefusal>> {
         let inner = Arc::clone(&self.0);
-        let caller = caller.clone();
-        off_thread(move || inner.open_page(workspace_id, &caller, &address))
+        let (caller, certificate) = (caller.clone(), certificate.clone());
+        off_thread(move || inner.open_page(workspace_id, (&caller, &certificate), &address))
     }
 
     fn act(

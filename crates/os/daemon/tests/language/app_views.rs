@@ -98,8 +98,8 @@ fn a_caller_of_another_workspace_opens_no_view() {
 #[test]
 fn a_page_of_an_installed_app_is_drawn_by_its_own_window() {
     host::run_with(&["calculator"], |host| async move {
-        let (daemon, caller, workspace) =
-            (host.daemon(), host.caller(), host.workspace().to_owned());
+        let (daemon, (caller, cert), workspace) =
+            (host.daemon(), host.browser(), host.workspace().to_owned());
         let (opened, pressed) = tokio::task::spawn_blocking(move || {
             let pages = daemon
                 .pages()
@@ -108,7 +108,7 @@ fn a_page_of_an_installed_app_is_drawn_by_its_own_window() {
                 tilo_desktop_model::WorkspaceId::parse(&workspace).expect("a workspace id");
             let opened = settled(pages.open(
                 workspace_id,
-                &caller,
+                (&caller, &cert),
                 PageAddress {
                     workspace,
                     app: "calculator".to_owned(),

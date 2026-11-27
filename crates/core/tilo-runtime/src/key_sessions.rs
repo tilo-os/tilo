@@ -60,23 +60,25 @@ pub trait Sessions: Send + Sync {
         key: &DeviceCert,
         whose: Whose,
     ) -> Result<(SessionHost, Caller), String>;
-
-    /// `workspace`'s dispatch, which admits each call as the caller it carries: what a web page
-    /// of the workspace asks as its person ([`Pages`]). `None` when this device answers no
-    /// actions there.
-    fn dispatch(&self, workspace: &str) -> Option<SessionHost>;
 }
 
 /// The record actions of the workspaces a device hosts, answered for its
 /// person's keys by its own broker: the device's
 /// [`AppActionServer`](tilo_workspace_service::app_serving::AppActionServer).
 pub struct KeySessions {
+    runs: Arc<Runs>,
+    /// The workspaces' apps as web pages, each a view of the run of the key that opened it.
+    pages: Pages,
+}
+
+/// The runs of the keys this device answers, by workspace and key: what a key's calls and the
+/// pages its browser opens go through alike.
+#[derive(Default)]
+struct Runs {
     /// The person's devices and the broker, once they run: a host opens
     /// before the store and the broker it serves.
     serving: OnceLock<Serving>,
     open: Arc<OpenSessions>,
-    /// The workspaces' apps as web pages, served from the same dispatch.
-    pages: Pages,
 }
 
 struct Serving {
@@ -148,19 +150,17 @@ impl KeySessions {
     /// until [`Self::serve`].
     #[must_use]
     pub fn new() -> Arc<Self> {
+        let runs = Arc::new(Runs::default());
         Arc::new(Self {
-            serving: OnceLock::new(),
-            open: Arc::default(),
-            pages: Pages::default(),
+            pages: Pages::over(Arc::clone(&runs)),
+            runs,
         })
     }
 
     /// Answer the keys `devices` says are the person's through `sessions` from
     /// now on. A second call is ignored.
     pub fn serve(&self, devices: Arc<PersonalDevices>, sessions: Arc<dyn Sessions>) {
-        self.pages
-            .serve(Arc::clone(&sessions), Arc::clone(&devices));
-        let _ = self.serving.set(Serving { devices, sessions });
+        let _ = self.runs.serving.set(Serving { devices, sessions });
     }
 
     /// The workspaces' apps as web pages, which show apps' views through what
@@ -169,16 +169,28 @@ impl KeySessions {
     pub const fn pages_served(&self) -> &Pages {
         &self.pages
     }
+}
 
-    /// The session `key` works in on `workspace_id` to answer `message`, opened now if it has
-    /// none, once its scope reaches the workspace and the key is the person's, or a member's
-    /// asking for what is the workspace's: `caller` is who the workspace's roster admitted it
-    /// as on the link.
+impl Runs {
+    /// The workspace `workspace_id` names on this device, when it answers its actions.
+    fn workspace(&self, workspace_id: WorkspaceId) -> Option<String> {
+        self.serving.get()?.sessions.workspace(workspace_id)
+    }
+
+    /// The person's devices, once this device's actions run.
+    fn devices(&self) -> Option<&PersonalDevices> {
+        self.serving.get().map(|serving| &*serving.devices)
+    }
+
+    /// The session `key` works in on `workspace_id`, opened now if it has none, once its scope
+    /// reaches the workspace and the key is the person's, or a member's asking for what is the
+    /// workspace's (`own_only` says it asks for what is this device's own): `caller` is who the
+    /// workspace's roster admitted it as on the link.
     fn run(
         &self,
         workspace_id: WorkspaceId,
         (caller, key): (&Caller, &DeviceCert),
-        message: &RemoteActionMessage,
+        own_only: bool,
     ) -> Result<Run, ActionCallError> {
         let Serving { devices, sessions } =
             self.serving
@@ -199,7 +211,7 @@ impl KeySessions {
             }
         };
         if whose == Whose::Member {
-            if crate::personal_devices::own_devices_only(message) {
+            if own_only {
                 return Err(ActionCallError::Refused {
                     reason: Refusal::OtherPerson.reason(),
                 });
@@ -266,6 +278,19 @@ impl KeySessions {
         Ok(Run::Open(Box::new((host, caller))))
     }
 
+    /// [`Self::run`], opened here for a caller on a thread of its own, which may wait on the
+    /// workspaces: the host the key's calls go through and the caller they go as.
+    fn opened(
+        &self,
+        workspace_id: WorkspaceId,
+        (caller, key): (&Caller, &DeviceCert),
+    ) -> Result<(SessionHost, Caller), ActionCallError> {
+        match self.run(workspace_id, (caller, key), false)? {
+            Run::Open(open) => Ok(*open),
+            Run::Opening(opening) => opening.open(&self.open),
+        }
+    }
+
     /// End the run `device` works in on `workspace_id`, if it has one.
     fn end(&self, workspace_id: WorkspaceId, device: &[u8; 32]) {
         let ended = self.open.lock_recover().remove(&(workspace_id, *device));
@@ -298,14 +323,15 @@ impl AppActionServer for KeySessions {
         certificate: &DeviceCert,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
-        match self.run(workspace_id, (caller, certificate), &message) {
+        let own_only = crate::personal_devices::own_devices_only(&message);
+        match self.runs.run(workspace_id, (caller, certificate), own_only) {
             Ok(Run::Open(open)) => {
                 let (host, caller) = *open;
                 tilo_action_calls::serve(&host, &caller, message)
             }
             Ok(Run::Opening(opening)) => {
                 let opening = *opening;
-                let open = Arc::clone(&self.open);
+                let open = Arc::clone(&self.runs.open);
                 let replies = tilo_actions::remote::refuse(
                     &message,
                     ActionCallError::Unavailable {
@@ -337,7 +363,7 @@ impl AppActionServer for KeySessions {
 
     fn forget_workspace(&self, workspace_id: WorkspaceId) {
         let ended: Vec<Session> = {
-            let mut open = self.open.lock_recover();
+            let mut open = self.runs.open.lock_recover();
             let keys: Vec<_> = open
                 .keys()
                 .filter(|(workspace, _)| *workspace == workspace_id)

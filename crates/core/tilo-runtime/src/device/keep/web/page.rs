@@ -23,6 +23,7 @@ use tilo_server_protocol::page::{
     PageRefusal, PointerEvent,
 };
 use tilo_server_protocol::web::LINK_PAGE_PATH;
+use tilo_user_identity::DeviceCert;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use tilo_server_protocol::WorkspaceId;
@@ -76,7 +77,7 @@ pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webt
     let person = tilo_workspace_service::service::local_caller(&device.cert);
     serve_pages(
         pages,
-        &person,
+        (&person, &device.cert),
         |workspace_id, app| readiness(workspaces.as_deref(), workspace_id, app),
         recv,
         send,
@@ -86,12 +87,13 @@ pub(crate) async fn serve_web(protocol: &ServerProtocol, session: tilo_net::webt
 }
 
 /// Answer what a page asks on its stream until it closes: the person of
-/// `person` opens pages and acts on the one open, and an open page hears what
-/// others changed on it. `ready` says whether a workspace's documents are
-/// readable here ([`readiness`]).
+/// `person`, on the device whose `certificate` the link verified, opens pages
+/// and acts on the one open, and an open page hears what others changed on it.
+/// `ready` says whether a workspace's documents are readable here
+/// ([`readiness`]).
 pub(crate) async fn serve_pages<R, W, F, Fut>(
     pages: &dyn AppPages,
-    person: &Caller,
+    (person, certificate): (&Caller, &DeviceCert),
     ready: F,
     mut recv: R,
     mut send: W,
@@ -141,8 +143,16 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
                 let Some(ask) = frame.and_then(|frame| serde_json::from_slice::<PageAsk>(&frame).ok()) else {
                     break;
                 };
-                answer_ask(pages, person, &ready, &mut open, &mut notices, &mut send, ask)
-                    .await
+                answer_ask(
+                    pages,
+                    (person, certificate),
+                    &ready,
+                    &mut open,
+                    &mut notices,
+                    &mut send,
+                    ask,
+                )
+                .await
             }
             () = tokio::time::sleep(follow_in), if open.is_some() => {
                 followed = true;
@@ -213,7 +223,7 @@ pub(crate) async fn serve_pages<R, W, F, Fut>(
 /// Answer one ask from the page.
 async fn answer_ask<W, F, Fut>(
     pages: &dyn AppPages,
-    person: &Caller,
+    (person, certificate): (&Caller, &DeviceCert),
     ready: &F,
     open: &mut Option<(WorkspaceId, u64)>,
     notices: &mut Vec<PageNotice>,
@@ -233,7 +243,7 @@ where
             // Another page of the same browser: what it was told of the person's
             // notifications is told again for the one it opens now.
             notices.clear();
-            let opened = open_page(pages, person, ready, address, send).await;
+            let opened = open_page(pages, (person, certificate), ready, address, send).await;
             if let Ok((workspace_id, page, _)) = &opened {
                 *open = Some((*workspace_id, *page));
             }
@@ -340,7 +350,7 @@ async fn answer_pointer(
 /// loading first.
 async fn open_page<W, F, Fut>(
     pages: &dyn AppPages,
-    person: &Caller,
+    (person, certificate): (&Caller, &DeviceCert),
     ready: &F,
     address: PageAddress,
     send: &mut W,
@@ -357,7 +367,7 @@ where
     }
     let caller = person.clone().in_workspace(workspace_id.to_string());
     let opened = pages
-        .open(workspace_id, &caller, address)
+        .open(workspace_id, (&caller, certificate), address)
         .await
         .unwrap_or_else(|| Err(PageRefusal::Unavailable("the page was dropped".to_owned())))?;
     let page = opened.page;

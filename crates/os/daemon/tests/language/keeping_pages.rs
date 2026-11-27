@@ -14,7 +14,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::remote::{Caller, Pending};
+use tilo_actions::remote::Pending;
 use tilo_runtime::RuntimeServices as _;
 use tilo_runtime::device::services::Daemon;
 use tilo_server_protocol::page::PageAddress;
@@ -126,7 +126,8 @@ fn keep_config(root: &Path) -> PathBuf {
 /// The keeping server a test runs against.
 struct Keeping {
     daemon: Arc<Daemon>,
-    person: String,
+    /// The person's browser, as its root certified it: what a page's link verifies.
+    browser: DeviceCert,
 }
 
 impl Keeping {
@@ -137,17 +138,22 @@ impl Keeping {
         let root = SigningKey::from_bytes(&[0x5c; 32]);
         let key = SigningKey::from_bytes(&[0x5d; 32]);
         let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "the-server".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
+        let certified = |key: &SigningKey, label: &str| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: key.verifying_key().to_bytes(),
+                device_label: label.into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: now.saturating_sub(60_000_000_000),
+                expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+            cert
         };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        let cert = certified(&key, "the-server");
+        let browser = certified(&SigningKey::from_bytes(&[0x5e; 32]), "Ada's browser");
         let place =
             tilo_device_identity::login::Place::here(tilo_api::calls::device_keys()).unwrap();
         tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
@@ -155,10 +161,7 @@ impl Keeping {
         tilo_api::daemon::enter::adopt(&place, &cert).unwrap();
         let daemon = Arc::new(Daemon::start_reporting(profile, &mut |_| {}).unwrap());
         daemon.hand_apps_their_lines();
-        Self {
-            person: daemon.actor().to_owned(),
-            daemon,
-        }
+        Self { daemon, browser }
     }
 }
 
@@ -187,7 +190,9 @@ fn a_keeping_server_answers_a_page_of_a_tl_app_it_serves() {
             .unwrap()
             .workspace;
         let workspace_id = tilo_desktop_model::WorkspaceId::parse(&workspace).unwrap();
-        let caller = Caller::local_person(keeping.person.as_str()).in_workspace(workspace.as_str());
+        let cert = keeping.browser.clone();
+        let caller =
+            tilo_workspace_service::service::local_caller(&cert).in_workspace(workspace.as_str());
         let daemon = Arc::clone(&keeping.daemon);
         let (opened, pressed) = tokio::task::spawn_blocking(move || {
             let pages = daemon
@@ -195,7 +200,7 @@ fn a_keeping_server_answers_a_page_of_a_tl_app_it_serves() {
                 .expect("a keeping server serves the pages of the workspaces it keeps");
             let opened = settled(pages.open(
                 workspace_id,
-                &caller,
+                (&caller, &cert),
                 PageAddress {
                     workspace: workspace.clone(),
                     app: "calculator".to_owned(),

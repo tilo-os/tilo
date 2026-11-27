@@ -484,6 +484,8 @@ pub struct Host {
     /// The person's root, kept here as the computer that founded them keeps it: what certifies
     /// their keys and devices.
     root: tilo_identity::store::SigningIdentity,
+    /// The person's browser, certified the first time a page is opened in it.
+    browser: std::sync::OnceLock<DeviceCert>,
 }
 
 impl Host {
@@ -522,6 +524,7 @@ impl Host {
             daemon: Mutex::new(Some(daemon)),
             profile: profile.to_owned(),
             root,
+            browser: std::sync::OnceLock::new(),
         }
     }
 
@@ -706,6 +709,28 @@ impl Host {
             .await
             .expect("the daemon answers the resolve")
             .expect("the person's answer is admitted");
+    }
+
+    /// The person's browser as a page's link verified it, opening pages in `workspace`: the
+    /// caller the link takes it as, and the certificate it proved.
+    #[must_use]
+    pub fn browser_in(&self, workspace: &str) -> (Caller, DeviceCert) {
+        let cert = self
+            .browser
+            .get_or_init(|| {
+                self.certify("Ada's browser", DeviceCapabilities::member())
+                    .1
+            })
+            .clone();
+        let caller =
+            tilo_workspace_service::service::local_caller(&cert).in_workspace(workspace.to_owned());
+        (caller, cert)
+    }
+
+    /// [`Self::browser_in`] the person's workspace.
+    #[must_use]
+    pub fn browser(&self) -> (Caller, DeviceCert) {
+        self.browser_in(self.workspace())
     }
 
     /// A new key of the person's, `label`, certified by their root with `capabilities`.

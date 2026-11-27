@@ -185,13 +185,18 @@ impl AppPages for Echo {
     fn open(
         &self,
         _: WorkspaceId,
-        caller: &Caller,
+        (caller, certificate): (&Caller, &DeviceCert),
         address: PageAddress,
     ) -> Pending<Result<OpenedPage, PageRefusal>> {
         assert_eq!(
             caller.workspace(),
             Some(WORKSPACE),
             "the caller is the page's workspace's"
+        );
+        assert_eq!(
+            caller.device_public_key(),
+            Some(&certificate.device_public_key),
+            "the page is opened under the certificate its link verified"
         );
         Pending::ready(Ok(OpenedPage {
             page: 1,
@@ -303,6 +308,7 @@ async fn answer(stream: &mut tokio::io::DuplexStream) -> PageAnswer {
 async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
     let pages = Echo::default();
     let person = Caller::authenticated([1; 32], [2; 32]);
+    let browser_cert = cert(1, "Browser", DeviceCapabilities::member());
     let (mut browser, served) = tokio::io::duplex(1 << 16);
     let (recv, send) = tokio::io::split(served);
     let address = PageAddress {
@@ -310,7 +316,13 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
         app: "notes".into(),
         show: Some("notes:page:a".into()),
     };
-    let serving = serve_pages(&pages, &person, |_, _| async { Ok(true) }, recv, send);
+    let serving = serve_pages(
+        &pages,
+        (&person, &browser_cert),
+        |_, _| async { Ok(true) },
+        recv,
+        send,
+    );
     let browsing = async {
         ask(&mut browser, &PageAsk::Open(address)).await;
         // Its keys were on their way: it is told so, then shown.
@@ -370,6 +382,7 @@ async fn a_page_opens_acts_and_lets_go_when_its_browser_leaves() {
 async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
     let pages = Echo::default();
     let person = Caller::authenticated([1; 32], [2; 32]);
+    let browser_cert = cert(1, "Browser", DeviceCapabilities::member());
     let (mut browser, served) = tokio::io::duplex(1 << 16);
     let (recv, send) = tokio::io::split(served);
     let address = PageAddress {
@@ -379,7 +392,7 @@ async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
     };
     let serving = serve_pages(
         &pages,
-        &person,
+        (&person, &browser_cert),
         |_, _| async { Err(PageRefusal::StoredCopy) },
         recv,
         send,
@@ -406,6 +419,7 @@ async fn a_pages_view_asks_the_browser_for_a_call_step_and_hears_its_answer() {
 
     let pages = Echo::default();
     let person = Caller::authenticated([1; 32], [2; 32]);
+    let browser_cert = cert(1, "Browser", DeviceCapabilities::member());
     let (mut browser, served) = tokio::io::duplex(1 << 16);
     let (recv, send) = tokio::io::split(served);
     let address = PageAddress {
@@ -413,7 +427,13 @@ async fn a_pages_view_asks_the_browser_for_a_call_step_and_hears_its_answer() {
         app: "chat".into(),
         show: None,
     };
-    let serving = serve_pages(&pages, &person, |_, _| async { Ok(true) }, recv, send);
+    let serving = serve_pages(
+        &pages,
+        (&person, &browser_cert),
+        |_, _| async { Ok(true) },
+        recv,
+        send,
+    );
     let browsing = async {
         ask(&mut browser, &PageAsk::Open(address)).await;
         assert_eq!(answer(&mut browser).await, PageAnswer::Loading);
@@ -532,6 +552,7 @@ async fn the_notifications_the_person_s_devices_show_reach_the_page_and_its_answ
     };
     *pages.notices.lock().unwrap() = vec![told.clone()];
     let person = Caller::authenticated([1; 32], [2; 32]);
+    let browser_cert = cert(1, "Browser", DeviceCapabilities::member());
     let (mut browser, served) = tokio::io::duplex(1 << 16);
     let (recv, send) = tokio::io::split(served);
     let address = PageAddress {
@@ -539,7 +560,13 @@ async fn the_notifications_the_person_s_devices_show_reach_the_page_and_its_answ
         app: "mail".into(),
         show: None,
     };
-    let serving = serve_pages(&pages, &person, |_, _| async { Ok(true) }, recv, send);
+    let serving = serve_pages(
+        &pages,
+        (&person, &browser_cert),
+        |_, _| async { Ok(true) },
+        recv,
+        send,
+    );
     let browsing = async {
         ask(&mut browser, &PageAsk::Open(address)).await;
         assert_eq!(answer(&mut browser).await, PageAnswer::Loading);
