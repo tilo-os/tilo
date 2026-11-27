@@ -327,7 +327,9 @@ impl Surface {
     ///
     /// `shown` bounds what a document publishes to what the window reaches: its level's target and
     /// the rows on screen. `None` is the whole workspace, what a caller that asks the directory
-    /// reads.
+    /// reads, and what a surface with no window publishes whatever it is asked with: a call names
+    /// what it calls, and what one call made is there for the next to name. Read bounded, the
+    /// document a call landed in would be published as far as the root alone.
     ///
     /// A document is published before the package catalogue: what the window holds and the actions
     /// its own resources offer are what a person came to do, so the palette lists them first, and
@@ -336,7 +338,7 @@ impl Surface {
         let mut out = vec![tilolang_tilo::publish::host_resource()];
         let trees = {
             let mut publications = self.publications.borrow_mut();
-            match shown {
+            match shown.filter(|_| !self.everything) {
                 Some(shown) => publications.reached(&self.host, &self.planner, &self.app, shown),
                 None => publications.everything(&self.host, &self.planner),
             }
@@ -4713,7 +4715,7 @@ impl Hosted {
         if let Some(descriptors) = self.surveyed.get(&key) {
             return Ok(Rc::clone(descriptors));
         }
-        let resources = surface.resources((!surface.everything).then_some(shown));
+        let resources = surface.resources(Some(shown));
         let mut handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),

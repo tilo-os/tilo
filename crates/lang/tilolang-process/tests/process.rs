@@ -2034,6 +2034,41 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase what_a_step_makes_is_offered_to_the_next_caller;
+    {
+        // An instance that shows nothing publishes the app's resources, which is what its
+        // callers name: a task one step made is there for the next step to act on, as the
+        // Migrations app's record its engine makes is there for a person to start.
+        let (app, bundle) = shipped(&shipped_dir().join("tasks"));
+        let (mut host, sent, inbox, _) = running_with_no_view("ada", &app, bundle, None);
+        settle_with_no_view(&mut host);
+        let new_task = published_as(&host, "New task");
+        for id in 1..=2 {
+            let (actor, context) = agent_step("scribe", "ada");
+            deliver_as(&inbox, id, tilo_actions::InvocationId::new(), &new_task, actor, context);
+            settle_with_no_view(&mut host);
+            let answer = answered(&sent, id).expect("the broker hears how the step ended");
+            assert!(
+                matches!(answer, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                "the agent's step ran: {answer:?}"
+            );
+        }
+        let renamed: std::collections::BTreeSet<String> = host
+            .instances()
+            .next()
+            .expect("the instance runs")
+            .published()
+            .iter()
+            .filter(|action| action.address.action == "retitle")
+            .map(|action| action.address.resource.clone())
+            .collect();
+        assert_eq!(
+            renamed.len(),
+            2,
+            "each task a step made offers its own actions: {renamed:?}"
+        );
+    }
+
     phase a_member_whose_access_denies_it_is_refused_and_nothing_is_written;
     {
         let (app, bundle) = shipped(&shipped_dir().join("tasks"));
