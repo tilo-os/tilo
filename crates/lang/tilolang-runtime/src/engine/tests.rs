@@ -471,4 +471,5 @@ fn the_runtimes_of_a_process_share_one_linker_per_abi() {
         2,
         "one linker for the `tl` table, one beside it for the probe's ABI"
     );
+    drop(linkers);
 }
