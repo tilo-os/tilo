@@ -366,11 +366,17 @@ fn device_section(parsed: &Address) -> bool {
         && crate::remote::settings_resources::is_section(&parsed.resource())
 }
 
+/// Whether `parsed` names an app after a device (`devices/<id>/<app>/…`), whose provider answers
+/// at that address. The person's devices themselves (`devices`, `devices/<id>`) name none.
+fn names_device_app(parsed: &Address) -> bool {
+    is_device_resource(parsed) && parsed.segments.len() > 2 && !device_section(parsed)
+}
+
 /// The segments of a path below the child of the root it starts with: below its app, which a
 /// device's own resources name after the device (`devices/<id>/<app>/…`).
 #[must_use]
 pub fn below_app(parsed: &Address) -> &[Segment] {
-    if is_device_resource(parsed) && !device_section(parsed) {
+    if names_device_app(parsed) {
         return parsed.segments.get(3..).unwrap_or_default();
     }
     parsed.segments.get(1..).unwrap_or_default()
@@ -1600,7 +1606,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         // level of the app's own names.
         if type_address(&app_of(parsed)).is_some()
             || device_section(parsed)
-            || is_device_resource(parsed)
+            || names_device_app(parsed)
         {
             let address = parsed.resource();
             if let Some(found) = self
