@@ -493,6 +493,7 @@ async fn a_persons_child_call_asks_them_only_where_its_own_rule_does() {
                     instance: "41".to_owned(),
                     resource: "workspace:atlas".to_owned(),
                     at: None,
+                    control: None,
                 })
             );
             assert_eq!(

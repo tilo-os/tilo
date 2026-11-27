@@ -184,6 +184,37 @@ fn a_widget_that_draws_itself_animates_on_the_frame_clock_and_takes_the_pointer(
     });
 }
 
+/// A click on a control says the rect of the control it answered: a call it makes carries it,
+/// so the person's question stands beside that control, never over it.
+#[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "a control's rect is whole logical pixels, told as the node laid it out"
+)]
+fn a_click_says_the_rect_of_the_control_it_answered() {
+    const PRESS: u32 = 77;
+    let mut driver = Driver::new(
+        State::new(),
+        Box::new(Column::new().push(Box::new(Button::new("add", "Add")))),
+        (400, 300),
+    );
+    driver.relayout();
+    let at = driver.targets().get("add").copied().expect("the button");
+    tilo_ui_base::press::note(PRESS);
+    driver.click_named("add").unwrap();
+    let told = tilo_actions::remote::press_points::of(PRESS).expect("the click told its control");
+    assert_eq!(
+        (
+            f64::from(told.x),
+            f64::from(told.y),
+            f64::from(told.w),
+            f64::from(told.h)
+        ),
+        (at.x0, at.y0, at.width(), at.height()),
+        "the rect of the button the pointer answered"
+    );
+}
+
 #[test]
 fn a_control_is_reached_by_its_name_its_accessibility_node_and_tab() {
     let presses = Rc::new(Cell::new(0));

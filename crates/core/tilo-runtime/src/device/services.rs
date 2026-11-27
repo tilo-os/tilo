@@ -6802,6 +6802,7 @@ impl RuntimeActionProvider {
                     instance: pressed.instance.clone(),
                     resource: pressed.resource.clone(),
                     at: pressed.at,
+                    control: None,
                 }
             }),
         }

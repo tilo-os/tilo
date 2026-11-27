@@ -742,8 +742,9 @@ pub trait AskedDispatch: Send + Sync {
     /// once it no longer remembers it (the host restarted): kept with its record.
     fn context(&self, invocation: super::InvocationId) -> serde_json::Value;
 
-    /// The window a person's press asked `invocation` in, where it did: kept with its record, so
-    /// the question stands over that window. `None` for a call no press asked (an agent's).
+    /// The window a person's press asked `invocation` in, where it did, and the control the
+    /// press answered: kept with its record, so the question stands beside it. `None` for a call
+    /// no press asked (an agent's).
     fn pressed(&self, invocation: super::InvocationId) -> Option<Pressed> {
         let _ = invocation;
         None
@@ -840,8 +841,8 @@ pub struct KeptAsk {
     /// what a device that takes it again after a restart runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edited: Option<serde_json::Map<String, serde_json::Value>>,
-    /// The window a person's press asked it in ([`AskedDispatch::pressed`]), so its question
-    /// stands over that window also after a restart.
+    /// The window a person's press asked it in ([`AskedDispatch::pressed`]), and the control it
+    /// answered, so its question stands beside that control also after a restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pressed: Option<Pressed>,
     /// The arguments [`Self::request`] carried that the record keeps none of, those its action
@@ -888,11 +889,15 @@ pub struct Pressed {
     /// The window's tab key, as the session publishes it (`device.Window.key`).
     pub instance: String,
     pub resource: String,
-    /// Where in that window the press was, as the compositor that delivered it saw it: the
-    /// question stands there, its answer under the press. `None` for a press it gave no point
-    /// for (a key).
+    /// Where in that window the press was, as the compositor that delivered it saw it. `None`
+    /// for a press it gave no point for (a key).
     #[serde(default)]
     pub at: Option<PressPoint>,
+    /// The control the press answered, where the window knew it: the question stands beside it,
+    /// never over the control the person pressed. A question whose record carries it anchors
+    /// there; one whose record does not falls back to [`Self::at`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<PressRect>,
 }
 
 /// A point in a window, in its logical pixels from its top-left corner.
@@ -900,6 +905,16 @@ pub struct Pressed {
 pub struct PressPoint {
     pub x: i32,
     pub y: i32,
+}
+
+/// Where a control stands in its window, in its logical pixels from the top-left corner: the
+/// rect of the button, row or key the person pressed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PressRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
 }
 
 /// One question that waits for the person, as the reading of its workspace's invocations

@@ -1100,23 +1100,23 @@ fn keyed_menu(key: &str) -> Vec<ToUi> {
     }]
 }
 
-/// A key that presses a control says where in the window that control stands: a question the
-/// call it makes raises stands there, as one a click raises stands where the click was. A key the
-/// window passes to the control the keyboard is in says where that control stands.
+/// A press that answers a control says the control's rect in the window: a question the call it
+/// makes raises stands beside that control, never over it. A key says where the control it
+/// answered stands, and a click where the button under the pointer stands.
 #[test]
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a control's place in a window is a few thousand pixels at most"
 )]
-fn a_key_that_presses_a_control_says_where_the_control_stands() {
+fn a_press_says_where_the_control_it_answered_stands() {
     const DECLARED: u32 = 41;
     const FOCUSED: u32 = 42;
-    let point = |rect: ui::kurbo::Rect| {
-        let centre = rect.center();
-        tilo_actions::remote::asked::PressPoint {
-            x: centre.x.round() as i32,
-            y: centre.y.round() as i32,
-        }
+    const CLICKED: u32 = 43;
+    let area = |rect: ui::kurbo::Rect| tilo_actions::remote::asked::PressRect {
+        x: rect.x0.round() as i32,
+        y: rect.y0.round() as i32,
+        w: rect.width().round() as i32,
+        h: rect.height().round() as i32,
     };
     let mut archive = UiNode::empty("ui.Button", "archive");
     archive
@@ -1144,8 +1144,19 @@ fn a_key_that_presses_a_control_says_where_the_control_stands() {
     assert_eq!(fired(&mut app).len(), 1, "the key pressed the button");
     assert_eq!(
         tilo_actions::remote::press_points::of(DECLARED),
-        Some(point(button)),
+        Some(area(button)),
         "the key's press stands at the button it pressed"
+    );
+
+    // A click on the same button says the same: the rect of the control the pointer answered,
+    // which the window knows though the compositor only saw where the pointer was.
+    tilo_ui_base::press::note(CLICKED);
+    harness.click_named("archive").expect("the button is drawn");
+    harness.relayout();
+    assert_eq!(
+        tilo_actions::remote::press_points::of(CLICKED),
+        Some(area(button)),
+        "the click's press stands at the button it pressed"
     );
 
     let (_app, mut harness) = drawn(&bound_page("ui.TextInput", &[], Value::text("hello")));
@@ -1157,7 +1168,7 @@ fn a_key_that_presses_a_control_says_where_the_control_stands() {
     harness.key("Enter");
     assert_eq!(
         tilo_actions::remote::press_points::of(FOCUSED),
-        Some(point(field)),
+        Some(area(field)),
         "a key no control declares stands at the control the keyboard is in"
     );
 }

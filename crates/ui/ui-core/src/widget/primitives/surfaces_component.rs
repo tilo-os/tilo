@@ -712,6 +712,10 @@ pub struct PopoverProps {
     /// raised it (a question an action asks first). Its primary button stands under that point,
     /// so pressing again at the same spot takes it.
     pub at: Option<Vec<f64>>,
+    /// The control it stands beside, `[x, y, w, h]` from the top-left of where it is declared:
+    /// the button, row or key a press answered. It opens below that control, or above it where
+    /// the window has no room there, and never over it. Wins over [`Self::at`].
+    pub anchor: Option<Vec<f64>>,
     /// It was closed (Escape, or a press outside it): a popover with this closes as it is.
     #[component(event)]
     pub dismiss: Event,
@@ -725,12 +729,24 @@ pub struct DeclaredPopover {
     rect: Rect,
     /// The point it stands at, from where it is declared ([`PopoverProps::at`]).
     at: Option<Point>,
+    /// The control it stands beside, from where it is declared ([`PopoverProps::anchor`]).
+    anchor: Option<Rect>,
+    /// The control's place in the window, as the panel was last placed beside it.
+    placed: Option<Rect>,
 }
 
 /// The point `[x, y]` a popover is declared at; `None` for anything else.
 fn point_of(at: Option<&[f64]>) -> Option<Point> {
     match at? {
         [x, y] => Some(Point::new(*x, *y)),
+        _ => None,
+    }
+}
+
+/// The rect `[x, y, w, h]` a popover stands beside; `None` for anything else.
+fn rect_of(anchor: Option<&[f64]>) -> Option<Rect> {
+    match anchor? {
+        [x, y, w, h] => Some(Rect::new(*x, *y, x + w, y + h)),
         _ => None,
     }
 }
@@ -754,6 +770,8 @@ impl DeclaredPopover {
             popover,
             rect: Rect::ZERO,
             at: point_of(props.at.as_deref()),
+            anchor: rect_of(props.anchor.as_deref()),
+            placed: None,
         }
     }
 
@@ -799,9 +817,22 @@ impl Widget for DeclaredPopover {
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
-        // Declared at a point of where it stands: that point in the window.
-        let aim = self.at.map(|at| self.rect.origin() + at.to_vec2());
-        self.popover.set_aim(aim);
+        if let Some(anchor) = self.anchor {
+            // Declared beside a control of where it stands: that control's rect in the window.
+            let placed = anchor + self.rect.origin().to_vec2();
+            self.popover.set_aim(None);
+            // Only when the control moved: a panel placed at the same rect each layout would
+            // repaint every frame.
+            if self.placed != Some(placed) {
+                self.popover.set_anchor(placed);
+                self.placed = Some(placed);
+            }
+        } else {
+            self.placed = None;
+            // Declared at a point of where it stands: that point in the window.
+            let aim = self.at.map(|at| self.rect.origin() + at.to_vec2());
+            self.popover.set_aim(aim);
+        }
         self.popover.apply_layout(taffy, node, origin);
     }
 
@@ -894,10 +925,16 @@ impl Described for DeclaredPopover {
             open,
             side,
             at,
+            anchor,
             dismiss,
             content: _,
         } = props;
         self.at = point_of(at.as_deref());
+        let anchor = rect_of(anchor.as_deref());
+        if self.anchor != anchor {
+            self.anchor = anchor;
+            self.placed = None;
+        }
         let popover = &mut self.popover;
         popover.set_label_option(label);
         popover.set_side(side.unwrap_or_default());

@@ -1,7 +1,8 @@
-//! A press that needs the person's yes is asked where they pressed: the shell's confirm stands
-//! at the point of the window the press was in, its answer that does what they pressed for under
-//! that point, and that answer is the asked record's own `resolve`. Escape, a press off it and
-//! its own no each decline the record.
+//! A press that needs the person's yes is asked where they pressed: the shell's question stands
+//! beside the control the press answered, in the window it was pressed in, and that answer is the
+//! asked record's own `resolve`. Escape, a press off it and its own no each decline the record. A
+//! call that leaves the system asks the same, beside its button, and offers no Shift that would
+//! skip it.
 
 use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{UiNode, Value};
@@ -9,8 +10,8 @@ use tilolang_tilo::host::Host;
 
 use crate::shell_staged::{Called, SHELL, ada, staged};
 
-/// The shell staged as its scenario "a press that needs a yes": Notes' Share, pressed at
-/// (640, 212) in the Notes window, waits for Ada.
+/// The shell staged as its scenario "a press that needs a yes": Notes' Share, pressed at its
+/// button in the Notes window, waits for Ada.
 fn shell() -> (Host, Called) {
     staged("a press that needs a yes")
 }
@@ -76,9 +77,14 @@ tilo_test_env::scenario! {
             panic!("one confirm stands at the press: {tree:#?}");
         };
         assert_eq!(
-            given(confirm.props.get("at")),
-            Some(&Value::List(vec![Value::Float(640.0), Value::Float(212.0)])),
-            "at the point of the window the press was in"
+            given(confirm.props.get("anchor")),
+            Some(&Value::List(vec![
+                Value::Float(592.0),
+                Value::Float(196.0),
+                Value::Float(96.0),
+                Value::Float(32.0)
+            ])),
+            "beside the control of the window the press answered, never over it"
         );
         let shown = texts(confirm);
         for fact in ["Mia Clayton", "Can edit", "Release planning"] {
@@ -99,7 +105,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             given(share.props.get("role")),
             Some(&Value::text("primary")),
-            "its main answer, which the confirm stands under the press"
+            "its main answer"
         );
     }
 
@@ -155,6 +161,90 @@ tilo_test_env::scenario! {
             answers(&called),
             ["decline"],
             "the confirm's own no says no to the record, and nothing of the call runs"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_send_that_leaves_asks_beside_its_button_and_runs_only_on_the_yes;
+
+    phase it_stands_beside_the_send_and_nothing_sent;
+    {
+        let (host, called) = staged("a send that needs a yes");
+        assert!(answers(&called).is_empty(), "nothing was answered before the person saw it");
+        let desktop = desktop(&host);
+        let tree = desktop.tree();
+        assert!(
+            tree.of_kind("ui.ModalDialog").is_empty(),
+            "no question in the middle of the window"
+        );
+        let [confirm] = tree.of_kind("ui.Popover")[..] else {
+            panic!("one question stands beside the Send: {tree:#?}");
+        };
+        assert_eq!(
+            given(confirm.props.get("anchor")),
+            Some(&Value::List(vec![
+                Value::Float(858.0),
+                Value::Float(644.0),
+                Value::Float(88.0),
+                Value::Float(32.0)
+            ])),
+            "beside the Send button the person pressed, never over it"
+        );
+        let shown = texts(confirm);
+        assert!(
+            shown.iter().any(|text| text.contains("grace@hopper.example")),
+            "it says whom the letter goes to: {shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|text| text == "Hold Shift to skip"),
+            "Shift never skips what leaves the system: {shown:?}"
+        );
+        assert!(
+            confirm
+                .of_kind("ui.Button")
+                .into_iter()
+                .any(|node| node.props.get("label") == Some(&Value::text("Send"))),
+            "its main answer is what was pressed for: {shown:?}"
+        );
+    }
+
+    phase its_yes_sends_once;
+    {
+        let (host, called) = staged("a send that needs a yes");
+        let desktop = desktop(&host);
+        desktop.press(&confirm_button(&desktop, "Send")).unwrap();
+        assert_eq!(
+            answers_of(&called, "studio/send-1"),
+            ["approve"],
+            "the yes is the record's resolve, and the call runs once"
+        );
+    }
+
+    phase its_no_sends_nothing;
+    {
+        let (host, called) = staged("a send that needs a yes");
+        let desktop = desktop(&host);
+        desktop
+            .press(&confirm_button(&desktop, "Don't allow"))
+            .unwrap();
+        assert_eq!(
+            answers_of(&called, "studio/send-1"),
+            ["decline"],
+            "the way out runs nothing"
+        );
+    }
+
+    phase escape_withdraws_it;
+    {
+        let (host, called) = staged("a send that needs a yes");
+        let desktop = desktop(&host);
+        let confirm = desktop.tree().of_kind("ui.Popover")[0].key.clone();
+        desktop.fire(&confirm, "dismiss").unwrap();
+        assert_eq!(
+            answers_of(&called, "studio/send-1"),
+            ["decline"],
+            "closing the question says no to the record, and nothing of the call runs"
         );
     }
 }
@@ -215,6 +305,16 @@ mod focus {
     }
 
     #[test]
+    fn an_irreversible_press_opens_on_the_way_out() {
+        let shell = staged("a send that needs a yes");
+        assert_eq!(
+            shell.holds_keyboard().as_deref(),
+            Some("Don't allow"),
+            "Enter must never send what nothing here can take back"
+        );
+    }
+
+    #[test]
     fn an_agents_question_opens_on_the_way_out() {
         let shell = staged("a call that writes another record");
         assert_eq!(
@@ -232,6 +332,11 @@ mod focus {
 /// workspace its address names, as the session sends it: nothing here publishes `resolve`, as
 /// nothing does there.
 fn answers(called: &Called) -> Vec<String> {
+    answers_of(called, "studio/share-1")
+}
+
+/// [`answers`] of the record `record`, as the scenario stages its id.
+fn answers_of(called: &Called, record: &str) -> Vec<String> {
     called
         .0
         .borrow()
@@ -247,18 +352,19 @@ fn answers(called: &Called) -> Vec<String> {
                 panic!("the shell called only the record's resolve: {call:?}");
             };
             assert_eq!(action.as_str(), "resolve", "{call:?}");
-            let record = target
+            let hole = target
                 .as_ref()
                 .expect("the call names the record it answers");
             assert!(
-                tilolang::is_invocation_type(&record.ty),
+                tilolang::is_invocation_type(&hole.ty),
                 "the call is on an asked record: {call:?}"
             );
             assert_eq!(
-                record.id_string(),
-                "studio/share-1",
+                hole.id_string(),
+                record,
                 "the asked record is the one answered: {call:?}"
             );
+            let resource = record.rsplit_once('/').map_or(record, |(_, last)| last);
             let sent = tilolang_tilo::call::Callees::default()
                 .call(call)
                 .unwrap_or_else(|_| panic!("the record's call is sent: {call:?}"));
@@ -272,7 +378,7 @@ fn answers(called: &Called) -> Vec<String> {
                 (
                     &serde_json::json!(tilo_action_services::workspace_invocations::PROVIDER),
                     &serde_json::json!("studio"),
-                    &serde_json::json!("share-1"),
+                    &serde_json::json!(resource),
                     &serde_json::json!("resolve"),
                 ),
                 "the workspace's invocations provider answers it: {sent}"

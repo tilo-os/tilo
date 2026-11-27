@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tilo_person_services::PersonServices;
 
 use tilo_actions::remote::asked::{
-    AskedBy, AskedDispatch, AskedFacts, AskedRecords, PressPoint, Pressed, RecordRef,
+    AskedBy, AskedDispatch, AskedFacts, AskedRecords, PressPoint, PressRect, Pressed, RecordRef,
 };
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvocationReceipt, InvocationState,
@@ -158,15 +158,16 @@ impl AppBrokerState {
     /// Keep `request`, which `caller` made on the connection of `app` and which `first`
     /// refused for want of the person's yes, as its asked record: answered waiting in it, and
     /// sent again through `provider` once the person approves. `pressed` is the window of this
-    /// device the person pressed the call in, by its tab id, and where in it, when their press
-    /// there made it: the question stands at that press. Any other answer, a call that carries
-    /// an approve already, and a host that keeps no asked records, answer `first`.
+    /// device the person pressed the call in, by its tab id, where in it, and the control the
+    /// press answered, when their press there made it: the question stands at that press. Any
+    /// other answer, a call that carries an approve already, and a host that keeps no asked
+    /// records, answer `first`.
     pub(super) fn keep_app_ask(
         &self,
         (provider, app): (&ConnectionActionProvider, &str),
         caller: &Caller,
         request: &InvokeRequest,
-        pressed: Option<(u64, Option<PressPoint>)>,
+        pressed: Option<(u64, Option<PressPoint>, Option<PressRect>)>,
         first: RemoteActionMessage,
     ) -> RemoteActionMessage {
         let RemoteActionMessage::Receipt(InvocationReceipt {
@@ -206,12 +207,13 @@ impl AppBrokerState {
         let stands = self.services.shell.as_ref().and_then(|shell| {
             let device = shell.workspaces.device_cert().device_public_key;
             match pressed {
-                Some((window, at)) => Some(Pressed {
+                Some((window, at, control)) => Some(Pressed {
                     device: hex::encode(device),
                     app: app.to_owned(),
                     instance: window.to_string(),
                     resource: request.target.address.resource.clone(),
                     at,
+                    control,
                 }),
                 None => self.parent_view(provider.own_peer, &device, request),
             }
@@ -277,6 +279,7 @@ impl AppBrokerState {
             instance: window.to_string(),
             resource: resource.to_owned(),
             at: None,
+            control: None,
         })
     }
 

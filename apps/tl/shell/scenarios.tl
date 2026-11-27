@@ -3660,6 +3660,7 @@ scenario "a press that needs a yes" {
                         instance: "p1",
                         resource: "",
                         at: .some(invocations.PressPoint(x: 640, y: 212)),
+                        control: .some(invocations.PressRect(x: 592, y: 196, w: 96, h: 32)),
                     ),
                 ),
                 .none,
@@ -3667,6 +3668,106 @@ scenario "a press that needs a yes" {
                 [],
                 [],
                 .some(.undoable),
+            ),
+        ],
+    )
+}
+
+/// A send that needs the person's yes: Mail's letter waits for Ada, and pressing Send asked it.
+/// The call leaves the system, so nothing of it runs before her yes, Shift never skips it, and
+/// the question stands beside the Send button in her letter's window.
+scenario "a send that needs a yes" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-mail",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 1000,
+            active: "m1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "m1",
+            strip: "s-mail",
+            shows: "so.tilo.mail",
+            title: "Re: Launch plan for the autumn release",
+            name: "Re: Launch plan for the autumn release — Mail",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "m1",
+                    title: "Re: Launch plan for the autumn release",
+                    origin_app: "Mail",
+                    app_key: "so.tilo.mail",
+                    icon: "mail",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    elsewhere: false,
+                    device: "laptop",
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                ),
+            ],
+        ),
+    )
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        [
+            waiting_record(
+                "studio",
+                "invocations/send-1",
+                "Send",
+                invocations.Asker(
+                    app: .some(
+                        invocations.AskingApp(
+                            app: "so.tilo.mail",
+                            title: "Mail",
+                            author: .some(invocations.Named(id: "tilo", name: "Tilo")),
+                        ),
+                    ),
+                ),
+                4,
+                "",
+                .some("Re: Launch plan for the autumn release"),
+                [
+                    invocations.Fact(label: "To", value: "grace@hopper.example"),
+                    invocations.Fact(
+                        label: "Cc",
+                        value: "ada@analytical.example, support@rivera.example",
+                    ),
+                ],
+                [],
+                false,
+                "",
+                .none,
+                .some(
+                    invocations.Pressed(
+                        device: "laptop",
+                        app: "so.tilo.mail",
+                        instance: "m1",
+                        resource: "",
+                        at: .some(invocations.PressPoint(x: 902, y: 660)),
+                        control: .some(invocations.PressRect(x: 858, y: 644, w: 88, h: 32)),
+                    ),
+                ),
+                .none,
+                invoker,
+                [],
+                [],
+                .some(.outside),
             ),
         ],
     )

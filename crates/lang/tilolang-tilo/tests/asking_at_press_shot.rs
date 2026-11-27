@@ -1,8 +1,8 @@
 //! Captures of the shell's questions, in both themes: the confirm for the scenario "a press that
-//! needs a yes", standing at the point of the Notes window the Share was pressed at, and a
-//! question nothing here started, its keyboard on declining it. The scenario is staged in
-//! the shell's own package by the instance that sends its desktop to the window, the same staging
-//! the shell's other tests read the scenario from.
+//! needs a yes", standing beside the Share button in the Notes window; a send that leaves the
+//! system, its keyboard on the way out; and a question nothing here started, its keyboard on
+//! declining it. The scenario is staged in the shell's own package by the instance that sends its
+//! desktop to the window, the same staging the shell's other tests read the scenario from.
 
 #![cfg(target_os = "linux")]
 
@@ -10,8 +10,12 @@ use tilolang_runtime::{UiNode, Value};
 
 use crate::shell_staged::StagedWindow;
 
-/// The scenario staged: Notes' Share, pressed at (640, 212) in its window, waits for Ada.
+/// The scenario staged: Notes' Share, pressed at its button in its window, waits for Ada.
 const SCENARIO: &str = "a press that needs a yes";
+
+/// The scenario staged: Mail's Send, pressed at its button in the letter's window, waits for
+/// Ada, and nothing of it leaves before her yes.
+const SEND: &str = "a send that needs a yes";
 
 /// The directory a capture is written to: beside the test's built binary, as the other shots
 /// are, since a source tree read from a test may be read-only.
@@ -63,9 +67,14 @@ fn a_press_that_needs_a_yes_in_both_themes() {
         panic!("one confirm stands at the press: {tree:#?}");
     };
     assert_eq!(
-        given(confirm.props.get("at")),
-        Some(&Value::List(vec![Value::Float(640.0), Value::Float(212.0)])),
-        "at the point of the window the press was in"
+        given(confirm.props.get("anchor")),
+        Some(&Value::List(vec![
+            Value::Float(592.0),
+            Value::Float(196.0),
+            Value::Float(96.0),
+            Value::Float(32.0)
+        ])),
+        "beside the control of the window the press answered, never over it"
     );
     let shown = texts(confirm);
     for fact in ["Mia Clayton", "Can edit"] {
@@ -76,6 +85,35 @@ fn a_press_that_needs_a_yes_in_both_themes() {
     }
 
     capture(&mut shell, "asking-at-press");
+}
+
+/// A send that leaves the system, in both themes: its question stands beside the Send button in
+/// the letter's window, and it promises no Shift that would skip it.
+#[test]
+fn a_send_that_needs_a_yes_in_both_themes() {
+    let mut dark = tilo_ui_base::Theme::dark();
+    dark.reduce_motion = true;
+    let mut shell = StagedWindow::staged(SEND, (1280, 800), dark);
+    let tree = shell.instance.root_tree().expect("the window's tree");
+    let [confirm] = tree.of_kind("ui.Popover")[..] else {
+        panic!("one question stands beside the Send: {tree:#?}");
+    };
+    assert_eq!(
+        given(confirm.props.get("anchor")),
+        Some(&Value::List(vec![
+            Value::Float(858.0),
+            Value::Float(644.0),
+            Value::Float(88.0),
+            Value::Float(32.0)
+        ])),
+        "beside the Send button the person pressed"
+    );
+    assert_eq!(
+        shell.holds_keyboard().as_deref(),
+        Some("Don't allow"),
+        "Enter must never send what nothing here can take back"
+    );
+    capture(&mut shell, "asking-at-send");
 }
 
 /// The shell's desktop as its scenario "a call that writes another record" stages it, in both

@@ -1850,6 +1850,8 @@ d-o4f6z532 = Ordner wählen
     .w-a-question-that-asks-for-files = Eine Frage, die nach Dateien fragt, öffnet hier einen
 
 d-buc46sub = Gefragt vorbei
+
+d-q7w2n4x9 = Gefragt beim Drücken
     .w-hold-shift-to-skip = Zum Überspringen Umschalt gedrückt halten
 
 d-i7735z6w = Gefragte Banner

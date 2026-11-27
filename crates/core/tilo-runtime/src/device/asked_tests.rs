@@ -703,6 +703,7 @@ fn a_press_in_a_window_reads_there_as_asked_until_she_answers() {
             instance: "window-1".into(),
             resource: "mail.draft".into(),
             at: None,
+            control: None,
         }),
     );
     assert!(
@@ -815,6 +816,7 @@ fn a_programs_and_a_windows_questions_are_withdrawn_when_the_device_restarts() {
                 instance: "window-1".into(),
                 resource: "mail.draft".into(),
                 at: None,
+                control: None,
             }),
         );
         assert_eq!(before.store.asked_of(&ADA).len(), 4);

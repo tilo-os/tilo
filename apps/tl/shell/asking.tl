@@ -7,12 +7,11 @@ use tilo.invocations as invocations
 /// person answers any of them, on every device of theirs and on the web alike. No window draws
 /// its own.
 ///
-/// A question the person caused with a press here stands at the control they pressed, where they
-/// are looking, its yes under their press. Every other one stands with the banners, and all of
-/// them wait in the notification centre. An answer is the record's own `resolve`, as any caller
-/// would call it, so it is admitted, attributed and kept in history like every other action; a
-/// question answered on another device, or by someone else, leaves this view as its record stops
-/// waiting.
+/// A question the person caused with a press here stands beside the control they pressed, where
+/// they are looking, never over it. Every other one stands with the banners, and all of them wait
+/// in the notification centre. An answer is the record's own `resolve`, as any caller would call
+/// it, so it is admitted, attributed and kept in history like every other action; a question
+/// answered on another device, or by someone else, leaves this view as its record stops waiting.
 ///
 /// The folder a question that asks for files shows, as this device reads it: the shell's own
 /// look at the disk while the person chooses, never what they chose.
@@ -114,31 +113,47 @@ fn key_of(q: invocations.Invocation) -> Text {
     return q.id
 }
 
-/// The questions a press in the window `w` made, standing at the control the person pressed:
-/// the newest one's answer that does what they pressed for stands under the point they pressed,
-/// so pressing again at the same spot answers yes. It takes Escape, or a press outside it, as
-/// its way out, declining it, as the system's questions always have; the older ones wait behind
-/// it. More than two wait in the notification centre. A press that said nowhere in the window
-/// (a key) asks over the window.
+/// The questions a press in the window `w` made, standing beside the control the person pressed:
+/// the newest one's popover is anchored to that control's rect, so it never covers what they
+/// pressed. It takes Escape, or a press outside it, as its way out, declining it, as the system's
+/// questions always have; the older ones wait behind it. More than two wait in the notification
+/// centre. A press whose record says where no control was (a palette's row, a key with no control
+/// of its own) stands over the window.
 view asked_over(w: device.Window) {
     let asked = asked_in(w)
     if not asked.is_empty() {
         if let q = asked.at(0) {
             if let a = q.asked {
-                if let at = a.pressed?.at {
+                if let control = a.pressed?.control {
+                    ui.Popover(
+                        label: title_of(a),
+                        open: true,
+                        anchor: [
+                            control.x.to_float(),
+                            control.y.to_float(),
+                            control.w.to_float(),
+                            control.h.to_float(),
+                        ],
+                    ) {
+                        on dismiss: host.resolve(
+                            resource(key_of(q), of: host.Invocation),
+                            resolution: "decline",
+                        )
+                        asked_at_press(q, a, title_of(a), asked.len() - 1)
+                    }
+                } else if let at = a.pressed?.at {
+                    // A press the window gave no control for: its point is all it said, and the
+                    // popover's answer stands under it.
                     ui.Popover(
                         label: title_of(a),
                         open: true,
                         at: [at.x.to_float(), at.y.to_float()],
                     ) {
-                        on dismiss: decline(key_of(q))
-                        question_body(key_of(q), answered_here(q), a, title_of(a))
-                        if skips_with_shift(a) {
-                            ui.Text("Hold Shift to skip", role: .caption, secondary: true)
-                        }
-                        if asked.len() > 1 {
-                            more_asked(asked.len() - 1)
-                        }
+                        on dismiss: host.resolve(
+                            resource(key_of(q), of: host.Invocation),
+                            resolution: "decline",
+                        )
+                        asked_at_press(q, a, title_of(a), asked.len() - 1)
                     }
                 } else {
                     ui.ModalDialog(
@@ -147,18 +162,28 @@ view asked_over(w: device.Window) {
                         destructive: a.destructive,
                         icon: .triangle_alert,
                     ) {
-                        on dismiss: decline(key_of(q))
-                        question_body(key_of(q), answered_here(q), a, "")
-                        if skips_with_shift(a) {
-                            ui.Text("Hold Shift to skip", role: .caption, secondary: true)
-                        }
-                        if asked.len() > 1 {
-                            more_asked(asked.len() - 1)
-                        }
+                        on dismiss: host.resolve(
+                            resource(key_of(q), of: host.Invocation),
+                            resolution: "decline",
+                        )
+                        asked_at_press(q, a, "", asked.len() - 1)
                     }
                 }
             }
         }
+    }
+}
+
+/// What a question that stands at the press says under `headline`: what it would do and the
+/// answers it offers, the hint Shift would skip it by where Shift would, and the `more` other
+/// questions that wait behind it.
+view asked_at_press(q: invocations.Invocation, a: invocations.Asked, headline: Text, more: Int) {
+    question_body(key_of(q), answered_here(q), a, headline)
+    if skips_with_shift(a) {
+        ui.Text("Hold Shift to skip", role: .caption, secondary: true)
+    }
+    if more > 0 {
+        more_asked(more)
     }
 }
 
@@ -167,14 +192,10 @@ fn title_of(a: invocations.Asked) -> Text {
     return if a.words != "" { a.words } else { a.name }
 }
 
-/// Whether pressing the control again with Shift down would have skipped `a`: only what Undo
-/// takes back. A call that takes away what Undo does not bring back, reaches outside the
-/// workspace, or says nothing of what it does always asks, so the hint never promises a skip
-/// the press would not make.
+/// Whether Shift would skip `a`: what does not leave the system, which a press answers itself.
+/// What leaves is never skipped, and a record that does not say its effect promises no skip
+/// either.
 fn skips_with_shift(a: invocations.Asked) -> Bool {
-    if a.destructive {
-        return false
-    }
     if let effect = a.effect {
         return effect != .outside
     }
@@ -368,9 +389,12 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                         a.decline ?? "Don't answer",
                         size: .small,
                         role: .plain,
-                        default_focus: a.pressed == .none,
+                        default_focus: a.pressed == .none or not skips_with_shift(a),
                     ) {
-                        on press: decline(key)
+                        on press: host.resolve(
+                            resource(key, of: host.Invocation),
+                            resolution: "decline",
+                        )
                     }
                 } else {
                     spacer
@@ -380,14 +404,19 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                         }
                     }
                     // Where the answer itself is given on the device that asked, the way out is
-                    // the only answer this surface offers.
+                    // the only answer this surface offers. The keyboard starts on the way out
+                    // unless Shift would skip the question: Enter never answers an irreversible
+                    // call nobody here could take back.
                     ui.Button(
                         a.decline ?? "Don't allow",
                         size: .small,
                         role: .secondary,
-                        default_focus: a.pressed == .none or not here,
+                        default_focus: a.pressed == .none or not here or not skips_with_shift(a),
                     ) {
-                        on press: decline(key)
+                        on press: host.resolve(
+                            resource(key, of: host.Invocation),
+                            resolution: "decline",
+                        )
                     }
                     if here {
                         ui.Button(
@@ -396,7 +425,7 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                             enabled: not unfilled,
                             description: "Fill in what it asks for first",
                             role: if a.destructive { .destructive } else { .primary },
-                            default_focus: a.pressed != .none,
+                            default_focus: a.pressed != .none and skips_with_shift(a),
                         ) {
                             on press: host.resolve(
                                 resource(key, of: host.Invocation),
@@ -451,7 +480,9 @@ view files_asked(key: Text, files: invocations.FilesAsked, typed: List<Text>) {
                     files: .some(chosen),
                 )
                 .then(close_folder(p)),
-            cancel: decline(key).then(close_folder(p)),
+            cancel: host
+                .resolve(resource(key, of: host.Invocation), resolution: "decline")
+                .then(close_folder(p)),
             mode: if files.mode == .save {
                 "save"
             } else if files.mode == .folder { "folder" } else { "open" },

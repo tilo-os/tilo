@@ -1,11 +1,13 @@
-//! Where in its window the control a key press answered stands, by the press's serial.
+//! Where in its window the control a press answered stands, by the press's serial.
 //!
-//! The compositor attests a key press to the window it delivered it to, but a key has no point:
-//! only the window knows which of its controls the key answered (the one that declares it, else
-//! the one the keyboard is in). The window notes that control's place here as it handles the
-//! press, and a call the press makes carries it ([`super::RemoteActionFrame::pressed`]). It says
-//! where in the app's own window a question stands, and nothing more: the host takes it only for
-//! a press the compositor attested in that app's window, and a pointer's own point wins.
+//! The compositor attests a press to the window it delivered it to, and for a pointer or a
+//! finger it knows where on the window it landed. Only the window knows which of its controls
+//! answered it (the one under the pointer, the one that declares the key, else the one the
+//! keyboard is in), and that control's rect is what a question the press asks stands beside. The
+//! window notes that rect here as it handles the press, and a call the press makes carries it
+//! ([`super::RemoteActionFrame::pressed`]). It says where in the app's own window a question
+//! stands, and nothing more: the host takes it only for a press the compositor attested in that
+//! app's window.
 //!
 //! The system's own surfaces (the shell's palette, menus and shortcuts) have no window of an app:
 //! the press they act on is the one [`handling`] names while they act on it.
@@ -13,16 +15,16 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use super::asked::PressPoint;
+use super::asked::PressRect;
 
 /// The presses whose place is remembered: a window handles one press at a time, and the calls
 /// one makes leave soon after it.
 const KEPT: usize = 16;
 
-static POINTS: Mutex<VecDeque<(u32, PressPoint)>> = Mutex::new(VecDeque::new());
+static POINTS: Mutex<VecDeque<(u32, PressRect)>> = Mutex::new(VecDeque::new());
 
 /// The press of `serial` answered the control standing at `at` in its window.
-pub fn note(serial: u32, at: PressPoint) {
+pub fn note(serial: u32, at: PressRect) {
     let mut points = POINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -35,7 +37,7 @@ pub fn note(serial: u32, at: PressPoint) {
 
 /// Where the control the press of `serial` answered stands, when the window said.
 #[must_use]
-pub fn of(serial: u32) -> Option<PressPoint> {
+pub fn of(serial: u32) -> Option<PressRect> {
     POINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

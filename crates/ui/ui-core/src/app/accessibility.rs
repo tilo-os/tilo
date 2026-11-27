@@ -967,6 +967,18 @@ impl App {
     /// or finger (a drag across a field selects in the text the finger came down on); any
     /// other input brings the control into view as [`Self::set_focused_node`] does.
     pub(super) fn focus_for_input(&mut self, id: NodeId, event: &WindowEvent) {
+        // The control the person's input answers stands where its node lays: a call it makes
+        // carries that rect, so their question stands beside it, never over it.
+        if tilo_ui_base::press::current().is_some() {
+            let rect = tilo_ui_base::widget::layout_rect(
+                &self.layout.taffy,
+                id,
+                vello::kurbo::Point::ZERO,
+            );
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                tilo_ui_base::press::note_control(rect);
+            }
+        }
         if matches!(event, WindowEvent::MouseInput { .. }) {
             self.place_focus(Some(id));
         } else {

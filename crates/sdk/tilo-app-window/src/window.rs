@@ -1987,8 +1987,25 @@ impl AppWindow {
     fn take_events(&mut self) {
         // One queue, in the order the person did things.
         for event in self.events.take() {
+            self.note_pressed_control(&event);
             self.event(event);
         }
+    }
+
+    /// `event` is what the press this window is handling made a control do: the control's rect
+    /// is where a question the call it makes raises stands. A call no press of this window made
+    /// (a program's, an agent's, a timer's) notes nothing.
+    fn note_pressed_control(&self, event: &UiEvent) {
+        if tilo_ui_base::press::current().is_none() {
+            return;
+        }
+        let (UiEvent::Press(key) | UiEvent::Fire(key, _, _, _)) = event else {
+            return;
+        };
+        let Some(rect) = rect_of(self.body.as_ref(), key) else {
+            return;
+        };
+        tilo_ui_base::press::note_control(rect);
     }
 
     /// Tell the app which bound control the keyboard focus is in now, when that changed: what its

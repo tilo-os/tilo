@@ -6640,6 +6640,15 @@
               "list": "float"
             }
           }
+        },
+        {
+          "name": "anchor",
+          "doc": "The control it stands beside, `[x, y, w, h]` from the top-left of where it is declared: the button, row or key a press answered. It opens below that control, or above it where the window has no room there, and never over it. Wins over [`Self::at`].",
+          "type": {
+            "option": {
+              "list": "float"
+            }
+          }
         }
       ],
       "parts": [

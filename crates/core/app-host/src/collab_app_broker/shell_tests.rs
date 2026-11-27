@@ -17,7 +17,7 @@ use runtime_collab::wire::{
     Call, Event, FRAMING, HostFrame, InvocationCall, Operation, Publication, Receipt, Record,
     Reply, Service, Topic,
 };
-use tilo_actions::remote::asked::{PressPoint, Pressed};
+use tilo_actions::remote::asked::{PressPoint, PressRect, Pressed};
 use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
 };
@@ -861,12 +861,12 @@ async fn pressed_action(
     browser: &mut Endpoint,
     record: &Record,
     message: tilo_actions::remote::RemoteActionMessage,
-    (press, press_at): (Option<u32>, Option<tilo_actions::remote::asked::PressPoint>),
+    (press, control): (Option<u32>, Option<tilo_actions::remote::asked::PressRect>),
 ) -> tilo_actions::remote::RemoteActionMessage {
     use tilo_actions::remote::RemoteActionFrame;
     let mut frame = RemoteActionFrame::new(message);
     frame.press = press;
-    frame.press_at = press_at;
+    frame.press_control = control;
     let answered = browser
         .call(Operation::Command {
             record: record.clone(),
@@ -1340,15 +1340,15 @@ fn pressed_asking(window: u64) -> Driven<'static, PressedAsking> {
 }
 
 /// Raise the Browser's call for the page's prompt `prompt` naming the press `press`, its window
-/// saying the control the press answered stands at: the press its asked record keeps, which is
-/// withdrawn once read.
+/// saying the control the press answered: the press its asked record keeps, which is withdrawn
+/// once read.
 fn pressed_prompt<'a>(
     browser: &'a mut Endpoint,
     channel: &'a Record,
     host: &'a Device,
     store: &'a tilo_remote_actions::asked::AskedStore,
     prompt: (u32, &'a str, &'a str),
-    press: (Option<u32>, Option<PressPoint>),
+    press: (Option<u32>, Option<PressRect>),
 ) -> Driven<'a, Option<Pressed>> {
     Box::pin(async move {
         use tilo_actions::remote::{InvocationReceipt, ReceiptStatus, RemoteActionMessage};
@@ -1379,22 +1379,29 @@ fn pressed_prompt<'a>(
     })
 }
 
-/// Each prompt the Browser raises stands where the compositor says its press was, never where
-/// the app says the control is; a call no press made, or one naming another window's press,
-/// stands nowhere.
+/// Each prompt the Browser raises keeps where the compositor says its press was and the control
+/// the press answered, which its window says; a call no press made, or one naming another
+/// window's press, stands nowhere.
 fn assert_pressed_prompts(asking: &mut PressedAsking) -> Driven<'_, ()> {
     Box::pin(async move {
-        let in_window = |at| {
+        let in_window = |at, control| {
             Some(Pressed {
                 device: hex::encode(asking.workspaces.device_cert().device_public_key),
                 app: BROWSER.to_owned(),
                 instance: asking.window.to_string(),
                 resource: PAGE.to_owned(),
                 at,
+                control,
             })
         };
-        // Where the Browser says the control a press answered stands, which the compositor never saw.
-        let control = PressPoint { x: 610, y: 400 };
+        // Where the Browser's window says the control a press answered stands, which the
+        // compositor never saw.
+        let control = PressRect {
+            x: 610,
+            y: 400,
+            w: 120,
+            h: 32,
+        };
         assert_eq!(
             pressed_prompt(
                 &mut asking.browser,
@@ -1405,8 +1412,8 @@ fn assert_pressed_prompts(asking: &mut PressedAsking) -> Driven<'_, ()> {
                 (Some(5), None),
             )
             .await,
-            in_window(Some(asking.point)),
-            "the question stands at the press in the Browser's window"
+            in_window(Some(asking.point), None),
+            "the question keeps the press in the Browser's window"
         );
         assert_eq!(
             pressed_prompt(
@@ -1418,8 +1425,8 @@ fn assert_pressed_prompts(asking: &mut PressedAsking) -> Driven<'_, ()> {
                 (Some(5), Some(control)),
             )
             .await,
-            in_window(Some(asking.point)),
-            "where a pointer pressed is the compositor's word, never the app's"
+            in_window(Some(asking.point), Some(control)),
+            "a pointer's press keeps both where it landed and the control it answered"
         );
         assert_eq!(
             pressed_prompt(
@@ -1431,8 +1438,8 @@ fn assert_pressed_prompts(asking: &mut PressedAsking) -> Driven<'_, ()> {
                 (Some(7), Some(control)),
             )
             .await,
-            in_window(Some(control)),
-            "a key press stands at the control its window says the key answered"
+            in_window(None, Some(control)),
+            "a key press has no point: it keeps the control its window says the key answered"
         );
         assert_eq!(
             pressed_prompt(
@@ -1464,10 +1471,10 @@ fn assert_pressed_prompts(asking: &mut PressedAsking) -> Driven<'_, ()> {
 }
 
 /// A call the person's press in an app's window made, and that asks first, is kept with where
-/// they pressed it: this device, the app, the window's tab key as the session publishes it and
-/// the point in the window the compositor attested over the shell link. The shell stands the
-/// question there. A call no press made, or one naming a press in another window, asks with no
-/// window.
+/// they pressed it: this device, the app, the window's tab key as the session publishes it, the
+/// point the compositor attested over the shell link and the control the window says the press
+/// answered. The shell stands the question beside that control. A call no press made, or one
+/// naming a press in another window, asks with no window.
 #[tokio::test(flavor = "current_thread")]
 async fn a_press_that_asks_first_is_kept_where_it_was_pressed() {
     let mut asking = pressed_asking(WINDOW).await;
