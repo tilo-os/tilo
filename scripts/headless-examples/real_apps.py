@@ -216,12 +216,25 @@ def as_account(account) -> list[str]:
             "--init-groups", "--"]
 
 
+def shader_cache(state: Path) -> Path:
+    """Where lavapipe keeps the machine code it compiles a shader to, under the
+    session's own cache: the test environment's shared cache belongs to the
+    account that prepared the run, and a session started as the person cannot
+    write there. A shader compiled the first time a process draws with it costs
+    seconds, and losing the cache pays that on every window's first draw."""
+    cache = state / "cache" / "shader-cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache
+
+
 def account_env(account, state: Path) -> dict:
     """What a program started as the session account needs of its own: the
     account's home and scratch, its name, and the checkout and build it reads
     even though the caller's account owns them (git would call them another
     account's repository, and the session's provenance check reads the tree it
     built from)."""
+    shaders = shader_cache(state)
+    os.chown(shaders, account.pw_uid, account.pw_gid)
     env = {
         "HOME": account.pw_dir,
         "USER": account.pw_name,
@@ -244,6 +257,7 @@ def account_env(account, state: Path) -> dict:
         # session has `/run/user/<uid>`, which the launcher and the compositor
         # both name. Without one the session makes its own under /tmp.
         "XDG_RUNTIME_DIR": os.environ.get("TILO_SESSION_RUNTIME", ""),
+        "MESA_SHADER_CACHE_DIR": str(shaders),
     }
     # Behind any git settings the caller already gave its programs.
     count = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
@@ -520,6 +534,7 @@ class ScriptedSession:
             XDG_DATA_HOME=str(self.profile / "data"),
             XDG_STATE_HOME=str(self.profile / "state"),
             XDG_CACHE_HOME=str(self.profile / "cache"),
+            MESA_SHADER_CACHE_DIR=str(shader_cache(self.profile)),
             XDG_RUNTIME_DIR=str(self.runtime_dir),
             TILO_IDENTITY_ROOT=str(self.profile / "identity"),
             TILO_AUTHORITY_SOCKET_DIR=str(self.profile / "system/run"),
