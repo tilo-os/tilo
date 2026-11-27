@@ -2156,8 +2156,13 @@ impl crate::Session {
                 .unwrap_or_default()
         });
         // What the person changed of the shell's own records: their calls of its actions where
-        // their workspace keeps them.
-        shell.own_calls(&self.shared.daemon, &workspace);
+        // their workspace keeps them. A shell the daemon runs keeps its record in the person's
+        // own workspace, whichever is in front, and its instance publishes its actions there.
+        let keeps = match &self.shared.shell_home {
+            Some((home, _)) if shell.kept_elsewhere => home.as_str(),
+            _ => workspace.as_str(),
+        };
+        shell.own_calls(&self.shared.daemon, keeps);
         let asks = shell.has_asks();
         if asks {
             serve_shell(&self.shared, shell, &workspace);
