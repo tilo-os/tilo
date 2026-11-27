@@ -138,6 +138,21 @@ for attempt in $(seq 1 120); do
   [ "$attempt" -lt 120 ] || die "the compositor did not start for A's first use"
   sleep 1
 done
+# A window's tree reaches the session's AT-SPI publisher only once the shell
+# has drawn its first surface; the ceremony is driven through that tree, so
+# wait for the publisher, as a screen reader's client does.
+cat > "$out/atspi-ready.sh" <<'GUEST'
+set -eu
+address=$(gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+  --method org.a11y.Bus.GetAddress | sed -e "s/^('//" -e "s/'.*//")
+busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true
+busctl --address="$address" list --no-pager | grep -q 'org.freedesktop.impl.portal.desktop.tilo'
+GUEST
+for attempt in $(seq 1 120); do
+  vm_a ssh 'bash -s' < "$out/atspi-ready.sh" >/dev/null 2>&1 && break
+  [ "$attempt" -lt 120 ] || die "A's shell did not register on the AT-SPI bus"
+  sleep 1
+done
 TILO_SSH_BOUND=900 vm_a test native-atspi-smoke.sh oobe-actions \
   || die "A's first-use ceremony did not finish"
 for attempt in $(seq 1 60); do
@@ -168,7 +183,11 @@ for attempt in $(seq 1 180); do
   fi
   sleep 1
 done
-[ -n "$found" ] || die "the person was never asked to add a computer"
+[ -n "$found" ] || {
+  tail -40 "$out/ticket-issue.txt" >&2 || true
+  vm_a ssh 'cat /tmp/joined-ticket.err' >&2 || true
+  die "the person was never asked to add a computer"
+}
 read -r issue_invocation issue_workspace <<<"$found"
 note "the person is asked to add a computer: $issue_invocation"
 vm_a ssh "XDG_RUNTIME_DIR=/run/user/\$(id -u) tilo do --in-person \
