@@ -22,6 +22,10 @@
 # (.config/nextest-capabilities.toml): those are left out of every run, the
 # probe of them taken here, where the tests run, so a workflow's run and a job
 # t shards leave them out alike.
+# A run narrowed by `t test <check> --test <name>` is handed the names in T_TESTS,
+# one per line, by the check that declares `tests = "env"` (t.toml); every nextest
+# run it wraps is intersected with them (tools/ci/test_selection.py names them as
+# t does: a test, or a module path for every test below it).
 # Other cargo commands pass through unchanged.
 #
 # A whole run records each package's test time (tools/ci/ci_test_timings.py): it
@@ -212,6 +216,25 @@ if (( nextest )) && [[ ${3:-} == run && -f $root/.config/nextest-capabilities.to
         done
         (( merged )) || arguments+=(-E "$left_out")
     fi
+fi
+# The tests a run names (`t test <check> --test`): a check whose t.toml declares `tests = "env"`
+# is handed them in T_TESTS, one per line, and runs those alone. A command the check runs is
+# narrowed by intersecting its own -E with the selection, so a command none of whose tests were
+# named runs none and passes (--no-tests=pass, which the flows' checks ask for). The -E this adds
+# is what keeps a narrowed run from recording test timings below: it names no whole package's
+# tests.
+if (( nextest )) && [[ ${3:-} == run ]] && [[ -n ${T_TESTS:-} ]]; then
+    selection=$(python3 "$root/tools/ci/test_selection.py")
+    merged=0
+    for (( index = 0; index < ${#arguments[@]}; index++ )); do
+        case ${arguments[index]} in
+            -E|--filterset|--filter-expr)
+                arguments[index + 1]="(${arguments[index + 1]}) & ($selection)"
+                merged=1
+                ;;
+        esac
+    done
+    (( merged )) || arguments+=(-E "$selection")
 fi
 # A package whose sources declare no test at all (a load generator, a bin-only
 # tool) passes with none run: run alone, nextest would answer "no tests to run",
