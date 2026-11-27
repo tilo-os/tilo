@@ -54,6 +54,9 @@ struct Four {
     laptop_session: Link,
     laptop_person: Link,
     _state: tempfile::TempDir,
+    /// The person's own computer, which founded their own workspace and handed it to the server.
+    _desk: TestHost,
+    _desk_state: tempfile::TempDir,
 }
 
 impl Four {
@@ -94,11 +97,34 @@ async fn four_devices() -> Four {
     // theirs takes part in each as a device of the person whose workspace it is.
     let work = workspaces.create("Work").await.unwrap().workspace;
     let home = workspaces.create("Home").await.unwrap().workspace;
-    // The person's own workspace, founded on their server as a server founds it.
-    let person_workspace = tilo_workspace_service::workspaces::person_workspace::found(workspaces)
-        .await
-        .unwrap();
+    // The person's own workspace is founded on a computer of theirs, as founding is signed on
+    // the founder's own device and never by a server, and that computer hands it to the server
+    // and lists the workspaces they have: a server never writes the person's list.
+    let desk = enrol(&root, "desk", DeviceCapabilities::primary());
+    let desk_state = tempfile::tempdir().unwrap();
+    let desk_host =
+        start_workspace_host_relaying(&root, &desk, desk_state.path(), false, true).await;
+    let desk_workspaces = desk_host.server.workspaces().unwrap();
+    let person_workspace =
+        tilo_workspace_service::workspaces::person_workspace::found(desk_workspaces)
+            .await
+            .unwrap();
     assert_eq!(person_workspace, person_workspace_id(&person));
+    desk_workspaces
+        .attach_server(
+            &person_workspace,
+            server_device.cert.device_public_key,
+            host.server.node_addr(),
+            tilo_peer_state::CopyRole::KeyHolder,
+        )
+        .await
+        .expect("the server keeps the person's own workspace their computer hands it");
+    for (workspace, name) in [(&work, "Work"), (&home, "Home")] {
+        assert!(
+            desk_workspaces.list_for(&person, workspace, name).await,
+            "the person's own computer lists {name} in their list"
+        );
+    }
     let desktop_session = flow::session(&host, &desktop, &server_device.cert);
     let pi_session = flow::session(&host, &pi, &server_device.cert);
     let laptop_session = flow::session(&host, &laptop, &server_device.cert);
@@ -134,6 +160,8 @@ async fn four_devices() -> Four {
         laptop_session,
         laptop_person,
         _state: state,
+        _desk: desk_host,
+        _desk_state: desk_state,
     }
 }
 
@@ -156,7 +184,7 @@ async fn recorded(f: &Four) -> Vec<String> {
 /// wrote and the shared desktop under which the apps' windows live.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_all_four_devices_see_every_workspace_app_and_file() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
 
     // The server holds both of the person's workspaces at once.
     let workspaces = f.host.server.workspaces().unwrap();
@@ -266,7 +294,7 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
 /// `devices#pending`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_always_on_server_is_one_of_the_persons_devices() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let devices = recorded(&f).await;
     let server = flow::key_of(&f.server_device.cert);
     assert!(
@@ -285,7 +313,7 @@ async fn flow_always_on_server_is_one_of_the_persons_devices() {
 /// (`workspace/<id>/servers#keeps`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_always_on_server_holds_all_workspaces_at_once() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let desktop = f.client(&f.desktop_session, &f.desktop, "fedora-desktop");
     let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
     // The person makes a workspace on each of two devices, through the published action.
@@ -414,7 +442,7 @@ async fn keep(
 /// desktop and session lane takes it, waiting on the session running as a daemon client).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_window_moved_by_its_move_action_shows_on_the_other_devices_monitor() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let (desktop, pi, laptop) = (
         flow::key_of(&f.desktop.cert),
         flow::key_of(&f.pi.cert),
@@ -483,7 +511,7 @@ async fn flow_window_moved_by_its_move_action_shows_on_the_other_devices_monitor
 /// lane takes this step).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_laptop_asleep_mid_turn_the_server_finishes_it() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
     let started = flow::ask(
         &laptop,
@@ -536,7 +564,7 @@ async fn flow_laptop_asleep_mid_turn_the_server_finishes_it() {
 /// against a fake provider on loopback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_five_model_providers_each_answer_a_turn() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let workspaces = f.host.server.workspaces().unwrap();
     let person = tilo_person_services::PersonServices::of(workspaces);
     person.call_private_model_addresses(true);
@@ -715,7 +743,7 @@ async fn link_provider(
 /// the agent engines lane takes that part of this step).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_page() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let workspaces = f.host.server.workspaces().unwrap();
     tilo_person_services::PersonServices::of(workspaces).call_private_model_addresses(true);
 
@@ -831,7 +859,7 @@ async fn device_action(
 /// flows end to end lane builds it as a typed action on the one device link).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_input_device_on_one_device_is_forwarded_to_another() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let forwarded = device_action(
         &f,
         "snapdragon-laptop",
@@ -855,7 +883,7 @@ async fn flow_input_device_on_one_device_is_forwarded_to_another() {
 /// The person's devices offer no action to show a window on another device.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_window_is_shown_on_another_of_the_persons_devices() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let shown = device_action(
         &f,
         "snapdragon-laptop",
@@ -879,7 +907,7 @@ async fn flow_window_is_shown_on_another_of_the_persons_devices() {
 /// The person's devices offer no action for a nearby drop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_nearby_drop_hands_a_file_to_a_nearby_device() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let dropped = device_action(
         &f,
         "snapdragon-laptop",
@@ -903,7 +931,7 @@ async fn flow_nearby_drop_hands_a_file_to_a_nearby_device() {
 /// The person's devices offer no action to add a device from a nearby one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_device_is_added_from_a_nearby_device() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let added = device_action(
         &f,
         "snapdragon-laptop",
@@ -927,7 +955,7 @@ async fn flow_device_is_added_from_a_nearby_device() {
 /// The person's devices offer no action to offer a pairing to the person's other devices.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_bluetooth_accessory_is_offered_to_the_persons_other_devices() {
-    let f = four_devices().await;
+    let f = Box::pin(four_devices()).await;
     let offered = device_action(
         &f,
         "snapdragon-laptop",
