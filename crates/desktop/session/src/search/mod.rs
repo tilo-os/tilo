@@ -2244,9 +2244,9 @@ mod tests {
                         as std::sync::Arc<dyn tilo_workspace_records::search::Answers>
                 }),
                 references: Some(crate::references::References::over(
-                    daemon.reads(),
                     daemon.shell(),
                     daemon.changes(),
+                    crate::references::held(None, daemon.reads()),
                 )),
                 ..SearchOptions::default()
             },

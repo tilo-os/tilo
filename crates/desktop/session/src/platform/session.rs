@@ -1739,10 +1739,11 @@ impl Session {
             ));
             // References to records of other workspaces are read and written through the same
             // link, in the stores of the workspaces this device holds.
+            let held = crate::references::held(view.as_ref(), document_reads.clone());
             search_options.references = Some(crate::references::References::over(
-                document_reads.clone(),
                 daemon.clone(),
                 changes.clone(),
+                held,
             ));
         }
         let search = Rc::new(SessionSearch::new(

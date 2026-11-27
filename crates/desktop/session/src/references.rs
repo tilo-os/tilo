@@ -45,6 +45,25 @@ pub(crate) fn stamp(verb: &str) -> tilo_resource_store::Stamp {
     }
 }
 
+/// The workspaces this device holds, as `view` reads them where the session has one, else as the
+/// daemon's documents `reads` answer.
+#[must_use]
+pub fn held(
+    view: Option<&Arc<crate::workspace_view::WorkspaceView>>,
+    reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+) -> Held {
+    let Some(view) = view else {
+        return Arc::new(move || reads.workspaces());
+    };
+    let view = Arc::clone(view);
+    Arc::new(move || {
+        view.workspaces()
+            .into_iter()
+            .map(|workspace| workspace.to_string())
+            .collect()
+    })
+}
+
 /// The references the workspaces on this device hold, each by the workspace holding it.
 pub struct References {
     changes: Changes,
@@ -52,14 +71,18 @@ pub struct References {
     read: Reading<Vec<(String, Reference)>>,
 }
 
+/// The workspaces this device holds, by their ids: what the references are read from.
+pub type Held = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
 impl References {
-    /// The references the workspaces `reads` holds hold, read through the stores at `daemon` as
-    /// the device's person, again whenever `changes` says a record moved.
+    /// The references the workspaces this device holds hold, read through the stores at `daemon`
+    /// as the device's person, again whenever `changes` says a record moved. `held` names those
+    /// workspaces, as the session knows them: a read does not ask the daemon that again.
     #[must_use]
     pub fn over(
-        reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
         daemon: tilo_session_client::daemon_documents::DaemonShell,
         changes: Changes,
+        held: Held,
     ) -> Self {
         let store = store_at(daemon);
         let reading = Arc::clone(&store);
@@ -67,7 +90,7 @@ impl References {
             "tilo-search-references",
             changes.clone(),
             Watch::Any,
-            move || read_references(&reads.workspaces(), reading.as_ref()),
+            move || read_references(&held(), reading.as_ref()),
             || {},
         );
         Self {
@@ -340,7 +363,7 @@ mod tests {
     use tilo_resource_store::reference;
 
     use super::testing::{NOTES, command, groceries, stamp};
-    use super::{Bring, REFERENCES_APP, References};
+    use super::{Bring, REFERENCES_APP, References, held};
     use crate::daemon_fixture::TestDaemon;
 
     const KITCHEN: &str = "6d1c1f36-0000-4000-8000-000000000001";
@@ -352,7 +375,8 @@ mod tests {
     fn a_brought_record_is_a_reference_whose_removal_leaves_the_record() {
         let daemon = TestDaemon::writing(&[KITCHEN, STUDIO]);
         let note = groceries(&daemon, KITCHEN);
-        let references = References::over(daemon.reads(), daemon.shell(), daemon.changes());
+        let references =
+            References::over(daemon.shell(), daemon.changes(), held(None, daemon.reads()));
         let names = [
             (KITCHEN.to_owned(), "Kitchen".to_owned()),
             (STUDIO.to_owned(), "Studio".to_owned()),
