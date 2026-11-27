@@ -655,6 +655,14 @@ async fn flow_five_model_providers_each_answer_a_turn() {
 
     // A turn through each provider is answered by the one chosen for it.
     for (provider, model) in asked {
+        ask_models(
+            &laptop,
+            work,
+            model_providers::SET_ASSIGNMENT,
+            json!({"kind": "request", "provider": provider, "model": model}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{provider} answers a request: {error:?}"));
         let answered = ask_models(
             &laptop,
             work,
@@ -725,6 +733,14 @@ async fn link_provider(
     ask_models(
         device,
         workspace,
+        model_providers::SET_KEY,
+        json!({"provider": id, "key": "sk-fake-api-0123456789abcdef"}),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{name} is reached with the key kept for it: {error:?}"));
+    ask_models(
+        device,
+        workspace,
         model_providers::SET_ASSIGNMENT,
         json!({"kind": "request", "provider": id, "model": model}),
     )
@@ -746,25 +762,39 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
     let workspaces = f.host.server.workspaces().unwrap();
     tilo_person_services::PersonServices::of(workspaces).call_private_model_addresses(true);
 
-    // A site the person has a login at, kept in the workspace's vault by their device.
-    let site = "http://127.0.0.1:9/vault-signin";
+    // The site the person has a key for: it answers whoever shows the key, and repeats what it
+    // was sent, so a key a careless service handed back would be in the answer.
+    let site = test_http::Responder::handle(|request| {
+        let shown = request.header("authorization").unwrap_or("none").to_owned();
+        Some(
+            test_http::Reply::status(200)
+                .header("content-type", "application/json")
+                .body(format!(
+                    r#"{{"report":"the quarter's numbers","seen":{shown:?}}}"#
+                )),
+        )
+    });
+    let service = site.url();
+    let address = format!("{service}/vault-signin");
+    let desktop = f.client(&f.desktop_session, &f.desktop, "fedora-desktop");
+
+    // The key, kept in the workspace's vault by their device.
     let kept = flow::ask(
-        &f.client(&f.desktop_session, &f.desktop, "fedora-desktop"),
+        &desktop,
         f.work_id(),
         workspace_vault::PROVIDER,
         workspace_vault::RESOURCE,
         workspace_vault::ADD,
         json!({
-            "kind": "login",
-            "belongsTo": [site],
-            "username": "ada@example.com",
-            "secret": "hunter2",
+            "kind": "key",
+            "belongsTo": [service],
+            "secret": "sk-live-0123456789abcdef0123456789ab",
         }),
     )
     .await
     .unwrap_or_else(|error| {
         panic!(
-            "the person keeps a login in the workspace's vault, which Passwords makes on a \
+            "the person keeps a key in the workspace's vault, which Passwords makes on a \
              member's device first, so an agent holds only a reference to it: {error:?}"
         )
     });
@@ -802,32 +832,71 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
         );
     }
 
-    // It uses the entry on the site without holding the secret.
-    let answered = flow::ask(
+    // It uses the entry on the site without holding the secret: the call is put to its person
+    // first, as a call is theirs to allow each time, and it is sent once they said yes.
+    let asked = flow::ask(
         &agent_device,
         f.work_id(),
         workspace_vault::PROVIDER,
         workspace_vault::RESOURCE,
         workspace_vault::WEB_CALL,
         json!({
-            "url": site,
+            "url": address,
             "method": "GET",
             "key": reference,
             "reason": "Signing in to see the report.",
         }),
     )
-    .await;
-    let said = answered
-        .as_ref()
-        .map_or_else(|error| format!("{error:?}"), ToString::to_string);
+    .await
+    .expect_err("a web call waits for its person's yes");
+    assert_eq!(
+        asked.code,
+        tilo_session_client::device::DeviceRefusal::AWAITING_APPROVAL,
+        "{asked:?}"
+    );
+    let awaiting = asked.awaiting.expect("the call that waits is named");
     assert!(
-        answered.is_ok(),
-        "the agent acts on the site with the vault entry it may use, and the host answers with \
-         the key struck out: {said}"
+        site.drain_requests().is_empty(),
+        "nothing is sent before the person's yes"
+    );
+    desktop
+        .ask_host(
+            ServerWorkspaceId::parse(&awaiting.ask.workspace).expect("the ask's workspace"),
+            tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    &awaiting.ask.record,
+                    tilo_actions::remote::asked::RESOLVE,
+                ),
+            },
+            serde_json::Map::from_iter([("resolution".into(), json!("approve"))]),
+        )
+        .await
+        .expect("the person's yes is taken");
+    let answered = agent_device
+        .answer_of(&awaiting, std::time::Duration::from_secs(60))
+        .await
+        .unwrap_or_else(|error| panic!("the call the person allowed is answered: {error:?}"));
+    let said = answered.to_string();
+    assert!(
+        said.contains("the quarter's numbers"),
+        "the agent acts on the site with the vault entry it may use, and the host answers what \
+         the site said: {said}"
     );
     assert!(
-        !said.contains("hunter2"),
+        !said.contains("sk-live-0123456789abcdef0123456789ab"),
         "the answer carries no secret the agent never held: {said}"
+    );
+    let sent = site.drain_requests();
+    assert_eq!(
+        sent.len(),
+        1,
+        "the call is sent once, with the key: {sent:?}"
+    );
+    assert_eq!(
+        sent[0].header("authorization"),
+        Some("Bearer sk-live-0123456789abcdef0123456789ab"),
+        "the vault added the key on the way out"
     );
 }
 

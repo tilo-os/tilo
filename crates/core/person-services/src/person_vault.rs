@@ -131,19 +131,34 @@ impl crate::PersonServices {
         {
             return Err(ActionCallError::UnknownAction);
         }
-        let reach = self
-            .reaching_allowed(
+        let asked = asked_of(request)?;
+        // A web call's person is shown the vault's own words — the item's kind and the address
+        // it would call, never the key — so it is decided here and asked there.
+        let reach = if matches!(asked, VaultAction::WebCall { .. }) {
+            self.reaching(
+                (workspace_id, caller, certificate),
+                Store::VAULT,
+                action,
+                effect,
+            )
+            .await?
+        } else {
+            self.reaching_allowed(
                 (workspace_id, caller, certificate),
                 Store::VAULT,
                 action,
                 effect,
                 request,
             )
-            .await?;
+            .await?
+        };
         let workspace = reach.workspace.to_string();
-        let asked = asked_of(request)?;
         match asked {
             VaultAction::Code { .. } => self.vault_code_invoke(&workspace, caller, request).await,
+            VaultAction::WebCall { call } => {
+                self.web_call_invoke(&workspace, caller, &reach, request, call)
+                    .await
+            }
             VaultAction::Uses { item } => {
                 self.vault_uses_invoke((workspace_id, certificate), &workspace, &item, None)
                     .await
@@ -218,6 +233,28 @@ impl crate::PersonServices {
             }
             _ => Err(ActionCallError::UnknownAction),
         }
+    }
+
+    /// Call a service with a key an item of the vault `workspace` keeps, for `request` in it:
+    /// an agent's use of its person's item, chosen each time, so its person is asked unless
+    /// they answered this very call. A person's own device makes no such call.
+    ///
+    /// # Errors
+    /// As [`crate::PersonServices::web_call_for`], and [`ActionCallError::UnknownAction`] for a
+    /// caller that is not an agent.
+    async fn web_call_invoke(
+        &self,
+        workspace: &str,
+        caller: &Caller,
+        reach: &Reach,
+        request: &InvokeRequest,
+        call: workspace_vault::WebCall,
+    ) -> Result<Value, ActionCallError> {
+        if !caller.acting().is_agent() {
+            return Err(ActionCallError::UnknownAction);
+        }
+        self.web_call_for(workspace, caller, reach, request, call)
+            .await
     }
 
     /// Answer the code an item's seed makes now, for `request` in the vault `workspace`: a read,

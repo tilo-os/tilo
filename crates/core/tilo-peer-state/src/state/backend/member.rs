@@ -93,18 +93,27 @@ fn current(
     let delegate = match identity.delegate.as_ref() {
         // A key its person's root certified as one of their agents is that agent, by the id the
         // certificate names, whichever device holds the key: one agent on every device, acting
-        // with its grants here and never as its person.
+        // with its grants here and never as its person. A grant that names no agent — one for a
+        // workspace alone — is the agent its key is
+        // ([`tilo_member_types::key_agent_id`]), the id `approved_keys` gives that key's grant
+        // and the one its caller acts as
+        // ([`crate::key_caller::caller_of_key`]). A server key is not an agent but its person
+        // there ([`tilo_user_identity::DeviceCapabilities::own_key_grant`]).
         None => match cert.capabilities.agent.as_ref() {
-            Some(scope @ tilo_user_identity::AgentScope::Agent(grant)) => {
+            Some(scope) if !cert.capabilities.server_key => {
                 if !scope.reaches(&peer.workspace) {
                     return Err(MembershipError::Delegate(DelegateInactive::OtherWorkspace));
                 }
+                let agent = match scope {
+                    tilo_user_identity::AgentScope::Agent(grant) => grant.agent.clone(),
+                    _ => collab_types::workspace_grant::key_agent_id(source),
+                };
                 Some(crate::state::ActingAs {
                     actor: tilo_member_types::Actor::Member(MemberId::agent(
-                        grant.agent.clone(),
+                        agent.clone(),
                         person.as_str(),
                     )),
-                    grants: tilo_member_types::Acting::handed_agent(&grant.agent, person.as_str())
+                    grants: tilo_member_types::Acting::handed_agent(&agent, person.as_str())
                         .handed_preset(&peer.workspace),
                 })
             }

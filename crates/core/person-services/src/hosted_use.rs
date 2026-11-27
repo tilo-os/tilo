@@ -82,6 +82,7 @@ use tilo_workspace_records::models::{self as model_providers, SetKeyFromItem};
 use crate::PersonServices as Workspaces;
 use collab_types::WorkspaceId;
 use tilo_workspace_records::vault::{self as workspace_vault, ItemRef, VaultAction};
+use tilo_workspace_service::workspaces::workspace_stores::Reach;
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 pub(crate) use tilo_workspace_service::workspaces::workspace_stores::agent_of;
 
@@ -1254,6 +1255,74 @@ impl crate::PersonServices {
                 self,
                 (&using.workspace, &root),
                 (&using.name, &using.acting(), item),
+                caller_app.as_deref(),
+                (purpose, request),
+            )
+            .await
+            .map_err(ActionCallError::refused)
+    }
+
+    /// Take the web call `call` `request` asks of `workspace`'s vault, which the workspace's
+    /// policy already let `caller` make (`reach`, [`Workspaces::reaching`]): the vault adds the
+    /// item's key to the request and answers with it struck out, so the secret never reaches
+    /// the agent. A call is the agent's to choose each time, so no "Always" stands for it: it
+    /// goes where its person answered this very call (`request` carries their yes), and
+    /// otherwise it waits for them here.
+    ///
+    /// # Errors
+    /// The arguments do not read, the vault refuses the call (no such item, another kind, a
+    /// place it does not belong to, an address a key is not sent to), or it waits for the
+    /// person's yes ([`ActionCallError::ConfirmationRequired`]).
+    pub(crate) async fn web_call_for(
+        &self,
+        workspace: &str,
+        caller: &Caller,
+        reach: &Reach,
+        request: &InvokeRequest,
+        call: workspace_vault::WebCall,
+    ) -> Result<Value, ActionCallError> {
+        let arguments = arguments_of(request);
+        let wanted = Use::Call(call);
+        let root = self.workspace_root(workspace);
+        let (item, kind, places) = wanted
+            .wanted(&root, &request.target)
+            .map_err(ActionCallError::refused)?;
+        let word = workspace_vault::use_word(&request.target);
+        let items = self
+            .open_vault(workspace)
+            .await
+            .map_err(ActionCallError::refused)?
+            .items();
+        wanted
+            .fits(&items, &item, kind, &places)
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        let caller_app = caller.acting().app().map(|app| app.as_str().to_owned());
+        wanted
+            .sendable(self, workspace, caller_app.as_deref(), &items)
+            .map_err(ActionCallError::refused)?;
+        drop(items);
+        // The person is asked in the vault's own words, and the call goes once they answered
+        // this one: no "Always" stands for a call whose request the agent writes anew.
+        if request.approval().is_none() {
+            return Err(ActionCallError::asks(use_asked(
+                caller,
+                &request.target,
+                &arguments,
+                (kind, &places, wanted.reason()),
+                wanted.takes_leave(),
+            )));
+        }
+        let purpose = UsedFor {
+            using: &word,
+            what: "",
+            allowed: Some(Allowance::Once),
+        };
+        let by = reach.by();
+        wanted
+            .carry_out(
+                self,
+                (workspace, &root),
+                (&by, &reach.acting, item),
                 caller_app.as_deref(),
                 (purpose, request),
             )
