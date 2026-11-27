@@ -288,6 +288,12 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
                 && listed.address.record == DESKTOP_DOCUMENT),
         "{listed:?}"
     );
+    assert!(
+        !listed
+            .iter()
+            .any(|listed| listed.address.app == tilo_actions::remote::PRESENCE),
+        "who is here is read, never a document: {listed:?}"
+    );
     // A workspace the daemon does not keep is refused as the daemon says it.
     let elsewhere = documents
         .read(

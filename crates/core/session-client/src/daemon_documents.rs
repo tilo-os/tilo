@@ -760,11 +760,22 @@ impl DeviceDocuments for DaemonDocuments {
         &self,
         workspace: &str,
     ) -> Result<Vec<tilo_actions::remote::ListedResource>, String> {
-        Ok(tilo_actions::remote::ListedResource::read_listing(
+        // The daemon lists every resource the workspace publishes, and who is in it and the keys
+        // it admitted are read from what it is, never stored: no document holds them, and a
+        // reader that follows the documents would ask for one that is not there.
+        let mut listed = tilo_actions::remote::ListedResource::read_listing(
             workspace,
             "",
             &self.0.read_blocking(listing(workspace))?,
-        ))
+        );
+        listed.retain(|listed| {
+            ![
+                tilo_actions::remote::PRESENCE,
+                tilo_actions::remote::KEY_GRANTS,
+            ]
+            .contains(&listed.address.app.as_str())
+        });
+        Ok(listed)
     }
 
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
