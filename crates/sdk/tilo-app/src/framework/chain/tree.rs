@@ -23,9 +23,9 @@ fn depth(item: usize, parent_of: &[Option<usize>]) -> usize {
 /// item whose parent chain comes back to itself is kept at the top rather
 /// than hidden.
 pub(super) fn nest(
-    items: Vec<tilo_ui_base::published::SharedResource>,
+    items: Vec<ui_core::published::SharedResource>,
     tree: &[(tilo_resource::Id, Option<tilo_resource::Id>)],
-) -> Vec<tilo_ui_base::published::SharedResource> {
+) -> Vec<ui_core::published::SharedResource> {
     if tree.is_empty() {
         return items;
     }
@@ -75,10 +75,10 @@ pub(super) fn nest(
     // nested; a cycle left over keeps its place in the order.
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_by_key(|item| std::cmp::Reverse(depth(*item, &parent_of)));
-    let mut built: Vec<Option<tilo_ui_base::published::SharedResource>> =
+    let mut built: Vec<Option<ui_core::published::SharedResource>> =
         items.iter().map(|_| None).collect();
     for item in order {
-        let mut below: Vec<tilo_ui_base::published::SharedResource> = items
+        let mut below: Vec<ui_core::published::SharedResource> = items
             .get(item)
             .map(|node| node.children().as_slice().to_vec())
             .unwrap_or_default();
@@ -91,7 +91,7 @@ pub(super) fn nest(
             );
         }
         if let (Some(entry), Some(node)) = (built.get_mut(item), items.get(item)) {
-            *entry = Some(node.over(tilo_ui_base::published::SharedChildren::new(below)));
+            *entry = Some(node.over(ui_core::published::SharedChildren::new(below)));
         }
     }
     (0..items.len())

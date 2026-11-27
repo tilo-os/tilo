@@ -1006,7 +1006,7 @@ impl HistoryHost {
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> usize {
-        tilo_ui_base::widget::controls::start_pending_control_invocations(self, doc, path)
+        crate::widget::resources::start_pending_control_invocations(self, doc, path)
     }
     /// The changes the timeline shows selected.
     pub fn timeline_selection(&self) -> Vec<tilo_ui_base::HistoryEntryId> {

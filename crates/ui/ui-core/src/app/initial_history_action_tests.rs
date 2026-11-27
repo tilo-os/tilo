@@ -4,7 +4,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 struct InitialHistoryProbe(Rc<Cell<usize>>, Rc<Cell<bool>>);
 impl tilo_ui_base::widget::Widget for InitialHistoryProbe {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::controls::ActionControls,
         dyn tilo_ui_base::widget::ResourceOperations
     );
@@ -40,7 +40,7 @@ impl tilo_ui_base::widget::controls::ActionControls for InitialHistoryProbe {
             })
     }
 }
-impl tilo_ui_base::widget::resources::PublishesResources for InitialHistoryProbe {
+impl crate::widget::resources::PublishesResources for InitialHistoryProbe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         vec![
             tilo_actions::ResourceSpec::new("initial-probe", "probe", "Probe").with_action(
@@ -919,10 +919,10 @@ fn an_invocation_waits_for_its_document_to_become_current() {
 /// may until then.
 struct LateRowProbe(Rc<Cell<Option<bool>>>);
 impl tilo_ui_base::widget::Widget for LateRowProbe {
-    tilo_ui_base::provides!(dyn tilo_ui_base::widget::resources::PublishesResources);
+    tilo_ui_base::provides!(dyn crate::widget::resources::PublishesResources);
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "late-row-probe");
 }
-impl tilo_ui_base::widget::resources::PublishesResources for LateRowProbe {
+impl crate::widget::resources::PublishesResources for LateRowProbe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let inspect = |id: &str| {
             tilo_actions::ResourceSpec::new(id, "probe", "Probe").with_action(

@@ -374,11 +374,11 @@ mod component_adapter {
     use super::{AppProcessIntent, AppWidget, IconDescriptor};
     use crate::application::AppComponent;
     use crate::floating_surface::{FloatingSurfaceProvider, FloatingSurfaceWidgetExt};
-    use crate::{time::Instant, widget::AppKind};
+    use crate::{time::Instant, widget::ActionDirectoryResourcePage, widget::AppKind};
     use tilo_ui_base::widget::DrawChild;
     use tilo_ui_base::widget::Widget;
     use tilo_ui_base::{
-        widget::ActionDirectoryResourcePage, widget::Affine, widget::AudiencePresentationProvider,
+        widget::Affine, widget::AudiencePresentationProvider,
         widget::AudiencePresentationWidgetExt, widget::AutoCommit, widget::CompleteContentProvider,
         widget::CompleteContentWidgetExt, widget::ControlBindingMetadata,
         widget::FullscreenProvider, widget::FullscreenWidgetExt, widget::HashMap, widget::HashSet,
@@ -1080,7 +1080,7 @@ mod component_adapter {
             #[cfg(feature = "model")]
             dyn crate::history_mode::capability::DocumentHistory,
             dyn tilo_ui_base::widget::controls::ActionControls,
-            dyn tilo_ui_base::widget::resources::PublishesResources,
+            dyn crate::widget::resources::PublishesResources,
             dyn crate::search::capability::SearchSource,
             #[cfg(feature = "model")]
             dyn tilo_ui_base::widget::permission::PermissionGuarded,
@@ -2058,7 +2058,7 @@ mod component_adapter {
         }
     }
 
-    impl tilo_ui_base::widget::resources::PublishesResources for BoundAppWidget {
+    impl crate::widget::resources::PublishesResources for BoundAppWidget {
         fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
             binding
@@ -2066,7 +2066,7 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref() else {
                         return Vec::new();
                     };
-                    tilo_ui_base::widget::resources::resources(root, document)
+                    crate::widget::resources::resources(root, document)
                 })
                 .unwrap_or_else(|_| Vec::new())
         }
@@ -2080,7 +2080,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    tilo_ui_base::widget::resources::action_directory_resource_page(
+                    crate::widget::resources::action_directory_resource_page(
                         root,
                         document,
                         cursor,
@@ -2094,7 +2094,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    tilo_ui_base::widget::resources::action_directory_revision(root, document)
+                    crate::widget::resources::action_directory_revision(root, document)
                 })
                 .unwrap_or(None)
         }
@@ -2109,7 +2109,7 @@ mod component_adapter {
                         .root
                         .as_deref()
                         .map(|root| {
-                            tilo_ui_base::widget::resources::action_directory_invocation_domain(
+                            crate::widget::resources::action_directory_invocation_domain(
                                 root, document,
                             )
                         })
@@ -2122,7 +2122,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    tilo_ui_base::widget::resources::resource(root, document, id)
+                    crate::widget::resources::resource(root, document, id)
                 })
                 .unwrap_or(None)
         }
@@ -2140,7 +2140,7 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref() else {
                         return Vec::new();
                     };
-                    tilo_ui_base::widget::resources::resources_for(root, presence, document)
+                    crate::widget::resources::resources_for(root, presence, document)
                 })
                 .unwrap_or_else(|_| Vec::new())
         }
@@ -2154,7 +2154,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    tilo_ui_base::widget::resources::resource_for(root, presence, document, id)
+                    crate::widget::resources::resource_for(root, presence, document, id)
                 })
                 .unwrap_or(None)
         }
@@ -2167,7 +2167,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _resource_root| {
                     let root = self.component.root.as_deref()?;
-                    tilo_ui_base::widget::resources::action_directory_visibility(
+                    crate::widget::resources::action_directory_visibility(
                         root,
                         document,
                         resource_id,

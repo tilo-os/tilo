@@ -321,7 +321,7 @@ impl Decorator for EmojiPickerButton {
         // The button publishes its press; this widget hosts it, so the
         // press is answered here, before the picker is opened from it.
         let path = ctx.path;
-        tilo_ui_base::widget::controls::start_pending_control_invocations(
+        crate::widget::resources::start_pending_control_invocations(
             &mut self.button,
             &mut ctx.edits(),
             path,

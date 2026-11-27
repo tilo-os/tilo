@@ -64,7 +64,7 @@ pub fn sends_through<I: 'static>(
 impl Widget for Sends {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -110,7 +110,7 @@ impl tilo_ui_base::widget::ResourceOperations for Sends {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Sends {
+impl crate::widget::resources::PublishesResources for Sends {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         vec![self.resource.clone()]
     }

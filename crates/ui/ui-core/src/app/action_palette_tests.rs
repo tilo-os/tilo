@@ -76,7 +76,7 @@ impl crate::search::SearchProvider for LazyProvider {
 struct Publisher;
 impl Widget for Publisher {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource
     );
 
@@ -110,7 +110,7 @@ impl crate::search::capability::SearchSource for Publisher {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Publisher {
+impl crate::widget::resources::PublishesResources for Publisher {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new("test.obj:1", "test.obj", "Widget Object").with_action(
@@ -149,7 +149,7 @@ struct Viewer(std::rc::Rc<std::cell::Cell<usize>>);
 
 impl Widget for Viewer {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -186,7 +186,7 @@ impl tilo_ui_base::widget::ResourceOperations for Viewer {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Viewer {
+impl crate::widget::resources::PublishesResources for Viewer {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new("test.view:1", "test.view", "Viewable").with_action(

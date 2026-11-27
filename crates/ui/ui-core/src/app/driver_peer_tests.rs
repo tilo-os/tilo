@@ -117,7 +117,7 @@ struct Waiter {
 
 impl Widget for Waiter {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
     fn build_layout(
@@ -134,7 +134,7 @@ impl Widget for Waiter {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Waiter {
+impl crate::widget::resources::PublishesResources for Waiter {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new("test.waiter", "test.waiter", "Waiter").with_action(

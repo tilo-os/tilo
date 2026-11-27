@@ -828,7 +828,7 @@ mod tests {
     }
     impl Widget for OwnedRoot {
         tilo_ui_base::provides!(
-            dyn tilo_ui_base::widget::resources::PublishesResources,
+            dyn crate::widget::resources::PublishesResources,
             dyn crate::component_lifecycle::ComponentLifecycle,
             dyn tilo_ui_base::widget::ResourceOperations
         );
@@ -947,7 +947,7 @@ mod tests {
         }
     }
 
-    impl tilo_ui_base::widget::resources::PublishesResources for OwnedRoot {
+    impl crate::widget::resources::PublishesResources for OwnedRoot {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             vec![crate::widget::resource_actions::resource(
                 "test.quit",
@@ -979,10 +979,7 @@ mod tests {
             .clone();
         assert!(
             tilo_actions::api::resolve(
-                &tilo_ui_base::widget::resources::resources(
-                    app.root_widget.as_ref(),
-                    &app.state.doc
-                ),
+                &crate::widget::resources::resources(app.root_widget.as_ref(), &app.state.doc),
                 &document.save,
             )
             .is_some(),

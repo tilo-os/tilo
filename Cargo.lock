@@ -21226,6 +21226,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-accesskit-winit",
  "tilo-action-policy",
+ "tilo-action-types",
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app-id",

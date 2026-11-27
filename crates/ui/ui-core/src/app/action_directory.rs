@@ -30,7 +30,7 @@ impl App {
                 .collect();
             let observation = action_directory_snapshot::DirectoryObservation {
                 registry_generation: self.actions.action_registry_generation,
-                root_domain: tilo_ui_base::widget::resources::action_directory_invocation_domain(
+                root_domain: crate::widget::resources::action_directory_invocation_domain(
                     self.root_widget.as_ref(),
                     &self.state.doc,
                 ),
@@ -40,7 +40,7 @@ impl App {
                 permission_generation: self.actions.permission_generation.get(),
                 route: self.bound_broker_route().cloned(),
                 owners,
-                root_revision: tilo_ui_base::widget::resources::action_directory_revision(
+                root_revision: crate::widget::resources::action_directory_revision(
                     self.root_widget.as_ref(),
                     &self.state.doc,
                 ),
@@ -565,9 +565,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|snapshot| snapshot.nodes.contains_key(&query.parent_resource));
             let live = !projected_parent
-                || tilo_ui_base::widget::resources::resolves_resources_by_id(
-                    self.root_widget.as_ref(),
-                );
+                || crate::widget::resources::resolves_resources_by_id(self.root_widget.as_ref());
             let parent = live
                 .then(|| self.resolve_publication_resource(&query.parent_resource, ""))
                 .flatten();
@@ -871,7 +869,7 @@ impl App {
 
     /// Whether `resource_id`, which resolves to nothing now, may resolve
     /// once what its widget reads lands
-    /// ([`tilo_ui_base::widget::resources::PublishesResources::resource_pending`]).
+    /// ([`crate::widget::resources::PublishesResources::resource_pending`]).
     fn publication_resource_pending(&mut self, resource_id: &str, action_id: &str) -> bool {
         let address = tilo_actions::ActionAddress::new(resource_id, action_id);
         match self.actions.bound_publication.target(&address) {

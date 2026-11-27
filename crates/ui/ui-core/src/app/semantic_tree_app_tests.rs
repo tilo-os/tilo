@@ -361,7 +361,7 @@ impl CounterCard {
 }
 impl Widget for CounterCard {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         dyn tilo_ui_base::widget::controls::ActionControls,
         dyn tilo_ui_base::widget::ResourceOperations
@@ -503,7 +503,7 @@ impl crate::search::capability::SearchSource for CounterCard {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for CounterCard {
+impl crate::widget::resources::PublishesResources for CounterCard {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.lazy_resource
             .is_none()
@@ -516,7 +516,7 @@ impl tilo_ui_base::widget::resources::PublishesResources for CounterCard {
         doc: &automerge::AutoCommit,
         cursor: &[u8],
         max_results: usize,
-    ) -> Option<tilo_ui_base::widget::ActionDirectoryResourcePage> {
+    ) -> Option<crate::widget::ActionDirectoryResourcePage> {
         let offset = std::str::from_utf8(cursor)
             .ok()
             .and_then(|cursor| cursor.parse::<usize>().ok())
@@ -546,7 +546,7 @@ impl tilo_ui_base::widget::resources::PublishesResources for CounterCard {
                 }
             })
             .collect();
-        Some(tilo_ui_base::widget::ActionDirectoryResourcePage {
+        Some(crate::widget::ActionDirectoryResourcePage {
             resources,
             next_cursor: end.to_string().into_bytes(),
             exhausted: end >= self.directory_roots,

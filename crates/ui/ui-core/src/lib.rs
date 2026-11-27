@@ -222,6 +222,7 @@ pub(crate) mod pipeline_cache;
 pub mod pipeline_seed;
 pub mod pointer_replay;
 pub mod profiling;
+pub mod published;
 pub mod shot_frame;
 pub use tilo_ui_paint::raster;
 pub mod storage;

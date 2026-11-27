@@ -14,7 +14,7 @@ struct HostedPumpProbe {
 }
 impl Widget for HostedPumpProbe {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -50,7 +50,7 @@ impl tilo_ui_base::widget::ResourceOperations for HostedPumpProbe {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for HostedPumpProbe {
+impl crate::widget::resources::PublishesResources for HostedPumpProbe {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.calls.set(self.calls.get() + 1);
         let count = if doc.get(ROOT, "more").unwrap().is_some() {
@@ -773,7 +773,7 @@ mod input_publication {
 
     impl Widget for InputProbe {
         tilo_ui_base::provides!(
-            dyn tilo_ui_base::widget::resources::PublishesResources,
+            dyn crate::widget::resources::PublishesResources,
             dyn tilo_ui_base::widget::ResourceOperations
         );
 
@@ -827,7 +827,7 @@ mod input_publication {
         }
     }
 
-    impl tilo_ui_base::widget::resources::PublishesResources for InputProbe {
+    impl crate::widget::resources::PublishesResources for InputProbe {
         fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
             self.calls.set(self.calls.get() + 1);
             let hovered = doc.get(ROOT, "hovered").unwrap().is_some();

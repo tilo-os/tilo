@@ -541,7 +541,7 @@ impl Leaf {
 }
 impl Widget for Leaf {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui::widget::resources::PublishesResources,
         dyn tilo_ui_base::host_operation::ResourceOperations
     );
 
@@ -718,7 +718,7 @@ impl tilo_ui_base::host_operation::ResourceOperations for Leaf {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Leaf {
+impl tilo_ui::widget::resources::PublishesResources for Leaf {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),

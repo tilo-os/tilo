@@ -50,7 +50,7 @@ impl MenuRows {
 
 impl Widget for MenuRows {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -104,7 +104,7 @@ impl Widget for MenuRows {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for MenuRows {
+impl crate::widget::resources::PublishesResources for MenuRows {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut record = tilo_actions::ResourceSpec::new(MENU_ROW_RESOURCE, "test.menu", "Menu");
         for (index, label) in self.labels.iter().enumerate() {

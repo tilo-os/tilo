@@ -38,7 +38,7 @@ pub(crate) fn press(
         ),
         "the control refused {action:?}"
     );
-    tilo_ui_base::widget::controls::start_pending_control_invocations(
+    ui::widget::resources::start_pending_control_invocations(
         control,
         &mut tilo_ui_base::widget::Edits::lend(doc),
         &automerge::ROOT,

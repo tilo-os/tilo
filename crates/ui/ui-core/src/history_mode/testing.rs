@@ -392,7 +392,7 @@ impl Widget for LiveOwner {
         dyn tilo_ui_base::widget::undo_access::UndoControl,
         dyn tilo_ui_base::widget::undo_access::LocalUndo,
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -488,7 +488,7 @@ impl tilo_ui_base::widget::ResourceOperations for LiveOwner {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for LiveOwner {
+impl crate::widget::resources::PublishesResources for LiveOwner {
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if let Some(identity) = &self.mutable_identity {
             return mutable_identity_resources(self.resource_id, self.type_id, identity);

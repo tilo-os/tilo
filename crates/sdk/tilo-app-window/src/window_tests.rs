@@ -1415,7 +1415,7 @@ fn palette_keys(window: &AppWindow, action: &str) -> Option<String> {
                 .or_else(|| find(&spec.children, action))
         })
     }
-    let shown = tilo_ui_base::widget::resources::PublishesResources::resources(
+    let shown = ui::widget::resources::PublishesResources::resources(
         window,
         &ui::automerge::AutoCommit::new(),
     );

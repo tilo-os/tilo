@@ -279,7 +279,7 @@ where
         dyn tilo_ui_base::widget::FullscreenProvider,
         dyn tilo_ui_base::widget::undo_access::CommittedActions,
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         #[cfg(feature = "model")]
         dyn crate::resource::capability::ResourceScoped,
@@ -437,7 +437,7 @@ where
     }
 }
 
-impl<K> tilo_ui_base::widget::resources::PublishesResources for ModelView<K>
+impl<K> crate::widget::resources::PublishesResources for ModelView<K>
 where
     K: PartialEq + 'static,
 {
@@ -447,12 +447,7 @@ where
         address: &tilo_actions::ActionAddress,
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
-        tilo_ui_base::widget::resources::document_action_result(
-            self.child.as_ref(),
-            doc,
-            address,
-            changes,
-        )
+        crate::widget::resources::document_action_result(self.child.as_ref(), doc, address, changes)
     }
 }
 

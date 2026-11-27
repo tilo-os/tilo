@@ -386,8 +386,8 @@ pub(crate) trait ResourceApi {
     }
     /// [`Self::publish`] as a shared tree, which a record whose items change a few at a time
     /// (a chain of parts) builds again only where they changed.
-    fn publish_shared(&self) -> tilo_ui_base::published::SharedResource {
-        tilo_ui_base::published::SharedResource::from_resource(self.publish())
+    fn publish_shared(&self) -> ui_core::published::SharedResource {
+        ui_core::published::SharedResource::from_resource(self.publish())
     }
     /// What search finds in the record beside the app's own: none unless the
     /// record holds what the window's search lists (a chain's items).

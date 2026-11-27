@@ -858,7 +858,7 @@ fn poll_live_source_rejects_invalid_json_without_replacing() {
 fn live_graph_actions_apply_and_dump() {
     let handle = UiGraphHandle::new(sample()).unwrap();
     let mut live = handle.widget(&Theme::dark()).unwrap();
-    let resources = tilo_ui_base::widget::resources::resources(&live, &AutoCommit::new());
+    let resources = tilo_ui::widget::resources::resources(&live, &AutoCommit::new());
     assert!(
         resources
             .iter()

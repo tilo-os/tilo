@@ -45,7 +45,7 @@ struct MailRoot {
 
 impl Widget for MailRoot {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource
     );
 
@@ -79,7 +79,7 @@ impl crate::search::capability::SearchSource for MailRoot {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for MailRoot {
+impl crate::widget::resources::PublishesResources for MailRoot {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         let archive = |id: &str, label: &str| {
             ResourceSpec::new(id, "mail.folder", label).with_action(

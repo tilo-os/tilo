@@ -705,11 +705,7 @@ impl ActionPalette {
         format!("palette-answer:{}:{part}", self.request_generation)
     }
     fn drain_command(&mut self, doc: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
-        tilo_ui_base::widget::controls::start_pending_control_invocations(
-            &mut self.controls,
-            doc,
-            path,
-        );
+        crate::widget::resources::start_pending_control_invocations(&mut self.controls, doc, path);
         match self.command.take() {
             Some(true) => {
                 self.focus_part(0);

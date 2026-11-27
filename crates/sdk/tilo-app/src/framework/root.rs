@@ -2134,7 +2134,7 @@ impl RootPublishes for ResourceRoot {
         &self,
         member: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
-    ) -> Option<Vec<tilo_ui_base::published::SharedResource>> {
+    ) -> Option<Vec<ui_core::published::SharedResource>> {
         self.shared_resources(member, doc)
     }
     fn resources_for(
@@ -2153,7 +2153,7 @@ impl RootPublishes for ResourceRoot {
         // never a document action: those are the resource's own. One naming
         // the resource joins it rather than publishing it twice.
         let mut extras = Vec::new();
-        for extra in tilo_ui_base::widget::resources::resources_for(self.app_view(), member, doc) {
+        for extra in ui_core::widget::resources::resources_for(self.app_view(), member, doc) {
             let extra = outside_document(extra);
             if extra.id == resource.id {
                 join(&mut resource, extra);
@@ -2307,7 +2307,7 @@ impl RootPublishes for ResourceRoot {
         // Last, what the content resolves by id beyond what it publishes (a
         // place, a record past the published page), without a document
         // action: those are the resource's own.
-        tilo_ui_base::widget::resources::resource_for(self.app_view(), None, doc, id)
+        ui_core::widget::resources::resource_for(self.app_view(), None, doc, id)
             .map(super::rows::resolved_outside_document)
     }
     fn published_action(
@@ -2354,7 +2354,7 @@ impl RootPublishes for ResourceRoot {
                 .typed
                 .answer(doc, &address.action, changes)
                 .or_else(|| {
-                    tilo_ui_base::widget::resources::document_action_result(
+                    ui_core::widget::resources::document_action_result(
                         self.app_view(),
                         doc,
                         address,
@@ -2371,12 +2371,7 @@ impl RootPublishes for ResourceRoot {
                 None => Some(serde_json::json!({ "minted": minted })),
             };
         }
-        tilo_ui_base::widget::resources::document_action_result(
-            self.app_view(),
-            doc,
-            address,
-            changes,
-        )
+        ui_core::widget::resources::document_action_result(self.app_view(), doc, address, changes)
     }
 }
 

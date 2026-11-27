@@ -20,6 +20,10 @@ pub use {
     action_proposal::ProposalTarget,
 };
 mod composed;
+/// What a widget publishes as resources, and the walk that runs a control's queued intent
+/// against them.
+pub mod resources;
+pub use resources::ActionDirectoryResourcePage;
 pub mod search_request;
 pub use composed::Composed;
 pub mod decorator;

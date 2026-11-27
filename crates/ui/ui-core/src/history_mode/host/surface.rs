@@ -349,7 +349,7 @@ impl HistoryHost {
             // their host, so it answers it here, before the frame seals what
             // the live app queued for ownership.
             let path = ctx.path;
-            tilo_ui_base::widget::controls::start_pending_control_invocations(
+            crate::widget::resources::start_pending_control_invocations(
                 self,
                 &mut ctx.edits(),
                 path,

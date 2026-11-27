@@ -56,7 +56,7 @@ impl ConsoleApp for Console<'_> {
     }
 
     fn published(&self) -> Vec<ResourceSpec> {
-        tilo_ui_base::widget::resources::resources(self.app, self.state)
+        ui::widget::resources::resources(self.app, self.state)
     }
 
     fn run(
@@ -465,7 +465,7 @@ fn diagnostics_action() -> Option<ActionSpec> {
     console_spec(GreeterConsole::CONFIGURE_SESSION_DIAGNOSTICS)
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for GreeterApp {
+impl ui::widget::resources::PublishesResources for GreeterApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         let mut resource = tilo_resource::typed_resource::<GreeterConsoleRoot>(
             PROVIDER,
@@ -599,7 +599,7 @@ mod tests {
             let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
             for phase in [AuthPhase::Idle, AuthPhase::Authenticating] {
                 app.phase = phase;
-                let resources = tilo_ui_base::widget::resources::resources(&app, &AutoCommit::new());
+                let resources = ui::widget::resources::resources(&app, &AutoCommit::new());
                 let violations = ui::tilo_actions::validate_surface(
                     &resources,
                     &ui::tilo_actions::ActionRegistry::new(),
@@ -625,7 +625,7 @@ mod tests {
             }
 
             app.phase = AuthPhase::Idle;
-            let resources = tilo_ui_base::widget::resources::resources(&app, &AutoCommit::new());
+            let resources = ui::widget::resources::resources(&app, &AutoCommit::new());
             let encoded = ui::tilo_actions::api::resolve(
                 &resources,
                 &ui::tilo_actions::ActionAddress::new(PROVIDER, "choose-session"),
@@ -1224,9 +1224,7 @@ mod authentication_tests {
     fn remote_sign_in_fixture_child() {
         let Some(route) = std::env::var_os("TILO_GREETER_CONSOLE_AUTH_FIXTURE") else {
             let app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
-            assert!(
-                !tilo_ui_base::widget::resources::resources(&app, &AutoCommit::new()).is_empty()
-            );
+            assert!(!ui::widget::resources::resources(&app, &AutoCommit::new()).is_empty());
             return;
         };
         let _logs = tracing_subscriber::fmt()
@@ -1236,7 +1234,7 @@ mod authentication_tests {
         let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
         assert!(!app.keyboard_focus);
         let mut doc = AutoCommit::new();
-        let resources = tilo_ui_base::widget::resources::resources(&app, &doc);
+        let resources = ui::widget::resources::resources(&app, &doc);
         let args = json!({"password":SECRET}).as_object().unwrap().clone();
         // The secret is a `Secret` parameter: the published catalogue never
         // carries it; it reaches the handler only inside the in-process

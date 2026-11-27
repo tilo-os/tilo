@@ -88,7 +88,7 @@ mod tests {
             .layout(&taffy, node);
         keys.send(&mut choice, &named_key(NamedKey::ArrowRight));
         let mut tree: Box<dyn Widget> = Box::new(choice);
-        tilo_ui_base::widget::controls::start_pending_control_invocations(
+        ui::widget::resources::start_pending_control_invocations(
             tree.as_mut(),
             &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &ROOT,

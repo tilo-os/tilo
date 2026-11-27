@@ -79,6 +79,8 @@ pub(crate) use control::{
 };
 
 #[cfg(feature = "model")]
+use crate::published::SharedResource;
+#[cfg(feature = "model")]
 use crate::resource::{DocumentCheckout, ResourceOpenError, ResourceSaveStatus, ResourceStore};
 #[cfg(feature = "model")]
 use crate::wake::{WakeHandle, WakeScopeGuard};
@@ -92,8 +94,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 #[cfg(all(feature = "model", feature = "native"))]
 use taffy::NodeId;
-#[cfg(feature = "model")]
-use tilo_ui_base::published::SharedResource;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 #[cfg(feature = "model")]
@@ -428,23 +428,19 @@ impl ControlAvailability {
         let last = std::mem::replace(&mut self.forest, Rc::clone(next));
         let allowed = Rc::make_mut(&mut self.allowed);
         let (counts, addresses) = (&mut self.counts, &self.addresses);
-        tilo_ui_base::published::diff(&last, next, &mut |change| match change {
-            tilo_ui_base::published::Change::Removed(subtree) => {
-                visit_subtree(subtree, &mut |node| {
-                    count_addresses(binding, node, false, counts, allowed, addresses);
-                })
-            }
-            tilo_ui_base::published::Change::Added(subtree) => {
-                visit_subtree(subtree, &mut |node| {
-                    count_addresses(binding, node, true, counts, allowed, addresses);
-                })
-            }
-            tilo_ui_base::published::Change::Head { last, next } if same_offer(last, next) => {}
-            tilo_ui_base::published::Change::Head { last, next } => {
+        crate::published::diff(&last, next, &mut |change| match change {
+            crate::published::Change::Removed(subtree) => visit_subtree(subtree, &mut |node| {
+                count_addresses(binding, node, false, counts, allowed, addresses);
+            }),
+            crate::published::Change::Added(subtree) => visit_subtree(subtree, &mut |node| {
+                count_addresses(binding, node, true, counts, allowed, addresses);
+            }),
+            crate::published::Change::Head { last, next } if same_offer(last, next) => {}
+            crate::published::Change::Head { last, next } => {
                 count_addresses(binding, last, false, counts, allowed, addresses);
                 count_addresses(binding, next, true, counts, allowed, addresses);
             }
-            tilo_ui_base::published::Change::Roots => {}
+            crate::published::Change::Roots => {}
         });
     }
 }
@@ -815,7 +811,7 @@ impl BoundResourceSnapshot {
     /// forest.
     pub(crate) fn resources(&self) -> &Rc<Vec<ResourceSpec>> {
         self.forest.plain.get_or_init(|| {
-            Rc::new(tilo_ui_base::published::to_resources(
+            Rc::new(crate::published::to_resources(
                 self.forest.shared.get().map_or(&[][..], |forest| forest),
             ))
         })
@@ -1321,14 +1317,12 @@ pub(crate) fn publication_visibility(
             let found = if let Some(binding) = &binding {
                 binding
                     .read_document(doc, |doc, _| {
-                        tilo_ui_base::widget::resources::action_directory_visibility(
-                            widget, doc, id,
-                        )
+                        crate::widget::resources::action_directory_visibility(widget, doc, id)
                     })
                     .ok()
                     .flatten()
             } else {
-                tilo_ui_base::widget::resources::action_directory_visibility(widget, doc, id)
+                crate::widget::resources::action_directory_visibility(widget, doc, id)
             };
             if found.is_some() {
                 return found;
@@ -1367,7 +1361,7 @@ pub(crate) fn publication_visibilities(
         };
         if boundary.is_none()
             && tilo_ui_base::widget::capability::capability::<
-                dyn tilo_ui_base::widget::resources::PublishesResources,
+                dyn crate::widget::resources::PublishesResources,
             >(widget)
             .is_some()
         {
@@ -1382,9 +1376,8 @@ pub(crate) fn publication_visibilities(
                         _ => false,
                     };
                     if mine {
-                        *slot = tilo_ui_base::widget::resources::action_directory_visibility(
-                            widget, doc, id,
-                        );
+                        *slot =
+                            crate::widget::resources::action_directory_visibility(widget, doc, id);
                     }
                 }
             };
@@ -1529,7 +1522,7 @@ pub(crate) fn directory_observation(
                 observation.domains.push(
                     binding
                         .read_document(doc, |doc, _| {
-                            tilo_ui_base::widget::resources::action_directory_invocation_domain(
+                            crate::widget::resources::action_directory_invocation_domain(
                                 widget, doc,
                             )
                         })
@@ -1540,7 +1533,7 @@ pub(crate) fn directory_observation(
                 observation.revisions.push(
                     binding
                         .read_document(doc, |doc, _| {
-                            tilo_ui_base::widget::resources::action_directory_revision(widget, doc)
+                            crate::widget::resources::action_directory_revision(widget, doc)
                         })
                         .map_err(|error| format!("{error:?}"))?,
                 );
@@ -1723,7 +1716,7 @@ pub(crate) fn discover_cached_bound_resources(
         resources: &mut Vec<SharedResource>,
         revisions: &mut Vec<Option<String>>,
         declarations: bool,
-        taken: &mut tilo_ui_base::widget::resources::TakenResources,
+        taken: &mut crate::widget::resources::TakenResources,
         root: bool,
     ) {
         let boundary = callback_binding(widget);
@@ -1734,11 +1727,11 @@ pub(crate) fn discover_cached_bound_resources(
             return;
         }
         if boundary.is_none() {
-            revisions.push(tilo_ui_base::widget::resources::action_directory_revision(
+            revisions.push(crate::widget::resources::action_directory_revision(
                 widget, doc,
             ));
             if declarations {
-                let found = tilo_ui_base::widget::resources::shared_resources(widget, doc);
+                let found = crate::widget::resources::shared_resources(widget, doc);
                 let fresh: Vec<_> = found
                     .into_iter()
                     .map(|resource| {
@@ -1748,11 +1741,9 @@ pub(crate) fn discover_cached_bound_resources(
                         if root {
                             return resource;
                         }
-                        SharedResource::from_resource(
-                            tilo_ui_base::widget::resources::outside_document(
-                                resource.to_resource(),
-                            ),
-                        )
+                        SharedResource::from_resource(crate::widget::resources::outside_document(
+                            resource.to_resource(),
+                        ))
                     })
                     .filter(|resource| !taken.holds(resource.id()))
                     .collect();
@@ -1823,7 +1814,7 @@ pub(crate) fn discover_cached_bound_resources(
                         &mut Vec::new(),
                         &mut revisions,
                         false,
-                        &mut tilo_ui_base::widget::resources::TakenResources::default(),
+                        &mut crate::widget::resources::TakenResources::default(),
                         true,
                     );
                     revisions
@@ -1858,12 +1849,12 @@ pub(crate) fn discover_cached_bound_resources(
                     .iter()
                     .find(|entry| entry.snapshot.binding.same_component(binding))
                     .map_or_else(
-                        || (tilo_ui_base::published::fresh_token(), Rc::default(), None),
+                        || (crate::published::fresh_token(), Rc::default(), None),
                         |entry| {
                             let (token, last) = if entry.permissions == permissions {
                                 (entry.filter_token, entry.snapshot.shared_forest().cloned())
                             } else {
-                                (tilo_ui_base::published::fresh_token(), None)
+                                (crate::published::fresh_token(), None)
                             };
                             (token, Rc::clone(&entry.snapshot.controls), last)
                         },
@@ -1878,7 +1869,7 @@ pub(crate) fn discover_cached_bound_resources(
                             &mut resources,
                             &mut Vec::new(),
                             true,
-                            &mut tilo_ui_base::widget::resources::TakenResources::default(),
+                            &mut crate::widget::resources::TakenResources::default(),
                             true,
                         );
                         resources
@@ -2131,10 +2122,7 @@ fn discover_bound_resources_with_filter(
         root: bool,
         address: Option<&tilo_actions::ActionAddress>,
         snapshots: &mut Vec<BoundResourceSnapshot>,
-        taken: &mut std::collections::HashMap<
-            usize,
-            tilo_ui_base::widget::resources::TakenResources,
-        >,
+        taken: &mut std::collections::HashMap<usize, crate::widget::resources::TakenResources>,
         filtered: bool,
     ) -> Result<(), BoundDispatchError> {
         let boundary = callback_binding(widget);
@@ -2148,7 +2136,7 @@ fn discover_bound_resources_with_filter(
                 .position(|snapshot| snapshot.binding.same_component(binding));
             let publishes = || {
                 tilo_ui_base::widget::capability::capability::<
-                    dyn tilo_ui_base::widget::resources::PublishesResources,
+                    dyn crate::widget::resources::PublishesResources,
                 >(widget)
                 .is_some()
                     || (address.is_some()
@@ -2166,7 +2154,7 @@ fn discover_bound_resources_with_filter(
                         && root
                         && presence.is_none()
                         && let Some(forest) = tilo_ui_base::widget::capability::capability::<
-                            dyn tilo_ui_base::widget::resources::PublishesResources,
+                            dyn crate::widget::resources::PublishesResources,
                         >(widget)
                         .and_then(|publisher| publisher.shared_resources_for(None, doc))
                     {
@@ -2179,7 +2167,7 @@ fn discover_bound_resources_with_filter(
                         // published page) is resolved alone by id, as the
                         // tree would carry it: never by publishing every
                         // resource to look for it.
-                        if let Some(resource) = tilo_ui_base::widget::resources::resource_for(
+                        if let Some(resource) = crate::widget::resources::resource_for(
                             widget,
                             None,
                             doc,
@@ -2194,20 +2182,17 @@ fn discover_bound_resources_with_filter(
                             };
                         }
                     }
-                    let mut resources = tilo_ui_base::widget::resources::resources_for(
-                        widget,
-                        presence.as_ref(),
-                        doc,
-                    );
+                    let mut resources =
+                        crate::widget::resources::resources_for(widget, presence.as_ref(), doc);
                     if !root {
                         resources = resources
                             .into_iter()
-                            .map(tilo_ui_base::widget::resources::outside_document)
+                            .map(crate::widget::resources::outside_document)
                             .collect();
                     }
                     if let Some(address) = address
                         && tilo_actions::api::resolve(&resources, address).is_none()
-                        && let Some(resource) = tilo_ui_base::widget::resources::resource_for(
+                        && let Some(resource) = crate::widget::resources::resource_for(
                             widget,
                             presence.as_ref(),
                             doc,
@@ -2874,7 +2859,7 @@ fn perform_resource_operation(
                     before.as_ref().and_then(|before| {
                         let after = doc.get_heads();
                         let changes = doc.diff(before, &after);
-                        let value = tilo_ui_base::widget::resources::document_action_result(
+                        let value = crate::widget::resources::document_action_result(
                             &*widget, doc, address, &changes,
                         );
                         // An answer names the text it wrote too: whoever's view shows that text
@@ -3315,7 +3300,7 @@ fn below_root(root: bool, resource: ResourceSpec) -> ResourceSpec {
     if root {
         resource
     } else {
-        tilo_ui_base::widget::resources::resolved_outside_document(resource)
+        crate::widget::resources::resolved_outside_document(resource)
     }
 }
 
@@ -3352,13 +3337,11 @@ fn collect_published(
     presence: Option<&tilo_actions::PresenceId>,
     resources: &mut Vec<ResourceSpec>,
 ) {
-    let mut taken = tilo_ui_base::widget::resources::TakenResources::default();
+    let mut taken = crate::widget::resources::TakenResources::default();
     for_each_published(widget, walk, &mut |widget, root| {
         let found = match presence {
-            Some(presence) => {
-                tilo_ui_base::widget::resources::resources_for(widget, Some(presence), doc)
-            }
-            None => tilo_ui_base::widget::resources::resources(widget, doc),
+            Some(presence) => crate::widget::resources::resources_for(widget, Some(presence), doc),
+            None => crate::widget::resources::resources(widget, doc),
         };
         let found: Vec<_> = found
             .into_iter()
@@ -3373,7 +3356,7 @@ fn collect_published(
             resources.extend(
                 found
                     .into_iter()
-                    .map(tilo_ui_base::widget::resources::outside_document),
+                    .map(crate::widget::resources::outside_document),
             );
         }
     });
@@ -3390,9 +3373,8 @@ fn resolve_published(
     let mut found = None;
     for_each_published(widget, walk, &mut |widget, root| {
         if found.is_none() {
-            found =
-                tilo_ui_base::widget::resources::resource_for(widget, presence.as_ref(), doc, id)
-                    .map(|resource| below_root(root, resource));
+            found = crate::widget::resources::resource_for(widget, presence.as_ref(), doc, id)
+                .map(|resource| below_root(root, resource));
         }
     });
     found
@@ -3431,13 +3413,13 @@ pub(crate) fn resolve_unbound_resource(
 }
 
 /// Whether resource `id`, which `widget`'s subtree resolves to nothing now, may resolve once what it
-/// reads arrives ([`tilo_ui_base::widget::resources::PublishesResources::resource_pending`]).
+/// reads arrives ([`crate::widget::resources::PublishesResources::resource_pending`]).
 #[cfg(feature = "model")]
 pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
     if has_separate_document_owner(widget) {
         return false;
     }
-    let mut pending = tilo_ui_base::widget::resources::resource_pending(widget, id);
+    let mut pending = crate::widget::resources::resource_pending(widget, id);
     widget.for_each_child(&mut |child| {
         pending = pending || unbound_resource_pending(child, id);
     });

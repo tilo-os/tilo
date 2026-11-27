@@ -829,8 +829,8 @@ impl Decorator for HostedSurface {
             request.provide::<dyn SurfacePublication>(self);
             return;
         }
-        if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
-            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
+        if request.wants::<dyn ui_core::widget::resources::PublishesResources>() {
+            request.provide::<dyn ui_core::widget::resources::PublishesResources>(self);
             return;
         }
         if request.wants::<dyn ResourceOperations>() {
@@ -848,8 +848,8 @@ impl Decorator for HostedSurface {
             request.provide::<dyn SurfacePublication>(self);
             return;
         }
-        if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
-            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
+        if request.wants::<dyn ui_core::widget::resources::PublishesResources>() {
+            request.provide::<dyn ui_core::widget::resources::PublishesResources>(self);
             return;
         }
         if request.wants::<dyn ResourceOperations>() {
@@ -1084,16 +1084,16 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 
 // What the surface publishes as a widget passes through here, without
 // document actions: those are the resource's, through its dispatcher.
-impl tilo_ui_base::widget::resources::PublishesResources for HostedSurface {
+impl ui_core::widget::resources::PublishesResources for HostedSurface {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        tilo_ui_base::widget::resources::resources(self.driver.surface(), doc)
+        ui_core::widget::resources::resources(self.driver.surface(), doc)
             .into_iter()
             .map(outside_document)
             .collect()
     }
 
     fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        tilo_ui_base::widget::resources::caller_view_resources(self.driver.surface(), doc)
+        ui_core::widget::resources::caller_view_resources(self.driver.surface(), doc)
             .into_iter()
             .map(outside_document)
             .collect()
@@ -1104,8 +1104,8 @@ impl tilo_ui_base::widget::resources::PublishesResources for HostedSurface {
         doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
-    ) -> Option<tilo_ui_base::widget::ActionDirectoryResourcePage> {
-        let mut page = tilo_ui_base::widget::resources::action_directory_resource_page(
+    ) -> Option<ui_core::widget::ActionDirectoryResourcePage> {
+        let mut page = ui_core::widget::resources::action_directory_resource_page(
             self.driver.surface(),
             doc,
             cursor,
@@ -1116,21 +1116,18 @@ impl tilo_ui_base::widget::resources::PublishesResources for HostedSurface {
     }
 
     fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
-        tilo_ui_base::widget::resources::action_directory_revision(self.driver.surface(), doc)
+        ui_core::widget::resources::action_directory_revision(self.driver.surface(), doc)
     }
 
     fn action_directory_invocation_domain(
         &self,
         doc: &AutoCommit,
     ) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
-        tilo_ui_base::widget::resources::action_directory_invocation_domain(
-            self.driver.surface(),
-            doc,
-        )
+        ui_core::widget::resources::action_directory_invocation_domain(self.driver.surface(), doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
-        tilo_ui_base::widget::resources::resource(self.driver.surface(), doc, id)
+        ui_core::widget::resources::resource(self.driver.surface(), doc, id)
             .map(resolved_outside_document)
     }
 
@@ -1139,7 +1136,7 @@ impl tilo_ui_base::widget::resources::PublishesResources for HostedSurface {
         presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::ResourceSpec> {
-        tilo_ui_base::widget::resources::resources_for(self.driver.surface(), presence, doc)
+        ui_core::widget::resources::resources_for(self.driver.surface(), presence, doc)
             .into_iter()
             .map(outside_document)
             .collect()
@@ -1151,7 +1148,7 @@ impl tilo_ui_base::widget::resources::PublishesResources for HostedSurface {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
-        tilo_ui_base::widget::resources::resource_for(self.driver.surface(), presence, doc, id)
+        ui_core::widget::resources::resource_for(self.driver.surface(), presence, doc, id)
             .map(resolved_outside_document)
     }
 
@@ -1160,7 +1157,7 @@ impl tilo_ui_base::widget::resources::PublishesResources for HostedSurface {
         id: &str,
         spec: tilo_actions::ActionSpec,
     ) -> tilo_actions::ActionSpec {
-        tilo_ui_base::widget::resources::published_action(self.driver.surface(), id, spec)
+        ui_core::widget::resources::published_action(self.driver.surface(), id, spec)
     }
 
     fn action_directory_visibility(
@@ -1168,7 +1165,7 @@ impl tilo_ui_base::widget::resources::PublishesResources for HostedSurface {
         doc: &AutoCommit,
         resource_id: &str,
     ) -> Option<tilo_actions::ActionAddress> {
-        tilo_ui_base::widget::resources::action_directory_visibility(
+        ui_core::widget::resources::action_directory_visibility(
             self.driver.surface(),
             doc,
             resource_id,
@@ -1181,7 +1178,7 @@ impl tilo_ui_base::widget::resources::PublishesResources for HostedSurface {
         address: &tilo_actions::ActionAddress,
         changes: &[ui_core::automerge::Patch],
     ) -> Option<serde_json::Value> {
-        tilo_ui_base::widget::resources::document_action_result(
+        ui_core::widget::resources::document_action_result(
             self.driver.surface(),
             doc,
             address,

@@ -23,7 +23,7 @@ struct PublicationProbeRoot {
     edit_on_wheel: bool,
 }
 impl tilo_ui_base::widget::Decorator for PublicationProbeRoot {
-    tilo_ui_base::provides!(dyn tilo_ui_base::widget::resources::PublishesResources, dyn tilo_ui_base::widget::ResourceOperations; inner = inner);
+    tilo_ui_base::provides!(dyn crate::widget::resources::PublishesResources, dyn tilo_ui_base::widget::ResourceOperations; inner = inner);
     type Inner = crate::widget::Scrollable;
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -78,7 +78,7 @@ impl crate::widget::AppWidget for PublicationProbeRoot {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for PublicationProbeRoot {
+impl crate::widget::resources::PublishesResources for PublicationProbeRoot {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.declarations.set(self.declarations.get() + 1);
         vec![

@@ -330,7 +330,7 @@ impl SemanticTree {
     /// receive no layout dispatch id. `focused` folds
     /// into each node's [`AccessState::focused`]. `resources` is the focused
     /// app's open-resource forest
-    /// ([`tilo_ui_base::widget::resources::PublishesResources::resources`]); each
+    /// ([`crate::widget::resources::PublishesResources::resources`]); each
     /// exported [`ActionSpec`] becomes an invokable
     /// affordance.
     pub fn refresh(

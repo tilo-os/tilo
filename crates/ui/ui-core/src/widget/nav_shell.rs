@@ -2963,8 +2963,8 @@ impl Widget for NavShell {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
-        } else if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
-            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
+        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
+            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
         } else if request.wants::<dyn tilo_ui_base::widget::ResourceOperations>() {
             request.provide::<dyn tilo_ui_base::widget::ResourceOperations>(self);
         } else if self.sidebar_search
@@ -2985,8 +2985,8 @@ impl Widget for NavShell {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
-        } else if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
-            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
+        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
+            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
         } else if request.wants::<dyn tilo_ui_base::widget::ResourceOperations>() {
             request.provide::<dyn tilo_ui_base::widget::ResourceOperations>(self);
         } else if self.sidebar_search
@@ -3820,7 +3820,7 @@ fn same_words(a: &str, b: &str) -> bool {
 /// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a
 /// pushed-away screen) still belong to the window: ownership, invocations and availability reach
 /// every part the shell owns.
-impl tilo_ui_base::widget::resources::PublishesResources for NavShell {}
+impl crate::widget::resources::PublishesResources for NavShell {}
 
 impl tilo_ui_base::widget::ResourceOperations for NavShell {}
 

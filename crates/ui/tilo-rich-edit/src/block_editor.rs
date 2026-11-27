@@ -13278,7 +13278,7 @@ impl BlockEditor {
                 &mut control.add_row,
                 &mut control.add_column,
             ] {
-                tilo_ui_base::widget::controls::start_pending_control_invocations(
+                tilo_ui::widget::resources::start_pending_control_invocations(
                     button,
                     &mut ctx.edits(),
                     path,

@@ -428,7 +428,7 @@ struct PartKept {
     at: Option<((u64, u64), u64)>,
     published: Option<Rc<PartPublished>>,
     /// The part's kept children ([`tilo_resource::items::ChildrenParts::kept`]), as carried.
-    kept: Option<(KeptChildren, Vec<tilo_ui_base::published::SharedResource>)>,
+    kept: Option<(KeptChildren, Vec<ui_core::published::SharedResource>)>,
     /// Its items, as carried.
     items: Option<super::root::ItemChildren>,
 }
@@ -441,14 +441,14 @@ type KeptChildren = Rc<[Rc<tilo_actions::ResourceSpec>]>;
 /// from one version of the chain's publication to the next while the part is unchanged.
 struct PartPublished {
     head: tilo_actions::ResourceSpec,
-    items: Vec<tilo_ui_base::published::SharedResource>,
+    items: Vec<ui_core::published::SharedResource>,
 }
 
 /// The items of every part before the newest, newest first, each id once: gathered again only
 /// when one of those parts changed, not when the newest one takes another item.
 struct EarlierItems {
     parts: Vec<Rc<PartPublished>>,
-    items: Vec<tilo_ui_base::published::SharedResource>,
+    items: Vec<ui_core::published::SharedResource>,
     ids: std::collections::HashSet<String>,
 }
 
@@ -493,7 +493,7 @@ pub(crate) struct ChainState {
     /// What a part holds before anything was written to it: what the chain
     /// publishes before it has a head.
     empty: Rc<dyn Any>,
-    published: RefCell<Option<((u64, u64), tilo_ui_base::published::SharedResource)>>,
+    published: RefCell<Option<((u64, u64), ui_core::published::SharedResource)>>,
     /// The parts held, as view state that follows every change
     /// ([`Chain::state`]), and the revision it was last written at.
     view: Box<dyn Any>,
@@ -650,16 +650,16 @@ impl ChainCore {
         let table = self.part.table;
         let parts = children();
         let carry = |child: tilo_actions::ResourceSpec| {
-            tilo_ui_base::published::SharedResource::from_resource(
+            ui_core::published::SharedResource::from_resource(
                 self.carried_item(route_at(child, &self.id, true), table),
             )
         };
-        let mut items: Vec<tilo_ui_base::published::SharedResource> =
+        let mut items: Vec<ui_core::published::SharedResource> =
             parts.others.into_iter().map(&carry).collect();
-        let carried: Vec<tilo_ui_base::published::SharedResource> = {
+        let carried: Vec<ui_core::published::SharedResource> = {
             let before: HashMap<
                 *const tilo_actions::ResourceSpec,
-                &tilo_ui_base::published::SharedResource,
+                &ui_core::published::SharedResource,
             > = kept
                 .kept
                 .as_ref()
@@ -818,7 +818,7 @@ impl ChainCore {
         tree: &[(tilo_resource::Id, Option<tilo_resource::Id>)],
         hidden: &std::collections::HashSet<String>,
         table: Option<&'static tilo_resource::table::ModelTable>,
-    ) -> tilo_ui_base::published::SharedResource {
+    ) -> ui_core::published::SharedResource {
         let _profile = tilo_resource::profiling::Phase::start("framework.chain_publish");
         let mut kept = self.earlier.borrow_mut();
         if !kept.as_ref().is_some_and(|kept| kept.holds(&earlier)) {
@@ -857,7 +857,7 @@ impl ChainCore {
                 continue;
             }
             own.insert(id.to_owned());
-            items.push(tilo_ui_base::published::SharedResource::from_resource(
+            items.push(ui_core::published::SharedResource::from_resource(
                 self.carried_item(route_at(place, &self.id, true), table),
             ));
         }
@@ -867,9 +867,9 @@ impl ChainCore {
             items.retain(|item| !hidden.contains(item.id()));
         }
         let items = nest(items, tree);
-        tilo_ui_base::published::SharedResource::new(
+        ui_core::published::SharedResource::new(
             published,
-            tilo_ui_base::published::SharedChildren::new(items),
+            ui_core::published::SharedChildren::new(items),
         )
     }
 
@@ -2280,7 +2280,7 @@ impl ChainState {
     }
 
     /// [`Self::publish`] as a shared tree ([`ChainCore::publish`]).
-    pub(crate) fn publish_shared(&self) -> tilo_ui_base::published::SharedResource {
+    pub(crate) fn publish_shared(&self) -> ui_core::published::SharedResource {
         let revision = (self.revision(), tilo_ui_base::i18n::I18nManager::revision());
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision

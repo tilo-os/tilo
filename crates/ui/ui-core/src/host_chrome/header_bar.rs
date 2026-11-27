@@ -388,11 +388,7 @@ impl Widget for HeaderBar {
         // from the app's tree, so it answers the press here, before the
         // menu it asks for opens.
         let path = ctx.path;
-        tilo_ui_base::widget::controls::start_pending_control_invocations(
-            self,
-            &mut ctx.edits(),
-            path,
-        );
+        crate::widget::resources::start_pending_control_invocations(self, &mut ctx.edits(), path);
         self.take_menu_request();
         if !*ctx.handled
             && matches!(

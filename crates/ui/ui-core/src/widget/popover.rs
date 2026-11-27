@@ -1869,7 +1869,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         self.button
             .handle_event(event, &mut ctx.reborrow(ctx.path, button));
         let path = ctx.path;
-        tilo_ui_base::widget::controls::start_pending_control_invocations(
+        crate::widget::resources::start_pending_control_invocations(
             &mut self.button,
             &mut ctx.edits(),
             path,

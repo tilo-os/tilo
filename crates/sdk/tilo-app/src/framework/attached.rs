@@ -64,7 +64,7 @@ impl ActionTransport for Landed {
 /// is made a resource only when a page reaches it
 /// ([`AttachedView::chain_level_item`]).
 #[derive(Clone)]
-pub struct ChainLevel(tilo_ui_base::published::SharedResource);
+pub struct ChainLevel(ui_core::published::SharedResource);
 
 impl ChainLevel {
     /// How many items the level holds.
@@ -80,7 +80,7 @@ impl ChainLevel {
             .children()
             .as_slice()
             .get(at)
-            .map(tilo_ui_base::published::SharedResource::id)
+            .map(ui_core::published::SharedResource::id)
     }
 
     /// Whether the level holds no item.

@@ -250,7 +250,7 @@ fn file(index: usize) -> tilo_actions::ResourceSpec {
 }
 
 impl tilo_ui_base::widget::Decorator for Folders {
-    tilo_ui_base::provides!(dyn tilo_ui_base::widget::resources::PublishesResources, dyn crate::widget::AppWidget; inner = content);
+    tilo_ui_base::provides!(dyn crate::widget::resources::PublishesResources, dyn crate::widget::AppWidget; inner = content);
     type Inner = Column;
 
     fn inner(&self) -> &Column {
@@ -275,7 +275,7 @@ impl tilo_ui_base::widget::Decorator for Folders {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Folders {
+impl crate::widget::resources::PublishesResources for Folders {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut folder =
             tilo_actions::ResourceSpec::new("folders.folder:root", "folders.folder", "Home");

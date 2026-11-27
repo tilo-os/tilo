@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::any::Any;
 
 use tilo_resource::items::{ItemAction, ItemCollection};
-use tilo_ui_base::{published::SharedChildren, published::SharedResource};
 use ui_core::automerge::AutoCommit;
+use ui_core::{published::SharedChildren, published::SharedResource};
 
 use super::super::chain_of_resource_id;
 use super::super::rows::{LiveRow, join, outside_document};
@@ -365,7 +365,7 @@ impl ResourceRoot {
         views
     }
 
-    /// [`tilo_ui_base::widget::resources::PublishesResources::resources_for`] as a shared
+    /// [`ui_core::widget::resources::PublishesResources::resources_for`] as a shared
     /// forest, when it is one: nothing the view adds touches the tree's
     /// children beyond what [`Self::published_children`] keeps per child (no
     /// surface, which alone publishes rows or binds edits to them, and no
@@ -412,9 +412,7 @@ impl ResourceRoot {
             (head, children, chains)
         };
         let mut extras = Vec::new();
-        for extra in
-            tilo_ui_base::widget::resources::resources_for(self.content.as_ref(), None, doc)
-        {
+        for extra in ui_core::widget::resources::resources_for(self.content.as_ref(), None, doc) {
             if extra.id.as_str() == root.0.id.as_str() {
                 return None;
             }

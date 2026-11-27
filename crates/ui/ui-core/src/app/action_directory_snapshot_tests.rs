@@ -103,7 +103,7 @@ struct DeclaredDirectory {
 }
 impl Widget for DeclaredDirectory {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         dyn tilo_ui_base::widget::ResourceOperations
     );
@@ -133,7 +133,7 @@ impl crate::search::capability::SearchSource for DeclaredDirectory {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for DeclaredDirectory {
+impl crate::widget::resources::PublishesResources for DeclaredDirectory {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.calls.set(self.calls.get() + 1);
         let effect = doc.get(ROOT, "effect").unwrap().is_some();
@@ -601,7 +601,7 @@ impl ExtendedDirectory {
 }
 impl Widget for ExtendedDirectory {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -614,7 +614,7 @@ impl tilo_ui_base::widget::ResourceOperations for ExtendedDirectory {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for ExtendedDirectory {
+impl crate::widget::resources::PublishesResources for ExtendedDirectory {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         vec![Self::resource_tree(false)]
     }

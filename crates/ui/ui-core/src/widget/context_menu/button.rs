@@ -184,7 +184,7 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
         // (an app's window, a sheet the page draws) rather than on a later frame nothing may
         // draw.
         let path = ctx.path;
-        tilo_ui_base::widget::controls::start_pending_control_invocations(
+        crate::widget::resources::start_pending_control_invocations(
             &mut self.button,
             &mut ctx.edits(),
             path,
@@ -326,8 +326,8 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
     fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
-        } else if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
-            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
+        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
+            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
         } else {
             Widget::provide(&self.button, request);
         }
@@ -339,8 +339,8 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
     ) {
         if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
-        } else if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
-            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
+        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
+            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
         } else if request.wants::<dyn tilo_ui_base::widget::ResourceOperations>() {
             request.provide::<dyn tilo_ui_base::widget::ResourceOperations>(self);
         } else {
@@ -352,10 +352,10 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
 /// The menu is drawn over the button and stands against it, not in the button's subtree, so
 /// the rows it publishes are the button's to publish and its rows' operations the button's to
 /// start.
-impl tilo_ui_base::widget::resources::PublishesResources for MenuButton {
+impl crate::widget::resources::PublishesResources for MenuButton {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = tilo_ui_base::widget::resources::resources(&self.button, doc);
-        resources.extend(tilo_ui_base::widget::resources::resources(&self.menu, doc));
+        let mut resources = crate::widget::resources::resources(&self.button, doc);
+        resources.extend(crate::widget::resources::resources(&self.menu, doc));
         resources
     }
 }

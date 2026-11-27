@@ -70,7 +70,7 @@ fn tree(view: &str) -> Vec<ResourceSpec> {
 impl Widget for TwoViews {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::presence_topology::Presences,
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -103,7 +103,7 @@ impl tilo_ui_base::widget::ResourceOperations for TwoViews {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for TwoViews {
+impl crate::widget::resources::PublishesResources for TwoViews {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         tree(if self.0.borrow().host {
             "schema"
@@ -453,7 +453,7 @@ tilo_test_env::scenario! {
             found: &mut Option<Vec<ResourceSpec>>,
         ) {
             if found.is_none() && widget.name() == "BoundComponent" {
-                *found = Some(tilo_ui_base::widget::resources::resources_for(
+                *found = Some(crate::widget::resources::resources_for(
                     widget,
                     Some(presence),
                     doc,

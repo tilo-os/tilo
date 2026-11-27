@@ -2254,7 +2254,7 @@ impl tilo_ui_base::widget::FullscreenProvider for GreeterApp {
 impl Widget for GreeterApp {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::FullscreenProvider,
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn ui::widget::resources::PublishesResources,
         dyn tilo_ui_base::host_operation::ResourceOperations
     );
 

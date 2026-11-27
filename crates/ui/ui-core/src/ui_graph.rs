@@ -1404,7 +1404,7 @@ fn filling() -> Style {
 
 impl Widget for LiveUi {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -1484,9 +1484,9 @@ impl tilo_ui_base::widget::ResourceOperations for LiveUi {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for LiveUi {
+impl crate::widget::resources::PublishesResources for LiveUi {
     fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::ResourceSpec> {
-        let mut resources = tilo_ui_base::widget::resources::resources(self.child.as_ref(), doc);
+        let mut resources = crate::widget::resources::resources(self.child.as_ref(), doc);
         resources.push(self.graph_resource());
         resources
     }

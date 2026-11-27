@@ -2266,7 +2266,7 @@ impl PaletteHistoryOwner {
 
 impl tilo_ui_base::widget::Widget for PaletteHistoryOwner {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -2359,7 +2359,7 @@ impl tilo_ui_base::widget::ResourceOperations for PaletteHistoryOwner {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for PaletteHistoryOwner {
+impl crate::widget::resources::PublishesResources for PaletteHistoryOwner {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if self.state.authority.load(Ordering::SeqCst) == 1 {
             return vec![];
@@ -2946,7 +2946,7 @@ impl crate::widget::AppWidget for ComponentControlOwner {
 impl tilo_ui_base::widget::Widget for ComponentControlOwner {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -3062,7 +3062,7 @@ impl tilo_ui_base::widget::ResourceOperations for ComponentControlOwner {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for ComponentControlOwner {
+impl crate::widget::resources::PublishesResources for ComponentControlOwner {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = vec![self.resource()];
         let empty =
@@ -4520,7 +4520,7 @@ struct DomainControlsRoot {
 impl tilo_ui_base::widget::Widget for DomainControlsRoot {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::resource::capability::ResourceScoped,
         dyn tilo_ui_base::widget::ResourceOperations
     );
@@ -4653,7 +4653,7 @@ impl crate::resource::capability::ResourceScoped for DomainControlsRoot {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for DomainControlsRoot {
+impl crate::widget::resources::PublishesResources for DomainControlsRoot {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.resources.clone()
     }

@@ -338,6 +338,7 @@ tilo-search = { version = "0.1.0", path = "../../platform/search" }
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-action-types = { version = "0.1.0", path = "../../platform/action-types" }
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 # What a reference in rich text refers to: a person, or the catalogue's resource reference.
 tilo-reference = { version = "0.1.0", path = "../../core/reference", optional = true }

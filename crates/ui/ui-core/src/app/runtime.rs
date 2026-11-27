@@ -547,7 +547,7 @@ pub(super) struct ActionRuntime {
     /// to that the provider is still answering, by broker request.
     pub(super) hosted_requests: std::collections::HashSet<u64>,
     /// Resolutions asked for a resource still being read, answered once its
-    /// read lands ([`tilo_ui_base::widget::resources::PublishesResources::resource_pending`]).
+    /// read lands ([`crate::widget::resources::PublishesResources::resource_pending`]).
     #[cfg(feature = "model")]
     pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
     /// Answers to broker invocations held, by wire id, until what they

@@ -7,7 +7,6 @@ use std::collections::HashSet;
 
 use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use tilo_ui_base::widget::Decorated;
-use tilo_ui_base::widget::resources::PublishesResources;
 use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
 use tilo_ui_base::{widget::capability::Request, widget::capability::RequestMut};
 use tilo_ui_base::{
@@ -20,6 +19,7 @@ use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::capability::SearchSource;
 use ui_core::view::ThawError;
 use ui_core::widget::empty_state::PaintedEmptyStates;
+use ui_core::widget::resources::PublishesResources;
 use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 
 /// What the root widget asks of the root of one resource type: the view it
@@ -119,7 +119,7 @@ pub(crate) trait RootPublishes {
         &self,
         presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
-    ) -> Option<Vec<tilo_ui_base::published::SharedResource>>;
+    ) -> Option<Vec<ui_core::published::SharedResource>>;
     fn resources_for(
         &self,
         presence: Option<&tilo_actions::PresenceId>,
@@ -164,7 +164,7 @@ pub(crate) trait RootPublishes {
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec>;
     /// An action of the resource `id` as this root publishes it now
-    /// ([`tilo_ui_base::widget::resources::PublishesResources::published_action`]), built from the surfaces' own
+    /// ([`ui_core::widget::resources::PublishesResources::published_action`]), built from the surfaces' own
     /// statuses rather than a publication.
     fn published_action(
         &self,
@@ -556,7 +556,7 @@ impl PublishesResources for RootWidget {
         &self,
         presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
-    ) -> Option<Vec<tilo_ui_base::published::SharedResource>> {
+    ) -> Option<Vec<ui_core::published::SharedResource>> {
         self.0.shared_resources_for(presence, doc)
     }
 

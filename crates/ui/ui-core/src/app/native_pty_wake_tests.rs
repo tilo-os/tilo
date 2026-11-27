@@ -114,7 +114,7 @@ impl PtyRoot {
 }
 impl Widget for PtyRoot {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
@@ -183,7 +183,7 @@ impl tilo_ui_base::widget::ResourceOperations for PtyRoot {
         ))
     }
 }
-impl tilo_ui_base::widget::resources::PublishesResources for PtyRoot {
+impl crate::widget::resources::PublishesResources for PtyRoot {
     fn resources(&self, _: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new(TYPE, TYPE, "PTY")

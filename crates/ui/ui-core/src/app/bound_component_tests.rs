@@ -281,7 +281,7 @@ impl Widget for Probe {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::undo_access::CommittedActions,
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         dyn tilo_ui_base::semantic_readers::SemanticReaders,
         dyn tilo_ui_base::widget::ResourceOperations
@@ -509,7 +509,7 @@ impl crate::search::capability::SearchSource for Probe {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Probe {
+impl crate::widget::resources::PublishesResources for Probe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         DISCOVERY_COUNT.set(DISCOVERY_COUNT.get().saturating_add(1));
         let mut action = tilo_actions::ActionSpec::operation(
@@ -582,8 +582,8 @@ impl tilo_ui_base::widget::resources::PublishesResources for Probe {
         doc: &automerge::AutoCommit,
         cursor: &[u8],
         max_results: usize,
-    ) -> Option<tilo_ui_base::widget::ActionDirectoryResourcePage> {
-        Some(tilo_ui_base::widget::ActionDirectoryResourcePage {
+    ) -> Option<crate::widget::ActionDirectoryResourcePage> {
+        Some(crate::widget::ActionDirectoryResourcePage {
             resources: if cursor.is_empty() && max_results > 0 {
                 self.resources(doc)
             } else {

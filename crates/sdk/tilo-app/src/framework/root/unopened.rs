@@ -57,7 +57,7 @@ impl Unopened {
 }
 
 impl Decorator for Unopened {
-    tilo_ui_base::provides!(dyn tilo_ui_base::widget::resources::PublishesResources);
+    tilo_ui_base::provides!(dyn ui_core::widget::resources::PublishesResources);
 
     type Inner = ui_core::widget::EmptyState;
 
@@ -70,7 +70,7 @@ impl Decorator for Unopened {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Unopened {
+impl ui_core::widget::resources::PublishesResources for Unopened {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![self.resource.clone()]
     }

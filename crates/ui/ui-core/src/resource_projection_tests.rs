@@ -6,8 +6,7 @@ struct SemanticCountingPublisher {
 
 fn counted_control_app(duplicate: bool) -> (App, std::rc::Rc<Cell<bool>>) {
     let visible = std::rc::Rc::new(Cell::new(true));
-    let resource =
-        tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+    let resource = crate::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let root = SemanticCountingPublisher {
         visible: visible.clone(),
         duplicate,
@@ -109,7 +108,7 @@ fn control_availability_follows_permissions_and_reads_without_committing() {
 impl Widget for SemanticCountingPublisher {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources
+        dyn crate::widget::resources::PublishesResources
     );
 
     fn sync(&mut self, _s: &AppModel, _p: &ModelPath) {}
@@ -140,7 +139,7 @@ impl Widget for SemanticCountingPublisher {
 
 fn counted_resources(visible: &Cell<bool>, duplicate: bool, doc: &AutoCommit) -> Vec<ResourceSpec> {
     let mut resources = if visible.get() {
-        tilo_ui_base::widget::resources::PublishesResources::resources(&Publisher, doc)
+        crate::widget::resources::PublishesResources::resources(&Publisher, doc)
     } else {
         Vec::new()
     };
@@ -150,7 +149,7 @@ fn counted_resources(visible: &Cell<bool>, duplicate: bool, doc: &AutoCommit) ->
     resources
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for SemanticCountingPublisher {
+impl crate::widget::resources::PublishesResources for SemanticCountingPublisher {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         counted_resources(&self.visible, self.duplicate, doc)
     }
@@ -170,8 +169,7 @@ struct InventoryOnlyPublisher {
 }
 
 fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
-    let resource =
-        tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+    let resource = crate::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let enabled = std::rc::Rc::new(Cell::new(false));
     (
         Box::new(InventoryOnlyPublisher {
@@ -248,8 +246,7 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
     {
         for wrapper in 0..4 {
             let resource =
-                tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new())
-                    .remove(0);
+                crate::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
             let root = FastInventoryPublisher {
                 visible: std::rc::Rc::new(Cell::new(true)),
                 duplicate: false,
@@ -286,7 +283,7 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
 impl Widget for InventoryOnlyPublisher {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources
+        dyn crate::widget::resources::PublishesResources
     );
 
     fn build_layout(
@@ -308,7 +305,7 @@ impl Widget for InventoryOnlyPublisher {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for InventoryOnlyPublisher {
+impl crate::widget::resources::PublishesResources for InventoryOnlyPublisher {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         counted_resources(&self.visible, self.duplicate, doc)
     }
@@ -337,7 +334,7 @@ struct FastInventoryPublisher {
 impl Widget for FastInventoryPublisher {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources
+        dyn crate::widget::resources::PublishesResources
     );
 
     fn build_layout(
@@ -359,7 +356,7 @@ impl Widget for FastInventoryPublisher {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for FastInventoryPublisher {
+impl crate::widget::resources::PublishesResources for FastInventoryPublisher {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         counted_resources(&self.visible, self.duplicate, doc)
     }

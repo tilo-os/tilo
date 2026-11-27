@@ -310,7 +310,7 @@ pub fn immediate(
 
 impl Widget for ResourceActionHost {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
 
@@ -468,7 +468,7 @@ impl tilo_ui_base::widget::ResourceOperations for ResourceActionHost {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for ResourceActionHost {
+impl crate::widget::resources::PublishesResources for ResourceActionHost {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![self.resource.clone()]
     }

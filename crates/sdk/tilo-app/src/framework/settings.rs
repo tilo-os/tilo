@@ -541,10 +541,7 @@ impl ViewStorage {
     /// built again only for a part that changed, without the frame of the view or the rest of
     /// what it publishes. `None` for a chain the views did not open, or one another provider
     /// keeps, which is built whole for that provider to name on every action.
-    pub(crate) fn chain_published(
-        &self,
-        id: &str,
-    ) -> Option<tilo_ui_base::published::SharedResource> {
+    pub(crate) fn chain_published(&self, id: &str) -> Option<ui_core::published::SharedResource> {
         if self.kept_by.borrow().contains_key(id) {
             return None;
         }
@@ -693,15 +690,13 @@ impl ViewStorage {
 
     /// [`Self::resource_resources`] as shared trees: a chain's items are the nodes its last
     /// publication carried wherever its parts are unchanged.
-    pub(crate) fn resource_resources_shared(&self) -> Vec<tilo_ui_base::published::SharedResource> {
+    pub(crate) fn resource_resources_shared(&self) -> Vec<ui_core::published::SharedResource> {
         let kept_by = self.kept_by.borrow();
         let owned = |resource: tilo_actions::ResourceSpec| {
             let owner = resource.id.as_str().to_owned();
-            tilo_ui_base::published::SharedResource::from_resource(
-                self.kept_where(&owner, resource),
-            )
+            ui_core::published::SharedResource::from_resource(self.kept_where(&owner, resource))
         };
-        let mut resources: Vec<tilo_ui_base::published::SharedResource> =
+        let mut resources: Vec<ui_core::published::SharedResource> =
             self.own_resources().into_iter().map(owned).collect();
         resources.extend(self.chains.apis().iter().map(|api| {
             // A chain run by another provider names it on every action, so it is built whole.

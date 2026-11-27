@@ -9,8 +9,8 @@
 /// reports that as the defect it is ([`crate::a11y_tree::SemanticTree`]).
 #[test]
 fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
+    use crate::{published::SharedChildren, published::SharedResource};
     use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
-    use tilo_ui_base::{published::SharedChildren, published::SharedResource};
 
     let fixture = ActionFixture::new();
     let binding = fixture.bindings[0].clone();
@@ -102,7 +102,7 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
         std::collections::HashSet::from([crate::widget::search_request::search_address()]);
     let mut kept = crate::a11y_tree::SemanticTree::new();
     let mut fresh = crate::a11y_tree::SemanticTree::new();
-    let mut token = tilo_ui_base::published::fresh_token();
+    let mut token = crate::published::fresh_token();
     let mut expired = false;
     for step in 0..240 {
         let label = format!("Step {step}");
@@ -152,7 +152,7 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
                 // A grant expires, or comes back: a new permission context.
                 expired = !expired;
                 at(if expired { 120 } else { 100 });
-                token = tilo_ui_base::published::fresh_token();
+                token = crate::published::fresh_token();
             }
             9 => {
                 let mut seen = std::collections::HashSet::new();
@@ -191,7 +191,7 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
         );
         let plain = crate::bound_dispatch::BoundResourceSnapshot::new(
             binding.clone(),
-            tilo_ui_base::published::to_resources(&forest),
+            crate::published::to_resources(&forest),
         );
         assert_eq!(
             *crate::bound_dispatch::component_controls_allowed(
@@ -235,8 +235,8 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
 /// reports it alone; every other node is kept as it was, not rebuilt.
 #[test]
 fn an_item_edit_updates_that_items_semantic_node_only() {
+    use crate::{published::SharedChildren, published::SharedResource};
     use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
-    use tilo_ui_base::{published::SharedChildren, published::SharedResource};
 
     let fixture = ActionFixture::new();
     let binding = fixture.bindings[0].clone();

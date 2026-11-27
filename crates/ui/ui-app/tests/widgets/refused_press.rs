@@ -362,7 +362,7 @@ fn relays(sent: Rc<Cell<usize>>) -> Element {
 impl tilo_ui_base::widget::Widget for Relays {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
     fn sync(
@@ -443,7 +443,7 @@ impl tilo_ui_base::widget::ResourceOperations for Relays {
     }
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Relays {
+impl tilo_ui::widget::resources::PublishesResources for Relays {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         vec![self.resource.clone()]
     }

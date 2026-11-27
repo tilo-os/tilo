@@ -58,7 +58,7 @@ impl Worker {
 
 impl Widget for Worker {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
     fn build_layout(
@@ -94,7 +94,7 @@ fn job(id: &str, label: &str, type_id: &str, cancellable: bool) -> ActionSpec {
         .returns(tilo_actions::ResultSpec::Job)
 }
 
-impl tilo_ui_base::widget::resources::PublishesResources for Worker {
+impl crate::widget::resources::PublishesResources for Worker {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         let erase =
             ActionSpec::operation("erase", "Erase", OperationKind::Effect, ERASE, &()).unwrap();

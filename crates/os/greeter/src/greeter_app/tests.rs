@@ -175,7 +175,7 @@ impl Screen {
             ),
             "{id} accepts activation"
         );
-        tilo_ui_base::widget::controls::start_pending_control_invocations(
+        ui::widget::resources::start_pending_control_invocations(
             composed,
             &mut tilo_ui_base::widget::Edits::lend(&mut self.doc),
             &automerge::ROOT,

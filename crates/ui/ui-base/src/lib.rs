@@ -204,7 +204,6 @@ pub mod draw_cull;
 #[cfg(feature = "model")]
 pub mod mentions;
 pub mod own_paint;
-pub mod published;
 pub mod reorder;
 pub mod richtext;
 /// Rich text as a component shows it: paragraphs with their marks, and how each reference in them reads

@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
         assert!(!p.is_open());
         let doc = automerge::AutoCommit::new();
         assert!(
-            tilo_ui_base::widget::resources::resources(&p, &doc).is_empty(),
+            crate::widget::resources::resources(&p, &doc).is_empty(),
             "a closed popover offers no way to close it"
         );
         assert!(dismissed.get());

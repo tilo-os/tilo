@@ -694,15 +694,6 @@ pub fn find_test_id_mut<'a>(root: &'a mut dyn Widget, id: &str) -> Option<&'a mu
         .find_map(|child| find_test_id_mut(child, id))
 }
 
-/// One bounded page from a widget-owned remote root catalogue.  `next_cursor`
-/// is meaningful only while `exhausted` is false and is never interpreted by
-/// a different widget or document revision.
-pub struct ActionDirectoryResourcePage {
-    pub resources: Vec<tilo_actions::ResourceSpec>,
-    pub next_cursor: Vec<u8>,
-    pub exhausted: bool,
-}
-
 /// Last-resort accessible label for controls whose constructor already
 /// requires a stable id. Explicit localized names remain preferable, but a
 /// standard control should never become silent merely because an author did
@@ -1535,7 +1526,6 @@ mod content_kind;
 pub mod permission;
 #[cfg(feature = "model")]
 pub mod presence_topology;
-pub mod resources;
 pub use content_kind::ContentKind;
 pub mod controls;
 pub mod defaults;

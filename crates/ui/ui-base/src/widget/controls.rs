@@ -5,9 +5,8 @@
 use std::collections::HashSet;
 
 use super::capability::{capability, capability_mut};
-use super::resource_operation::{ResourceOperation, start_operation};
 use super::{
-    ControlBindingKind, ControlBindingMetadata, Edits, ResourceOperationStart, Widget,
+    ControlBindingKind, ControlBindingMetadata, ResourceOperationStart, Widget,
     semantic_action_bindings_into,
 };
 
@@ -252,71 +251,6 @@ pub fn take_control_invocation(
         .children_mut()
         .into_iter()
         .find_map(take_control_invocation)
-}
-
-/// Run the queued control intents of a tree whose host keeps no resource tree of its own, such as
-/// the shell's own UI: an intent is delivered to the control that published the action it names, as
-/// a resource host delivers an admitted invocation.
-pub fn start_pending_control_invocations(
-    root: &mut dyn Widget,
-    doc: &mut Edits<'_>,
-    path: &automerge::ObjId,
-) -> usize {
-    // A handler can queue another control (a confirmation, a follow-up); a
-    // tree that keeps queueing cannot hold the frame for longer than the
-    // per-control queue bounds it.
-    const MOST: usize = 64;
-    let mut started: usize = 0;
-    for _ in 0..MOST {
-        let Some(invocation) = take_control_invocation(&mut *root) else {
-            break;
-        };
-        let spec = published_action(&*root, doc.doc(), &invocation.address);
-        let encoded = spec
-            .as_ref()
-            .and_then(|spec| spec.build_json(&invocation.arguments).ok());
-        let (Some(spec), Some(encoded)) = (&spec, &encoded) else {
-            continue;
-        };
-        let (kind, type_id, payload) = (
-            spec.kind,
-            encoded.type_id.as_str(),
-            encoded.payload.as_slice(),
-        );
-        let operation = ResourceOperation::local(
-            tilo_action_types::InvocationId::new(),
-            kind,
-            type_id,
-            payload,
-        );
-        if matches!(
-            start_operation(&mut *root, &operation, doc, path),
-            Ok(Some(_))
-        ) {
-            started = started.saturating_add(1);
-        }
-    }
-    started
-}
-
-/// The action `widget`'s subtree publishes at `address`, if any does.
-pub(crate) fn published_action(
-    widget: &dyn Widget,
-    doc: &automerge::AutoCommit,
-    address: &tilo_action_types::ActionAddress,
-) -> Option<tilo_actions::ActionSpec> {
-    for resource in crate::widget::resources::resources(widget, doc) {
-        if let Some(spec) = resource.actions.iter().find(|spec| {
-            address
-                == &tilo_action_types::ActionAddress::new(resource.id.as_str(), spec.id.as_str())
-        }) {
-            return Some(spec.clone());
-        }
-    }
-    widget
-        .children()
-        .into_iter()
-        .find_map(|child| published_action(child, doc, address))
 }
 
 /// [`take_control_invocation`], with the effect invocation the intent continues

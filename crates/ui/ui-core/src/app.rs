@@ -3177,7 +3177,7 @@ pub(crate) mod control_fixture_tests {
     impl Widget for Fixture {
         tilo_ui_base::provides!(
             dyn tilo_ui_base::widget::controls::ActionControls,
-            dyn tilo_ui_base::widget::resources::PublishesResources,
+            dyn crate::widget::resources::PublishesResources,
             dyn tilo_ui_base::widget::ResourceOperations
         );
 
@@ -3233,7 +3233,7 @@ pub(crate) mod control_fixture_tests {
         }
     }
 
-    impl tilo_ui_base::widget::resources::PublishesResources for Fixture {
+    impl crate::widget::resources::PublishesResources for Fixture {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             self.resources.borrow().clone()
         }
