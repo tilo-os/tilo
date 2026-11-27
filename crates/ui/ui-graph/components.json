@@ -3462,6 +3462,13 @@
           "type": "bool"
         },
         {
+          "name": "window",
+          "doc": "The window's name, for the step that searches what it shows alone (\"Search Release planning\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "app",
           "doc": "The app's name, for the step that searches all of it (\"Search Notes\").",
           "type": {
@@ -3507,8 +3514,12 @@
         },
         {
           "name": "widen",
-          "doc": "The person widened the search: `app` for everything the app holds, `everywhere` for the platform's search over the workspace.",
+          "doc": "The person widened the search: `window` for what the window shows alone, `app` for everything the app holds, `everywhere` for the platform's search over the workspace.",
           "value": "text"
+        },
+        {
+          "name": "find_chord",
+          "doc": "Find (Ctrl+F) was pressed while the field had the keyboard: the search widens one step, as the bar's own chord always has."
         },
         {
           "name": "close",

@@ -193,20 +193,20 @@ tilo_test_env::scenario! {
         let (host, called) = shell();
         let shown = desktop(&host);
         let key = controls(&shown).key.clone();
-        let typing = |value: &str| {
+        let typing = |reach: &str, fire: &str| {
             shown
-                .fire_with(&key, "changed", Some(&Value::Text(value.into())))
+                .fire_with(&key, "changed", Some(&Value::Text("Ship".into())))
                 .expect("what is typed");
             shown
-                .fire_with(&key, "widen", Some(&Value::Text("app".into())))
-                .expect("the app's search");
+                .fire_with(&key, fire, Some(&Value::Text(reach.into())))
+                .expect("the search opens");
         };
-        typing("Ship");
+        typing("window", "widen");
         let made = calls(&called);
         let (action, args) = made
             .iter()
             .find(|(action, _)| action == "search")
-            .unwrap_or_else(|| panic!("the app's search opens: {made:?}"));
+            .unwrap_or_else(|| panic!("the window's search opens: {made:?}"));
         assert_eq!(action, "search");
         let argument = |name: &str| {
             args.iter()
@@ -214,11 +214,46 @@ tilo_test_env::scenario! {
                 .map(|(_, value)| value.clone())
         };
         assert_eq!(argument("query"), Some(Value::Text("Ship".into())));
-        assert_eq!(argument("scope"), Some(Value::Text("app".into())));
+        assert_eq!(argument("scope"), Some(Value::Text("window".into())));
         assert_eq!(
             argument("app"),
             Some(Value::Text("so.tilo.notes".into())),
-            "the search reaches the app the window shows"
+            "the window's app holds what it shows"
+        );
+        assert_eq!(
+            argument("resource"),
+            Some(Value::Text("notes:note-3".into())),
+            "the note the window shows is what the search reaches alone"
+        );
+        assert_eq!(
+            argument("label"),
+            Some(Value::Text("Release planning".into())),
+            "and it is named as its window is"
+        );
+
+        let (host, called) = shell();
+        let shown = desktop(&host);
+        let key = controls(&shown).key.clone();
+        shown
+            .fire_with(&key, "changed", Some(&Value::Text("Ship".into())))
+            .expect("what is typed");
+        shown
+            .fire_with(&key, "widen", Some(&Value::Text("app".into())))
+            .expect("the app's search");
+        let made = calls(&called);
+        let (_, args) = made
+            .iter()
+            .find(|(action, _)| action == "search")
+            .unwrap_or_else(|| panic!("the app's search opens: {made:?}"));
+        let argument = |name: &str| {
+            args.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(argument("scope"), Some(Value::Text("app".into())));
+        assert!(
+            matches!(argument("resource"), None | Some(Value::Opt(None))),
+            "the app's search has no part of it to reach"
         );
 
         let (host, called) = shell();
@@ -239,6 +274,29 @@ tilo_test_env::scenario! {
             args.iter().find(|(key, _)| key == "scope").map(|(_, value)| value),
             Some(&Value::Text("everywhere".into())),
             "and everywhere is everything"
+        );
+    }
+
+    phase finding_again_while_the_field_holds_the_keys_widens_to_the_app;
+    {
+        let (host, called) = shell();
+        let shown = desktop(&host);
+        let key = controls(&shown).key.clone();
+        shown
+            .fire_with(&key, "changed", Some(&Value::Text("Ship".into())))
+            .expect("what is typed");
+        shown.fire(&key, "find_chord").expect("the find chord");
+        let made = calls(&called);
+        let (_, args) = made
+            .iter()
+            .find(|(action, _)| action == "search")
+            .unwrap_or_else(|| panic!("the app's search opens: {made:?}"));
+        assert_eq!(
+            args.iter()
+                .find(|(key, _)| key == "scope")
+                .map(|(_, value)| value),
+            Some(&Value::Text("app".into())),
+            "the step after this view is the app's own search"
         );
     }
 

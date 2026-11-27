@@ -154,6 +154,7 @@ fn window_reading(
         controls_desktop,
         display_id: display,
         bar_location: handle.window_name(tab.id).unwrap_or_default(),
+        resource: handle.window_resource(tab.id).unwrap_or_default(),
         bar_field: bar_field(handle.bar_field(tab.id)).to_owned(),
         bar_typing: handle.bar_takes_typing() && handle.bar_field(tab.id).is_some(),
         find: find_of(handle, tab.id),

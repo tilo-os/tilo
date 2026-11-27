@@ -370,8 +370,9 @@ answer:
   the find acts on, the match of how many, its abilities and the options it
   runs under come from the window's offer, and every act is the session's
   own `bar-search*` verb, so the app remains the one search). It widens step
-  by step: this view, then the whole app ("Search Notes", or Ctrl+F again),
-  then everywhere, both handing the query to the platform search the shell's
+  by step: what the window shows (its reading carries the resource the
+  layout keeps), then the whole app ("Search Notes", or Ctrl+F again), then
+  everywhere, each handing the query to the platform search the shell's
   `search` verb opens with the scope it names. An app gets this by providing
   the capability it already has; it draws nothing. An app running as its own
   window (every app on a device) gets the same over its shell-ui connection:

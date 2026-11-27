@@ -772,6 +772,13 @@ impl DesktopHandle {
         self.shared.borrow().items.clone()
     }
 
+    /// The resource the window `tab` shows, as the workspace's layout keeps it: a note's address,
+    /// empty when it shows none of the workspace's documents.
+    #[must_use]
+    pub fn window_resource(&self, tab: TabId) -> Option<String> {
+        self.shared.borrow().resources.get(&tab).cloned()
+    }
+
     /// Replace the tree with one changed elsewhere. The next update pass reconciles the live rows
     /// with it: tabs still present keep their running content, new tabs get content from the host's
     /// [`TileSource`], and removed tabs' applications close. Queued commands stay queued and are

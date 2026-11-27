@@ -17,6 +17,8 @@ fn controls(width: u32, set: impl FnOnce(&mut FindControlsProps)) -> (Driver, In
     props.current = Some(2);
     props.total = Some(5);
     props.acts_on = Some("document".to_owned());
+    props.window = Some("Release planning".to_owned());
+    props.app = Some("Notes".to_owned());
     props.changed = Event::View(Intent::new(&queue, "find", "changed"));
     props.submit = Event::View(Intent::new(&queue, "find", "submit"));
     props.step = Event::View(Intent::new(&queue, "find", "step"));
@@ -24,6 +26,7 @@ fn controls(width: u32, set: impl FnOnce(&mut FindControlsProps)) -> (Driver, In
     props.replace = Event::View(Intent::new(&queue, "find", "replace"));
     props.replace_all = Event::View(Intent::new(&queue, "find", "replace_all"));
     props.widen = Event::View(Intent::new(&queue, "find", "widen"));
+    props.find_chord = Event::View(Intent::new(&queue, "find", "find_chord"));
     props.close = Event::View(Intent::new(&queue, "find", "close"));
     set(&mut props);
     let find = FindControls::from_props("find", props);
@@ -159,9 +162,11 @@ fn the_options_offer_what_the_content_allows() {
 /// app is named on the first.
 #[test]
 fn widening_steps_out_from_the_view() {
-    let (mut harness, queue) = controls(900, |props| {
-        props.app = Some("Notes".to_owned());
-    });
+    let (mut harness, queue) = controls(900, |_| {});
+    harness
+        .click_named("find.window")
+        .expect("what the window shows");
+    assert_eq!(queue.take(), [fired("find", "widen", Some(text("window")))]);
     harness.click_named("find.app").expect("the app");
     assert_eq!(queue.take(), [fired("find", "widen", Some(text("app")))]);
     harness.click_named("find.everywhere").expect("everywhere");
@@ -169,6 +174,21 @@ fn widening_steps_out_from_the_view() {
         queue.take(),
         [fired("find", "widen", Some(text("everywhere")))]
     );
+}
+
+/// Shift+Enter steps to the match before, and Find while the field holds the keys widens one
+/// step: the two chords the bar's own search always had.
+#[test]
+fn shift_enter_steps_back_and_find_widens() {
+    let (mut harness, queue) = controls(900, |_| {});
+    harness.key("Shift+Enter");
+    assert_eq!(
+        queue.take(),
+        [fired("find", "step", Some(Value::Bool(false)))],
+        "the match before the one the find stands on"
+    );
+    harness.key("Ctrl+F");
+    assert_eq!(queue.take(), [fired("find", "find_chord", None)]);
 }
 
 /// Enter asks again and Escape lets go of the field, as the bar's own search always has.

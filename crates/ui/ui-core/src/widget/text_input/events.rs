@@ -22,6 +22,28 @@ impl TextInput {
         self.on_submit = callback;
     }
 
+    /// Run `callback`, with the text, when Shift+Enter is pressed in a field where Enter submits:
+    /// a search asks for the match before the one it stands on.
+    #[must_use]
+    pub fn on_shift_submit(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        self.set_on_shift_submit(Some(Box::new(callback)));
+        self
+    }
+
+    /// [`Self::on_shift_submit`] on a field already built.
+    pub fn set_on_shift_submit(&mut self, callback: Option<Box<dyn FnMut(&str)>>) {
+        self.repaint = true;
+        self.enter_submits = true;
+        self.on_shift_submit = callback;
+    }
+
+    /// Run `callback` when Find (Ctrl+F, ⌘F) is pressed while the field has the keyboard: a find
+    /// field asks for the next step of the search rather than typing the control character.
+    pub fn set_on_find_chord(&mut self, callback: Option<Box<dyn FnMut()>>) {
+        self.repaint = true;
+        self.on_find_chord = callback;
+    }
+
     /// Route Enter through an exported resource action with the text as its
     /// input; see [`Self::on_submit`].
     #[must_use]

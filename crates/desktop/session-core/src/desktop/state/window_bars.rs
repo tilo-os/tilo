@@ -974,6 +974,19 @@ mod tests {
         );
     }
 
+    /// The resource each window shows, as the layout keeps it, is what its bar's find can
+    /// search alone: the reading carries it by the window's tab.
+    #[test]
+    fn a_windows_shown_resource_is_read_by_its_tab() {
+        let handle = shell();
+        handle.set_window_resources(std::collections::BTreeMap::from([(
+            7,
+            "notes:note-3".to_owned(),
+        )]));
+        assert_eq!(handle.window_resource(7), Some("notes:note-3".to_owned()));
+        assert_eq!(handle.window_resource(8), None);
+    }
+
     /// A window's find widens to the system search over what its app holds, and to everything,
     /// through the shell's own search verb: the scope says what the search reaches, and typing
     /// into an open search keeps it.
@@ -992,8 +1005,31 @@ mod tests {
         let verbs = ShellVerbs::new(handle.clone(), asks, cards);
         assert!(verbs.perform(&LayoutEffect::Search {
             query: Some("relay".into()),
+            scope: Some("window".into()),
+            app: Some("so.tilo.app0".into()),
+            resource: Some("notes:note-3".into()),
+            label: Some("Release planning".into()),
+        }));
+        assert_eq!(
+            handle.shared.borrow().search_request,
+            Some(SearchRequest::Open {
+                scope: Scope::InApp(AppScope {
+                    app: Some("so.tilo.app0".into()),
+                    part: Some(ui::widget::search_request::ScopeDecl {
+                        anchor: "notes:note-3".into(),
+                        label: "Release planning".into(),
+                    }),
+                }),
+                query: Some("relay".into()),
+            }),
+            "the note the window shows is what the search reaches"
+        );
+        assert!(verbs.perform(&LayoutEffect::Search {
+            query: Some("relay".into()),
             scope: Some("app".into()),
             app: Some("so.tilo.app0".into()),
+            resource: Some("notes:note-3".into()),
+            label: Some("Release planning".into()),
         }));
         assert_eq!(
             handle.shared.borrow().search_request,
@@ -1010,6 +1046,8 @@ mod tests {
             query: Some("relay".into()),
             scope: Some("everywhere".into()),
             app: None,
+            resource: None,
+            label: None,
         }));
         assert_eq!(
             handle.shared.borrow().search_request,

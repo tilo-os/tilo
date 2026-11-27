@@ -10,6 +10,7 @@ use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::layout::TileContent;
 use ui::search::{AppScope, Scope};
+use ui::widget::search_request::ScopeDecl;
 
 use crate::desktop::host::contract::DesktopAsk;
 use crate::desktop::launchpad::LaunchpadAction;
@@ -144,8 +145,27 @@ impl ShellVerbs {
             // search, and a press over the open search closes it. A query is typed into the
             // search already open, which keeps what it reaches; a scope says what a search opened
             // now reaches, the workspace when it names nothing narrower.
-            LayoutEffect::Search { query, scope, app } => {
+            LayoutEffect::Search {
+                query,
+                scope,
+                app,
+                resource,
+                label,
+            } => {
                 let reach = |handle: &DesktopHandle| match scope.as_deref() {
+                    Some("window") => match resource.clone().filter(|it| !it.is_empty()) {
+                        Some(anchor) => Scope::InApp(AppScope {
+                            app: app.clone(),
+                            part: Some(ScopeDecl {
+                                anchor,
+                                label: label.clone().unwrap_or_default(),
+                            }),
+                        }),
+                        None => Scope::InApp(AppScope {
+                            app: app.clone(),
+                            part: None,
+                        }),
+                    },
                     Some("app") => Scope::InApp(AppScope {
                         app: app.clone(),
                         part: None,

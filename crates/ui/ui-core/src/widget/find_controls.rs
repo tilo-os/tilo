@@ -83,6 +83,9 @@ pub struct FindControlsProps {
     pub match_regex: bool,
     /// And whether it reads the query as bytes, in hex.
     pub match_hex: bool,
+    /// The window's name, for the step that searches what it shows alone ("Search Release
+    /// planning").
+    pub window: Option<String>,
     /// The app's name, for the step that searches all of it ("Search Notes").
     pub app: Option<String>,
     /// It opened to replace: the replacement takes the keyboard, as Ctrl+H asks.
@@ -107,10 +110,14 @@ pub struct FindControlsProps {
     /// The person replaced every match with the text carried.
     #[component(event(value = String))]
     pub replace_all: Event,
-    /// The person widened the search: `app` for everything the app holds, `everywhere` for the
-    /// platform's search over the workspace.
+    /// The person widened the search: `window` for what the window shows alone, `app` for
+    /// everything the app holds, `everywhere` for the platform's search over the workspace.
     #[component(event(value = String))]
     pub widen: Event,
+    /// Find (Ctrl+F) was pressed while the field had the keyboard: the search widens one step, as
+    /// the bar's own chord always has.
+    #[component(event)]
+    pub find_chord: Event,
     /// The person closed the find, or let go of the field with Escape.
     #[component(event)]
     pub close: Event,
@@ -127,6 +134,7 @@ struct Slots {
     replacement: Option<usize>,
     replace: Option<usize>,
     replace_all: Option<usize>,
+    window: Option<usize>,
     app: Option<usize>,
     everywhere: usize,
     close: usize,
@@ -139,7 +147,9 @@ pub struct FindControls {
     slots: Slots,
     /// The name the controls stand under, which keys their parts.
     key: String,
-    /// The count as the row's label reads it, updated with the props.
+    /// What the app found: the match it stands on of how many, as the props last said.
+    count: Option<FilterCount>,
+    /// The count as the row's label reads it, updated with the props and with what is typed.
     count_text: Rc<RefCell<String>>,
     /// What has been typed into the replacement field, as the buttons read it.
     replacement: Rc<RefCell<String>>,
@@ -225,6 +235,16 @@ impl FindControls {
         }
     }
 
+    fn window_label(window: Option<&str>) -> String {
+        match window.filter(|window| !window.trim().is_empty()) {
+            Some(window) => tilo_ui_base::i18n::widget_format(
+                "window-search-window",
+                &[("window", window.to_owned().into())],
+            ),
+            None => tr("window-search-this-window"),
+        }
+    }
+
     fn count_of(props: &FindControlsProps) -> Option<FilterCount> {
         match (props.current, props.total) {
             (Some(current), Some(total)) => Some(FilterCount::new(
@@ -275,6 +295,7 @@ impl FindControls {
         (in_place == InPlace::Document) == self.slots.previous.is_some()
             && props.replaces == self.slots.replacement.is_some()
             && (in_place != InPlace::Query) == self.slots.app.is_some()
+            && (in_place != InPlace::Query) == self.slots.window.is_some()
     }
 
     /// Build the row for `props`, wiring every control's event.
@@ -288,6 +309,7 @@ impl FindControls {
         let in_place = Self::target_of(props);
         let count = Self::count_of(props);
         let typed = !props.query.state.get().is_empty();
+        self.count = count;
         self.count_text.replace(Self::count_label(count, typed));
         self.replacement.replace(String::new());
 
@@ -301,6 +323,7 @@ impl FindControls {
             replacement: None,
             replace: None,
             replace_all: None,
+            window: None,
             app: None,
             everywhere: 0,
             close: 0,
@@ -311,6 +334,12 @@ impl FindControls {
         }
         field.set_changed_event(props.changed.clone());
         field.set_cancel_event(props.close.clone());
+        let back = props.step.clone();
+        field.set_on_shift_submit(Some(Box::new(move |_: &str| {
+            back.fire(Some(Value::Bool(false)));
+        })));
+        let chord = props.find_chord.clone();
+        field.set_on_find_chord(Some(Box::new(move || chord.fire(None))));
         let submit = props.submit.clone();
         let field = field.on_submit(move |text: &str| {
             submit.fire(Some(Value::Text(text.to_owned())));
@@ -403,6 +432,17 @@ impl FindControls {
             ));
         }
         if in_place != InPlace::Query {
+            slots.window = Some(row.children().len());
+            let fired = props.widen.clone();
+            row = row.push(Box::new(
+                Button::new(
+                    &format!("{key}.window"),
+                    &Self::window_label(props.window.as_deref()),
+                )
+                .control_size(ControlSize::Small)
+                .role(ButtonRole::Plain)
+                .on_open(move || fired.fire(Some(Value::Text("window".to_owned())))),
+            ));
             slots.app = Some(row.children().len());
             let fired = props.widen.clone();
             row = row.push(Box::new(
@@ -458,6 +498,25 @@ impl Decorator for FindControls {
     fn inner_mut(&mut self) -> &mut Row {
         &mut self.row
     }
+
+    /// The count follows what is typed: the field's own text settles after the props of the frame
+    /// that opened it, so it is read here, once a frame, rather than only when the props change.
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
+        let typed = self
+            .field_mut(self.slots.query)
+            .is_some_and(|field| !field.value().is_empty());
+        let label = Self::count_label(self.count, typed);
+        let mut held = self.count_text.borrow_mut();
+        if *held != label {
+            *held = label;
+        }
+        drop(held);
+        Widget::sync(&mut self.row, state, path);
+    }
 }
 
 impl Described for FindControls {
@@ -474,11 +533,13 @@ impl Described for FindControls {
                 replacement: None,
                 replace: None,
                 replace_all: None,
+                window: None,
                 app: None,
                 everywhere: 0,
                 close: 0,
             },
             key: key.to_owned(),
+            count: None,
             count_text: Rc::new(RefCell::new(String::new())),
             replacement: Rc::new(RefCell::new(String::new())),
         };
@@ -496,11 +557,18 @@ impl Described for FindControls {
         let typed = !props.query.state.get().is_empty();
         // A find the app ran on its own put a query in the bar's field: it shows there.
         let text = props.query.state.get();
-        if let Some(field) = self.field_mut(self.slots.query)
-            && field.value() != text
-        {
-            field.set_text(&text);
+        if let Some(field) = self.field_mut(self.slots.query) {
+            if field.value() != text {
+                field.set_text(&text);
+            }
+            let back = props.step.clone();
+            field.set_on_shift_submit(Some(Box::new(move |_: &str| {
+                back.fire(Some(Value::Bool(false)));
+            })));
+            let chord = props.find_chord.clone();
+            field.set_on_find_chord(Some(Box::new(move || chord.fire(None))));
         }
+        self.count = count;
         self.count_text.replace(Self::count_label(count, typed));
         if let Some(menu) = self.child_mut::<MenuButton>(self.slots.options) {
             menu.set_items(Self::options_items(abilities, options, &props.option));

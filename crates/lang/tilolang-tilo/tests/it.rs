@@ -161,6 +161,7 @@ mod upgrade;
 mod vision;
 mod weather;
 mod window_find;
+mod window_find_shot;
 mod windows_apps;
 mod words;
 mod workspace_members;

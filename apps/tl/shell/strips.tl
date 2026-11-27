@@ -905,6 +905,7 @@ view bar_search(w: device.Window) {
             match_whole_word: f.match_whole_word,
             match_regex: f.match_regex,
             match_hex: f.match_hex,
+            window: w.title,
             app: w.origin_app,
             replacing: w.bar_field == "replace",
         ) {
@@ -917,6 +918,9 @@ view bar_search(w: device.Window) {
             on replace(text): session.bar_search_replace(tab: w.key, with: text, all: false)
             on replace_all(text): session.bar_search_replace(tab: w.key, with: text, all: true)
             on widen(reach): find_widen(w, reach: reach, text: query)
+            // Find again while the field holds the keys is the step after this view: the app's
+            // own search over what is typed.
+            on find_chord: find_widen(w, reach: "app", text: query)
             on close: session.bar_search_close(tab: w.key)
         }
     } else {
@@ -947,7 +951,15 @@ action find_submit(w: device.Window, text: Text) {
 /// over everything (`everywhere`), through the system search the shell opens for that scope. The
 /// bar's field closes with it.
 action find_widen(w: device.Window, reach: Text, text: Text) {
-    if reach == "app" {
+    if reach == "window" {
+        session.search(
+            query: text,
+            scope: "window",
+            app: w.app_key,
+            resource: w.resource,
+            label: w.title,
+        )
+    } else if reach == "app" {
         session.search(query: text, scope: "app", app: w.app_key)
     } else {
         session.search(query: text, scope: "everywhere")

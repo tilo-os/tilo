@@ -501,6 +501,13 @@ pub struct TextInput {
     /// again, so its width follows the words.
     caret_measured: Option<String>,
     on_submit: Option<TextChangeCallback>,
+    /// Shift+Enter was pressed ([`Self::set_on_shift_submit`]): a search that steps back with
+    /// it, where Enter asks for the next match.
+    on_shift_submit: Option<TextChangeCallback>,
+    /// Find (Ctrl+F, ⌘F) was pressed while the field had the keyboard
+    /// ([`Self::set_on_find_chord`]): a field that is a find's asks its host for the next step
+    /// instead of typing the control character.
+    on_find_chord: Option<Box<dyn FnMut()>>,
     /// The selection settled ([`Self::with_selection_event`]): what a read-only field's reader
     /// gets of the run someone chose, as `<start>:<end>` bytes, or nothing on a collapse.
     selection_event: Option<tilo_ui_base::component::Event>,
@@ -805,6 +812,8 @@ impl TextInput {
             caret: false,
             caret_measured: None,
             on_submit: None,
+            on_shift_submit: None,
+            on_find_chord: None,
             selection_event: None,
             cancel_event: tilo_ui_base::component::Event::None,
             begin_event: tilo_ui_base::component::Event::None,

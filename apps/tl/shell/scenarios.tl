@@ -4383,6 +4383,7 @@ scenario "a window found in" {
                     recency: 1,
                     focused: true,
                     preview: "live",
+                    resource: "notes:note-3",
                     bar_field: "find",
                     find: .some(
                         device.Find(
@@ -4457,4 +4458,140 @@ scenario "the dock on the right" {
     let one = a_strip(a, row, "Note", 1000)
     a_note_place(a, one, 0)
     a.front = one
+}
+
+/// A window found nothing: the note in front with its own find open on words it does not hold,
+/// so the bar says there is nothing to step to.
+scenario "a window found nothing" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-notes",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 1000,
+            active: "p1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p1",
+            strip: "s-notes",
+            shows: "so.tilo.notes",
+            title: "Release planning",
+            name: "Release planning — Notes",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "p1",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                    resource: "notes:note-3",
+                    bar_field: "find",
+                    find: .some(
+                        device.Find(
+                            acts_on: "document",
+                            current: 0,
+                            total: 0,
+                            replaces: true,
+                            regex: true,
+                            hex: false,
+                            match_case: false,
+                            match_whole_word: false,
+                            match_regex: false,
+                            match_hex: false,
+                            query: "Zeppelin",
+                        ),
+                    ),
+                ),
+            ],
+        ),
+    )
+}
+
+/// A window replacing: the note in front with its find opened to replace, the first of three
+/// matches current, and the replacement field holding the keyboard.
+scenario "a window replacing" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-notes",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 1000,
+            active: "p1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p1",
+            strip: "s-notes",
+            shows: "so.tilo.notes",
+            title: "Release planning",
+            name: "Release planning — Notes",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "p1",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                    resource: "notes:note-3",
+                    bar_field: "replace",
+                    find: .some(
+                        device.Find(
+                            acts_on: "document",
+                            current: 1,
+                            total: 3,
+                            replaces: true,
+                            regex: true,
+                            hex: false,
+                            match_case: false,
+                            match_whole_word: false,
+                            match_regex: false,
+                            match_hex: false,
+                            query: "Ship",
+                        ),
+                    ),
+                ),
+            ],
+        ),
+    )
 }

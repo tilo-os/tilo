@@ -100,6 +100,11 @@ pub struct Window {
     /// What the app calls what its window shows, as its bar's location: a note's title, a
     /// folder's path. Empty when the app names nothing there.
     pub bar_location: String,
+    /// The resource the window shows, as the workspace's layout keeps it: a note's address, a
+    /// folder's. Empty when the window shows none of the workspace's documents (an app's own
+    /// window, a foreign one).
+    #[serde(default)]
+    pub resource: String,
     /// The field its bar holds open: `location` (the app asked to edit what it shows), `rename`
     /// (the person is naming the window), `find` or `replace` (the app's search), or empty.
     pub bar_field: String,

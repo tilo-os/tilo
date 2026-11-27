@@ -307,6 +307,15 @@ impl TextInput {
         let correction = (self.enter_submits || self.multiline)
             .then(|| self.autocorrect_previous_word())
             .flatten();
+        if self.enter_submits && shift && !self.multiline {
+            // Shift+Enter asks for what Enter steps past: the match before the one it stands on.
+            if let Some(callback) = self.on_shift_submit.as_mut() {
+                let text = self.text.clone();
+                callback(&text);
+            }
+            *handled = true;
+            return;
+        }
         if self.enter_submits && !shift {
             if let Some(correction) = correction {
                 self.apply_autocorrection(correction);
@@ -393,6 +402,19 @@ impl TextInput {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         if self.read_only && !Self::read_only_key(logical_key, ctrl) {
+            return;
+        }
+
+        // Find, while a find's field has the keyboard: the search asks for its next step rather
+        // than the field typing the control character.
+        if ctrl
+            && !modifiers.state().alt_key()
+            && let Key::Character(text) = logical_key
+            && text.eq_ignore_ascii_case("f")
+            && let Some(callback) = self.on_find_chord.as_mut()
+        {
+            callback();
+            *handled = true;
             return;
         }
 

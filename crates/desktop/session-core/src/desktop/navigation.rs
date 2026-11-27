@@ -224,12 +224,20 @@ pub enum LayoutEffect {
         /// What to type.
         #[param("The query to type")]
         query: Option<String>,
-        /// What to search: `app` for the app `app` names, or the workspace.
+        /// What to search: `window` for what the window shows alone (the resource `resource`
+        /// names), `app` for the app `app` names, or the workspace.
         #[param("What the search reaches")]
         scope: Option<String>,
-        /// The app a `scope` of `app` searches, by its canonical id.
+        /// The app a `scope` of `app` or `window` searches, by its canonical id.
         #[param("The app to search")]
         app: Option<String>,
+        /// The resource a `scope` of `window` searches, by the address the workspace's layout
+        /// keeps: the note a window shows.
+        #[param("The resource to search")]
+        resource: Option<String>,
+        /// What that resource is called, for the search's scope pill: the window's name.
+        #[param("The resource's name")]
+        label: Option<String>,
     },
 
     /// Choose a search row
@@ -1371,10 +1379,9 @@ fn admit_layout(verb: &LayoutEffect, tree: &Layout) -> Result<Admitted, String> 
         LayoutEffect::CloseTab { tab } => tab_route(tree, tab).map(Admitted::Close),
         LayoutEffect::Focus { tab } => tab_route(tree, tab).map(Admitted::Select),
         LayoutEffect::Search { query, scope, .. } => {
-            if scope
-                .as_deref()
-                .is_some_and(|scope| !matches!(scope, "app" | "workspace" | "everywhere"))
-            {
+            if scope.as_deref().is_some_and(|scope| {
+                !matches!(scope, "window" | "app" | "workspace" | "everywhere")
+            }) {
                 return Err("The search reaches nothing by that name".into());
             }
             match query {
