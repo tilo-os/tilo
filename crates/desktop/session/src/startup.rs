@@ -390,14 +390,28 @@ fn certify_this_computers_key(identity_path: &Path) {
 /// started) is taken up the same way: the daemon, not this account's store, says whether the
 /// person exists. An account that signed in as a person whose identity another device of theirs
 /// holds makes none.
+///
+/// The session after a login that made no identity reads and writes nothing of a person's, so
+/// that is logged as the error it is: a session logs errors alone unless asked for more.
 fn found_here(identity_dir: &Path) {
     match found_and_certify(identity_dir) {
         Ok(true) => {
             tracing::info!("this account made its Tilo identity on this computer");
         }
+        // A person another device of theirs certifies this account for is on the way; an
+        // account the daemon names no person at all is left with none.
+        Ok(false)
+            if tilo_api::daemon::who::who()
+                .is_ok_and(|who| who.person.is_none() && who.certify_person.is_none()) =>
+        {
+            tracing::error!(
+                "this account signed in with no Tilo identity, and this computer's daemon lets it \
+                 make none"
+            );
+        }
         Ok(false) => {}
         Err(error) => {
-            tracing::warn!(%error, "this account's identity was not made on this computer");
+            tracing::error!(%error, "this account's identity was not made on this computer");
         }
     }
 }
