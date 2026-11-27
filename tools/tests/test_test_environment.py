@@ -290,6 +290,19 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the apps whose views its tests lay out",
             )
+        # The device daemon's process tests ask this computer's `tilo-install`, a program of
+        # another package, for a development build's id, as a dev session's build asks it.
+        install = scripts.pop("install-siblings")
+        self.assertEqual(install["command"], ["bash", "tools/build-sibling-binaries.sh",
+                                              "install:tilo-install"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "install-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-daemon)", {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds the installer the daemon's tests ask",
+            )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
                                  "headless-audio": ["audio"],
@@ -325,6 +338,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "test(language::keeping_pages::) or test(language::chat::) or "
                                  "test(language::hosted_turns::))":
                                      "view-siblings",
+                                 "package(tilo-daemon)": "install-siblings",
                                  # The values only some packages' tests need, for those packages:
                                  # given to the run's environment, each would key every build
                                  # script's and proc macro's cache entry by it.
