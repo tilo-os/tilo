@@ -488,11 +488,32 @@ pub struct TilolangProcess {
     thumbnails: Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>,
 }
 
+/// The outside services whose resources an instance's types may hold, kept in step through the
+/// app's connector: a package's types name one (`origin: imap.message`), matched in this order.
+const CONNECTED_ORIGINS: [&str; 2] = ["imap", "caldav"];
+
+/// Have this process reach the connector of each origin in [`CONNECTED_ORIGINS`] its build links
+/// through that origin's own client, once: the platform finds a client only where its crate
+/// registered one (`tilolang_tilo::origin::remote`), and a host whose instances keep a mailbox or a
+/// calendar is such a process. The calendar's client comes with the app launches it is part of.
+fn register_origins() {
+    #[cfg(any(unix, windows))]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            tilolang_mail::register();
+            #[cfg(feature = "app-launch")]
+            tilolang_calendar::register();
+        });
+    }
+}
+
 impl TilolangProcess {
     /// A host woken by `wake` whenever an instance's connection or work off the frame has
     /// something for it.
     #[must_use]
     pub fn new(wake: Waker) -> Self {
+        register_origins();
         let mut scope = tilo_wake::WakeScope::new();
         let arrived = wait::Wake::new()
             .inspect_err(|error| tracing::warn!(%error, "the host's store wake did not open"))
@@ -1123,7 +1144,7 @@ impl TilolangProcess {
         // app's connector, which holds the network and the credentials this process has none of.
         // Which service is the package's own: a type names it (`origin: imap.message`).
         if let Some(origin) = opening.origin.take() {
-            let served = ["imap", "caldav"]
+            let served = CONNECTED_ORIGINS
                 .into_iter()
                 .find(|name| tilolang_tilo::origin::uses_origin(&hosted.bundle().meta, name));
             if let Some(name) = served {
@@ -1478,6 +1499,29 @@ fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An instance whose types hold a mailbox's or a calendar's resources is handed its app's
+    /// connector, and the host makes the origin's client of it: a host reaches the connector of
+    /// every origin its build links, so a hosted Mail or Calendar opens rather than saying its
+    /// build has no connector.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_reaches_the_connector_of_each_origin_an_instance_holds() {
+        let wake: Waker = Arc::new(|| {});
+        let _host = TilolangProcess::new(Arc::clone(&wake));
+        let linked = CONNECTED_ORIGINS
+            .into_iter()
+            .filter(|name| *name != "caldav" || cfg!(feature = "app-launch"));
+        for name in linked {
+            let (ours, _connector) = std::os::unix::net::UnixStream::pair().unwrap();
+            let handed: Descriptor = std::os::fd::OwnedFd::from(ours);
+            if let Err(error) =
+                tilolang_tilo::origin::remote(name, stream_of(handed), Arc::clone(&wake))
+            {
+                panic!("the {name} origin's connector is not reached: {error}");
+            }
+        }
+    }
 
     #[test]
     fn views_open_in_the_persons_workspace_with_the_workspace_as_context() {
