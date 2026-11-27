@@ -171,9 +171,18 @@ impl Apps {
     /// installed, which no retry mends and a person can act on.
     pub(super) fn needs_runtime(&self, app: &str) -> Option<String> {
         self.missing_runtime(app).map(|runtime| {
+            // Where the check looked, as the launcher says it: a profile's own store
+            // (`TILO_RUNTIME_BUNDLE_DIR` when it names one) and the image's.
+            let version = runtime
+                .split_once('/')
+                .map_or(runtime.as_str(), |(_, version)| version);
+            let looked = runtime_bundle::default_bundle_path(version)
+                .map_or_else(|error| error.to_string(), |path| path.display().to_string());
+            let image = runtime_bundle::system_bundle_path(version);
             format!(
-                "{app} needs the runtime `{runtime}`, which is not installed; installing or \
-                 updating the app brings it"
+                "{app} needs the runtime `{runtime}`, which is not installed (looked in {looked}, \
+                 {}); installing or updating the app brings it",
+                image.display()
             )
         })
     }

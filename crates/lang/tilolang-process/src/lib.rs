@@ -332,6 +332,16 @@ fn store_of(fd: Option<Descriptor>) -> Option<tilo_content::ContentStore> {
         .ok()
 }
 
+/// The content store an instance keeps what it makes in: its workspace's, as a session lends it,
+/// so its engine reads back what it keeps; a process the device hands no such store keeps its
+/// own, where its window's files live and no other's.
+fn instance_content(kept: &Kept, workspace: &str) -> tilo_content::ContentStore {
+    kept.content
+        .clone()
+        .or_else(|| tilo_content_device::session(workspace))
+        .unwrap_or_else(tilo_content_device::for_app)
+}
+
 /// The person's chooser over the connection the session opened for this instance, over the
 /// chooser the launch brought for what nobody is at the computer to answer.
 fn chooser_of(fd: Option<Descriptor>) -> Option<Arc<dyn tilo_dialogs::FilePicker>> {
@@ -1076,12 +1086,7 @@ impl TilolangProcess {
             }
             Shows::Nothing => (Box::new(hosted::NoView), None),
         };
-        // What the instance's actions keep as content lives in the device's content store, as a
-        // native window's does: it outlives the instance.
-        let content = kept
-            .content
-            .clone()
-            .unwrap_or_else(tilo_content_device::for_app);
+        let content = instance_content(&kept, &spec.workspace);
         let mut hosted = Hosted::new(
             spec,
             connection,
