@@ -38,7 +38,9 @@ use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultItems
 use serde_json::Value;
 use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
-use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
+use tilo_actions::remote::{
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
+};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_records::accounts::{
     self as workspace_accounts, AddMailAccount, AddMailWithItem, MailAccount,
@@ -363,15 +365,16 @@ impl crate::PersonServices {
 
     /// Answer a request that uses a vault item by its reference:
     /// [`workspace_accounts::ADD_MAIL_WITH_ITEM`] or
-    /// [`model_providers::SET_KEY_FROM_ITEM`].
+    /// [`model_providers::SET_KEY_FROM_ITEM`], the provider's action `target`. `request` is the
+    /// call as its caller made and signed it, which may name the action by the workspace's tree
+    /// (`workspace/models#set-key-from-item`): what is changed is checked against that.
     pub(super) async fn vault_use_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
-        request: &InvokeRequest,
+        (target, request): (&RemoteActionTarget, &InvokeRequest),
     ) -> Result<Value, ActionCallError> {
-        let target = &request.target;
         let action = target.address.action.as_str();
         let asked = (workspace_id, caller, certificate);
         // The item is used, never read: whoever reaches the vault's items

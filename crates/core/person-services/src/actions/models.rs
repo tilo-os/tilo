@@ -17,17 +17,11 @@ use tilo_workspace_records::models::{self as model_providers, ModelsAction};
 use tilo_workspace_service::workspaces::actions::DeclaredRow as _;
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 
-/// Whether the workspace's tree offers the action `decl` declares: every one but those a
-/// caller asks only of the provider itself. A turn of the model is asked by a window, a key
-/// named by its vault item is answered as a use of the vault, and a computer links its own
-/// model from its own pane.
+/// Whether the workspace's tree offers the action `decl` declares: every one but a turn of the
+/// model, which a window asks of the provider itself as it runs one. A key named by its vault
+/// item is offered here too, and answered as the use of the vault it is.
 fn in_tree(decl: &EffectDecl) -> bool {
-    ![
-        model_providers::ASK,
-        model_providers::SET_KEY_FROM_ITEM,
-        model_providers::LINK_THIS_COMPUTER,
-    ]
-    .contains(&decl.id)
+    decl.id != model_providers::ASK
 }
 
 /// The declaration of the action `action` the tree offers.
@@ -111,8 +105,16 @@ impl crate::PersonServices {
         if here.as_deref() != Some(workspace) {
             return Err(tilo_actions::remote::ActionCallError::UnknownAction);
         }
+        let target = model_providers::target(action);
+        // A key named by its vault item is a use of the vault, decided where every use is, and
+        // checked against the call as it was made.
+        if super::uses_by_reference(&target) {
+            return self
+                .vault_use_invoke(workspace_id, caller, certificate, (&target, request))
+                .await;
+        }
         let mut asking = request.clone();
-        asking.target = model_providers::target(action);
+        asking.target = target;
         self.model_providers_invoke(workspace_id, caller, certificate, &asking)
             .await
     }

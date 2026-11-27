@@ -230,10 +230,15 @@ impl crate::PersonServices {
         let mut asking = request.clone();
         asking.target = workspace_accounts::target(action);
         // It takes its sign-in from the vault by reference, which the provider
-        // resolves on this host.
+        // resolves on this host, checked against the call as it was made.
         if action == workspace_accounts::ADD_MAIL_WITH_ITEM {
-            return Box::pin(self.vault_use_invoke(workspace_id, caller, certificate, &asking))
-                .await;
+            return Box::pin(self.vault_use_invoke(
+                workspace_id,
+                caller,
+                certificate,
+                (&asking.target, request),
+            ))
+            .await;
         }
         Box::pin(self.person_accounts_invoke(workspace_id, caller, certificate, &asking)).await
     }

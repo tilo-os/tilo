@@ -326,7 +326,7 @@ impl PersonServices {
         }
         match (request.target.provider.as_str(), address.action.as_str()) {
             _ if uses_by_reference(&request.target) => {
-                self.vault_use_invoke(workspace, caller, certificate, request)
+                self.vault_use_invoke(workspace, caller, certificate, (&request.target, request))
                     .await
             }
             // The person's own mail accounts and model providers, kept here when their

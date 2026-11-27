@@ -5,11 +5,24 @@
 use tilo_actions::remote::{
     ACCOUNTS_PROVIDER, CONNECTIONS_PROVIDER, MODELS_PROVIDER, MODERATED_APP, MODERATION_HISTORY,
     MODERATION_PROVIDER, MODERATION_UNDO, RemoteActionTarget, VAULT_PROVIDER,
-    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_VAULT,
+    WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MAIL_ACCOUNTS, WORKSPACE_MODELS, WORKSPACE_VAULT,
     workspace_agent_effects, workspace_governance_operation, workspace_governance_resource,
 };
 
 use crate::{accounts, connections, models, vault};
+
+/// Whether `target` names an action of the child `child` of a workspace's own tree
+/// (`workspace.permissions:<id>/<child>`).
+fn in_tree(target: &RemoteActionTarget, child: &str) -> bool {
+    target.provider == WORKSPACE_GOVERNANCE_PROVIDER
+        && target
+            .address
+            .resource
+            .strip_prefix(workspace_governance_resource("").as_str())
+            .and_then(|rest| rest.strip_suffix(child))
+            .and_then(|workspace| workspace.strip_suffix('/'))
+            .is_some_and(|workspace| !workspace.is_empty() && !workspace.contains('/'))
+}
 
 /// What the action `target` names declares it writes besides its own resource
 /// ([`tilo_actions::ActionContract::effects`]), from its declaration: a device reading a record checks
@@ -38,19 +51,16 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<tilo_actions::Action
     }
     let address = &target.address;
     // The workspace's mail accounts in its tree (`workspace/mail-accounts`) take the steps their
-    // `tilo.accounts` action takes; adding one there is `add`.
-    let in_mail_accounts = target.provider == WORKSPACE_GOVERNANCE_PROVIDER
-        && address
-            .resource
-            .strip_prefix(workspace_governance_resource("").as_str())
-            .and_then(|rest| rest.strip_suffix(WORKSPACE_MAIL_ACCOUNTS))
-            .and_then(|workspace| workspace.strip_suffix('/'))
-            .is_some_and(|workspace| !workspace.is_empty() && !workspace.contains('/'));
+    // `tilo.accounts` action takes; adding one there is `add`. Its model providers there
+    // (`workspace/models`) take the steps their `tilo.models` action takes.
+    let in_mail_accounts = in_tree(target, WORKSPACE_MAIL_ACCOUNTS);
+    let in_models = in_tree(target, WORKSPACE_MODELS);
     let mut effects = match target.provider.as_str() {
         _ if in_mail_accounts => account_steps(match address.action.as_str() {
             "add" => "add-mail",
             action => action,
         }),
+        _ if in_models => vault_steps(&models::MODEL_VAULT_STEPS, &address.action),
         ACCOUNTS_PROVIDER if address.resource == "accounts" => account_steps(&address.action),
         MODELS_PROVIDER => vault_steps(&models::MODEL_VAULT_STEPS, &address.action),
         CONNECTIONS_PROVIDER => vault_steps(&connections::CONNECTION_VAULT_STEPS, &address.action),

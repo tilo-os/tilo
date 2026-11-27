@@ -415,8 +415,13 @@ impl crate::PersonServices {
         if action == workspace_accounts::ADD_MAIL_WITH_ITEM {
             self.allowed(reach, caller, Store::MAIL, action, request)
                 .await?;
-            return Box::pin(self.vault_use_invoke(workspace_id, caller, certificate, request))
-                .await;
+            return Box::pin(self.vault_use_invoke(
+                workspace_id,
+                caller,
+                certificate,
+                (&request.target, request),
+            ))
+            .await;
         }
         let asked = asked_of(request)?;
         // An agent's connect of a calendar account the workspace keeps already adds nothing, and

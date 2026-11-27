@@ -13,9 +13,8 @@
 //!
 //! A key typed in the person's own window is carried here to the workspace's host, which seals
 //! it in the workspace's vault: a reading never says what it is, and no other app of the
-//! workspace is shown it. A key the vault already keeps is named by its item, a use of the vault
-//! ([`model_providers::SET_KEY_FROM_ITEM`]), and a computer links its own model from its own pane:
-//! neither is a step here.
+//! workspace is shown it. A key the vault already keeps is named by its item instead
+//! ([`model_providers::SET_KEY_FROM_ITEM`]), which the workspace answers as a use of its vault.
 
 use std::sync::Arc;
 
@@ -33,18 +32,12 @@ use tilo_workspace_records::models::{self as model_providers, ModelsAction};
 
 use crate::workspace_view::WorkspaceView;
 
-/// The steps the holder answers for this device: each action the providers declare in the
-/// workspace's tree. A turn of the model is asked of the workspace's host itself, and a key from
-/// the vault and this computer's own model are asked where they are kept.
+/// The steps the holder answers for this device: each action the providers declare but a turn
+/// of the model, which a window asks of the workspace's host itself.
 fn steps() -> impl Iterator<Item = tilo_resource::EffectDecl> {
-    ModelsAction::declarations().into_iter().filter(|decl| {
-        ![
-            model_providers::ASK,
-            model_providers::SET_KEY_FROM_ITEM,
-            model_providers::LINK_THIS_COMPUTER,
-        ]
-        .contains(&decl.id)
-    })
+    ModelsAction::declarations()
+        .into_iter()
+        .filter(|decl| decl.id != model_providers::ASK)
 }
 
 /// The workspace's models, answered by its holder for the person at this device.

@@ -2532,3 +2532,73 @@ async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
     );
     server.shutdown().await;
 }
+
+/// The person's own windows and palette ask the workspace's tree for its model providers
+/// (`workspace/models`), and both actions a provider answers apart from the rest are there: a
+/// key the vault keeps, named by its item, is kept as the use of the vault it is, and linking
+/// this computer's models reaches the provider, which says why a host keeping the workspace for
+/// a page links none.
+#[tokio::test]
+async fn the_person_keeps_a_key_from_the_vault_and_links_this_computer_through_the_tree() {
+    use tilo_actions::remote::{
+        WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MODELS, workspace_governance_child,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = &crate::PersonServices::of(server.workspaces());
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let provider = a_provider(&service, workspace_id, (&ada, &as_ada)).await;
+    let item = kept_item(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        ("key", "https://models.example/v1/chat"),
+    )
+    .await;
+    let in_tree = |action: &str| RemoteActionTarget {
+        provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(
+            workspace_governance_child(&workspace, Some(WORKSPACE_MODELS)),
+            action,
+        ),
+    };
+
+    let view = ask_at(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        in_tree(model_providers::SET_KEY_FROM_ITEM),
+        json!({"provider": provider, "key": item}),
+    )
+    .await
+    .expect("Ada keeps her provider's key from the item her vault keeps");
+    assert_eq!(view["configured"], json!(true), "{view}");
+    assert!(!view.to_string().contains(KEY), "{view}");
+    let own = workspaces.workspace_root(&workspace_id.to_string());
+    let named = provider_named(&own, &provider).expect("the provider names its key");
+    assert_eq!(json!(named.to_string()), item);
+    let uses = uses_of(&service, workspace_id, (&ada, &as_ada), &item).await;
+    assert_eq!(uses[0]["using"], "tilo.models/set-key-from-item", "{uses}");
+
+    let linked = ask_at(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        in_tree(model_providers::LINK_THIS_COMPUTER),
+        json!({}),
+    )
+    .await;
+    match linked {
+        Err(ActionCallError::UnknownAction) => panic!("linking this computer is not in the tree"),
+        Err(refused) => assert!(
+            format!("{refused:?}").contains("Only a computer of yours links its own models"),
+            "{refused:?}"
+        ),
+        Ok(answer) => panic!("a host keeping the workspace linked its own models: {answer}"),
+    }
+    server.shutdown().await;
+}
