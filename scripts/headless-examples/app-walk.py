@@ -732,7 +732,13 @@ class MachineDaemon:
             if path.is_dir():
                 path.chmod(0o755 if within_user else 0o750)
             else:
-                path.chmod(0o644 if within_user else 0o440)
+                # A program the store keeps, a runtime's own included, stays one: the launcher
+                # runs it from the store.
+                runs = path.stat().st_mode & 0o111
+                if within_user:
+                    path.chmod(0o755 if runs else 0o644)
+                else:
+                    path.chmod(0o550 if runs else 0o440)
         self.IMAGE.chmod(0o750)
         return system, publishers, user
 
