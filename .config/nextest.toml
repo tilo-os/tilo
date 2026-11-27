@@ -155,15 +155,16 @@ setup = "lounge-siblings"
 
 # The browser peer's Lounge test starts the same workspace service the deployment
 # runs, so it is built the same way: a program of another package, with the
-# feature `agents` that gives it the `workspace` subcommand.
+# feature `agents` that gives it the `workspace` subcommand. The flows' person's
+# server is that daemon too, started with a server configuration.
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)"
+filter = "package(tilo-session-client) and binary(it) and (test(lounge_fresh_page::) or test(flow_four_devices::) or test(flow_laptop_phone_server::))"
 setup = "lounge-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)"
+filter = "package(tilo-session-client) and binary(it) and (test(lounge_fresh_page::) or test(flow_four_devices::) or test(flow_laptop_phone_server::))"
 setup = "lounge-siblings"
 
 # The browser peer's page tests drive the page's own modules in headless

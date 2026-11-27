@@ -41,8 +41,8 @@ use tokio::task::block_in_place;
 #[path = "../../../../crates/desktop/phone/tests/support/mod.rs"]
 mod phone;
 use crate::support::{
-    Device, HostSettings, TestHost, commit_change, enrol, entry_grant, record_of, redeem,
-    start_host_serving, start_peer, start_workspace_host_relaying,
+    DaemonHost, Device, HostSettings, TestHost, commit_change, enrol, entry_grant, record_of,
+    redeem, start_host_serving, start_peer, start_server_daemon, start_workspace_host_relaying,
 };
 
 /// The laptop, the Android phone and the person's server, with no tilo.sh: every address here
@@ -53,7 +53,7 @@ struct Rig {
     server_device: Device,
     laptop: Device,
     phone: Device,
-    host: TestHost,
+    host: DaemonHost,
     work: String,
     second: String,
     person_workspace: String,
@@ -63,10 +63,9 @@ struct Rig {
     laptop_person: Link,
     phone_session: Link,
     phone_person: Link,
-    _state: tempfile::TempDir,
     /// The person's own computer, holding the workspaces they found themselves: it founds their
     /// own workspace and hands it to the server.
-    _desk: TestHost,
+    desk: TestHost,
     _desk_state: tempfile::TempDir,
 }
 
@@ -97,23 +96,8 @@ impl Rig {
 
 async fn rig() -> Rig {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let server_device = enrol(&root, "the-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let phone = enrol(&root, "android-phone", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host_serving(
-        &root,
-        &server_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-        HostSettings {
-            plain_listen: Some("127.0.0.1:0".parse().unwrap()),
-            relayed: true,
-            ..HostSettings::default()
-        },
-    )
-    .await;
-    let workspaces = host.server.workspaces().unwrap();
     let person = root.verifying_key().to_bytes();
     // The person's own workspace is founded on their own computer, as founding is signed on the
     // founder's own device and never by a server, and that computer hands it to the server: the
@@ -128,19 +112,29 @@ async fn rig() -> Rig {
             .await
             .unwrap();
     assert_eq!(person_workspace, person_workspace_id(&person));
+    let host = start_server_daemon(&root, &desk_host, &desk, &person_workspace, "the-server");
+    let server_device = host.device();
     desk_workspaces
         .attach_server(
             &person_workspace,
             server_device.cert.device_public_key,
-            host.server.node_addr(),
+            host.node_addr(),
             CopyRole::KeyHolder,
         )
         .await
         .expect("the server keeps the person's own workspace their computer hands it");
-    // The person's workspaces are theirs: the server keeps them for them, and every device of
-    // theirs takes part in each as a device of the person whose workspace it is.
-    let work = workspaces.create("Work").await.unwrap().workspace;
-    let home = workspaces.create("Home").await.unwrap().workspace;
+    let laptop_session = flow::session(&host, &laptop, &server_device.cert);
+    let phone_session = flow::session(&host, &phone, &server_device.cert);
+    for session in [&laptop_session, &phone_session] {
+        flow::join(session, &person_workspace, "Ada").await;
+    }
+    // The person's workspaces are theirs: their laptop makes them on the server through its
+    // published action, and every device of theirs takes part in each as a device of the
+    // person whose workspace it is.
+    let maker = flow::client(&laptop_session, &laptop, &server_device.cert, "laptop");
+    let in_person = ServerWorkspaceId::parse(&person_workspace).unwrap();
+    let work = flow::create_workspace(&maker, in_person, "Work").await;
+    let home = flow::create_workspace(&maker, in_person, "Home").await;
     // Their own computer lists what the person has, as the device that holds their own
     // workspace does: each entry reaches the copy the server keeps.
     for (workspace, name) in [(&work, "Work"), (&home, "Home")] {
@@ -149,12 +143,9 @@ async fn rig() -> Rig {
             "the person's own computer lists {name} in their list"
         );
     }
-    let laptop_session = flow::session(&host, &laptop, &server_device.cert);
-    let phone_session = flow::session(&host, &phone, &server_device.cert);
     for session in [&laptop_session, &phone_session] {
         flow::join(session, &work, "Work").await;
         flow::join(session, &home, "Home").await;
-        flow::join(session, &person_workspace, "Ada").await;
     }
     let laptop_person = laptop_session.clone();
     let phone_person = phone_session.clone();
@@ -172,8 +163,7 @@ async fn rig() -> Rig {
         laptop_person,
         phone_session,
         phone_person,
-        _state: state,
-        _desk: desk_host,
+        desk: desk_host,
         _desk_state: desk_state,
     }
 }
@@ -265,22 +255,18 @@ async fn nothing_reaches_tilo_sh_or_a_public_relay() {
         relays.n0_dns
     );
 
-    let addr = f.host.server.node_addr();
+    let addr = f.host.node_addr();
+    let loopback = test_server::loopback_url();
     assert!(
-        addr.relay_urls().next().is_none(),
-        "the server reaches its devices directly, through no relay at all: {addr:?}"
+        addr.relay_urls().all(|relay| relay.to_string() == loopback),
+        "the server is reached through this machine's loopback relay alone: {addr:?}"
     );
     assert!(
-        f.host.web.addr.ip().is_loopback(),
+        f.host.daemon.web().ip().is_loopback(),
         "the server's web UI listens on this machine's loopback: {}",
-        f.host.web.addr
+        f.host.daemon.web()
     );
-    let origin = f
-        .host
-        .web
-        .plain_origin
-        .clone()
-        .expect("the server's plain listener");
+    let origin = f.host.origin();
     assert!(
         !origin.contains("tilo.sh"),
         "nothing the server serves names tilo.sh: {origin}"
@@ -303,8 +289,7 @@ async fn nothing_reaches_tilo_sh_or_a_public_relay() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_server_serves_its_web_ui_by_default_and_a_setting_turns_it_off() {
     let f = Box::pin(rig()).await;
-    let origin = f.host.web.plain_origin.clone().unwrap();
-    let addr = flow::address_of(&origin);
+    let addr = f.host.daemon.web();
 
     // On by default: the server answers HTTP on its own address, which is how its pages and
     // the page protocol are reached.
@@ -349,12 +334,14 @@ async fn flow_phone_joins_like_any_other_device() {
         workspace: f.work.clone(),
         workspace_name: Some("Work".into()),
         server_cert: f.server_device.cert.clone(),
-        server: tilo_api::daemon::enter::reached_of(&f.host.server.node_addr()),
-        site: f.host.web.origin.clone(),
-        host_origin: f.host.web.origin.clone(),
+        server: tilo_api::daemon::enter::reached_of(&f.host.node_addr()),
+        site: f.host.origin(),
+        host_origin: f.host.origin(),
     };
     let runtime = tokio::runtime::Handle::current();
-    let workspaces = f.host.server.workspaces().unwrap().clone();
+    // The record of the person's devices, which the computer that founded their own workspace
+    // holds and the server keeps a copy of.
+    let workspaces = f.desk.server.workspaces().unwrap().clone();
     let laptop = block_in_place(|| phone::Issuing::start(&runtime, &f.root, entry, workspaces))
         .expect("the laptop's ticket and endpoint are made");
     let mut device = block_in_place(|| tilo_runtime::in_process::Device::start(&phone::profile()))
@@ -688,8 +675,9 @@ async fn flow_every_device_manages_every_other() {
     let phone = f.client(&f.phone_session, &f.phone, "android-phone");
     let laptop_key = flow::key_of(&f.laptop.cert);
 
-    // The person's devices are a record of their own workspace, which the server keeps with them.
-    let workspaces = f.host.server.workspaces().unwrap();
+    // The person's devices are a record of their own workspace, written by the computer that
+    // certifies them, which founded it, and kept by the server with them.
+    let workspaces = f.desk.server.workspaces().unwrap();
     for device in [&f.laptop, &f.phone, &f.server_device] {
         workspaces.keep_issued_device(&device.cert, "").await;
     }

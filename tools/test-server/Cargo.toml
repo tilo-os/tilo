@@ -16,6 +16,8 @@ description = "A host on this machine's loopback and fresh device keys for tests
 # is `test-support`, which each test's dev-dependency on tilo-runtime turns on: a normal
 # dependency turning it on would reach a shipping build's feature set.
 tilo-runtime = { path = "../../crates/core/tilo-runtime" }
+# The login a server daemon is signed in with, asked on its native endpoint.
+tilo-actions = { path = "../../crates/core/actions" }
 tilo-server-protocol = { path = "../../crates/core/tilo-server-protocol" }
 tilo-workspace-service = { path = "../../crates/core/tilo-workspace-service" }
 tilo-endpoint-reachability = { path = "../../crates/core/endpoint-reachability" }
@@ -23,6 +25,11 @@ settings-store = { package = "tilo-settings-store", path = "../../crates/desktop
 tilo-workspace-join = { path = "../../crates/core/workspace-join" }
 tilo-user-identity = { path = "../../crates/core/tilo-user-identity" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
+# The identity a server daemon is started with, written where the daemon reads it.
+tilo-device-identity = { path = "../../crates/core/tilo-device-identity" }
+# The daemon binary the run built, and its start under the environment lock.
+tilo-test-env = { path = "../test-env" }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tempfile.workspace = true
 blake3.workspace = true

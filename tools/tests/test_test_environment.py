@@ -223,7 +223,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-session) and binary(it) and test(lounge_e2e::)",
                   {"host": 'cfg(target_os = "linux")'}),
-                 ("package(tilo-session-client) and binary(it) and test(lounge_fresh_page::)",
+                 ("package(tilo-session-client) and binary(it) and (test(lounge_fresh_page::) or "
+                  "test(flow_four_devices::) or test(flow_laptop_phone_server::))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds the server for the lounge's tests",
             )
@@ -329,7 +330,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                      "vault-siblings",
                                  "package(tilo-session) and binary(it) and test(lounge_e2e::)": "lounge-siblings",
                                  "package(tilo-session-client) and binary(it) and "
-                                 "test(lounge_fresh_page::)":
+                                 "(test(lounge_fresh_page::) or test(flow_four_devices::) or "
+                                 "test(flow_laptop_phone_server::))":
                                      "lounge-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(passkey_root::) or test(node_workspace::))": "page-bundle",

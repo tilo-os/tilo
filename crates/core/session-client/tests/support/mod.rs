@@ -324,6 +324,72 @@ pub async fn start_host_serving(
     }
 }
 
+/// The person's server as a deployment runs it: the device daemon, a child process started with
+/// a server configuration, reached through this machine's loopback relay. It answers its
+/// workspaces' actions, their apps' included, as the person's device it is.
+pub struct DaemonHost {
+    pub daemon: test_server::ServerDaemon,
+}
+
+impl DaemonHost {
+    /// Where the server's endpoint answers, naming the relay it is reached through.
+    pub fn node_addr(&self) -> iroh::EndpointAddr {
+        self.daemon.node_addr()
+    }
+
+    /// The server as a device dials it.
+    pub fn iroh(&self) -> ServerAddress {
+        ServerAddress::at(self.daemon.node_addr())
+    }
+
+    /// The server as a device of its person's: the key and certificate its login made.
+    pub fn device(&self) -> Device {
+        Device {
+            key: self.daemon.key().clone(),
+            cert: self.daemon.cert().clone(),
+        }
+    }
+
+    /// The origin the server serves its web UI at.
+    pub fn origin(&self) -> String {
+        format!("https://{}", self.daemon.web())
+    }
+}
+
+/// The person's server, a machine started as one and signed in with a ticket their computer
+/// `desk` prints, as a deployment is: the ticket enters it into their own workspace
+/// `person_workspace`, which `desk_host` keeps, and lists it in the record of their devices.
+pub fn start_server_daemon(
+    root: &SigningKey,
+    desk_host: &TestHost,
+    desk: &Device,
+    person_workspace: &str,
+    label: &str,
+) -> DaemonHost {
+    let entry = tilo_device_identity::login::Entry {
+        workspace: person_workspace.to_owned(),
+        workspace_name: None,
+        server_cert: desk.cert.clone(),
+        server: tilo_api::daemon::enter::reached_of(&desk_host.server.node_addr()),
+        site: desk_host.web.origin.clone(),
+        host_origin: desk_host.web.origin.clone(),
+    };
+    let runtime = tokio::runtime::Handle::current();
+    let workspaces = desk_host.server.workspaces().unwrap().clone();
+    tokio::task::block_in_place(|| {
+        let issuing = tilo_runtime::device::issuing::test_support::Issuing::start(
+            &runtime, root, entry, workspaces,
+        )
+        .expect("the person's computer prints a ticket");
+        let daemon = test_server::ServerDaemon::start(&issuing.ticket(), label);
+        HOSTS
+            .lock()
+            .unwrap()
+            .insert(daemon.cert().device_public_key);
+        DaemonHost { daemon }
+    })
+}
+
 /// A host reached through a packet relay names it in its address from the start: what
 /// `Relay::start` waits for before it answers anything.
 fn names_its_server(server: &Server) {

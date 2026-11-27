@@ -32,7 +32,7 @@ use tilo_session_client::device::{Device, DeviceRefusal};
 use tilo_session_client::{Cmd, Link, Outbox as _};
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::{Device as Certified, TestHost, admitted_to, record_of, start_peer};
+use super::{DaemonHost, Device as Certified, admitted_to, record_of, start_peer};
 
 /// The app whose document is a workspace's shared desktop, and that document.
 pub const DESKTOP_APP: &str = tilo_desktop_model::ownership::DESKTOP_APP;
@@ -46,7 +46,7 @@ pub const PLACEMENT_KEY: &str = "tilo.display_person.placement";
 /// session enters on its handshake, which is what hands it the workspace's records. This is
 /// how `layout_views`' pages read and write a workspace's records.
 pub async fn session_entered(
-    host: &TestHost,
+    host: &DaemonHost,
     root: &ed25519_dalek::SigningKey,
     device: &Certified,
     server_cert: &DeviceCert,
@@ -69,7 +69,7 @@ pub async fn session_entered(
     .expect("the host certifies the device's key for the person");
     // A page has no UDP socket of its own: it reaches the host through the relay the host
     // runs, as `layout_views`' pages do.
-    let addr = host.server.node_addr();
+    let addr = host.node_addr();
     let dialed = tilo_server_client::ServerAddress::through(
         iroh::EndpointAddr::new(addr.id),
         addr.relay_urls().next().cloned(),
@@ -92,7 +92,7 @@ pub async fn session_entered(
 
 /// A session of `device` with `host`, as the device dials it.
 #[must_use]
-pub fn session(host: &TestHost, device: &Certified, server_cert: &DeviceCert) -> Link {
+pub fn session(host: &DaemonHost, device: &Certified, server_cert: &DeviceCert) -> Link {
     start_peer(
         host.iroh(),
         device.cert.clone(),
@@ -615,4 +615,45 @@ pub fn address_of(origin: &str) -> SocketAddr {
     format!("{host}:{port}")
         .parse()
         .expect("a plain listener's address")
+}
+
+/// Make the workspace `name` on the person's server through its published action, as `device`
+/// asks it from the workspace `in_workspace` its session is in: its id.
+pub async fn create_workspace(device: &Device, in_workspace: WorkspaceId, name: &str) -> String {
+    use tilo_server_protocol::workspaces::{
+        CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
+    };
+    let made = ask(
+        device,
+        in_workspace,
+        HOST_ACTIONS_PROVIDER,
+        HOST_WORKSPACES_RESOURCE,
+        CREATE_WORKSPACE,
+        serde_json::json!({"name": name}),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the server makes the workspace {name}: {error:?}"));
+    made["workspace"]
+        .as_str()
+        .expect("the new workspace's id")
+        .to_owned()
+}
+
+/// Whether the person's server serves `workspace`, as the host's list of what it serves answers
+/// `device`, asked from the workspace `in_workspace` its session is in.
+pub async fn server_serves(device: &Device, in_workspace: WorkspaceId, workspace: &str) -> bool {
+    use tilo_server_protocol::workspaces::{
+        HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_WORKSPACES,
+    };
+    let listed = ask(
+        device,
+        in_workspace,
+        HOST_ACTIONS_PROVIDER,
+        HOST_WORKSPACES_RESOURCE,
+        LIST_WORKSPACES,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the server lists what it serves: {error:?}"));
+    listed.to_string().contains(workspace)
 }

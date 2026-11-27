@@ -28,7 +28,9 @@ use tilo_workspace_records::vault as workspace_vault;
 use tilo_workspace_service::workspaces::OwnWorkspaceOffer;
 
 use crate::support::flow;
-use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying};
+use crate::support::{
+    DaemonHost, Device, TestHost, enrol, start_server_daemon, start_workspace_host_relaying,
+};
 
 /// The person's four devices, entered into every workspace they have, with a session each
 /// for the three that run a Tilo shell; the fourth is the server itself.
@@ -39,7 +41,7 @@ struct Four {
     desktop: Device,
     pi: Device,
     laptop: Device,
-    host: TestHost,
+    host: DaemonHost,
     work: String,
     home: String,
     person_workspace: String,
@@ -52,7 +54,6 @@ struct Four {
     pi_person: Link,
     laptop_session: Link,
     laptop_person: Link,
-    _state: tempfile::TempDir,
     /// The person's own computer, which founded their own workspace and handed it to the server.
     desk: Device,
     desk_host: TestHost,
@@ -84,19 +85,10 @@ impl Four {
 
 async fn four_devices() -> Four {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let server_device = enrol(&root, "tilo.sh", DeviceCapabilities::member());
     let desktop = enrol(&root, "fedora-desktop", DeviceCapabilities::primary());
     let pi = enrol(&root, "orange-pi", DeviceCapabilities::member());
     let laptop = enrol(&root, "snapdragon-laptop", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let host =
-        start_workspace_host_relaying(&root, &server_device, state.path(), false, true).await;
-    let workspaces = host.server.workspaces().unwrap();
     let person = root.verifying_key().to_bytes();
-    // The person's workspaces are theirs: the server keeps them for them, and every device of
-    // theirs takes part in each as a device of the person whose workspace it is.
-    let work = workspaces.create("Work").await.unwrap().workspace;
-    let home = workspaces.create("Home").await.unwrap().workspace;
     // The person's own workspace is founded on a computer of theirs, as founding is signed on
     // the founder's own device and never by a server, and that computer hands it to the server
     // and lists the workspaces they have: a server never writes the person's list.
@@ -114,34 +106,45 @@ async fn four_devices() -> Four {
             .await
             .unwrap();
     assert_eq!(person_workspace, person_workspace_id(&person));
+    let host = start_server_daemon(&root, &desk_host, &desk, &person_workspace, "tilo.sh");
+    let server_device = host.device();
     desk_workspaces
         .attach_server(
             &person_workspace,
             server_device.cert.device_public_key,
-            host.server.node_addr(),
+            host.node_addr(),
             tilo_peer_state::CopyRole::KeyHolder,
         )
         .await
         .expect("the server keeps the person's own workspace their computer hands it");
+    let desktop_session = flow::session(&host, &desktop, &server_device.cert);
+    let pi_session = flow::session(&host, &pi, &server_device.cert);
+    let laptop_session = flow::session(&host, &laptop, &server_device.cert);
+    for session in [&desktop_session, &pi_session, &laptop_session] {
+        flow::join(session, &person_workspace, "Ada").await;
+    }
+    // The person's workspaces are theirs: their desktop makes them on the server through its
+    // published action, the server keeps them for them, and every device of theirs takes part
+    // in each as a device of the person whose workspace it is.
+    let maker = flow::client(
+        &desktop_session,
+        &desktop,
+        &server_device.cert,
+        "fedora-desktop",
+    );
+    let in_person = ServerWorkspaceId::parse(&person_workspace).unwrap();
+    let work = flow::create_workspace(&maker, in_person, "Work").await;
+    let home = flow::create_workspace(&maker, in_person, "Home").await;
     for (workspace, name) in [(&work, "Work"), (&home, "Home")] {
         assert!(
             desk_workspaces.list_for(&person, workspace, name).await,
             "the person's own computer lists {name} in their list"
         );
     }
-    let desktop_session = flow::session(&host, &desktop, &server_device.cert);
-    let pi_session = flow::session(&host, &pi, &server_device.cert);
-    let laptop_session = flow::session(&host, &laptop, &server_device.cert);
     for session in [&desktop_session, &pi_session, &laptop_session] {
         flow::join(session, &work, "Work").await;
         flow::join(session, &home, "Home").await;
-        flow::join(session, &person_workspace, "Ada").await;
     }
-    // tilo.sh is the person's always-on server: it has its entry among their servers, as a
-    // server enters itself there once it has their workspace.
-    tilo_workspace_service::workspaces::servers::enroll(workspaces, &host.server.node_addr(), None)
-        .await
-        .expect("the server enters itself among the person's servers");
     let (desktop_home, desktop_person) = (desktop_session.clone(), desktop_session.clone());
     let pi_person = pi_session.clone();
     let laptop_person = laptop_session.clone();
@@ -163,7 +166,6 @@ async fn four_devices() -> Four {
         pi_person,
         laptop_session,
         laptop_person,
-        _state: state,
         desk,
         desk_host,
         _desk_state: desk_state,
@@ -171,10 +173,10 @@ async fn four_devices() -> Four {
 }
 
 /// The keys of the person's devices, as the record of their own workspace holds them on the
-/// server, which every device of theirs holds too.
+/// computer that founded it, which every device of theirs holds too.
 async fn recorded(f: &Four) -> Vec<String> {
     use tilo_workspace_service::workspaces::person_workspace::{self, devices};
-    let workspaces = f.host.server.workspaces().unwrap();
+    let workspaces = f.desk_host.server.workspaces().unwrap();
     person_workspace::read::<devices::Devices>(workspaces, devices::DEVICES)
         .await
         .expect("the record of the person's devices reads")
@@ -192,16 +194,14 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
     let f = Box::pin(four_devices()).await;
 
     // The server holds both of the person's workspaces at once.
-    let workspaces = f.host.server.workspaces().unwrap();
+    let desktop = f.client(&f.desktop_session, &f.desktop, "fedora-desktop");
     assert!(
-        workspaces.summary(&f.work).await.is_ok() && workspaces.summary(&f.home).await.is_ok(),
+        flow::server_serves(&desktop, f.work_id(), &f.work).await
+            && flow::server_serves(&desktop, f.work_id(), &f.home).await,
         "the always-on server serves every workspace of the person"
     );
 
     // Each device their root certified is in the record of their devices.
-    for certified in [&f.desktop, &f.pi, &f.laptop, &f.server_device] {
-        workspaces.keep_issued_device(&certified.cert, "").await;
-    }
     let devices = recorded(&f).await;
     for certified in [&f.desktop, &f.pi, &f.laptop, &f.server_device] {
         assert!(
@@ -325,7 +325,12 @@ async fn flow_always_on_server_holds_all_workspaces_at_once() {
     // own workspace founds it for them, places it at their server and lists it.
     let mut made: Vec<(&str, String)> = Vec::new();
     for (who, device) in [("the desktop", &f.desktop), ("the laptop", &f.laptop)] {
-        let session = flow::session(&f.desk_host, device, &f.desk.cert);
+        let session = crate::support::start_peer(
+            f.desk_host.iroh(),
+            device.cert.clone(),
+            f.desk.cert.clone(),
+            device.key.clone(),
+        );
         let (listing, _) = flow::client(&session, device, &f.desk.cert, who)
             .own_workspace(
                 serde_json::Map::from_iter([("name".to_owned(), json!("Ada's work"))]),
@@ -379,11 +384,10 @@ async fn flow_always_on_server_holds_all_workspaces_at_once() {
     // Keeping off for the laptop's workspace, through the server's entry: the server lets it
     // go, and no member reads it among the workspace's keepers any more.
     let server = flow::key_of(&f.server_device.cert);
-    let workspaces = f.host.server.workspaces().unwrap();
     let (_, laptops) = &made[1];
     keep(&f, &desktop, laptops, false).await;
     crate::support::wait_for("the server lets go of the workspace kept off", || async {
-        workspaces.summary(laptops).await.is_err().then_some(())
+        (!flow::server_serves(&desktop, f.work_id(), laptops).await).then_some(())
     })
     .await;
     let keeps = tokio::time::timeout(
@@ -399,14 +403,16 @@ async fn flow_always_on_server_holds_all_workspaces_at_once() {
         "the server is no keeper of the workspace its entry turned keeping off for: {keeps:?}"
     );
     assert!(
-        workspaces.summary(&made[0].1).await.is_ok(),
+        flow::server_serves(&desktop, f.work_id(), &made[0].1).await,
         "the server still keeps the desktop's workspace"
     );
 
     // Keeping on again: the server keeps it once more.
     keep(&f, &desktop, laptops, true).await;
     crate::support::wait_for("the server keeps the workspace again", || async {
-        workspaces.summary(laptops).await.ok()
+        flow::server_serves(&desktop, f.work_id(), laptops)
+            .await
+            .then_some(())
     })
     .await;
 }
@@ -564,16 +570,7 @@ async fn flow_laptop_asleep_mid_turn_the_server_finishes_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_five_model_providers_each_answer_a_turn() {
     let f = Box::pin(four_devices()).await;
-    let workspaces = f.host.server.workspaces().unwrap();
-    let person = tilo_person_services::PersonServices::of(workspaces);
-    person.call_private_model_addresses(true);
     let fake = fake_model_providers::FakeProviders::start().await.unwrap();
-    person.sign_in_to_openai_at(tilo_person_services::OpenAiSignIn {
-        issuer: fake.issuer_url(),
-        backend: fake.chatgpt_backend_url(),
-        api: fake.openai_api_url(),
-        ..Default::default()
-    });
     let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
     let work = f.work_id();
 
@@ -759,8 +756,6 @@ async fn link_provider(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_page() {
     let f = Box::pin(four_devices()).await;
-    let workspaces = f.host.server.workspaces().unwrap();
-    tilo_person_services::PersonServices::of(workspaces).call_private_model_addresses(true);
 
     // The site the person has a key for: it answers whoever shows the key, and repeats what it
     // was sent, so a key a careless service handed back would be in the answer.
@@ -806,10 +801,6 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
     // An agent of theirs, certified for this workspace, joins as its own device.
     let workspace = *uuid::Uuid::parse_str(&f.work).unwrap().as_bytes();
     let agent = flow::agent_device(&f.root, "claude-code", AgentScope::Workspace(workspace));
-    workspaces
-        .enter(&f.work, (&agent.cert, &agent.key))
-        .await
-        .unwrap();
     let agent_session = flow::session(&f.host, &agent, &f.server_device.cert);
     flow::join(&agent_session, &f.work, "Work").await;
     let agent_device = f.client(&agent_session, &agent, "claude-code");

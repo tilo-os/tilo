@@ -18,6 +18,10 @@
     reason = "test support: a fixture that cannot start is the test's failure, and the host's server is kept alive until the test ends"
 )]
 
+mod daemon;
+
+pub use daemon::ServerDaemon;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, mpsc};
