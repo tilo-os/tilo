@@ -413,7 +413,10 @@ impl PublishedResources for VaultPublished {
                 tick.tick().await;
                 let said = match reading(&workspaces, &caller, &named).await {
                     Ok(reading) => Some(reading.into_bytes()),
-                    Err(_) => None,
+                    Err(error) => {
+                        tracing::warn!(%error, "the vault actions could not be read");
+                        None
+                    }
                 };
                 revision = revision.saturating_add(1);
                 let event = runtime_collab::wire::Event::Reading {
