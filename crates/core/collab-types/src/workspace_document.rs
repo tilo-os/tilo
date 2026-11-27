@@ -109,6 +109,26 @@ pub fn shared_workspace_document(app: &str, document: &str) -> Option<&'static W
 mod tests {
     use super::*;
 
+    /// Writing `workspace` reaches the workspace's own app: its governance and the
+    /// records the system keeps for its apps name no second app by it.
+    ///
+    /// The agents record was kept by an app of its own (`so.tilo.workspace`) beside
+    /// the workspace's (`tilo.workspace`), so a caller writing `workspace` — a
+    /// server making the stack's own person an administrator — was asked which it
+    /// meant.
+    #[test]
+    fn the_workspaces_own_record_keeps_it_one_app_called_workspace() {
+        let own = tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
+        let listed: Vec<(&str, &str)> = std::iter::once((own, "Workspace"))
+            .chain(WORKSPACE_DOCUMENTS.iter().map(|kept| (kept.app, "")))
+            .collect();
+        assert_eq!(
+            tilo_actions::tree::app_meant("workspace", &listed),
+            Ok(Some(own.to_owned())),
+            "a workspace's own app is the one app `workspace` names"
+        );
+    }
+
     #[test]
     fn only_a_listed_document_of_its_owner_is_a_workspace_document() {
         let emoji = workspace_document_id("tilo.workspace.emoji");
