@@ -19,6 +19,7 @@ fn tab(key: &str, title: &str) -> TabItemProps {
         modified: false,
         busy: false,
         presence: Vec::new(),
+        author: None,
     }
 }
 
@@ -31,6 +32,7 @@ fn props(tabs: Vec<TabItemProps>, active: usize) -> TabStripProps {
         close: Event::None,
         reorder: Event::None,
         detach: Event::None,
+        opened_by: Event::None,
         tabs,
     }
 }
@@ -154,6 +156,57 @@ tilo_test_env::scenario! {
             faces[0].rgb,
             Some((0x33, 0x66, 0xcc)),
             "the face wears the colour the view gave it"
+        );
+    }
+
+    // A window someone else opened leads its tab's faces with theirs, in the colour they wear
+    // everywhere, once even while they are also at it; an agent's face is the agent's mark.
+    phase whoever_opened_a_window_leads_its_faces;
+    {
+        let mut tabs = vec![tab("a", "A"), tab("b", "B")];
+        tabs[0].author = Some(tilo_ui_app::widget::TabAuthorProps {
+            name: Some("Scribe".to_owned()),
+            colour: Some("#2a9d8f".to_owned()),
+            agent: true,
+            ..Default::default()
+        });
+        tabs[1].author = Some(tilo_ui_app::widget::TabAuthorProps {
+            name: Some("Ada".to_owned()),
+            colour: Some("#c85028".to_owned()),
+            ..Default::default()
+        });
+        tabs[1].presence = vec![
+            tilo_ui_app::widget::PresenceFaceProps {
+                key: "ada".to_owned(),
+                who: None,
+                name: Some("Ada".to_owned()),
+                colour: Some("#c85028".to_owned()),
+            },
+            tilo_ui_app::widget::PresenceFaceProps {
+                key: "bo".to_owned(),
+                who: None,
+                name: Some("Bo".to_owned()),
+                colour: Some("#3366cc".to_owned()),
+            },
+        ];
+        let strip = TabStrip::from_props("frame", props(tabs, 0));
+        let agents = strip.bar().tabs()[0].id;
+        let adas = strip.bar().tabs()[1].id;
+        let faces = strip.bar().given_faces(adas).expect("Ada's face is on her tab");
+        let names: Vec<&str> = faces.iter().map(|face| face.name.as_str()).collect();
+        assert_eq!(names, ["Ada", "Bo"], "who opened it first, then who else is there");
+        assert_eq!(faces[0].rgb, Some((0xc8, 0x50, 0x28)), "in her own colour");
+        assert!(
+            strip.bar().holder(adas).is_some_and(|holder| !holder.keeps),
+            "she opened it, and it stays this person's to close and move"
+        );
+        assert!(strip.bar().closable_for_tests(), "its close chip stays");
+        let agent = strip.bar().given_faces(agents).expect("the agent's face is on its tab");
+        assert!(agent[0].agent && agent[0].name == "Scribe", "drawn as the agent: {agent:?}");
+        assert_eq!(
+            strip.bar().opened_by(agents).map(|mark| (mark.label.as_str(), mark.rgb)),
+            Some(("Scribe", (0x2a, 0x9d, 0x8f))),
+            "the agent's mark, in its colour"
         );
     }
 }

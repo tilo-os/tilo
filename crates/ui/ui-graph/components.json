@@ -8617,6 +8617,11 @@
           "doc": "Told a pill was dragged out of the strip and let go: carries the tab and where it was let go, as [`pack_point`] packs the window's coordinates. The shell puts the tab in the frame there, or makes one.",
           "value": "resource",
           "at": "int"
+        },
+        {
+          "name": "opened_by",
+          "doc": "Told the mark of the agent that opened the tab in front was pressed: carries that tab's resource. The shell shows what the agent did there in History.",
+          "value": "resource"
         }
       ],
       "semantics": {
@@ -12605,11 +12610,62 @@
           },
           "many": true,
           "default": true
+        },
+        {
+          "name": "author",
+          "doc": "Who opened the window, when someone else did: their face leads the pill's faces. Pointing at a person's tab names them; an agent's face is its mark, which names the agent and its step, is a stop for the keyboard, and opens what the agent did.",
+          "accepts": {
+            "component": "TabAuthor"
+          }
         }
       ],
       "semantics": {
         "role": "Tab",
         "label": "title"
+      }
+    },
+    {
+      "name": "TabAuthor",
+      "doc": "Who opened a tab's window, when it was not the person here: another member, or an agent.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What they are called here.",
+          "type": {
+            "option": "text"
+          },
+          "positional": true
+        },
+        {
+          "name": "colour",
+          "doc": "The colour they wear everywhere, as `#rrggbb`.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "agent",
+          "doc": "An agent opened it, on its person's behalf.",
+          "type": "bool"
+        },
+        {
+          "name": "run",
+          "doc": "The agent's run that opened it, as History groups its changes.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "step",
+          "doc": "What the agent called the step that opened it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "name"
       }
     },
     {

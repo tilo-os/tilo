@@ -1552,10 +1552,13 @@ impl Layouts {
     /// The member who opened each window of the workspaces this device shows, by tab: what each
     /// window's bar says of whose hands opened it.
     pub(crate) fn authors(&self) -> BTreeMap<u64, String> {
+        // A window the person here opened needs no word of whose it is: only someone else's does.
+        let me = self.person.borrow().clone();
         self.authors
             .borrow()
             .values()
             .flat_map(|people| people.iter().map(|(tab, person)| (*tab, person.clone())))
+            .filter(|(_, person)| me.as_ref() != Some(person))
             .collect()
     }
 

@@ -11,25 +11,50 @@ use vello::kurbo::Affine;
 
 pub(super) const OPENED_BY_TARGET: &str = "tab-opened-by";
 
+/// The agent that opened a window, as its mark draws it: the run, the agent's name, the step it
+/// was taking and the colour it wears.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentMark {
+    /// The run, as History groups its changes: what pressing the mark opens.
+    pub run: String,
+    /// The agent's name.
+    pub label: String,
+    /// What the agent called the step that opened the window; empty when it titled none.
+    pub title: String,
+    /// The colour the agent wears everywhere, beside every window it opened.
+    pub rgb: (u8, u8, u8),
+}
+
+impl From<&OpenedBy> for AgentMark {
+    /// The agent's colour comes from the agent, as presence draws it everywhere: never from its
+    /// display name or the session that opened the window.
+    fn from(opened: &OpenedBy) -> Self {
+        Self {
+            run: opened.run.clone(),
+            label: opened.label.clone(),
+            title: opened.title.clone(),
+            rgb: tilo_ui_base::presence::member_color(&opened.agent),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct OpenedByChip {
-    runs: std::collections::HashMap<u64, OpenedBy>,
+    runs: std::collections::HashMap<u64, AgentMark>,
     /// The person each window's agent opened it for, by the name this page knows them by.
     opened_for: std::collections::HashMap<u64, String>,
     painted: Option<Rect>,
     pressed: Option<(u64, String)>,
 }
 
-/// The agent's colour, as presence draws the agent everywhere: by the agent, never by its display
-/// name or by the session that opened the window.
-fn agent_colour(opened: &OpenedBy) -> vello::peniko::Color {
-    let (red, green, blue) = tilo_ui_base::presence::member_color(&opened.agent);
+fn agent_colour(opened: &AgentMark) -> vello::peniko::Color {
+    let (red, green, blue) = opened.rgb;
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 
 /// What pointing at the mark says: who opened the window, and for whom when the page knows them,
 /// then on a line of its own the step that opened it, when the agent titled one.
-fn opened_by_tip(opened: &OpenedBy, opened_for: Option<&str>) -> String {
+fn opened_by_tip(opened: &AgentMark, opened_for: Option<&str>) -> String {
     let agent = opened.label.as_str();
     let who = match opened_for
         .map(str::trim)
@@ -52,7 +77,12 @@ fn opened_by_tip(opened: &OpenedBy, opened_for: Option<&str>) -> String {
 
 impl TabBar {
     pub fn set_opened_by(&mut self, id: u64, run: Option<OpenedBy>) -> bool {
-        let changed = match run {
+        self.set_agent_mark(id, run.as_ref().map(AgentMark::from))
+    }
+
+    /// Mark `id` as opened by the agent `mark` names, or clear the mark. `true` when that changed.
+    pub fn set_agent_mark(&mut self, id: u64, mark: Option<AgentMark>) -> bool {
+        let changed = match mark {
             Some(run) => self.opened.runs.insert(id, run.clone()) != Some(run),
             None => self.opened.runs.remove(&id).is_some(),
         };
@@ -62,7 +92,7 @@ impl TabBar {
         changed
     }
 
-    pub fn opened_by(&self, id: u64) -> Option<&OpenedBy> {
+    pub fn opened_by(&self, id: u64) -> Option<&AgentMark> {
         self.opened.runs.get(&id)
     }
 
@@ -114,6 +144,13 @@ impl TabBar {
             Some(rect) => self.press_opened_by(rect.center()),
             None => false,
         }
+    }
+
+    /// What resting on the mark says: which agent opened the window, for whom when the page
+    /// knows, and the step it was taking.
+    pub(super) fn opened_by_tip_at(&self, at: Point) -> Option<(Rect, String)> {
+        let rect = self.opened.painted.filter(|rect| rect.contains(at))?;
+        Some((rect, self.opened_tip(self.active_id)?))
     }
 
     pub(super) fn opened_by_stop(&self) -> Option<(Rect, AccessNode)> {
@@ -192,6 +229,18 @@ impl TabBar {
         theme: &Theme,
     ) {
         self.opened.painted = None;
+        // A tab that wears the agent's face (a strip whose view says who opened its windows)
+        // has its mark there: the face is what points, reads and presses as the mark.
+        if let Some(i) = self.tabs.iter().position(|tab| tab.id == self.active_id)
+            && self.opened_by(self.active_id).is_some()
+            && self
+                .given_faces(self.active_id)
+                .and_then(|faces| faces.first())
+                .is_some_and(|face| face.agent)
+        {
+            self.opened.painted = self.first_face_rect(i);
+            return;
+        }
         let Some((rect, label)) = self.opened_by_chip(tr, theme) else {
             return;
         };

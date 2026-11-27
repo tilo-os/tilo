@@ -67,6 +67,11 @@ tilo_test_env::scenario! {
             Some("Jane Doe\u{2019}s agent opened this window\nFill Jane Doe\u{2019}s visa application"),
             "who opened it, then its step on a line of its own"
         );
+        assert_eq!(
+            bar.tooltip_target_at(rect.center()),
+            Some((rect, node.description.clone().unwrap_or_default())),
+            "pointing at the mark says what a reader hears"
+        );
         // Once the page knows whom the agent works for, the mark says so.
         assert!(bar.set_opened_for(1, Some("Quinten".into())));
         assert!(!bar.set_opened_for(1, Some("Quinten".into())), "unchanged");

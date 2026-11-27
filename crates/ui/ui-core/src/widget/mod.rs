@@ -245,9 +245,9 @@ pub use {
 };
 pub mod tabs;
 pub use {
-    tabs::PresenceFaceProps, tabs::TabBar, tabs::TabDescriptor, tabs::TabFaceSpec, tabs::TabHolder,
-    tabs::TabItemProps, tabs::TabMark, tabs::TabStrip, tabs::TabStripProps, tabs::draw_app_mark,
-    tabs::pack_point, tabs::unpack_point,
+    tabs::AgentMark, tabs::PresenceFaceProps, tabs::TabAuthorProps, tabs::TabBar,
+    tabs::TabDescriptor, tabs::TabFaceSpec, tabs::TabHolder, tabs::TabItemProps, tabs::TabMark,
+    tabs::TabStrip, tabs::TabStripProps, tabs::draw_app_mark, tabs::pack_point, tabs::unpack_point,
 };
 pub mod scrollbar;
 pub use {scrollbar::PressOutcome, scrollbar::Scrollbar, scrollbar::TrackMark};

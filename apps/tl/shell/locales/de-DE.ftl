@@ -1096,6 +1096,11 @@ d-d64rg4sw = Eigenes Fenster
 
 d-d64rg4sw-place = Platz
 
+d-c3l4l473 = Was der Agent getan hat
+    .doc = Was das Drücken der Marke des Agenten zeigt, der das Fenster am Platz `place` geöffnet hat: den Verlauf seines Workspace, wo die Schritte des Agenten stehen, wie ihn der eigene Verlauf-Knopf des Fensters zeigt.
+
+d-c3l4l473-place = Platz
+
 d-wln2heq6 = Nach vorn holen
     .doc = Holt das Fenster der Leiste `s` nach vorn, mit der Tastatur darin: die Sitzung holt seinen Platz nach vorn, wie bei einem Druck, einem Skript oder einem Agenten.
 

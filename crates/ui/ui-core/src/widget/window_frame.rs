@@ -1578,6 +1578,7 @@ mod tests {
             modified: false,
             busy: false,
             presence: Vec::new(),
+            author: None,
         };
         let tabs = vec![tab("a", "Sorting"), tab("b", "Second")];
         Box::new(TabStrip::from_props(
@@ -1590,6 +1591,7 @@ mod tests {
                 close: Event::None,
                 reorder: Event::None,
                 detach: Event::None,
+                opened_by: Event::None,
                 tabs,
             },
         ))
@@ -1607,6 +1609,7 @@ mod tests {
             modified: false,
             busy: false,
             presence: Vec::new(),
+            author: None,
         };
         Box::new(TabStrip::from_props(
             "frame",
@@ -1618,6 +1621,7 @@ mod tests {
                 close: Event::None,
                 reorder: Event::None,
                 detach: Event::None,
+                opened_by: Event::None,
                 tabs: vec![tab],
             },
         ))
@@ -1854,6 +1858,175 @@ mod tests {
             (body.y0 - bar.y1).abs() < 0.5 && (body.y1 - rect.y1).abs() < 0.5,
             "the place in front fills the window under the tabs: {body:?} under {bar:?}"
         );
+    }
+
+    /// Who opened a window shows on its tabs where the window stands: their face on the tab they
+    /// opened. Pointing at a person's tab names them; an agent's face is its mark, which names
+    /// the agent and its step when pointed at and is a stop for the keyboard.
+    #[test]
+    fn who_opened_a_window_shows_on_its_tabs_where_the_window_stands() {
+        use crate::widget::TabAuthorProps;
+        use tilo_ui_base::a11y::AccessNode;
+        let tab = |key: &str, title: &str, author: TabAuthorProps| TabItemProps {
+            key: key.to_owned(),
+            item: Some(ResourceId(format!("@notes.Note:{key}"))),
+            title: Some(title.to_owned()),
+            author: Some(author),
+            ..TabItemProps::default()
+        };
+        let tabs = vec![
+            tab(
+                "a",
+                "Receipts",
+                TabAuthorProps {
+                    name: Some("Scribe".to_owned()),
+                    colour: Some("#2a9d8f".to_owned()),
+                    agent: true,
+                    run: Some("agent-run:7".to_owned()),
+                    step: Some("File the receipts".to_owned()),
+                },
+            ),
+            tab(
+                "b",
+                "Plan",
+                TabAuthorProps {
+                    name: Some("Ada".to_owned()),
+                    colour: Some("#c85028".to_owned()),
+                    ..TabAuthorProps::default()
+                },
+            ),
+        ];
+        let queue: tilo_ui_base::Intents<tilo_ui_base::component::Fired> =
+            tilo_ui_base::Intents::default();
+        let strip = TabStrip::from_props(
+            "frame",
+            TabStripProps {
+                key: "frame".to_owned(),
+                active: tabs.first().and_then(|t| t.item.clone()),
+                focused: true,
+                opened_by: Event::View(tilo_ui_base::component::Intent::new(
+                    &queue,
+                    "frame",
+                    "opened_by",
+                )),
+                tabs,
+                ..TabStripProps::default()
+            },
+        );
+        let mut frame = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                name: Some("Receipts".to_owned()),
+                focused: true,
+                tabs: Some(Box::new(strip)),
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        );
+        let theme = Theme::light();
+        // The window as its strip gives it room: a face widens its pill, so the first drawing
+        // measures it and the next layout makes its room.
+        for _ in 0..2 {
+            let mut taffy = TaffyTree::<()>::new();
+            let mut nodes = std::collections::HashMap::new();
+            let node = Widget::build_layout(&mut frame, &mut taffy, &theme, &mut nodes);
+            if let Ok(mut style) = taffy.style(node).cloned() {
+                style.size = taffy::Size::from_lengths(900.0_f32, 360.0_f32);
+                let _ = taffy.set_style(node, style);
+            }
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(900.0),
+                        height: taffy::AvailableSpace::Definite(360.0),
+                    },
+                )
+                .expect("the window solves its layout");
+            Widget::apply_layout(&mut frame, &taffy, node, Point::ZERO);
+            let _ = drawn(&theme, &mut frame);
+        }
+        let own = frame.layers.children()[CONTENT].children();
+        let own = own[OWN_BAR].children();
+        let strip = own[TABS];
+        let tree = strip.accessibility().expect("the tabs answer a reader");
+        let all = |node: &AccessNode| -> Vec<AccessNode> {
+            fn walk(node: &AccessNode, out: &mut Vec<AccessNode>) {
+                out.push(node.clone());
+                for child in &node.children {
+                    walk(child, out);
+                }
+            }
+            let mut out = Vec::new();
+            walk(node, &mut out);
+            out
+        };
+        let nodes = all(&tree);
+        let rect_of = |node: &AccessNode| {
+            let at = node.bounds.expect("drawn where it stands");
+            Rect::new(at.x0, at.y0, at.x1, at.y1)
+        };
+        let plan = nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Plan"))
+            .map(rect_of)
+            .expect("the tab Ada opened");
+        assert_eq!(
+            strip
+                .tooltip_target_at(plan.center())
+                .map(|(_, tip)| tip)
+                .as_deref(),
+            Some("Ada opened this window"),
+            "pointing at her tab names her"
+        );
+        let mark = nodes
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some("tab-opened-by"))
+            .expect("the agent's face is its mark, a node of the tabs");
+        assert_eq!(mark.name.as_deref(), Some("Scribe"));
+        assert!(mark.state.focusable, "the keyboard stops on the mark");
+        let at = rect_of(mark);
+        let receipts = nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Receipts"))
+            .map(rect_of)
+            .expect("the tab the agent opened");
+        assert!(
+            receipts.contains(at.center()) && at.width() > 0.0,
+            "the agent's face stands on its tab: {at:?} in {receipts:?}"
+        );
+        assert_eq!(
+            strip
+                .tooltip_target_at(at.center())
+                .map(|(_, tip)| tip)
+                .as_deref(),
+            Some("Scribe opened this window\nFile the receipts"),
+            "pointing at the mark says which agent and the step it took"
+        );
+        // Pressing the mark, or reaching it with the keyboard, is the view's event for that tab.
+        assert_eq!(
+            with_tabs_bar(&mut frame, &mut TabBar::activate_opened_by),
+            Some(true)
+        );
+        let reported = strip_in(&mut frame).map(TabStrip::report);
+        assert!(reported.is_some(), "the strip reports what its bar marked");
+        let fired = queue.take();
+        assert_eq!(fired.len(), 1, "one press, one event: {fired:?}");
+        assert_eq!(fired[0].event, "opened_by");
+        assert_eq!(
+            fired[0].value,
+            Some(tilo_ui_base::component::Value::Resource(
+                "@notes.Note:a".to_owned()
+            ))
+        );
+    }
+
+    /// The tab strip under `widget`.
+    fn strip_in(widget: &mut dyn Widget) -> Option<&mut TabStrip> {
+        if widget.as_any_mut().is_some_and(|any| any.is::<TabStrip>()) {
+            return widget.as_any_mut().and_then(|any| any.downcast_mut());
+        }
+        widget.children_mut().into_iter().find_map(strip_in)
     }
 
     #[test]

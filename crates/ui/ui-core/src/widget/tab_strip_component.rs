@@ -53,6 +53,77 @@ pub struct TabItemProps {
     /// resource's lenses.
     #[component(part(default))]
     pub presence: Vec<PresenceFaceProps>,
+    /// Who opened the window, when someone else did: their face leads the pill's faces. Pointing
+    /// at a person's tab names them; an agent's face is its mark, which names the agent and its
+    /// step, is a stop for the keyboard, and opens what the agent did.
+    #[component(part)]
+    pub author: Option<TabAuthorProps>,
+}
+
+/// Who opened a tab's window, when it was not the person here: another member, or an agent.
+#[derive(Component, Default, Clone, PartialEq)]
+#[component(name = "TabAuthor", role = "Image", label = "name")]
+pub struct TabAuthorProps {
+    /// What they are called here.
+    #[component(positional)]
+    pub name: Option<String>,
+    /// The colour they wear everywhere, as `#rrggbb`.
+    pub colour: Option<String>,
+    /// An agent opened it, on its person's behalf.
+    pub agent: bool,
+    /// The agent's run that opened it, as History groups its changes.
+    pub run: Option<String>,
+    /// What the agent called the step that opened it.
+    pub step: Option<String>,
+}
+
+tilo_ui_base::part_type!(TabAuthorProps);
+
+impl TabAuthorProps {
+    fn name(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+
+    fn rgb(&self) -> (u8, u8, u8) {
+        self.colour.as_deref().and_then(hex_rgb).unwrap_or_else(|| {
+            tilo_ui_base::presence::identity_rgb(tilo_ui_base::tokens::PresenceHue::Violet)
+        })
+    }
+
+    /// The mark of the agent that opened the window, when one did.
+    fn agent_mark(&self) -> Option<crate::widget::AgentMark> {
+        let label = self.name().filter(|_| self.agent)?.to_owned();
+        Some(crate::widget::AgentMark {
+            run: self.run.clone().unwrap_or_default(),
+            label,
+            title: self.step.clone().unwrap_or_default(),
+            rgb: self.rgb(),
+        })
+    }
+
+    /// The person who opened the window, when a person did.
+    fn holder(&self) -> Option<crate::widget::TabHolder> {
+        let name = self.name().filter(|_| !self.agent)?.to_owned();
+        Some(crate::widget::TabHolder {
+            name,
+            rgb: self.rgb(),
+            keeps: false,
+        })
+    }
+
+    /// Their face, leading the pill's faces: a person's initials or an agent's mark, in the
+    /// colour they wear.
+    fn face(&self) -> Option<TabFaceSpec> {
+        Some(TabFaceSpec {
+            name: self.name()?.to_owned(),
+            hue: tilo_ui_base::tokens::PresenceHue::Violet,
+            agent: self.agent,
+            rgb: Some(self.rgb()),
+        })
+    }
 }
 
 /// One face on a tab: who is at the tab's resource now.
@@ -108,6 +179,7 @@ impl TabItemProps {
             modified: self.modified,
             busy: self.busy,
             presence: self.presence.clone(),
+            author: self.author.clone(),
         }
     }
 }
@@ -147,6 +219,10 @@ pub struct TabStripProps {
     /// coordinates. The shell puts the tab in the frame there, or makes one.
     #[component(event(value = ResourceId, at = i64))]
     pub detach: Event,
+    /// Told the mark of the agent that opened the tab in front was pressed: carries that tab's
+    /// resource. The shell shows what the agent did there in History.
+    #[component(event(value = ResourceId))]
+    pub opened_by: Event,
 }
 
 /// A strip's tabs: [`TabItemProps`] only.
@@ -218,6 +294,7 @@ struct Events {
     close: Event,
     reorder: Event,
     detach: Event,
+    opened_by: Event,
 }
 
 impl Events {
@@ -228,6 +305,7 @@ impl Events {
             close: props.close.clone(),
             reorder: props.reorder.clone(),
             detach: props.detach.clone(),
+            opened_by: props.opened_by.clone(),
         }
     }
 
@@ -246,6 +324,7 @@ impl Events {
             "close" => self.close.fire(Some(value(None))),
             "reorder" => self.reorder.fire(Some(value(Some(at)))),
             "detach" => self.detach.fire(Some(value(Some(at)))),
+            "opened_by" => self.opened_by.fire(Some(value(None))),
             _ => {}
         }
     }
@@ -470,6 +549,7 @@ impl TabStripProps {
             close: Event::None,
             reorder: Event::None,
             detach: Event::None,
+            opened_by: Event::None,
         }
     }
 }
@@ -538,8 +618,21 @@ impl TabStrip {
             self.bar.set_attention(*id, tab.attention);
             self.bar.set_mark(*id, tab.busy.then_some(TabMark::Busy));
             self.bar.set_modified(*id, tab.modified);
+            // Whoever opened the window leads its faces, once, ahead of who else is there now.
+            let author = tab.author.as_ref();
+            let opener = author.and_then(TabAuthorProps::face);
+            let mut faces: Vec<TabFaceSpec> = opener.clone().into_iter().collect();
+            faces.extend(
+                tab.presence
+                    .iter()
+                    .filter_map(face_spec)
+                    .filter(|face| opener.as_ref().is_none_or(|lead| lead.name != face.name)),
+            );
+            self.bar.set_faces(*id, faces);
             self.bar
-                .set_faces(*id, tab.presence.iter().filter_map(face_spec).collect());
+                .set_holder(*id, author.and_then(TabAuthorProps::holder));
+            self.bar
+                .set_agent_mark(*id, author.and_then(TabAuthorProps::agent_mark));
         }
     }
 
@@ -662,6 +755,11 @@ impl TabStrip {
             self.detach_point = Some(point);
             out.push(("detach", resource.clone(), pack_point(point.x, point.y)));
         }
+        if let Some((id, _)) = self.bar.take_opened_by_press()
+            && let Some(resource) = self.tabs.resources.get(&id)
+        {
+            out.push(("opened_by", resource.clone(), 0));
+        }
         out
     }
 }
@@ -681,6 +779,7 @@ mod tests {
             modified: false,
             busy: false,
             presence: Vec::new(),
+            author: None,
         }
     }
 
@@ -701,6 +800,7 @@ mod tests {
             close: Event::None,
             reorder: Event::None,
             detach: Event::None,
+            opened_by: Event::None,
             tabs,
         }
     }

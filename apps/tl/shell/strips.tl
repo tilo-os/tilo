@@ -484,6 +484,7 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
                         on close(p: session.Place): session.close(place: p)
                         on reorder(p: session.Place, at: Int): reorder_place(a, s, p, at)
                         on detach(p: session.Place): detach_place(p)
+                        on opened_by(p: session.Place): show_what_the_agent_did(p)
                         for p in placed {
                             if let w = shown_window(p) {
                                 ui.TabItem(
@@ -496,8 +497,24 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
                                 ) {
                                     // Who else is at the window now: their faces, in their
                                     // presence colour, on its tab.
-                                    for f in w.presence {
-                                        ui.TabFace(name: f.name, colour: f.colour)
+                                    presence: {
+                                        for f in w.presence {
+                                            ui.TabFace(name: f.name, colour: f.colour)
+                                        }
+                                    }
+                                    // Who opened it, when someone else did: their face leads
+                                    // the tab's faces, and names them when pointed at; an
+                                    // agent's names its step too, and opens what it did.
+                                    author: {
+                                        if let a = w.author {
+                                            ui.TabAuthor(
+                                                author_name(a),
+                                                colour: a.colour,
+                                                agent: a.kind == "agent",
+                                                run: a.run,
+                                                step: a.title,
+                                            )
+                                        }
                                     }
                                 }
                             } else {
@@ -651,6 +668,14 @@ fn strip_place(a: Layout, s: LayoutStrip) -> Option<LayoutPlace> {
 /// place in front, which lights its first tab instead.
 fn place_in_front(s: LayoutStrip) -> Option<session.Place> {
     if s.active != "" { the_place(s.active) }
+}
+
+/// What pressing the mark of the agent that opened the window at `place` shows: the history of
+/// its workspace, where the agent's steps are, as the window's own History button shows it.
+action show_what_the_agent_did(place: session.Place) (icon: .history, label: "What the agent did") {
+    if let w = device.windows.all.find(w -> w.key == place_key(place)) {
+        session.activity(workspace: w.workspace_key, view: "catch-up", author: .none)
+    }
 }
 
 /// Shows the place `place` and brings its window forward with it, the keyboard in it: what
@@ -1058,8 +1083,11 @@ view window_bar_actions(w: device.Window, waits: Bool) {
     }
     // Whose hands opened the window, person or agent, with the live presence of whoever is here:
     // whose window it is, never who may close it.
+    // An agent's face stands on its tab, where the strip is drawn, with its step and its run.
     if let a = w.author {
-        author_chip(a)
+        if a.kind != "agent" or not shell.strips_tabs {
+            author_chip(a)
+        }
     }
     // What the window's app puts in its bar, before the shell's own controls: its leading
     // controls, its way back and forward, its sidebar, its actions and views, a line it says to

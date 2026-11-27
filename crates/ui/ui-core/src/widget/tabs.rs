@@ -65,6 +65,7 @@ pub use new_tab::new_tab_name;
 pub(crate) use new_tab::new_tab_name;
 pub(crate) use new_tab::{new_tab_control, paint_new_tab};
 use pill_layout::{chip_rects, fit_pill_widths};
+pub use status_chips::AgentMark;
 pub use tabs_faces::TabFaceSpec;
 use tabs_faces::{FaceMetrics, PILL_MAX_FACES, PillFaces, paint_tab_face};
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
@@ -1578,13 +1579,8 @@ impl TabBar {
             return;
         }
         let r = pill.rect;
-        let reserve = self
-            .reveal_px
-            .get(pill.i)
-            .copied()
-            .unwrap_or_else(|| Reveal::None.reserve());
         let metrics = self.face_metrics;
-        let x0 = r.x1 - reserve - faces.width(metrics) + metrics.gap;
+        let x0 = self.pill_faces_x0(pill.i, r);
         let cy = r.center().y;
         let ring = tilo_ui_base::tokens::colors::over(
             self.ground(ctx.theme),
@@ -1646,6 +1642,32 @@ impl TabBar {
             faces.overflow,
             Some(ring),
         );
+    }
+
+    /// Where pill `i`, drawn at `r`, starts its faces: at the trailing end of its title zone,
+    /// before what its trailing edge reveals.
+    fn pill_faces_x0(&self, i: usize, r: Rect) -> f64 {
+        let faces = self.pill_faces.get(i).copied().unwrap_or_default();
+        let reserve = self
+            .reveal_px
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| Reveal::None.reserve());
+        let metrics = self.face_metrics;
+        r.x1 - reserve - faces.width(metrics) + metrics.gap
+    }
+
+    /// Where pill `i` draws its first face, when it draws one.
+    pub(super) fn first_face_rect(&self, i: usize) -> Option<Rect> {
+        let faces = self.pill_faces.get(i).copied().unwrap_or_default();
+        let r = *self.tab_rects.get(i)?;
+        (faces.faces > 0).then(|| {
+            let x0 = self.pill_faces_x0(i, r);
+            square_at(
+                Point::new(x0 + self.face_metrics.face / 2.0, r.center().y),
+                self.face_metrics.face,
+            )
+        })
     }
 
     /// The close × (or unsaved-changes dot) chip. Split out of
@@ -7015,5 +7037,6 @@ mod tests {
 #[path = "tab_strip_component.rs"]
 mod component;
 pub use component::{
-    PresenceFaceProps, TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point,
+    PresenceFaceProps, TabAuthorProps, TabItemProps, TabStrip, TabStripProps, pack_point,
+    unpack_point,
 };

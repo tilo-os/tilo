@@ -19,6 +19,9 @@ impl TabBar {
     }
 
     pub(super) fn tip_at(&self, point: Point) -> Option<(Rect, String)> {
+        if let Some(tip) = self.opened_by_tip_at(point) {
+            return Some(tip);
+        }
         if self.active_toolbar().is_some()
             && let Some(tip) = self.toolbar_row.tooltip_at(point)
         {
