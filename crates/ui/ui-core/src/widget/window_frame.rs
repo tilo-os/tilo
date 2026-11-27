@@ -1198,19 +1198,6 @@ impl Decorator for WindowFrame {
                 .needs_frame(tilo_ui_base::motion::frame_now(), self.motion.fast())
     }
 
-    /// A row of windows a scroll view scrolls offers the scroll each window's leading edge to
-    /// settle on, so a fling or a wheel leaves a whole window at the row's edge rather than half
-    /// of two.
-    fn snap_points(&self, axis: tilo_ui_base::widget::ScrollAxis, out: &mut Vec<f32>) {
-        if matches!(axis, tilo_ui_base::widget::ScrollAxis::Horizontal)
-            && self.resizable
-            && !self.leaving
-            && self.rect.width() > 0.0
-        {
-            out.push(0.0);
-        }
-    }
-
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.layers.collect_damage(regions);
         let now = tilo_ui_base::motion::frame_now();
@@ -1422,7 +1409,7 @@ impl WindowFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{Row, TabItemProps, TabStrip, TabStripProps};
+    use crate::widget::{TabItemProps, TabStrip, TabStripProps};
     use tilo_ui_base::{component::Described, component::Event, component::ResourceId};
     use vello::Scene;
     use vello::kurbo::Affine;
@@ -2201,59 +2188,6 @@ mod tests {
                 tilo_ui_base::component::Value::Int(480),
             ])),
             "the width it is taking, then the width it had"
-        );
-    }
-
-    /// A row of a shell's windows offers the scroll around it each window's leading edge to settle
-    /// on: a fling or a wheel leaves a whole window at the row's edge, never half of two.
-    #[test]
-    fn a_row_of_windows_offers_each_windows_edge_to_the_scroll() {
-        let frame = |key: &str| {
-            // A spacer of a token's size, so the window has a width of its own in the row.
-            let body: Element = Box::new(Spacer::token(SpacingStep::S16));
-            let frame: Element = Box::new(WindowFrame::from_props(
-                key,
-                WindowFrameProps {
-                    key: key.to_owned(),
-                    name: Some(key.to_owned()),
-                    resizable: true,
-                    body: Some(body),
-                    ..WindowFrameProps::default()
-                },
-            ));
-            frame
-        };
-        let mut row = Row::new().with_gap(12.0);
-        row = row.push(frame("a"));
-        row = row.push(frame("b"));
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut nodes = std::collections::HashMap::new();
-        let node = Widget::build_layout(&mut row, &mut taffy, &theme, &mut nodes);
-        if let Ok(mut style) = taffy.style(node).cloned() {
-            style.size = taffy::Size::from_lengths(1000.0_f32, 400.0_f32);
-            let _ = taffy.set_style(node, style);
-        }
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(1000.0),
-                    height: taffy::AvailableSpace::Definite(400.0),
-                },
-            )
-            .expect("the row solves its layout");
-        Widget::apply_layout(&mut row, &taffy, node, Point::ZERO);
-        let mut points = Vec::new();
-        Widget::snap_points(
-            &row,
-            tilo_ui_base::widget::ScrollAxis::Horizontal,
-            &mut points,
-        );
-        assert_eq!(points.len(), 2, "one detent per window: {points:?}");
-        assert!(
-            points[0] < points[1],
-            "the second window's edge is where the scroll settles: {points:?}"
         );
     }
 }

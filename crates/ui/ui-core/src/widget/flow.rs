@@ -950,30 +950,6 @@ macro_rules! flow_widget_methods {
         fn release_scene_cache(&mut self) {
             self.flow.release_scene_cache();
         }
-
-        /// A child that offers the scroll around this row detents (a window's edge) offers
-        /// them from the row's own leading edge, so the view settles a whole window at a time
-        /// wherever the row is panned to.
-        fn snap_points(
-            &self,
-            axis: ::tilo_ui_base::widget::ScrollAxis,
-            out: &mut Vec<f32>,
-        ) {
-            let along = |rect: vello::kurbo::Rect| match axis {
-                ::tilo_ui_base::widget::ScrollAxis::Vertical => rect.y0,
-                ::tilo_ui_base::widget::ScrollAxis::Horizontal
-                | ::tilo_ui_base::widget::ScrollAxis::Both => rect.x0,
-            };
-            let lead = along(self.flow.rect);
-            for child in &self.flow.children {
-                let start = out.len();
-                child.snap_points(axis, out);
-                let at = ::tilo_ui_base::num::f32_of_f64(along(child.get_rect()) - lead);
-                for point in &mut out[start..] {
-                    *point += at;
-                }
-            }
-        }
     };
 }
 pub(super) use flow_widget_methods;
