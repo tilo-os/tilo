@@ -701,8 +701,10 @@ impl Session {
         // The settings everything in this process reads: the workspace's, once the daemon holds
         // the person's.
         let settings = crate::session_settings::SessionSettings::install();
-        // A write the daemon takes to a layout or a view has it read again off the loop.
+        // A write the daemon takes to a layout or a view has it read again off the loop, and one it
+        // takes to the settings has them read again.
         desktops.follow_writes(daemon_writes.clone());
+        settings.follow_writes(&daemon_writes);
         let view = crate::options::open_view(&daemon_link, &options);
         let service_root = crate::options::service_root(&options);
         if let Some(view) = &view {

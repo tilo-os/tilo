@@ -14,12 +14,15 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use collab_types::store::wire::{Command, Reply};
+use runtime_collab::wire::shell::DocumentWritten;
 use serde_json::{Map, Value};
 use settings_sections::workspace::{Stores, WorkspaceSettings};
 use settings_store::placement::Holder;
-use tilo_session_client::daemon_documents::DaemonShell;
+use tilo_session_client::daemon_documents::{DaemonShell, DaemonWritesFeed};
+use tokio::sync::broadcast;
 
-/// How long the settings go between looks at what another device or an agent changed.
+/// How long a workspace the daemon does not hold yet goes between questions: what it holds is only
+/// known by asking, and a workspace it takes in later is found on the next question.
 const LOOK_EVERY: Duration = Duration::from_millis(400);
 
 /// The workspace whose only member is the person, which every device of theirs takes part in
@@ -42,6 +45,13 @@ pub(crate) struct SessionSettings {
     /// The revision of the settings, and the device they were read on, last left for the
     /// processes outside the session.
     published: std::cell::RefCell<Option<(u64, String)>>,
+    /// The daemon's notice of the writes it takes, followed once the session has its link: a write
+    /// to the settings is when they are read again, never a clock.
+    writes: std::cell::RefCell<Option<broadcast::Receiver<DocumentWritten>>>,
+    /// Whether a write to the settings reached the store since the last read of them.
+    moved: Cell<bool>,
+    /// Whether a setting was set here since the last read: what is carried to the store then.
+    dirty: Arc<std::sync::atomic::AtomicBool>,
     /// Where what is left is written: a worker, so no pass of the session's loop reads or writes
     /// the file. `None` when the worker could not start, and the pass writes it itself.
     publisher: Option<mpsc::Sender<Publication>>,
@@ -79,14 +89,23 @@ impl SessionSettings {
             held: Arc::default(),
             reading: Arc::default(),
             published: std::cell::RefCell::new(None),
+            writes: std::cell::RefCell::new(None),
+            moved: Cell::new(true),
+            dirty: Arc::default(),
             publisher: publisher.ok(),
         }
     }
 
+    /// Follow the daemon's notice of the writes it takes: what reaches the settings is what they
+    /// are read again for, as another device's or an agent's change reaches them.
+    pub(crate) fn follow_writes(&self, writes: &DaemonWritesFeed) {
+        *self.writes.borrow_mut() = Some(writes.follow());
+    }
+
     /// Keep the settings in `person`'s workspace once the device's daemon holds it and this
     /// device seals writes to it (`sealing`), carry what was set since the last pass there, and
-    /// take in what moved there now and then. Until then what is set is kept on the device, as
-    /// before the workspace came.
+    /// take in what moved there when a write reaches it. Until then what is set is kept on the
+    /// device, as before the workspace came.
     pub(crate) fn follow(
         &self,
         daemon: &DaemonShell,
@@ -129,26 +148,86 @@ impl SessionSettings {
             }
             self.settings.attach(Arc::new(SessionStores {
                 daemon: daemon.clone(),
-                workspace,
+                workspace: workspace.clone(),
                 person,
                 device,
                 wake: Arc::clone(wake),
+                dirty: Arc::clone(&self.dirty),
             }));
             self.attached.set(true);
+            // What the workspace holds now is what the session reads on the pass after, as a write
+            // that reached it is.
+            self.moved.set(true);
+            self.note_writes(&workspace);
             return;
         }
-        if due {
-            self.looked.set(Some(now));
-            self.read_off_the_loop(wake);
+        // The settings are read again when a write reached them or when one was set here: never on
+        // a clock, which would ask a daemon that heard nothing on every pass it went by. A session
+        // with no notices to follow, as one with no link, looks on the clock as before.
+        if let Some((person, _)) = identity {
+            let workspace = persons_workspace(&person);
+            if self.follows_writes() {
+                self.note_writes(&workspace);
+            } else if due {
+                self.looked.set(Some(now));
+                self.moved.set(true);
+            }
+        }
+        let moved = self.moved.replace(false);
+        let dirty = self.dirty.swap(false, std::sync::atomic::Ordering::AcqRel);
+        if moved || dirty {
+            self.read_off_the_loop(wake, moved);
         }
     }
 
-    /// Carry what was set and take in what moved, on a thread of its own: each of the two is a
-    /// round trip to the device's daemon, and the loop must never wait on one. The next pass reads
-    /// what it left, woken by its answer; one read is in flight at a time.
-    fn read_off_the_loop(&self, wake: &tilo_service::Wake) {
+    /// Whether the daemon's notice of its writes is followed here.
+    fn follows_writes(&self) -> bool {
+        self.writes.borrow().is_some()
+    }
+
+    /// Note a write to the settings `workspace` holds, as the daemon tells of it: one made by
+    /// another device, an agent, or this session itself.
+    fn note_writes(&self, workspace: &str) {
+        let mut writes = self.writes.borrow_mut();
+        let closed = {
+            let Some(receiver) = writes.as_mut() else {
+                return;
+            };
+            let mut closed = false;
+            loop {
+                match receiver.try_recv() {
+                    Ok(written) => {
+                        if written.workspace == workspace
+                            && written.app == settings_store::workspace::SURFACE_APP
+                        {
+                            self.moved.set(true);
+                        }
+                    }
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => self.moved.set(true),
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(broadcast::error::TryRecvError::Closed) => {
+                        closed = true;
+                        break;
+                    }
+                }
+            }
+            closed
+        };
+        if closed {
+            *writes = None;
+        }
+    }
+
+    /// Carry what was set, and, where `refresh`, take in what moved, on a thread of its own: each
+    /// is a round trip to the device's daemon, and the loop must never wait on one. The next pass
+    /// reads what it left, woken by its answer; one read is in flight at a time.
+    fn read_off_the_loop(&self, wake: &tilo_service::Wake, refresh: bool) {
         use std::sync::atomic::Ordering;
         if self.reading.swap(true, Ordering::AcqRel) {
+            // A read is with the daemon now: what was set or moved is read on the pass after its
+            // answer.
+            self.moved.set(refresh);
+            self.dirty.store(true, Ordering::Release);
             return;
         }
         let (settings, wake, finished) = (
@@ -160,7 +239,8 @@ impl SessionSettings {
             .name("settings-read".into())
             .spawn(move || {
                 settings.sync();
-                if settings.refresh() {
+                let moved = refresh && settings.refresh();
+                if moved {
                     wake();
                 }
                 finished.store(false, Ordering::Release);
@@ -169,7 +249,9 @@ impl SessionSettings {
             self.reading.store(false, Ordering::Release);
             tracing::warn!(%error, "the settings are read on the loop");
             self.settings.sync();
-            self.settings.refresh();
+            if refresh {
+                self.settings.refresh();
+            }
         }
     }
 
@@ -267,6 +349,8 @@ struct SessionStores {
     person: [u8; 32],
     device: [u8; 32],
     wake: tilo_service::Wake,
+    /// Whether a setting was set since the last read: what the session carries to the store then.
+    dirty: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Stores for SessionStores {
@@ -290,6 +374,7 @@ impl Stores for SessionStores {
     }
 
     fn wake(&self) {
+        self.dirty.store(true, std::sync::atomic::Ordering::Release);
         (self.wake)();
     }
 }
