@@ -275,33 +275,25 @@ pub fn locate_host(program: &std::path::Path) -> io::Result<std::path::PathBuf> 
     unix::locate_host(program)
 }
 
-/// Whether a capture asks a daemon rather than running here: only a caller that named a profile
-/// of its own (`TILO_RUNTIME_PROFILE`, as `tools/screenshots/run.py` and a harness do) does. A
-/// capture never joins the person's own daemon, whose workspace and app data are theirs.
-#[must_use]
-pub fn capture_attaches() -> bool {
-    std::env::var_os("TILO_RUNTIME_PROFILE").is_some_and(|profile| !profile.is_empty())
-}
-
 /// Join the shared native runtime, or retain an inherited launcher connection.
 ///
 /// # Errors
 /// Invalid inherited descriptors, unavailable hosts and failed execs are
 /// reported; they never silently select a different authority.
-pub fn ensure_attached(app_id: &str, capture_args: &[String]) -> io::Result<()> {
+pub fn ensure_attached(app_id: &str) -> io::Result<()> {
     // Android has no runtime host to re-exec under: its apps run as they are.
     #[cfg(target_os = "android")]
     {
-        let _ = (app_id, capture_args);
+        let _ = app_id;
         Ok(())
     }
     #[cfg(all(unix, not(target_os = "android")))]
     {
-        unix::ensure_attached(app_id, capture_args)
+        unix::ensure_attached(app_id)
     }
     #[cfg(not(unix))]
     {
-        let _ = (app_id, capture_args);
+        let _ = app_id;
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "automatic native runtime attachment requires Unix",
@@ -414,7 +406,7 @@ mod unix {
     }
 
     #[cfg(not(target_os = "android"))]
-    pub(super) fn ensure_attached(app_id: &str, capture_args: &[String]) -> io::Result<()> {
+    pub(super) fn ensure_attached(app_id: &str) -> io::Result<()> {
         if inherited()? {
             if let Some(raw) = env::var_os("TILO_RUNTIME_LAUNCH_GUARD_FD") {
                 let fd = raw
@@ -440,15 +432,8 @@ mod unix {
         let executable = env::current_exe()?;
         let host = locate_host(&executable)?;
         // The daemon this computer runs starts the app it has installed: this process names the
-        // app, and for a capture the app's own capture arguments, and nothing else. The host's
-        // asking ends it, and the daemon starts the app with what it reached: its sandbox, its
-        // grants and the connectors the device runs for its origins.
-        let mut command = Command::new(host);
-        command.arg("--run-app").arg(app_id);
-        if !capture_args.is_empty() {
-            command.arg("--").args(capture_args);
-        }
-        Err(command.exec())
+        // app and nothing else, and the host's asking ends it.
+        Err(Command::new(host).arg("--run-app").arg(app_id).exec())
     }
 
     /// How long the exchange with the daemon may take: the daemon starts the instance through the

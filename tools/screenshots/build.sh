@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Build what tools/screenshots/run.py runs: every app of the default
-# collection as a thin app, the tilolang packages beside them (each compiled
-# into the payload the one tilolang runtime binary reads), the shared runtime
-# library they link, its engines and the Rust standard library, and the
-# product font catalog beside the executables. OUT/bin holds the apps, the
-# modules, the daemon, the launcher, the installer, the runtime bundle tool and
-# fonts/, OUT/lib the libraries, OUT/runtime the bundles a profile mounts, and
-# OUT/install one development build per app, the form a daemon installs.
+# collection as a thin app, the runtime they and the tilolang packages run on
+# (the shared runtime library, its engines, the Rust standard library and the
+# product font catalog), and the programs a capture runs through. OUT/bin holds
+# the daemon, the launcher, the installer, the tilolang tool, the runtime bundle
+# tool and fonts/, OUT/lib the runtime's libraries, OUT/runtime the bundles a
+# profile mounts, and OUT/install one development build per native app, the
+# form a daemon installs.
 #
 # Usage: tools/screenshots/build.sh OUT
 set -euo pipefail
@@ -38,10 +38,6 @@ INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$plan") \
 
 rm -rf "$out"
 mkdir -p "$out/bin" "$out/lib"
-while IFS= read -r binary; do
-    cp -p "$target/thin-app/$binary" "$out/bin/"
-done < <(jq -r '.catalog[].binary | select(length > 0)' <<<"$plan")
-cp -p "$target/thin-app/tilolang-process" "$out/bin/"
 cp -p "$target/thin-app/libruntime_dylib.so" "$out/lib/"
 while IFS= read -r engine; do
     cp -p "$target/thin-app/$engine" "$out/lib/"
@@ -106,8 +102,7 @@ tilolang_bake_runtime "$out/bin/tilo-runtime-bundle" "$target/thin-app/tilolang-
     "$tilolang_version"
 
 # Each app of the collection as the development build a disposable profile
-# installs: the manifest with the runtime this build baked, and its payload files.
-# The build's own dirs (the thin binaries) are laid out for a direct run; this is
+# installs: the manifest with the runtime this build baked, and its payload files,
 # the form the device signs and starts.
 mkdir -p "$out/install"
 while IFS=$'\t' read -r name manifest binary; do
@@ -118,7 +113,7 @@ while IFS=$'\t' read -r name manifest binary; do
         "$repo_root/$manifest" > "$dir/tilo-app.toml"
     grep -q "^runtime = \"$runtime_id\"" "$dir/tilo-app.toml" \
         || { echo "$manifest names no runtime to point at $runtime_id" >&2; exit 1; }
-    cp -p "$out/bin/$binary" "$dir/bin/$binary"
+    cp -p "$target/thin-app/$binary" "$dir/bin/$binary"
     # The app's public surface ships at the payload root, as the image's own
     # packing places it: the window bar, search and slots the app declares.
     if [[ -f $(dirname "$repo_root/$manifest")/surface.toml ]]; then

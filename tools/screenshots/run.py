@@ -39,12 +39,11 @@ published resource tree after the first situation: what a plan can invoke.
 there is one.
 
 Usage:
-  tools/screenshots/run.py --bin-dir DIR --out DIR [--lib-dir DIR ...]
-                           [--apps "tasks chat ..."] [--jobs N]
+  tools/screenshots/run.py --bin-dir DIR --out DIR [--apps "tasks chat ..."] [--jobs N]
 
-`--bin-dir` holds the app executables (and a `fonts/` catalog beside them);
-`--lib-dir` adds directories the dynamic loader searches (a thin build's
-runtime library and libstd). tools/screenshots/build.sh builds both.
+`--bin-dir` holds the daemon, the launcher and the tools a capture runs through
+(and a `fonts/` catalog beside them), with the runtime bundles and the staged
+builds beside it. tools/screenshots/build.sh builds it.
 """
 
 from __future__ import annotations
@@ -256,7 +255,7 @@ def resolve_strings(value, replace):
     return value
 
 
-def profile_env(root: Path, lib_dirs: list[Path]) -> dict:
+def profile_env(root: Path) -> dict:
     """A fresh profile: nothing of the caller's session reaches the app."""
     env = {
         key: value
@@ -283,8 +282,6 @@ def profile_env(root: Path, lib_dirs: list[Path]) -> dict:
     env["GSETTINGS_BACKEND"] = "memory"
     env.setdefault("LANG", "en_US.UTF-8")
     env.setdefault("TZ", "Europe/Berlin")
-    if lib_dirs:
-        env["LD_LIBRARY_PATH"] = ":".join(str(d) for d in lib_dirs)
     return env
 
 
@@ -383,7 +380,7 @@ class Session:
         self._tmp = tempfile.TemporaryDirectory(prefix="t-", dir="/tmp")
         self.tmp = Path(self._tmp.name)
         self.log = self.tmp / "daemon.log"
-        self.env = profile_env(self.tmp / "profile", args.lib_dir)
+        self.env = profile_env(self.tmp / "profile")
         self.home = Path(self.env["HOME"])
         seed_home(plan, self.home, self.env)
 
@@ -653,13 +650,11 @@ def run_device(plan: Plan, situations: list, args, first: str) -> tuple[list, di
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bin-dir", type=Path, required=True)
-    parser.add_argument("--lib-dir", type=Path, action="append", default=[])
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--apps", default="", help="space-separated app directory names (default: all)")
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     args = parser.parse_args()
     args.bin_dir = args.bin_dir.resolve()
-    args.lib_dir = [d.resolve() for d in args.lib_dir]
     args.out = args.out.resolve()
 
     entries = catalog()

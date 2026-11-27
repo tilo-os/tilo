@@ -494,7 +494,7 @@ A tilolang package of the collection is photographed the same way, through the s
 Each app's directory (`<out>/<app>/`, pictures named `<situation>-<theme>-<size>.png`) holds `manifest.json` (its situations, titles and pictures) and `resources.json` (what its plan can invoke); `summary.json` at the top lists every situation that failed, with the end of its log, and `<situation>.log` beside the pictures has the whole log. With a build of the apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner takes one app or all, on the software renderer; on a laptop take the GPU lock:
 
 ```bash
-flock ~/TiloData/.gpu-lock tools/screenshots/run.py --bin-dir DIR/bin --lib-dir DIR/lib \
+flock ~/TiloData/.gpu-lock tools/screenshots/run.py --bin-dir DIR/bin \
     --out target/app-screenshots --apps "notes calendar"
 ```
 

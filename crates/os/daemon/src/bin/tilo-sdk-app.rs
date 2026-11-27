@@ -20,7 +20,7 @@ fn main() -> std::process::ExitCode {
         eprintln!("tilo-sdk-app: this program is an app: it is started by the launcher for one");
         return std::process::ExitCode::FAILURE;
     };
-    if let Err(error) = runtime_portal::native::ensure_attached(&app, &[]) {
+    if let Err(error) = runtime_portal::native::ensure_attached(&app) {
         eprintln!("tilo-sdk-app: attaching {app}: {error}");
         return std::process::ExitCode::FAILURE;
     }

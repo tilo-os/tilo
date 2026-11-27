@@ -251,8 +251,6 @@ pub struct LaunchOptions {
     pub gui_argv: Vec<String>,
     /// Open [`Self::open_uri`] in a window that browses as a visitor.
     pub open_as_visitor: bool,
-    /// Shell instance id selecting the fixed private standard console namespace.
-    pub headless_console: Option<u64>,
     /// A tilolang host runs this app's instance: its process is its window and keeps none of the app's
     /// data.
     pub tilolang_process: bool,
@@ -314,7 +312,6 @@ impl Default for LaunchOptions {
             open_uri: None,
             gui_argv: Vec::new(),
             open_as_visitor: false,
-            headless_console: None,
             tilolang_process: false,
             tilolang_connector: None,
             tilolang_origin_reader: false,
@@ -337,31 +334,12 @@ fn gui_open_args(opts: &LaunchOptions) -> Vec<String> {
             .map(|path| vec![path.display().to_string()])
             .unwrap_or_default()
     };
-    if let Some(instance) = opts.headless_console {
-        args.extend([
-            "--headless-drive".into(),
-            serde_json::json!({
-                "serve": crate::headless_console::guest_socket(instance),
-            })
-            .to_string(),
-        ]);
-    }
     // The app's arguments ride the tail after the entrypoint token that bwrap forwards as `argv[1..]`.
     args.extend(opts.gui_argv.iter().cloned());
     args
 }
 
 fn validate_open_uri(manifest: &ManifestView, opts: &LaunchOptions) -> Result<(), LaunchError> {
-    if let Some(instance) = opts.headless_console
-        && (instance == 0
-            || opts.wayland_socket.is_some()
-            || !matches!(opts.mode, LaunchMode::Gui)
-            || manifest.entrypoint.gui_bin().is_none())
-    {
-        return Err(LaunchError::InvalidServiceLaunch(
-            "invalid headless console launch".into(),
-        ));
-    }
     let Some(uri) = opts.open_uri.as_deref() else {
         return Ok(());
     };
@@ -471,7 +449,7 @@ fn is_native_game_launch(manifest: &ManifestView, opts: &LaunchOptions) -> bool 
 }
 
 #[cfg(test)]
-mod headless_console_launch_tests {
+mod open_uri_launch_tests {
     use super::*;
 
     fn browser_manifest() -> ManifestView {
@@ -483,32 +461,7 @@ mod headless_console_launch_tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_headless_console_launch_follows_its_manifest;
-
-        phase typed_headless_console_uses_fixed_standard_wire_and_refuses_other_modes;
-        {
-            let mut opts = LaunchOptions {
-                headless_console: Some(72),
-                ..Default::default()
-            };
-            validate_open_uri(&browser_manifest(), &opts).unwrap();
-            let args = gui_open_args(&opts);
-            assert_eq!(args[0], "--headless-drive");
-            assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&args[1]).unwrap(),
-                serde_json::json!({"serve":"/run/tilo/app/.headless-72/control.sock"})
-            );
-            opts.wayland_socket = Some("/not/a/display".into());
-            assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
-            opts.wayland_socket = None;
-            opts.headless_console = Some(0);
-            assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
-            opts.headless_console = Some(72);
-            opts.mode = LaunchMode::Service {
-                passthrough_argv: Vec::new(),
-            };
-            assert!(validate_open_uri(&browser_manifest(), &opts).is_err());
-        }
+        fn a_launch_follows_its_manifest;
 
         phase launch_claims_and_device_hints_follow_the_manifest;
         {
@@ -3222,10 +3175,6 @@ pub(crate) fn launch_with_context(
     };
     let binds = to_service_binds(&resolved);
     tilo_startup_metrics::handoff_mark("services-resolved");
-    let mut headless_console = opts
-        .headless_console
-        .map(|instance| crate::headless_console::Namespace::prepare(&app_dir, instance))
-        .transpose()?;
 
     let keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
 
@@ -3334,10 +3283,7 @@ pub(crate) fn launch_with_context(
         },
     )?;
 
-    if let Some(namespace) = &mut headless_console {
-        namespace.before_spawn();
-    }
-    let result = spawn_and_wait(
+    spawn_and_wait(
         argv,
         cli_passthrough,
         opts,
@@ -3350,13 +3296,7 @@ pub(crate) fn launch_with_context(
         egress_proxy.as_ref(),
         native_owner,
         opts.data_home.as_deref().and_then(debug_output_log),
-    );
-    if result.is_ok()
-        && let Some(namespace) = &mut headless_console
-    {
-        namespace.after_exit()?;
-    }
-    result
+    )
 }
 
 /// Debug-only, off by default: when the launching host sets `TILO_LAUNCHER_DEBUG_STDERR=1`, a
@@ -3923,10 +3863,6 @@ fn launch_with_capture_spawn<T>(
     splice_egress_proxy_bind(&mut argv, egress_proxy.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;
     let (app_dir, person_dir) = resolve_launch_dirs(manifest, opts)?;
-    let mut headless_console = opts
-        .headless_console
-        .map(|instance| crate::headless_console::Namespace::prepare(&app_dir, instance))
-        .transpose()?;
     splice_app_dir(&mut argv, &app_dir, &person_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
@@ -3955,16 +3891,7 @@ fn launch_with_capture_spawn<T>(
         },
     )?;
 
-    if let Some(namespace) = &mut headless_console {
-        namespace.before_spawn();
-    }
-    let result = spawn(argv, passthrough, opts, seccomp_fds, resolved);
-    if result.is_ok()
-        && let Some(namespace) = &mut headless_console
-    {
-        namespace.after_exit()?;
-    }
-    result
+    spawn(argv, passthrough, opts, seccomp_fds, resolved)
 }
 
 /// Give `bwrap` itself an environment worth inheriting, so a dropped `--clearenv` cannot silently

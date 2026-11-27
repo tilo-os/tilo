@@ -173,7 +173,7 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 notify.workspace = true
 tilo-app-module = { version = "0.1.0", path = "../tilo-app-module", optional = true }
 # YouTube as an outside origin: the connector role the process runs when the launcher starts it
-# as one, and a window without a session reaching that connector. YouTube's client lives in the
+# as one, and a window reaching that connector over the connection its launch was handed. YouTube's client lives in the
 # connector's engine library, so this process links none of it.
 tilolang-youtube = { path = "../../integrations/tilolang-youtube", default-features = false, features = [
     "connector",
@@ -181,7 +181,7 @@ tilolang-youtube = { path = "../../integrations/tilolang-youtube", default-featu
 # YouTube's Grayjay link: the Noise handshake and exchanges with a Grayjay device, whose key is
 # the app's own secret in the platform's store.
 # A music catalogue as an outside origin: the connector role the process runs when the launcher
-# starts it as one, and a window without a session reaching that connector. The catalogue's
+# starts it as one, and a window reaching that connector over the connection its launch was handed. The catalogue's
 # clients live in the connector's engine library, so this process links none of them.
 tilolang-music = { path = "../../integrations/tilolang-music", default-features = false, features = [
     "connector",

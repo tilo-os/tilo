@@ -139,9 +139,6 @@ enum Cmd {
         /// app is handed `runtime_portal::process_link::VISITOR_WINDOW_FLAG` after the address.
         #[arg(long, requires = "open_uri")]
         open_as_visitor: bool,
-        /// Standard console in a private namespace for this shell instance.
-        #[arg(long, conflicts_with_all = ["service", "wayland_socket"])]
-        headless_console: Option<u64>,
         /// Launch this package's headless entrypoint as a desktop-managed service.
         #[arg(long, conflicts_with_all = ["wayland_socket", "open", "open_uri"])]
         service: bool,
@@ -687,7 +684,6 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open,
         open_uri,
         open_as_visitor,
-        headless_console,
         service,
         tilolang_process,
         tilolang_connector,
@@ -719,7 +715,6 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open,
         open_uri,
         open_as_visitor,
-        headless_console,
         service,
         tilolang_process,
         tilolang_connector,
@@ -940,7 +935,6 @@ struct RunCliArgs {
     open: Option<PathBuf>,
     open_uri: Option<String>,
     open_as_visitor: bool,
-    headless_console: Option<u64>,
     service: bool,
     tilolang_process: bool,
     tilolang_connector: Option<String>,
@@ -1007,7 +1001,6 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         open_document: args.open,
         open_uri: args.open_uri,
         open_as_visitor: args.open_as_visitor,
-        headless_console: args.headless_console,
         tilolang_process: args.tilolang_process,
         tilolang_connector: args.tilolang_connector,
         tilolang_origin_reader: args.tilolang_origin_reader,
@@ -1477,7 +1470,6 @@ fn run_installed(
         open_uri: None,
         gui_argv: Vec::new(),
         open_as_visitor: false,
-        headless_console: None,
         tilolang_process: false,
         tilolang_connector: None,
         tilolang_origin_reader: false,

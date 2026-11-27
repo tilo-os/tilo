@@ -537,18 +537,11 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     run_with_args_with_attachment(spec, raw_args, runtime_portal::native::ensure_attached)
 }
 
-/// The app's own arguments of a launch, whose first is the program: what a capture hands the app
-/// the daemon starts for it, exactly as this process was asked for it.
-#[cfg(feature = "native")]
-fn app_arguments(raw_args: &[String]) -> &[String] {
-    raw_args.get(1..).unwrap_or_default()
-}
-
 #[cfg(all(feature = "native", feature = "model"))]
 fn run_with_args_with_attachment(
     spec: &LaunchSpec,
     raw_args: &[String],
-    attach: impl FnOnce(&str, &[String]) -> std::io::Result<()>,
+    attach: impl FnOnce(&str) -> std::io::Result<()>,
 ) -> Result<(), LaunchError> {
     let _detached = crate::wake::WakeScope::enter_detached();
     #[cfg(feature = "native")]
@@ -579,9 +572,9 @@ fn run_with_args_with_attachment(
         tilo_ui_base::i18n::PseudoLocale::Off
     });
     if let Some(directory) = &args.shots_dir {
-        return capture_every_scenario(spec, &args, directory, attach, app_arguments(raw_args));
+        return capture_every_scenario(spec, &args, directory);
     }
-    run_parsed(spec, &args, attach, app_arguments(raw_args))
+    run_parsed(spec, &args, attach)
 }
 
 /// `--shots-dir`: each declared scenario (or the plain capture, for an app that declares none) captured
@@ -592,19 +585,7 @@ fn capture_every_scenario(
     spec: &LaunchSpec,
     args: &LaunchArgs,
     directory: &std::path::Path,
-    attach: impl FnOnce(&str, &[String]) -> std::io::Result<()>,
-    app_args: &[String],
 ) -> Result<(), LaunchError> {
-    // The scenarios are captured by the app the daemon starts once, on the arguments this
-    // process was asked for: every one of them runs there, and none here.
-    if !tilo_ui_base::surface_services::is_surface()
-        && (spec.runtime_attachment)(args)
-        && runtime_portal::native::capture_attaches()
-    {
-        attach(spec.app_id, app_args).map_err(|error| {
-            LaunchError::Operation(format!("native runtime attachment failed: {error}"))
-        })?;
-    }
     capture_directory(directory, "--shots-dir")?;
     let scenarios: Vec<Option<&str>> = if spec.scenarios.is_empty() {
         vec![None]
@@ -618,17 +599,11 @@ fn capture_every_scenario(
         capture.shots_dir = None;
         capture.shots = Some(out);
         capture.scenario = scenario.map(str::to_owned);
-        // The app already runs where the daemon started it: this process captures there.
-        run_parsed(spec, &capture, |_, _| Ok(()), &[])?;
+        // A capture never attaches to the runtime: the daemon starts a capture's app itself
+        // (`tilo-runtime --run-app <app> -- <capture>`).
+        run_parsed(spec, &capture, |_| Ok(()))?;
     }
     Ok(())
-}
-
-/// Whether these arguments capture the app: a shot, a scenario gallery or a headless drive, rather
-/// than a window or an audit.
-#[cfg(feature = "native")]
-fn is_capture(args: &LaunchArgs) -> bool {
-    args.shots.is_some() || args.responsive_matrix.is_some() || args.headless.is_some()
 }
 
 /// Whether these arguments run the app in a live native window, rather than headless, as captures or as
@@ -653,8 +628,7 @@ fn opens_native_window(args: &LaunchArgs) -> bool {
 fn run_parsed(
     spec: &LaunchSpec,
     args: &LaunchArgs,
-    attach: impl FnOnce(&str, &[String]) -> std::io::Result<()>,
-    app_args: &[String],
+    attach: impl FnOnce(&str) -> std::io::Result<()>,
 ) -> Result<(), LaunchError> {
     let args = args.clone();
     if let Some(handler) = spec.command_handler
@@ -664,14 +638,8 @@ fn run_parsed(
     }
     let attaches =
         !tilo_ui_base::surface_services::is_surface() && (spec.runtime_attachment)(&args);
-    // A window is started by the daemon. A capture is too, when its caller named a profile of
-    // its own: the app the daemon starts gets its sandbox, its grants and the connectors the
-    // device runs, and captures with them, as a person's app does.
-    let window = opens_native_window(&args);
-    let capture = !window && is_capture(&args) && runtime_portal::native::capture_attaches();
-    if (window || capture) && attaches {
-        let capture_args = if window { &[][..] } else { app_args };
-        attach(spec.app_id, capture_args).map_err(|error| {
+    if opens_native_window(&args) && attaches {
+        attach(spec.app_id).map_err(|error| {
             LaunchError::Operation(format!("native runtime attachment failed: {error}"))
         })?;
     }
