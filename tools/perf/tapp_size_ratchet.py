@@ -149,7 +149,11 @@ class Budget:
 
 
 def git(root: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=False)
+    """Git in `root` alone. A git hook or `rebase --exec` exports GIT_DIR and friends, and those
+    win over the working directory: `init --bare` would then turn the caller's own repository
+    bare, and a fetch would land in it. So the git variables never reach these commands."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    return subprocess.run(["git", *args], cwd=root, env=env, capture_output=True, text=True, check=False)
 
 
 def load(root: pathlib.Path = REPO) -> Budget:

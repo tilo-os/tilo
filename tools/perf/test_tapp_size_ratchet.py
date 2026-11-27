@@ -354,3 +354,32 @@ class CommittedBudget(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FetchCommit(unittest.TestCase):
+    def test_a_git_dir_a_hook_exports_is_never_the_one_made_bare(self):
+        """Inside a git hook GIT_DIR names the caller's repository; making the fetch cache must
+        not turn that repository bare or fetch into it."""
+        import os
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as scratch:
+            scratch = pathlib.Path(scratch)
+            caller = scratch / "caller"
+            subprocess.run(["git", "init", "-q", str(caller)], check=True)
+            source = scratch / "source"
+            subprocess.run(["git", "init", "-q", str(source)], check=True)
+            subprocess.run(["git", "-C", str(source), "-c", "user.name=t", "-c", "user.email=t@t",
+                            "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+            commit = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], check=True,
+                                    capture_output=True, text=True).stdout.strip()
+            source_dir = str(source / ".git")
+            subprocess.run(["git", "-C", str(source), "config", "uploadpack.allowAnySHA1InWant", "true"],
+                           check=True)
+            cache = scratch / "cache"
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(caller / ".git")}):
+                ratchet.fetch_commit(commit, cache, source_dir)
+            bare = subprocess.run(["git", "-C", str(caller), "config", "--get", "core.bare"],
+                                  capture_output=True, text=True).stdout.strip()
+            self.assertEqual(bare, "false")
+            self.assertTrue((cache / "HEAD").is_file())
