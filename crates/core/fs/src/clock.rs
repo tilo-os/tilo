@@ -151,6 +151,10 @@ fn validate_open_file_metadata(
     if !metadata.file_type().is_file() || metadata.len() > MAX_CLOCK_FILE_BYTES {
         return Err(ClockConfigurationError::InvalidFile);
     }
+    // A file's identity is its inode, which only a Unix filesystem has: elsewhere the pin
+    // at installation is not read, and a replaced file is told apart by nothing here.
+    #[cfg(not(unix))]
+    let _ = expected;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;

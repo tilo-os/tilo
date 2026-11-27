@@ -9,6 +9,7 @@
 use std::path::Path;
 
 use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProfile};
+#[cfg(unix)]
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tilo_workspace_records::models::ModelsAction;
@@ -18,6 +19,7 @@ use crate::person_settings::{ProviderKeys, provider_config};
 /// Every request and answer the manager's service speaks.
 const RPC_VERSION: u16 = 1;
 /// The manager's framing: a big-endian `u32` length, then JSON.
+#[cfg(unix)]
 const RPC_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(1024 * 1024);
 
 /// The request's body for the Hugging Face action `wanted` (a search, a model's description
@@ -62,6 +64,7 @@ fn body(wanted: ModelsAction, token: Option<&str>) -> Value {
 }
 
 /// The manager's answer.
+#[cfg(unix)]
 #[derive(Deserialize)]
 struct Answer {
     ok: bool,

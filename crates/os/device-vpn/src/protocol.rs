@@ -1,8 +1,11 @@
 //! What the shell says to the device VPN helper, and its answers.
 
+#[cfg(target_os = "linux")]
 use std::io;
 use std::net::{IpAddr, Ipv4Addr};
+#[cfg(target_os = "linux")]
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};

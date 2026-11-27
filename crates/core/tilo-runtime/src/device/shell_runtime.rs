@@ -20,18 +20,23 @@
 //!   either end closes.
 
 use std::sync::{Arc, Mutex};
+#[cfg(unix)]
 use std::time::Duration;
 
 use collab_types::store::wire::Command;
-use runtime_portal::workspace_terminal::{self, Reply};
+use runtime_portal::workspace_terminal;
+#[cfg(unix)]
+use runtime_portal::workspace_terminal::Reply;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
+    InvokeRequest, Pending,
 };
-use tilo_actions::{
-    ActionAddress, ActionDescriptor, ActionParam, InvocationId, InvocationUpdate, ParamType,
-};
+#[cfg(unix)]
+use tilo_actions::remote::{ReceiptStatus, RemoteActionTarget};
+#[cfg(unix)]
+use tilo_actions::{ActionAddress, InvocationUpdate};
+use tilo_actions::{ActionDescriptor, ActionParam, InvocationId, ParamType};
 use tilo_device_identity::login::{OPEN_TERMINAL, PROVIDER, RESOURCE, TERMINAL_RECORDS};
 use tilo_workspace_service::workspaces::{Workspaces, standing};
 
@@ -48,9 +53,11 @@ const REFUSED: &str = "shell-runtime";
 
 /// The longest an open waits for the host: long enough for the person to see the question on
 /// another device and answer it.
+#[cfg(unix)]
 const OPEN_WITHIN: Duration = Duration::from_secs(10 * 60);
 
 /// How long the host holds one answer to the open before saying it still runs.
+#[cfg(unix)]
 const WAIT_MS: u32 = 10_000;
 
 /// Whether `request` is one the shell runtime asks.
@@ -256,7 +263,9 @@ where
     }
     #[cfg(not(unix))]
     {
-        let _ = host;
+        // Carrying the shell is what the runtime's dispatch, its person and the descriptor it is
+        // handed are for: this platform carries none.
+        let _ = (host, &asked.dispatch, &asked.person, asked.handed);
         refused(
             invocation,
             "a hosted Terminal shell is carried on Linux and macOS alone",

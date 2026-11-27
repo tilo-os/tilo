@@ -252,6 +252,7 @@ impl LocalAppConnection {
     /// Copies of the pidfds pinning the app's process, and its launcher's when the launcher
     /// handed it over: what the seat hands the daemon with the app's connection. `None` where the
     /// kernel pins no process.
+    #[cfg(unix)]
     #[cfg_attr(
         not(target_os = "linux"),
         expect(

@@ -13,7 +13,10 @@
 
 use std::sync::Arc;
 
-use tilo_runtime::device::capabilities::{Capabilities, Mounting};
+use tilo_runtime::device::capabilities::Capabilities;
+#[cfg(unix)]
+use tilo_runtime::device::capabilities::Mounting;
+#[cfg(unix)]
 use tilo_workspace_service::workspaces::providers::Reach;
 
 #[cfg(target_os = "linux")]

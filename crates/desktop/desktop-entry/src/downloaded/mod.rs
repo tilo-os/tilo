@@ -661,6 +661,7 @@ fn parse_document(hex: &str) -> Option<[u8; 16]> {
     Some(out)
 }
 
+#[cfg(unix)]
 fn format_record(id: &[u8; 16]) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(36);

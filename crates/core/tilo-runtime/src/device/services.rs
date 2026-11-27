@@ -122,6 +122,7 @@ pub struct Daemon {
     _identity: IdentityBrokerHandle,
     workspace: String,
     actor: String,
+    #[cfg(unix)]
     identity_socket: PathBuf,
     blob_socket: PathBuf,
     /// The files of the workspaces whose work this device takes, each a replica of the
@@ -3231,6 +3232,7 @@ impl Daemon {
             _identity: identity_broker,
             workspace: workspace_id,
             actor,
+            #[cfg(unix)]
             identity_socket,
             blob_socket: sockets.blobs,
             replicas,
@@ -8633,9 +8635,14 @@ fn identity_service(
 ) -> io::Result<tilo_identity::broker::IdentityBrokerHandle> {
     let person = AttachedSurfaces {
         apps: Arc::clone(apps),
+        #[cfg(unix)]
         first: Arc::clone(first),
         dev,
     };
+    // The person's workspace is founded behind an app's connection, which only a Unix socket
+    // carries.
+    #[cfg(not(unix))]
+    let _ = first;
     tilo_identity::broker::spawn(socket, workspaces, keys, Arc::new(person))
 }
 
@@ -8648,6 +8655,7 @@ fn identity_service(
 pub(super) struct AttachedSurfaces {
     pub(super) apps: Arc<apps::Apps>,
     /// The person's workspace here, which the first app this daemon launched in it settles.
+    #[cfg(unix)]
     pub(super) first: Arc<super::first_workspace::FirstWorkspace>,
     pub(super) dev: bool,
 }

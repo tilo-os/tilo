@@ -295,6 +295,7 @@ type Opened = dyn Fn(&str) + Send + Sync;
 /// on what members post there and the content a limit refused, as the Workspace package's root
 /// carries them (`tilolang_tilo::content::WorkspaceContent` JSON). The daemon hands it to each
 /// window's process, which serves it as `workspace.content`.
+#[cfg(target_os = "linux")]
 pub(crate) trait ContentOf: Send + Sync {
     /// The reading of `workspace` for this device's person, now. It reads the workspace's store,
     /// so it is awaited: a process starting never waits on it.
@@ -321,6 +322,7 @@ pub struct Processes {
     provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
     /// Where each workspace's content is read, once the daemon keeps its workspaces here
     /// ([`Self::read_content_from`]): what each window's process serves as `workspace.content`.
+    #[cfg(target_os = "linux")]
     content_of: OnceLock<Arc<dyn ContentOf>>,
     /// The content last handed to each workspace's processes, so a reading that did not move is
     /// said no second time.
@@ -379,6 +381,7 @@ impl Processes {
             follows_reinstalls: AtomicBool::new(false),
             playing: Mutex::new(Playing::default()),
             provided: OnceLock::new(),
+            #[cfg(target_os = "linux")]
             content_of: OnceLock::new(),
             contents: Mutex::new(HashMap::new()),
             attests: OnceLock::new(),

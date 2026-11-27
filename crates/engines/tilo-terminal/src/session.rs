@@ -156,6 +156,7 @@ pub fn classify_pty_read(
 }
 
 /// The pty a supervisor opened and the facts of the session behind it.
+#[cfg(unix)]
 pub(crate) struct Backend {
     pub(crate) writer: Box<dyn Write + Send>,
     pub(crate) reader: Box<dyn Read + Send>,
@@ -319,6 +320,7 @@ impl Session {
     }
 
     /// A session over a pty someone else opened and handed over, as a supervisor does.
+    #[cfg(unix)]
     pub(crate) fn from_backend(backend: Backend) -> Self {
         let Backend {
             writer,

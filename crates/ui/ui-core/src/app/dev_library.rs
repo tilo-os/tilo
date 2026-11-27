@@ -72,14 +72,14 @@ pub fn take_dev_root() -> Option<DevRoot> {
     DEV_ROOT.with(|slot| slot.borrow_mut().take())
 }
 
-#[cfg(any(feature = "native", test))]
+#[cfg(all(unix, any(feature = "native", test)))]
 type ApplyFn = unsafe extern "C" fn(*const u8, usize, *const u8, usize, *mut u8, usize) -> isize;
-#[cfg(any(feature = "native", test))]
+#[cfg(all(unix, any(feature = "native", test)))]
 type LinkedFn = unsafe extern "C" fn() -> *const ();
-#[cfg(any(feature = "native", test))]
+#[cfg(all(unix, any(feature = "native", test)))]
 type PublishFn = unsafe extern "C" fn() -> i32;
 
-#[cfg(any(feature = "native", test))]
+#[cfg(all(unix, any(feature = "native", test)))]
 struct DevFns {
     apply: ApplyFn,
     linked_ui: Option<LinkedFn>,
@@ -141,12 +141,12 @@ pub(crate) fn reload_from_library(
 }
 
 // A failed reload puts back the resource schemas the old code published.
-#[cfg(all(any(feature = "native", test), feature = "model"))]
+#[cfg(all(unix, any(feature = "native", test), feature = "model"))]
 struct ReloadSchemas {
     accepted: bool,
 }
 
-#[cfg(all(any(feature = "native", test), feature = "model"))]
+#[cfg(all(unix, any(feature = "native", test), feature = "model"))]
 impl Drop for ReloadSchemas {
     fn drop(&mut self) {
         if !self.accepted {
@@ -155,7 +155,7 @@ impl Drop for ReloadSchemas {
     }
 }
 
-#[cfg(any(feature = "native", test))]
+#[cfg(all(unix, any(feature = "native", test)))]
 fn reload_with(fns: &DevFns, windows: &[DevWindowEntry]) -> Result<DevReload, String> {
     let mut root = None;
     #[cfg(feature = "model")]

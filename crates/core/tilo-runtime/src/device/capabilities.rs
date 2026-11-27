@@ -111,6 +111,7 @@ pub(crate) fn tilolang() -> Option<tilo_workspace_service::tl_records::Tilolang>
 }
 
 /// The platform's notifications the program mounted for this device's wakeups, where it did.
+#[cfg(not(windows))]
 pub(crate) fn alarms() -> Option<Arc<dyn tilo_app_host::wakeups::Notifier>> {
     mounted()?.alarms.clone()
 }

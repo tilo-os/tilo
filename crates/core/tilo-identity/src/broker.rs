@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 use tilo_files::native::socket::Stream;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use collab_types::DocumentMutation;
 use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
@@ -743,7 +743,7 @@ fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut Stream) -> io::Result
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn write_frame<T: serde::Serialize>(stream: &mut Stream, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;

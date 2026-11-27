@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::commands::new_key;
-use crate::session::{Backend, Session};
+#[cfg(unix)]
+use crate::session::Backend;
+use crate::session::Session;
 use crate::target::SessionTarget;
 
 /// Who caused a session to open. The device's own shell is never opened for an agent.
@@ -292,9 +294,14 @@ pub fn open_with(
             open_on_socket(socket, target, requested_by, options)
         }
         #[cfg(not(unix))]
-        ConfineRoute::Service => Err(OpenError::NoRuntime(
-            "the ush supervisor runs only on Linux and macOS".into(),
-        )),
+        ConfineRoute::Service => {
+            // A supervisor's session is opened on a socket this platform has none of, so the
+            // target names nothing a refusal here could reach: every target is refused alike.
+            let _ = target;
+            Err(OpenError::NoRuntime(
+                "the ush supervisor runs only on Linux and macOS".into(),
+            ))
+        }
         ConfineRoute::SelfHosted(bin) => open_self_hosted(bin, program),
         ConfineRoute::Host => open_host(program, requested_by),
         ConfineRoute::Unavailable(reason) => Err(OpenError::Unavailable(reason.clone())),

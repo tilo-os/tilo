@@ -132,6 +132,7 @@ pub struct Apps {
     /// The stores the profile reads; `None` when no app store can be
     /// located, which is a catalogue with nothing in it.
     catalog: Option<package_store::Catalog>,
+    #[cfg(unix)]
     root: PathBuf,
     /// The daemon's sockets, which a launch attaches the app to.
     sockets: Sockets,
@@ -236,6 +237,8 @@ impl Apps {
         // Each place only matters on the platform whose launch path reads it.
         #[cfg(not(target_os = "macos"))]
         drop(data_home);
+        #[cfg(not(unix))]
+        let _ = profile;
         #[cfg(not(target_os = "linux"))]
         drop(launcher_candidates);
         // What starts a tilolang host: `tilo-launcher` on Linux, the installed runtime on macOS
@@ -263,6 +266,7 @@ impl Apps {
             connection_wait: false,
             instances: instances::Instances::new(&sockets, finds_launcher, Arc::clone(&launched)),
             catalog,
+            #[cfg(unix)]
             root: profile.to_path_buf(),
             sockets,
             #[cfg(target_os = "macos")]
@@ -304,6 +308,7 @@ impl Apps {
 
     /// Attest the next connection this process opens naming `app` in `workspace` as that launch:
     /// the one it opens for a process it is about to start, before the process runs.
+    #[cfg(unix)]
     pub(crate) fn launching(&self, app: &str, workspace: &str) {
         self.launching
             .lock_recover()
@@ -359,6 +364,7 @@ impl Apps {
 
     /// Hand the tilolang process of each app's own instances started from now on its daemon line,
     /// made by `lines` ([`crate::device::processes::OwnLines`]).
+    #[cfg(unix)]
     pub(crate) fn serve_own_lines(&self, lines: crate::device::processes::OwnLines) {
         self.instances.serve_own_lines(lines);
     }
@@ -821,6 +827,7 @@ impl Apps {
     /// Record `pid` as the process this runtime started to run `app` in `workspace`, so a
     /// connection from it is admitted as that app: a tilolang instance, an origin connector or a
     /// task's host.
+    #[cfg(unix)]
     pub(crate) fn record_started(&self, pid: u32, app: &str, workspace: &str) {
         let _ = self.launched.record_started(pid, app, workspace);
     }
@@ -883,6 +890,7 @@ impl Apps {
     }
 
     /// The profile this runtime reads its apps and services in.
+    #[cfg(unix)]
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
@@ -893,6 +901,7 @@ impl Apps {
     ///
     /// # Errors
     /// The app is not installed on this computer: how to install it.
+    #[cfg(unix)]
     pub(crate) fn installed_here(&self, app_id: &str) -> Result<InstalledApp, String> {
         self.installed_app(app_id).map_err(|_| {
             format!(
@@ -909,6 +918,7 @@ impl Apps {
     ///
     /// # Errors
     /// The app is not installed, has no window, or the launcher refuses it.
+    #[cfg(unix)]
     pub(crate) async fn start_watched_window(
         &self,
         app_id: &str,
@@ -941,6 +951,7 @@ impl Apps {
     /// # Errors
     /// The app is not installed, has no window, its connector cannot be started, its instance's
     /// connections cannot be made, the launcher refuses it, or the capture fails: what it said.
+    #[cfg(unix)]
     pub(crate) fn capture(
         &self,
         app_id: &str,
@@ -1146,7 +1157,9 @@ impl Apps {
         )?;
         #[cfg(windows)]
         let mut launch = {
-            let _ = &sockets;
+            // A window of a tilolang app takes neither the arguments a capture names nor the
+            // origin connection: only the Unix launchers read those of `runs`.
+            let _ = (&sockets, &runs.args, &runs.origin);
             windows::launch(self, &app, workspace, shows, open_uri.as_deref())?
         };
         #[cfg(target_os = "android")]

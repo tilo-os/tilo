@@ -139,6 +139,7 @@ pub use published_invocation::{InvocationRequest, OriginalInvocation};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+#[cfg(unix)]
 use std::fs::OpenOptions;
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;

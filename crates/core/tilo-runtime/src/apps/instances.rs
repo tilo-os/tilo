@@ -70,6 +70,7 @@ pub(crate) struct Instances {
     collab: PathBuf,
     identity: PathBuf,
     /// The daemon's document-media socket, where an instance keeps the files it makes.
+    #[cfg(unix)]
     blobs: PathBuf,
     /// Finds the platform's launcher.
     launcher: FindsLauncher,
@@ -310,6 +311,7 @@ impl Instances {
         Self {
             collab: sockets.collab.clone(),
             identity: sockets.identity.clone(),
+            #[cfg(unix)]
             blobs: sockets.blobs.clone(),
             launcher,
             launched: started,
@@ -386,6 +388,7 @@ impl Instances {
     }
 
     /// Hand each app's own tilolang process started from now on its daemon line, made by `lines`.
+    #[cfg(unix)]
     pub(crate) fn serve_own_lines(&self, lines: crate::device::processes::OwnLines) {
         let _ = self.own_lines.set(Arc::clone(&lines));
         if let Some(processes) = self.processes.get() {
@@ -476,6 +479,7 @@ impl Instances {
     /// Start the instance of `app`'s window in `workspace` here, with no process drawing it: the
     /// person's layout holds the window, and the session that shows their layout draws it. What
     /// starts is the app's code, on the app's own connection, exactly as a window's instance is.
+    #[cfg(target_os = "linux")]
     pub(crate) fn start_window(
         &self,
         app: &str,

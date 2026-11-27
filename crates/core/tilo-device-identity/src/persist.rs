@@ -609,6 +609,7 @@ pub fn append_revocation(
 /// writer's umask, keeping a setgid bit inherited from their parent. The
 /// machine's group-writable device tree must also allow later login users
 /// in that same trust group to publish their own root-signed certificates.
+#[cfg(unix)]
 const PUBLIC_DIR_MODE: u32 = 0o755;
 
 fn create_public_dir(path: &Path) -> io::Result<()> {
