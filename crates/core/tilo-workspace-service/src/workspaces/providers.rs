@@ -1070,8 +1070,8 @@ impl Providers {
                 {
                     Err(Asks::Person) if request.approval().is_some() => Ok(()),
                     Err(Asks::Person) => {
-                        let facts = asked_facts(&caller, address);
-                        completer.complete(work.keep_asked(&caller, request, facts).await);
+                        let asked = kept_asked(&registered.answers, &work, &caller, request);
+                        completer.complete(asked.await);
                         return;
                     }
                     Err(Asks::Refused(refused)) => Err(refused),
@@ -1421,6 +1421,28 @@ pub(super) fn the_greater(
         }
         (declared, surface) => declared.or(surface),
     }
+}
+
+/// `request`, a call of `caller`'s the workspace's grants leave to its person, kept in its asked
+/// record for them to answer ([`super::device_actions::DeviceWork::keep_asked`]). A call
+/// `provider` refuses before it runs, whatever the person would answer
+/// ([`ActionProvider::asks_first`]), is refused now instead, not kept for an answer that changes
+/// nothing.
+async fn kept_asked(
+    provider: &Arc<dyn ActionProvider + Send + Sync>,
+    work: &super::device_actions::DeviceWork,
+    caller: &Caller,
+    request: InvokeRequest,
+) -> Result<InvocationReceipt, ActionCallError> {
+    let first = provider.asks_first(caller, &request, &tilo_actions::remote::Admitted::default());
+    if let Some(first) = first
+        && let Some(Err(refused)) = first.await
+        && !matches!(refused, ActionCallError::ConfirmationRequired(_))
+    {
+        return Err(refused);
+    }
+    let facts = asked_facts(caller, &request.target.address);
+    work.keep_asked(caller, request, facts).await
 }
 
 #[cfg(test)]

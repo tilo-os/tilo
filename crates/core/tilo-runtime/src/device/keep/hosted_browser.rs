@@ -703,6 +703,16 @@ impl HostedBrowsers {
     /// or their agent under its grants, or the window's own session for what its page sent
     /// by itself; another member's device is refused. It is always put to the person first,
     /// whoever asked and whatever the key may do, since nothing takes a departure back.
+    /// Whether `caller` may let a request the window holds leave: one of the person's own
+    /// devices or keys, or the window's own device, which reports what it holds. Nobody else's
+    /// word lets the person's request leave, and nobody else is asked about it.
+    fn lets_leave(&self, caller: &Caller, window_device: [u8; 32]) -> bool {
+        let persons = self
+            .person()
+            .is_ok_and(|person| caller.user_public_key() == Some(&person));
+        persons || caller.device_public_key() == Some(&window_device)
+    }
+
     fn let_leave(
         &self,
         workspace_id: WorkspaceId,
@@ -711,11 +721,7 @@ impl HostedBrowsers {
         message: &RemoteActionMessage,
         request: &InvokeRequest,
     ) -> Option<tilo_workspace_service::app_serving::Routing> {
-        let device = *caller.device_public_key()?;
-        let persons = self
-            .person()
-            .is_ok_and(|person| caller.user_public_key() == Some(&person));
-        if !persons && device != window_device {
+        if !self.lets_leave(caller, window_device) {
             return answered_with(message, ActionCallError::NotPermitted);
         }
         // Answered, it is the person's approval of the record it was kept as, carried to the
@@ -2018,6 +2024,29 @@ impl tilo_workspace_service::app_serving::AppActionServer for Beside {
 /// The provider this host is on its device's dispatch: the open of Browser it places, and the page
 /// actions of the windows it placed.
 impl ActionProvider for HostedBrowsers {
+    /// A `let_leave` of a window's held request from anyone but the person or the window is
+    /// refused before the workspace's grants ask anyone about it: nobody's yes would let it leave.
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _: &tilo_actions::remote::Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        if request.target.address.action != LET_LEAVE {
+            return None;
+        }
+        let workspace_id = caller.workspace().and_then(WorkspaceId::parse)?;
+        let window_device = self
+            .open
+            .lock_recover()
+            .get(&workspace_id)
+            .filter(|up| up.page().names(&request.target))?
+            .device
+            .device_public_key;
+        (!self.lets_leave(caller, window_device))
+            .then(|| Pending::ready(Err(ActionCallError::NotPermitted)))
+    }
+
     /// The app this host places, and the provider each window it placed publishes under.
     fn serves(&self, provider: &str) -> bool {
         provider == PROVIDER
