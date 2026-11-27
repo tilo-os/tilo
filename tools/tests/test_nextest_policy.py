@@ -728,7 +728,7 @@ class WrapperHandedProgramTests(unittest.TestCase):
     }
 
     def run_wrapper(self, packages: str, handed: tuple[str, ...] = (), broken: str = "",
-                    command: tuple[str, ...] = ()):
+                    command: tuple[str, ...] = (), **extra: str):
         """A shard of PACKAGES as t starts one, through the production wrapper: the result, the
         cargo invocations it made, and the paths of the artifacts handed to it. COMMAND is the
         wrapped command, the shard's nextest run by default. The tree's tools/test-env.sh records
@@ -748,7 +748,7 @@ class WrapperHandedProgramTests(unittest.TestCase):
             )
             (programs / "cargo").chmod(0o755)
             env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
-                   "T_NEXTEST_PACKAGES": packages, "GIVEN": str(argv)}
+                   "T_NEXTEST_PACKAGES": packages, "GIVEN": str(argv), **extra}
             paths = {}
             for name in handed:
                 path = Path(work) / name
@@ -797,6 +797,29 @@ class WrapperHandedProgramTests(unittest.TestCase):
                     result, ran, _ = self.run_wrapper(package, command=command)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(ran, [" ".join(command[1:])], "the command alone")
+
+    def test_a_run_that_names_features_gets_no_unify_member(self):
+        # In CI a run of named packages builds them beside workspace-unify, whose manifest gives
+        # every member the features all of their builds together resolve. A command that names
+        # features itself picks a set of its own: beside it, `--all-features` would turn on the
+        # unify member's `never` feature, whose bin builds the whole workspace, and the build
+        # gets none of the inputs t gives the packages that need them.
+        command = ("cargo", "nextest", "run", "--locked", "--profile", "ci", "-E", "all()",
+                   "-p", "tilo-collab-types")
+        for features in (("--features", "test-support"), ("-F", "test-support"),
+                         ("--features=test-support",), ("--all-features",)):
+            with self.subTest(features=features):
+                result, ran, _ = self.run_wrapper("tilo-collab-types", command=command + features,
+                                                  CI="1")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                (argv,) = ran
+                self.assertTrue(argv.startswith(" ".join((command + features)[1:])), argv)
+                self.assertNotIn("workspace-unify", argv)
+        # Without one it is added, as every CI run of named packages has it.
+        result, ran, _ = self.run_wrapper("tilo-collab-types", command=command, CI="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(ran), 1, ran)
+        self.assertIn("-p workspace-unify", ran[0])
 
     def test_a_cargo_test_runs_in_the_test_environment(self):
         # A command that starts tests itself, not through nextest, still gets the environment.

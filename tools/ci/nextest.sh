@@ -87,10 +87,12 @@ package_name() {
     spec=${spec##*#}
     printf '%s' "${spec%%@*}"
 }
+named_features=0
 for (( index = 0; index < ${#arguments[@]}; index++ )); do
     case ${arguments[index]} in
         -p|--package) tested+="$(package_name "${arguments[index + 1]}") " ;;
         -E|--filterset|--filter-expr) explicit=1 ;;
+        --features|--features=*|-F|-F?*|--all-features) named_features=1 ;;
     esac
 done
 # Whether this run tests one of the named packages. A run that shards the whole family names
@@ -117,7 +119,12 @@ unify=()
 # A run that names no `-p` gets no features here: t builds a family without a unify member whole,
 # and that family's own t.toml `args` name the features its packages' tests need, so the command t
 # resolves the family's unit graph from is the command that runs.
-if (( nextest )) && [[ " $* " == *" -p "* || " $* " == *" --package "* ]]; then
+#
+# A run that names features itself is left as given too. Their set is that command's decision,
+# and the unify member's own manifest resolves the features of such a build differently: with
+# `--all-features` it turns on its `never` feature, which builds its bin and with it the whole
+# workspace, and the build gets none of the inputs t gives the packages that need them.
+if (( nextest && ! named_features )) && [[ " $* " == *" -p "* || " $* " == *" --package "* ]]; then
     # Not as --features: `tilo-media/decode` there also turns on the optional tilo-media of every
     # package selected beside it.
     arguments+=(${unify[@]+"${unify[@]}"})
