@@ -127,7 +127,9 @@ mod branch {
         self, Branch, Certification, Machine, MachineIdentity, PRODUCT_UUID, Resealed, SealedStore,
         Settled, SigningKey,
     };
+    use tilo_device_identity::login::daemon::profile_device_dir;
     use tilo_device_identity::persist::IdentityPaths;
+    use tilo_machine::DAEMON_SYSTEM_PROFILE;
 
     /// Each person's Secret Service, which re-seals their vault as them.
     const SECRET_SERVICE: &str = "/usr/libexec/tilo/tilo-secret-service";
@@ -143,6 +145,11 @@ mod branch {
         let people = people(Path::new(PASSWD));
         let vaults: Vec<PersonVault<'_>> =
             people.iter().map(|person| PersonVault { person }).collect();
+        // The daemon's own group state, which a copy holds as the source device's membership:
+        // dropped here, so the daemon joins its person's groups fresh as itself.
+        let groups = DeviceGroups {
+            dir: profile_device_dir(Path::new(DAEMON_SYSTEM_PROFILE)).join("own/groups"),
+        };
         let names = MachineNames {
             machine_id: PathBuf::from(MACHINE_ID),
             ssh: PathBuf::from(SSH_DIR),
@@ -154,6 +161,7 @@ mod branch {
                 stores: vaults
                     .iter()
                     .map(|vault| vault as &dyn SealedStore)
+                    .chain([&groups as &dyn SealedStore])
                     .collect(),
                 machine: Some(&names),
                 now_ns: std::time::SystemTime::now()
@@ -289,6 +297,35 @@ mod branch {
         }
     }
 
+    /// The daemon's sealed group state: the groups the copied device was admitted to, sealed
+    /// under the vault its device key derives. That is the source device's membership, which no
+    /// re-seal makes a clone's: it is dropped, and the daemon joins the person's groups fresh.
+    struct DeviceGroups {
+        dir: PathBuf,
+    }
+
+    impl SealedStore for DeviceGroups {
+        fn name(&self) -> String {
+            format!("the device's group state in {}", self.dir.display())
+        }
+
+        fn reseal(&self, _: &[SigningKey], _: &SigningKey) -> Result<Resealed, String> {
+            let entries = match std::fs::read_dir(&self.dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Ok(Resealed::Absent);
+                }
+                Err(error) => return Err(format!("{}: {error}", self.dir.display())),
+            };
+            for entry in entries {
+                let path = entry.map_err(|error| error.to_string())?.path();
+                std::fs::remove_file(&path)
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+            }
+            Ok(Resealed::Reset)
+        }
+    }
+
     /// The machine-wide names a copied disk shares with its source.
     struct MachineNames {
         machine_id: PathBuf,
@@ -403,6 +440,118 @@ mod branch {
                 .unwrap();
                 assert!(!bare.path().join("machine-id").exists());
             }
+        }
+
+        /// A cloned disk carries the source device's sealed group state, which is that device's
+        /// membership: the re-key drops it, and the clone joins the person's groups fresh as a
+        /// device their root certified. What is not the source's membership stays, and the
+        /// source is untouched.
+        #[test]
+        fn a_clone_keeps_none_of_the_group_state_it_was_copied_with() {
+            use tilo_device_identity::branch::record_machine;
+            use tilo_device_identity::persist::{load_device_key, load_or_create_device_key};
+
+            const SOURCE: &str = "4c4c4544-0042-3510-8048-b4c04f4d3232";
+            const CLONE: &str = "8a1f02d6-91c4-4f0e-9b9a-2d1f5c3e7a10";
+
+            let dir = tempfile::tempdir().unwrap();
+            let paths = IdentityPaths::under(dir.path().join("keys"));
+            paths.ensure_directories().unwrap();
+            let (source, _) = load_or_create_device_key(&paths).unwrap();
+            record_machine(&paths, &Machine::parse(SOURCE).unwrap()).unwrap();
+
+            let clone_dir = dir.path().join("clone");
+            let groups = DeviceGroups {
+                dir: clone_dir.join("own/groups"),
+            };
+            std::fs::create_dir_all(&groups.dir).unwrap();
+            for name in ["1.peer", "1.scope", "reader-groups.json"] {
+                std::fs::write(groups.dir.join(name), "sealed").unwrap();
+            }
+            std::fs::create_dir_all(clone_dir.join("own/service")).unwrap();
+            std::fs::write(clone_dir.join("own/service/replica"), "documents").unwrap();
+            std::fs::write(clone_dir.join("login.json"), "{}").unwrap();
+
+            let source_dir = dir.path().join("source");
+            std::fs::create_dir_all(source_dir.join("own/groups")).unwrap();
+            std::fs::write(source_dir.join("own/groups/1.peer"), "sealed").unwrap();
+
+            let settled = branch::settle(
+                &paths,
+                Some(&Machine::parse(CLONE).unwrap()),
+                &Branch {
+                    stores: vec![&groups],
+                    machine: None,
+                    now_ns: 1_800_000_000_000_000_000,
+                    after: &|_| Ok(()),
+                },
+            )
+            .unwrap();
+            let Settled::Branched(branched) = settled else {
+                panic!("not re-keyed: {settled:?}");
+            };
+            assert!(branched.finished());
+            assert_eq!(branched.stores, vec![(groups.name(), Resealed::Reset)]);
+            // None of the groups the source was a member of, nor its leaf's state, is left.
+            assert_eq!(
+                std::fs::read_dir(&groups.dir).unwrap().count(),
+                0,
+                "the copied device's group state stayed"
+            );
+            // The clone is a device of its own: the key it was copied with is gone.
+            assert_eq!(branched.previous, source.verifying_key().to_bytes());
+            assert_ne!(
+                load_device_key(&paths).unwrap().to_bytes(),
+                source.to_bytes()
+            );
+            // What is not the source's membership stays: the device's own copies and its login.
+            assert!(clone_dir.join("own/service/replica").exists());
+            assert!(clone_dir.join("login.json").exists());
+            // The source device keeps its group state: only the copy re-keyed.
+            assert!(source_dir.join("own/groups/1.peer").exists());
+
+            // A device with no group state has none to drop.
+            let absent = DeviceGroups {
+                dir: dir.path().join("absent"),
+            };
+            assert_eq!(absent.reseal(&[], &source).unwrap(), Resealed::Absent);
+        }
+
+        /// The branch unit may write exactly the directory the re-key drops, and no wider state
+        /// of the daemon's.
+        #[test]
+        fn the_branch_unit_may_write_exactly_the_daemons_group_state() {
+            let dir = profile_device_dir(Path::new(DAEMON_SYSTEM_PROFILE)).join("own/groups");
+            let unit = include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../os/usr/lib/systemd/system/tilo-device-branch.service"
+            ));
+            assert!(
+                unit.lines()
+                    .any(|line| line == format!("ReadWritePaths=-{}", dir.display())),
+                "the branch unit may write the daemon's group state at {}",
+                dir.display()
+            );
+            // The daemon's profile is the one its unit names, and a daemon given a profile keeps
+            // its state directory inside it: both units must agree on that profile.
+            let runtime = include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../os/usr/lib/systemd/system/tilo-runtime.service"
+            ));
+            assert!(
+                runtime.lines().any(|line| line
+                    == format!(
+                        "Environment=TILO_RUNTIME_PROFILE={}",
+                        tilo_machine::DAEMON_SYSTEM_PROFILE
+                    )),
+                "the daemon's state directory is resolved inside the profile its unit names"
+            );
+            assert!(
+                !unit
+                    .lines()
+                    .any(|line| line == "ReadWritePaths=/var/lib/tilo/state"),
+                "the daemon's other state is not the source device's membership"
+            );
         }
     }
 }

@@ -295,14 +295,14 @@ cannot be re-sealed into the new one's, so it is dropped and rebuilt from the
 device's peers:
 
 - **Group membership.** Each MLS group the copy holds names the source's
-  device as its member. The server's group member files (sealed under a key
-  its device key derives) are dropped at re-key; a session's (sealed under the
-  person's own vault) are dropped where the key service finds them naming
-  another device (`key_group::Error::OtherDevice`). Neither is ever used,
-  so the branch takes no leaf of its source's and cannot act as it. The
-  branch then asks for each workspace's keys as itself, and a committer admits it
-  with a `Welcome` and the key history, as for any further device of a member.
-  The source stays the member it was.
+  device as its member. The device daemon's sealed group state (under a key
+  its device key derives, in its `own/groups`) is dropped at re-key; a
+  session's (sealed under the person's own vault) are dropped where the key
+  service finds them naming another device (`key_group::Error::OtherDevice`).
+  Neither is ever used, so the branch takes no leaf of its source's and cannot
+  act as it. The branch then asks for each workspace's keys as itself, and a
+  committer admits it with a `Welcome` and the key history, as for any further
+  device of a member. The source stays the member it was.
 - **Workspace membership.** The workspaces on the copied shell are held as the
   source's device: a workspace whose governance holds no certificate for this
   device is entered at its host as the person's further device — at the host

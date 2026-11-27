@@ -30,6 +30,10 @@ PrivateNetwork=yes
 PrivateIPC=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/tilo/device-private /var/lib/tilo/device
+# The daemon's sealed group state, in the device directory of the state directory its profile
+# names: a copy holds it as the source device's membership, so the re-key drops it and the daemon
+# joins the person's groups fresh. Nothing wider is written.
+ReadWritePaths=-/var/lib/tilo/state/state/tilo/device/own/groups
 # The machine id and the SSH host keys a copy shares with its source.
 ReadWritePaths=/etc
 # Each person's Secret Service re-seals their vault, running as them, in
