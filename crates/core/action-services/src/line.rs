@@ -59,6 +59,7 @@ pub fn answer_message<H: ActionProvider + Clone + Send + 'static>(
 /// takes: a call that still runs is never cut short. A look at how a call stands is the one
 /// answered within a bound, as unanswered past it. An answer the provider abandons is refused,
 /// as [`serve`] refuses it. A message that asks nothing is refused as `parse_error`.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn answer_whenever<H: ActionProvider + Clone + Send + 'static>(
     provider: &H,
     caller: &Caller,
@@ -87,6 +88,7 @@ pub(crate) fn answer_whenever<H: ActionProvider + Clone + Send + 'static>(
 
 /// What a look at a call ([`answer_whenever`]) is given past the longest remote wait before it
 /// is answered as unanswered, for its provider to answer it itself.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const LOOK_SLACK: Duration = Duration::from_secs(2);
 
 /// `message` as the line a socket writes.
