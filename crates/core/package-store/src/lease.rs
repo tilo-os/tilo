@@ -12,17 +12,6 @@ use tilo_app_package::PackageId;
 use crate::layout::{Layout, default_user_root};
 use crate::registry::Registry;
 
-/// Hold the payload tree at `payload_root` for a launch, when it is a tree
-/// of the user's store; trees elsewhere (the image's store) are never
-/// removed and need no lease. Keep the guard until the sandbox that mounts
-/// the tree has exited, and check the tree is still there after taking it.
-pub fn hold_payload(payload_root: &Path) -> io::Result<Option<FileLock>> {
-    match default_user_root() {
-        Some(root) => hold_payload_in(&Layout::new(root), payload_root),
-        None => Ok(None),
-    }
-}
-
 pub fn hold_payload_in(layout: &Layout, payload_root: &Path) -> io::Result<Option<FileLock>> {
     let Some(id) = layout.materialised_id(payload_root) else {
         return Ok(None);

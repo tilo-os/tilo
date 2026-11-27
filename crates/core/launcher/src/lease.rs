@@ -61,7 +61,12 @@ impl LaunchLeases {
         opts: &LaunchOptions,
         observe: &mut dyn FnMut(Stage),
     ) -> Result<Self, LaunchError> {
-        let payload = hold_payload(payload_root)?;
+        let store = package_store::layout::default_user_root();
+        let ours = store.as_deref().is_some_and(leases_are_this_accounts);
+        let payload = match &store {
+            Some(store) if ours => hold_in(store, payload_root)?,
+            _ => None,
+        };
         let mut held = Vec::new();
         if !payload_root.is_dir() {
             return Err(LaunchError::PackageChanged {
@@ -70,7 +75,7 @@ impl LaunchLeases {
             });
         }
         observe(Stage::PayloadHeld);
-        if let Some(bundles) = per_user_bundles() {
+        if ours && let Some(bundles) = per_user_bundles() {
             for version in runtime_versions(manifest, opts, bundles.path()) {
                 let lease =
                     bundles
@@ -92,13 +97,31 @@ impl LaunchLeases {
     }
 }
 
-/// Hold the payload tree at `payload_root` when it is one of the user's store; see
-/// [`package_store::lease::hold_payload`].
+/// Hold the payload tree at `payload_root` when it is one of a store this account writes.
 pub fn hold_payload(payload_root: &Path) -> Result<Option<FileLock>, LaunchError> {
-    package_store::lease::hold_payload(payload_root).map_err(|source| LaunchError::LaunchLease {
-        path: payload_root.to_path_buf(),
-        source,
-    })
+    match package_store::layout::default_user_root() {
+        Some(store) if leases_are_this_accounts(&store) => hold_in(&store, payload_root),
+        _ => Ok(None),
+    }
+}
+
+/// [`hold_payload`] in the store at `store`.
+fn hold_in(store: &Path, payload_root: &Path) -> Result<Option<FileLock>, LaunchError> {
+    package_store::lease::hold_payload_in(&package_store::layout::Layout::new(store), payload_root)
+        .map_err(|source| LaunchError::LaunchLease {
+            path: payload_root.to_path_buf(),
+            source,
+        })
+}
+
+/// Whether this account writes `root`'s store: it owns the root, and its leases once one exists.
+fn leases_are_this_accounts(root: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let leases = root.join(package_store::layout::LEASES_DIR);
+    let me = rustix::process::geteuid().as_raw();
+    std::fs::symlink_metadata(&leases)
+        .or_else(|_| std::fs::symlink_metadata(root))
+        .is_ok_and(|meta| meta.uid() == me)
 }
 
 /// How many times [`find_installed_held`] looks again after an update removed the tree it found.
@@ -549,5 +572,21 @@ type = "gui"
             LaunchLeases::take(&manifest, &gone, &fx.opts),
             Err(LaunchError::PackageChanged { .. })
         ));
+    }
+
+    /// A store another account writes takes no lease, and the launch starts.
+    #[test]
+    fn a_store_another_account_writes_is_launched_without_a_lease() {
+        let fx = fixture();
+        let other = 65534 * u32::from(rustix::process::geteuid().is_root());
+        tilo_test_env::require_capability!(Chown, tilo_test_env::chown_to(other), "not ours");
+        let store = fx.store.layout();
+        let leases = store.root().join(package_store::layout::LEASES_DIR);
+        std::fs::create_dir_all(&leases).unwrap();
+        std::os::unix::fs::chown(&leases, Some(other), None).unwrap();
+        let row = package_store::find_installed(APP).unwrap().unwrap();
+        let manifest = read_manifest(&row.manifest_path).unwrap();
+        let launch = LaunchLeases::take(&manifest, &row.payload_root, &fx.opts).unwrap();
+        assert!(launch.payload.is_none(), "not leased");
     }
 }

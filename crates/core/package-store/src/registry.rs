@@ -234,8 +234,13 @@ impl Registry {
             taken_over: self.taken_over.clone(),
         };
         let text = toml::to_string(&file).map_err(|error| write_error(error.to_string()))?;
-        tilo_files::native::atomic::write(path, text.as_bytes())
-            .map_err(|error| write_error(error.to_string()))
+        // The registry is the store's public index, as the packages it names are public: a
+        // device's daemon writes it, and every account's session reads what is installed.
+        #[cfg(unix)]
+        let written = tilo_files::native::atomic::write_with_mode(path, text.as_bytes(), 0o444);
+        #[cfg(not(unix))]
+        let written = tilo_files::native::atomic::write(path, text.as_bytes());
+        written.map_err(|error| write_error(error.to_string()))
     }
 
     pub fn entries(&self) -> &[InstalledPackage] {
@@ -303,6 +308,19 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store's registry is its public index: a daemon writes it, and every account's session
+    /// reads the apps it holds.
+    #[cfg(all(unix, feature = "store"))]
+    #[test]
+    fn a_saved_registry_is_readable_by_every_account() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registry.toml");
+        Registry::load(&path).unwrap().save(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o444, "every account reads the store's index");
+    }
 
     #[test]
     fn registry_rows_load_and_parse_even_with_an_unknown_future_field() {
