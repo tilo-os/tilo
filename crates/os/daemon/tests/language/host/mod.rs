@@ -53,6 +53,7 @@
 
 pub mod apps;
 
+mod app_actions;
 mod messages_for_agents;
 mod second;
 
