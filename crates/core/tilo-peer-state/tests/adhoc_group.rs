@@ -71,7 +71,7 @@ struct Desktop {
     endpoint: Endpoint,
     service: Arc<WorkspaceService>,
     /// The device's key service, kept open beside its workspace service.
-    _keys: KeyService,
+    keys: KeyService,
     router: Router,
     link: Option<DirectSync>,
     syncing: Option<tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>>,
@@ -124,7 +124,7 @@ impl Desktop {
             key,
             endpoint,
             service: Arc::new(service),
-            _keys: keys,
+            keys,
             router: router.spawn(),
             link: None,
             syncing: None,
@@ -169,6 +169,27 @@ impl Desktop {
         self.owner
             .with_current(workspace(), |view| Ok(view.founded_here()))
             .expect("this desktop holds the workspace")
+    }
+
+    /// Take part in the workspace's own key group, as the desktop's key service
+    /// does the first time it seals or opens one of the workspace's records: the
+    /// desktop that made the workspace founds the group, and a desktop hands the
+    /// group over with the workspace only once it holds it.
+    async fn founds_the_group(&self) {
+        let opened = self
+            .keys
+            .keys()
+            .group_keys(
+                WORKSPACE,
+                collab_types::EVERY_MEMBER,
+                true,
+                Duration::from_secs(30),
+            )
+            .await;
+        assert!(
+            matches!(opened, Some(Ok(_))),
+            "this desktop's service founds the workspace's key group: {opened:?}"
+        );
     }
 
     /// Where the workspace is held: the signed address of each of its holders.
@@ -452,6 +473,10 @@ async fn held_by_five(directory: &Path) -> [Desktop; 5] {
     // document its apps write to. No server and no admin workspace is made for
     // any of this.
     a1.founds().await;
+    // Its key service takes part in the workspace's group, as it does the first
+    // time it seals a record: a desktop that hands the workspace over hands the
+    // group with it.
+    a1.founds_the_group().await;
     a1.takes_part().await;
     a1.starts_document();
     let at_a1 = a1
@@ -713,6 +738,9 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
     let mut a1 = Desktop::start(directory.path(), "a1", a1_key, a1_cert).await;
     let a2 = Desktop::start(directory.path(), "a2", a2_key.clone(), a2_cert.clone()).await;
     a1.founds().await;
+    // Its key service takes part in the workspace's group before the workspace is
+    // handed over, as it does the first time it seals a record.
+    a1.founds_the_group().await;
     a1.takes_part().await;
     for (at, resource) in RESOURCES.iter().enumerate() {
         a1.starts(resource);
