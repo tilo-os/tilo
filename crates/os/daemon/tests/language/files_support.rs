@@ -294,6 +294,29 @@ pub fn file_at<'a>(
     dir: &str,
     name: &str,
 ) -> Option<&'a fs_protocol::tree::TreeEntry> {
+    entry_at(tree, dir, (name, FileNodeKind::File))
+}
+
+/// The folder at `dir/name` in `tree`, as its node; `None` when it is not there.
+pub fn folder_node<'a>(
+    tree: &'a Tree,
+    dir: &str,
+    name: &str,
+) -> Option<&'a fs_protocol::tree::TreeEntry> {
+    entry_at(tree, dir, (name, FileNodeKind::Directory))
+}
+
+/// Whether `dir/name` is a folder of `tree`.
+pub fn folder_at(tree: &Tree, dir: &str, name: &str) -> bool {
+    folder_node(tree, dir, name).is_some()
+}
+
+/// The entry of `kind` named `name` in the folder `dir` of `tree`; `None` when it is not there.
+fn entry_at<'a>(
+    tree: &'a Tree,
+    dir: &str,
+    (name, kind): (&str, FileNodeKind),
+) -> Option<&'a fs_protocol::tree::TreeEntry> {
     let mut parent = ROOT_ID;
     for folder in dir.split('/').filter(|folder| !folder.is_empty()) {
         let (id, _) = tree.children(parent).into_iter().find(|(_, node)| {
@@ -303,15 +326,8 @@ pub fn file_at<'a>(
     }
     tree.children(parent)
         .into_iter()
-        .find(|(_, node)| {
-            node.kind == FileNodeKind::File && node.name.as_bytes() == name.as_bytes()
-        })
+        .find(|(_, node)| node.kind == kind && node.name.as_bytes() == name.as_bytes())
         .map(|(_, node)| node)
-}
-
-/// Whether `dir/name` is a folder of `tree`.
-pub fn folder_at(tree: &Tree, dir: &str, name: &str) -> bool {
-    file_at(tree, dir, name).is_some_and(|node| node.kind == FileNodeKind::Directory)
 }
 
 /// What the file at `dir/name` of `tree` names its content by.

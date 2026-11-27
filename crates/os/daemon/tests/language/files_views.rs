@@ -49,7 +49,7 @@ async fn person_keeps_a_folder(host: &Host) -> u64 {
         crate::language::files_support::folder_at(tree, "", FOLDER)
     })
     .await;
-    crate::language::files_support::file_at(&tree, "", FOLDER)
+    crate::language::files_support::folder_node(&tree, "", FOLDER)
         .expect("the folder is in the tree")
         .mtime
 }
