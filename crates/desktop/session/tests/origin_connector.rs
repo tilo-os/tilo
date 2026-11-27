@@ -11,7 +11,9 @@
 //! socket the daemon started, and the answer lands in the client's record — its videos and the
 //! search's settled state — which the session publishes and its app wire reads. A video the answer
 //! brought, played, is asked for its stream the same way, and the record holds where it plays from
-//! while the client's session plays it.
+//! while the client's session plays it. The client's call into the playback service is another
+//! app's action, so the person answers it first, as their asked record: their yes plays the video,
+//! their way out plays nothing.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -29,6 +31,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
+use tilo_session_client::daemon_documents::{DaemonShell, inherited_link, whole};
 
 use crate::common::private_home;
 
@@ -192,7 +195,7 @@ fn connector_launcher(dir: &Path) -> tilo_test_env::StandIn {
 /// The apps are this run's own build, installed in the store a device has them in: the client's
 /// package is a signed `.tapp` whose manifest declares the `youtube` origin, so the daemon starts
 /// its connector the way it starts any installed app's.
-fn session(root: &Path) -> Session {
+fn session(root: &Path) -> (Session, DaemonShell) {
     // The store this run installed the apps in, as a device has them: the daemon and the session's
     // own launcher read the packages from there, so the connector's app is the client's package.
     crate::common::app_store();
@@ -249,9 +252,17 @@ fn session(root: &Path) -> Session {
         })
     });
     crate::common::kept_in_workspace(&mut session);
+    // The person's own link, kept for what they do beside the session: installing the client, and
+    // answering the call it makes of another app, as they would on any device of theirs.
+    let runtime = tilo_rt::app().handle().clone();
+    let person = DaemonShell::new(
+        inherited_link(Some(person_link.expect("the person's link")), &runtime)
+            .map(|(link, _)| link),
+        runtime,
+    );
     // The person installs the client in the workspace, through the workspace's own install
     // action: what lets it keep its records there and use what its package names.
-    install_in_workspace(&mut session, person_link.expect("the person's link"), TUBE);
+    install_in_workspace(&mut session, &person, TUBE);
     // The daemon starts the client's connector through the launcher it was handed, and that
     // process takes the socket the origin is reached over.
     let started = |dir: &Path| {
@@ -264,22 +275,13 @@ fn session(root: &Path) -> Session {
     crate::common::until(&mut session, "the client's connector attaching", |_| {
         child_ran(root, "youtube").is_file()
     });
-    session
+    (session, person)
 }
 
 /// Install `app`, as this run built it, in the workspace the session shows, as its person does
-/// over their own link `link`: its package handed to the workspace's install action.
-fn install_in_workspace(
-    session: &mut Session,
-    link: runtime_portal::process_link::Descriptor,
-    app: &str,
-) {
-    let runtime = tilo_rt::app().handle().clone();
-    let shell = tilo_session_client::daemon_documents::DaemonShell::new(
-        tilo_session_client::daemon_documents::inherited_link(Some(link), &runtime)
-            .map(|(link, _)| link),
-        runtime,
-    );
+/// over their own link `person`: its package handed to the workspace's install action.
+fn install_in_workspace(session: &mut Session, person: &DaemonShell, app: &str) {
+    let shell = person.clone();
     let workspace = session
         .handle()
         .read(|tree| {
@@ -316,23 +318,101 @@ fn install_in_workspace(
 fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let dir = private_home();
-    let mut session = session(dir.path());
+    let (mut session, person) = session(dir.path());
+    let (root, video) = searched(&mut session);
 
+    // The person presses the video page's Play. Tube's call into playback is another app's action,
+    // so it waits for the person as their asked record instead of running: nothing plays yet, and
+    // the record of the video keeps no address until the client's code runs.
+    play(&mut session, &video);
+    let workspace = workspace(&session);
+    let (action, asked) = waiting_ask(&mut session, &person, &workspace);
+    assert!(
+        action.ends_with("#play_list"),
+        "the person is asked about the client's call into playback, which is {action}"
+    );
+    assert!(
+        !playing(&session, &root, KEY),
+        "nothing plays before the person answers"
+    );
+
+    // Their yes runs the call the press made, as the shell's own answer does: the asked record's
+    // `resolve`, called on the person's connection as any action. The client's code goes on to
+    // call playback once more, which waits for them the same way.
+    resolve(&mut session, &person, &workspace, &asked, "approve");
+    // It runs, and the client's code goes on to its next call.
+    let _ = asked_ended(&mut session, &person, &workspace, &asked);
+    let (action, asked) = waiting_ask(&mut session, &person, &workspace);
+    assert!(
+        action.ends_with("#resume"),
+        "the person is asked about the client's next call into playback, which is {action}"
+    );
+    resolve(&mut session, &person, &workspace, &asked, "approve");
+    crate::common::until(
+        &mut session,
+        "the video's address in the record",
+        |session| streaming(session, &video),
+    );
+    crate::common::until(&mut session, "the player holds the video", |session| {
+        playing(session, &root, KEY)
+    });
+}
+
+/// The person declines the call a press into playback made: nothing plays, and the call ends in
+/// the dispatch's words.
+#[test]
+fn a_play_the_person_declines_into_playback_runs_nothing() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let dir = private_home();
+    let (mut session, person) = session(dir.path());
+    let (root, video) = searched(&mut session);
+
+    play(&mut session, &video);
+    let workspace = workspace(&session);
+    let (action, asked) = waiting_ask(&mut session, &person, &workspace);
+    assert!(
+        action.ends_with("#play_list"),
+        "the person is asked about the client's call into playback, which is {action}"
+    );
+
+    // Their way out declines it: the call ends, and nothing plays.
+    resolve(&mut session, &person, &workspace, &asked, "decline");
+    let ended = asked_ended(&mut session, &person, &workspace, &asked)
+        .expect("the declined call keeps its record");
+    assert_eq!(
+        ended.status,
+        tilo_action_services::workspace_invocations::InvocationStatus::Cancelled,
+        "the call the person declined ends, not run: {ended:?}"
+    );
+    for _ in 0..50 {
+        session
+            .step(std::time::Duration::from_millis(16))
+            .expect("step");
+    }
+    assert!(
+        !playing(&session, &root, KEY),
+        "the call the person declined plays nothing"
+    );
+}
+
+/// The person's search through the session's app wire, as any action: the outside effect it queues
+/// goes to the connector the session started for the app's origin. The answer lands in the client's
+/// record (the video the scripted service found and the channel it names), and this answers the
+/// client's root and the video it found.
+fn searched(session: &mut Session) -> (String, String) {
     // The client's root is published by the seeded apps, and the video the scripted service answers
     // with is not in it: only the scenario's own are.
-    crate::common::until(&mut session, "the client's root", |session| {
+    crate::common::until(session, "the client's root", |session| {
         session
             .resources()
             .iter()
             .any(|resource| resource.kind == format!("tl.{TUBE}.YouTube"))
     });
     assert!(
-        !record_says(&session, VIDEO),
+        !record_says(session, VIDEO),
         "the answer's video is not in the record before the search"
     );
 
-    // The person's search, through the session's app wire as any action: the outside effect it queues
-    // goes to the connector the session started for the app's origin.
     let root = session
         .resources()
         .into_iter()
@@ -366,32 +446,32 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
     // The answer lands in the client's record: the video the scripted service found and the channel
     // it names, each a resource of the client's the app wire reads, and the search settled
     // (`search_state` `done` , so the client's view stops saying it searches).
-    crate::common::until(&mut session, "the answer in the record", |session| {
+    crate::common::until(session, "the answer in the record", |session| {
         record_says(session, VIDEO) && record_says(session, NAME)
     });
-    let videos = client_items(&session, "Video");
+    let videos = client_items(session, "Video");
     assert!(
         videos.iter().any(|(_, title)| title == VIDEO),
         "the video YouTube answered with is a resource of the client's: {videos:?}"
     );
-    let channels = client_items(&session, "Channel");
+    let channels = client_items(session, "Channel");
     assert!(
         channels.iter().any(|(_, name)| name == NAME),
         "the channel YouTube answered with is a resource of the client's: {channels:?}"
     );
-
-    // The person opens the video the search found and presses its page's Play. The client asks
-    // the service where the video's bytes play from; the connector answers, and the answer is
-    // written into the video the record holds. The page draws the player only once both hold: the
-    // address, and the client's session playing that video, so what it needs is what is waited
-    // for.
     let video = videos
         .iter()
         .find(|(_, title)| title == VIDEO)
         .map(|(id, _)| id.clone())
         .expect("the video the search found");
+    (root.id.as_str().to_owned(), video)
+}
+
+/// The person presses the video page's Play: the client asks the service where the video's bytes
+/// play from, and its code plays the video in the client's session.
+fn play(session: &mut Session, video: &str) {
     let resources = session.resources();
-    let page = resource(&resources, &video).expect("the video is a resource of the client's");
+    let page = resource(&resources, video).expect("the video is a resource of the client's");
     let play = page
         .actions
         .iter()
@@ -409,16 +489,167 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
             |action| action.id.clone(),
         );
     session
-        .invoke(&video, &play, &serde_json::Map::new())
-        .expect("the video plays");
-    crate::common::until(
-        &mut session,
-        "the video's address in the record",
-        |session| streaming(session, &video),
+        .invoke(video, &play, &serde_json::Map::new())
+        .expect("the press is asked before it runs");
+}
+
+/// The workspace the session shows, by its id.
+fn workspace(session: &Session) -> String {
+    session
+        .handle()
+        .read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        })
+        .expect("the workspace the shell shows")
+}
+
+/// The asked record of the call that waits for the person in `workspace`, as the device's daemon
+/// lists its invocations: what `resolve` is called on, and the app's action it asks about.
+fn waiting_ask(session: &mut Session, person: &DaemonShell, workspace: &str) -> (String, String) {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if let Some(asked) = invocations(session, person, workspace)
+            .into_iter()
+            .find(|invocation| {
+                invocation.status
+                    == tilo_action_services::workspace_invocations::InvocationStatus::Waiting
+            })
+            .and_then(|invocation| invocation.asked)
+        {
+            return (asked.action.clone(), asked.record.record.clone());
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a call waits for the person's answer: none did"
+        );
+        session
+            .step(std::time::Duration::from_millis(16))
+            .expect("step");
+    }
+}
+
+/// Wait until the call whose asked record is `record` no longer waits for the person, and say
+/// what its record holds then, when it holds it.
+fn asked_ended(
+    session: &mut Session,
+    person: &DaemonShell,
+    workspace: &str,
+    record: &str,
+) -> Option<tilo_action_services::workspace_invocations::Invocation> {
+    let deadline = tilo_test_env::hang_deadline();
+    let holds = |invocation: &tilo_action_services::workspace_invocations::Invocation| {
+        invocation
+            .asked
+            .as_ref()
+            .is_some_and(|asked| asked.record.record == record)
+    };
+    loop {
+        let held = invocations(session, person, workspace);
+        if !held.iter().any(|invocation| {
+            invocation.status
+                == tilo_action_services::workspace_invocations::InvocationStatus::Waiting
+                && holds(invocation)
+        }) {
+            return held.into_iter().find(holds);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the call whose asked record is {record} ended: it still waits"
+        );
+        session
+            .step(std::time::Duration::from_millis(16))
+            .expect("step");
+    }
+}
+
+/// Answer the asked record `record`, as the person on their own connection does: its own
+/// `resolve`, called by its address as any caller calls it, with `resolution` (`approve` or
+/// `decline`).
+fn resolve(
+    session: &mut Session,
+    person: &DaemonShell,
+    workspace: &str,
+    record: &str,
+    resolution: &str,
+) {
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
+    use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+    let target = tilo_actions::remote::RemoteActionTarget {
+        provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(record, tilo_actions::remote::asked::RESOLVE),
+    };
+    let request =
+        crate::common::invocation(&target, &json!({"resolution": resolution}), None, None);
+    let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(request))
+        .encode()
+        .expect("an invocation encodes");
+    let call = ShellCall::Action {
+        workspace: Some(workspace.to_owned()),
+        frame,
+        caller: None,
+        pressed: None,
+    };
+    let shell = person.clone();
+    let reply = answered(session, person, async move { shell.ask(call).await });
+    assert!(
+        matches!(reply, ShellReply::Action(_)),
+        "the person's answer reached the asked record: {reply:?}"
     );
-    crate::common::until(&mut session, "the player holds the video", |session| {
-        playing(session, root.id.as_str(), KEY)
+}
+
+/// The invocations the device's daemon keeps of `workspace`, newest first: what its record of
+/// calls answers the person.
+fn invocations(
+    session: &mut Session,
+    person: &DaemonShell,
+    workspace: &str,
+) -> Vec<tilo_action_services::workspace_invocations::Invocation> {
+    let shell = person.clone();
+    let workspace = workspace.to_owned();
+    let reading = answered(session, person, async move {
+        shell.read(whole(&workspace, "tilo.invocations", "")).await
     });
+    let value = reading["records"]
+        .as_array()
+        .and_then(|records| records.first())
+        .and_then(|record| record.get("value"))
+        .cloned()
+        .unwrap_or_else(|| panic!("the invocations read answers a value: {reading}"));
+    serde_json::from_value(value["items"].clone()).unwrap_or_else(|error| {
+        panic!("the invocations read as invocations: {error}; it says {reading}")
+    })
+}
+
+/// What the daemon answered `ask` with, running the session's frames meanwhile: the session's own
+/// loop is what the daemon's answers land on.
+fn answered<T: Send + 'static>(
+    session: &mut Session,
+    person: &DaemonShell,
+    ask: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
+) -> T {
+    let (answered, answer) = std::sync::mpsc::sync_channel(1);
+    let _task = person.runtime().spawn(async move {
+        let _ = answered.send(ask.await);
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        session
+            .step(std::time::Duration::from_millis(2))
+            .expect("step");
+        match answer.try_recv() {
+            Ok(Ok(value)) => return value,
+            Ok(Err(error)) => panic!("the person's connection was refused: {error}"),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("the person's connection stopped before it answered")
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the person's connection answered: it never did"
+        );
+    }
 }
 
 /// The resource `id` among `resources`, its own or one of its children's: what the client
@@ -589,7 +820,7 @@ fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
 fn a_live_canvas_query_places_a_channel_the_client_never_held() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
-    let mut session = session(root.path());
+    let (mut session, _person) = session(root.path());
 
     // The channel the scripted test origin answers for "compositor" is not held before the query:
     // only the client's own scenario channels are.
@@ -687,7 +918,7 @@ fn type_on_canvas(session: &mut Session, text: &str) {
 /// A headless session over the scripted test origin, with the client's root published and nothing
 /// the scripted service answers held yet.
 fn live_session(root: &Path) -> Session {
-    let mut session = session(root);
+    let (mut session, _person) = session(root);
     crate::common::until(&mut session, "the client's root", |session| {
         session
             .resources()
