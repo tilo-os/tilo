@@ -1114,6 +1114,17 @@ impl Person {
     }
 }
 
+/// Make `root`'s runtime directory, as a machine's boot has its manager make it: a disk copied from
+/// another machine never carries one, and a daemon started without it binds its sockets elsewhere
+/// than where every client of this device looks.
+fn make_runtime(root: &Path) {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(root.join("runtime"))
+        .expect("the device's runtime directory");
+}
+
 /// A directory for a device of its own: its home, configuration, data, state, cache and runtime.
 fn device_home() -> tempfile::TempDir {
     let home = tempfile::tempdir().expect("a directory for the device");
@@ -1539,15 +1550,11 @@ impl Device {
         listening: Option<(String, mpsc::Sender<bool>)>,
     ) -> std::fs::File {
         let root = self.home.path().to_path_buf();
+        // The machine's boot makes its runtime directory, as a login's manager does: a copied disk
+        // never carries one, and a daemon started without it binds its sockets elsewhere.
+        make_runtime(&root);
         let logs = self.logs_dir();
         std::fs::create_dir_all(&logs).expect("a directory for what the device logs");
-        // The machine's boot makes its runtime directory, as a login's manager does: a copied
-        // disk never carries one, and without it the daemon would bind its sockets elsewhere.
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(root.join("runtime"))
-            .expect("the device's runtime directory");
         // A device started again keeps what it said when it stopped: what it answered last, a
         // crash included, is what a step that fails after the restart reads. The daemon and the
         // session the daemon starts write here, as a device's journal holds both.
