@@ -1422,6 +1422,9 @@ impl Task {
         mut reading: direct::Reader,
         mut answers: tokio::sync::broadcast::Receiver<Answered>,
     ) {
+        self.reports.change(|status| {
+            status.unlinked.remove(&workspace_id);
+        });
         let commands = self.commands.clone();
         n0_future::task::spawn(async move {
             while let Some(heard) = reading.recv().await {
@@ -1790,6 +1793,7 @@ impl Task {
                 self.links.remove(&workspace_id);
                 self.reports.change(|status| {
                     status.workspaces.insert(workspace_id, false);
+                    status.unlinked.insert(workspace_id);
                 });
             }
         }
@@ -2073,6 +2077,7 @@ impl Task {
         self.reports.change(|status| {
             status.workspaces.remove(&workspace_id);
             status.serving.remove(&workspace_id);
+            status.unlinked.remove(&workspace_id);
             if nothing_left {
                 status.phase = TransportPhase::Failed;
             }
@@ -2092,6 +2097,7 @@ impl Task {
         if self.joined(workspace_id) {
             self.reports.change(|status| {
                 status.workspaces.insert(workspace_id, false);
+                status.unlinked.insert(workspace_id);
             });
         }
         match refusal {

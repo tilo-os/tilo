@@ -16,15 +16,17 @@ impl PeerStatus {
     #[must_use]
     pub fn workspace_state(&self, workspace: WorkspaceId) -> Option<WorkspaceState> {
         let ready = *self.workspaces.get(&workspace)?;
-        Some(if self.phase != TransportPhase::Connected {
-            WorkspaceState::Connecting
-        } else if !ready {
-            WorkspaceState::Admitting
-        } else if self.serving.contains(&workspace) {
-            WorkspaceState::Serving
-        } else {
-            WorkspaceState::Open
-        })
+        Some(
+            if self.phase != TransportPhase::Connected || self.unlinked.contains(&workspace) {
+                WorkspaceState::Connecting
+            } else if !ready {
+                WorkspaceState::Admitting
+            } else if self.serving.contains(&workspace) {
+                WorkspaceState::Serving
+            } else {
+                WorkspaceState::Open
+            },
+        )
     }
 
     /// Every joined workspace's state.
@@ -120,6 +122,13 @@ mod tests {
                 }]
             ),
             "{told:?}"
+        );
+        // Its own link ended while the session's others stay up: it waits for a connection.
+        let mut unlinked = joined(false);
+        unlinked.unlinked.insert(ws);
+        assert_eq!(
+            unlinked.workspace_state(ws),
+            Some(WorkspaceState::Connecting)
         );
         let mut serving = joined(true);
         serving.serving.insert(ws);

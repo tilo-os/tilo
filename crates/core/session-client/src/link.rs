@@ -115,6 +115,10 @@ pub struct PeerStatus {
     /// The joined workspaces whose governance admits this device: their records read as a
     /// member's ([`crate::WorkspaceState::Serving`]).
     pub serving: BTreeSet<WorkspaceId>,
+    /// The joined workspaces whose link ended and that wait to be dialled again: each waits for
+    /// a connection ([`crate::WorkspaceState::Connecting`]) whatever the session's other links
+    /// do.
+    pub unlinked: BTreeSet<WorkspaceId>,
     /// Each record's local store state, as reported with [`Link::set_local_state`].
     pub local: BTreeMap<DocumentRoute, LocalState>,
     /// Current failures, newest last.
@@ -164,6 +168,7 @@ impl PeerStatus {
             last_contact_at_ms: None,
             workspaces: BTreeMap::new(),
             serving: BTreeSet::new(),
+            unlinked: BTreeSet::new(),
             local: BTreeMap::new(),
             failures: Vec::new(),
             outgoing_pending: 0,
