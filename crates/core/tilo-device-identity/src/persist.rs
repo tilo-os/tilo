@@ -1103,24 +1103,66 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
 }
 
-/// Give the key at `path` the owner and group of its directory, and
-/// [`DEVICE_KEY_MODE`].
-///
-/// The directory is the daemon's: the image makes it for the account the
-/// device's daemon runs as, and that account is the one process that reads the
-/// key. Whoever writes the key as another account — root at first boot, a
-/// re-key, an installer's copy — gives it back to the directory's owner here,
-/// on every boot, so an install from any earlier state settles on the one state
-/// the daemon reads. A process running as that account needs no privilege for
-/// this. One running as root needs `CAP_CHOWN` and `CAP_FOWNER` for the key, and
-/// `CAP_DAC_OVERRIDE` (or `CAP_DAC_READ_SEARCH` where it only reads) to reach a
-/// file inside the directory.
+/// The account the device's daemon runs as on every computer, the one process that reads the
+/// machine's key.
+pub const DEVICE_DAEMON_ACCOUNT: &str = "tilo";
+
+/// The uid and primary gid of [`DEVICE_DAEMON_ACCOUNT`].
 ///
 /// # Errors
 ///
-/// The key or its directory cannot be read, the key is not a regular file, or
-/// it cannot be given its owner and mode.
-pub fn enforce_device_key_owner_and_mode(path: &Path) -> io::Result<()> {
+/// This computer has no such account.
+#[cfg(unix)]
+pub fn device_daemon_owner() -> io::Result<(u32, u32)> {
+    let name = std::ffi::CString::new(DEVICE_DAEMON_ACCOUNT).map_err(io::Error::other)?;
+    // SAFETY: an all-zero passwd is a valid out-buffer for getpwnam_r.
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: a NUL-terminated name, and out-pointers to the entry, its string buffer of the
+    // length given, and the result, all live for the call.
+    let rc = unsafe {
+        libc::getpwnam_r(
+            name.as_ptr(),
+            &raw mut entry,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &raw mut found,
+        )
+    };
+    if rc != 0 || found.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("this computer has no `{DEVICE_DAEMON_ACCOUNT}` account for its device daemon"),
+        ));
+    }
+    Ok((entry.pw_uid, entry.pw_gid))
+}
+
+/// No computer without Unix accounts keeps its device key in a file a daemon account owns.
+///
+/// # Errors
+///
+/// Always.
+#[cfg(not(unix))]
+pub fn device_daemon_owner() -> io::Result<(u32, u32)> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+/// Give the key at `path` and its directory to `owner` (uid, gid): the directory `0700`, the key
+/// [`DEVICE_KEY_MODE`].
+///
+/// `owner` is named, never read off the directory: whoever made or copied the directory last
+/// (an installer, a re-key, another service of an earlier image) can have left an owner the
+/// daemon isn't, and settling on it would hand the key to that account. Run every boot, so an
+/// install from any earlier state settles on the one state the daemon reads. As root this needs
+/// `CAP_CHOWN` and `CAP_FOWNER`, and `CAP_DAC_OVERRIDE` to reach the key inside the directory.
+///
+/// # Errors
+///
+/// The key or its directory cannot be read, the key is not a regular file, or either cannot be
+/// given its owner and mode.
+pub fn enforce_device_key_owner_and_mode(path: &Path, owner: (u32, u32)) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -1130,7 +1172,6 @@ pub fn enforce_device_key_owner_and_mode(path: &Path) -> io::Result<()> {
                 format!("the device key {} has no directory", path.display()),
             )
         })?;
-        let directory = fs::metadata(directory)?;
         let key = fs::symlink_metadata(path)?;
         if !key.file_type().is_file() {
             return Err(io::Error::new(
@@ -1138,15 +1179,20 @@ pub fn enforce_device_key_owner_and_mode(path: &Path) -> io::Result<()> {
                 format!("the device key {} is not a regular file", path.display()),
             ));
         }
-        if (key.uid(), key.gid()) != (directory.uid(), directory.gid()) {
-            std::os::unix::fs::chown(path, Some(directory.uid()), Some(directory.gid()))?;
-        }
-        if key.permissions().mode() & 0o777 != DEVICE_KEY_MODE {
-            fs::set_permissions(path, fs::Permissions::from_mode(DEVICE_KEY_MODE))?;
+        for (path, metadata, mode) in [
+            (directory, fs::metadata(directory)?, 0o700),
+            (path, key, DEVICE_KEY_MODE),
+        ] {
+            if (metadata.uid(), metadata.gid()) != owner {
+                std::os::unix::fs::chown(path, Some(owner.0), Some(owner.1))?;
+            }
+            if metadata.permissions().mode() & 0o777 != mode {
+                fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+            }
         }
     }
     #[cfg(not(unix))]
-    let _ = path;
+    let _ = (path, owner);
     Ok(())
 }
 
@@ -2650,12 +2696,22 @@ mod tests {
                     }
                 }
 
-                // Giving the key back its state, as the machine's boot does, makes it readable
-                // again: the mode is the daemon's, and the owner is the directory's.
-                enforce_device_key_owner_and_mode(path).unwrap();
+                // Giving the key and its directory back their state, as the machine's boot does,
+                // makes it readable again.
+                let directory = path.parent().unwrap();
+                fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).unwrap();
+                let me = (
+                    rustix::process::geteuid().as_raw(),
+                    rustix::process::getegid().as_raw(),
+                );
+                enforce_device_key_owner_and_mode(path, me).unwrap();
                 assert_eq!(
                     fs::metadata(path).unwrap().permissions().mode() & 0o777,
                     DEVICE_KEY_MODE
+                );
+                assert_eq!(
+                    fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                    0o700
                 );
                 assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
             }

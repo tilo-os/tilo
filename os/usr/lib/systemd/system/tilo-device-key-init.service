@@ -12,7 +12,7 @@ Before=tilo-firstboot.service greetd.service fs.service
 Conflicts=shutdown.target
 Before=shutdown.target
 # Every boot, not only the first: the key is the device daemon's, which runs as
-# the account that owns its directory, so this gives it that owner and 0600
+# `tilo`, so this gives the key and its directory that account, 0600 and 0700,
 # each time. A re-key, an installer's copy or an install from before this rule
 # can have left another owner or mode, and the daemon reads just the one.
 
@@ -49,8 +49,8 @@ MemoryDenyWriteExecute=yes
 RemoveIPC=yes
 # The key is the daemon account's file inside that account's 0700 directory.
 # CAP_DAC_OVERRIDE reaches it and, on a computer with no key yet, creates it
-# (a write; reading alone would take CAP_DAC_READ_SEARCH). CAP_CHOWN gives it the
-# directory's owner, CAP_FOWNER its 0600.
+# (a write; reading alone would take CAP_DAC_READ_SEARCH). CAP_CHOWN gives both
+# to `tilo`, CAP_FOWNER their modes.
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 AmbientCapabilities=
 SystemCallArchitectures=native

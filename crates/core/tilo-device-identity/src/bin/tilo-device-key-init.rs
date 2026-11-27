@@ -5,20 +5,22 @@
 //! `TILO_NODE_SESSION_DEVICE=<hex>`, a systemd `EnvironmentFile` the node's
 //! server names the session with (`--session-device`).
 //!
-//! The machine's key is the device daemon's, which runs as the account that
-//! owns the key's directory, never as root. This program makes it when the
-//! computer has none and gives it that account and `0600` every boot, so an
-//! install from any earlier state settles on the one state the daemon reads.
+//! The machine's key is the device daemon's, which runs as the `tilo` account
+//! on every computer, never as root. This program makes it when the computer
+//! has none and gives it and its directory that account, `0600` and `0700`,
+//! every boot, so an install from any earlier state settles on the one state
+//! the daemon reads.
 //! Nothing here keeps a copy, and a device whose daemon has the key already is
 //! refused rather than read beside it.
 //!
 //! `--branch` runs at every boot before anything uses the machine's key: it
 //! records which machine the key belongs to and re-keys a machine whose disk
-//! was copied from another (`tilo_device_identity::branch`).
+//! was copied from another (`tilo_device_identity::branch`), then gives a new
+//! key the daemon's account as well.
 
 use tilo_device_identity::persist::{
-    DeviceKeyOutcome, IdentityPaths, enforce_device_key_owner_and_mode, holds_device_key,
-    load_or_create_device_key, settle_device_certificate, take_device_key,
+    DeviceKeyOutcome, IdentityPaths, device_daemon_owner, enforce_device_key_owner_and_mode,
+    holds_device_key, load_or_create_device_key, settle_device_certificate, take_device_key,
 };
 
 fn main() {
@@ -34,19 +36,33 @@ fn provision(args: &[String]) -> Result<(), String> {
             if rustix::process::geteuid().as_raw() != 0 {
                 return Err("must run as root".into());
             }
-            maintain(&IdentityPaths::default_system())
+            let owner = device_daemon_owner().map_err(|error| error.to_string())?;
+            maintain(&IdentityPaths::default_system(), owner)
         }
         #[cfg(unix)]
         [flag] if flag == "--branch" => {
             if rustix::process::geteuid().as_raw() != 0 {
                 return Err("must run as root".into());
             }
-            branch::run(&IdentityPaths::default_system())
+            let owner = device_daemon_owner().map_err(|error| error.to_string())?;
+            let paths = IdentityPaths::default_system();
+            let branched = branch::run(&paths);
+            // A re-key writes the new key as root, and a run that stops early can have written it
+            // already: whatever is on disk now goes to the daemon.
+            if holds_device_key(&paths).map_err(|error| error.to_string())? {
+                enforce_device_key_owner_and_mode(&paths.device_privkey, owner)
+                    .map_err(|error| error.to_string())?;
+            }
+            branched
         }
         [root_flag, root, out_flag, out]
             if root_flag == "--root" && out_flag == "--public-env-out" =>
         {
-            let device = create(&IdentityPaths::under(root), "node session")?;
+            let me = (
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getegid().as_raw(),
+            );
+            let device = create(&IdentityPaths::under(root), "node session", me)?;
             let line = format!(
                 "TILO_NODE_SESSION_DEVICE={}\n",
                 hex::encode(device.to_bytes())
@@ -59,15 +75,15 @@ fn provision(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// The machine's key in the one state its daemon reads: the owner of its directory and `0600`.
-/// Every boot, since a re-key, an installer's copy or a build from before this rule can have left
-/// another owner or mode; when the computer has no key yet it is made first.
-fn maintain(paths: &IdentityPaths) -> Result<(), String> {
+/// The machine's key in the one state its daemon reads: `owner`'s, `0600`, in `owner`'s `0700`
+/// directory. Every boot, since a re-key, an installer's copy or a build from before this rule can
+/// have left another owner or mode; when the computer has no key yet it is made first.
+fn maintain(paths: &IdentityPaths, owner: (u32, u32)) -> Result<(), String> {
     if holds_device_key(paths).map_err(|error| error.to_string())? {
-        enforce_device_key_owner_and_mode(&paths.device_privkey)
+        enforce_device_key_owner_and_mode(&paths.device_privkey, owner)
             .map_err(|error| error.to_string())?;
     } else {
-        create(paths, "machine")?;
+        create(paths, "machine", owner)?;
     }
     // A machine imaged before one certificate per person kept the owner's at the old
     // `device/cert.bin`: keep it beside its person and remove the second copy. Idempotent, so
@@ -79,15 +95,19 @@ fn maintain(paths: &IdentityPaths) -> Result<(), String> {
 /// Make the device key under `paths` when there is none, before the daemon that writes as the
 /// device starts: it is handed over in the file, which the daemon takes. Nothing here keeps it,
 /// and a device whose daemon took the key already is refused rather than read beside it.
-fn create(paths: &IdentityPaths, what: &str) -> Result<ed25519_dalek::VerifyingKey, String> {
+fn create(
+    paths: &IdentityPaths,
+    what: &str,
+    owner: (u32, u32),
+) -> Result<ed25519_dalek::VerifyingKey, String> {
     let (_, outcome) = load_or_create_device_key(paths).map_err(|error| error.to_string())?;
     // Taken and let go at once, while it is still root's: a running daemon refuses it, naming
     // itself.
     let taken = take_device_key(paths).map_err(|error| error.to_string())?;
     let public = taken.key().verifying_key();
     drop(taken);
-    // Root made it here; the directory is the daemon account's, so the key is too.
-    enforce_device_key_owner_and_mode(&paths.device_privkey).map_err(|error| error.to_string())?;
+    enforce_device_key_owner_and_mode(&paths.device_privkey, owner)
+        .map_err(|error| error.to_string())?;
     if outcome == DeviceKeyOutcome::Created {
         eprintln!("created {what} device identity");
     }
