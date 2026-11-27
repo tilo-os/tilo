@@ -3531,7 +3531,7 @@ arch = ["x86_64", "aarch64"]
 name = "runtime-macos-app"
 # Installs packages (npm, PyPI, rustup) from hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\nrustup target add aarch64-apple-darwin x86_64-apple-darwin\nout=${CARGO_TARGET_DIR:-$PWD/target}/dist-macos\nrm -rf \"$out\"\ndist/macos/build-app.sh \"$out\"\ndist/macos/verify-app.sh \"$out/tilo-macos-universal.dmg\"\n"
+run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\nrustup target add aarch64-apple-darwin x86_64-apple-darwin\nout=${CARGO_TARGET_DIR:-$PWD/target}/dist-macos\nrm -rf \"$out\"\ndist/macos/build-app.sh \"$out\"\ncargo build --locked --release -p install --bin tilo-install -p tilolang-cli --bin tilolang\nTILO_TAPP_TOOLS=\"${CARGO_TARGET_DIR:-$PWD/target}/release\" dist/macos/verify-app.sh \"$out/tilo-macos-universal.dmg\"\n"
 requires = ["os=macos", "arch=arm64"]
 outputs = ["/target/dist-macos/tilo-macos-universal.*", "/target/dist-macos/tilo.rb"]
 on = ["dispatch"]

@@ -94,9 +94,11 @@ fi
 
 # The profile is a private throwaway. HOME stays the user's: the identity key
 # goes to the login Keychain, which a redirected HOME turns into a blocking
-# "keychain not found" prompt.
-mkdir -m 0700 "$work/profile"
-"$contents/MacOS/tilo-runtime" --profile "$work/profile" \
+# "keychain not found" prompt. The app and runtime store is private too, so
+# first start's carried installs land here and not in the user's store.
+runtime_release="${TILO_RUNTIME_RELEASE:-2026.07}"
+mkdir -m 0700 "$work/profile" "$work/store"
+TILO_APPS_DATA_DIR="$work/store" "$contents/MacOS/tilo-runtime" --profile "$work/profile" \
   </dev/null >"$work/daemon.log" 2>&1 &
 daemon=$!
 socket="$("$contents/MacOS/tilo-runtime" --profile "$work/profile" --socket)" \
@@ -121,4 +123,45 @@ done
 [ -n "$status" ] || { cat "$work/daemon.log" >&2; fail 'daemon never answered its status probe'; }
 python3 -c 'import json, sys; s = json.loads(sys.argv[1]); assert s["version"] == 1 and s["pid"] == int(sys.argv[2]) and s["room"], s' \
   "$status" "$daemon" || fail "unexpected daemon status: $status"
-printf 'verify-app: %s ok; bundled daemon pid %s answered %s\n' "$dmg" "$daemon" "$status"
+
+# First start installed the runtime packages Tilo.app carries into the store the installer reads:
+# the Tilo runtime it is, named by the release its apps are built for, and the tilolang runtime
+# every tilolang package runs on. A package naming either finds it; one naming another release is
+# refused by name.
+runtimes_in_store="$work/store/runtimes"
+for _ in $(seq 1 60); do
+  if [ -f "$runtimes_in_store/$runtime_release/bundle.toml" ] \
+     && compgen -G "$runtimes_in_store/*+tilolang.*/bundle.toml" >/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+[ -f "$runtimes_in_store/$runtime_release/bundle.toml" ] \
+  || { cat "$work/daemon.log" >&2; fail "first start did not install the Tilo runtime $runtime_release it carries"; }
+compgen -G "$runtimes_in_store/*+tilolang.*/bundle.toml" >/dev/null \
+  || { cat "$work/daemon.log" >&2; fail 'first start did not install the tilolang runtime it carries'; }
+
+# One of the collection's packages installs beside them. TILO_TAPP_TOOLS names the tilolang and
+# tilo-install binaries built from this tree; the package's own runtime is the one first start
+# installed, so nothing is fetched. The daemon stops first so the store has one writer.
+tools="${TILO_TAPP_TOOLS:-}"
+if [ -n "$tools" ]; then
+  kill "$daemon" 2>/dev/null || true
+  wait "$daemon" 2>/dev/null || true
+  daemon=
+  repo="$(cd "$(dirname "$0")/../.." && pwd)"
+  tapps="$work/tapps"
+  mkdir -p "$tapps"
+  ( cd "$repo" && "$tools/tilolang" build --locked "$repo/apps/tl/notes" --out "$tapps" >/dev/null ) \
+    || fail 'the notes package did not build'
+  tapp="$(ls "$tapps"/*.tapp | head -n 1)"
+  TILO_APPS_DATA_DIR="$work/store" \
+  TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$contents/Resources/runtime-bundle-trusted-publishers.txt" \
+    "$tools/tilo-install" install "$tapp" --allow-self-signed \
+    || fail 'a collection package did not install on the runtime first start installed'
+  TILO_APPS_DATA_DIR="$work/store" "$tools/tilo-install" list | grep -q 'so.tilo.notes' \
+    || fail 'the collection package is not in the store after installing'
+fi
+
+printf 'verify-app: %s ok; bundled daemon pid %s answered %s; carried runtime %s and the tilolang runtime installed on first start\n' \
+  "$dmg" "$daemon" "$status" "$runtime_release"
