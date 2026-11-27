@@ -301,19 +301,18 @@ fn run_through_control_socket(resource: &str, action: &str, value: &Value) -> Re
     )
 }
 
-/// Whether a socket serves this login's `tilo do`: a session or the device's daemon. A computer
-/// whose daemon serves no control socket keeps the change for its session.
+/// Whether a socket serves this login's `tilo do`: a session's, or the device's daemon's native
+/// endpoint (a socket file or its link on Unix, a named pipe on Windows).
 fn control_socket_serves() -> bool {
-    #[cfg(unix)]
-    {
-        tilo_control::client::sockets_from_env()
-            .iter()
-            .any(|socket| socket.path().exists())
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
+    tilo_control::client::sockets_from_env()
+        .iter()
+        .any(|socket| {
+            #[cfg(unix)]
+            let served = socket.path().exists();
+            #[cfg(not(unix))]
+            let served = tilo_files::native::socket::is_bound(socket.path());
+            served
+        })
 }
 
 /// Run the verb `action` of this device's section `section` with `change` (its one parameter)
@@ -339,29 +338,21 @@ pub fn run_on_this_device(section: &str, action: &str, change: Value) -> std::io
 
 /// Run `resource#action` with `arguments` through this login's control socket.
 fn call(resource: &str, action: &str, arguments: Map<String, Value>) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        if let Some(reason) = crate::unisolated_test_write() {
-            return Err(reason.to_owned());
-        }
-        let target = tilo_actions::remote::RemoteActionTarget {
-            provider: tilo_actions::remote::settings_resources::PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(resource, action),
-        };
-        tilo_control::front::call_target(
-            &tilo_control::client::sockets_from_env(),
-            target,
-            action,
-            &Value::Object(arguments),
-            &tilo_control::front::Spelling::tilo(),
-        )
-        .map(drop)
+    if let Some(reason) = crate::unisolated_test_write() {
+        return Err(reason.to_owned());
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (resource, action, arguments);
-        Err("this platform's settings are set in its session".to_owned())
-    }
+    let target = tilo_actions::remote::RemoteActionTarget {
+        provider: tilo_actions::remote::settings_resources::PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(resource, action),
+    };
+    tilo_control::front::call_target(
+        &tilo_control::client::sockets_from_env(),
+        target,
+        action,
+        &Value::Object(arguments),
+        &tilo_control::front::Spelling::tilo(),
+    )
+    .map(drop)
 }
 
 #[cfg(test)]

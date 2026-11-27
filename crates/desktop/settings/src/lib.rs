@@ -160,7 +160,7 @@ const fn outside_source() -> Option<Arc<dyn SettingsSource>> {
 /// Why this process must not change the person's settings: a test harness started by hand
 /// (`target/debug/deps/<crate>-<hash>`) outside the test environment keeps the caller's home, and
 /// would change the settings of the caller's own session.
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 fn unisolated_test_write() -> Option<&'static str> {
     let harness = std::env::current_exe()
         .ok()

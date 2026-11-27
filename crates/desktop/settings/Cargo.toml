@@ -59,8 +59,6 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-
-[target.'cfg(unix)'.dependencies]
-# A process outside the session changes a setting by its setter, which the session runs through
-# its control socket as it runs `tilo do`.
+# A process outside the session changes a setting by its setter, which the session or the device's
+# daemon runs through its control socket (a named pipe on Windows) as it runs `tilo do`.
 tilo-control = { version = "0.1.0", path = "../../desktop/control-cli" }
