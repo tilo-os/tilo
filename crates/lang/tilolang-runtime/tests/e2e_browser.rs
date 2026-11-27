@@ -2615,4 +2615,28 @@ mod cases {
             );
         }
     }
+
+    tilo_test_env::scenario! {
+        fn e2e_browser_library;
+
+        phase the_library_lists_the_places_it_switches_between;
+        {
+            let b = Browser::new();
+            let view = b.view("bookmarks", vec![Value::resource(&b.root)]);
+            let shell = of_kind(view.tree(), "ui.NavShell");
+            let shell = shell.first().expect("the library's window");
+            assert_eq!(shell.props.get("title"), Some(&Value::text("Bookmarks")));
+            assert_eq!(shell.props.get("sidebar_title"), Some(&Value::text("Library")));
+            let places: Vec<String> = of_kind(view.tree(), "ui.NavItem")
+                .into_iter()
+                .filter_map(|item| match item.props.get("label") {
+                    Some(Value::Text(label)) => Some(label.clone()),
+                    _ => None,
+                })
+                .collect();
+            for place in ["History", "Bookmarks"] {
+                assert!(places.iter().any(|label| label == place), "{place} in {places:?}");
+            }
+        }
+    }
 }
