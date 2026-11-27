@@ -670,7 +670,7 @@ tilo_test_env::scenario! {
                 .len(),
             3 * 1024 * 1024
         );
-        assert!(!env.xdg_data().join("tilo-runtime").exists());
+        assert!(!env.xdg_data().join("tilo-apps/runtimes").exists());
     }
 
     phase desktop_contract_refuses_foreign_platform_and_architecture;
@@ -775,7 +775,7 @@ tilo_test_env::scenario! {
 
         let bundle = env
             .xdg_data()
-            .join("tilo-runtime")
+            .join("tilo-apps/runtimes")
             .join("2026.10.23-chromium");
         std::fs::create_dir_all(&bundle).unwrap();
         std::fs::write(bundle.join("bundle.toml"), b"").unwrap();

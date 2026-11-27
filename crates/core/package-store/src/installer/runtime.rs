@@ -1,5 +1,6 @@
 //! Installing a native runtime package: its payload is a signed runtime bundle, which lands where
-//! the launcher looks for the runtime it provides (`$XDG_DATA_HOME/tilo-runtime/<version>`).
+//! the launcher looks for the runtime it provides (`runtimes/<version>` in the device's own
+//! store, [`tilo_paths::device_data_dir`]).
 
 use std::fs;
 use std::io::Read;
@@ -306,7 +307,7 @@ pub fn seal(tree: &Path, manifest: &runtime_bundle::BundleManifest, report: &mut
     }
 }
 
-/// The checks the launcher makes before it mounts a per-user bundle, which leave the bundle's
+/// The checks the launcher makes before it mounts a device bundle, which leave the bundle's
 /// verification record: the first launch of an app that installs a runtime reads that record instead
 /// of hashing what this just proved. Sealing the bundle afterwards moves the files' identities and
 /// the record with them, which costs nothing: a sealed bundle is proven by the kernel, and one the

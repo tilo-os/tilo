@@ -159,7 +159,7 @@ pub enum BundleError {
         expected: u64,
         actual: u64,
     },
-    #[error("home / data-dir not resolvable — set XDG_DATA_HOME or HOME")]
+    #[error("no device store — set TILO_APPS_DATA_DIR, or XDG_DATA_HOME / HOME")]
     NoDataDir,
     #[error("SOURCE_DATE_EPOCH must be an unsigned unix timestamp: {0}")]
     InvalidSourceDateEpoch(String),
@@ -330,22 +330,26 @@ pub const HOST_MINIMAL_PATHS_AARCH64: &[&str] = &[
 pub const HOST_LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
 /// Environment override naming the root that holds `<version>/` bundle
-/// directories (counterpart of `TILO_APPS_DATA_DIR`).
+/// directories instead of the device's own store.
 ///
 /// Repointing `XDG_DATA_HOME` for a session's own documents would
-/// also isolate the runtime bundles living under it, breaking every
-/// app's launch — this variable lets a caller keep the (shared)
-/// runtime reachable without moving it into the session's isolated documents.
+/// also move the device store a session resolves without `TILO_APPS_DATA_DIR`, and with it
+/// the runtimes installed there, breaking every app's launch — this variable lets a caller
+/// keep the (shared) runtime reachable without moving it into the session's isolated
+/// documents.
 pub const RUNTIME_DIR_ENV: &str = "TILO_RUNTIME_BUNDLE_DIR";
 
-/// Root holding the per-user bundles, before the version is appended:
-/// [`RUNTIME_DIR_ENV`] when set and non-empty, else
-/// `$XDG_DATA_HOME/tilo-runtime`.
+/// The directory under the device's store ([`tilo_paths::device_data_dir`]) that holds the
+/// bundles: `runtimes/<version>/`.
+const BUNDLES_IN_STORE: &str = "runtimes";
+
+/// Root holding the bundles, before the version is appended: [`RUNTIME_DIR_ENV`] when set and
+/// non-empty, else `runtimes` in the device's own store.
 ///
 /// # Errors
 ///
-/// Returns [`BundleError::NoDataDir`] if [`RUNTIME_DIR_ENV`] is unset
-/// and the platform data directory can't be resolved (`XDG_DATA_HOME`/`HOME` unset).
+/// Returns [`BundleError::NoDataDir`] if [`RUNTIME_DIR_ENV`] is unset and the device's data
+/// directory can't be resolved (`TILO_APPS_DATA_DIR`, `XDG_DATA_HOME` and `HOME` unset).
 pub fn bundle_root() -> Result<PathBuf, BundleError> {
     bundle_root_from(std::env::var_os(RUNTIME_DIR_ENV))
 }
@@ -356,13 +360,13 @@ pub fn bundle_root_from(root_override: Option<std::ffi::OsString>) -> Result<Pat
     {
         return Ok(PathBuf::from(dir));
     }
-    Ok(tilo_paths::data_dir()
+    Ok(tilo_paths::device_data_dir()
         .ok_or(BundleError::NoDataDir)?
-        .join("tilo-runtime"))
+        .join(BUNDLES_IN_STORE))
 }
 
-/// Default per-user bundle directory: `$XDG_DATA_HOME/tilo-runtime/<v>/`,
-/// unless [`RUNTIME_DIR_ENV`] names another root.
+/// Default bundle directory: `runtimes/<v>/` in the device's own store
+/// ([`tilo_paths::device_data_dir`]), unless [`RUNTIME_DIR_ENV`] names another root.
 ///
 /// # Errors
 ///
@@ -383,7 +387,8 @@ pub fn system_bundle_path(version: &str) -> PathBuf {
     PathBuf::from("/usr/lib/tilo-runtime").join(version)
 }
 
-/// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
+/// Walk the search path and return the first existing bundle dir with a `bundle.toml` (the
+/// device's store, then the image's).
 pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
     if let Ok(p) = default_bundle_path(version)
         && p.join(BUNDLE_MANIFEST_FILENAME).exists()
@@ -2858,15 +2863,51 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn bundle_root_resolves_from_the_environment_or_data_dir;
+        fn the_bundle_root_is_the_device_store;
 
-        phase default_bundle_path_uses_data_dir;
+        phase default_bundle_path_is_the_device_stores_runtimes;
+        // A runtime is installed once per device, under the store its daemon and every person's
+        // session read: `runtimes/<version>` below the device's data directory.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove(RUNTIME_DIR_ENV);
-            if let Ok(p) = default_bundle_path("v") {
-                assert!(p.ends_with("tilo-runtime/v"));
-            }
+            env.remove(RUNTIME_DIR_ENV)
+                .remove(tilo_paths::APPS_DATA_DIR_ENV)
+                .set("XDG_DATA_HOME", "/dev/person/data");
+            assert_eq!(
+                default_bundle_path("v").expect("a device data directory"),
+                Path::new("/dev/person/data/tilo-apps/runtimes/v"),
+            );
+            env.set(tilo_paths::APPS_DATA_DIR_ENV, "/dev/store");
+            assert_eq!(
+                default_bundle_path("v").expect("the named store"),
+                Path::new("/dev/store/runtimes/v"),
+            );
+        }
+
+        phase a_bundle_in_the_device_store_resolves_and_one_in_a_persons_data_dir_does_not;
+        // The store the daemon reads is the device's; the per-person directory a runtime used to
+        // be installed in is not a place a launch looks any more.
+        {
+            let device = tempfile::tempdir().expect("device store");
+            let person = tempfile::tempdir().expect("person data");
+            let version = "2026.07+native.device";
+            let installed = device.path().join("runtimes").join(version);
+            fs::create_dir_all(&installed).unwrap();
+            fs::write(installed.join(BUNDLE_MANIFEST_FILENAME), "").unwrap();
+            let old = person.path().join("tilo-runtime").join(version);
+            fs::create_dir_all(&old).unwrap();
+            fs::write(old.join(BUNDLE_MANIFEST_FILENAME), "").unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove(RUNTIME_DIR_ENV)
+                .set(tilo_paths::APPS_DATA_DIR_ENV, device.path())
+                .set("XDG_DATA_HOME", person.path());
+            assert_eq!(resolve_bundle_path(version), Some(installed));
+            env.remove(tilo_paths::APPS_DATA_DIR_ENV);
+            assert_eq!(
+                resolve_bundle_path(version),
+                None,
+                "a bundle in a person's private data directory is not one a launch reads",
+            );
         }
 
         phase the_env_override_names_the_bundle_root;
@@ -2877,30 +2918,34 @@ mod tests {
             let shared = tempfile::tempdir().expect("tempdir");
             let resolved = {
                 let mut env = tilo_test_env::ScopedEnv::new();
-                env.set("XDG_DATA_HOME", "/nonexistent/session/data")
+                env.set(tilo_paths::APPS_DATA_DIR_ENV, "/nonexistent/device/store")
                     .set(RUNTIME_DIR_ENV, shared.path());
                 default_bundle_path("2026.07")
             };
             assert_eq!(
                 resolved.expect("the override needs no data dir"),
                 shared.path().join("2026.07"),
-                "the override must win over an isolated XDG_DATA_HOME",
+                "the override must win over the device's store",
             );
         }
 
-        phase an_empty_override_falls_back_to_the_data_dir;
+        phase an_empty_override_falls_back_to_the_device_store;
         // An empty value is not a path — treating it as one resolves to
         // `/<version>` (nowhere), turning a stray `TILO_RUNTIME_BUNDLE_DIR=`
         // into "no app on this machine launches".
         {
             let resolved = {
                 let mut env = tilo_test_env::ScopedEnv::new();
-                env.set(RUNTIME_DIR_ENV, "");
+                env.remove(tilo_paths::APPS_DATA_DIR_ENV)
+                    .set("XDG_DATA_HOME", "/dev/person/data")
+                    .set(RUNTIME_DIR_ENV, "");
                 default_bundle_path("v")
             };
-            if let Ok(p) = resolved {
-                assert!(p.ends_with("tilo-runtime/v"), "got {p:?}");
-            }
+            assert_eq!(
+                resolved.expect("a device data directory"),
+                Path::new("/dev/person/data/tilo-apps/runtimes/v"),
+                "an empty override is no root",
+            );
         }
     }
 

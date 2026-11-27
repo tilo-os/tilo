@@ -1111,7 +1111,7 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
     probe = Path(os.environ.get("TILO_COLLAB_PROBE") or TARGET / "debug/tilo-collab-probe")
     if not probe.is_file():
         raise Failed(f"no probe at {probe} (cargo build -p collab-probe)")
-    bundle = state / "runtimes" / PROBE_RUNTIME
+    bundle = state / "apps/runtimes" / PROBE_RUNTIME
     shutil.rmtree(bundle, ignore_errors=True)
     run([BIN / "tilo-runtime-bundle", "build", "--version", PROBE_RUNTIME, "--out", bundle,
          "--include-bin", probe, "--identity", state / "keys/publisher.json"])
@@ -1259,7 +1259,7 @@ def main() -> int:
     if not args.no_build:
         print("==> building the probe", file=sys.stderr)
         run(["cargo", "build", "-p", "collab-probe", "--bin", "tilo-collab-probe"], cwd=REPO)
-    runtime = (state / "runtimes/.version").read_text().strip()
+    runtime = (state / "apps/runtimes/.version").read_text().strip()
     print("==> tilolang build", file=sys.stderr)
     run([tool, "build", "--locked", REPO / "apps/tl/today", "--search", REPO / "apps/tl",
          "--out", out / "build", "--tilo-runtime", f"tilo-runtime/{runtime}"])

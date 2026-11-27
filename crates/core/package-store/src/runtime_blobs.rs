@@ -58,8 +58,8 @@ impl LocalRuntimeBlobs {
         Self { files }
     }
 
-    /// The bundle roots this device has: the user's (or [`runtime_bundle::RUNTIME_DIR_ENV`]'s) and
-    /// the image's.
+    /// The bundle roots this device has: the device's own store (or
+    /// [`runtime_bundle::RUNTIME_DIR_ENV`]'s) and the image's.
     #[must_use]
     pub fn installed() -> Self {
         let mut roots = Vec::new();

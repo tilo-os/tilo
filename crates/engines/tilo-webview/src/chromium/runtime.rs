@@ -19,7 +19,7 @@ pub const HOST_IN_BUNDLE: &str = "lib/chromium/tilo-chromium-host";
 /// Release images never set it.
 pub const HOST_OVERRIDE_ENV: &str = "TILO_CHROMIUM_HOST";
 
-/// Overrides the per-user runtime root, as it does for every runtime bundle.
+/// Overrides the device's runtime root, as it does for every runtime bundle.
 pub const RUNTIME_DIR_ENV: &str = "TILO_RUNTIME_BUNDLE_DIR";
 
 /// Where the launcher mounts runtime bundles inside an app's sandbox.
@@ -78,7 +78,7 @@ impl SearchRoots {
             mount_root: Some(PathBuf::from(MOUNT_ROOT)),
             user_root: non_empty(std::env::var_os(RUNTIME_DIR_ENV))
                 .map(PathBuf::from)
-                .or_else(|| tilo_paths::data_dir().map(|dir| dir.join("tilo-runtime"))),
+                .or_else(|| tilo_paths::device_data_dir().map(|dir| dir.join("runtimes"))),
             system_root: Some(PathBuf::from(SYSTEM_ROOT)),
             executable: std::env::current_exe().ok(),
         }

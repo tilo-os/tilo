@@ -421,38 +421,43 @@ tilo_test_env::scenario! {
         assert!(!env.installed_bundle(forged_version).exists());
     }
 
-    phase a_signed_runtime_installs_at_its_canonical_destination_and_runs;
+    phase a_signed_runtime_installs_into_the_device_store_where_a_launch_resolves_it;
     {
+        // No runtime directory is named and no per-person data home is set: an install lands in
+        // the device's own store, and a launch reads it from there.
         let env = Env::new();
         let (runtime_key, runtime_identity) = identity_file(&env, "host-runtime-publisher");
         env.trust(&[&runtime_key]);
         let (version, bundle) = env.bundle("host", b"canonical runtime payload", &runtime_identity);
         let package = env.runtime_tapp("host", &bundle, &format!("tilo-runtime/{version}"));
-        let mut command = Command::new(tilo_test_env::package_binary!("tilo-install"));
-        crate::support::offline(&mut command, &env.path(".local/share"));
-        let output = command
-            .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("HOME", env.home.path())
-            .env("XDG_CONFIG_HOME", env.path("config"))
-            .env(
-                "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
-                env.path("trusted-runtime-publishers.txt"),
-            )
-            .args([
-                "install",
-                package.to_str().unwrap(),
-                "--require-publisher",
-                &hex_key(&env.publisher),
-            ])
-            .output_locked()
-            .unwrap();
+        let install = |args: &[&str]| {
+            let mut command = Command::new(tilo_test_env::package_binary!("tilo-install"));
+            crate::support::offline(&mut command, &env.path(".local/share"));
+            command
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .env("HOME", env.home.path())
+                .env("XDG_CONFIG_HOME", env.path("config"))
+                .env(
+                    "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+                    env.path("trusted-runtime-publishers.txt"),
+                )
+                .args(args)
+                .output_locked()
+                .unwrap()
+        };
+        let output = install(&[
+            "install",
+            package.to_str().unwrap(),
+            "--require-publisher",
+            &hex_key(&env.publisher),
+        ]);
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let root = env.path(".local/share/tilo-runtime");
+        let root = env.path(".local/share/tilo-apps/runtimes");
         let installed = root.join(&version);
         assert!(String::from_utf8_lossy(&output.stdout).contains(installed.to_str().unwrap()));
         let verified = runtime_bundle::verify_bundle_with(
@@ -476,6 +481,18 @@ tilo_test_env::scenario! {
                 .to_string_lossy()
                 .starts_with(".install-")
         }));
+        assert!(
+            !env.path(".local/share/tilo-runtime").exists(),
+            "nothing is installed in a person's own data directory"
+        );
+        // What a launch asks: the path the launcher reads the build from.
+        let explained = install(&["runtime", "path", "--version", &version]);
+        assert!(explained.status.success(), "{explained:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&explained.stdout).trim(),
+            installed.to_str().unwrap(),
+            "a launch resolves the build from the device's store"
+        );
     }
 }
 

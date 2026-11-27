@@ -707,11 +707,12 @@ may still fetch) lists it; the prune after that deletes them.
 Retention is also what lets a device open an app without fetching a runtime:
 a first open takes the newest retained version whose runtime build the device
 already has (`app_cli::first_open_offer`). With the default of 20, an image or
-per-user runtime from within the last 20 releases of an app opens it with no
+device runtime from within the last 20 releases of an app opens it with no
 runtime download; an older one downloads the runtime the newest version names.
 
-On the device, a downloaded runtime build lives in
-`$XDG_DATA_HOME/tilo-runtime/<version>/` only while something needs it
+On the device, a downloaded runtime build lives in the device's own store, at
+`runtimes/<version>/` under the app store root (`$TILO_APPS_DATA_DIR`, else
+`$XDG_DATA_HOME/tilo-apps`), only while something needs it
 (`runtime_bundle::gc`). After every `tilo app install`, `update` and
 `uninstall`, and on `tilo app gc`, a build is removed unless an installed
 package (the user's or the image's) names it as its `runtime` or among its
@@ -723,8 +724,8 @@ is deleted, so a collection stopped halfway never leaves a build a launch
 would pick. Nothing runs on a timer.
 
 A launch holds what it runs on from before it looks at it until its sandbox
-exits: a shared `flock` on `.launches/<version>` in the runtime root for each
-per-user runtime build, and on `leases/<package id>` in the app store for its
+exits: a shared `flock` on `.launches/<version>` in the device's runtime root for
+each runtime build, and on `leases/<package id>` in the app store for its
 payload tree. Removal takes the same file exclusively without waiting, so an
 app opened while it is being updated keeps the build it chose, payload and
 runtime, and the collection after the launch ends takes them. A launcher that

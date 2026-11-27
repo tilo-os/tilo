@@ -389,7 +389,9 @@ impl Peer {
     }
 
     pub(crate) fn runtimes(&self) -> PathBuf {
-        self.state.join("runtimes")
+        // The device store's runtimes: `nested-session.sh` bakes them where the launcher and
+        // the daemon resolve them (`$TILO_APPS_DATA_DIR/runtimes`).
+        self.state.join("apps/runtimes")
     }
 
     /// The Tilo runtime and the tilolang runtime the session baked, as packages name them.

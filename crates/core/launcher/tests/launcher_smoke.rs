@@ -71,7 +71,7 @@ fn gui_options(
 }
 
 /// A fresh home for the runtime-bundle lookup, which is resolved from the environment:
-/// `$XDG_DATA_HOME/tilo-runtime` unless [`runtime_bundle::RUNTIME_DIR_ENV`] names another root, and a
+/// `$XDG_DATA_HOME/tilo-apps/runtimes` unless [`runtime_bundle::RUNTIME_DIR_ENV`] names another root, and a
 /// trust list named by `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`.
 fn runtime_home() -> TestHome {
     let mut home = TestHome::new().unwrap();
@@ -81,7 +81,7 @@ fn runtime_home() -> TestHome {
     home
 }
 
-/// Build a valid unsigned runtime bundle under `<xdg_data_home>/tilo-runtime/<version>/` from a fake
+/// Build a valid unsigned runtime bundle under `<xdg_data_home>/tilo-apps/runtimes/<version>/` from a fake
 /// host rootfs and return its resolved path.
 fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
     let host = tempfile::tempdir().unwrap();
@@ -90,7 +90,7 @@ fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, format!("stub {rel}")).unwrap();
     }
-    let dest = xdg_data_home.join("tilo-runtime").join(version);
+    let dest = xdg_data_home.join("tilo-apps/runtimes").join(version);
     runtime_bundle::build_bundle_with(
         &dest,
         version,
@@ -130,7 +130,7 @@ fn install_signed_bundle_with(
     let id_path = host.path().join("id.json");
     std::fs::write(&id_path, identity.to_json_bytes()).unwrap();
 
-    let dest = xdg_data_home.join("tilo-runtime").join(version);
+    let dest = xdg_data_home.join("tilo-apps/runtimes").join(version);
     runtime_bundle::build_bundle_with(
         &dest,
         version,
@@ -223,7 +223,7 @@ tilo_test_env::scenario! {
             let id_path = host.path().join("id.json");
             std::fs::write(&id_path, identity.to_json_bytes()).unwrap();
 
-            let bundle_dir = home.data().join("tilo-runtime").join(version);
+            let bundle_dir = home.data().join("tilo-apps/runtimes").join(version);
             runtime_bundle::build_bundle_with(
                 &bundle_dir,
                 version,

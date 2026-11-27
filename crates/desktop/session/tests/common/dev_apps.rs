@@ -559,8 +559,8 @@ fn build_runtimes(root: &Path) {
 }
 
 /// Take the [`runtimes`] into the store of runtimes under `store` (a device's
-/// `$XDG_DATA_HOME/tilo-runtime`, where its launcher looks for the runtime an app names), each
-/// file linked rather than copied.
+/// `$XDG_DATA_HOME/tilo-apps/runtimes`, where its launcher looks for the runtime an app names),
+/// each file linked rather than copied.
 ///
 /// # Panics
 /// A bundle cannot be read or linked.

@@ -19,7 +19,7 @@ const TILO: &str = "2026.10.0-probe";
 /// `libs` and `bins`, signed by the identity at `identity`.
 fn bundle(data: &Path, version: &str, identity: &Path, libs: &[PathBuf], bins: &[PathBuf]) {
     runtime_bundle::build_bundle_with(
-        &data.join("tilo-runtime").join(version),
+        &data.join("tilo-apps/runtimes").join(version),
         version,
         &runtime_bundle::BuildOptions {
             from: None,

@@ -340,9 +340,8 @@ enum RevokedCmd {
 
 #[derive(Debug, Subcommand)]
 enum RuntimeCmd {
-    /// Build + install a runtime bundle into
-    /// `$XDG_DATA_HOME/tilo-runtime/<version>/`, from the host root or an
-    /// explicit prefix.
+    /// Build + install a runtime bundle into `runtimes/<version>/` in the
+    /// device's own store, from the host root or an explicit prefix.
     Install {
         /// Bundle version tag, written into bundle.toml and used to look it up at launch.
         #[arg(long)]
@@ -912,9 +911,8 @@ fn print_path() -> Result<(), Error> {
 }
 
 fn runtime_list() -> Result<(), Error> {
-    let base = tilo_paths::data_dir()
-        .ok_or(Error::NoDataDir)?
-        .join("tilo-runtime");
+    let base =
+        runtime_bundle::bundle_root().map_err(|error| Error::RuntimeBundle(error.to_string()))?;
     if !base.exists() {
         println!("(no runtime bundles installed)");
         return Ok(());

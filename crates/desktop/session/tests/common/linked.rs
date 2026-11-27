@@ -238,7 +238,7 @@ fn home_with_apps(installs: bool) -> (tilo_test_env::TestHome, std::path::PathBu
         return (home, launcher);
     }
     crate::common::dev_apps::install(&store, &home.state().join("tilolang"));
-    crate::common::dev_apps::install_runtimes(&home.data().join("tilo-runtime"));
+    crate::common::dev_apps::install_runtimes(&home.data().join("tilo-apps/runtimes"));
     home.env().set(
         "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
         &crate::common::dev_apps::runtimes().trusted,

@@ -354,7 +354,13 @@ trust=$keys/runtime-publishers.txt
 printf '%s\n' "$pubkey" > "$trust"
 
 # --- 4. Runtime bundle --------------------------------------------------------
-runtimes=$state/runtimes
+# The device's own store holds the runtimes every session on the device launches apps on;
+# `TILO_APPS_DATA_DIR` names it (the walk shares one across a version's sessions), else the
+# session's state is its own device's store, as a developer's one-command session is.
+app_store=${TILO_APPS_DATA_DIR:-$state/apps}
+# A caller may name a bundle root of its own (a check keeps one per session); otherwise the
+# bundles are the device store's, where a launch resolves them.
+runtimes=${TILO_RUNTIME_BUNDLE_DIR:-$app_store/runtimes}
 mkdir -p "$runtimes"
 needed_std=$(readelf -dW "$thin/libruntime_dylib.so" | sed -n 's/.*Shared library: \[\(libstd-[^]]*\)\].*/\1/p')
 rust_libstd=$thin/$needed_std
@@ -481,7 +487,7 @@ cp "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" "$state/config
 cp "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" "$portal/portals/"
 export XDG_DATA_DIRS=$state/data:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}
 export TILO_IDENTITY_ROOT=$state/identity
-export TILO_APPS_DATA_DIR=$state/apps
+export TILO_APPS_DATA_DIR=$app_store
 # The session's system store (below), as /usr/share/tilo-apps is a device's.
 system_store=$state/system
 export TILO_APPS_SYSTEM_DIR=$system_store

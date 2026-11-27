@@ -530,8 +530,8 @@ pub fn compile_installed_at(root: &Path, data_home: &Path) {
     let Ok(packages) = catalog.list() else {
         return;
     };
-    // The runtime bundles a device keeps beside its cache, under its data home.
-    let runtimes = data_home.join("tilo-runtime");
+    // The runtime bundles the device's own store keeps.
+    let runtimes = runtime_bundle::bundle_root().unwrap_or_default();
     for package in packages {
         super::compiled::compile_package(
             &compiler,

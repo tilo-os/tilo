@@ -101,7 +101,7 @@ fn install_tl(device: &Device) {
 /// runtimes, and answer the publishers its launcher trusts. A sold device has both in its image; a
 /// test bakes them from the programs its run built (`common::dev_apps`).
 fn install_runtimes(device: &Device) -> PathBuf {
-    crate::common::dev_apps::install_runtimes(&device.directory().join("data/tilo-runtime"));
+    crate::common::dev_apps::install_runtimes(&device.directory().join("data/tilo-apps/runtimes"));
     crate::common::dev_apps::runtimes().trusted.clone()
 }
 

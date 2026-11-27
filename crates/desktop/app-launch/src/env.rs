@@ -29,7 +29,7 @@ use desktop_entry::launch::LaunchEnv;
 const FORWARDED: &[&str] = &[
     // Where the person's state and identity live.
     "TILO_WORKSPACE_ROOTS",
-    "TILO_APPS_DATA_DIR",
+    tilo_paths::APPS_DATA_DIR_ENV,
     "TILO_IDENTITY_ROOT",
     "TILO_HOME_PEERS_PATH",
     // The registries and runtime of a session started from a build under

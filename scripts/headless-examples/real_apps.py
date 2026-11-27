@@ -607,14 +607,14 @@ def prepare(state: Path, *, apps: str = APPS, built: bool = False, remote=None) 
 
 def tl_packages(state: Path, out: Path, names: list[str], *, build: bool = False) -> list[Path]:
     """`tilolang build` each of `names` (directories under apps/tl) against the runtime installed
-    in `state`: their signed packages, for `Session.start(tapps=...)`."""
+    in the state's device store: their signed packages, for `Session.start(tapps=...)`."""
     tool = REPO / "target/debug/tilolang"
     if build:
         print("==> building the tilolang tool", file=sys.stderr)
         run(["cargo", "build", "-p", "tilolang-cli", "--bin", "tilolang"], cwd=REPO)
     if not tool.is_file():
         raise Failed(f"no tilolang tool at {tool} (cargo build -p tilolang-cli --bin tilolang)")
-    runtime = (state / "runtimes/.version").read_text().strip()
+    runtime = (state / "apps/runtimes/.version").read_text().strip()
     tapps = []
     for name in names:
         print(f"==> tilolang build {name}", file=sys.stderr)
@@ -764,6 +764,11 @@ class Session:
         self.tag = ""
         self.launcher_log: Path | None = None
         self._launch_out = self.state
+        # The device's own store the session installs its apps and runtimes in: its state's,
+        # unless the caller named another with `TILO_APPS_DATA_DIR`.
+        self.store = self.state / "apps"
+        # The bundle root it was started with, when it named one (`TILO_RUNTIME_BUNDLE_DIR`).
+        self.runtime_root: Path | None = None
         # The account the session runs as, when it is not the caller's own.
         self.account = None
 
@@ -823,6 +828,10 @@ class Session:
         launch_env = {**os.environ,
                       "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo::launch_latency=info"),
                       **(env or {})}
+        if launch_env.get("TILO_APPS_DATA_DIR"):
+            self.store = Path(launch_env["TILO_APPS_DATA_DIR"])
+        if launch_env.get("TILO_RUNTIME_BUNDLE_DIR"):
+            self.runtime_root = Path(launch_env["TILO_RUNTIME_BUNDLE_DIR"])
         if self.account is not None:
             # The session and everything it starts are the person's: their
             # account, their home, and the tree their account reads.
@@ -925,8 +934,8 @@ class Session:
             XDG_STATE_HOME=str(state / "state"),
             XDG_CACHE_HOME=str(state / "cache"),
             TILO_IDENTITY_ROOT=str(state / "identity"),
-            TILO_APPS_DATA_DIR=str(state / "apps"),
-            TILO_RUNTIME_BUNDLE_DIR=str(state / "runtimes"),
+            TILO_APPS_DATA_DIR=str(self.store),
+            TILO_RUNTIME_BUNDLE_DIR=str(self.runtime_root or self.store / "runtimes"),
             TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=str(state / "keys/runtime-publishers.txt"),
             TILO_TEST_CONTROL=self.control_socket(),
             XDG_RUNTIME_DIR=self.runtime_directory(),

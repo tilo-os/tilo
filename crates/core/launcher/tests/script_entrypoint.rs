@@ -214,7 +214,7 @@ fn install_bundle(from: &Path, to: &Path) {
 /// what an app's `package.runtime` names, whose libraries the interpreter's own binary runs on.
 fn app_runtime(data: &Path, identity: &Path) {
     runtime_bundle::build_bundle_with(
-        &data.join("tilo-runtime").join(APP_RUNTIME),
+        &data.join("tilo-apps/runtimes").join(APP_RUNTIME),
         APP_RUNTIME,
         &runtime_bundle::BuildOptions {
             from: None,
@@ -296,7 +296,10 @@ fn installed_runtime(
 ) -> RuntimePackage {
     let package = runtime_package(package).expect("the package tree was handed to this run");
     let version = package.provides.split_once('/').expect("provides").1;
-    install_bundle(&package.bundle, &data.join("tilo-runtime").join(version));
+    install_bundle(
+        &package.bundle,
+        &data.join("tilo-apps/runtimes").join(version),
+    );
     let identity = runtime_bundle::Identity::generate();
     let signer = root.join("identity.json");
     std::fs::write(&signer, identity.to_json_bytes()).expect("the identity is kept");

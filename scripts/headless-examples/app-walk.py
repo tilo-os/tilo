@@ -699,12 +699,14 @@ class MachineDaemon:
             argv += ["--install-tapp", str(tapp)]
         run(argv, cwd=real_apps.REPO)
         data = self.PROFILE / "data"
-        runtimes, apps = data / "tilo-runtime", data / "tilo-apps"
+        # The session's store carries its runtimes (`runtimes/<version>`, where its launcher and
+        # this daemon both look), so the one copy puts the device's store in the daemon's data
+        # directory.
+        store = data / "tilo-apps"
         if self.IMAGE.exists():
             shutil.rmtree(self.IMAGE)
         system, publishers = self.IMAGE / "system", self.IMAGE / "keys/runtime-publishers.txt"
-        for source, target in ((self.state / "runtimes", runtimes),
-                               (self.state / "apps", apps),
+        for source, target in ((self.state / "apps", store),
                                (self.state / "system", system)):
             if source.is_dir():
                 shutil.copytree(source, target, symlinks=True)
@@ -3523,7 +3525,7 @@ def build_tapp(name: str, out: Path, state: Path) -> Path:
     """`tilolang build` the package `apps/tl/<name>` against the session's runtime:
     its signed package, which the session installs as an app."""
     tool = tilolang_tool()
-    runtime = (state / "runtimes/.version").read_text().strip()
+    runtime = (state / "apps/runtimes/.version").read_text().strip()
     print(f"==> tilolang build {name}", file=sys.stderr)
     # `--locked`: a walk builds what is committed, and fails on a stale ids lock or catalogue
     # rather than writing one mid-walk, which the session would see as a package no commit has.

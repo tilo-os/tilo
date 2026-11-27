@@ -2299,7 +2299,7 @@ impl Device {
     /// so an app's window starts as it does on a person's computer.
     pub fn install_dev_apps(&self) {
         super::dev_apps::install(&self.store(), &self.home.path().join("state/tilolang"));
-        super::dev_apps::install_runtimes(&self.home.path().join("data/tilo-runtime"));
+        super::dev_apps::install_runtimes(&self.home.path().join("data/tilo-apps/runtimes"));
         self.seeds.set(true);
     }
 
@@ -2314,7 +2314,7 @@ impl Device {
     /// Chat's action here, without seeding a scenario of its own into the workspace.
     pub fn install_chat(&self) {
         super::dev_apps::install_named(&self.store(), &["so.tilo.chat"]);
-        super::dev_apps::install_runtimes(&self.home.path().join("data/tilo-runtime"));
+        super::dev_apps::install_runtimes(&self.home.path().join("data/tilo-apps/runtimes"));
     }
 
     /// What this device lists for the running `app`'s `operation`, once the app published it: a

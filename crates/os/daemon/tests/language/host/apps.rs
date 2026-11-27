@@ -290,11 +290,11 @@ fn files_under(dir: &Path, files: &mut Vec<PathBuf>) {
 }
 
 #[cfg(target_os = "linux")]
-/// A runtime bundle `version` under `data`'s runtimes, of this machine's loader, the libraries
+/// A runtime bundle `version` in `data`'s device store, of this machine's loader, the libraries
 /// `libs` and the programs `bins`, signed by the publisher at `signer`.
 fn bundle(data: &Path, version: &str, signer: &Path, libs: &[PathBuf], bins: &[PathBuf]) {
     runtime_bundle::build_bundle_with(
-        &data.join("tilo-runtime").join(version),
+        &data.join("tilo-apps/runtimes").join(version),
         version,
         &runtime_bundle::BuildOptions {
             from: None,

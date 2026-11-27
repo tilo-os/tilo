@@ -200,9 +200,9 @@ fn a_second_dev_attaches_to_the_running_session() {
     // A running session of this login: its state, its control socket, the API socket it
     // answers on, and the runtimes it baked.
     let state = scratch.path().join("state");
-    std::fs::create_dir_all(state.join("runtimes")).unwrap();
-    std::fs::write(state.join("runtimes/.version"), "2026.07\n").unwrap();
-    std::fs::write(state.join("runtimes/.tilolang-version"), "0.1.0\n").unwrap();
+    std::fs::create_dir_all(state.join("apps/runtimes")).unwrap();
+    std::fs::write(state.join("apps/runtimes/.version"), "2026.07\n").unwrap();
+    std::fs::write(state.join("apps/runtimes/.tilolang-version"), "0.1.0\n").unwrap();
     let runtime = scratch.path().join("runtime");
     let digest = {
         use sha2::Digest as _;

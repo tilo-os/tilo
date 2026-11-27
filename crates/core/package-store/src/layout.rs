@@ -103,14 +103,11 @@ pub fn parse_id_hex(text: &str) -> Option<PackageId> {
     Some(PackageId::from_bytes(bytes))
 }
 
-/// The per-user store root: `TILO_APPS_DATA_DIR` when set (tests and dev
-/// installs), else `$XDG_DATA_HOME/tilo-apps`, else
-/// `$HOME/.local/share/tilo-apps`. `None` when none of these is set.
+/// The per-user store root: the device's own data directory
+/// ([`tilo_paths::device_data_dir`]: `TILO_APPS_DATA_DIR` when set — tests and dev
+/// installs — else `$XDG_DATA_HOME/tilo-apps`). `None` when neither is set.
 pub fn default_user_root() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("TILO_APPS_DATA_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    Some(tilo_paths::xdg::data_home()?.join("tilo-apps"))
+    tilo_paths::device_data_dir()
 }
 
 /// Root of the system store, or `None` when there is no system store to
@@ -127,7 +124,7 @@ pub fn default_user_root() -> Option<PathBuf> {
 pub fn system_data_dir() -> Option<PathBuf> {
     system_data_dir_from(
         dev_override(SYSTEM_DIR_ENV),
-        std::env::var_os("TILO_APPS_DATA_DIR").is_some(),
+        std::env::var_os(tilo_paths::APPS_DATA_DIR_ENV).is_some(),
     )
 }
 

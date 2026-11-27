@@ -439,6 +439,21 @@ pub fn data_local_dir() -> Option<PathBuf> {
     platform::data_local()
 }
 
+/// Names the device's store of apps and the runtimes they run on instead of its default
+/// directory.
+pub const APPS_DATA_DIR_ENV: &str = "TILO_APPS_DATA_DIR";
+
+/// The device's own store of apps and the runtimes they run on: [`APPS_DATA_DIR_ENV`] when it
+/// names an absolute path, else the platform data directory's `tilo-apps`.
+///
+/// One directory per device, not per person: the daemon that installs an app and launches it
+/// reads the same files as every person's session, so a runtime it starts an app on is never
+/// inside one person's private directories.
+#[must_use]
+pub fn device_data_dir() -> Option<PathBuf> {
+    absolute(var(APPS_DATA_DIR_ENV)).or_else(|| Some(xdg::data_home()?.join("tilo-apps")))
+}
+
 /// The platform's per-user configuration directory: [`xdg::config_home`] on
 /// Linux and other Unix, `~/Library/Application Support` on macOS,
 /// `%APPDATA%` on Windows.

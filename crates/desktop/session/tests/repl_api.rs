@@ -225,7 +225,7 @@ fn a_daemon_only_sessions_repl_runs_a_program() {
     let store = home.data().join("tilo-apps");
     home.env().set("TILO_APPS_DATA_DIR", &store);
     dev_apps::install(&store, &home.state().join("tilolang"));
-    dev_apps::install_runtimes(&home.data().join("tilo-runtime"));
+    dev_apps::install_runtimes(&home.data().join("tilo-apps/runtimes"));
     home.env()
         .set(
             "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",

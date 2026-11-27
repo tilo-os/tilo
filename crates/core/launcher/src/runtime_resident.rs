@@ -78,7 +78,7 @@ pub fn user_registry() -> Option<PathBuf> {
         .map(|root| package_store::Layout::new(root).registry())
 }
 
-/// Where a person's own runtime bundles are installed: the root the launcher looks in first
+/// Where the device's own runtime bundles are installed: the root the launcher looks in first
 /// ([`runtime_bundle::default_bundle_path_from`]).
 pub fn user_runtime_root() -> Option<PathBuf> {
     runtime_bundle::bundle_root_from(package_store::dev_env::dev_override(

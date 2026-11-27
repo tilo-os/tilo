@@ -22,10 +22,7 @@ impl StorageRoots {
     pub fn discover() -> Self {
         let data = tilo_paths::xdg::data_home();
         let cache = tilo_paths::xdg::cache_home();
-        let payload_root = std::env::var_os("TILO_APPS_DATA_DIR")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| data.as_ref().map(|p| p.join("tilo-apps")));
+        let payload_root = package_store::layout::default_user_root();
         Self {
             app_payloads: payload_root,
             workspace_data: data.as_ref().map(|p| p.join("tilo-workspaces")),
