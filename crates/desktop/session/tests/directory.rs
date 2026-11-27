@@ -1699,8 +1699,10 @@ fn the_lounge_writes_past_the_removal(session: &mut Session, lounge: &Lounge) {
         &DocumentMutation::Incremental(after.save_after(&before)),
     )
     .expect("the site's page goes on talking without this computer");
+    // The record no longer opening here is the removal itself; only another line is the write.
     let arrived = crate::common::steps_within(session, AFTER_THE_REMOVAL, |session| {
-        (chat_here(session, &lounge.workspace).as_deref() != Some("Pulled up a chair"))
+        chat_here(session, &lounge.workspace)
+            .is_some_and(|line| line != "Pulled up a chair")
             .then_some(())
     });
     assert!(
@@ -1792,22 +1794,20 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
         automerge::AutoCommit::load(&record).is_ok(),
         "and it is the chat app's own document"
     );
-    // The workspace's window streams carry between the devices the workspace admits:
-    // its host, the page that recorded there before this computer arrived,
-    // and this computer itself. The roster is the workspace's governance, which reaches this
-    // computer on its own, so it is waited for rather than read the moment the chat is here.
+    // The workspace's window streams carry between its members' devices: the page that recorded
+    // there before this computer arrived, and this computer itself. Its host serves it and is no
+    // member's device. The roster is the workspace's governance, which reaches this computer on
+    // its own, so it is waited for rather than read the moment the chat is here.
     let roster = wait_until_the_roster_holds(
         &mut session,
         &lounge.workspace,
-        3,
+        2,
         "the workspace's devices are on its roster",
     );
-    for device in [host_publisher(&lounge), page_publisher(&lounge)] {
-        assert!(
-            roster.contains(&device),
-            "the lounge's own devices are among them: {roster:?}"
-        );
-    }
+    assert!(
+        roster.contains(&page_publisher(&lounge)) && !roster.contains(&host_publisher(&lounge)),
+        "the lounge's page is among them, and its host is not: {roster:?}"
+    );
 }
 
 #[test]
@@ -1843,12 +1843,12 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     let roster = wait_until_the_roster_holds(
         &mut session,
         &lounge.workspace,
-        3,
-        "the lounge's devices and this computer are on the workspace's roster",
+        2,
+        "the lounge's page and this computer are on the workspace's roster",
     );
     assert!(
         roster.iter().any(|device| !lounge_devices.contains(device)),
-        "this computer is on the roster beside the lounge's own devices: {roster:?}"
+        "this computer is on the roster beside the lounge's page: {roster:?}"
     );
 
     // The lounge's owner removes this person, and every device of theirs.
