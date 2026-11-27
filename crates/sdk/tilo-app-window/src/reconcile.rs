@@ -122,6 +122,10 @@ pub struct Reconciler {
     /// renders in, which holds the view's root, so a call's `fill` reaches that root through each
     /// fragment between ([`fragment_fill`]).
     filling: HashMap<String, f32>,
+    /// The gap the container around the node being built lays its parts out with, which a fragment
+    /// it places takes when it writes no `gap` of its own: a call of a view stands where the
+    /// container would put a part of its own ([`Reconciler::parts_gap`]).
+    gap_around: Option<Rhythm>,
     /// The page this window shows a `ui.WebView` with, made when one is first built: one page
     /// per window, so the window holds it and not the app whose view it draws. Its session is
     /// the engine's one reader, which the window also asks for the app's page calls.
@@ -863,6 +867,7 @@ impl Reconciler {
             rows: None,
             broken: Rc::default(),
             filling: HashMap::new(),
+            gap_around: None,
             shown_page: Rc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             terminals: crate::terminal::Handles::default(),
@@ -885,6 +890,7 @@ impl Reconciler {
             rows: other.rows.clone(),
             broken: Rc::clone(&other.broken),
             filling: HashMap::new(),
+            gap_around: None,
             shown_page: Rc::clone(&other.shown_page),
             #[cfg(not(target_arch = "wasm32"))]
             terminals: crate::terminal::Handles::default(),
@@ -1077,12 +1083,20 @@ impl Reconciler {
 
     fn build_kind(&mut self, node: &UiNode) -> Element {
         if crate::adapter::component_name(&node.kind).is_some() {
-            return self.component(node);
+            // A component lays its own parts out: a call of a view it holds takes the gap of the
+            // component's part, never of the layout the component stands in.
+            let around = self.gap_around.take();
+            let built = self.component(node);
+            self.gap_around = around;
+            return built;
         }
         match node.kind.as_str() {
             "stack" | "column" | "fragment" | "primary" | "secondary" => {
+                // A call of a view draws nothing of its own: what the view's body puts in it
+                // stands as the container around the call would lay out its own parts, unless
+                // the call writes a `gap` of its own.
                 let default = if node.kind == "fragment" {
-                    Rhythm::Tight
+                    self.gap_around.unwrap_or(Rhythm::Tight)
                 } else {
                     Rhythm::Sibling
                 };
@@ -1459,6 +1473,27 @@ impl Reconciler {
         placement
     }
 
+    /// The rhythm `parent` lays its parts out with: what a fragment it places inherits when it
+    /// writes no `gap` of its own, so a call of a view takes the spacing of the container it stands
+    /// in rather than a gap of its own. A row, a grid and layers place what a loop's fragment holds
+    /// one by one, never the fragment as a stack ([`placed`]); a split stands its panes apart by its
+    /// own gutter, not by a rhythm.
+    fn parts_gap(&self, parent: &UiNode) -> Rhythm {
+        match parent.kind.as_str() {
+            "stack" | "column" | "primary" | "secondary" | "grid" => {
+                rhythm(parent, "gap", Rhythm::Sibling)
+            }
+            "embed" | "invocation" | "row" => rhythm(parent, "gap", Rhythm::Related),
+            // A fragment's parts take its gap, which it wrote or took from its container.
+            "fragment" => rhythm(parent, "gap", self.gap_around.unwrap_or(Rhythm::Tight)),
+            "scroll" => Rhythm::Sibling,
+            // A page's parts stand its content gutter apart, as the toolkit's pages and the form
+            // composition's page space their sections.
+            "page" => Rhythm::Group,
+            _ => Rhythm::Tight,
+        }
+    }
+
     fn part(&mut self, parent: &UiNode, placed: &Placed<'_>) -> Part {
         let child = placed.node;
         let Placement {
@@ -1467,12 +1502,26 @@ impl Reconciler {
             at,
             offset,
         } = self.place(parent, placed);
-        let mut part = Part::new(self.build(child));
+        let around = self.gap_around;
+        self.gap_around = Some(self.parts_gap(parent));
+        let built = self.build(child);
+        self.gap_around = around;
+        let mut part = Part::new(built);
         part.fit = fit;
         part.span = span;
         part.at = at;
         part.offset = offset;
         part
+    }
+
+    /// Build `node` with no container's gap around it: a widget that lays its own parts out — a
+    /// split's pane, a field's controls, a suggestion's sentence — is no layout primitive's part,
+    /// so a call of a view it holds takes no gap from the layout that holds the widget.
+    fn build_apart(&mut self, node: &UiNode) -> Element {
+        let around = self.gap_around.take();
+        let built = self.build(node);
+        self.gap_around = around;
+        built
     }
 
     fn stack(&mut self, node: &UiNode, default: Rhythm) -> Element {
@@ -1562,7 +1611,7 @@ impl Reconciler {
             if crate::attach::is_menu(child) {
                 continue;
             }
-            let mut part = Part::new(self.build(child));
+            let mut part = Part::new(self.build_apart(child));
             part.fit = Fit::hug();
             split = split.push_part(part);
         }
@@ -1768,7 +1817,7 @@ impl Reconciler {
             .push(Box::new(Avatar::of(author).size(AvatarSize::Small)))
             .push_part(self.fixed_text(&format!("{}~by", node.key), &says, TextRole::Body));
         for child in &node.children {
-            sentence = sentence.push(self.build(child));
+            sentence = sentence.push(self.build_apart(child));
         }
         Box::new(
             Container::new()
@@ -1874,7 +1923,7 @@ impl Reconciler {
     }
 
     fn pane(&mut self, node: &UiNode) -> Element {
-        Box::new(Pane::new(self.build(node)))
+        Box::new(Pane::new(self.build_apart(node)))
     }
 
     /// A holder whose shape is the same keeps its widget; each part is reconciled in its pane.
@@ -3416,6 +3465,73 @@ mod tests {
             "the trailing group ends at the row's edge: {end:?}"
         );
         assert!(end.width() < 200.0, "it hugs its text: {end:?}");
+    }
+
+    /// A call of a view draws nothing of its own: what the view's body holds stands as the
+    /// container around the call would lay out its own parts. A pane of sections called from a
+    /// stack keeps the stack's gap, a call in a page the page's, a call wrapped in another call's
+    /// body the same again, and a call that writes a `gap` of its own keeps it.
+    #[test]
+    fn a_fragments_parts_take_the_gap_of_the_container_it_stands_in() {
+        /// How far apart the texts `above` and `below` stand in `kind`, with `gap`, behind
+        /// `children`.
+        fn spread(kind: &str, gap: Option<&str>, children: Vec<UiNode>) -> f64 {
+            let mut container = node(kind, "container");
+            if let Some(gap) = gap {
+                container.props.insert("gap".to_owned(), Value::text(gap));
+            }
+            container.children = children;
+            let rects = laid_out_all(&container, (400, 600));
+            rects["below"].y0 - rects["above"].y1
+        }
+        // What a container's own parts stand apart by, with no fragment between them.
+        fn apart(gap: &str) -> f64 {
+            spread(
+                "stack",
+                Some(gap),
+                vec![text("above", "Above"), text("below", "Below")],
+            )
+        }
+        let call = |gap: Option<&str>| {
+            let mut body = node("fragment", "call~body");
+            body.children = vec![text("above", "Above"), text("below", "Below")];
+            let mut call = node("fragment", "call");
+            if let Some(gap) = gap {
+                call.props.insert("gap".to_owned(), Value::text(gap));
+            }
+            call.children = vec![body];
+            call
+        };
+        let sections = apart("group");
+        assert!(sections > 0.0, "a group of parts stands apart");
+        let in_stack = spread("stack", Some("group"), vec![call(None)]);
+        assert!(
+            (in_stack - sections).abs() < 0.5,
+            "the call's parts keep the stack's gap: {in_stack} against {sections}"
+        );
+        let nested = spread(
+            "stack",
+            Some("group"),
+            vec![UiNode {
+                children: vec![call(None)],
+                ..node("fragment", "outer")
+            }],
+        );
+        assert!(
+            (nested - sections).abs() < 0.5,
+            "a call in another's body passes the gap on: {nested} against {sections}"
+        );
+        let in_page = spread("page", None, vec![call(None)]);
+        assert!(
+            (in_page - sections).abs() < 0.5,
+            "a page lays its parts a group apart: {in_page} against {sections}"
+        );
+        let own = spread("stack", Some("group"), vec![call(Some("tight"))]);
+        let tight = apart("tight");
+        assert!(
+            (own - tight).abs() < 0.5,
+            "a call that writes its own gap keeps it: {own} against {tight}"
+        );
     }
 
     /// A filled call of a view (`show(r, fill)`, a filled call of another package's view) stands
