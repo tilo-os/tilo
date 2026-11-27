@@ -52,6 +52,15 @@ impl Instance {
         if let Some(facts) = &self.facts {
             out.insert(resource_id(&self.app, &facts.target.id_string()));
         }
+        // An instance with no window opens no view, and runs for the callers of its actions: the
+        // root they act on is what it holds, found without the reads a view of it makes.
+        if self.windowless
+            && self.root.is_none()
+            && let Some(host) = self.host()
+            && let Ok(root) = host.root_of_layer(&self.app, &self.root_view)
+        {
+            out.insert(resource_id(&self.app, &root.id_string()));
+        }
         out
     }
 }

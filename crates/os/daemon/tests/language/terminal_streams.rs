@@ -142,10 +142,10 @@ async fn terminal_holds(host: &host::Host, needle: &str) -> bool {
         if crate::language::agent_fixture::terminal_holds(host, needle).await {
             return true;
         }
-        assert!(
-            Instant::now() < deadline,
-            "the session never records {needle:?}"
-        );
+        if Instant::now() >= deadline {
+            let held = crate::language::agent_fixture::terminal_commands(&host.agent()).await;
+            panic!("the session never records {needle:?}; it holds {held:?}");
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
