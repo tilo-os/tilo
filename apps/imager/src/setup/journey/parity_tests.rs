@@ -7,6 +7,7 @@
 //! text, never a field of the state machine, so the same walk proves the fold
 //! lost nothing.
 
+use super::harness::private_state;
 use super::*;
 use crate::hosting::testing::TestHost;
 use crate::resource::ImagerEffect;
@@ -124,18 +125,6 @@ fn assert_refused<E: tilo_resource::Effect>(
 ) {
     let (refused, words) = refusal(app, effect);
     assert_eq!((refused.as_str(), words.as_str()), (code, reason));
-}
-
-/// An XDG state the setup writes into, on this test's own temporary
-/// directory, for as long as the walk runs.
-fn private_state() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
-    let root = tempfile::tempdir().unwrap();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_STATE_HOME", root.path().join("state"));
-    environment.set("XDG_CONFIG_HOME", root.path().join("config"));
-    environment.set("XDG_DATA_HOME", root.path().join("data"));
-    environment.set("XDG_CACHE_HOME", root.path().join("cache"));
-    (root, environment)
 }
 
 /// The signed Tilo Desktop package the fixture catalog offers.
@@ -304,6 +293,7 @@ fn the_desktop_route_offers_the_desktop_choice_and_hands_the_review_to_its_setup
         ],
     );
     assert_shows(&mut app, &[t("installer-preview-destination-heading")]);
+    assert_refused_with(&mut app, "back-in-preview", "at_start");
 }
 
 // Full Tilo next to the current system, through the internal staging setup.
@@ -749,6 +739,30 @@ fn the_preview_route_walks_every_page_and_writes_nothing() {
         .value
         .unwrap();
     assert_eq!(stored["storage"]["size_gib"], 100);
+
+    // Back retraces the pages the person came through, one at a time, to the
+    // first; walking forward again reaches the same page.
+    for heading in [
+        "installer-preview-devices-heading",
+        "installer-preview-migrate-heading",
+        "installer-preview-destination-heading",
+    ] {
+        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+        assert_shows(&mut app, &[t(heading)]);
+    }
+    for effect in [
+        InstallerPreviewEffect::ChooseAndContinuePreview {
+            choice: "computer".into(),
+        },
+        InstallerPreviewEffect::ContinuePreview,
+        InstallerPreviewEffect::SetPreviewDeviceName {
+            value: "Ada's computer".into(),
+        },
+        InstallerPreviewEffect::ContinuePreview,
+    ] {
+        app.effect(&effect).unwrap();
+    }
+    assert_shows(&mut app, &[t("installer-preview-storage-heading")]);
 
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();

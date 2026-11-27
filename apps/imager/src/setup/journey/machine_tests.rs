@@ -142,7 +142,7 @@ fn the_plan_screens_paint_at_desktop_and_narrow_widths() {
             let mut app = TestHost::capture_at(Some(scenario), viewport);
             app.harness()
                 .set_theme(Theme::dark().with_reduce_motion(true));
-            visual_tests::paint_app(&mut app, scenario, ids, viewport, tag);
+            harness::paint_app(&mut app, scenario, ids, viewport, tag);
             app.harness().close_components();
         }
     }
@@ -168,15 +168,15 @@ tilo_test_env::scenario! {
                 "installer.review.plan-delivery",
             ] {
                 assert!(
-                    visual_tests::control(preview, id).is_some(),
+                    harness::control(preview, id).is_some(),
                     "the review shows {id}"
                 );
             }
             assert!(
-                visual_tests::control(preview, "installer.review.plan-hosting").is_some(),
+                harness::control(preview, "installer.review.plan-hosting").is_some(),
                 "a server's review shows what it holds"
             );
-            let name = visual_tests::control(preview, "installer.review.plan-name")
+            let name = harness::control(preview, "installer.review.plan-name")
                 .expect("the review shows the computer's name row")
                 .accessibility()
                 .expect("the name row is readable");
@@ -190,7 +190,7 @@ tilo_test_env::scenario! {
                 Some(spoken.as_str()),
                 "the name row says what it is and what it takes: {name:?}"
             );
-            let model = visual_tests::control(preview, "installer.review.target")
+            let model = harness::control(preview, "installer.review.target")
                 .expect("the review shows the model row")
                 .accessibility()
                 .expect("the model row is readable");
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
             assert!(created.commands.medium.contains("tilo-server-installer"));
             for id in ["installer.plan.token", "installer.plan.command"] {
                 assert!(
-                    visual_tests::control(preview, id).is_some(),
+                    harness::control(preview, id).is_some(),
                     "the ready page shows {id}"
                 );
             }
@@ -236,11 +236,11 @@ tilo_test_env::scenario! {
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.machine.waiting.len(), 2);
             assert!(
-                visual_tests::control(preview, "installer.waiting.0.disk-answer").is_some(),
+                harness::control(preview, "installer.waiting.0.disk-answer").is_some(),
                 "a waiting computer's disk choice is answered from its reported drives"
             );
             assert!(
-                visual_tests::control(preview, "installer.waiting.1.network").is_some(),
+                harness::control(preview, "installer.waiting.1.network").is_some(),
                 "a question the plan left open is shown"
             );
         })

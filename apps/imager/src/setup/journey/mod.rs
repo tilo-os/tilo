@@ -4,8 +4,6 @@
 //! A route this host, build or catalogue cannot fulfil is shown unavailable with
 //! its reason. `--demo` data never enters the live setup or its workers.
 
-#[cfg(test)]
-mod back_navigation_tests;
 mod capabilities;
 mod demo;
 mod scenarios;
@@ -14,6 +12,8 @@ mod devices;
 mod direct;
 mod draft;
 mod handoff;
+#[cfg(test)]
+mod harness;
 mod machine;
 #[cfg(test)]
 mod machine_tests;
@@ -23,8 +23,8 @@ mod native;
 mod native_page;
 #[cfg(test)]
 mod parity_tests;
-#[cfg(test)]
-mod password_validation_tests;
+#[cfg(all(test, unix))]
+mod password_tests;
 mod plan_view;
 mod storage;
 mod target;
@@ -2069,8 +2069,6 @@ impl Widget for InstallerPreview {
 }
 
 #[cfg(all(test, unix))]
-mod desktop_model_tests;
-#[cfg(all(test, unix))]
-mod purpose_tests;
+mod model_tests;
 #[cfg(test)]
 mod structure_tests;

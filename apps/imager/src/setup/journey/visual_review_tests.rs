@@ -1,7 +1,7 @@
 //! Development-only raster evidence from the production renderer and action path.
 
+use super::harness::Walk;
 use super::*;
-use crate::hosting::testing::TestHost;
 
 pub(super) fn evidence(harness: &mut ui::headless::Driver, name: &str) {
     let Some(directory) = std::env::var_os("TILO_UI_SCREENSHOT_DIR") else {
@@ -56,24 +56,6 @@ pub(super) fn evidence(harness: &mut ui::headless::Driver, name: &str) {
     eprintln!("current raster evidence: {name}");
 }
 
-fn fixture(viewport: (u32, u32), theme: Theme) -> TestHost {
-    let mut app = TestHost::launched(&["--setup"]);
-    app.with_widget::<InstallerPreview, _>(|preview| {
-        preview.live = false;
-        preview.capture = false;
-        preview.journey = Journey::new();
-        preview.journey.destination = Some(Destination::Computer);
-        preview.journey.device_name = "My computer".into();
-        preview.journey.page = Page::Migrate;
-        preview.dirty = true;
-    })
-    .unwrap();
-    app.harness().resize(viewport).unwrap();
-    app.harness().set_theme(theme.with_reduce_motion(true));
-    app.settle();
-    app
-}
-
 #[test]
 #[cfg(unix)]
 fn current_migrate_password_and_review_raster_matrix() {
@@ -101,7 +83,11 @@ fn current_migrate_password_and_review_raster_matrix() {
         for viewport in [(1180, 820), (640, 800), (320, 800)] {
             for text_scale in [1.0, 2.0] {
                 let tag = format!("{tag}-{}x{}-text{text_scale}", viewport.0, viewport.1);
-                let mut app = fixture(viewport, theme.clone().with_text_scale(text_scale));
+                let mut app = Walk::at(
+                    Page::Migrate,
+                    viewport,
+                    theme.clone().with_text_scale(text_scale),
+                );
                 evidence(app.harness(), &format!("migrate-{tag}"));
                 app.effect(&InstallerPreviewEffect::ContinuePreview)
                     .unwrap();
@@ -118,7 +104,7 @@ fn current_migrate_password_and_review_raster_matrix() {
                 app.settle();
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     assert!(
-                        visual_tests::control(preview, "installer.password")
+                        harness::control(preview, "installer.password")
                             .unwrap()
                             .accessibility()
                             .unwrap()
@@ -166,7 +152,7 @@ fn current_migrate_password_and_review_raster_matrix() {
                 evidence(app.harness(), &format!("review-blocked-top-{tag}"));
                 let body = app
                     .with_widget::<InstallerPreview, _>(|preview| {
-                        visual_tests::body_scroll_geometry(preview).unwrap().0
+                        harness::body_scroll_geometry(preview).unwrap().0
                     })
                     .unwrap();
                 app.harness()

@@ -1,5 +1,5 @@
 //! Exercise the retained production computer-name form, not a sample device fleet.
-use super::super::visual_tests::control;
+use super::super::harness::control;
 use super::super::*;
 use crate::hosting::testing::TestHost;
 

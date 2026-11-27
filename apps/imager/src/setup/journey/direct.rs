@@ -192,7 +192,7 @@ mod tests {
                 preview.storage.set_size(size).unwrap();
                 let body = preview.body(&Theme::default());
                 let row =
-                    super::super::visual_tests::control(&body, "installer.review.storage").unwrap();
+                    super::super::harness::control(&body, "installer.review.storage").unwrap();
                 let node = row.accessibility().unwrap();
                 let summary = preview.review_storage_summary();
                 assert!(summary.contains(&t_args(
@@ -264,7 +264,7 @@ mod tests {
             preview.journey.page = Page::Review;
             preview.journey.destination = Some(Destination::Computer);
             let root = preview.composition(&Theme::default());
-            let control = super::super::visual_tests::control;
+            let control = super::super::harness::control;
             assert!(
                 control(root.as_ref(), "installer.prepare-direct")
                     .unwrap()

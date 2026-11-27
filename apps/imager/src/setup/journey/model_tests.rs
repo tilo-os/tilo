@@ -1,5 +1,5 @@
-//! The ordinary journey keeps the safe computer default without asking a
-//! Purpose question.
+//! The journey's own model: the safe computer default kept without asking a
+//! Purpose question, and a desktop route that never asks an OS question.
 use super::*;
 
 tilo_test_env::scenario! {
@@ -7,7 +7,7 @@ tilo_test_env::scenario! {
 
     phase purpose_is_not_asked_and_the_safe_default_is_retained;
     {
-        let mut journey = model::Journey::new();
+        let mut journey = Journey::new();
         journey.destination = Some(Destination::Computer);
         journey.device_name = "Home device".into();
         journey.page = Page::Devices;
@@ -29,16 +29,35 @@ tilo_test_env::scenario! {
         assert_eq!(profile.purpose, install_profile_model::default_purpose());
     }
 
-    phase desktop_has_no_os_purpose_page;
+    phase desktop_edits_never_restore_os_questions;
     {
-        let mut journey = model::Journey::new();
-        journey.destination = Some(Destination::Desktop);
-        journey.device_name = "Existing Linux".into();
-        journey.page = Page::Destination;
+        let mut journey = Journey::new();
+        journey.choose("desktop", true).unwrap();
         journey.next().unwrap();
         assert_eq!(journey.page, Page::Review);
         assert_eq!(journey.history, vec![Page::Destination]);
+        assert_eq!(journey.destination, Some(Destination::Desktop));
         assert_eq!(journey.purpose, install_profile_model::default_purpose());
+        assert!(journey.password.is_empty());
+        assert!(journey.device_name.is_empty());
+        for section in ["password", "devices", "purpose"] {
+            assert!(journey.edit(section).is_err());
+            assert_eq!(journey.page, Page::Review);
+        }
+        journey.edit("destination").unwrap();
+        journey.next().unwrap();
+        assert_eq!(journey.page, Page::Review);
+        journey.back().unwrap();
+        assert_eq!(journey.page, Page::Destination);
+        journey.choose("computer", true).unwrap();
+        assert_eq!(journey.purpose, install_profile_model::default_purpose());
+        journey.next().unwrap();
+        assert_eq!(journey.page, Page::Migrate);
+        journey.back().unwrap();
+        journey.choose("desktop", true).unwrap();
+        journey.next().unwrap();
+        assert_eq!(journey.page, Page::Review);
+        assert_eq!(journey.history, vec![Page::Destination]);
     }
 
     phase legacy_purpose_values_remain_readable_but_are_not_asked;
