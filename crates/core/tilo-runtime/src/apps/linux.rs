@@ -369,25 +369,40 @@ fn service_directory(sockets: &Sockets) -> io::Result<PathBuf> {
 
 /// Make `link` name `target`. The services are one set for the device, so two launches of an app
 /// side by side ask for the same links: a link already there to `target` is the one this launch
-/// needs, and an entry at the name that is no such link is refused rather than taken for one.
+/// needs.
+///
+/// The link is made under a name of its own and renamed into place. A rename replaces the name in
+/// one step, so a launch that is checking the link never finds it missing while another launch
+/// makes it, and two launches reaching the same link both end with one naming `target`. Removing
+/// the old name first left exactly that window, and a launch that lost it refused a link the
+/// other had already made.
 fn link_service(target: &Path, link: &Path) -> io::Result<()> {
     if is_link_to(link, target) {
         return Ok(());
     }
-    match std::fs::remove_file(link) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    match std::os::unix::fs::symlink(target, link) {
+    let staged = staged_link_name(link);
+    std::os::unix::fs::symlink(target, &staged)?;
+    match std::fs::rename(&staged, link) {
         Ok(()) => Ok(()),
-        // Another launch of the same app made the link this one needs between its look and its
-        // link.
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && is_link_to(link, target) => {
-            Ok(())
+        Err(error) => {
+            let _ = std::fs::remove_file(&staged);
+            // A name a link cannot take (a directory someone put there) is refused rather than
+            // passed over: only a launch's own link may stand at it.
+            Err(error)
         }
-        Err(error) => Err(error),
     }
+}
+
+/// A name beside `link` for the link this launch is about to rename into place: unique to the
+/// launch, and no name a launch looks a service up by.
+fn staged_link_name(link: &Path) -> PathBuf {
+    static STAGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = link
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let staged = STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    link.with_file_name(format!(".{name}.{}.{staged}", std::process::id()))
 }
 
 /// Whether `link` is a link to exactly `target`.
@@ -603,6 +618,53 @@ mod tests {
                 let link = services.join(format!("{name}.sock"));
                 assert_eq!(&std::fs::read_link(&link).unwrap(), target);
             }
+        }
+
+        phase a_link_a_launch_replaces_is_never_missing;
+        {
+            // A launch that finds a stale link replaces it. The replacement is one step, so a
+            // launch looking the link up while another replaces it never finds the name gone:
+            // removing the old name first left it missing, and a launch that looked then refused
+            // a link another had already made.
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            let temp = tempfile::tempdir().unwrap();
+            let target = temp.path().join("collab.sock");
+            std::fs::write(&target, b"").unwrap();
+            let stale = temp.path().join("stale.sock");
+            std::fs::write(&stale, b"").unwrap();
+            let link = temp.path().join("services/collab.sock");
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            let mut missing = 0;
+            for _ in 0..300 {
+                let _ = std::fs::remove_file(&link);
+                std::os::unix::fs::symlink(&stale, &link).unwrap();
+                let replacements = AtomicUsize::new(0);
+                let stop = AtomicBool::new(false);
+                std::thread::scope(|scope| {
+                    for _ in 0..3 {
+                        scope.spawn(|| {
+                            link_service(&target, &link).expect("a launch replaces the link");
+                            if replacements.fetch_add(1, Ordering::Relaxed) == 2 {
+                                stop.store(true, Ordering::Relaxed);
+                            }
+                        });
+                    }
+                    // The name is a link at every instant, whatever a launch is making of it.
+                    let mut reads = 0_u32;
+                    while !stop.load(Ordering::Relaxed) || reads < 50 {
+                        if std::fs::read_link(&link).is_err() {
+                            missing += 1;
+                        }
+                        reads = reads.saturating_add(1);
+                    }
+                });
+                assert_eq!(
+                    std::fs::read_link(&link).unwrap(),
+                    target,
+                    "the launch's link stands after its replacement"
+                );
+            }
+            assert_eq!(missing, 0, "the link was missing {missing} times");
         }
 
         phase no_launcher_binary_refuses_rather_than_running_unconfined;
