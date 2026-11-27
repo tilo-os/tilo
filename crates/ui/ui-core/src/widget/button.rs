@@ -1133,21 +1133,7 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
         }
         ButtonRole::Plain => {
             // Hover and press are neutral lifts of the ground: never the
-            // accent, which is for what is selected. The hovered plate is the step a person
-            // sees the control by, so it clears the non-text contrast floor on the ground it
-            // stands on (a chrome body hands its contents that ground); the press is one step
-            // past it.
-            let ground = colors.surfaces.content;
-            let floor = NON_TEXT_MIN_CONTRAST + PLATE_GROUND_MARGIN;
-            let hover = colors.ink_on(colors.lift_on(ground, 0.5), ground, floor);
-            let pressed = colors.lift_on(ground, 1.0);
-            let fill = if interact.pressed {
-                pressed
-            } else if interact.hovered {
-                hover
-            } else {
-                Color::TRANSPARENT
-            };
+            // accent, which is for what is selected.
             // At rest a plain button paints nothing: it stands on the ground
             // its container handed it (`surfaces.content`, re-pointed by
             // `Theme::on_ground` inside a region), and hover and press are
@@ -1156,7 +1142,23 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
             // clears the ground stays legible on them, while asking one ink to
             // clear all three at once jumps to the ground's opposite (black on
             // a dark ground) and leaves the resting glyph unreadable.
+            let ground = colors.surfaces.content;
             let ink = colors.ink_on(ground, colors.text_primary, ON_FILL_MIN_CONTRAST);
+            // The plate is the step a person sees the control by, so it clears the
+            // non-text floor on the ground it stands on. It is held back from being
+            // any lighter than the glyph read on it allows: on a dark ground a plate
+            // clear enough to see would otherwise take the label under its floor.
+            let floor = NON_TEXT_MIN_CONTRAST + PLATE_GROUND_MARGIN;
+            let hover = colors.ink_on(colors.lift_on(ground, 0.5), ground, floor);
+            let hover = colors.ink_on(ink, hover, ON_FILL_MIN_CONTRAST);
+            let pressed = colors.lift_on(ground, 1.0);
+            let fill = if interact.pressed {
+                pressed
+            } else if interact.hovered {
+                hover
+            } else {
+                Color::TRANSPARENT
+            };
             (fill, None, ink)
         }
     }

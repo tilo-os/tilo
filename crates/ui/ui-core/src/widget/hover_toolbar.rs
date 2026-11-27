@@ -134,7 +134,12 @@ impl HoverToolbar {
                 let captioned = caption.is_some();
                 if let Some(caption) = caption {
                     let mut said = crate::widget::arrange::Part::new(caption);
-                    said.fit = crate::widget::arrange::Fit::fill(1.0);
+                    // The caption takes the band's room at its leading end, whole: what it
+                    // says stands at the foot and the rest of the band takes the pointer, as
+                    // a window's bar is taken by the whole bar. It stretches across the band
+                    // although the row says how its parts stand there, because what it wraps
+                    // places its own words.
+                    said.fit = crate::widget::arrange::Fit::fill(1.0).align(Align::Stretch);
                     bar = bar.push_part(said);
                 }
                 let bar = bar.push(Box::new(face));

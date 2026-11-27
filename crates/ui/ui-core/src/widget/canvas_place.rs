@@ -111,18 +111,28 @@ impl Described for CanvasPlace {
         // theme's secondary ink, wrapped and said in full (a turn's caption is the person's whole
         // question), the band growing to hold it. It is what a person picks the place up by: a
         // press on it that travels carries the place's resource.
-        let caption = Text::new(&title)
+        let said = Text::new(&title)
             .with_role(TextRole::Caption)
             .dimmed()
             .with_wrap_mode(tilo_ui_base::text_render::TextWrapMode::WordOrGlyph);
+        // The band over the place is its handle, whole: what it says stands at the band's foot,
+        // a tight step above the content, and the rest of the band takes the pointer too, as a
+        // window's bar does.
+        let caption: Element = Box::new(
+            Stack::stack()
+                .fill_width()
+                .fill_height()
+                .align(Align::End)
+                .push(Box::new(said) as Element),
+        );
         let caption: Element = match carries {
             Some(resource) if !resource.is_empty() => Box::new(DragSource::new(
                 format!("{key}{HANDLE_KEY}"),
-                Box::new(caption),
+                caption,
                 resource,
                 title.clone(),
             )),
-            _ => Box::new(caption),
+            _ => caption,
         };
         // The handle: the resource's actions, pin and close, on hover and focus only.
         let handle = Stack::row()
