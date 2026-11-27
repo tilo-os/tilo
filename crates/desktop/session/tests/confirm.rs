@@ -252,7 +252,10 @@ fn forgetting_a_bluetooth_accessory_asks_first_and_declining_runs_nothing() {
     let mut session = session(&calls);
     open_quick_settings(&mut session);
 
-    // The accessory's row offers to forget it.
+    // The accessory's row opens its own page — the header's way back shows the person is
+    // there — and that page offers to forget it.
+    press(&mut session, "Headphones");
+    until_control(&mut session, "Back to quick settings");
     press(&mut session, "Forget this device");
     until_control(&mut session, "Don't allow");
     assert!(calls.borrow().is_empty(), "nothing runs unasked");
@@ -266,7 +269,10 @@ fn forgetting_a_bluetooth_accessory_asks_first_and_declining_runs_nothing() {
         calls.borrow()
     );
 
-    // Asked again, the person's yes runs it.
+    // Asked again from the accessory's page — the panel stands at its first page once the
+    // question is answered — the person's yes runs it.
+    press(&mut session, "Headphones");
+    until_control(&mut session, "Back to quick settings");
     press(&mut session, "Forget this device");
     press(&mut session, "Forget the device");
     until_called(&mut session, &calls, "bluetooth-accessory:AA-BB", "forget");
