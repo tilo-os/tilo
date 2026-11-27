@@ -76,7 +76,7 @@ impl Published {
         let reading = Arc::clone(&inner);
         let spawned = std::thread::Builder::new()
             .name("tilo-journal".into())
-            .spawn(move || reading.read(None, DEFAULT_LIMIT, "refresh".to_owned(), true));
+            .spawn(move || reading.read(None, DEFAULT_LIMIT, "refresh", true));
         if let Err(error) = spawned {
             tracing::warn!(%error, "the journal is not read at this device's start");
         }
@@ -123,25 +123,25 @@ impl Inner {
         self: &Arc<Self>,
         after: Option<String>,
         limit: u32,
-        action: String,
+        action: &str,
         replace: bool,
     ) {
         {
             let mut served = self.served.lock_recover();
-            if !served.reading.pending.contains(&action) {
-                served.reading.pending.push(action.clone());
+            if !served.reading.pending.iter().any(|id| id == action) {
+                served.reading.pending.push(action.to_owned());
             }
         }
         self.moved();
         let read = Arc::clone(self);
-        let named = action.clone();
+        let named = action.to_owned();
         let spawned = std::thread::Builder::new()
             .name("tilo-journal-read".into())
-            .spawn(move || read.read(after, limit, named, replace));
+            .spawn(move || read.read(after, limit, &named, replace));
         if let Err(error) = spawned {
             tracing::warn!(%error, "the journal is not read");
             self.land(
-                &action,
+                action,
                 Err("The journal is not read on this device.".to_owned()),
                 replace,
             );
@@ -150,12 +150,12 @@ impl Inner {
     }
 
     /// Read the journal, then put what it answered into the reading.
-    fn read(&self, after: Option<String>, limit: u32, action: String, replace: bool) {
-        let result = match &after {
-            Some(cursor) => tilo_system_resources::journal::read_after(cursor, limit),
+    fn read(&self, after: Option<String>, limit: u32, action: &str, replace: bool) {
+        let result = match after {
+            Some(cursor) => tilo_system_resources::journal::read_after(&cursor, limit),
             None => tilo_system_resources::journal::read(limit),
         };
-        self.land(&action, result, replace);
+        self.land(action, result, replace);
         self.moved();
     }
 
@@ -196,6 +196,7 @@ impl Inner {
                 }
             }
         }
+        drop(served);
     }
 }
 
@@ -302,12 +303,10 @@ impl PublishedResources for Published {
             }
         };
         match action {
-            "refresh" => self.inner.start_read(
-                None,
-                limit_of(&arguments, DEFAULT_LIMIT),
-                action.to_owned(),
-                true,
-            ),
+            "refresh" => {
+                self.inner
+                    .start_read(None, limit_of(&arguments, DEFAULT_LIMIT), action, true)
+            }
             "read-after" => {
                 let cursor = arguments
                     .get("cursor")
@@ -315,12 +314,8 @@ impl PublishedResources for Published {
                     .unwrap_or_default()
                     .to_owned();
                 let after = (!cursor.is_empty()).then_some(cursor);
-                self.inner.start_read(
-                    after,
-                    limit_of(&arguments, FOLLOW_LIMIT),
-                    action.to_owned(),
-                    false,
-                );
+                self.inner
+                    .start_read(after, limit_of(&arguments, FOLLOW_LIMIT), action, false);
             }
             "set-following" => {
                 let on = arguments
