@@ -8,6 +8,7 @@ use std::rc::Rc;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{Layout, Strip, StripId, Workspace, WorkspaceId};
 use ui::shortcut_table::{FixedAction, ShortcutAction};
+use ui::window_toolbar::SearchOpening;
 use ui::window_toolbar::ToolbarEvent;
 
 use super::DesktopHandle;
@@ -157,6 +158,9 @@ impl DesktopHandle {
             | ChromeEffect::BarSearch { .. }
             | ChromeEffect::BarSearchStep { .. }
             | ChromeEffect::BarSearchClose { .. }
+            | ChromeEffect::BarFind { .. }
+            | ChromeEffect::BarSearchOption { .. }
+            | ChromeEffect::BarSearchReplace { .. }
             | ChromeEffect::BarAction { .. }
             | ChromeEffect::BarSidebar { .. }
             | ChromeEffect::BarBack { .. }
@@ -207,6 +211,9 @@ impl DesktopHandle {
         | ChromeEffect::BarSearch { tab, .. }
         | ChromeEffect::BarSearchStep { tab, .. }
         | ChromeEffect::BarSearchClose { tab }
+        | ChromeEffect::BarFind { tab, .. }
+        | ChromeEffect::BarSearchOption { tab, .. }
+        | ChromeEffect::BarSearchReplace { tab, .. }
         | ChromeEffect::BarAction { tab, .. }
         | ChromeEffect::BarSidebar { tab }
         | ChromeEffect::BarBack { tab }
@@ -242,6 +249,30 @@ impl DesktopHandle {
             ChromeEffect::BarSearchClose { .. } => {
                 self.bar_event(tab, ToolbarEvent::SearchClose);
                 self.close_bar_field(tab);
+            }
+            ChromeEffect::BarFind { replace, .. } => self.open_bar_search(
+                tab,
+                if replace.unwrap_or(false) {
+                    SearchOpening::Replace
+                } else {
+                    SearchOpening::Find
+                },
+            ),
+            ChromeEffect::BarSearchOption { option, .. } => {
+                // The app is the search, so what it offers and runs under is what the reading
+                // said last; the option is chosen on that, and the app takes the result.
+                let offer = self.bar_offer(tab).unwrap_or_default();
+                let options = offer.options.choosing(option, offer.find);
+                self.bar_event(tab, ToolbarEvent::SearchOptions { options });
+            }
+            ChromeEffect::BarSearchReplace { with, all, .. } => {
+                self.bar_event(
+                    tab,
+                    ToolbarEvent::SearchReplace {
+                        with: with.clone(),
+                        all: *all,
+                    },
+                );
             }
             ChromeEffect::BarAction { id, .. } => {
                 self.bar_event(tab, ToolbarEvent::Action { id: id.clone() });

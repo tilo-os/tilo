@@ -325,6 +325,18 @@ impl DesktopHandle {
         self.shared.borrow().bars.open.get(&tab).copied()
     }
 
+    /// What the window `tab` offers the bar's search and History control, as its app last said:
+    /// what the search acts on, what it found, the find's abilities and options.
+    #[must_use]
+    pub fn bar_offer(&self, tab: TabId) -> Option<WindowOffer> {
+        self.shared
+            .borrow()
+            .bars
+            .offers
+            .get(&tab)
+            .map(|(_, offer)| offer.clone())
+    }
+
     /// Close the field the window `tab`'s bar held open, as Escape or its Done does.
     pub fn close_bar_field(&self, tab: TabId) {
         self.queue_bar_ask(|bars| {
@@ -807,5 +819,205 @@ mod tests {
         assert!(bars.take_names(names.clone()), "a new name is a change");
         assert_eq!(bars.names, names);
         assert!(!bars.take_names(names), "the same names change nothing");
+    }
+
+    /// The window's bar, its app offering a document that it replaces and matches expressions in,
+    /// with the window's own find open where it stands: where a test of the find's controls stands.
+    fn finding(handle: &DesktopHandle) {
+        use crate::desktop::navigation::ChromeEffect;
+        use ui::widget::FindAbilities;
+        use ui::window_toolbar::SearchOffer;
+
+        handle.declare_bar(7, 41, Some(WindowToolbar::default()));
+        handle.follow_bars();
+        handle.offer_bar(
+            7,
+            41,
+            ui::window_toolbar::WindowOffer {
+                search: SearchOffer::Document,
+                find: FindAbilities {
+                    replace: true,
+                    regex: true,
+                    hex: false,
+                },
+                ..ui::window_toolbar::WindowOffer::default()
+            },
+        );
+        handle.follow_bars();
+        handle
+            .perform_verb(&ChromeEffect::BarFind {
+                tab: "7".into(),
+                replace: None,
+            })
+            .expect("the find opens");
+        handle.follow_bars();
+    }
+
+    /// The bar's search control opens the window's own find where it stands, and the options it
+    /// offers go to the app that owns the search, chosen on what that app said it runs under.
+    #[test]
+    fn the_bars_find_opens_and_its_options_go_to_the_app() {
+        use crate::desktop::navigation::ChromeEffect;
+        use ui::widget::FindAbilities;
+        use ui::widget::FindMode;
+        use ui::widget::FindOptions;
+        use ui::window_toolbar::SearchOffer;
+        use ui::window_toolbar::SearchOpening;
+
+        let handle = shell();
+        finding(&handle);
+        assert_eq!(
+            handle.bar_field(7),
+            Some(BarField::Search(SearchOpening::Find)),
+            "the window's find stands in the bar"
+        );
+        assert!(
+            handle.bar_offer(7).is_some_and(|offer| offer.find.regex),
+            "the bar reads what the app's find offers"
+        );
+        handle
+            .perform_verb(&ChromeEffect::BarSearchOption {
+                tab: "7".into(),
+                option: "case".into(),
+            })
+            .expect("the option is taken");
+        assert_eq!(
+            handle.take_bar_events(),
+            vec![(
+                7,
+                41,
+                ToolbarEvent::SearchOptions {
+                    options: FindOptions {
+                        match_case: true,
+                        ..FindOptions::default()
+                    },
+                },
+            )],
+            "matching case, on top of what the app runs under"
+        );
+        // The app runs under it now, as it says on its next offer.
+        handle.offer_bar(
+            7,
+            41,
+            ui::window_toolbar::WindowOffer {
+                search: SearchOffer::Document,
+                find: FindAbilities {
+                    replace: true,
+                    regex: true,
+                    hex: false,
+                },
+                options: FindOptions {
+                    match_case: true,
+                    ..FindOptions::default()
+                },
+                ..ui::window_toolbar::WindowOffer::default()
+            },
+        );
+        handle.follow_bars();
+        handle
+            .perform_verb(&ChromeEffect::BarSearchOption {
+                tab: "7".into(),
+                option: "regex".into(),
+            })
+            .expect("the option is taken");
+        assert_eq!(
+            handle.take_bar_events(),
+            vec![(
+                7,
+                41,
+                ToolbarEvent::SearchOptions {
+                    options: FindOptions {
+                        match_case: true,
+                        mode: FindMode::Regex,
+                        ..FindOptions::default()
+                    },
+                },
+            )],
+            "reading the query as an expression, where the content offers it"
+        );
+    }
+
+    /// The replacement the bar's find asks for goes to the app, and closing it gives the keys
+    /// back to the window.
+    #[test]
+    fn the_bars_find_replaces_in_the_app_and_closes() {
+        use crate::desktop::navigation::ChromeEffect;
+
+        let handle = shell();
+        finding(&handle);
+        handle
+            .perform_verb(&ChromeEffect::BarSearchReplace {
+                tab: "7".into(),
+                with: "dog".into(),
+                all: false,
+            })
+            .expect("the replacement is asked");
+        assert_eq!(
+            handle.take_bar_events(),
+            vec![(
+                7,
+                41,
+                ToolbarEvent::SearchReplace {
+                    with: "dog".into(),
+                    all: false,
+                },
+            )]
+        );
+        handle
+            .perform_verb(&ChromeEffect::BarSearchClose { tab: "7".into() })
+            .expect("the find closes");
+        handle.follow_bars();
+        assert_eq!(handle.bar_field(7), None);
+        assert!(
+            !handle.bar_takes_typing(),
+            "the keys go back to the window's app"
+        );
+    }
+
+    /// A window's find widens to the system search over what its app holds, and to everything,
+    /// through the shell's own search verb: the scope says what the search reaches, and typing
+    /// into an open search keeps it.
+    #[test]
+    fn a_windows_find_widens_the_shells_search_to_what_it_reaches() {
+        use crate::desktop::navigation::LayoutEffect;
+        use crate::desktop::shell_verbs::ShellVerbs;
+        use crate::desktop::shell_verbs::StartCards;
+        use crate::desktop::state::search::SearchRequest;
+        use ui::search::AppScope;
+        use ui::search::Scope;
+
+        let handle = shell();
+        let asks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let cards: StartCards = std::rc::Rc::new(Vec::new);
+        let verbs = ShellVerbs::new(handle.clone(), asks, cards);
+        assert!(verbs.perform(&LayoutEffect::Search {
+            query: Some("relay".into()),
+            scope: Some("app".into()),
+            app: Some("so.tilo.app0".into()),
+        }));
+        assert_eq!(
+            handle.shared.borrow().search_request,
+            Some(SearchRequest::Open {
+                scope: Scope::InApp(AppScope {
+                    app: Some("so.tilo.app0".into()),
+                    part: None,
+                }),
+                query: Some("relay".into()),
+            }),
+            "the app in the window is what the search reaches"
+        );
+        assert!(verbs.perform(&LayoutEffect::Search {
+            query: Some("relay".into()),
+            scope: Some("everywhere".into()),
+            app: None,
+        }));
+        assert_eq!(
+            handle.shared.borrow().search_request,
+            Some(SearchRequest::Open {
+                scope: Scope::Workspace,
+                query: Some("relay".into()),
+            }),
+            "and everything is the workspace"
+        );
     }
 }

@@ -213,12 +213,23 @@ pub enum LayoutEffect {
     /// Search the desktop
     /// Open the desktop's search, or close it when it is already open, as its key does; with
     /// `query` typed when given, into the search already open instead.
+    ///
+    /// `scope` narrows a new search: `app` searches only what the app `app` names holds (a
+    /// window's own find widened to its whole app), and anything else searches the workspace.
+    /// With no scope, a search already open keeps the scope it has, so typing into it does not
+    /// widen it back.
     #[effect(kind = "outside")]
     #[effect(own_device)]
     Search {
         /// What to type.
         #[param("The query to type")]
         query: Option<String>,
+        /// What to search: `app` for the app `app` names, or the workspace.
+        #[param("What the search reaches")]
+        scope: Option<String>,
+        /// The app a `scope` of `app` searches, by its canonical id.
+        #[param("The app to search")]
+        app: Option<String>,
     },
 
     /// Choose a search row
@@ -597,6 +608,50 @@ pub enum ChromeEffect {
         /// The window, by its tab.
         #[param(decimal, "The window, by its tab")]
         tab: String,
+    },
+
+    /// Open a window's own find in its bar
+    /// The bar's search control expands into the window's find where it stands; the app's own
+    /// Ctrl+F asks the same, and so does an agent.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarFind {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+        /// Whether it opens to replace as well as find.
+        #[param("Whether it opens to replace")]
+        replace: Option<bool>,
+    },
+
+    /// Choose one of a window's bar search options
+    /// `case` and `whole` toggle what the search matches; `regex` toggles reading the query as
+    /// one, where the content offers that; `text` and `hex` pick how it reads the query, where
+    /// the content is bytes.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarSearchOption {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+        /// The option: `case`, `whole`, `regex`, `text` or `hex`.
+        #[param("The option to choose")]
+        option: String,
+    },
+
+    /// Replace what a window's bar search matched
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarSearchReplace {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+        /// What to put in place of a match.
+        #[param("What to put in place of a match")]
+        with: String,
+        /// Whether every match is replaced; the one the search stands on otherwise.
+        #[param("Whether every match is replaced")]
+        all: bool,
     },
     /// Press one of the window's own bar controls
     /// A leading control, an action, a menu item, a view, a notice's action or a reaction: the
@@ -1315,13 +1370,21 @@ fn admit_layout(verb: &LayoutEffect, tree: &Layout) -> Result<Admitted, String> 
     match verb {
         LayoutEffect::CloseTab { tab } => tab_route(tree, tab).map(Admitted::Close),
         LayoutEffect::Focus { tab } => tab_route(tree, tab).map(Admitted::Select),
-        LayoutEffect::Search { query } => match query {
-            None => Ok(Admitted::Search(None)),
-            Some(query) if ui::search::system::query_input_is_bounded(query) => {
-                Ok(Admitted::Search(Some(query.clone())))
+        LayoutEffect::Search { query, scope, .. } => {
+            if scope
+                .as_deref()
+                .is_some_and(|scope| !matches!(scope, "app" | "workspace" | "everywhere"))
+            {
+                return Err("The search reaches nothing by that name".into());
             }
-            Some(_) => Err("Search query too long".into()),
-        },
+            match query {
+                None => Ok(Admitted::Search(None)),
+                Some(query) if ui::search::system::query_input_is_bounded(query) => {
+                    Ok(Admitted::Search(Some(query.clone())))
+                }
+                Some(_) => Err("Search query too long".into()),
+            }
+        }
         LayoutEffect::StepFocus { .. }
         | LayoutEffect::FocusDisplay { .. }
         | LayoutEffect::MoveToDisplay { .. }
@@ -1504,6 +1567,9 @@ fn admit_chrome(
         | ChromeEffect::BarSearch { .. }
         | ChromeEffect::BarSearchStep { .. }
         | ChromeEffect::BarSearchClose { .. }
+        | ChromeEffect::BarFind { .. }
+        | ChromeEffect::BarSearchOption { .. }
+        | ChromeEffect::BarSearchReplace { .. }
         | ChromeEffect::BarAction { .. }
         | ChromeEffect::BarSidebar { .. }
         | ChromeEffect::BarBack { .. }

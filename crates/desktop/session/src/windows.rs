@@ -9,8 +9,8 @@ use tilo_session_core::desktop::overlays::{Overlay, Overlays, SwitcherScope};
 use tilo_session_core::desktop::state::DesktopHandle;
 
 pub use tilo_device_surfaces::windows::{
-    Author, Bar, BarAction, BarNotice, BarReaction, BarReactions, BarView, BarViews, Ended, Window,
-    WindowDisplay, WindowFace, Windows,
+    Author, Bar, BarAction, BarNotice, BarReaction, BarReactions, BarView, BarViews, Ended, Find,
+    Window, WindowDisplay, WindowFace, Windows,
 };
 
 /// What a window with no title is called.
@@ -168,6 +168,7 @@ fn window_reading(
         bar_location: handle.window_name(tab.id).unwrap_or_default(),
         bar_field: bar_field(handle.bar_field(tab.id)).to_owned(),
         bar_typing: handle.bar_takes_typing() && handle.bar_field(tab.id).is_some(),
+        find: find_of(handle, tab.id),
         bar: handle.bar_toolbar(tab.id).as_ref().map(bar_of),
         author: author_of(handle, tab.id),
         ended: handle.ended_answer(tab.id).map(|answer| Ended {
@@ -280,6 +281,40 @@ fn bar_of(toolbar: &ui::window_toolbar::WindowToolbar) -> Bar {
                 .collect(),
         }),
     }
+}
+
+/// What the window `tab` offers the bar's search, as the reading spells it: nothing when its app
+/// searches nothing in place, else what the search acts on, what it found, and the abilities and
+/// options it runs under.
+fn find_of(handle: &DesktopHandle, tab: u64) -> Option<Find> {
+    use ui::widget::FindMode;
+    use ui::window_toolbar::SearchOffer;
+    let offer = handle.bar_offer(tab)?;
+    let acts_on = match offer.search {
+        SearchOffer::Nothing => return None,
+        SearchOffer::Document => "document",
+        SearchOffer::List => "list",
+        SearchOffer::Query => "query",
+    };
+    let count = offer.count.unwrap_or_default();
+    Some(Find {
+        acts_on: acts_on.to_owned(),
+        // A document counts the match it stands on of all of them; a list the rows it left of
+        // all it had. Both say it the same way.
+        current: i64::from(count.shown),
+        total: i64::from(count.total),
+        replaces: offer.find.replace,
+        regex: offer.find.regex,
+        hex: offer.find.hex,
+        match_case: offer.options.match_case,
+        match_whole_word: offer.options.whole_word,
+        match_regex: offer.options.mode == FindMode::Regex,
+        match_hex: offer.options.mode == FindMode::Hex,
+        query: offer
+            .adopted
+            .map(|adopted| adopted.query)
+            .unwrap_or_default(),
+    })
 }
 
 /// The bar field `field` as the reading spells it: the app's location, the tab's name, its search

@@ -1917,6 +1917,20 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                 self.surfaces.overlays.search(query);
                 return Ok(started);
             }
+            // A scope with nothing typed opens the search over what it reaches (a window's find
+            // handed on with its field empty): it never closes the search already up, which is
+            // what the key alone does.
+            if arguments.get("scope").is_some() {
+                let started = tilo_session_core::surfaces::Published::invoke(
+                    &mut self.desktop,
+                    address,
+                    arguments,
+                    look,
+                )?;
+                self.surfaces
+                    .open(tilo_session_core::desktop::overlays::Overlay::Launcher.name());
+                return Ok(started);
+            }
             self.surfaces
                 .toggle(tilo_session_core::desktop::overlays::Overlay::Launcher.name());
             return Ok(

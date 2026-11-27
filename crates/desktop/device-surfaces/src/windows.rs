@@ -105,6 +105,11 @@ pub struct Window {
     pub bar_field: String,
     /// Whether a field in its bar takes what is typed now, holding the keys off the window.
     pub bar_typing: bool,
+    /// What its app offers the bar's search, and what the open search found, when it has
+    /// something to search in place. The bar's field draws what this says and asks the app for
+    /// what it does; the shell never searches for the app.
+    #[serde(default)]
+    pub find: Option<Find>,
     /// The parts its app declared for its bar, when it declared any.
     pub bar: Option<Bar>,
     /// Who opened it, person or agent, when the workspace's shared desktop says.
@@ -122,6 +127,42 @@ pub struct WindowFace {
     pub name: String,
     /// The presence colour they wear, as `#rrggbb`.
     pub colour: String,
+}
+
+/// What a window's app offers the bar's search: what it acts on in place, what the open search
+/// found, the find's abilities and the options it runs under. The bar draws its field from this
+/// and asks the app for each step; the app is the one search.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the find's abilities and its chosen options are independent of one another, and the shell reads each by name"
+)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct Find {
+    /// What the search acts on: `document` (its matches are stepped), `list` (the list narrows),
+    /// `query` (the app searches itself), or `nothing`.
+    pub acts_on: String,
+    /// The match the document stands on, counting from one; `0` while nothing is current.
+    pub current: i64,
+    /// How many it found.
+    pub total: i64,
+    /// The content's find replaces what it matches.
+    pub replaces: bool,
+    /// And matches a regular expression.
+    pub regex: bool,
+    /// And reads its content as bytes, searched in hex.
+    pub hex: bool,
+    /// Whether the find runs case-sensitively.
+    pub match_case: bool,
+    /// Whether it matches whole words only.
+    pub match_whole_word: bool,
+    /// Whether it reads the query as a regular expression.
+    pub match_regex: bool,
+    /// Whether it reads the query as hex bytes.
+    pub match_hex: bool,
+    /// The query an app's own find went to, for the bar's field to show; empty when none did.
+    pub query: String,
 }
 
 /// What a window says in the place its app left, when the app could not open or stopped: the

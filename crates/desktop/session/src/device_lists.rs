@@ -637,6 +637,11 @@ impl DeviceLists {
         Search {
             query,
             open,
+            scope: if open {
+                self.handle.search_scope().unwrap_or_default()
+            } else {
+                String::new()
+            },
             searching: open && self.handle.search_searching(),
             expecting: open && self.handle.search_expecting(),
             groups,

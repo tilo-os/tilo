@@ -5,9 +5,12 @@ desktop:chrome desktop (Desktop)
   bar-back Back in the window
   bar-commit Go to the location
   bar-edit What the location holds
+  bar-find Find in the window
   bar-forward Forward in the window
   bar-search Search the window
   bar-search-close Close the search
+  bar-search-option Choose one of a window's bar search options
+  bar-search-replace Replace what a window's bar search matched
   bar-search-step Step through the search
   bar-sidebar Toggle the window's sidebar
   branch-workspace Branch the workspace

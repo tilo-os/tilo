@@ -109,6 +109,9 @@ pub struct Search {
     pub query: String,
     /// Whether a search is open; none of the rows belong to anything while it is not.
     pub open: bool,
+    /// What the open search reaches: `workspace`, `everywhere`, `app:<package id>` for one app's
+    /// own search, or `new-tab` for the apps a window group can show. Empty while none is open.
+    pub scope: String,
     /// Whether the rows shown are not the search's answer yet.
     pub searching: bool,
     /// Whether a source is still out, so more rows may join the ones shown.

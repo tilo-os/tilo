@@ -14,8 +14,14 @@ fn the_committed_description_is_what_the_api_publishes() {
     let path = repo().join(session_package::PATH);
     let expected = session_package::description();
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
-    if committed != expected && std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
+    let authored_path = repo().join(session_package::AUTHORED_PATH);
+    let authored = session_package::authored();
+    let committed_authored = std::fs::read_to_string(&authored_path).unwrap_or_default();
+    if (committed != expected || committed_authored != authored)
+        && std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1")
+    {
         std::fs::write(&path, &expected).expect("the description is written");
+        std::fs::write(&authored_path, &authored).expect("the authored form is written");
         return;
     }
     assert!(
@@ -24,6 +30,13 @@ fn the_committed_description_is_what_the_api_publishes() {
          UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --test it session_package::, \
          or write what it publishes:\n<<<description\n{expected}description>>>",
         session_package::PATH
+    );
+    assert!(
+        committed_authored == authored,
+        "{} is not the description the session publishes, as the compiler reads it; \
+         regenerate it with UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --test it \
+         session_package::, or write what it publishes:\n<<<authored\n{authored}authored>>>",
+        session_package::AUTHORED_PATH
     );
 }
 

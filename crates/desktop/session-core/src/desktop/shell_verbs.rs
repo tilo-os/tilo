@@ -9,7 +9,7 @@ use std::rc::Rc;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::layout::TileContent;
-use ui::search::Scope;
+use ui::search::{AppScope, Scope};
 
 use crate::desktop::host::contract::DesktopAsk;
 use crate::desktop::launchpad::LaunchpadAction;
@@ -140,14 +140,28 @@ impl ShellVerbs {
                 return tab.parse().is_ok_and(|tab| self.handle.focus_tab(tab));
             }
             LayoutEffect::CloseTab { .. } => return self.handle.dispatch(verb.clone()).is_ok(),
-            // With nothing typed the effect is the search key itself: it opens search, and a press
-            // over the open search closes it. A query is typed into the search already open.
-            LayoutEffect::Search { query } => match query {
-                None => self.handle.toggle_search(),
-                Some(query) => self
-                    .handle
-                    .open_search(Scope::Workspace, Some(query.clone())),
-            },
+            // With nothing typed and no scope, the effect is the search key itself: it opens
+            // search, and a press over the open search closes it. A query is typed into the
+            // search already open, which keeps what it reaches; a scope says what a search opened
+            // now reaches, the workspace when it names nothing narrower.
+            LayoutEffect::Search { query, scope, app } => {
+                let reach = |handle: &DesktopHandle| match scope.as_deref() {
+                    Some("app") => Scope::InApp(AppScope {
+                        app: app.clone(),
+                        part: None,
+                    }),
+                    None if handle.search_open() => handle.search_palette().borrow().scope(),
+                    Some(_) | None => Scope::Workspace,
+                };
+                match (query, scope.as_deref()) {
+                    (None, None) => self.handle.toggle_search(),
+                    (query, Some(_)) => self.handle.open_search(reach(&self.handle), query.clone()),
+                    (Some(query), None) => {
+                        let scope = reach(&self.handle);
+                        self.handle.open_search(scope, Some(query.clone()));
+                    }
+                }
+            }
             LayoutEffect::ChooseSearchRow { row, argument, way } => self.handle.choose_search_row(
                 usize::try_from(*row).unwrap_or(usize::MAX),
                 argument.clone(),
