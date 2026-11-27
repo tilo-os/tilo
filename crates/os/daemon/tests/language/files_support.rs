@@ -507,28 +507,40 @@ pub async fn person_calls(
     }
 }
 
-/// Files' `verb` by its path, asked of the workspace's own dispatch as the person: what it
-/// answered, or the words it was refused with.
+/// Files' `verb` by its path, asked of the person's dispatch as the person acts in
+/// `workspace`: the folder reads are the workspace's listing of its own tree, and every verb
+/// that changes it is the device's own action on the folder it keeps (`tilo.device-files`).
+/// What it answered, or the words it was refused with.
 pub async fn person_files(
     host: &Host,
     workspace: &str,
     verb: &str,
     arguments: Value,
 ) -> Result<Value, String> {
-    person_calls(
-        host,
-        tilo_actions::remote::RemoteActionTarget {
+    person_calls(host, folder_target(workspace, verb), arguments, None)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// [`person_files`]' target: what answers Files' `verb` by a path, where the product publishes
+/// it.
+fn folder_target(workspace: &str, verb: &str) -> tilo_actions::remote::RemoteActionTarget {
+    if verb == fs_protocol::tree::LIST || verb == fs_protocol::tree::READ_TEXT {
+        return tilo_actions::remote::RemoteActionTarget {
             provider: tilo_actions::remote::workspace_provider(workspace),
             address: ActionAddress {
                 resource: format!("app.{FILES_APP}"),
                 action: verb.to_owned(),
             },
+        };
+    }
+    tilo_actions::remote::RemoteActionTarget {
+        provider: tilo_action_services::device_files::PROVIDER.to_owned(),
+        address: ActionAddress {
+            resource: tilo_action_services::device_files::FOLDER.to_owned(),
+            action: verb.to_owned(),
         },
-        arguments,
-        None,
-    )
-    .await
-    .map_err(|error| error.to_string())
+    }
 }
 
 /// Files' `verb` by its path asked of the person's dispatch, which must be refused: the words it
