@@ -185,7 +185,7 @@ impl Rig {
 
     /// A rig whose app is launched by the desktop entry `entry`: its windows say they are `APP`.
     fn launched_by(titles: &[&str], x11: bool, entry: &str) -> Self {
-        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let home = tilo_test_env::TestHome::new().expect("a home");
         let workspaces = [(1, "Home"), (2, "Two"), (3, "Three")].map(|(n, name)| {
             let mut workspace = Workspace::new(WorkspaceId::from_u128(n), name);
             workspace.strips = vec![Strip::new(StripId(u64::try_from(n).unwrap()), name)];
@@ -196,7 +196,7 @@ impl Rig {
             workspaces: workspaces.into(),
             ..Layout::default()
         };
-        let (device, workspaces) = Device::with_layout(&mut home, &tree);
+        let (device, workspaces) = Device::with_layout(&tree);
         let app = home.home().join("app");
         fs::create_dir_all(&app).unwrap();
         fs::write(app.join("titles"), titles.join("\n")).unwrap();

@@ -2171,11 +2171,11 @@ fn two_workspaces_with(app: &str) -> tilo_desktop_model::Layout {
 
 #[test]
 fn a_saved_tab_of_another_workspace_starts_nothing() {
-    let mut rig = KeptRig::new();
+    let rig = KeptRig::new();
     // The program's window was seen in the workspace in front; the saved tab stands in the
     // workspace behind, where the session never saw it.
     let (device, workspaces) =
-        crate::layout::Device::with_layout(&mut rig.home, &two_workspaces_with(PROGRAM_WINDOW));
+        crate::layout::Device::with_layout(&two_workspaces_with(PROGRAM_WINDOW));
     let seen = serde_json::json!([{
         "workspace": workspaces[0].to_string(),
         "window": PROGRAM_WINDOW,

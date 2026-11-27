@@ -68,6 +68,13 @@ pub fn asked() -> bool {
     ASKED.load(Ordering::SeqCst)
 }
 
+/// Forget a signal this process took: what a test that ends a desktop and starts the one after it
+/// in the same process needs, as a wrapper's new process starts with no signal behind it.
+#[cfg(feature = "test-support")]
+pub fn forget_asked() {
+    ASKED.store(false, Ordering::SeqCst);
+}
+
 /// End the loop on SIGTERM, SIGINT and SIGHUP from now on, and wake it when a child exits,
 /// through `wake`.
 ///

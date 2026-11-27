@@ -29,7 +29,6 @@ use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_session_core::desktop::state::banners::Banners as _;
 use tilo_session_core::desktop::state::window_menu::move_to_workspace_id;
-use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// The app a test installs: a Tilo package whose window is a tab of the layout.
 const PROBE: &str = "so.tilo.probe";
@@ -43,32 +42,96 @@ const SETTINGS: &str = "so.tilo.settings";
 /// What a test names a strip it renames.
 const RENAMED: &str = "Sketches";
 
-/// A device in a test's home: where it keeps its state, and the salt it numbers what it
-/// makes in.
+/// A device in a test: its daemon, holding the person's workspaces, the state its sessions keep
+/// their own services' files in, and the salt it numbers what it makes in. A layout is a
+/// workspace's own record, which the daemon keeps and signs, so a session reaches its layout only
+/// as the daemon's shell: two sessions of one of these are the same computer started twice.
 pub(crate) struct Device {
+    /// The computer, as this process runs it: its daemon on the home and profile it serves.
+    computer: crate::common::Device,
+    /// Where a session of this device keeps its own services' files: one, as a computer started
+    /// again reads what it left.
     pub(crate) state: PathBuf,
     salt: u16,
 }
 
 impl Device {
-    /// The device of `home`, holding its workspaces.
-    fn in_home(home: &mut tilo_test_env::TestHome) -> Self {
-        let state = crate::common::device_in(home);
-        let salt = session_keeping(&state, None)
-            .handle()
-            .read(|tree| tree.salt);
-        Self { state, salt }
+    /// The device a test runs on: its daemon, founded as a computer's first set-up founds its
+    /// person, on a home of its own.
+    fn new() -> Self {
+        let computer = crate::common::device_daemon(crate::common::device_home(), None);
+        let state = computer.home.state().join("session");
+        std::fs::create_dir_all(&state).expect("the session's state directory");
+        // The ids this device mints are its own, from its own key: a session reads the same salt
+        // from the identity its daemon keeps, and one with no identity numbers under the seed a
+        // session starts with.
+        let salt = tilo_session_client::identity::device_identity().map_or_else(
+            || Options::default().salt,
+            |identity| {
+                tilo_desktop_model::ids::device_salt_of_key(&identity.device_cert.device_public_key)
+            },
+        );
+        Self {
+            computer,
+            state,
+            salt,
+        }
     }
 
-    /// The device of `home` with `tree` left as the layout its session ended with
+    /// The device with `tree` left as the layout its session ended with
     /// ([`save_layout`]), and the ids that layout gave `tree`'s workspaces.
-    pub(crate) fn with_layout(
-        home: &mut tilo_test_env::TestHome,
-        tree: &Layout,
-    ) -> (Self, Vec<WorkspaceId>) {
-        let state = crate::common::device_in(home);
-        let (salt, workspace_ids) = save_layout(&state, tree);
-        (Self { state, salt }, workspace_ids)
+    pub(crate) fn with_layout(tree: &Layout) -> (Self, Vec<WorkspaceId>) {
+        let mut device = Self::new();
+        let workspace_ids = device.save(tree);
+        (device, workspace_ids)
+    }
+
+    /// The home the daemon serves: where a test keeps the launcher its session starts apps
+    /// through, and the store it reads them from.
+    fn home(&self) -> &tilo_test_env::TestHome {
+        &self.computer.home
+    }
+
+    /// [`Self::home`], to be given what the daemon's session reads.
+    fn home_mut(&mut self) -> &mut tilo_test_env::TestHome {
+        &mut self.computer.home
+    }
+
+    /// Leave `tree` as the layout a session of this device ends with ([`save_layout`]), and
+    /// answer the ids it gave `tree`'s workspaces.
+    fn save(&mut self, tree: &Layout) -> Vec<WorkspaceId> {
+        let (salt, workspace_ids) = save_layout(self, tree);
+        self.salt = salt;
+        workspace_ids
+    }
+
+    /// A session on this device, starting `apps` when its windows are asked for.
+    fn session(&self, apps: Option<Rc<Apps>>) -> Session {
+        self.session_on(apps, false)
+    }
+
+    /// [`Self::session`], taking part in the peer network when `network` says so.
+    fn session_on(&self, apps: Option<Rc<Apps>>, network: bool) -> Session {
+        self.computer.session_with(Options {
+            collab: network,
+            apps: apps
+                .as_ref()
+                .map(|apps| Rc::clone(apps) as Rc<dyn AppActions>),
+            launch: apps,
+            state: Some(self.state.clone()),
+            ..Options::default()
+        })
+    }
+
+    /// [`Self::session`] as the machine's own desktop is started: it asks whether its wrapper
+    /// restarts it in place, and ends its apps only when the login does.
+    fn restarted(&self) -> Session {
+        self.computer.session_with(Options {
+            collab: false,
+            state: Some(self.state.clone()),
+            teardown: Box::new(tilo_session::restart::teardown),
+            ..Options::default()
+        })
     }
 
     /// What this device numbers `n` as.
@@ -109,15 +172,15 @@ fn salted(salt: u16, tree: &Layout) -> Layout {
     tree
 }
 
-/// Leave `tree` as the layout a session of the device keeping its state at `state` ends with, its
-/// ids numbered as that device numbers them ([`salted`]): the first of `tree`'s workspaces is the
-/// one the session opened, the others are put beside it, each is laid out as `tree` does, and a
-/// workspace's layout is written while it is in front. The session then ends as a desktop ends: what
-/// it could not write yet of the shell stays on the device, and the next session writes it as the
-/// person's steps. The device's salt, as that session reads it, and the ids the layout gave `tree`'s
-/// workspaces, in order.
-fn save_layout(state: &Path, tree: &Layout) -> (u16, Vec<WorkspaceId>) {
-    let mut session = session_keeping(state, None);
+/// Leave `tree` as the layout a session of `device` ends with, its ids numbered as that device
+/// numbers them ([`salted`]): the first of `tree`'s workspaces is the one the session opened, the
+/// others are put beside it, each is laid out as `tree` does, and a workspace's layout is written
+/// while it is in front. The session then ends as a desktop ends: what it could not write yet of
+/// the shell stays on the device, and the next session writes it as the person's steps. The
+/// device's salt, as that session reads it, and the ids the layout gave `tree`'s workspaces, in
+/// order.
+fn save_layout(device: &Device, tree: &Layout) -> (u16, Vec<WorkspaceId>) {
+    let mut session = device.session(None);
     let salt = session.handle().read(|tree| tree.salt);
     let tree = salted(salt, tree);
     session.step(Duration::from_millis(1)).expect("step");
@@ -280,37 +343,6 @@ fn one_window(app: &str, label: &str) -> Layout {
     on_shell(vec![strip])
 }
 
-/// A session on the shell this device saved, starting `apps` when its windows are asked for. `None`
-/// : a session that starts nothing at all. It takes part in no peer network, as a laptop that
-/// boots with none: the workspaces it makes are founded on its own workspace service all the same.
-fn session_keeping(state: &Path, apps: Option<Rc<Apps>>) -> Session {
-    session_on(state, apps, false)
-}
-
-/// [`session_keeping`], taking part in the peer network when `network` says so.
-fn session_on(state: &Path, apps: Option<Rc<Apps>>, network: bool) -> Session {
-    crate::common::headless(Options {
-        collab: network,
-        apps: apps
-            .as_ref()
-            .map(|apps| Rc::clone(apps) as Rc<dyn AppActions>),
-        launch: apps,
-        state: Some(state.to_path_buf()),
-        ..Options::default()
-    })
-}
-
-/// [`session_keeping`] as the machine's own desktop is started: it asks whether its wrapper restarts it
-/// in place, and ends its apps only when the login does.
-fn session_restarted(state: &Path) -> Session {
-    crate::common::headless(Options {
-        collab: false,
-        state: Some(state.to_path_buf()),
-        teardown: Box::new(tilo_session::restart::teardown),
-        ..Options::default()
-    })
-}
-
 /// The apps this session starts, on its own display.
 fn apps_at(home: &tilo_test_env::TestHome, launcher: Option<PathBuf>) -> Rc<Apps> {
     let mut environment = tilo_app_launch::SessionEnvironment::from_process();
@@ -434,15 +466,14 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 #[test]
 fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
     // The widths, the maximized group and what is in front are the person's own view of the
-    // workspace, a record beside the layout's: the session that leaves them is the one after the
-    // device's first, which founded the workspace ([`Device::with_layout`] says why).
-    let device = Device::in_home(&mut home);
-    let (_, workspace_ids) = save_layout(&device.state, &wide_shell());
+    // workspace, a record beside the layout's, which [`save_layout`] writes for the session that
+    // shows it.
+    let mut device = Device::new();
+    let workspace_ids = device.save(&wide_shell());
 
     // Nothing is asked of any app: this is the shape of the layout coming back.
-    let mut session = session_keeping(&device.state, None);
+    let mut session = device.session(None);
     laid_out(&mut session);
 
     let (workspaces, names, widths, maximized, front, strip_in_front) =
@@ -490,13 +521,11 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
 #[test]
 fn a_restart_brings_back_the_shell_the_session_kept() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let device = Device::in_home(&mut home);
-    let state = device.state.clone();
-    save_layout(&device.state, &wide_shell());
+    let mut device = Device::new();
+    device.save(&wide_shell());
 
     let kept = {
-        let mut session = session_keeping(&state, None);
+        let mut session = device.session(None);
         laid_out(&mut session);
         let mut tree = session.handle().read(Clone::clone);
         tree.workspaces[0].strips[0].name = RENAMED.into();
@@ -504,19 +533,20 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
         session.step(Duration::from_millis(1)).expect("step");
         session
     };
-    let records = kept
-        .device_records()
-        .expect("the session keeps the device's records");
-    // A session keeps the layout as it ends.
+    // A session keeps the layout as it ends, and its link to the daemon ends with it: the records
+    // are read through the session that follows.
     drop(kept);
 
+    let mut next = device.session(None);
+    laid_out(&mut next);
+    let records = next
+        .device_records()
+        .expect("the session keeps the device's records");
     assert!(
         crate::common::kept(&records, "so.tilo.session-shown").is_some(),
         "the device keeps what it shows"
     );
 
-    let mut next = session_keeping(&state, None);
-    laid_out(&mut next);
     let (name, width) = next.handle().read(|tree| {
         let strip = &tree.workspaces[0].strips[0];
         (strip.name.clone(), strip.window_groups[0].width.permille())
@@ -525,16 +555,15 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
     assert_eq!(width, 480, "at the width it was left");
 }
 
-/// A shell laid out in the session that founds the device's workspace, ended before that workspace
-/// can hold it, is there in the next session and is written as the person's steps.
+/// A shell laid out in a session that ends before its workspace can hold it is there in the next
+/// session and is written as the person's steps.
 #[test]
 fn a_shell_a_session_ends_before_it_can_be_written_is_kept() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let state = crate::common::device_in(&mut home);
-    // The device's first session: the workspace it shows is founded a moment after it starts.
+    let device = Device::new();
+    // A session that lays the shell out and ends before the look that draws it can write it.
     let kept = {
-        let mut session = session_keeping(&state, None);
+        let mut session = device.session(None);
         let salt = session.handle().read(|tree| tree.salt);
         let tree = salted(salt, &wide_shell());
         let mut layout = session.handle().read(Clone::clone);
@@ -556,7 +585,7 @@ fn a_shell_a_session_ends_before_it_can_be_written_is_kept() {
         tabs(&session)
     };
 
-    let mut next = session_keeping(&state, None);
+    let mut next = device.session(None);
     let mut wanted = kept;
     wanted.sort_unstable();
     let arrived = crate::common::reached(&mut next, |session| {
@@ -594,11 +623,10 @@ fn a_window_moved_to_a_workspace_behind_on_the_network_comes_back_there() {
 /// `network` says so, is there in the next one.
 fn moved_behind_comes_back(network: bool) {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let (device, workspace_ids) = Device::with_layout(&mut home, &wide_shell());
+    let (device, workspace_ids) = Device::with_layout(&wide_shell());
     let mail = device.id(200);
 
-    let mut session = session_on(&device.state, None, network);
+    let mut session = device.session_on(None, network);
     until(&mut session, "the window is back", |session| {
         workspace_of(session, mail).is_some()
     });
@@ -617,14 +645,13 @@ fn moved_behind_comes_back(network: bool) {
     session.step(Duration::from_millis(1)).expect("step");
     drop(session);
 
-    let mut next = session_on(&device.state, None, network);
-    until(&mut next, "the window is back", |session| {
-        workspace_of(session, mail).is_some()
-    });
-    assert_eq!(
-        workspace_of(&next, mail),
-        Some(workspace_ids[1]),
-        "the window is in the workspace the person sent it to"
+    let mut next = device.session_on(None, network);
+    // The window comes back in the workspace the person sent it to, once the layouts this device
+    // kept are laid in: the move is the workspace's, and the session that follows reads it there.
+    until(
+        &mut next,
+        "the window is in the workspace the person sent it to",
+        |session| workspace_of(session, mail) == Some(workspace_ids[1]),
     );
     assert_eq!(
         tile_of(&next, mail),
@@ -637,93 +664,54 @@ fn moved_behind_comes_back(network: bool) {
     );
 }
 
-/// Set in the process a scene has: the signal a wrapper sends a desktop ends every later
-/// layout write in the process that sees it, so a scene that must see one has a process of its
-/// own.
-const SIGNALLED_SCENE: &str = "TILO_TEST_SIGNALLED_RESTART";
-
 /// A window moved in the instant before the wrapper signals an in-place restart is in the
 /// workspace the person sent it to when the next desktop opens: the signal does not end the save.
 #[test]
 fn a_window_moved_just_before_the_restart_signal_comes_back_there() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let (device, workspace_ids) = Device::with_layout(&mut home, &wide_shell());
+    let (device, workspace_ids) = Device::with_layout(&wide_shell());
     let mail = device.id(200);
-    // The desktop that sees the signal has a process of its own; this one opens the desktop
-    // that follows, which a signal has to reach no more than the one before it.
-    let scene = std::process::Command::new(std::env::current_exe().expect("this test program"))
-        .args(["--exact", "layout::signalled_restart_scene", "--nocapture"])
-        .env(SIGNALLED_SCENE, "1")
-        .env("TILO_TEST_SCENE_STATE", &device.state)
-        .env("TILO_TEST_SCENE_WORKSPACE", workspace_ids[1].to_string())
-        .env("TILO_TEST_SCENE_TAB", mail.to_string())
-        .output_locked()
-        .expect("the scene starts");
-    assert!(
-        scene.status.success(),
-        "the scene failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&scene.stdout),
-        String::from_utf8_lossy(&scene.stderr)
-    );
 
-    let mut next = session_keeping(&device.state, None);
-    until(&mut next, "the window is back", |session| {
-        workspace_of(session, mail).is_some()
-    });
-    assert_eq!(
-        workspace_of(&next, mail),
-        Some(workspace_ids[1]),
-        "the window moved in the instant before the signal is where the person sent it"
-    );
-}
-
-/// Not a test: the desktop [`a_window_moved_just_before_the_restart_signal_comes_back_there`]
-/// ends with the wrapper's signal, which would end every later write in this process too.
-#[test]
-fn signalled_restart_scene() {
-    if std::env::var_os(SIGNALLED_SCENE).is_none() {
-        return;
-    }
-    let state =
-        PathBuf::from(std::env::var_os("TILO_TEST_SCENE_STATE").expect("the scene's state"));
-    let workspace: WorkspaceId = std::env::var("TILO_TEST_SCENE_WORKSPACE")
-        .expect("the scene's workspace")
-        .parse()
-        .expect("a workspace id");
-    let mail: u64 = std::env::var("TILO_TEST_SCENE_TAB")
-        .expect("the scene's window")
-        .parse()
-        .expect("a tab id");
-    let mut session = session_restarted(&state);
-    until(&mut session, "the window is back", |session| {
-        workspace_of(session, mail).is_some()
-    });
-    move_to_workspace(&mut session, mail, workspace);
-    until(
-        &mut session,
-        "the window is in the workspace behind",
-        |session| workspace_of(session, mail) == Some(workspace),
-    );
+    // The desktop that sees the signal: the window moves in the instant no look follows.
     let private = signalled_restart_directory();
-    // The wrapper named its private directory in the environment: this process sets it for
-    // its one scene.
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(
-        "TILO_SESSION_LOGOUT_REQUEST",
-        private.path().join("logout-request"),
+    {
+        let mut session = device.restarted();
+        until(&mut session, "the window is back", |session| {
+            workspace_of(session, mail).is_some()
+        });
+        move_to_workspace(&mut session, mail, workspace_ids[1]);
+        until(
+            &mut session,
+            "the window is in the workspace behind",
+            |session| workspace_of(session, mail) == Some(workspace_ids[1]),
+        );
+        // The wrapper named its private directory in the environment: this process sets it for
+        // the desktop it ends here.
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set(
+            "TILO_SESSION_LOGOUT_REQUEST",
+            private.path().join("logout-request"),
+        );
+        tilo_session::termination::install(tilo_service::LoopWake::default().handle())
+            .expect("a signal ends this desktop");
+        // SAFETY: the handler is installed and only stores a flag.
+        unsafe { libc::raise(libc::SIGTERM) };
+        assert!(
+            tilo_session::termination::asked(),
+            "the signal reached the desktop"
+        );
+        drop(session);
+    }
+    // The wrapper starts the desktop that follows in a process of its own: this one takes the
+    // signal above no more than that desktop would.
+    tilo_session::termination::forget_asked();
+
+    let mut next = device.session(None);
+    until(
+        &mut next,
+        "the window moved in the instant before the signal is where the person sent it",
+        |session| workspace_of(session, mail) == Some(workspace_ids[1]),
     );
-    // The wrapper's signal, in the instant no look follows.
-    tilo_session::termination::install(tilo_service::LoopWake::default().handle())
-        .expect("a signal ends this desktop");
-    // SAFETY: the handler is installed and only stores a flag.
-    unsafe { libc::raise(libc::SIGTERM) };
-    assert!(
-        tilo_session::termination::asked(),
-        "the signal reached the desktop"
-    );
-    drop(session);
-    drop(private);
 }
 
 /// The login's own directory with the wrapper's restart marker in it, as it is before an
@@ -740,15 +728,15 @@ fn signalled_restart_directory() -> tempfile::TempDir {
 #[test]
 fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    let launcher = installed_probe(&mut home, &started);
-    let (device, _) = Device::with_layout(&mut home, &one_window(PROBE, "Probe"));
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    let launcher = installed_probe(device.home_mut(), &started);
+    device.save(&one_window(PROBE, "Probe"));
 
-    let mut session = session_keeping(
-        &device.state,
-        Some(apps_at(&home, Some(launcher.path().to_owned()))),
-    );
+    let mut session = device.session(Some(apps_at(
+        device.home(),
+        Some(launcher.path().to_owned()),
+    )));
     laid_out(&mut session);
     let before = tabs(&session);
     assert_eq!(
@@ -789,12 +777,12 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
 #[test]
 fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    let instances = home.home().join("instances");
-    installed_probe_package(&mut home);
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    let instances = device.home().home().join("instances");
+    installed_probe_package(device.home_mut());
     let launcher = tilo_test_env::stand_in(
-        home.home().join("tilo-launcher"),
+        device.home().home().join("tilo-launcher"),
         &format!(
             "printf '%s\\n' \"$$\" >> '{started}'\n\
              printf '%s\\n' \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{instances}'\n\
@@ -804,12 +792,12 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
         ),
     )
     .unwrap();
-    let (device, _) = Device::with_layout(&mut home, &one_window(PROBE, "Probe"));
+    device.save(&one_window(PROBE, "Probe"));
 
-    let mut session = session_keeping(
-        &device.state,
-        Some(apps_at(&home, Some(launcher.path().to_owned()))),
-    );
+    let mut session = device.session(Some(apps_at(
+        device.home(),
+        Some(launcher.path().to_owned()),
+    )));
     until(&mut session, "the app is asked for its window", |_| {
         instances.exists()
             && fs::read_to_string(&instances).is_ok_and(|said| !said.trim().is_empty())
@@ -829,12 +817,12 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
 #[test]
 fn a_window_opened_on_content_is_told_the_tab_it_lands_in() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    let instances = home.home().join("instances");
-    installed_probe_package(&mut home);
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    let instances = device.home().home().join("instances");
+    installed_probe_package(device.home_mut());
     let launcher = tilo_test_env::stand_in(
-        home.home().join("tilo-launcher"),
+        device.home().home().join("tilo-launcher"),
         &format!(
             "printf '%s\\n' \"$$\" >> '{started}'\n\
              printf '%s\\n' \"${{TILO_CONTINUITY_INSTANCE:-}}\" >> '{instances}'\n\
@@ -844,10 +832,9 @@ fn a_window_opened_on_content_is_told_the_tab_it_lands_in() {
         ),
     )
     .unwrap();
-    let state = Device::in_home(&mut home).state;
 
-    let apps = apps_at(&home, Some(launcher.path().to_owned()));
-    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let apps = apps_at(device.home(), Some(launcher.path().to_owned()));
+    let mut session = device.session(Some(Rc::clone(&apps)));
     let workspace = session
         .handle()
         .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
@@ -915,17 +902,16 @@ fn a_window_of_the_persons_own_opens_again_after_a_restart() {
 /// the next session asks `app` for its window again, into that tab.
 fn opens_again_after_a_restart(app: &str) {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    crate::common::probe_app(&mut home, app, "Probe");
-    let launcher = launcher(&home, &started);
-    let state = Device::in_home(&mut home).state;
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    crate::common::probe_app(device.home_mut(), app, "Probe");
+    let launcher = launcher(device.home(), &started);
 
     // The person opens the app from the layout, the compositor maps its window into the tab it made,
     // and the session stops with that window open.
     let before = {
-        let apps = apps_at(&home, Some(launcher.path().to_owned()));
-        let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+        let apps = apps_at(device.home(), Some(launcher.path().to_owned()));
+        let mut session = device.session(Some(Rc::clone(&apps)));
         let workspace = session
             .handle()
             .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
@@ -957,10 +943,10 @@ fn opens_again_after_a_restart(app: &str) {
 
     // The next session starts on what this one kept, and asks the app for its window again, into
     // the tab it was in.
-    let mut next = session_keeping(
-        &state,
-        Some(apps_at(&home, Some(launcher.path().to_owned()))),
-    );
+    let mut next = device.session(Some(apps_at(
+        device.home(),
+        Some(launcher.path().to_owned()),
+    )));
     until(&mut next, "the app is asked for its window again", |_| {
         starts(&started) == 2
     });
@@ -993,14 +979,13 @@ fn opens_again_after_a_restart(app: &str) {
 #[test]
 fn a_window_of_the_persons_own_stays_closed() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    crate::common::probe_app(&mut home, SETTINGS, "Settings");
-    crate::common::probe_app(&mut home, PROBE, "Probe");
-    let launcher = launcher(&home, &started);
-    let state = Device::in_home(&mut home).state;
-    let apps = apps_at(&home, Some(launcher.path().to_owned()));
-    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    crate::common::probe_app(device.home_mut(), SETTINGS, "Settings");
+    crate::common::probe_app(device.home_mut(), PROBE, "Probe");
+    let launcher = launcher(device.home(), &started);
+    let apps = apps_at(device.home(), Some(launcher.path().to_owned()));
+    let mut session = device.session(Some(Rc::clone(&apps)));
     let workspace = session
         .handle()
         .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
@@ -1104,15 +1089,13 @@ fn a_window_of_the_persons_own_stays_closed() {
 #[test]
 fn a_launch_before_the_first_layout_keeps_its_place() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    let launcher = installed_probe(&mut home, &started);
-    let state = Device::with_layout(&mut home, &one_window(GONE, "Gone"))
-        .0
-        .state;
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    let launcher = installed_probe(device.home_mut(), &started);
+    device.save(&one_window(GONE, "Gone"));
 
-    let apps = apps_at(&home, Some(launcher.path().to_owned()));
-    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let apps = apps_at(device.home(), Some(launcher.path().to_owned()));
+    let mut session = device.session(Some(Rc::clone(&apps)));
     let workspace = session
         .handle()
         .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
@@ -1178,17 +1161,16 @@ fn a_launch_before_the_first_layout_keeps_its_place() {
 #[test]
 fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    let launcher = installed_probe(&mut home, &started);
-    let (device, _) = Device::with_layout(&mut home, &one_window(PROBE, "Probe"));
-    let state = device.state.clone();
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    let launcher = installed_probe(device.home_mut(), &started);
+    device.save(&one_window(PROBE, "Probe"));
 
     // The session starts on the shell, and the person — or an action reaching the app from somewhere
     // else — opens it before the restore has asked for its saved window: that launch starts the
     // app, into the tab the window was left in.
-    let apps = apps_at(&home, Some(launcher.path().to_owned()));
-    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let apps = apps_at(device.home(), Some(launcher.path().to_owned()));
+    let mut session = device.session(Some(Rc::clone(&apps)));
     let workspace = session
         .handle()
         .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
@@ -1226,17 +1208,16 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
 #[test]
 fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    let launcher = installed_probe(&mut home, &started);
-    let (device, _) = Device::with_layout(&mut home, &one_window(PROBE, "Probe"));
-    let state = device.state.clone();
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    let launcher = installed_probe(device.home_mut(), &started);
+    device.save(&one_window(PROBE, "Probe"));
 
     // The restore asks for the saved window first, and the same app is asked for again while its
     // window is coming: a record names the process that already has the app's records, so no second
     // one starts.
-    let apps = apps_at(&home, Some(launcher.path().to_owned()));
-    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let apps = apps_at(device.home(), Some(launcher.path().to_owned()));
+    let mut session = device.session(Some(Rc::clone(&apps)));
     until(&mut session, "the restore asks for the window", |_| {
         starts(&started) == 1
     });
@@ -1273,11 +1254,10 @@ fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
 #[test]
 fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let device = Device::in_home(&mut home);
-    save_layout(&device.state, &one_window(GONE, "Gone"));
+    let mut device = Device::new();
+    device.save(&one_window(GONE, "Gone"));
 
-    let mut session = session_keeping(&device.state, Some(apps_at(&home, None)));
+    let mut session = device.session(Some(apps_at(device.home(), None)));
     until(&mut session, "the tab says why it is empty", |session| {
         note_of(session, device.id(100)).is_some_and(|note| !note.is_empty())
     });
@@ -1385,16 +1365,15 @@ fn showing(session: &mut Session, apps: &Apps, started: &Path) -> TabId {
 #[test]
 fn a_window_moved_to_another_workspace_runs_its_app_there() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    let arguments = home.home().join("arguments");
-    installed_probe_package(&mut home);
-    let launcher = recording_launcher(&home, &started, &arguments);
-    let (device, workspace_ids) = Device::with_layout(&mut home, &two_workspaces());
-    let state = device.state;
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    let arguments = device.home().home().join("arguments");
+    installed_probe_package(device.home_mut());
+    let launcher = recording_launcher(device.home(), &started, &arguments);
+    let workspace_ids = device.save(&two_workspaces());
 
-    let apps = apps_at(&home, Some(launcher.path().to_owned()));
-    let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+    let apps = apps_at(device.home(), Some(launcher.path().to_owned()));
+    let mut session = device.session(Some(Rc::clone(&apps)));
     let window_tab = showing(&mut session, &apps, &started);
     let (away, away_id) = session
         .handle()
@@ -1448,14 +1427,13 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
 #[test]
 fn moving_a_window_into_a_shared_workspace_asks_first() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    let arguments = home.home().join("arguments");
-    installed_probe_package(&mut home);
-    let launcher = recording_launcher(&home, &started, &arguments);
-    let device = Device::in_home(&mut home);
-    let apps = apps_at(&home, Some(launcher.path().to_owned()));
-    let mut session = session_keeping(&device.state, Some(Rc::clone(&apps)));
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    let arguments = device.home().home().join("arguments");
+    installed_probe_package(device.home_mut());
+    let launcher = recording_launcher(device.home(), &started, &arguments);
+    let apps = apps_at(device.home(), Some(launcher.path().to_owned()));
+    let mut session = device.session(Some(Rc::clone(&apps)));
     session.step(Duration::from_millis(1)).expect("step");
     // Someone else is in the workspace the person moves the window to: it is another person's, and
     // this device holds no governance of it.
@@ -1549,18 +1527,17 @@ fn item_launcher(
 fn a_window_a_send_opened_on_an_item_opens_there_again_after_a_restart() {
     const ITEM: &str = "probe:conversation/7";
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().unwrap();
-    let started = home.home().join("started");
-    let instances = home.home().join("instances");
-    let reveals = home.home().join("reveals");
-    installed_probe_package(&mut home);
-    let launcher = item_launcher(&home, &started, &instances, &reveals);
-    let state = Device::in_home(&mut home).state;
+    let mut device = Device::new();
+    let started = device.home().home().join("started");
+    let instances = device.home().home().join("instances");
+    let reveals = device.home().home().join("reveals");
+    installed_probe_package(device.home_mut());
+    let launcher = item_launcher(device.home(), &started, &instances, &reveals);
 
     // The send opens a window of the app on the conversation, beside the window that sent it.
     let tab = {
-        let apps = apps_at(&home, Some(launcher.path().to_owned()));
-        let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
+        let apps = apps_at(device.home(), Some(launcher.path().to_owned()));
+        let mut session = device.session(Some(Rc::clone(&apps)));
         assert!(
             apps.ask_window(
                 &tilo_app_launch::Launch::Package {
@@ -1592,10 +1569,10 @@ fn a_window_a_send_opened_on_an_item_opens_there_again_after_a_restart() {
     };
 
     // The next session asks the app for that window again, and on the item it opened.
-    let mut next = session_keeping(
-        &state,
-        Some(apps_at(&home, Some(launcher.path().to_owned()))),
-    );
+    let mut next = device.session(Some(apps_at(
+        device.home(),
+        Some(launcher.path().to_owned()),
+    )));
     until(&mut next, "the app is asked for its window again", |_| {
         starts(&started) == 2
     });
