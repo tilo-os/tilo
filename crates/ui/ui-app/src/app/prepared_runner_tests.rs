@@ -777,15 +777,19 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         app.open_action_palette();
         activate_palette_action(&mut app, "confirm");
         // Confirming queues the action and closes the palette, so this frame draws what the
-        // close left and drains the queued dispatch; there is no palette left to lay out.
+        // close left and drains the queued dispatch. What asks the person first is the device's
+        // to ask, so the call waits there and the palette takes no further key.
         frame(&mut app);
         assert_eq!(
             body(&host.records, &checkout),
             "typed",
-            "a confirmed action waits for the answer"
+            "a confirming action waits for the person's yes, which the device asks"
         );
-        palette_key(&mut app, Key::Named(NamedKey::Enter), None);
-        assert_eq!(body(&host.records, &checkout), "confirmed");
+        assert!(
+            !app.action_palette()
+                .is_some_and(|palette| palette.is_open()),
+            "the palette queues the call and closes; the ask is not its own"
+        );
         app.open_action_palette();
         let before = app.text_renderer.cache_stats();
         app.text_renderer.bump_generation();
