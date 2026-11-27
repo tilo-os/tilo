@@ -726,6 +726,38 @@ impl Store {
             .then_some(held)
     }
 
+    /// Every resource nested directly in the resource `id` of `kind`, each by its kind, its id and
+    /// what the index holds of it: a message's attachments, under each collection its type declares.
+    /// Whoever reads them is the caller's to decide; none for a kind this store declares no type
+    /// of.
+    #[must_use]
+    pub fn nested(&self, kind: &str, id: &str) -> Vec<(String, String, Indexed)> {
+        let Some(ty) = self.schema.get(kind) else {
+            return Vec::new();
+        };
+        let kinds: BTreeSet<&str> = ty.nested.iter().map(|(_, kind)| kind.as_str()).collect();
+        let mut nested = Vec::new();
+        for kind in kinds {
+            let mut query = Query::of(kind, 256).filter(Filter::Is(
+                collab_types::store::PARENT.to_owned(),
+                Value::Text(id.to_owned()),
+            ));
+            loop {
+                let page = self.index.query(&query, &|_| true);
+                nested.extend(
+                    page.resources
+                        .into_iter()
+                        .map(|(id, held)| (kind.to_owned(), id, held)),
+                );
+                match page.next {
+                    Some(next) => query.after = Some(next),
+                    None => break,
+                }
+            }
+        }
+        nested
+    }
+
     /// Watches the resources of `kind`: from now on, every commit that changes one names the
     /// watch in [`Self::changed`], so an open query reads its page again.
     pub fn watch(&mut self, kind: &str) -> u64 {

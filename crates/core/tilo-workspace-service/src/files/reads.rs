@@ -181,6 +181,29 @@ impl OpenedFiles {
         }
     }
 
+    /// The message `turn` answers, as `workspace`'s record of it holds it, when it carries the
+    /// content `hash` as a file: who sent it and when, which decide whether the turn may read
+    /// that content. `None` for a message this device does not hold, one nested elsewhere than
+    /// the turn's conversation, or one that carries no such file.
+    #[must_use]
+    pub fn sent_carrying(
+        &self,
+        workspace: WorkspaceId,
+        turn: &tilo_action_policy::turn::Turn,
+        hash: &str,
+    ) -> Option<crate::workspaces::SentMessage> {
+        // A turn's conversation is `app/record`, the record the message is nested in.
+        let (_, in_record) = turn.conversation.split_once('/')?;
+        tilo_rt::app()
+            .block_on(
+                self.workspaces
+                    .store_sent(&workspace.to_string(), in_record, &turn.message),
+            )
+            .ok()
+            .flatten()
+            .filter(|sent| sent.carries.iter().any(|carried| carried == hash))
+    }
+
     /// What `read-text` answers for the file `file` names by its path in the workspace: what it
     /// says, a page of characters at a time (`from`, `next`, `total`).
     fn text_at(

@@ -14,6 +14,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
+use tilo_workspace_service::workspaces::SentMessage;
+
 use crate::services::{FilesEntry, FilesTreePuts};
 use crate::test_support::{WorkspaceId, WorkspaceTree};
 
@@ -29,9 +31,13 @@ fn owner_id() -> String {
 }
 
 /// What reached the workspace's folder: the reads, each its action and arguments. The writer is
-/// refused: no call here puts a file or changes the folder.
+/// refused: no call here puts a file or changes the folder. Beside them, the messages the
+/// workspace's records hold, each by its conversation and id.
 #[derive(Default)]
-struct Recorder(Mutex<Vec<(String, Map<String, Value>)>>);
+struct Recorder(
+    Mutex<Vec<(String, Map<String, Value>)>>,
+    Vec<(tilo_action_policy::turn::Turn, SentMessage)>,
+);
 
 /// What the recorder's workspace folder holds: a folder `Inbox` with one file in it.
 const HELD: [(&str, bool); 2] = [("Inbox", true), ("Inbox/plan.md", false)];
@@ -89,6 +95,19 @@ impl FilesTreePuts for Recorder {
     ) -> Result<Value, String> {
         Err("no change reaches the folder here".to_owned())
     }
+
+    fn sent_carrying(
+        &self,
+        _workspace: WorkspaceId,
+        turn: &tilo_action_policy::turn::Turn,
+        hash: &str,
+    ) -> Option<SentMessage> {
+        self.1
+            .iter()
+            .find(|(sent, _)| sent == turn)
+            .map(|(_, message)| message.clone())
+            .filter(|message| message.carries.iter().any(|carried| carried == hash))
+    }
 }
 
 struct Fixture {
@@ -100,15 +119,21 @@ struct Fixture {
 
 /// A workspace with an owner, holding a folder `Inbox` with one file in it.
 fn fixture() -> Fixture {
+    fixture_with(Recorder::default(), |_| {})
+}
+
+/// [`fixture`], its records `recorder`'s and its rules changed by `rules`.
+fn fixture_with(recorder: Recorder, rules: impl FnOnce(&mut Workspace)) -> Fixture {
     let home = tempfile::tempdir().unwrap();
     let mut workspace = Workspace::new(WorkspaceId::from_u128(71), "Files listing");
     workspace.policy.set_owner(owner_id());
+    rules(&mut workspace);
     let id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     tree.persist_path = Some(home.path().join("state.json"));
     let membership = tree.shared();
-    let recorder = Arc::new(Recorder::default());
+    let recorder = Arc::new(recorder);
     let services = crate::services::ProcessServices {
         files_open: Some(Arc::clone(&recorder) as Arc<dyn FilesTreePuts>),
         ..membership.services()
@@ -292,4 +317,294 @@ async fn what_the_listing_offers_on_the_folder_is_answered_as_offered() {
         calls.len(),
         "nothing was read for a refused caller"
     );
+}
+
+/// The file a message sends the agent, the version it names: what the turn may read.
+const SENT: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+/// Another file of the workspace, which no message sends.
+const OTHER: &str = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+/// The version the sent file's path holds after it was sent: `Inbox/plan.md` edited.
+const EDITED: &str = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3";
+
+/// The person whose read of the workspace ended before they sent a file.
+const LAPSED: &str = "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4";
+
+/// The conversation the messages are in.
+const CONVERSATION: &str = "so.tilo.chat/channel-1";
+
+/// When the lapsed person's read of the workspace ended, in Unix seconds.
+fn lapsed_at() -> u64 {
+    tilo_clock::unix_now().saturating_sub(3_600)
+}
+
+/// A turn of the message `message` in `conversation`.
+fn turn(conversation: &str, message: &str) -> tilo_action_policy::turn::Turn {
+    tilo_action_policy::turn::Turn::new(conversation, message)
+}
+
+/// The messages the workspace holds: the owner's that sends [`SENT`], the owner's that sends
+/// nothing, the lapsed person's that sends [`SENT`] after their read ended, and the lapsed
+/// person's that sent it while they could still read it.
+fn messages() -> Recorder {
+    let sent = |by: &str, at_s: u64, carries: &[&str]| SentMessage {
+        by: by.to_owned(),
+        at: jiff::Timestamp::from_second(i64::try_from(at_s).unwrap())
+            .unwrap()
+            .to_string(),
+        carries: carries.iter().map(|hash| (*hash).to_owned()).collect(),
+    };
+    let now = tilo_clock::unix_now();
+    Recorder(
+        Mutex::default(),
+        vec![
+            (
+                turn(CONVERSATION, "sends"),
+                sent(&owner_id(), now.saturating_sub(60), &[SENT]),
+            ),
+            (
+                turn(CONVERSATION, "says"),
+                sent(&owner_id(), now.saturating_sub(60), &[]),
+            ),
+            (
+                turn(CONVERSATION, "lapsed"),
+                sent(LAPSED, lapsed_at().saturating_add(60), &[SENT]),
+            ),
+            (
+                turn(CONVERSATION, "before"),
+                sent(LAPSED, lapsed_at().saturating_sub(60), &[SENT]),
+            ),
+        ],
+    )
+}
+
+/// The workspace's rules: the owner refuses their agent Files, and the lapsed person read the
+/// workspace until [`lapsed_at`].
+fn rules(workspace: &mut Workspace) {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
+    let id = workspace.id().to_string();
+    workspace.policy.grant(Grant::new(
+        "scout-reads-no-files",
+        Grantee::agent("scout", owner_id()),
+        TreePath::workspace(&id).app(fs_protocol::tree::FILES_APP),
+        KindSet::READ_UNDOABLE,
+        Answer::Deny,
+        Grantee::person(owner_id()),
+    ));
+    workspace.policy.grant(
+        Grant::new(
+            "lapsed-reads",
+            Grantee::person(LAPSED),
+            TreePath::workspace(&id),
+            KindSet::READ,
+            Answer::Allow,
+            Grantee::person(owner_id()),
+        )
+        .with_lifetime(Lifetime::Until(lapsed_at().saturating_mul(1_000))),
+    );
+}
+
+/// The owner's agent inside the turn of `message` in `conversation`, holding what its
+/// certificate delegates to it, as a triggered turn's calls are made.
+fn agent_turn(workspace: &str, conversation: &str, message: &str) -> Caller {
+    Caller::agent_turn(
+        ("scout", owner_id()),
+        owner_id(),
+        turn(conversation, message),
+    )
+    .in_workspace(workspace)
+    .granting(tilo_action_policy::roles::certified_agent(
+        workspace,
+        ("scout", &owner_id()),
+        &owner_id(),
+    ))
+}
+
+/// [`agent_turn`] in [`CONVERSATION`], in a run of its own.
+fn agent_in(workspace: &str, message: &str) -> Caller {
+    agent_turn(workspace, CONVERSATION, message).in_new_execution()
+}
+
+/// Files' `read-text` of the workspace's folder with `arguments`.
+fn read_text(workspace: &str, arguments: Value) -> InvokeRequest {
+    let Value::Object(arguments) = arguments else {
+        panic!("the arguments are an object")
+    };
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_provider(workspace),
+            address: tilo_actions::ActionAddress {
+                resource: format!(
+                    "{APPLICATION_RESOURCE_PREFIX}{}",
+                    fs_protocol::tree::FILES_APP
+                ),
+                action: fs_protocol::tree::READ_TEXT.to_owned(),
+            },
+        },
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// The address a message names `hash` by.
+fn address(hash: &str) -> Value {
+    json!({"content": format!("tilo.content:{hash}")})
+}
+
+/// `caller`'s read with `arguments` is refused as not permitted, and nothing reaches the folder.
+async fn refused(fixture: &Fixture, caller: &Caller, arguments: Value, why: &str) {
+    let before = fixture.recorder.0.lock().unwrap().len();
+    let request = read_text(&fixture.workspace, arguments);
+    let answer = tilo_test_env::within(
+        "the broker answers the read",
+        settled(fixture.state.action_invoke(caller, None, None, &request)),
+    )
+    .await;
+    assert!(
+        matches!(answer, Err(ActionCallError::NotPermitted)),
+        "{why}: {answer:?}"
+    );
+    assert_eq!(
+        fixture.recorder.0.lock().unwrap().len(),
+        before,
+        "{why}: nothing reached the folder"
+    );
+}
+
+/// A file a message sends the agent is shared with the turn the message started: that one
+/// version, by its content hash, labelled as content from outside, while the turn goes. Another
+/// file, another version of the same path, a message that sends none, and a file its sender
+/// could no longer read when they sent it stay refused, as does anything once the turn ended.
+#[tokio::test]
+async fn a_turn_reads_the_version_its_message_sends_and_nothing_else() {
+    let fixture = fixture_with(messages(), rules);
+    let workspace = fixture.workspace.clone();
+
+    // The attached version is read, and its observer is told it is content from outside.
+    let caller = agent_in(&workspace, "sends");
+    let request = read_text(&workspace, address(SENT));
+    tilo_test_env::within(
+        "the turn's read of the file its message sends is admitted",
+        settled(fixture.state.action_invoke(&caller, None, None, &request)),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the turn reads the file its message sends: {error:?}"));
+    let answer = tilo_test_env::within(
+        "the read completes",
+        finished(&fixture.state, &caller, &request),
+    )
+    .await;
+    assert_eq!(answer, json!({"read": "read-text"}));
+    assert!(
+        fixture
+            .state
+            .action_observe(&caller, &request.invocation)
+            .is_some_and(|seen| seen.untrusted),
+        "what a sent file says reaches the turn labelled as content from outside"
+    );
+    {
+        let reads = fixture.recorder.0.lock().unwrap();
+        assert_eq!(reads.len(), 1, "one read reached the folder");
+        assert_eq!(Value::Object(reads[0].1.clone()), address(SENT));
+    }
+
+    // Another file of the workspace, by its content or its path, is refused.
+    refused(&fixture, &caller, address(OTHER), "another file").await;
+    refused(
+        &fixture,
+        &caller,
+        json!({"file": "Inbox/plan.md"}),
+        "a file by its path",
+    )
+    .await;
+    refused(&fixture, &caller, json!({"folder": "Inbox"}), "the folder").await;
+
+    // The path's later version is another version, and is refused.
+    refused(
+        &fixture,
+        &caller,
+        address(EDITED),
+        "the path's edited version",
+    )
+    .await;
+
+    // A turn of a message that sends nothing claims the file in vain, as does a turn naming the
+    // sending message in another conversation.
+    let claims = agent_in(&workspace, "says");
+    refused(
+        &fixture,
+        &claims,
+        address(SENT),
+        "a file the message does not send",
+    )
+    .await;
+    let elsewhere = agent_turn(&workspace, "so.tilo.chat/channel-2", "sends").in_new_execution();
+    refused(
+        &fixture,
+        &elsewhere,
+        address(SENT),
+        "the message, named in a conversation it is not in",
+    )
+    .await;
+
+    // A file sent by someone who could no longer read it is refused; one they sent while they
+    // could is read.
+    let lapsed = agent_in(&workspace, "lapsed");
+    refused(
+        &fixture,
+        &lapsed,
+        address(SENT),
+        "a file its sender could not read when they sent it",
+    )
+    .await;
+    let before = agent_in(&workspace, "before");
+    let request = read_text(&workspace, address(SENT));
+    tilo_test_env::within(
+        "a file sent while its sender could read it is read",
+        settled(fixture.state.action_invoke(&before, None, None, &request)),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the sender could read it when they sent it: {error:?}"));
+    tilo_test_env::within(
+        "the read completes",
+        finished(&fixture.state, &before, &request),
+    )
+    .await;
+
+    // Once the turn ended, the file it read is refused.
+    caller
+        .execution_lease()
+        .expect("the turn runs in a run of its own")
+        .close();
+    let reads = fixture.recorder.0.lock().unwrap().len();
+    let request = read_text(&workspace, address(SENT));
+    let answer = tilo_test_env::within(
+        "the broker answers the read",
+        settled(fixture.state.action_invoke(&caller, None, None, &request)),
+    )
+    .await;
+    assert!(
+        matches!(answer, Err(ActionCallError::Unavailable { .. })),
+        "a read after the turn ended is refused with the turn's run: {answer:?}"
+    );
+    assert_eq!(
+        fixture.recorder.0.lock().unwrap().len(),
+        reads,
+        "nothing was read after the turn ended"
+    );
+    // The agent holds no grant of the folder: without a turn, the same read is refused.
+    let outside = agent_turn(&workspace, CONVERSATION, "sends");
+    refused(
+        &fixture,
+        &outside,
+        address(SENT),
+        "a turn with no run of its own",
+    )
+    .await;
 }

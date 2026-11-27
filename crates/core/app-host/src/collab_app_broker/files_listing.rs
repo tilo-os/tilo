@@ -296,14 +296,78 @@ fn read_arguments(
 }
 
 impl AppBrokerState {
+    /// Whether the message `caller`'s turn answers carries the content `arguments` names, as a
+    /// file its sender could read when they sent it. Sending a file to an agent shares it: the
+    /// one version the message names, by its content hash, never the path it was at or what
+    /// stands beside it, and only while the turn it started goes. The message is read from the
+    /// workspace's own record of it, named by the turn this host admitted the agent's call in,
+    /// so nothing the turn asks with widens it; the agent holds no grant on the folder itself.
+    fn turn_carries(
+        &self,
+        caller: &Caller,
+        workspace: &Workspace,
+        arguments: &Map<String, Value>,
+        now: u64,
+    ) -> bool {
+        // A turn's calls run under its own execution, which ends with the turn.
+        let Some(turn) = caller
+            .turn()
+            .filter(|_| caller.execution_id().is_some() && caller.execution_is_live())
+        else {
+            return false;
+        };
+        let Some(hash) = arguments
+            .get("content")
+            .and_then(Value::as_str)
+            .and_then(|address| tilo_actions::content_hash(address.trim()))
+        else {
+            return false;
+        };
+        let (Some(puts), Some(id)) = (
+            self.services.files_open.clone(),
+            WorkspaceId::parse(&workspace.id().to_string()),
+        ) else {
+            return false;
+        };
+        let (turn, hash) = (turn.clone(), hash.to_owned());
+        // The record is read on a thread of its own, as the folder's reads are: it waits for the
+        // workspace's records, which this device's runtime serves meanwhile.
+        let Some(sent) = std::thread::spawn(move || puts.sent_carrying(id, &turn, &hash))
+            .join()
+            .ok()
+            .flatten()
+        else {
+            return false;
+        };
+        let Ok(sender) = tilo_action_policy::PersonId::parse(&sent.by) else {
+            return false;
+        };
+        // Decided as the sender stood when they sent it, as their send recorded the time, never
+        // later than now: a message that names no time is decided as they stand now.
+        let sent_at = tilo_failure::ignored!(
+            "a send that names no readable time is decided as its sender stands now",
+            sent.at.parse::<jiff::Timestamp>().ok()
+        )
+        .and_then(|at| u64::try_from(at.as_second()).ok())
+        .map_or(now, |at| at.min(now));
+        // What a message carries may be any content the workspace keeps, not only a file of its
+        // folder: its sender shares it only where they could read the whole workspace.
+        BrokerActor::person(sender).answer_in(
+            workspace,
+            &workspace.policy.node(),
+            ActionKind::Read,
+            sent_at,
+        ) == Answer::Allow
+    }
+
     /// Files' `list` or `read-text` of the workspace's folder, as its listing offers them: read
     /// from the tree this device holds and answered as the call's output. `None` when the target
     /// is another action, or no folder or file of the workspace.
     ///
     /// # Errors
     /// A caller naming no workspace, one the workspace does not let read its files (or, for
-    /// content named by its address, the workspace), an admission that fails, or a host that
-    /// serves no folder.
+    /// content named by its address, the workspace, unless the message its turn answers carries
+    /// that content), an admission that fails, or a host that serves no folder.
     pub(super) fn start_files_read(
         self: &Arc<Self>,
         caller: &Caller,
@@ -342,6 +406,7 @@ impl AppBrokerState {
         // a file or folder of the tree by whoever may read what Files keeps in it.
         let allowed = if action == READ_TEXT && arguments.contains_key("content") {
             may_read_content(workspace, policy, now)
+                || self.turn_carries(caller, workspace, &arguments, now)
         } else {
             may_read_tree(workspace, policy, now)
         };

@@ -1257,6 +1257,18 @@ impl Drop for WorkspacesInner {
     }
 }
 
+/// A message as its own record holds it ([`Workspaces::store_sent`]): what a turn the message
+/// started may read of what it carries is decided by it, never by what the turn says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SentMessage {
+    /// The person who sent it, as its first version's stamp names them.
+    pub by: String,
+    /// When they sent it, ISO-8601 UTC, as their send recorded it; empty where it names no time.
+    pub at: String,
+    /// The content of each file its sender attached to it, by hash.
+    pub carries: Vec<String>,
+}
+
 /// A workspace this service left closed as it opened: the record it is kept in could not be
 /// read. Its file stays on disk exactly as it was, and every other workspace serves around it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2382,6 +2394,50 @@ impl Workspaces {
     ) -> Option<collab_types::store::Indexed> {
         let reading = self.reading_now(workspace).await.ok()?;
         reading.store().get(kind, id, &|_| true).cloned()
+    }
+
+    /// The message `id` of `workspace`, as its own record holds it: who sent it and when, and
+    /// the content of each file nested in it. `in_record` is the resource the turn that names it
+    /// says it is nested in; a message nested elsewhere is not the one asked for. `None` where
+    /// this device holds no such message, or no person sent it.
+    pub async fn store_sent(
+        &self,
+        workspace: &str,
+        in_record: &str,
+        id: &str,
+    ) -> Option<SentMessage> {
+        let reading = self.reading_now(workspace).await.ok()?;
+        let store = reading.store();
+        let kind = store.index().kind_anywhere(id)?;
+        let held = store.get(&kind, id, &|_| true)?;
+        if !in_record.is_empty() && held.parent.as_deref() != Some(in_record) {
+            return None;
+        }
+        let by = store.author_person(&kind, id)?;
+        let at = store
+            .version_end(&kind, id, false)
+            .and_then(|made| made.stamp)
+            .map(|stamp| stamp.at)
+            .unwrap_or_default();
+        // A file a message carries is `Attached { name, media, size, blob }`, its content named
+        // by `tilo-blob://<hash>`: the address the turn is told it at. Only what its sender
+        // attached is theirs to share; a file someone else nested in it later is not.
+        let carries = store
+            .nested(&kind, id)
+            .into_iter()
+            .filter(|(kind, file, _)| store.author_person(kind, file).as_ref() == Some(&by))
+            .filter_map(|(_, _, file)| match file.scalar("blob") {
+                collab_types::store::Value::Text(blob) => Some(
+                    blob.strip_prefix(tilo_content::BLOB_SCHEME)
+                        .unwrap_or(&blob)
+                        .to_owned(),
+                ),
+                _ => None,
+            })
+            .filter(|hash| !hash.is_empty())
+            .collect();
+        drop(store);
+        Some(SentMessage { by, at, carries })
     }
 
     /// The `(app, record)` of every record of `workspace` the host's copy

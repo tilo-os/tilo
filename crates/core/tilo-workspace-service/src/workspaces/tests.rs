@@ -28,6 +28,7 @@ mod lookup;
 mod naming;
 mod one_copy_two_writers;
 mod replacing;
+mod sent_message;
 mod stopped_writer;
 mod unreadable_workspace;
 

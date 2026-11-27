@@ -1835,8 +1835,10 @@ impl TurnScope {
             .get(..24)
             .unwrap_or_default()
         );
-        let cause =
-            tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone());
+        // The turn's calls carry the message that caused it, by its id in its conversation: what
+        // a host reads that message's record by, to admit a read of a file it carries.
+        let Ask::Triggered(place) = &turn.ask;
+        let cause = tilo_action_policy::turn::Turn::new(place.conversation(), place.item.clone());
         // The turn's own run: its calls are admitted while it goes, and refused once it ended
         // ([`TurnRun`]).
         let caller = self

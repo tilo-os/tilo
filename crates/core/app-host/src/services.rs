@@ -461,6 +461,19 @@ pub trait FilesTreePuts: Send + Sync {
         call: Option<FilesPutCall<'_>>,
         confirm: &dyn Fn() -> bool,
     ) -> Result<serde_json::Value, String>;
+
+    /// The message `turn` answers, as `workspace`'s own record of it holds it, when it carries
+    /// the content `hash` as a file: who sent it and when. What a turn may read of what its
+    /// message carries is decided by this, never by what the turn says. `None` where the message
+    /// carries no such file, or a host holds no records to read it from.
+    fn sent_carrying(
+        &self,
+        _workspace: tilo_server_protocol::WorkspaceId,
+        _turn: &tilo_action_policy::turn::Turn,
+        _hash: &str,
+    ) -> Option<tilo_workspace_service::workspaces::SentMessage> {
+        None
+    }
 }
 
 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
@@ -504,6 +517,15 @@ impl FilesTreePuts for tilo_workspace_service::files::OpenedFiles {
         tilo_workspace_service::files::OpenedFiles::change_folder(
             self, workspace, verb, arguments, call, confirm,
         )
+    }
+
+    fn sent_carrying(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        turn: &tilo_action_policy::turn::Turn,
+        hash: &str,
+    ) -> Option<tilo_workspace_service::workspaces::SentMessage> {
+        tilo_workspace_service::files::OpenedFiles::sent_carrying(self, workspace, turn, hash)
     }
 }
 
