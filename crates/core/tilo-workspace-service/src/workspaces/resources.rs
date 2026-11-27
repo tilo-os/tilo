@@ -1818,6 +1818,35 @@ impl Workspaces {
         compact: bool,
         notice: bool,
     ) -> Result<(), String> {
+        self.take_resource_write(
+            hosted,
+            device,
+            app,
+            (writes, whole),
+            messages,
+            compact,
+            notice,
+        )
+        .await?;
+        // Kept by the store and the workspace's copy, the write goes out: what a device is
+        // served is never a write its own store refused.
+        self.inner
+            .records
+            .carry_all(hosted.workspace_id(), device.device(), messages)
+    }
+
+    /// [`Self::keep_resource_write`] up to carrying `messages`, which the caller does once the
+    /// store holds them.
+    async fn take_resource_write(
+        &self,
+        hosted: &mut HostedWorkspace,
+        device: &super::MemberDevice,
+        app: &str,
+        (writes, whole): (&[tilo_resource_store::Written], bool),
+        messages: &[neighbour_wire::NeighbourMsg],
+        compact: bool,
+        notice: bool,
+    ) -> Result<(), String> {
         let author = device.device();
         let document = &writes
             .first()
@@ -1864,11 +1893,6 @@ impl Workspaces {
         if notice && hosted.member.is_some() {
             self.wrote(hosted.workspace(), app, document);
         }
-        // Kept by the store and the workspace's copy, the write goes out: what a device is
-        // served is never a write its own store refused.
-        self.inner
-            .records
-            .carry_all(hosted.workspace_id(), author, messages)?;
         Ok(())
     }
 
@@ -2802,19 +2826,43 @@ impl Workspaces {
             )?);
         }
         hosted.resources.batch();
-        for (index, (batch, messages)) in batches.iter().zip(&messages).enumerate() {
-            self.keep_resource_write(
-                hosted,
-                device,
-                app,
-                (batch, whole),
-                messages,
-                // Compaction can consume a sequence the batch already drafted.
-                index.saturating_add(1) == requests.len(),
-                // One notice per action, once its every document is kept.
-                false,
-            )
-            .await?;
+        let mut kept: Vec<neighbour_wire::NeighbourMsg> = Vec::new();
+        let mut taken = Ok(());
+        for (batch, messages) in batches.iter().zip(&messages) {
+            taken = self
+                .take_resource_write(
+                    hosted,
+                    device,
+                    app,
+                    (batch, whole),
+                    messages,
+                    // Compaction can consume a sequence the batch already drafted: it runs once
+                    // the whole batch went out, below.
+                    false,
+                    // One notice per action, once its every document is kept.
+                    false,
+                )
+                .await;
+            if taken.is_err() {
+                break;
+            }
+            kept.extend(messages.iter().cloned());
+        }
+        // What the store kept goes out together, behind one barrier for the action's frames
+        // instead of one for each document it wrote; what was kept before a document was
+        // refused goes out too, as it would have one document at a time.
+        let carried = self
+            .inner
+            .records
+            .carry_all(hosted.workspace_id(), author, &kept);
+        taken?;
+        carried?;
+        // A member copy compacts nothing: the device serving it does.
+        #[cfg(feature = "device-keys")]
+        if hosted.member.is_none()
+            && let Err(error) = self.compact_sealed_histories(hosted).await
+        {
+            tracing::warn!(workspace = %hosted.workspace(), %error, "hosted workspace did not compact a sealed record");
         }
         Ok(collab_types::store::wire::Reply::Written)
     }
