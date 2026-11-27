@@ -202,6 +202,9 @@ fn ssh_stream(device: &Device, input: &str, frames: Frames) -> Result<String, St
             move || ssh.close()
         }),
         shell_name: "ssh".to_owned(),
+        ended: Arc::default(),
+        relay_session: None,
+        commands: None,
     };
     let tool = Live::carrying(
         far,
