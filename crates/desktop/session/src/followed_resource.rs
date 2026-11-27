@@ -18,8 +18,6 @@ use tilo_ui_base::{
     permissions::PermissionContext, permissions::PermissionScope, permissions::TreePath,
 };
 
-/// How long a follow waits for a write before it asks again.
-const FOLLOW_WAIT_MS: u32 = 25_000;
 /// How long a change asked of the daemon is waited for: a linked daemon answers at once, and one
 /// that does not is not waited on forever.
 const INVOKE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -212,7 +210,9 @@ fn read_of(workspace: &str, app: &str, id: &str, after: Option<String>) -> Resou
         app: app.to_owned(),
         record: id.to_owned(),
         joined: false,
-        wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
+        wait_ms: after
+            .is_some()
+            .then_some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
         after,
         answer: tilo_actions::remote::ReadAnswer::Document,
     }
@@ -479,7 +479,11 @@ async fn taken_up(
 ) -> Went {
     loop {
         match daemon
-            .observe(Some(workspace), invocation, Some(FOLLOW_WAIT_MS))
+            .observe(
+                Some(workspace),
+                invocation,
+                Some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
+            )
             .await
         {
             Ok(Some(state)) => match state.update {
@@ -499,7 +503,7 @@ async fn taken_up(
             Ok(None) => {
                 return match moved.changed().await {
                     Ok(()) => Went::Made,
-                    Err(_) => Went::Unreached("the follow stopped".to_owned()),
+                    Err(stopped) => Went::Unreached(format!("the follow stopped: {stopped}")),
                 };
             }
             Err(error) => return Went::Unreached(error),
@@ -852,7 +856,9 @@ fn reading_of(workspace: &str, app: &str, after: Option<String>) -> ResourceRead
         app: app.to_owned(),
         record: String::new(),
         joined: false,
-        wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
+        wait_ms: after
+            .is_some()
+            .then_some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
         after,
         answer: tilo_actions::remote::ReadAnswer::Reading,
     }

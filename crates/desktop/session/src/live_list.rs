@@ -19,8 +19,6 @@ use ui::widget::TransportControl;
 /// The resource the rows are published under.
 pub(crate) const RESOURCE: &str = "session:live";
 
-/// How long one read of the workspaces' live rows waits at the daemon for them to move, ms.
-const FOLLOW_WAIT_MS: u32 = 25_000;
 /// How long a follow waits before it asks a daemon that did not answer again.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -42,7 +40,7 @@ pub(crate) fn follow_daemon(
                 app: tilo_desktop_model::commands::APP_ID.to_owned(),
                 record: tilo_workspace_service::live::RESOURCE.to_owned(),
                 joined: false,
-                wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
+                wait_ms: after.is_some().then_some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
                 after: after.clone(),
                 answer: tilo_actions::remote::ReadAnswer::Document,
             };
@@ -95,7 +93,9 @@ pub(crate) fn follow_window_notes(
                 app: tilo_desktop_model::commands::APP_ID.to_owned(),
                 record: tilo_app_host::window_notes::RESOURCE.to_owned(),
                 joined: false,
-                wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
+                wait_ms: after
+                    .is_some()
+                    .then_some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
                 after: after.clone(),
                 answer: tilo_actions::remote::ReadAnswer::Document,
             };

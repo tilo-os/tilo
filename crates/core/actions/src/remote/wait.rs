@@ -27,7 +27,12 @@ use crate::outcome::{InvocationId, InvocationUpdate};
 
 /// The longest a provider holds a waiting answer, whatever `wait_ms` asked, so a
 /// server connection or a broker call is never held open indefinitely.
-pub const MAX_REMOTE_WAIT: Duration = Duration::from_secs(10);
+#[allow(clippy::cast_lossless, reason = "u64::from is not a const fn")]
+pub const MAX_REMOTE_WAIT: Duration = Duration::from_millis(MAX_REMOTE_WAIT_MS as u64);
+
+/// [`MAX_REMOTE_WAIT`] as the `wait_ms` a request carries: a follow asking for more is held no
+/// longer, so it asks for this.
+pub const MAX_REMOTE_WAIT_MS: u32 = 10_000;
 
 /// How often one wait looks again because the provider's change signal had
 /// already fired, before it answers with what it has rather than spin.

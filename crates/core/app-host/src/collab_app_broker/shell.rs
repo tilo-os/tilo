@@ -949,9 +949,17 @@ async fn published_revision(
     }
 }
 
+/// How long a read asking to wait `wait_ms` is held: never past [`MAX_REMOTE_WAIT`], so a follow
+/// asking for longer is answered with the reading as it stands and asks again.
+///
+/// [`MAX_REMOTE_WAIT`]: tilo_actions::remote::MAX_REMOTE_WAIT
+fn held_for(wait_ms: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(u64::from(wait_ms)).min(tilo_actions::remote::MAX_REMOTE_WAIT)
+}
+
 /// A read of a resource the device's services publish: its reading now, or the next one past
 /// `revision` when the read waits for it.
-async fn published_read(
+pub(super) async fn published_read(
     published: &Arc<dyn PublishedResources>,
     read: &ResourceReadRequest,
     revision: u64,
@@ -981,9 +989,7 @@ async fn published_read(
             }
             None
         };
-        if let Ok(Some(moved)) =
-            tokio::time::timeout(std::time::Duration::from_millis(u64::from(waited)), waiting).await
-        {
+        if let Ok(Some(moved)) = tokio::time::timeout(held_for(waited), waiting).await {
             current = moved;
         }
         published.unwatch(watch);

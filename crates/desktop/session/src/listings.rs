@@ -18,8 +18,6 @@ use tilo_service::{Service, Started};
 use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::state::DesktopHandle;
 
-/// How long a follow waits for a change before it asks again.
-const FOLLOW_WAIT_MS: u32 = 25_000;
 /// How long a follow waits before it asks a daemon that did not answer again.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -111,7 +109,9 @@ impl Listings {
                         app: app.to_owned(),
                         record: record.to_owned(),
                         joined: false,
-                        wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
+                        wait_ms: after
+                            .is_some()
+                            .then_some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
                         after: after.clone(),
                         answer: tilo_actions::remote::ReadAnswer::Reading,
                     };

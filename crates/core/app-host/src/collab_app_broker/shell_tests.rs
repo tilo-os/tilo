@@ -1470,3 +1470,78 @@ async fn a_press_that_asks_first_is_kept_where_it_was_pressed() {
     let mut asking = pressed_asking(WINDOW).await;
     assert_pressed_prompts(&mut asking).await;
 }
+
+/// A published resource that never moves: its watch holds the reading as it stands.
+#[derive(Default)]
+struct Still {
+    sinks: std::sync::Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Event>>>,
+}
+
+impl PublishedResources for Still {
+    fn snapshot(
+        &self,
+        _: &Caller,
+        _: &str,
+    ) -> tokio::sync::oneshot::Receiver<Result<Reading, String>> {
+        let (reply, answered) = tokio::sync::oneshot::channel();
+        let _ = reply.send(Ok((7, Some(br#"{"volume":0.4}"#.to_vec()))));
+        answered
+    }
+    fn watch(
+        &self,
+        _: &Caller,
+        resource: &str,
+        sink: tokio::sync::mpsc::UnboundedSender<Event>,
+    ) -> Result<ResourceWatch, String> {
+        let _ = sink.send(Event::Reading {
+            resource: resource.into(),
+            revision: 7,
+            reading: Some(br#"{"volume":0.4}"#.to_vec()),
+        });
+        self.sinks.lock().unwrap().push(sink);
+        Ok(ResourceWatch::new(0))
+    }
+    fn unwatch(&self, _: ResourceWatch) {}
+    fn invoke(
+        &self,
+        _: &Caller,
+        _: &str,
+        _: &str,
+        _: Vec<u8>,
+    ) -> tokio::sync::oneshot::Receiver<Receipt> {
+        let (reply, answered) = tokio::sync::oneshot::channel();
+        let _ = reply.send(Receipt::Accepted);
+        answered
+    }
+}
+
+/// A follow of a resource the device publishes that asks to wait longer than any provider holds
+/// a read is answered within that limit with the reading as it stands, so its caller asks again
+/// rather than a call held open past the limit everything else keeps.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_follow_that_asks_to_wait_long_is_answered_within_the_remote_wait() {
+    let published: Arc<dyn PublishedResources> = Arc::new(Still::default());
+    let follow = tilo_actions::remote::ResourceReadRequest {
+        workspace: "the-workspace".to_owned(),
+        app: "so.tilo.settings".to_owned(),
+        record: "sound".to_owned(),
+        joined: false,
+        wait_ms: Some(25_000),
+        after: Some("7".to_owned()),
+        answer: tilo_actions::remote::ReadAnswer::Reading,
+    };
+    let asked = tokio::time::Instant::now();
+    let reading = super::shell::published_read(&published, &follow, 7).await;
+    assert!(
+        asked.elapsed() <= tilo_actions::remote::MAX_REMOTE_WAIT,
+        "the follow was held {:?}, past {:?}",
+        asked.elapsed(),
+        tilo_actions::remote::MAX_REMOTE_WAIT,
+    );
+    assert!(
+        reading
+            .as_deref()
+            .is_ok_and(|reading| reading.contains("0.4")),
+        "the follow is answered with the reading as it stands: {reading:?}"
+    );
+}

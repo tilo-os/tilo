@@ -89,8 +89,6 @@ impl Drop for Followed {
     }
 }
 
-/// How long a follow of the daemon's reading waits for a change before it asks again.
-const FOLLOW_WAIT_MS: u32 = 25_000;
 /// How long a follow waits before it asks a daemon that did not answer again.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -282,7 +280,9 @@ impl Inner {
             let mut after: Option<String> = None;
             loop {
                 let mut read = whole(&at, "session", wire::RESOURCE);
-                read.wait_ms = after.is_some().then_some(FOLLOW_WAIT_MS);
+                read.wait_ms = after
+                    .is_some()
+                    .then_some(tilo_actions::remote::MAX_REMOTE_WAIT_MS);
                 read.after.clone_from(&after);
                 match daemon.read(read).await {
                     Ok(answered) => {

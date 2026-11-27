@@ -22,8 +22,6 @@ use tilo_workspace_service::workspaces::person_workspace::devices::{Devices, Onl
 use crate::followed_resource::SharedFollow;
 use crate::platform::fabric::{Continuity, PeerLink};
 
-/// How long a follow of the daemon's own reading waits for it to move before it asks again.
-const FOLLOW_WAIT_MS: u32 = 25_000;
 /// How long a follow waits before asking a daemon that did not answer again.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -66,7 +64,9 @@ where
                     let mut read = tilo_session_client::daemon_documents::whole(
                         &workspace, "session", resource,
                     );
-                    read.wait_ms = after.is_some().then_some(FOLLOW_WAIT_MS);
+                    read.wait_ms = after
+                        .is_some()
+                        .then_some(tilo_actions::remote::MAX_REMOTE_WAIT_MS);
                     read.after.clone_from(&after);
                     match daemon.read(read).await {
                         Ok(answered) => {
