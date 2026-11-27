@@ -212,7 +212,7 @@
     },
     {
       "id": "about",
-      "said": "Open About and see the system it runs",
+      "said": "Open About and see the system it runs and the hardware it found",
       "ops": [
         {
           "press": "About"
@@ -223,10 +223,13 @@
         {
           "must": [
             "This system",
-            "Apps"
+            "Apps",
+            "Hardware",
+            "Processor"
           ]
         }
       ],
+      "dark": true,
       "budget_ms": 20000
     },
     {
