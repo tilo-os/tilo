@@ -849,6 +849,8 @@ readers = [
   "crates/lang/tilolang-cli/tests/native_types.rs",
   "crates/lang/tilolang-cli/tests/check.rs",
   "crates/lang/tilolang-cli/tests/build.rs",
+  "crates/lang/tilolang-cli/src/describe.rs",
+  "crates/lang/tilolang-cli/tests/package_platform.rs",
 ]
 
 
@@ -872,9 +874,13 @@ readers = ["crates/desktop/app-fleet/build.rs"]
 
 [[cargo]]
 package = "tilo-runtime"
-# The app listing test builds Notes from its sources.
-inputs = ["apps/"]
-readers = ["crates/core/tilo-runtime/src/device/app_listing_tests.rs"]
+# The app listing test builds Notes from its sources, and the founding test reads the shipped
+# unit it runs under.
+inputs = ["apps/", "os/usr/lib/systemd/system/tilo-runtime.service"]
+readers = [
+  "crates/core/tilo-runtime/src/device/app_listing_tests.rs",
+  "crates/core/tilo-runtime/src/device/services_tests.rs",
+]
 
 [[cargo]]
 package = "tilo-migrate"
@@ -1473,6 +1479,8 @@ inputs = [
   # The web target and an app's model module embed the wasm-opt argument list
   # the modules are built with.
   "tools/web/wasm-opt-flags",
+  # Windows publish the application surface collab-types declares.
+  "crates/core/collab-types/app-view-surface.json",
 ]
 # The record-kinds tests read the sources of the local crates the apps depend on, the
 # production resource regression Music's whole normal local dependency closure.
@@ -1491,6 +1499,8 @@ readers = [
   "crates/lang/tilo-app-builder/src/native_sdk/tests.rs",
   # `--from-example` embeds the example apps' files.
   "crates/lang/tilo-app-builder/src/examples.rs",
+  # The window surface binds the actions collab-types declares.
+  "crates/lang/tilo-app-builder/src/surface.rs",
 ]
 
 [[cargo]]
@@ -1786,6 +1796,7 @@ readers = [
   "crates/desktop/session/tests/common/mod.rs",
   "crates/desktop/session/tests/common/people.rs",
   "crates/desktop/session/tests/firstboot.rs",
+  "crates/desktop/session/tests/origin_connector.rs",
   "crates/desktop/session/tests/session_package.rs",
   "crates/desktop/session/tests/theme_package.rs",
   "crates/desktop/session/tests/theme_package_process.rs",
