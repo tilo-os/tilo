@@ -4866,7 +4866,9 @@ async fn ask_fetch_grant(
 /// workspace lets the device in once it signs its own admission
 /// ([`Entered::Sign`](tilo_server_protocol::entering::Entered::Sign)), the device signs it with
 /// its own key ([`tilo_peer_state::own_admission::sign_entry`]) and asks again with it: no host
-/// signs anyone in. The host's last answer.
+/// signs anyone in. A host whose member list moved to a newer base while the device signed
+/// answers with that list again, and the device signs on it, up to
+/// [`SIGN_TRIES`](tilo_server_protocol::entering::SIGN_TRIES) times. The host's last answer.
 async fn ask_entry(
     (actions, store): (
         Option<&tilo_server_client::link::Link>,
@@ -4877,95 +4879,107 @@ async fn ask_entry(
     host: [u8; 32],
     entering: &tilo_server_protocol::entering::Entering,
 ) -> Result<tilo_server_protocol::entering::Entered, EntryFailure> {
-    use tilo_server_protocol::entering::{Entered, Through};
-    let entered =
+    use tilo_server_protocol::entering::{Entered, SIGN_TRIES, Through};
+    let mut answered =
         ask_entry_once(actions, Arc::clone(&signer), cert.clone(), host, entering).await?;
-    let Entered::Sign {
-        governance,
-        through,
-    } = entered
-    else {
-        return Ok(entered);
-    };
-    let invitation = match &through {
-        Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
-        Through::Entry => None,
-    };
     // What the device signed into the workspace before, as its store keeps it, comes first: it
     // never signs a second change under a number it gave one already, after a restart either.
     let workspace_id = WorkspaceId::parse(&entering.workspace);
     let stored = store.as_ref().zip(workspace_id);
-    let turn =
-        tilo_peer_state::own_admission::signing_turn(&entering.workspace, cert.device_public_key)
-            .await;
-    let own = stored
-        .map(|(store, workspace)| store.own_admissions(workspace, &cert.device_public_key))
-        .unwrap_or_default();
-    // A row the workspace refuses leaves nothing of it there, so the device's next try signs
-    // its first change again: one signed for a refused request cannot come first, since every
-    // copy holding it would refuse the retry's redemption of the same invitation.
+    // A row the workspace refuses or did not take leaves nothing of it there, so the device's
+    // next try signs its first change again: one signed for a refused request cannot come
+    // first, since every copy holding it would refuse the retry's redemption of the same
+    // invitation.
     let forget_refused = || {
         if let Some((store, workspace)) = stored {
             store.forget_own_admission(workspace, &cert.device_public_key);
         }
     };
-    let admission = tilo_peer_state::own_admission::sign_entry(
-        &entering.workspace,
-        (&governance, &own),
-        (invitation, entering.request_id),
-        Some(entering.name.as_str()),
-        (&cert, signer.as_ref()),
-        tilo_clock::wall(),
-    )
-    .await
-    .map_err(|reason| EntryFailure {
-        code: "refused",
-        message: format!("this device could not sign its own admission: {reason}"),
-    })?;
-    // Kept before it leaves: a hand-over of the workspace that reaches this device before the
-    // host's answer signs on top of it.
-    if let Some((store, workspace)) = stored {
-        store
-            .keep_own_admission(workspace, &cert.device_public_key, &admission)
-            .map_err(|reason| EntryFailure {
-                code: "unavailable",
-                message: format!("this device could not keep its own admission: {reason}"),
-            })?;
-    }
-    // Let go before the host is asked: the next signing needs only what is kept.
-    drop(turn);
-    let with_admission = tilo_server_protocol::entering::Entering {
-        through,
-        admission,
-        ..entering.clone()
-    };
-    let answered = ask_entry_once(actions, signer, cert.clone(), host, &with_admission).await;
-    let answered = match answered {
-        Ok(answered) => answered,
-        Err(failure) => {
-            if failure.code == "refused" {
-                forget_refused();
+    for _ in 0..SIGN_TRIES {
+        let Entered::Sign {
+            governance,
+            through,
+        } = answered
+        else {
+            return Ok(answered);
+        };
+        let invitation = match &through {
+            Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
+            Through::Entry => None,
+        };
+        let turn = tilo_peer_state::own_admission::signing_turn(
+            &entering.workspace,
+            cert.device_public_key,
+        )
+        .await;
+        let own = stored
+            .map(|(store, workspace)| store.own_admissions(workspace, &cert.device_public_key))
+            .unwrap_or_default();
+        let admission = tilo_peer_state::own_admission::sign_entry(
+            &entering.workspace,
+            (&governance, &own),
+            (invitation, entering.request_id),
+            Some(entering.name.as_str()),
+            (&cert, signer.as_ref()),
+            tilo_clock::wall(),
+        )
+        .await
+        .map_err(|reason| EntryFailure {
+            code: "refused",
+            message: format!("this device could not sign its own admission: {reason}"),
+        })?;
+        // Kept before it leaves: a hand-over of the workspace that reaches this device before
+        // the host's answer signs on top of it.
+        if let Some((store, workspace)) = stored {
+            store
+                .keep_own_admission(workspace, &cert.device_public_key, &admission)
+                .map_err(|reason| EntryFailure {
+                    code: "unavailable",
+                    message: format!("this device could not keep its own admission: {reason}"),
+                })?;
+        }
+        // Let go before the host is asked: the next signing needs only what is kept.
+        drop(turn);
+        let with_admission = tilo_server_protocol::entering::Entering {
+            through,
+            admission,
+            ..entering.clone()
+        };
+        answered = match ask_entry_once(
+            actions,
+            Arc::clone(&signer),
+            cert.clone(),
+            host,
+            &with_admission,
+        )
+        .await
+        {
+            Ok(answered) => answered,
+            Err(failure) => {
+                if failure.code == "refused" {
+                    forget_refused();
+                }
+                return Err(failure);
             }
-            return Err(failure);
-        }
-    };
-    match answered {
-        // The device is in: its row is the workspace's, and its next admission builds on it.
-        Entered::Admitted { .. } => Ok(answered),
-        // The entry refused the device under the row it signed, or asked for one it was sent:
-        // neither leaves the row in the workspace.
-        Entered::Refused(refusal) => {
-            forget_refused();
-            Ok(Entered::Refused(refusal))
-        }
-        Entered::Sign { .. } => {
-            forget_refused();
-            Err(EntryFailure {
-                code: "refused",
-                message: "the host did not take the admission this device signed".into(),
-            })
+        };
+        match &answered {
+            // The device is in: its row is the workspace's, and its next admission builds on it.
+            Entered::Admitted { .. } => return Ok(answered),
+            // The entry refused the device under the row it signed: the row is not the
+            // workspace's.
+            Entered::Refused(_) => {
+                forget_refused();
+                return Ok(answered);
+            }
+            // The member list moved on while the device signed: the row built on what it
+            // replaced is not the workspace's, and the device signs again on the list answered.
+            Entered::Sign { .. } => forget_refused(),
         }
     }
+    Err(EntryFailure {
+        code: "refused",
+        message: tilo_server_protocol::entering::KEPT_CHANGING.into(),
+    })
 }
 
 /// One ask of [`ask_entry`]: the host's answer to `entering` as it stands.

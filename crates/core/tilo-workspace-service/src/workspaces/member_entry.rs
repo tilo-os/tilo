@@ -73,22 +73,27 @@ impl Workspaces {
             through: Through::Entry,
             admission: Vec::new(),
         };
-        let entered = match ask(&remote, &device.cert, &entering).await? {
-            Entered::Sign {
+        // The host answers its member list again where it moved on while this device signed:
+        // the device signs on it, a bounded number of times.
+        let mut entered = ask(&remote, &device.cert, &entering).await?;
+        for _ in 0..tilo_server_protocol::entering::SIGN_TRIES {
+            let Entered::Sign {
                 governance,
                 through,
-            } => {
-                self.sign_and_ask(
+            } = entered
+            else {
+                break;
+            };
+            entered = self
+                .sign_and_ask(
                     &remote,
                     &device,
                     &entering,
                     (workspace, &governance),
                     through,
                 )
-                .await?
-            }
-            entered => entered,
-        };
+                .await?;
+        }
         let hint = match entered {
             Entered::Admitted {
                 host: Some(hint), ..
@@ -98,7 +103,7 @@ impl Workspaces {
             }
             Entered::Refused(refusal) => return Err(refusal.reason().to_owned()),
             Entered::Sign { .. } => {
-                return Err("the host did not take the admission this device signed".into());
+                return Err(tilo_server_protocol::entering::KEPT_CHANGING.into());
             }
         };
         let hint: TransportHint = postcard::from_bytes(&hint).map_err(|error| {

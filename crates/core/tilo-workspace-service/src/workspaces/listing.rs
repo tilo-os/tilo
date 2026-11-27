@@ -1133,6 +1133,15 @@ pub(crate) mod entry_tests {
         )
         .await
         .unwrap();
+        // An admission that writes nothing is no way in, whichever entry it names.
+        let forged = workspaces
+            .admit_entered(&guest, &workspace, rand::random(), &[])
+            .await;
+        assert_eq!(
+            forged,
+            JoinReply::Refused("workspace write forbidden".into()),
+            "an empty admission lets nobody in"
+        );
         workspaces
             .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
@@ -1147,6 +1156,110 @@ pub(crate) mod entry_tests {
             said.contains("does not take people who ask"),
             "the refusal names the entry: {said}"
         );
+        server.shutdown().await;
+    }
+
+    /// An admission signed on the member list before an arrival started the
+    /// workspace's history over builds on changes the host no longer holds:
+    /// the entry answers the list as it is now, as it answered the first ask,
+    /// and the device that signs again on it is in.
+    #[tokio::test]
+    async fn an_admission_signed_before_the_history_started_over_is_signed_again() {
+        use crate::handshake::Admit;
+        use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = hosting_device();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: "Everyone".into(),
+                    default_role: Role::Commenter,
+                },
+            )
+            .await
+            .unwrap();
+        let generation = async || {
+            workspaces
+                .state(&workspace)
+                .await
+                .unwrap()
+                .admitted_workspace()
+                .map_or(0, tilo_peer_state::workspace::base::generation)
+        };
+        let entry = |entering: Entering| Entry {
+            entering,
+            access: None,
+            proof: [0; 64],
+        };
+        let (guest_key, guest) = guest_device();
+        let asked = Entering {
+            workspace: workspace.clone(),
+            name: "Ada".into(),
+            request_id: rand::random(),
+            through: Through::Entry,
+            admission: Vec::new(),
+        };
+        let Entered::Sign {
+            governance,
+            through,
+        } = Admit::enter(workspaces, &guest, entry(asked.clone())).await
+        else {
+            panic!("the open entry asks the guest to sign itself in");
+        };
+        let signed_at = generation().await;
+        let stale = tilo_peer_state::own_admission::sign_entry(
+            &workspace,
+            (&governance, &[]),
+            (None, asked.request_id),
+            Some("Ada"),
+            (&guest, &guest_key),
+            tilo_clock::wall(),
+        )
+        .await
+        .unwrap();
+
+        // The workspace's name is changed and someone else arrives: its
+        // history starts over from a newer base.
+        workspaces.rename(&workspace, "Lounge two").await.unwrap();
+        let (other_key, other) = guest_device();
+        let other_came = workspaces
+            .enter_signed(
+                (&other_key, &other),
+                entry(Entering {
+                    name: "Bo".into(),
+                    request_id: rand::random(),
+                    ..asked.clone()
+                }),
+            )
+            .await;
+        assert!(
+            matches!(other_came, Entered::Admitted { .. }),
+            "{other_came:?}"
+        );
+        assert!(
+            generation().await > signed_at,
+            "the arrival after a rename starts the history over"
+        );
+
+        let stale = entry(Entering {
+            through,
+            admission: stale,
+            ..asked
+        });
+        assert!(
+            matches!(
+                Admit::enter(workspaces, &guest, stale.clone()).await,
+                Entered::Sign { .. }
+            ),
+            "an admission on the replaced history is answered the list as it is now"
+        );
+        let entered = workspaces.enter_signed((&guest_key, &guest), stale).await;
+        assert!(matches!(entered, Entered::Admitted { .. }), "{entered:?}");
         server.shutdown().await;
     }
 

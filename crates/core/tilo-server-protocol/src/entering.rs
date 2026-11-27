@@ -66,6 +66,16 @@ use crate::workspaces::Role;
 /// iroh join service's bound on one exchange.
 pub const ENTERING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How many times a device signs its own admission for one entry. A host answers
+/// [`Entered::Sign`] again, with its member list as it is now, to an admission signed on a list
+/// it has since moved to a newer base; a device signs on that and asks again, this many times at
+/// most, and is then told [`KEPT_CHANGING`].
+pub const SIGN_TRIES: usize = 4;
+
+/// What a device is told when the workspace's member list moved on each time it signed itself
+/// in ([`SIGN_TRIES`]).
+pub const KEPT_CHANGING: &str = "the workspace's member list kept changing while this device signed itself in: try again in a moment";
+
 /// What a device that is not in the workspace yet asks for in its hello: to
 /// come into `workspace`, through its entry or with an invitation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,7 +186,9 @@ pub enum Entered {
     /// written on `governance`, the workspace's member list as encoded
     /// neighbour messages, and asked again `through` (the invitation the
     /// entry issued it, or as the device came) with those changes as its
-    /// [`Entering::admission`].
+    /// [`Entering::admission`]. Answered again, with the list as it is
+    /// now, to an admission signed on one the host has since moved to a
+    /// newer base.
     Sign {
         governance: Vec<Vec<u8>>,
         through: Through,

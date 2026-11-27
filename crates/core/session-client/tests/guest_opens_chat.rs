@@ -64,14 +64,16 @@ const MESSAGES: usize = 200;
 /// round trip each, and many of those over the chat's writes exceed it.
 const OPENED_TO_READ: Duration = Duration::from_secs(3);
 
-/// A person coming through `workspace`'s entry with a device of their own,
-/// leaving no session behind: the member the workspace made of them.
+/// A person coming through `workspace`'s entry with a device of their own, as its session
+/// asks it, leaving no session behind: the member the workspace made of them. The device signs
+/// its own admission on the member list the entry answers, and again on the list answered where
+/// the crowd's arrivals moved it to a newer base meanwhile.
 async fn through_the_entry(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
     workspace: &str,
     name: &str,
 ) {
-    use tilo_server_protocol::workspaces::JoinReply;
+    use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
     let root = new_key();
     let key = new_key();
     let cert = tilo_server_client::invite::guest_certificate(
@@ -82,51 +84,19 @@ async fn through_the_entry(
     )
     .await
     .unwrap();
-    let listed = workspaces
-        .admit_listed(
-            workspace,
-            &tilo_server_protocol::directory::EntryJoin {
-                user_public_key: hex::encode(cert.user_public_key),
-                display_name: name.to_owned(),
-            },
-        )
-        .await
-        .unwrap();
-    let admitted = match listed {
-        tilo_workspace_service::workspaces::Listed::Invited(issued) => {
-            workspaces
-                .admit_proven(
-                    issued.signed_invitation,
-                    (cert, &key),
-                    rand::random(),
-                    name,
-                    None,
-                )
-                .await
-        }
-        tilo_workspace_service::workspaces::Listed::Open => {
-            let request_id = rand::random();
-            let signed = workspaces.entry_signed_changes(workspace).await.unwrap();
-            let admission = tilo_peer_state::own_admission::sign_entry_admission(
-                workspace,
-                &signed,
-                &cert,
-                request_id,
-                Some(name),
-                &key,
-                tilo_clock::wall(),
-            )
-            .await
-            .unwrap();
-            workspaces
-                .admit_entered(&cert, workspace, request_id, &admission)
-                .await
-        }
+    let entry = Entry {
+        entering: Entering {
+            workspace: workspace.to_owned(),
+            name: name.to_owned(),
+            request_id: rand::random(),
+            through: Through::Entry,
+            admission: Vec::new(),
+        },
+        access: None,
+        proof: [0; 64],
     };
-    assert!(
-        matches!(admitted, JoinReply::Admitted { .. }),
-        "{admitted:?}"
-    );
+    let admitted = workspaces.enter_signed((&key, &cert), entry).await;
+    assert!(matches!(admitted, Entered::Admitted { .. }), "{admitted:?}");
 }
 
 /// The chat's history as the guest's page reads it: the page reads a record

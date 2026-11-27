@@ -55,6 +55,19 @@ impl Admit for Workspaces {
     )]
     fn enter<'a>(&'a self, cert: &'a DeviceCert, entry: Entry) -> EntryFuture<'a, Entered> {
         Box::pin(async move {
+            // An admission signed on a member list this host has since moved to a newer base
+            // builds on changes it no longer holds, and writes nothing here. The device is
+            // answered as it was when it first asked, without an admission: by the entry's own
+            // checks, and then with the list as it is now, to sign again on.
+            if self
+                .signed_on_replaced(&entry.entering.workspace, &entry.entering.admission)
+                .await
+            {
+                let mut entry = entry;
+                entry.entering.admission.clear();
+                return Admit::enter(self, cert, entry).await;
+            }
+            let asked = entry.clone();
             let Entry {
                 entering, access, ..
             } = entry;
@@ -180,6 +193,16 @@ impl Admit for Workspaces {
                     )
                 }
             };
+            // The list may also move on while the admission is taken in: it is answered the same.
+            if matches!(entered, Entered::Refused(_))
+                && self
+                    .signed_on_replaced(&asked.entering.workspace, &asked.entering.admission)
+                    .await
+            {
+                let mut entry = asked;
+                entry.entering.admission.clear();
+                return Admit::enter(self, cert, entry).await;
+            }
             if !matches!(entered, Entered::Admitted { .. }) {
                 return entered;
             }
@@ -236,6 +259,30 @@ impl Workspaces {
             .redeem(&hosted, self.device_cert(), tilo_clock::unix_now_ns())
             .map(drop)
             .map_err(|error| error.to_string())
+    }
+
+    /// Whether `admission` was signed on a member list `workspace` no longer
+    /// holds: one of its changes builds on a change that is neither held here
+    /// nor among its own, as when the list moved to a newer base after the
+    /// device was sent it. An admission that writes nothing builds on nothing.
+    async fn signed_on_replaced(&self, workspace: &str, admission: &[Vec<u8>]) -> bool {
+        let changes: Vec<automerge::Change> = admission
+            .iter()
+            .filter_map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
+            .collect();
+        if changes.is_empty() {
+            return false;
+        }
+        let Ok(hosted) = self.workspace(workspace).await else {
+            return false;
+        };
+        let hosted = hosted.lock().await;
+        let own: std::collections::BTreeSet<_> =
+            changes.iter().map(automerge::Change::hash).collect();
+        changes
+            .iter()
+            .flat_map(automerge::Change::deps)
+            .any(|dep| !own.contains(dep) && !hosted.peer().workspace_holds_change(dep))
     }
 
     /// What a device that may come into `workspace` is answered before it
@@ -722,41 +769,49 @@ fn entered(reply: JoinReply) -> Entered {
 impl Workspaces {
     /// `cert`'s device asking for `entry` here, as a device does on its session: where the host
     /// answers that it may come in once it signs its own admission, `signer` (its key) signs it
-    /// ([`tilo_peer_state::own_admission::sign_entry`]) and it asks again. The host's last
-    /// answer.
+    /// ([`tilo_peer_state::own_admission::sign_entry`]) and it asks again, signing again on the
+    /// member list answered where it moved on meanwhile, up to
+    /// [`SIGN_TRIES`](tilo_server_protocol::entering::SIGN_TRIES) times. The host's last answer.
     ///
     /// # Errors
-    /// The key does not sign what the host answered.
+    /// The key does not sign what the host answered, or the member list kept moving on.
     pub async fn enter_signed_by(
         &self,
         (signer, cert): (&dyn collab_types::signer::DeviceSigner, &DeviceCert),
         mut entry: Entry,
     ) -> Result<Entered, String> {
-        let answered = Admit::enter(self, cert, entry.clone()).await;
-        let Entered::Sign {
-            governance,
-            through,
-        } = answered
-        else {
-            return Ok(answered);
-        };
-        let invitation = match &through {
-            Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
-            Through::Entry => None,
-        };
-        let entering = &entry.entering;
-        let admission = tilo_peer_state::own_admission::sign_entry(
-            &entering.workspace,
-            (&governance, &[]),
-            (invitation, entering.request_id),
-            Some(entering.name.as_str()),
-            (cert, signer),
-            tilo_clock::wall(),
-        )
-        .await?;
-        entry.entering.through = through;
-        entry.entering.admission = admission;
-        Ok(Admit::enter(self, cert, entry).await)
+        use tilo_server_protocol::entering::{KEPT_CHANGING, SIGN_TRIES};
+        let mut answered = Admit::enter(self, cert, entry.clone()).await;
+        for _ in 0..SIGN_TRIES {
+            let Entered::Sign {
+                governance,
+                through,
+            } = answered
+            else {
+                return Ok(answered);
+            };
+            let invitation = match &through {
+                Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
+                Through::Entry => None,
+            };
+            let entering = &entry.entering;
+            let admission = tilo_peer_state::own_admission::sign_entry(
+                &entering.workspace,
+                (&governance, &[]),
+                (invitation, entering.request_id),
+                Some(entering.name.as_str()),
+                (cert, signer),
+                tilo_clock::wall(),
+            )
+            .await?;
+            entry.entering.through = through;
+            entry.entering.admission = admission;
+            answered = Admit::enter(self, cert, entry.clone()).await;
+        }
+        match answered {
+            Entered::Sign { .. } => Err(KEPT_CHANGING.to_owned()),
+            answered => Ok(answered),
+        }
     }
 
     /// Bring the key `cert` certifies for an agent of its person into `workspace`, named `name`,
