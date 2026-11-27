@@ -7477,12 +7477,17 @@ impl ActionProvider for RuntimeActionProvider {
         ))
     }
 
-    /// What was put into the workspace here, read back by the run this runtime admitted.
+    /// What the workspace keeps here, read back by the run this runtime admitted: what was put
+    /// into it, and its files as the tree names them.
     fn content_gets(&self) -> Option<Arc<dyn tilo_actions::remote::ContentGets>> {
         Some(Arc::new(AdmittedContent {
             session: Arc::clone(self.session.as_ref()?),
             workspaces: Arc::clone(&self.workspaces),
-            content: tilo_workspace_service::content::shelf_gets(self.workspaces.content_shelf()?),
+            content: tilo_workspace_service::files::OpenedFiles::new(
+                self.workspaces.copies().clone(),
+                self.workspaces.content_shelf()?,
+            )
+            .into_gets(),
         }))
     }
 }

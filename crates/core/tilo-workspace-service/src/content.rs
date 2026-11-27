@@ -76,7 +76,7 @@ use tokio::sync::mpsc;
 use crate::workspaces::{ContentKeeper, WorkspaceContent, Workspaces};
 
 mod put;
-pub use put::{shelf_gets, shelf_puts};
+pub use put::shelf_puts;
 
 pub use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_BYTES, PIECES_PER_ANSWER};
 

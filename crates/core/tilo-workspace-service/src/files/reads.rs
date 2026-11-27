@@ -8,10 +8,19 @@
 //! put together from the content kept here of it and opened with the workspace's Files keys
 //! where they seal it.
 //!
+//! A content get of the caller's workspace ([`ContentGets`]) is answered here too: content put
+//! into the workspace as it was given, and a file of its tree, named by its manifest, as the file
+//! it describes, a piece at a time.
+//!
 //! Nothing is written, so nothing is taken back.
 
+use std::ops::Range;
+
 use serde_json::{Map, Value, json};
-use tilo_fs::content::{Manifest, is_manifest, whole_with};
+use tilo_actions::remote::{
+    ActionCallError, Caller, ContentGets, ContentPiece, MAX_CONTENT_FRAME_BYTES,
+};
+use tilo_fs::content::{Manifest, SealedChunks, is_manifest, whole_with};
 use tilo_fs::namespace::{MOST_LISTED, Namespace};
 use tilo_server_protocol::WorkspaceId;
 
@@ -285,24 +294,154 @@ impl OpenedFiles {
             None => None,
         };
         let files = files_scope(workspace);
-        let artifact = collab_types::file_content_artifact(workspace);
         whole_with(
             stored,
             MOST_TEXT_BYTES,
             |chunk| self.shelf.read(&files, &hex::encode(chunk)),
-            |sealed, bytes| {
-                let metadata = collab_types::EncryptionMetadata::content_group(
-                    workspace,
-                    WorkspaceId::from_u128(u128::from_be_bytes(sealed.group)),
-                    sealed.epoch,
-                    collab_types::ContentRetention::Delta,
-                );
-                keys.as_ref()?
-                    .open_content(artifact, &metadata, bytes)
-                    .ok()
-                    .map(|clear| clear.to_vec())
-            },
+            |sealed, bytes| opened_chunk(workspace, keys.as_ref(), sealed, bytes),
         )
         .ok_or_else(missing)
+    }
+
+    /// The bytes `range` of the file `manifest` describes in `workspace`: the chunks it lists
+    /// that overlap the range, each opened with the workspace's Files keys where they seal it.
+    fn file_range(
+        &self,
+        workspace: WorkspaceId,
+        manifest: &Manifest,
+        range: Range<u64>,
+        named: &str,
+    ) -> Result<Vec<u8>, String> {
+        let missing = || format!("the content of {named} has not arrived on this device");
+        let keys = match manifest.sealed() {
+            Some(_) => Some(self.keys(workspace, false)?.ok_or_else(|| {
+                "this workspace's files are sealed, and their keys are not here".to_owned()
+            })?),
+            None => None,
+        };
+        let files = files_scope(workspace);
+        let mut bytes =
+            Vec::with_capacity(usize::try_from(range.end.saturating_sub(range.start)).unwrap_or(0));
+        for (_, start, part) in manifest.overlapping(range.clone()) {
+            let stored = self
+                .shelf
+                .read(&files, &hex::encode(part.hash))
+                .ok_or_else(missing)?;
+            if u64::try_from(stored.len()).unwrap_or(u64::MAX) != manifest.stored_len(part) {
+                return Err(format!(
+                    "a piece of {named} is not the length its manifest says"
+                ));
+            }
+            let clear = match manifest.sealed() {
+                Some(sealed) => opened_chunk(workspace, keys.as_ref(), sealed, &stored)
+                    .ok_or_else(|| {
+                        format!("a piece of {named} does not open with the workspace's Files keys")
+                    })?,
+                None => stored,
+            };
+            let from = usize::try_from(range.start.saturating_sub(start)).unwrap_or(usize::MAX);
+            let to = usize::try_from(range.end.saturating_sub(start))
+                .unwrap_or(usize::MAX)
+                .min(clear.len());
+            bytes.extend_from_slice(clear.get(from..to).unwrap_or_default());
+        }
+        Ok(bytes)
+    }
+}
+
+/// A chunk of `workspace`'s file sealed as `sealed` says, opened with `keys`; `None` without
+/// them, or when it does not open.
+fn opened_chunk(
+    workspace: WorkspaceId,
+    keys: Option<&key_group::ContentKeys>,
+    sealed: SealedChunks,
+    bytes: &[u8],
+) -> Option<Vec<u8>> {
+    let metadata = collab_types::EncryptionMetadata::content_group(
+        workspace,
+        WorkspaceId::from_u128(u128::from_be_bytes(sealed.group)),
+        sealed.epoch,
+        collab_types::ContentRetention::Delta,
+    );
+    keys?
+        .open_content(
+            collab_types::file_content_artifact(workspace),
+            &metadata,
+            bytes,
+        )
+        .ok()
+        .map(|clear| clear.to_vec())
+}
+
+impl OpenedFiles {
+    /// These reads as the content gets of the workspaces they read ([`ContentGets`]).
+    #[must_use]
+    pub fn into_gets(self) -> std::sync::Arc<dyn ContentGets> {
+        std::sync::Arc::new(self)
+    }
+}
+
+impl ContentGets for OpenedFiles {
+    /// `length` bytes from `offset` of what `content` names in the caller's workspace: content
+    /// put into it as it was given, or a file of its tree, which the tree names by its manifest,
+    /// as the file the manifest describes — never the manifest itself.
+    fn get(
+        &self,
+        caller: &Caller,
+        content: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<ContentPiece, ActionCallError> {
+        let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
+        let named = caller.workspace().ok_or_else(|| {
+            invalid("content is read from a workspace, and this caller is in none".into())
+        })?;
+        let workspace = WorkspaceId::parse(named)
+            .ok_or_else(|| invalid(format!("{named:?} names no workspace")))?;
+        let hash = tilo_actions::content_hash(content)
+            .ok_or_else(|| invalid(format!("{content} is not a tilo.content:<hash> reference")))?;
+        // The length asked is the most the caller takes: a piece carries at most what a frame
+        // does, and a caller that asked for more reads on from where the piece ends, as it does
+        // with any piece shorter than the content.
+        let most = MAX_CONTENT_FRAME_BYTES as u64;
+        let length = match length {
+            0 => most,
+            length => length.min(most),
+        };
+        let stored = self
+            .read(workspace, hash)
+            .ok_or_else(|| invalid(format!("this workspace has no {content}")))?;
+        let manifest = if is_manifest(&stored) {
+            Some(
+                Manifest::decode(&stored).map_err(|error| ActionCallError::Unavailable {
+                    reason: format!("{content} does not read: {error}"),
+                })?,
+            )
+        } else {
+            None
+        };
+        let size = manifest.as_ref().map_or_else(
+            || u64::try_from(stored.len()).unwrap_or(u64::MAX),
+            Manifest::total_len,
+        );
+        if offset > size {
+            return Err(invalid(format!(
+                "the content is {size} bytes: an offset of {offset} is past its end"
+            )));
+        }
+        let end = offset.saturating_add(length).min(size);
+        let bytes = if let Some(manifest) = manifest {
+            self.file_range(workspace, &manifest, offset..end, content)
+                .map_err(|reason| ActionCallError::Unavailable { reason })?
+        } else {
+            let start = usize::try_from(offset).unwrap_or(usize::MAX);
+            let end = usize::try_from(end).unwrap_or(usize::MAX);
+            stored.get(start..end).unwrap_or_default().to_vec()
+        };
+        Ok(ContentPiece {
+            size,
+            offset,
+            bytes,
+        })
     }
 }

@@ -409,6 +409,26 @@ async fn a_file_put_is_a_node_naming_content_the_workspace_keeps() {
         opened(&put.shelf, put.workspace, keys.as_ref(), &hash),
         visa.as_slice()
     );
+    // A content get of the address the tree names the file by answers the file, not its
+    // manifest, a piece at a time.
+    let member =
+        tilo_actions::remote::Caller::authenticated([1; 32], [2; 32]).in_workspace(&put.name);
+    let reference = format!("tilo.content:{hash}");
+    let gets: &dyn tilo_actions::remote::ContentGets = &put.puts;
+    let whole = gets.get(&member, &reference, 0, 0).unwrap();
+    assert_eq!(whole.size, visa.len() as u64);
+    assert_eq!(whole.bytes, visa.as_slice());
+    let piece = gets.get(&member, &reference, 9, 11).unwrap();
+    assert_eq!((piece.offset, piece.size), (9, visa.len() as u64));
+    assert_eq!(piece.bytes, &visa[9..20]);
+    let past = gets.get(&member, &reference, visa.len() as u64 + 1, 0);
+    assert!(past.is_err(), "an offset past the file's end is refused");
+    let elsewhere = tilo_actions::remote::Caller::authenticated([1; 32], [2; 32])
+        .in_workspace(WorkspaceId::from_u128(7).to_string());
+    assert!(
+        gets.get(&elsewhere, &reference, 0, 0).is_err(),
+        "another workspace holds none of it"
+    );
 
     // A folder path keeps the folder, and the file is in it, not at the root.
     let permit = b"%PDF-1.7\nApplication for Residence Permit\n";

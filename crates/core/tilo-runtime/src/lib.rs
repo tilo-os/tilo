@@ -8,6 +8,11 @@
 //! the `tilo-runtime` executable, which serves the person's login as its device too
 //! ([`device`]).
 
+// A program's API connection is served on the runtime's own tasks, and its future reaches the
+// device's network control, deep enough that the default recursion limit gives up proving the
+// task `Send`.
+#![recursion_limit = "256"]
+
 #[cfg(unix)]
 use std::process::{Child, Command};
 use std::{io, path::Path};
