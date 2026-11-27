@@ -4,8 +4,9 @@
 //! A setup wizard, an import, a first-run card: one page whose body scrolls under a fixed
 //! account of where the person is, with what needs attention and the ways forward kept in view.
 //! The account is either a [`Stepper`] of named stations or a progress track with the stage's
-//! name and which step of how many; the body scrolls when it is taller than the room; a notice
-//! stands above the ways forward, never inside the scrolling page.
+//! name and which step of how many; the body scrolls when it is taller than the room, keeping
+//! the bar's gutter whether it is or not, so what stands on one step does not move on the next;
+//! a notice stands above the ways forward, never inside the scrolling page.
 //!
 //! It stands two ways. Alone on a window's ground ([`GuidedPage::new`]) it takes the readable
 //! column, centred, the page's own gutter round it. In a surface that already measures it
@@ -324,7 +325,10 @@ struct Scroll {
 fn page_scroll(options: Scroll) -> Scrollable {
     let mut scroll = Scrollable::new_vertical();
     if options.shows_bar {
-        scroll = scroll.always_visible();
+        // The page under the track is one of several, each a step of the same account: the bar's
+        // gutter stays kept whichever step fits and whichever overflows, so a control stands
+        // where it stood on the last page.
+        scroll = scroll.always_visible().with_stable_vertical_gutter();
     }
     if options.reveals_focus {
         scroll = scroll.with_focus_reveal();

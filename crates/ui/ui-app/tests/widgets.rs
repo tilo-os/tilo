@@ -10,6 +10,8 @@ mod find_controls_tests;
 mod floating_panel_dock_tests;
 #[path = "widgets/floating_panel_resize.rs"]
 mod floating_panel_resize;
+#[path = "widgets/guided_page_gutter_tests.rs"]
+mod guided_page_gutter_tests;
 #[path = "widgets/manual.rs"]
 mod manual;
 #[path = "widgets/map_answer_tests.rs"]
