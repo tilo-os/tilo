@@ -424,7 +424,7 @@ fn an_app_with_a_window_shows_its_content_on_the_page() {
     // What each window shows of itself, over the scenario it opens on.
     let apps = [
         ("apps/tl/calculator", "Calculator"),
-        ("apps/tl/files", "Files is starting"),
+        ("apps/tl/files", "This folder is empty"),
         ("apps/tl/feeds", "A quiet morning in the city"),
         ("apps/tl/photos", "Dawn"),
         ("apps/tl/canvas", "No artwork yet"),

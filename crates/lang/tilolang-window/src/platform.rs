@@ -78,6 +78,14 @@ fn image_of(image: &ClipboardImage) -> (String, Vec<u8>) {
 }
 
 impl Platform for Packages {
+    /// A page's home is the workspace's, and stands empty until it is served: `~` answers an
+    /// empty folder, so Files opens on it rather than on the refusal a host with no files gives.
+    fn list_files(&self, path: &str) -> Result<Vec<tilolang_runtime::files::Entry>, String> {
+        if path.trim_end_matches('/') == "~" {
+            return Ok(Vec::new());
+        }
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
     fn load(&self, host: &Host) -> u64 {
         // A page runs no session: nothing of the platform's apps is published here, so each
         // reads as its type starts — a view over the sound, the battery or the drives lays out
