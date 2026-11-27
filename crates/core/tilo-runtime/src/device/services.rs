@@ -1618,6 +1618,17 @@ impl Daemon {
         self.workspaces.copies()
     }
 
+    /// The device's workspace service, which a login answered while this part runs enters its
+    /// workspaces through, as a start does.
+    pub(crate) fn service_workspaces(&self) -> &Arc<ServiceWorkspaces> {
+        &self.workspaces
+    }
+
+    /// The person this part serves, by their id: whose login it takes in while it runs.
+    pub(crate) fn serves_person(&self) -> &str {
+        &self.actor
+    }
+
     /// The record content of this device's workspaces: where the bytes of their records' files
     /// are kept and asked for. `None` before the device's content store is open.
     pub(crate) fn record_content(
@@ -2522,11 +2533,25 @@ impl Daemon {
                 }
             });
         }
+        let entering = entered.clone();
         let home = Arc::new(super::home::Home::new(
             Arc::clone(&workspaces),
             identity.cert.clone(),
             entered,
         ));
+        // The workspace a ticket login named is entered and kept here now, before this part
+        // answers anyone: the person's list and their apps read what the part holds, and a login
+        // that answers before its workspace is here leaves both showing none of it.
+        if let Some(login) = entering {
+            let (entering_with, cert) = (Arc::clone(&workspaces), identity.cert.clone());
+            stage("entering the workspace the login named");
+            super::workspaces::block_on_owned(async move {
+                super::home::entered_while_running(&entering_with, &cert, &login).await
+            })
+            .unwrap_or_else(
+                |why| tracing::warn!(%why, "the workspace this login named is not kept here yet"),
+            );
+        }
         let take_work = member
             .then(|| take_work::Server::from_login(home.get_blocking().as_ref()))
             .flatten();

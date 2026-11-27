@@ -19,6 +19,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 use tilo_device_identity::login::{Approval, Approved, Approver, Asked, Entry, Ticket};
+use tilo_peer_state::new_device::Keeping;
 use tilo_peer_state::workspace_membership::{AppPayload, AppRelease, WorkspaceMembershipCommand};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -99,7 +100,15 @@ impl Server {
             .build()
             .unwrap();
         let person = key(7);
-        let host = test_server::Host::of(&person, WORKSPACE_NAME);
+        // A site, as a person's own server is: it keeps their own workspace too, where the device
+        // that issues a ticket lists the computer it adds, and which every workspace of theirs
+        // reads to admit that computer.
+        let host = test_server::Host::site(&person, WORKSPACE_NAME);
+        runtime
+            .block_on(tilo_workspace_service::workspaces::person_workspace::found(
+                host.workspaces(),
+            ))
+            .expect("the site keeps the person's own workspace");
         let workspace = host.workspace().to_owned();
         Self {
             runtime,
@@ -111,9 +120,14 @@ impl Server {
 
     /// Where a device the person's laptop lets in enters: this host's workspace, at this host.
     fn entry(&self) -> Entry {
+        self.entry_of(&self.workspace, WORKSPACE_NAME)
+    }
+
+    /// Where a device the person's laptop lets in enters `workspace`, named `name`: at this host.
+    fn entry_of(&self, workspace: &str, name: &str) -> Entry {
         Entry {
-            workspace: self.workspace.clone(),
-            workspace_name: Some(WORKSPACE_NAME.into()),
+            workspace: workspace.to_owned(),
+            workspace_name: Some(name.into()),
             server_cert: self.host.host_hint().host,
             server: tilo_api::daemon::enter::reached_of(&self.host.addr()),
             site: "https://tilo.test/".into(),
@@ -177,7 +191,12 @@ struct Issuing {
 }
 
 impl Issuing {
-    fn start(runtime: &tokio::runtime::Handle, person: &SigningKey, entry: Entry) -> Self {
+    fn start(
+        runtime: &tokio::runtime::Handle,
+        person: &SigningKey,
+        entry: Entry,
+        keeps: Arc<dyn Keeping>,
+    ) -> Self {
         let laptop = key(8);
         let cert = certified(person, &laptop, "the person's laptop", true);
         let endpoint = endpoint(runtime, &laptop);
@@ -195,6 +214,7 @@ impl Issuing {
                     device: laptop.clone(),
                     cert,
                 }),
+                keeps,
             )
         };
         Self {
@@ -219,6 +239,26 @@ impl Drop for Issuing {
             let _ = router.shutdown().await;
             endpoint.close().await;
         }));
+    }
+}
+
+/// The site's record of the person's devices, where the computer a ticket certifies is listed as
+/// the daemon that issues a ticket lists it.
+struct SiteKeeps(tilo_workspace_service::workspaces::Workspaces);
+
+impl Keeping for SiteKeeps {
+    fn keep(&self, cert: DeviceCert) -> tilo_peer_state::new_device::Kept {
+        let workspaces = self.0.clone();
+        Box::pin(async move {
+            if let Err(error) = tilo_workspace_service::workspaces::person_workspace::devices::keep(
+                &workspaces,
+                &cert,
+            )
+            .await
+            {
+                tracing::warn!(%error, "the added computer is not listed among the person's devices");
+            }
+        })
     }
 }
 
@@ -250,6 +290,7 @@ fn serving(
     person: [u8; 32],
     entry: Entry,
     approver: Arc<dyn Approver>,
+    keeps: Arc<dyn Keeping>,
 ) -> Router {
     let service = tilo_peer_state::actions::ActionService::new(
         key.clone(),
@@ -257,16 +298,21 @@ fn serving(
     );
     service.admit_uncertified(
         tilo_device_identity::login::SCOPE,
-        Arc::new(tilo_peer_state::new_device::ServedTicket::new(
-            ticket,
-            person,
-            entry,
-            DeviceCapabilities::member(),
-            approver,
-            tilo_user_identity::RevocationList::new(),
-            tilo_clock::unix_now_ns()
-                .saturating_add(tilo_device_identity::login::TICKET_LIFETIME_NS),
-        )),
+        Arc::new(
+            tilo_peer_state::new_device::ServedTicket::new(
+                ticket,
+                person,
+                entry,
+                DeviceCapabilities::member(),
+                approver,
+                tilo_user_identity::RevocationList::new(),
+                tilo_clock::unix_now_ns()
+                    .saturating_add(tilo_device_identity::login::TICKET_LIFETIME_NS),
+            )
+            // The computer the ticket certifies is listed among the person's devices as it is
+            // certified, as the daemon that issues a ticket lists it.
+            .kept_by(keeps),
+        ),
     );
     Router::builder(endpoint.clone())
         .accept(tilo_peer_state::actions::ACTIONS_ALPN, service)
@@ -366,7 +412,13 @@ fn a_phone_that_joins_lists_its_workspaces_installed_apps_by_name_and_no_others(
     let scratch = tempfile::tempdir().unwrap();
     // The workspace runs Notes before the phone ever joins it; nothing is installed on the phone.
     server.install(&notes_tapp(scratch.path()));
-    let laptop = Issuing::start(server.runtime.handle(), &server.person, server.entry());
+    let keeps: Arc<dyn Keeping> = Arc::new(SiteKeeps(server.host.workspaces().clone()));
+    let laptop = Issuing::start(
+        server.runtime.handle(),
+        &server.person,
+        server.entry(),
+        Arc::clone(&keeps),
+    );
     let profile = tilo_machine::account_daemon_profile().expect("the phone keeps a daemon");
     let mut phone = Device::start(&profile).expect("the phone's daemon");
     phone
@@ -412,4 +464,164 @@ fn a_phone_that_joins_lists_its_workspaces_installed_apps_by_name_and_no_others(
 
     phone.stop().expect("the phone's daemon stops");
     drop(laptop);
+}
+
+/// A device that serves its person now takes the login it is given in as it is made: the
+/// workspaces the ticket entered are held here, and its list reads them without the person's part
+/// starting again.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one login into a second workspace, and the part that keeps it, read top to bottom"
+)]
+fn a_running_device_keeps_the_workspace_its_login_enters() {
+    use tilo_actions::remote::{
+        ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+        RemoteActionTarget,
+    };
+    use tilo_device_identity::login::{LOG_IN, PROVIDER, RESOURCE};
+
+    let (_home, mut env) = phone_home();
+    let server = Server::start();
+    env.set("TILO_RELAY", server.relay_url());
+    let keeps: Arc<dyn Keeping> = Arc::new(SiteKeeps(server.host.workspaces().clone()));
+    let laptop = Issuing::start(
+        server.runtime.handle(),
+        &server.person,
+        server.entry(),
+        Arc::clone(&keeps),
+    );
+    let profile = tilo_machine::account_daemon_profile().expect("the phone keeps a daemon");
+    let mut phone = Device::start(&profile).expect("the phone's daemon");
+    phone
+        .log_in(&laptop.ticket(), "Pixel")
+        .expect("the phone redeems the ticket its person's laptop printed");
+    until("the phone lists the workspace it joined", || {
+        let devices = phone.devices().map_err(|error| format!("{error:#}"))?;
+        if devices
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.key == server.workspace)
+        {
+            Ok(())
+        } else {
+            Err(format!("{devices:?}"))
+        }
+    });
+
+    // A second workspace of the person's, the laptop lets a device into now, while the phone's
+    // person's part serves.
+    let garage = server.host.create("Garage");
+    let issuer = Issuing::start(
+        server.runtime.handle(),
+        &server.person,
+        server.entry_of(&garage, "Garage"),
+        Arc::clone(&keeps),
+    );
+    let part = phone
+        .services(Duration::from_secs(30))
+        .expect("the phone's person's part serves");
+    let serving = Arc::clone(&part);
+    // The login a session's sign-in reaches the device's own actions with, answered by them
+    // exactly as `devices#logIn` is.
+    let keys = tilo_api::calls::device_keys();
+    let key = tilo_device_identity::persist::read_device_key(&keys.device_privkey)
+        .expect("the phone's device key, which its daemon took");
+    let answers = crate::device::unclaimed::DeviceOnly::at(
+        key,
+        tilo_device_identity::login::Place::here(keys).expect("the phone's login"),
+        profile,
+        crate::device::services::this_account_uid(),
+    );
+    answers.serving(&part);
+    let invocation = tilo_actions::InvocationId::new();
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: RemoteActionTarget {
+            provider: PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(RESOURCE, LOG_IN),
+        },
+        argument: InvokeArgument::Json(
+            serde_json::json!({"ticket": issuer.ticket(), "agent": "tilo"})
+                .as_object()
+                .cloned()
+                .expect("the login's arguments"),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+        asks: false,
+    };
+    let receipt = answers
+        .invoke(&Caller::local_system(), request)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten();
+    assert!(
+        matches!(
+            receipt,
+            Some(Ok(ref receipt)) if matches!(receipt.status, ReceiptStatus::Accepted)
+        ),
+        "the device's own actions take the login: {receipt:?}"
+    );
+    // The device's own actions ran the login: what it became, or why it did not.
+    let answered = tilo_test_env::wait_for("the login's answer", || {
+        match tilo_actions::remote::ActionProvider::observe(
+            &answers,
+            &Caller::local_system(),
+            &invocation,
+        ) {
+            Some(state)
+                if !matches!(
+                    state.update,
+                    tilo_actions::InvocationUpdate::Accepted { .. }
+                ) =>
+            {
+                Some(state)
+            }
+            _ => None,
+        }
+    });
+    assert!(
+        matches!(
+            answered.update,
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "the device's own actions ran the login: {answered:?}"
+    );
+    until(
+        "the person's part lists the workspace its login entered, without starting again",
+        || {
+            let devices = phone.devices().map_err(|error| format!("{error:#}"))?;
+            if devices
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.key == garage)
+            {
+                Ok(())
+            } else {
+                let reading = Arc::clone(&serving);
+                let held = crate::device::workspaces::block_on_owned(async move {
+                    reading.workspaces().ids().await
+                });
+                Err(format!(
+                    "{devices:?}; the part serving {} holds {held:?}",
+                    serving.serves_person()
+                ))
+            }
+        },
+    );
+    let holds = phone
+        .services(Duration::from_secs(30))
+        .expect("the person's part still serves");
+    assert!(
+        Arc::ptr_eq(&part, &holds),
+        "the person's part did not start again for the login"
+    );
+    phone.stop().expect("the phone's daemon stops");
+    drop(issuer);
 }

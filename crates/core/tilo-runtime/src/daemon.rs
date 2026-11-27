@@ -869,6 +869,10 @@ fn serve_device(
         }
         stop.waiting_on("the wait between its person's parts");
         hold_between_parts(stop);
+        // A login answered while no part served is taken up by the part that starts here.
+        if entered.is_none() {
+            entered = device.entered();
+        }
         // Each stage is the work under way until the next begins: a start that hangs is named
         // by the stage it hangs in, in the stall's report.
         let mut watched = None;

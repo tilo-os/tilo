@@ -482,6 +482,20 @@ impl Device {
             )),
             Err(refusal) => Some(refusal),
         };
+        // The host let this device in through its entry: the workspace is entered, and its host
+        // answered the address this device's service takes it in by. The session's link to the
+        // workspace follows that admission on its own time, and a link that has not caught up
+        // yet is no refusal of an entry the host already made.
+        if asked.is_none() {
+            if let Err(error) = self.join(workspace).await {
+                tracing::warn!(
+                    %error,
+                    workspace,
+                    "the workspace's link is not joined yet; the device is entered and keeps it"
+                );
+            }
+            return Ok(id);
+        }
         // A workspace the host invites no one into on its own may admit this device already.
         match self.join(workspace).await {
             Ok(id) => Ok(id),

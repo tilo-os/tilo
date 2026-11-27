@@ -612,6 +612,12 @@ impl Answering {
             .insert(invocation, state);
         receipt
     }
+
+    /// The person's services, while they run: what a login answered now is taken into, and what
+    /// a call this endpoint does not answer is handed to.
+    fn serving(&self) -> Option<Arc<super::services::Daemon>> {
+        self.serving.now()
+    }
 }
 
 impl DeviceOnly {
@@ -1093,7 +1099,21 @@ impl DeviceOnly {
                 .adopted_login(seated.seat.uid, device.cert.user_public_key);
         }
         let said = logged_in(&device);
-        *self.0.entered.lock_recover() = Some(device);
+        *self.0.entered.lock_recover() = Some(device.clone());
+        // The person's services, when they run, take the login in now: the part enters through
+        // the server this login names, and takes the workspace it entered in, by the same path a
+        // start enters through, rather than at its next start.
+        if let Some(daemon) = self.0.serving()
+            && daemon.serves_person() == hex::encode(device.cert.user_public_key)
+        {
+            daemon.move_to(device.clone());
+            let workspaces = Arc::clone(daemon.service_workspaces());
+            super::home::entered_while_running(&workspaces, &device.cert, &device)
+                .await
+                .map_err(|why| {
+                    anyhow::anyhow!("this computer is one of your devices now, but {why}")
+                })?;
+        }
         Ok(said)
     }
 }

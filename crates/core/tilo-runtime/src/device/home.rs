@@ -16,6 +16,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
 use super::workspaces::{ServiceWorkspaces, block_on_owned};
+use tilo_desktop_model::WorkspaceId;
+use tilo_workspace_service::workspaces::MemberDevice;
 
 /// The site a device names whose server names none of its own.
 const SITE: &str = "https://tilo.sh/";
@@ -223,6 +225,73 @@ impl Home {
     }
 }
 
+/// The person's services take a login in while they run: `device`'s workspaces are entered and
+/// held here, as the start that first entered through it holds them, and the person's list is
+/// written from what it brought. A login answered by the device's own actions while their part
+/// runs is taken in here, so no part has to start again for it to be kept.
+pub(crate) async fn entered_while_running(
+    workspaces: &Arc<ServiceWorkspaces>,
+    cert: &DeviceCert,
+    device: &Device,
+) -> Result<(), String> {
+    // The workspace the entry names is entered here now, by the path a start enters through: the
+    // session this device's service lent has it entered at its host, and the host's address is
+    // kept with it, which the member copy is taken in by. A copy its host does not take in is the
+    // login's to say, not one to pass over: the person's list reads what the part keeps.
+    // The part acts as the device this login made from now on: the host that lists this
+    // computer knows the certificate the login filed, and a member copy proves with that one,
+    // not the certificate the part started with.
+    workspaces
+        .copies()
+        .set_member_device(Arc::new(MemberDevice {
+            cert: device.cert.clone(),
+            signer: workspaces.signer(),
+        }));
+    let entered = entered_here(workspaces, device).await?;
+    // The session this device's service lent takes the workspace in as its host answers the
+    // address it keeps it at, which is told here as it is kept. A copy the host does not take in
+    // is the login's to say, not one to pass over: the person's list reads what the part keeps.
+    let workspace = WorkspaceId::parse(&device.workspace)
+        .ok_or_else(|| format!("the login names no workspace: {}", device.workspace))?;
+    let kept = workspaces.entered();
+    let deadline = std::time::Instant::now().checked_add(crate::daemon::WAITED_WITHIN);
+    loop {
+        let heard = kept.notified();
+        tokio::pin!(heard);
+        heard.as_mut().enable();
+        if workspaces.keeps_now(workspace) {
+            break;
+        }
+        let left = deadline.map_or(crate::daemon::WAITED_WITHIN, |deadline| {
+            deadline.saturating_duration_since(std::time::Instant::now())
+        });
+        if left.is_zero() || tokio::time::timeout(left, heard).await.is_err() {
+            entered.close();
+            return Err(format!(
+                "the workspace {workspace} this computer logged into is not kept here yet: the \
+                 device keeping it did not answer within {} seconds",
+                crate::daemon::WAITED_WITHIN.as_secs()
+            ));
+        }
+    }
+    entered.close();
+    list_the_persons_workspaces(Arc::clone(workspaces), cert.clone(), device.clone()).await;
+    Ok(())
+}
+
+/// The device `workspaces` enters the workspaces the login `device` names through: at the address
+/// its entry gives, admitted as this device, or why it could not.
+async fn entered_here(
+    workspaces: &Arc<ServiceWorkspaces>,
+    device: &Device,
+) -> Result<tilo_session_client::device::Device, String> {
+    tilo_api::daemon::enter::connect_signed(workspaces.signer(), device, Some(workspaces.lent()))
+        .await
+        .map_err(|error| {
+            format!("the workspace this computer logged into is not here yet: {error:#}")
+        })
+}
+
 /// Write the person's list of their workspaces here, once this device holds a copy of their own
 /// workspace: the workspace its login named, as the server keeps it, and every workspace its copy
 /// records them in.
@@ -254,20 +323,10 @@ async fn list_the_persons_workspaces(
 /// synced with the server as the copy of any workspace its login entered is. Whether it is held
 /// here now.
 async fn taken_in(workspaces: &Arc<ServiceWorkspaces>, device: &Device, own: &str) -> bool {
-    let entered = match tilo_api::daemon::enter::connect_signed(
-        workspaces.signer(),
-        device,
-        Some(workspaces.lent()),
-    )
-    .await
-    {
+    let entered = match entered_here(workspaces, device).await {
         Ok(entered) => entered,
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                workspace = %own,
-                "the person's own workspace is not taken in from their server"
-            );
+        Err(why) => {
+            tracing::warn!("{why}");
             return false;
         }
     };

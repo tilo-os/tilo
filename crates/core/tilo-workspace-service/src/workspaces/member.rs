@@ -103,8 +103,9 @@ pub(super) struct Members {
     /// so it writes its way in once and the second finds it in.
     entering: tokio::sync::Mutex<()>,
     /// The device the copies act as, once the embedder hands it to the
-    /// service ([`Workspaces::set_member_device`]).
-    device: std::sync::OnceLock<Arc<MemberDevice>>,
+    /// service ([`Workspaces::set_member_device`]): the certificate a login
+    /// made for this device replaces the one its part started with.
+    device: std::sync::RwLock<Option<Arc<MemberDevice>>>,
     /// Whether each member copy's link is up, by workspace: what a write
     /// waits for before it is published, since a write published before the
     /// serving device listens is in no store of its own.
@@ -138,7 +139,7 @@ impl Default for Members {
             syncing: std::sync::Mutex::default(),
             holding: tokio::sync::Mutex::default(),
             entering: tokio::sync::Mutex::default(),
-            device: std::sync::OnceLock::default(),
+            device: std::sync::RwLock::default(),
             up: std::sync::Mutex::default(),
             away: std::sync::Mutex::default(),
             materials: std::sync::Mutex::default(),
@@ -199,11 +200,22 @@ impl MemberSyncing {
 }
 
 impl Members {
-    /// Take `device` as the device the member copies act as.
+    /// Take `device` as the device the member copies act as, in place of the one it acted as
+    /// before: a login certifies this device's key again, and the member copies prove with the
+    /// certificate the host that lists it knows.
     pub(super) fn set_device(&self, device: Arc<MemberDevice>) {
-        if self.device.set(device).is_err() {
-            tracing::warn!("the service's member device was already set; it is kept");
-        }
+        *self
+            .device
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(device);
+    }
+
+    /// The device the member copies act as, once one was handed to the service.
+    fn device(&self) -> Option<Arc<MemberDevice>> {
+        self.device
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// A receiver told whenever a served write is noted, answered or refused.
@@ -625,9 +637,7 @@ impl Workspaces {
     pub(super) fn member_identity(&self) -> Result<Arc<MemberDevice>, String> {
         self.inner
             .member
-            .device
-            .get()
-            .cloned()
+            .device()
             .ok_or_else(|| "this service serves no device's member copies".to_owned())
     }
 
@@ -635,7 +645,7 @@ impl Workspaces {
     /// act as where its embedder keeps one, else this device itself, which hosts the
     /// workspaces it serves.
     pub fn signing_device(&self) -> Arc<MemberDevice> {
-        if let Some(device) = self.inner.member.device.get().cloned() {
+        if let Some(device) = self.inner.member.device() {
             return device;
         }
         Arc::new(MemberDevice {
@@ -1137,7 +1147,7 @@ impl Workspaces {
     /// hold as a member copy.
     #[must_use]
     pub fn member_material(&self, workspace: WorkspaceId) -> Option<MemberMaterial> {
-        let device = self.inner.member.device.get()?;
+        let device = self.inner.member.device()?;
         let (hint, continuity) = {
             let materials = self.inner.member.materials.lock().ok()?;
             materials.get(&workspace)?.clone()
@@ -1168,7 +1178,7 @@ impl Workspaces {
     /// The device this service's member copies act as, once it is handed one:
     /// the device whose own writes [`Self::admitted_writes`] does not tell.
     pub(super) fn member_device_key(&self) -> Option<[u8; 32]> {
-        self.inner.member.device.get().map(|device| device.device())
+        self.inner.member.device().map(|device| device.device())
     }
 
     /// Every workspace held here as a member copy. Read without any
