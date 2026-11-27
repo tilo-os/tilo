@@ -809,10 +809,12 @@ pub fn dump() {
 }
 
 /// One line describing this process's startup so far, for a log reader:
-/// `APP-STARTUP app=<app> total_ms=<ms> phases=<mark>:<ms>,...`. `total_ms`
-/// is the time to the latest mark; each phase is the time from the previous
-/// mark to the one it names, and phases under a millisecond are left out.
-/// `None` while capture is disabled.
+/// `APP-STARTUP app=<app> total_ms=<ms> phases=until-<mark>:<ms>,... on_cpu=until-<mark>:<ms>,...`.
+/// `total_ms` is the time to the latest mark. Each phase is the wall time from the previous mark
+/// until the one it names, so it holds whatever ran before that mark, not the step the mark is
+/// named after; phases under a millisecond are left out. `on_cpu` is the CPU the process ran in
+/// the same gaps, where the system says: a phase much longer than its CPU waited (for a core, a
+/// lock, a reply) rather than worked. `None` while capture is disabled.
 pub fn summary_line(app: &str) -> Option<String> {
     let Some(Some(m)) = METRICS.get() else {
         return None;
@@ -821,7 +823,7 @@ pub fn summary_line(app: &str) -> Option<String> {
         .events
         .lock_recover()
         .iter()
-        .map(|event| (event.name.clone(), event.ns))
+        .map(|event| (event.name.clone(), event.ns, event.cpu_ns))
         .collect::<Vec<_>>();
     Some(format_summary(app, &events))
 }
@@ -868,19 +870,33 @@ pub fn events() -> Vec<(String, u128)> {
         .collect()
 }
 
-fn format_summary(app: &str, events: &[(String, u128)]) -> String {
+fn format_summary(app: &str, events: &[(String, u128, Option<u128>)]) -> String {
     const MS: u128 = 1_000_000;
     let mut previous = 0u128;
+    let mut previous_cpu = Some(0u128);
     let mut phases = Vec::new();
-    for (name, ns) in events {
+    let mut on_cpu = Vec::new();
+    for (name, ns, cpu_ns) in events {
         let elapsed = ns.saturating_sub(previous);
         previous = previous.max(*ns);
+        let ran = previous_cpu
+            .zip(*cpu_ns)
+            .map(|(from, to)| to.saturating_sub(from));
+        previous_cpu = cpu_ns.map(|cpu| previous_cpu.map_or(cpu, |from| from.max(cpu)));
         if elapsed >= MS {
-            phases.push(format!("{name}:{}", elapsed / MS));
+            phases.push(format!("until-{name}:{}", elapsed / MS));
+            if let Some(ran) = ran {
+                on_cpu.push(format!("until-{name}:{}", ran / MS));
+            }
         }
     }
+    let on_cpu = if on_cpu.is_empty() {
+        String::new()
+    } else {
+        format!(" on_cpu={}", on_cpu.join(","))
+    };
     format!(
-        "APP-STARTUP app={app} total_ms={} phases={}",
+        "APP-STARTUP app={app} total_ms={} phases={}{on_cpu}",
         previous / MS,
         phases.join(",")
     )
@@ -910,6 +926,30 @@ pub fn span<T>(name: &str, f: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A startup whose window process waited for a core: the summary names each gap by the mark
+    /// it ran until, and says how little of a long gap the process spent on the CPU.
+    #[test]
+    fn a_gap_is_named_until_its_mark_and_says_what_ran_on_the_cpu() {
+        const MS: u128 = 1_000_000;
+        let events = [
+            ("app-prepare-end".to_owned(), 554 * MS, Some(6 * MS)),
+            ("history-install".to_owned(), 759 * MS, Some(7 * MS)),
+            ("first-frame".to_owned(), 759 * MS + 1, Some(7 * MS + 1)),
+        ];
+        assert_eq!(
+            format_summary("so.tilo.maps", &events),
+            "APP-STARTUP app=so.tilo.maps total_ms=759 \
+             phases=until-app-prepare-end:554,until-history-install:205 \
+             on_cpu=until-app-prepare-end:6,until-history-install:1"
+        );
+        // Where the system keeps no CPU time, the line says only the wall time.
+        let wall_only = [("first-frame".to_owned(), 30 * MS, None)];
+        assert_eq!(
+            format_summary("so.tilo.maps", &wall_only),
+            "APP-STARTUP app=so.tilo.maps total_ms=30 phases=until-first-frame:30"
+        );
+    }
 
     /// The launches still being timed: the ask that the next window's map is credited to.
     fn pending() -> Vec<(u64, String, bool, Option<u64>)> {

@@ -1,7 +1,8 @@
 """How fast every app the session launched drew its first frame, judged against a budget.
 
 Each Tilo app logs one line when its first frame is presented, which the session log
-keeps as `[app <pkg> stderr] APP-STARTUP app=<pkg> total_ms=<ms> phases=<mark>:<ms>,...`.
+keeps as `[app <pkg> stderr] APP-STARTUP app=<pkg> total_ms=<ms> phases=until-<mark>:<ms>,...`
+and, where the system says, `on_cpu=until-<mark>:<ms>,...`: the CPU each gap ran.
 `total_ms` runs from the app's process start to that first frame. Opening History logs
 `[app <pkg> stderr] HISTORY-OPEN listed=<n> earlier=<bool> ms=<ms>`: the time from the
 request to the listed history. The `tilo-gpu: window adapter` line an app logs before its
