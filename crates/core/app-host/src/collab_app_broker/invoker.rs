@@ -58,13 +58,7 @@ fn invoked_with(
     // A Shortcut's step is admitted as the person it runs for, and the app is told what it is:
     // the automation acting for them, which every check of the app's reads as nobody at a
     // screen.
-    let admitting = caller.filter(|caller| {
-        let acting = caller.acting();
-        acting.by == *actor.actor()
-            || (acting.is_automation()
-                && !acting.acted_for.is_empty()
-                && acting.principal() == actor.actor())
-    });
+    let admitting = caller.filter(|caller| caller.acting().stands_for(actor.actor()));
     // Without a caller, the admitted actor says whom an agent acts for.
     let admitted = admitting.map_or_else(|| actor.shown(), |caller| caller.acting().clone());
 

@@ -42,19 +42,6 @@ impl MemberId {
             .flatten()
     }
 
-    /// The id of the one direct conversation with exactly `members`, as every
-    /// app that reads or writes conversations spells it: derived from the
-    /// set, so two devices that open the same conversation at once make one,
-    /// and neither has to create it first.
-    #[must_use]
-    pub fn direct_conversation(members: impl IntoIterator<Item = Self>) -> String {
-        let mut members: Vec<Self> = members.into_iter().collect();
-        members.sort();
-        members.dedup();
-        let members = serde_json::to_string(&members).unwrap_or_default();
-        format!("{DIRECT_CONVERSATION_PREFIX}{members}")
-    }
-
     #[track_caller]
     #[must_use]
     pub fn person(id: impl Into<PersonId>) -> Self {
@@ -707,23 +694,23 @@ impl Acting {
     /// through an agent (the run of a Shortcut an agent saved), the person that agent acts for.
     #[must_use]
     pub fn acted_for_person(&self) -> Option<&str> {
-        self.person_node().and_then(|node| node.person_id())
+        self.person_node().and_then(Self::person_id)
     }
 
-    /// The node of the person this acting is for ([`Self::acted_for_person`]), or of the member
-    /// an automation runs for.
+    /// The node of the member this acting is for: the one an automation acts for, and for an
+    /// automation acting through an agent, that agent's person.
     fn person_node(&self) -> Option<&Self> {
         let node = self.acted_for.first()?;
-        match node.by.member_id()? {
-            MemberId::Person(_) => Some(node),
-            MemberId::Agent { .. } if self.is_automation() => node
-                .acted_for
-                .first()
-                .filter(|person| person.is_person())
-                .or(Some(node)),
-            _ if self.is_automation() => Some(node),
-            _ => None,
+        node.member_id()?;
+        if node.is_person() || !self.is_automation() {
+            return node.is_person().then_some(node);
         }
+        Some(
+            node.acted_for
+                .first()
+                .filter(|person| node.is_agent() && person.is_person())
+                .unwrap_or(node),
+        )
     }
 
     /// The agent acting here: the actor, when it is one, or the agent an automation acts through
@@ -732,16 +719,26 @@ impl Acting {
     /// the run too.
     #[must_use]
     pub fn acting_agent(&self) -> Option<&MemberId> {
-        if self.is_agent() {
-            return self.member_id();
-        }
-        if !self.is_automation() {
-            return None;
-        }
-        self.acted_for
-            .first()
-            .and_then(Self::member_id)
-            .filter(|member| member.is_agent())
+        let node = if self.is_automation() {
+            self.acted_for.first()?
+        } else {
+            self
+        };
+        node.member_id().filter(|member| member.is_agent())
+    }
+
+    /// Whether this acting is a Shortcut's run acting for `actor`: the automation whose principal
+    /// they are, never the actor's own act.
+    #[must_use]
+    pub fn runs_for(&self, actor: &Actor) -> bool {
+        self.is_automation() && self.principal() == actor
+    }
+
+    /// Whether this acting speaks for `actor`: the actor itself, or a Shortcut's run acting for
+    /// them.
+    #[must_use]
+    pub fn stands_for(&self, actor: &Actor) -> bool {
+        &self.by == actor || self.runs_for(actor)
     }
 
     /// On whose behalf this acting writes, as an app reads `invoker.principal()`: the actor
@@ -752,8 +749,8 @@ impl Acting {
     /// screen.
     #[must_use]
     pub fn principal(&self) -> &Actor {
-        match (&self.by, self.person_node()) {
-            (Actor::Automation(_), Some(node)) => &node.by,
+        match self.person_node() {
+            Some(node) if self.is_automation() => &node.by,
             _ => &self.by,
         }
     }

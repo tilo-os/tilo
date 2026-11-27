@@ -1573,11 +1573,7 @@ impl ActionInvoker {
         // An automation's step is delivered as the person it runs for; the
         // host names the automation acting for exactly that person, through
         // the agent that saved it when one did.
-        if let Some(automation) = invoker.filter(|invoker| {
-            invoker.acting.is_automation()
-                && !invoker.acting.acted_for.is_empty()
-                && invoker.acting.principal() == actor
-        }) {
+        if let Some(automation) = invoker.filter(|invoker| invoker.acting.runs_for(actor)) {
             return automation.clone();
         }
         match invoker.filter(|invoker| invoker.acting.by == *actor) {
