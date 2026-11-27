@@ -1685,6 +1685,16 @@ impl Workspaces {
         {
             return Ok(envelopes);
         }
+        // A sealed document's writes are no changes of the cleartext this device opens it to:
+        // what says one landed is the disposition the admission reported for it. Opening the
+        // document to confirm it would decrypt and merge its whole history on every write, so a
+        // list that grows by a write at a time grows slower with each; it is opened only to say
+        // why a write did not land. A document that travels in the clear is looked for in the
+        // document itself, which reads as it is saved.
+        let sealed = candidate.publication().is_sealed_document(app, document);
+        if sealed && accepted {
+            return Ok(envelopes);
+        }
         // Which version of the app the write was made with, and which the workspace runs: a
         // write that waits for its app's surface is told apart by them.
         let surface = |hash: Option<[u8; 32]>| hash.map_or_else(|| "none".to_owned(), hex::encode);
@@ -1709,13 +1719,6 @@ impl Workspaces {
                     taken.rejected
                 )
             })?;
-        // A sealed document's writes are no changes of the cleartext this device opens it to:
-        // what says one landed is the disposition the admission reported for it. A document
-        // that travels in the clear is looked for in the document itself.
-        let sealed = candidate
-            .publication()
-            .held_document(app, document)
-            .is_some_and(|held| held.is_sealed());
         resource_write_landed(&opened, sealed, accepted, write, &decided, &taken)?;
         Ok(envelopes)
     }
