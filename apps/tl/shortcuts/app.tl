@@ -3629,7 +3629,11 @@ view overview(w: Workbench) {
         )
     }
     let runs = recent_runs()
-    if not runs.is_empty() {
+    if let why = unreadable(query(invocations.Invocation)) {
+        ui.Section(title: "Recent invocations") {
+            std.unreadable_row("Recent invocations could not be read", why)
+        }
+    } else if not runs.is_empty() {
         ui.Section(title: "Recent invocations") {
             for call in runs {
                 ui.ListRow(
