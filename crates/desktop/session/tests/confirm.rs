@@ -338,3 +338,71 @@ fn shutting_down_a_session_in_a_window_asks_and_ends_only_the_session() {
         "shutting down did not reach the host's machine"
     );
 }
+
+/// A program's question, here an agent asking to work in a workspace, put to the person in a
+/// session its daemon runs, answered on another thread as the program waits for it.
+fn program_asks(
+    asks: &tilo_service::AskSender,
+    handle: &str,
+) -> std::thread::JoinHandle<Option<tilo_service::Answer>> {
+    let asked = asks.ask(tilo_service::Question {
+        handle: handle.to_owned(),
+        kind: "session.mcp-server".to_owned(),
+        app_id: None,
+        label: "Codex".to_owned(),
+        details: json!({"workspace": "Studio", "agent": "Codex"}),
+    });
+    std::thread::spawn(move || pollster::block_on(asked))
+}
+
+/// The program's answer, once it has one, running the session until then.
+#[track_caller]
+fn answered(
+    session: &mut Session,
+    waiting: std::thread::JoinHandle<Option<tilo_service::Answer>>,
+) -> Option<tilo_service::Answer> {
+    crate::common::wait_for(session, "the program's answer", |session| {
+        session.settle_services();
+        session.step(REFRESH).expect("step");
+        waiting.is_finished().then_some(())
+    });
+    waiting.join().expect("the program's thread")
+}
+
+/// A program's question reaches the person in a session linked to its daemon: it stands on the
+/// system's sheet as the person's asked record, their no declines it, and their yes answers the
+/// program with the choice they made.
+#[test]
+fn a_programs_question_reaches_the_person_and_their_answer_reaches_the_program() {
+    let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (asks, questions) = crate::common::person_asked();
+    let mut session = crate::common::on_its_daemon(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, TALL)],
+        Options {
+            asks: Some((asks.clone(), questions)),
+            collab: false,
+            ..Options::default()
+        },
+    );
+
+    // Declined: the program is told no.
+    let waiting = program_asks(&asks, "agent-codex-1");
+    press(&mut session, "Don't answer");
+    assert_eq!(
+        answered(&mut session, waiting),
+        None,
+        "the person's no declines the program's question"
+    );
+    until_gone(&mut session, "Don't answer");
+
+    // Allowed: the program is answered with what the person chose.
+    let waiting = program_asks(&asks, "agent-codex-2");
+    press(&mut session, "Allow once");
+    let answer = answered(&mut session, waiting).expect("the person's yes answers the program");
+    assert_eq!(
+        answer.choice,
+        crate::common::allowed_for(0).choice,
+        "the person's yes answers the program with their choice: {answer:?}"
+    );
+}

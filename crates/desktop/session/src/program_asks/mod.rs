@@ -86,6 +86,8 @@ struct Inner {
     /// The allowances the person gave beyond this session, not yet told.
     granted: Mutex<Vec<Grant>>,
     dispatch: OnceLock<Dispatch>,
+    /// What [`PROVIDER`] offers on the dispatch: the answer of each question raised.
+    listing: OnceLock<runtime_collab::Provided>,
     /// Wakes the session's loop, where the notices are shown.
     wake: OnceLock<Wake>,
     /// The workspace the person has in front, as the session's pass last saw it: where a
@@ -143,10 +145,14 @@ impl ProgramAsks {
                     tilo_action_calls::serve,
                 )
                 .await;
-            if let Err(error) = served {
-                tracing::warn!(%error, "a program's question reaches nobody here");
-                return;
-            }
+            let listing = match served {
+                Ok(listing) => listing,
+                Err(error) => {
+                    tracing::warn!(%error, "a program's question reaches nobody here");
+                    return;
+                }
+            };
+            let _ = asks.inner.listing.set(listing);
             asks.reach(Dispatch {
                 actions: Arc::new(shell.dispatch()),
                 caller: Caller::local_system(),
@@ -292,6 +298,13 @@ impl ProgramAsks {
         };
         let asks = self.clone();
         self.runtime.spawn(async move {
+            // Its answer is offered before it is called: the dispatch admits a call of what its
+            // provider offers, the person's approve of it included.
+            if let Some(listing) = asks.inner.listing.get()
+                && let Err(error) = listing.publish(&asks.offered()).await
+            {
+                tracing::warn!(%error, "a program's question is offered to nobody");
+            }
             let admitted = dispatch.actions.invoke(&dispatch.caller, request).await;
             match &admitted {
                 Some(Ok(_)) => {}
@@ -464,18 +477,70 @@ impl ProgramAsks {
     }
 }
 
+/// The row describing the answer of question `handle`, asked by `who`.
+fn answer_row(handle: &str, who: &str) -> tilo_actions::remote::CatalogueRow {
+    tilo_actions::remote::CatalogueRow::for_action(
+        PROVIDER,
+        PROVIDER,
+        tilo_actions::ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: ActionAddress::new(handle, ANSWER),
+            resource_kind: PROVIDER.into(),
+            resource_label: who.into(),
+            action_label: ANSWER.into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: tilo_actions::ExecutionLocus::ClientLocal,
+            kind: tilo_actions::OperationKind::Document,
+            contract: tilo_actions::ActionContract::default(),
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        },
+    )
+}
+
+impl ProgramAsks {
+    /// What [`PROVIDER`] offers now: the answer of each question raised.
+    fn offered(&self) -> CataloguePage {
+        let raised = self.inner.raised.lock_recover();
+        CataloguePage {
+            // Each question raised is a call of its own: what is offered moved with them.
+            revision: raised
+                .values()
+                .map(|was| was.invocation.0.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            rows: raised
+                .iter()
+                .map(|(handle, was)| answer_row(handle, &was.question.label))
+                .collect(),
+            exhausted: true,
+            ..CataloguePage::default()
+        }
+    }
+}
+
 impl ActionProvider for ProgramAsks {
     fn serves(&self, provider: &str) -> bool {
         provider == PROVIDER
     }
 
-    /// Nothing here is offered to call: a question is raised by the session alone.
+    /// The answer of each question raised: a question is raised by the session alone.
     fn query(
         &self,
         _caller: &Caller,
-        _query: CatalogueQuery,
+        query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        Pending::ready(Ok(CataloguePage::default()))
+        let offered = self.offered();
+        Pending::ready(Ok(CataloguePage::from_rows(
+            offered.revision,
+            offered.rows,
+            &query,
+        )))
     }
 
     fn invoke(

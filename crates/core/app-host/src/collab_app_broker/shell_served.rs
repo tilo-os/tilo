@@ -15,7 +15,7 @@ use runtime_collab::wire::shell::Typed;
 use runtime_collab::wire::{Answer, Ask, Handle};
 use tilo_actions::remote::session_actions;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, Completer,
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, UpdateMark,
 };
@@ -67,6 +67,7 @@ impl Served {
             runtime: tokio::runtime::Handle::current(),
             calls: std::sync::Mutex::default(),
             asked: std::sync::Mutex::default(),
+            answered_first: std::sync::Mutex::default(),
             asked_in,
             closed: AtomicBool::new(false),
         });
@@ -152,6 +153,10 @@ struct LinkProvider {
     /// The calls the shell answered by asking its person, whose records wait for their answer:
     /// withdrawn once the shell closes, since what asked them is gone.
     asked: std::sync::Mutex<std::collections::HashSet<InvocationId>>,
+    /// The calls the shell already answered when the dispatch asked whether they wait for the
+    /// person's yes, and did not: what the dispatch's taking of each is answered with.
+    answered_first:
+        std::sync::Mutex<HashMap<InvocationId, Result<InvocationReceipt, ActionCallError>>>,
     /// Where those records are kept.
     asked_in: Option<Arc<AskedStore>>,
     closed: AtomicBool,
@@ -410,6 +415,50 @@ impl ActionProvider for LinkProvider {
             done.complete(Ok(receipt));
         });
         answer
+    }
+
+    /// Whether the call waits for the person's yes is the shell's provider's to say, and it says
+    /// so only by answering the call: it is asked the call once, here, before the dispatch takes
+    /// it, so a refusal for want of the yes is kept as the person's asked record. Any other
+    /// answer is what taking the call answers ([`Self::run`]).
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        _admitted: &Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        let invocation = request.invocation;
+        let me = self.me.clone();
+        Some(
+            self.invoke(caller, request.clone())
+                .map(move |answered| match answered {
+                    Err(waits @ ActionCallError::ConfirmationRequired(_)) => Err(waits),
+                    answered => {
+                        if let Some(me) = me.upgrade() {
+                            me.answered_first
+                                .lock_recover()
+                                .insert(invocation, answered);
+                        }
+                        Ok(())
+                    }
+                }),
+        )
+    }
+
+    fn run(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        _admitted: Admitted,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let answered = self
+            .answered_first
+            .lock_recover()
+            .remove(&request.invocation);
+        match answered {
+            Some(answered) => Pending::ready(answered),
+            None => self.invoke(caller, request),
+        }
     }
 
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
