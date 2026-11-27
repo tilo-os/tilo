@@ -110,6 +110,9 @@ impl AppPage {
             return self.resize((width, height));
         }
         let (widget, action) = self.page.semantic_target(id, action)?;
+        // An element that is a part of a widget presses what it publishes, also when the ask
+        // names no target of its own: its number keeps the target it acts on.
+        let target = target.or_else(|| self.page.target(id));
         self.window
             .harness
             .perform_semantic_named(widget, target, &action)?;

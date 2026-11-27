@@ -126,7 +126,12 @@ impl ShownOnPage {
             action => self
                 .page
                 .semantic_target(id, action)
-                .and_then(|(widget, action)| frame.perform_semantic_named(widget, target, &action)),
+                .and_then(|(widget, action)| {
+                    // An element that is a part of a widget presses what it publishes, also when the
+                    // ask names no target of its own: its number keeps the target it acts on.
+                    let target = target.or_else(|| self.page.target(id));
+                    frame.perform_semantic_named(widget, target, &action)
+                }),
         };
         if let Err(reason) = acted {
             tracing::debug!(%reason, id, "a page's press was refused");

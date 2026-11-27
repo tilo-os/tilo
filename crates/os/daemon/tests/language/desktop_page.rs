@@ -210,8 +210,61 @@ fn patched(patches: &[PagePatch]) -> String {
         .join("")
 }
 
-/// The number of the innermost element labelled `label` in `html`.
+/// The number of the element named `label` in `html`: by its `aria-label`, or, for a control that
+/// shows its words instead of a label of its own, by the words it shows. A reader hears the same
+/// name either way, and a page's control is reached here as a person reaches it.
 fn labelled(html: &str, label: &str) -> Option<u32> {
+    labelled_named(html, label).or_else(|| {
+        let at = html.rfind(&format!(">{label}<"))?;
+        enclosing_id(html, at.saturating_add(1))
+    })
+}
+
+/// The number of the control whose own words begin `words`: a control that shows the name a
+/// reader hears rather than carrying it as an `aria-label`.
+fn labelled_words(html: &str, words: &str) -> Option<u32> {
+    let at = html.rfind(&format!(">{words}"))?;
+    enclosing_id(html, at.saturating_add(1))
+}
+
+/// The number of the nearest numbered element around the text at `at`: the words stand in the
+/// element that draws them, under the control or inside its row.
+fn enclosing_id(html: &str, at: usize) -> Option<u32> {
+    let mut rest = html.get(..at)?;
+    while let Some(start) = rest.rfind('<') {
+        let tag = rest.get(start..)?;
+        let open = tag.get(..tag.find('>')?)?;
+        if !open.starts_with("</")
+            && let Some(id) = open
+                .split("data-p=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .and_then(|number| number.parse().ok())
+        {
+            return Some(id);
+        }
+        rest = rest.get(..start)?;
+    }
+    None
+}
+
+/// The number of the shell's style menu on a page: the control that names the style the shell
+/// shows. A wide bar draws it with its words, a compact one with an `aria-label` alone, and the
+/// canvas style keeps it in the person's own menu — all the same control.
+fn style_menu(html: &str) -> Option<u32> {
+    let named = html
+        .split("aria-label=\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .find(|label| label.starts_with("Showing ") || label.ends_with(": style and workspaces"));
+    named
+        .and_then(|label| labelled(html, label))
+        .or_else(|| labelled_words(html, "Showing "))
+        .or_else(|| labelled_words(html, "You: style and workspaces"))
+}
+
+/// The number of the innermost element whose `aria-label` is `label`.
+fn labelled_named(html: &str, label: &str) -> Option<u32> {
     let at = html.rfind(&format!("aria-label=\"{label}\""))?;
     let open = html.get(html.get(..at)?.rfind('<')?..at)?;
     open.split("data-p=\"")
@@ -1063,15 +1116,7 @@ fn a_style_installed_while_readers_follow_reaches_each_of_them() {
 
         // The page's style menu lists it beside the shell's own.
         let whole = page.opened.body.clone();
-        let menu = whole
-            .split("aria-label=\"")
-            .skip(1)
-            .filter_map(|rest| rest.split('"').next())
-            .find(|label| {
-                label.starts_with("Showing ") || label.ends_with(": style and workspaces")
-            })
-            .map_or_else(|| panic!("the page's style menu: {whole}"), str::to_owned);
-        let menu = labelled(&whole, &menu).unwrap();
+        let menu = style_menu(&whole).unwrap_or_else(|| panic!("the page's style menu: {whole}"));
         let listed = page.act(Some((menu, PageAction::Activate))).await;
         if labelled(&listed, "Timeline of the layout").is_none() {
             page.until("the page's menu lists the installed style", |html| {
@@ -1132,15 +1177,7 @@ fn an_agents_pick_and_a_press_change_the_shells_record_the_computer_merges() {
 
         // The person presses the strips in the page's menu: the same action, as them.
         let whole = format!("{}{canvas}", page.opened.body);
-        let menu = whole
-            .split("aria-label=\"")
-            .skip(1)
-            .filter_map(|rest| rest.split('"').next())
-            .find(|label| {
-                label.ends_with(": style and workspaces") || label.starts_with("Showing ")
-            })
-            .map_or_else(|| panic!("the page's style menu: {whole}"), str::to_owned);
-        let menu = labelled(&whole, &menu).unwrap();
+        let menu = style_menu(&whole).unwrap_or_else(|| panic!("the page's style menu: {whole}"));
         let strips = style_line(STRIPS);
         let listed = page.act(Some((menu, PageAction::Activate))).await;
         let listed = if labelled(&listed, &strips).is_some() {

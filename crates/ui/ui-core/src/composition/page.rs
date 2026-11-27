@@ -36,6 +36,10 @@ use tilo_ui_base::{a11y::AccessNode, a11y::Action, a11y::Autofill, a11y::Role};
 pub struct Page {
     ids: HashMap<String, u32>,
     paths: Vec<String>,
+    /// The target each numbered element acts on, where it is a part of a widget that publishes
+    /// one (a list's row, a control over a picture): what a press on it names, whether or not
+    /// the ask that presses it carries the target itself.
+    targets: Vec<Option<String>>,
     last: Option<Element>,
     /// What the page's host shows in each well, by place (a window node naming the place it
     /// shows, [`well_place`]): the markup that stands where the compositor would show the
@@ -533,7 +537,18 @@ impl Page {
         }
         let id = u32::try_from(self.paths.len()).unwrap_or(u32::MAX);
         self.paths.push(path.to_owned());
+        self.targets.push(None);
         self.ids.insert(path.to_owned(), id);
+        id
+    }
+
+    /// [`Self::id`] for an element that is a part of a widget, acting on `target`: the target is
+    /// kept with the number, so a press that names only the element presses what it publishes.
+    fn id_targeted(&mut self, path: &str, target: &str) -> u32 {
+        let id = self.id(path);
+        if let Some(held) = self.targets.get_mut(id as usize) {
+            *held = Some(target.to_owned());
+        }
         id
     }
 
@@ -541,6 +556,13 @@ impl Page {
     #[must_use]
     pub fn path(&self, id: u32) -> Option<&str> {
         self.paths.get(id as usize).map(String::as_str)
+    }
+
+    /// The target the element numbered `id` acts on, where it is a part of a widget that
+    /// publishes one: what a press on it names when the ask does not carry the target itself.
+    #[must_use]
+    pub fn target(&self, id: u32) -> Option<&str> {
+        self.targets.get(id as usize)?.as_deref()
     }
 
     /// Where what the person did on the element numbered `id` lands: the widget its element stands
@@ -832,7 +854,13 @@ impl Page {
         } else {
             Element::new(tag_of(node, shows, node.children.is_empty()))
         };
-        element.id = Some(self.id(key));
+        element.id = Some(match &node.action_target {
+            // A part that acts names what it acts on: a press on its element alone presses it.
+            Some(target) if shows != Shows::Field && pressable(node) => {
+                self.id_targeted(key, target)
+            }
+            _ => self.id(key),
+        });
         self.semantics_attrs(&mut element, node, shows);
         if shows != Shows::Field
             && pressable(node)
@@ -885,7 +913,7 @@ impl Page {
             {
                 *index = index.saturating_add(1);
                 let mut over = Element::new("button");
-                over.id = Some(self.id(&format!("{path}#over:{target}")));
+                over.id = Some(self.id_targeted(&format!("{path}#over:{target}"), target));
                 over.attr("type", "button");
                 over.attr("class", "tilo-over");
                 over.attr(
