@@ -448,6 +448,8 @@ pub struct Instance {
     reveals: u64,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
+    /// The app's held connections, until the host they are handed to starts.
+    connections: Option<crate::held::Connections>,
     /// The outside services the package's types with an origin are kept in step with.
     origins: crate::origin::Origins,
     /// The undos and redos the person asked for, in order, not yet taken.
@@ -588,6 +590,7 @@ impl Instance {
                     .sink
                     .unwrap_or_else(|| Box::new(crate::sink::LogSink::dev())),
             ),
+            connections: None,
             origins: Rc::default(),
             history: Vec::new(),
             seen_offer: false,
@@ -664,6 +667,29 @@ impl Instance {
     /// Send the outside effects the instance settles to `sink`. Before the host starts.
     pub fn set_sink(&mut self, sink: Box<dyn OutsideSink>) {
         self.sink = Some(sink);
+    }
+
+    /// Hand a starting host what reaches outside the instance: where its settled outside effects
+    /// go, and its held connections.
+    fn hand_outside(&mut self, host: &Host) {
+        if let Some(sink) = self.sink.take() {
+            host.runtime().set_sink(crate::origin::RoutingSink {
+                origins: Rc::clone(&self.origins),
+                rest: sink,
+            });
+        }
+        if let Some(connections) = self.connections.take() {
+            host.runtime().set_held(connections);
+        }
+    }
+
+    /// Reach the app's held connections through `connections`: what its `connection.*` asks. An
+    /// instance whose host has not started yet hands them to it as it starts.
+    pub fn hold(&mut self, connections: crate::held::Connections) {
+        match self.host() {
+            Some(host) => host.runtime().set_held(connections),
+            None => self.connections = Some(connections),
+        }
     }
 
     /// Keep the package's types with an origin in step with `origin`'s service, and hand it the
@@ -1336,12 +1362,7 @@ impl Instance {
         let platform = Rc::clone(&self.platform);
         host.runtime().set_week_start(move || platform.week_start());
         host.set_words(PlatformWords(Rc::clone(&self.platform)));
-        if let Some(sink) = self.sink.take() {
-            host.runtime().set_sink(crate::origin::RoutingSink {
-                origins: Rc::clone(&self.origins),
-                rest: sink,
-            });
-        }
+        self.hand_outside(&host);
         self.generation = self.platform.load(&host);
         if let Some(builds) = self.platform.builds()
             && self.mode != Mode::Past

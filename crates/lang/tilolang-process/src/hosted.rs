@@ -2480,18 +2480,11 @@ impl Hosted {
         self.instance.add_origin(origin);
     }
 
-    /// Reach the app's held connections through `connections`: what its `connection.*` asks.
-    ///
-    /// # Errors
-    /// The instance has not opened its host yet.
-    pub fn hold(&mut self, connections: tilolang_tilo::held::Connections) -> Result<(), String> {
+    /// Reach the app's held connections through `connections`: what its `connection.*` asks,
+    /// from the moment its host starts.
+    pub fn hold(&mut self, connections: tilolang_tilo::held::Connections) {
         let _code = self.scope.enter();
-        let host = self
-            .instance
-            .host()
-            .ok_or_else(|| "the instance has no host yet".to_owned())?;
-        host.runtime().set_held(connections);
-        Ok(())
+        self.instance.hold(connections);
     }
 
     /// The person's environment changed — their formats, or the name the window calls someone:

@@ -480,20 +480,11 @@ pub struct TilolangProcess {
     thumbnails: Arc<std::sync::OnceLock<Arc<thumbnail::ThumbnailService>>>,
 }
 
-/// The outside services whose resources an instance's types may hold, kept in step through the
-/// app's connector: a package's types name one (`origin: imap.message`), matched in this order.
-const CONNECTED_ORIGINS: [&str; 4] = ["imap", "caldav", "youtube", "music"];
-
-/// The origins of [`CONNECTED_ORIGINS`] whose clients come only with the app launches they are
-/// part of (`app-launch`).
-#[cfg(test)]
-const LAUNCH_ORIGINS: [&str; 3] = ["caldav", "youtube", "music"];
-
-/// Have this process reach the connector of each origin in [`CONNECTED_ORIGINS`] its build links
-/// through that origin's own client, once: the platform finds a client only where its crate
-/// registered one (`tilolang_tilo::origin::remote`), and a host whose instances keep a mailbox, a
-/// calendar, a video site or a music catalogue is such a process. All but the mail's client come
-/// with the app launches they are part of.
+/// Have this process reach the connector of each origin its build links through that origin's
+/// own client, once: an instance is handed the connector of the service its types hold, and the
+/// platform finds a client only where its crate registered one
+/// ([`tilolang_tilo::origin::connected_origin`]). All but the mail's client come with the app
+/// launches they are part of.
 fn register_origins() {
     #[cfg(any(unix, windows))]
     {
@@ -1144,47 +1135,56 @@ impl TilolangProcess {
     fn attach_origin(&self, opening: &mut Opening, hosted: &mut Hosted) -> Result<(), AdmitError> {
         // Its types with an outside service's resources as origin are kept in step through the
         // app's connector, which holds the network and the credentials this process has none of.
-        // Which service is the package's own: a type names it (`origin: imap.message`).
-        if let Some(origin) = opening.origin.take() {
-            let served = CONNECTED_ORIGINS
-                .into_iter()
-                .find(|name| tilolang_tilo::origin::uses_origin(&hosted.bundle().meta, name));
-            if let Some(name) = served {
-                #[cfg(unix)]
-                let origin =
-                    tilolang_tilo::origin::remote(name, stream_of(origin), Arc::clone(&self.wake))
-                        .map_err(|error| {
-                            AdmitError::Join(format!("its {name} connector: {error}"))
-                        })?;
-                #[cfg(windows)]
-                let origin = stream_of(origin)
-                    .map_err(|error| error.to_string())
-                    .and_then(|origin| {
-                        tilolang_tilo::origin::remote(name, origin, Arc::clone(&self.wake))
-                    })
-                    .map_err(|error| AdmitError::Join(format!("its {name} connector: {error}")))?;
-                hosted.add_origin(origin);
-            } else {
-                // A package whose types hold no outside service's records keeps held
-                // connections there instead (`connections: ["lsp"]`): its `connection.*` reach
-                // them, and what they say is pushed to the instance.
-                #[cfg(unix)]
-                let stream = Ok::<_, String>(stream_of(origin));
-                #[cfg(windows)]
-                let stream = stream_of(origin).map_err(|error| error.to_string());
-                let client = stream
-                    .and_then(|stream| {
-                        tilolang_tilo::held::Client::over(stream).map_err(|error| error.to_string())
-                    })
-                    .map_err(|error| AdmitError::Join(format!("its held connections: {error}")))?;
-                hosted
-                    .hold(tilolang_tilo::held::Connections {
-                        client,
-                        wake: Arc::clone(&self.wake),
-                    })
-                    .map_err(|error| AdmitError::Join(format!("its held connections: {error}")))?;
-            }
+        // Which service is the package's own: a type names it (`origin: imap.message`), and the
+        // service's crate registered the client of its connector.
+        let Some(origin) = opening.origin.take() else {
+            return Ok(());
+        };
+        let meta = &hosted.bundle().meta;
+        if let Some(name) = tilolang_tilo::origin::connected_origin(meta) {
+            #[cfg(unix)]
+            let origin =
+                tilolang_tilo::origin::remote(&name, stream_of(origin), Arc::clone(&self.wake));
+            #[cfg(windows)]
+            let origin = stream_of(origin)
+                .map_err(|error| error.to_string())
+                .and_then(|origin| {
+                    tilolang_tilo::origin::remote(&name, origin, Arc::clone(&self.wake))
+                });
+            let origin = origin
+                .map_err(|error| AdmitError::Join(format!("its {name} connector: {error}")))?;
+            hosted.add_origin(origin);
+            return Ok(());
         }
+        if meta.connections.is_empty() {
+            // Handed a connector, yet its types hold no service this build reaches and it keeps
+            // no held connections: say which service it holds rather than take it for either.
+            let held: Vec<&str> = meta
+                .types
+                .iter()
+                .filter_map(|t| t.origin.as_deref()?.split('.').next())
+                .collect();
+            return Err(AdmitError::Join(format!(
+                "this build reaches no connector of the services its types hold ({})",
+                held.join(", ")
+            )));
+        }
+        // A package whose types hold no outside service's records keeps held connections there
+        // instead (`connections: ["lsp"]`): its `connection.*` reach them, and what they say is
+        // pushed to the instance.
+        #[cfg(unix)]
+        let stream = Ok::<_, String>(stream_of(origin));
+        #[cfg(windows)]
+        let stream = stream_of(origin).map_err(|error| error.to_string());
+        let client = stream
+            .and_then(|stream| {
+                tilolang_tilo::held::Client::over(stream).map_err(|error| error.to_string())
+            })
+            .map_err(|error| AdmitError::Join(format!("its held connections: {error}")))?;
+        hosted.hold(tilolang_tilo::held::Connections {
+            client,
+            wake: Arc::clone(&self.wake),
+        });
         Ok(())
     }
 
@@ -1502,27 +1502,63 @@ fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
 mod tests {
     use super::*;
 
-    /// An instance whose types hold a mailbox's, a calendar's, a video site's or a music
-    /// catalogue's resources is handed its app's connector, and the host makes the origin's client
-    /// of it: a host reaches the connector of every origin its build links, so a hosted Mail,
-    /// Calendar, Tube or Music opens rather than taking the connector for held connections.
+    /// A package whose types hold a kind of the service `origin`.
+    #[cfg(unix)]
+    fn holding(origin: &str) -> tilolang_tilo::tilolang::meta::PackageMeta {
+        tilolang_tilo::tilolang::meta::PackageMeta {
+            app: "so.tilo.held".into(),
+            types: vec![
+                tilolang_tilo::tilolang::meta::TypeMeta {
+                    origin: Some("file.entry".into()),
+                    ..Default::default()
+                },
+                tilolang_tilo::tilolang::meta::TypeMeta {
+                    origin: Some(format!("{origin}.item")),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// An instance whose types hold an outside service's resources is handed its app's connector,
+    /// and the host makes the service's client of it: any service whose crate registered a client,
+    /// one no list in this host names among them, so a hosted Mail, Calendar, Tube or Music opens
+    /// rather than taking its connector for held connections.
     #[cfg(unix)]
     #[test]
-    fn a_host_reaches_the_connector_of_each_origin_an_instance_holds() {
+    fn a_host_reaches_the_connector_of_any_service_an_instance_holds() {
+        const CLIENT: &tilolang_tilo::origin::Remote =
+            &|_stream, _wake| Err("the far end is this test's".to_owned());
         let wake: Waker = Arc::new(|| {});
         let _host = TilolangProcess::new(Arc::clone(&wake));
-        let linked = CONNECTED_ORIGINS
-            .into_iter()
-            .filter(|name| !LAUNCH_ORIGINS.contains(name) || cfg!(feature = "app-launch"));
+        tilolang_tilo::origin::register_remote("elsewhere", CLIENT);
+        let mut linked = vec!["imap", "elsewhere"];
+        if cfg!(feature = "app-launch") {
+            linked.extend(["caldav", "youtube", "music"]);
+        }
         for name in linked {
+            let meta = holding(name);
+            assert_eq!(
+                tilolang_tilo::origin::connected_origin(&meta).as_deref(),
+                Some(name),
+                "the {name} connector is not the one its instance reaches"
+            );
             let (ours, _connector) = std::os::unix::net::UnixStream::pair().unwrap();
             let handed: Descriptor = std::os::fd::OwnedFd::from(ours);
-            if let Err(error) =
-                tilolang_tilo::origin::remote(name, stream_of(handed), Arc::clone(&wake))
-            {
+            let reached = tilolang_tilo::origin::remote(name, stream_of(handed), Arc::clone(&wake));
+            if name == "elsewhere" {
+                assert_eq!(reached.err().as_deref(), Some("the far end is this test's"));
+            } else if let Err(error) = reached {
                 panic!("the {name} origin's connector is not reached: {error}");
             }
         }
+        // A service no crate registered a client of has no connector here, and kinds the system
+        // writes itself never had one.
+        assert_eq!(
+            tilolang_tilo::origin::connected_origin(&holding("nowhere")),
+            None
+        );
     }
 
     #[test]

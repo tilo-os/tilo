@@ -194,6 +194,23 @@ pub fn register_remote(name: &'static str, remote: &'static Remote) {
     remotes.push((name, remote));
 }
 
+/// The origin whose connector an instance of `meta` reaches: the first service its types hold
+/// kinds of (`origin: youtube.video`) whose crate registered a client of its connector here
+/// ([`register_remote`]). `None` when its types hold no such service's kinds: kinds the system
+/// writes itself (`file.entry`), or a service whose client this build does not link.
+#[cfg(any(unix, windows))]
+#[must_use]
+pub fn connected_origin(meta: &Meta) -> Option<String> {
+    let remotes = REMOTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    meta.types
+        .iter()
+        .filter_map(|t| t.origin.as_deref()?.split('.').next())
+        .find(|origin| remotes.iter().any(|(registered, _)| registered == origin))
+        .map(str::to_owned)
+}
+
 /// The origin `name`'s client of the connector at the far end of `stream`, when a crate
 /// registered one here.
 #[cfg(any(unix, windows))]
