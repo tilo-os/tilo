@@ -23,6 +23,10 @@ pub use collaboration::RouteSpec as Route;
 
 /// How long a resource command waits for the store's answer before the read or write fails.
 const ANSWER_WAIT: Duration = Duration::from_secs(30);
+/// Why every command of a port fails once an answer came that its connection never woke it for.
+const UNWOKEN: &str = "the workspace's store answered, but the connection never woke the wait \
+                       for it: the connection was joined outside the wake scope its host waits \
+                       on, so every command would wait out its time before its answer is read";
 /// How long a command that the connection cannot take yet waits before it is offered again, when
 /// nothing arrives on the connection sooner.
 const SEND_RETRY: Duration = Duration::from_millis(20);
@@ -107,6 +111,7 @@ impl Connection {
             held: Rc::clone(&self.held),
             arrived,
             next: Cell::new(1),
+            unwoken: Cell::new(false),
         }
     }
 }
@@ -119,22 +124,31 @@ pub struct CallPort {
     /// answer. The host's own loop is woken beside it, so taking it here takes nothing from it.
     arrived: Option<Rc<Wake>>,
     next: Cell<u64>,
+    /// An answer came that the connection never woke `arrived` for: the connection writes
+    /// another wake, or none, so every answer would be found only once its wait ran out. Every
+    /// command fails at once from then on, saying so.
+    unwoken: Cell<bool>,
 }
 
 impl CallPort {
-    /// Wait until the connection may have delivered something, or `until`.
-    fn wait(&self, until: Instant) {
+    /// Wait until the connection may have delivered something, or `until`: whether the wake
+    /// ended the wait (always, without one: the port looks again every millisecond).
+    fn wait(&self, until: Instant) -> bool {
         let Some(arrived) = &self.arrived else {
             std::thread::park_timeout(Duration::from_millis(1));
-            return;
+            return true;
         };
-        arrived.wait_for(until.saturating_duration_since(Instant::now()));
+        let woken = arrived.wait_for(until.saturating_duration_since(Instant::now()));
         let _ = arrived.consume();
+        woken
     }
 }
 
 impl Port for CallPort {
     fn command(&self, command: Command) -> Result<Reply, String> {
+        if self.unwoken.get() {
+            return Err(UNWOKEN.to_owned());
+        }
         let request_id = self.next.get();
         self.next.set(request_id.wrapping_add(1));
         let request = CollabRequest::ResourceCommand {
@@ -167,6 +181,7 @@ impl Port for CallPort {
                 }
             }
         }
+        let mut woken = true;
         loop {
             let mut answer = None;
             for event in self.manager.borrow_mut().poll() {
@@ -179,12 +194,16 @@ impl Port for CallPort {
                 }
             }
             if let Some(answer) = answer {
+                if !woken {
+                    self.unwoken.set(true);
+                    return Err(UNWOKEN.to_owned());
+                }
                 return serde_json::from_slice(&answer?).map_err(|error| error.to_string());
             }
             if Instant::now() >= until {
                 return Err("the workspace's store did not answer".to_owned());
             }
-            self.wait(until);
+            woken = self.wait(until);
         }
     }
 }

@@ -69,8 +69,9 @@ impl Wake {
         self.read.as_fd()
     }
 
-    /// Wait until it is written, or `timeout` passes.
-    pub fn wait_for(&self, timeout: Duration) {
+    /// Wait until it is written, or `timeout` passes: whether the wait ended before its time
+    /// ran out (a wait cut short by a signal counts as ended, as it may have been written).
+    pub fn wait_for(&self, timeout: Duration) -> bool {
         let millis = i32::try_from(timeout.as_millis())
             .unwrap_or(i32::MAX)
             .max(1);
@@ -80,7 +81,7 @@ impl Wake {
             revents: 0,
         }];
         // SAFETY: `fds` is one valid pollfd for the duration of the call.
-        let _ = unsafe { libc::poll(fds.as_mut_ptr(), 1, millis) };
+        unsafe { libc::poll(fds.as_mut_ptr(), 1, millis) != 0 }
     }
 
     /// Take out everything written to it: the wait ends again only when it is written again.
@@ -144,9 +145,12 @@ impl Wake {
         self.event.as_handle()
     }
 
-    /// Wait until it is written, or `timeout` passes.
-    pub fn wait_for(&self, timeout: Duration) {
+    /// Wait until it is written, or `timeout` passes: whether the wait ended before its time
+    /// ran out.
+    pub fn wait_for(&self, timeout: Duration) -> bool {
         use std::os::windows::io::AsRawHandle as _;
+        /// What the wait answers when its time ran out.
+        const WAIT_TIMEOUT: u32 = 0x102;
         let millis = u32::try_from(timeout.as_millis())
             .unwrap_or(u32::MAX - 1)
             .max(1);
@@ -155,8 +159,8 @@ impl Wake {
             windows_sys::Win32::System::Threading::WaitForSingleObject(
                 self.event.as_raw_handle(),
                 millis,
-            )
-        };
+            ) != WAIT_TIMEOUT
+        }
     }
 
     /// Whether it was written since it was last taken out.
