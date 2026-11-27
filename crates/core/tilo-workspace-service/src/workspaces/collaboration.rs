@@ -28,9 +28,9 @@ use super::authority::WorkspaceOp;
 use super::{HostedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
 use tilo_lock::MutexRecover as _;
 
-/// Why a read of a workspace's own state is refused: this host keeps no such workspace.
-fn not_held() -> CollaborationError {
-    CollaborationError::new("this server does not hold that workspace")
+/// Why a read of a workspace's own state is refused: this device has no copy of it.
+pub(super) fn not_here() -> CollaborationError {
+    CollaborationError::new("this device has no copy of that workspace and hasn't joined it")
 }
 
 /// The person `person` (a root key in hex) as the host's actor: who a
@@ -1383,7 +1383,7 @@ impl Workspaces {
         lease: &str,
     ) -> Result<Option<[u8; 32]>, CollaborationError> {
         let now = system_time(tilo_clock::unix_now_ns());
-        let peer = self.state(workspace).await.ok_or_else(not_held)?;
+        let peer = self.state(workspace).await.ok_or_else(not_here)?;
         Ok(peer
             .workspace()
             .lease(lease, now)
@@ -1401,7 +1401,7 @@ impl Workspaces {
         workspace: &str,
         lease: &str,
     ) -> Result<Option<serde_json::Value>, CollaborationError> {
-        let peer = self.state(workspace).await.ok_or_else(not_held)?;
+        let peer = self.state(workspace).await.ok_or_else(not_here)?;
         Ok(peer.workspace().done(lease).map(|done| done.answer))
     }
 
@@ -1415,7 +1415,7 @@ impl Workspaces {
         workspace: &str,
         prefix: &str,
     ) -> Result<std::collections::BTreeMap<String, serde_json::Value>, CollaborationError> {
-        let peer = self.state(workspace).await.ok_or_else(not_held)?;
+        let peer = self.state(workspace).await.ok_or_else(not_here)?;
         Ok(peer
             .workspace()
             .done_under(prefix)

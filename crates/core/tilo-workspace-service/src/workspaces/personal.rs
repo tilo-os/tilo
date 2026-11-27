@@ -205,7 +205,7 @@ impl Workspaces {
 
 impl Workspaces {
     /// The person's workspace list as it is in their own workspace: empty
-    /// while this host does not hold that workspace.
+    /// while this device does not have that workspace.
     async fn list_of(&self, person: &[u8; 32]) -> WorkspaceList {
         let workspace = person_workspace_id(person);
         person_workspace::read_on::<WorkspaceList>(self, &workspace, IDENTITY_LIST)

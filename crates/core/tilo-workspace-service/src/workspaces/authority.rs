@@ -135,7 +135,7 @@ fn refused(op: WorkspaceOp<'_>, refusal: &tilo_action_policy::Refusal) -> Collab
 }
 
 /// Why an operation inside a workspace names none here.
-const NO_WORKSPACE: &str = "this server does not hold that workspace";
+const NO_WORKSPACE: &str = "this device does not have that workspace";
 
 impl Workspaces {
     /// Whether `device` may do `op` in `workspace` (which every operation but a

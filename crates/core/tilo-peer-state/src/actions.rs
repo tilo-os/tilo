@@ -1107,7 +1107,7 @@ impl ActionService {
                 )
                 .await
                 .ok_or_else(|| ActionCallError::Refused {
-                    reason: "this device does not hold that workspace".into(),
+                    reason: "this device does not have that workspace".into(),
                 })??;
             let (acting, _, certificate, opened, _, _, placed) = &decided;
             let unknown = certificate.is_none() && placed.is_none() && !opened;

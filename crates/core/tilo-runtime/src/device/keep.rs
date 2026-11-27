@@ -792,6 +792,7 @@ mod tests {
         };
         let key = SigningKey::from_bytes(&[7; 32]);
         let (endpoint, relay) = keeping.bind(&key, None).unwrap();
+        (keeping.runtime).block_on(tilo_workspace_service::Reaching::ByRelay.awaited(&endpoint));
         let named: Vec<String> = endpoint
             .addr()
             .relay_urls()

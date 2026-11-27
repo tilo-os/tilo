@@ -64,7 +64,7 @@ impl Workspaces {
             .await
             .get(workspace)
             .cloned()
-            .ok_or("this host does not hold that workspace")?;
+            .ok_or("this device does not have that workspace")?;
         // Before the workspace is held: its machine's host enters it to be
         // asked, which takes the workspace's lock.
         self.delete_machine(workspace).await?;

@@ -1972,7 +1972,7 @@ impl Workspaces {
             .await
             .get(workspace)
             .cloned()
-            .ok_or("this host does not hold that workspace")?;
+            .ok_or("this device does not have that workspace")?;
         let mut hosted = hosted.lock().await;
         // Recorded first: a host stopped halfway keeps it released.
         let marker = hosted.path.with_extension(RELEASED);
@@ -2852,7 +2852,7 @@ impl Workspaces {
                 closed.file.display(),
                 closed.reason
             )),
-            None => CollaborationError::new("this server does not hold that workspace"),
+            None => collaboration::not_here(),
         })
     }
 

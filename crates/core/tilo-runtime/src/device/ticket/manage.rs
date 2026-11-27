@@ -465,16 +465,8 @@ impl Issuer for Fleet {
             })?;
             let session = service.session();
             match role {
-                Role::Server => {
-                    // Entered where this device reached it as it logged in, until the server
-                    // enrolls its own address.
-                    let reached = tilo_workspace_service::workspaces::servers::reached(
-                        &self.endpoint,
-                        &cert.device_public_key,
-                    )
-                    .await?;
-                    server_entry(service.copies(), (session, cert), Some(reached)).await
-                }
+                // Entered by its key alone: the server says where it answers once it runs.
+                Role::Server => server_entry(service.copies(), (session, cert), None).await,
                 Role::Plan(plan) => plan_entry(service.copies(), session, plan, cert).await,
             }
         })

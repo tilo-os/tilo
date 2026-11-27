@@ -199,7 +199,7 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is held neither here nor as a member copy, the device is
+    /// This device does not have the workspace, the device is
     /// not the one its copy acts as, or the actor is not the person that
     /// device acts for.
     pub async fn admit_execution(
@@ -227,11 +227,11 @@ impl Workspaces {
                 continuity: material.continuity,
             }
         } else {
-            // Why this service does not hold it (stopped for the part that starts next, its
-            // record did not read, or never held here) is the reason the run is refused.
-            self.workspace(workspace).await.map_err(|error| {
-                format!("the workspace is held neither here nor as a member copy: {error}")
-            })?;
+            // Why this device does not have it (stopped for the part that starts next, its
+            // record did not read, or never here) is the reason the run is refused.
+            self.workspace(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
             Pinned::Own
         };
         // A run of this device's own person, whose root certifies this very device, is on their

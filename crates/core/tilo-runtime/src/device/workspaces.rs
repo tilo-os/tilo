@@ -20,6 +20,7 @@ use std::{
 use ed25519_dalek::SigningKey;
 use tilo_app_host::services::WorkspaceGrants;
 use tilo_desktop_model::{Workspace, WorkspaceId};
+use tilo_device_identity::login::Device as Login;
 use tilo_identity::broker::WorkspaceMembership;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_invocations::Invocations;
@@ -520,6 +521,19 @@ impl ServiceWorkspaces {
             .await;
     }
 
+    /// Tell the device this server's `login` entered where it answers: that device took it in by
+    /// its key alone, and hands it the person's workspaces there.
+    pub(crate) async fn enter_among_servers(&self, login: &Login) -> Result<(), String> {
+        let session =
+            tilo_api::daemon::enter::connect_signed(self.signer(), login, Some(self.lent()))
+                .await
+                .map_err(|error| format!("{error:#}"))?;
+        let me = (Some(&session), &self.identity.device_cert);
+        let told = super::ticket::server_entry(self.copies(), me, Some(self.endpoint.addr())).await;
+        session.close();
+        told
+    }
+
     /// Close the service and its endpoint, as the process ending would: what the service holds
     /// is kept, and the next service opened under this device's directory takes it up.
     #[cfg(test)]
@@ -792,7 +806,7 @@ impl ServiceWorkspaces {
     /// workspace's material now.
     ///
     /// # Errors
-    /// The workspace is held neither here nor as a member copy, or the actor
+    /// This device does not have the workspace, or the actor
     /// is not the person this device acts for in it.
     pub(crate) async fn admit_execution(
         &self,

@@ -1425,14 +1425,13 @@ async fn a_logged_in_issuers_server_ticket_leaves_the_entry_on_the_host() {
         }
     })
     .await;
-    // Its devices dial it where the issuer reached it as it logged in: its key alone reaches
-    // nothing where no directory names it, and the server enrolls its own address only once it
-    // is handed the Servers workspace at that one.
+    // Its key alone: where the login reached it is the login's own endpoint, gone once it
+    // logged in. The server says where it answers once it runs.
     let dialled: iroh::EndpointAddr =
-        serde_json::from_str(&entry.endpoint).expect("the entry names an address");
+        serde_json::from_str(&entry.endpoint).expect("the entry names the server");
     assert!(
-        !dialled.addrs.is_empty(),
-        "the server is entered at an address it is reached at, not by its key alone: {dialled:?}"
+        dialled.addrs.is_empty(),
+        "entered by its key alone: {dialled:?}"
     );
     entered.close();
     let _ = router.shutdown().await;

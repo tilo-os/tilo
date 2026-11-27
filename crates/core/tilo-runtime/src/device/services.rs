@@ -2501,6 +2501,15 @@ impl Daemon {
         if let Ok(processes) = apps.processes() {
             processes.serving_jobs(Arc::clone(&jobs));
         }
+        // A server its person's ticket made tells the device its login entered where it answers.
+        if let Some(login) = entered.clone().filter(|_| joined && keeping.is_some()) {
+            let workspaces = Arc::clone(&workspaces);
+            tilo_rt::app().handle().spawn(async move {
+                if let Err(error) = workspaces.enter_among_servers(&login).await {
+                    tracing::warn!(%error, "this server did not tell where it answers");
+                }
+            });
+        }
         let home = Arc::new(super::home::Home::new(
             Arc::clone(&workspaces),
             identity.cert.clone(),
@@ -7856,7 +7865,7 @@ impl Certificates {
         let id = WorkspaceId::parse(&name).ok_or("invalid exact workspace")?;
         let peer = held
             .peer(id)
-            .ok_or("this device does not hold that workspace")?;
+            .ok_or("this device does not have that workspace")?;
         peer.permissions(cert.device_public_key, tilo_clock::wall())
             .map(drop)
             .map_err(|error| error.to_string())

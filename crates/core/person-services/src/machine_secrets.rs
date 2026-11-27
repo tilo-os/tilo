@@ -76,7 +76,7 @@ impl crate::PersonServices {
         let policy = self
             .policy_of(workspace)
             .await
-            .ok_or("this server does not hold that workspace")?;
+            .ok_or("this device does not have that workspace")?;
         if !tilo_workspace_service::workspaces::vault::may_read_vault(&policy, workspace, by) {
             return Err(
                 "Whoever started this may not read the workspace's vault, so its secrets stay in it"

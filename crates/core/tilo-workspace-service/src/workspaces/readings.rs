@@ -325,12 +325,12 @@ impl Workspaces {
             }
             if !self.inner.workspaces.lock().await.contains_key(workspace) {
                 return Err(CollaborationError::new(
-                    "this server does not hold that workspace",
+                    "this device does not have that workspace",
                 ));
             }
             if kept.changed().await.is_err() {
                 return Err(CollaborationError::new(
-                    "this server does not hold that workspace",
+                    "this device does not have that workspace",
                 ));
             }
         }

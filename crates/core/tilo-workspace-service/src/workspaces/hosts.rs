@@ -908,7 +908,7 @@ impl Workspaces {
                 governance.peer.governance().keeping_devices()
             })
             .await
-            .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
+            .ok_or_else(|| "this device does not have that workspace".to_owned())?;
         let handed =
             super::holding::handed_by(&self.inner.dir.join(format!("{workspace_id}.workspace")));
         let named = keeping

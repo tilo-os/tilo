@@ -545,7 +545,7 @@ impl Workspaces {
         let policy = self
             .reading_of(workspace)
             .await
-            .ok_or_else(|| unavailable("this server does not hold that workspace"))?
+            .ok_or_else(|| unavailable("this device does not have that workspace"))?
             .replica
             .read(|peer| peer.permissions(device, now))
             .map_err(unavailable)?

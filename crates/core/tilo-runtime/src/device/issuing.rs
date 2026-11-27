@@ -129,7 +129,7 @@ pub async fn admit_in(
         Role::Plan(plan) => {
             servers::admit_planned(&workspaces, plan, &cert.device_public_key).await
         }
-        Role::Server => servers::admit_reached(&workspaces, cert).await,
+        Role::Server => super::ticket::server_entry(&workspaces, (None, cert), None).await,
     }
 }
 

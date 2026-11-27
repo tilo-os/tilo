@@ -1304,7 +1304,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     let refused = queried(&elsewhere, &caller).await.unwrap_err();
     assert_eq!(
         refusal(&refused),
-        "this device does not hold that workspace"
+        "this device does not have that workspace"
     );
 
     // A request the action service does not serve is answered with a reason,

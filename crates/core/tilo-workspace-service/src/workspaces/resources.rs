@@ -1929,7 +1929,7 @@ impl Workspaces {
             let reading = self
                 .reading_of(workspace)
                 .await
-                .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
+                .ok_or_else(|| "this device does not have that workspace".to_owned())?;
             let peer = reading.replica.read(tilo_peer_state::StatePeer::clone);
             return Ok(collab_types::store::wire::Reply::Content(Some(
                 workspace_members(self, workspace, &peer, &agents_named(&reading, workspace))?,
@@ -1943,7 +1943,7 @@ impl Workspaces {
         let reading = self
             .reading_of(workspace)
             .await
-            .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
+            .ok_or_else(|| "this device does not have that workspace".to_owned())?;
         read_from(&reading, reader, command)
     }
 

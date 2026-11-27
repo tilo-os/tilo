@@ -1151,7 +1151,7 @@ impl Workspaces {
         let reading = self
             .reading(workspace_id)
             .await
-            .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))?;
+            .ok_or_else(|| CollaborationError::new("this device does not have that workspace"))?;
         let issued = reading.invitations.now();
         let invite_id = *blake3::hash(invitation).as_bytes();
         let join = tilo_peer_state::join_log::honourable(
