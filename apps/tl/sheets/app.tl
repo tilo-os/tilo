@@ -1046,27 +1046,27 @@ action resolve(c: Comment, resolved: Bool = not c.resolved) (
 
 /// Changes what a comment says. Only its author may.
 action edit_comment(c: Comment, text: RichText = c.text) (icon: .pencil, label: "Edit comment") {
-    require created(c)?.who == invoker "Only its author can edit a comment"
+    require created(c)?.owner == invoker "Only its author can edit a comment"
     require not text.is_empty() "Write a comment first"
     c.text = text
 }
 
 /// Changes what a reply says. Only its author may.
 action edit_reply(r: Reply, text: RichText = r.text) (icon: .pencil, label: "Edit reply") {
-    require created(r)?.who == invoker "Only its author can edit a reply"
+    require created(r)?.owner == invoker "Only its author can edit a reply"
     require not text.is_empty() "Write a reply first"
     r.text = text
 }
 
 /// Deletes a reply. Only its author may.
 destructive action delete_reply(c: Comment, r: Reply) (icon: .trash, label: "Delete reply") {
-    require created(r)?.who == invoker "Only its author can delete a reply"
+    require created(r)?.owner == invoker "Only its author can delete a reply"
     c.replies.remove(r)
 }
 
 /// Deletes a comment and its replies. Only its author may.
 destructive action delete_comment(w: Workbook, c: Comment) (icon: .trash, label: "Delete comment") {
-    require created(c)?.who == invoker "Only its author can delete a comment"
+    require created(c)?.owner == invoker "Only its author can delete a comment"
     w.comments.remove(c)
 }
 

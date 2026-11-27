@@ -3859,10 +3859,10 @@ impl Core {
             Imp::Notice => self.notice_import(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::WindowState => self.window_state(a.h(0)?, a.h(1)?, a.h(2)?),
             // Who invokes the action running, or the person a view is shown to: who would
-            // invoke its actions. An automation's run reads as the member it acts for.
+            // invoke its actions. An automation's run is the automation: whom it writes for is
+            // `invoker.principal()`.
             Imp::Invoker => {
                 let who = self.looking()?;
-                let who = self.principals.borrow().get(&who).cloned().unwrap_or(who);
                 self.ret_h(Value::Actor(who))
             }
             Imp::MadeFrom => self.made_from(),

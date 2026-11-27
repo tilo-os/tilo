@@ -712,11 +712,11 @@ impl Acting {
             .and_then(MemberId::person_id)
     }
 
-    /// On whose behalf this acting writes, as an app reads who invoked it: the actor itself,
-    /// or, for an automation acting for a member (a Shortcut's run), that member. Only what an
-    /// app shows and groups by follows it (whose conversation a run writes in); who may do what,
-    /// and who history says did it, are decided on the acting itself, where the automation
-    /// stays the actor and nobody is at a screen.
+    /// On whose behalf this acting writes, as an app reads `invoker.principal()`: the actor
+    /// itself, or, for an automation acting for a member (a Shortcut's run), that member. Only
+    /// what an app addresses and groups by follows it (whose conversation a run writes in); who
+    /// may do what, and who history says did it, are decided on the acting itself, where the
+    /// automation stays the actor and nobody is at a screen.
     #[must_use]
     pub fn principal(&self) -> &Actor {
         match (&self.by, self.acted_for.first()) {

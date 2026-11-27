@@ -530,6 +530,14 @@ impl Core {
                         .map_or_else(Value::none, |app| Value::some(Value::Text(app))),
                 )
             }
+            // Whom the actor acts for, as an app addresses and attributes what it writes: the
+            // member an automation the host admitted runs for, else the actor itself. Never what
+            // decides who may do what: that is the actor.
+            Imp::ActorPrincipal => {
+                let who = self.actor_arg(a.h(0)?)?;
+                let principal = self.principals.borrow().get(&who).cloned().unwrap_or(who);
+                self.ret_h(Value::Actor(principal))
+            }
             Imp::ActorRole => {
                 let who = self.actor_arg(a.h(0)?)?;
                 let _ = self.read_members();

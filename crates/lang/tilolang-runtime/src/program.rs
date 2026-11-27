@@ -269,9 +269,9 @@ impl Runtime {
         self.core.delegates_own.set(true);
     }
 
-    /// `actor` invokes on behalf of `principal`: an automation running for a member, whose runs
-    /// `invoker` reads as that member ([`tilo_actions::Acting::principal`]). The runtime still
-    /// decides and records each of its changes as `actor`'s.
+    /// `actor` invokes on behalf of `principal`: an automation running for a member, which
+    /// `invoker.principal()` reads as that member ([`tilo_actions::Acting::principal`]). The
+    /// runtime still decides and records each of its changes as `actor`'s, and `invoker` is it.
     pub fn acts_for(&self, actor: &crate::ids::Actor, principal: &crate::ids::Actor) {
         if actor != principal {
             self.core

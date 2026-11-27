@@ -242,6 +242,7 @@ imports! {
     ActorKind = "actor_kind" ([H] -> [I64]);
     ActorRole = "actor_role" ([H] -> [H]);
     ActorApp = "actor_app" ([H] -> [H]);
+    ActorPrincipal = "actor_principal" ([H] -> [H]);
 
     EnumNew = "enum_new" ([H, H] -> [H]);
     EnumSetI = "enum_set_i" ([H, H, I64] -> []);

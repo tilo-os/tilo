@@ -4823,6 +4823,12 @@ impl Checker<'_> {
             (Ty::Actor, "app") if args.is_empty() => {
                 Ex::host(Imp::ActorApp, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
+            // Whom the actor writes for (`invoker.principal()`): the member a Shortcut's run acts
+            // for, else the actor. What an app addresses and attributes by (whose conversation a
+            // run writes in), never what it decides who may do what by: that is `invoker`.
+            (Ty::Actor, "principal") if args.is_empty() => {
+                Ex::host(Imp::ActorPrincipal, vec![r], Ty::Actor)
+            }
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
             // `as.many()`: an action that applies each of `as` to its own item, all at once: one
             // change, one undo.

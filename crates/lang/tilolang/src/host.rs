@@ -317,6 +317,13 @@ pub const VALUE_TYPES: &[ValueType] = &[
                  target, and for one action applied to many items at once (`many`), as many \
                  as the items it changed.",
             ),
+            (
+                "owner",
+                "Actor",
+                "Whose what it made is, which a check of who may change it compares with \
+                 `invoker`: whoever made it, except that a Shortcut's run writes for its person, \
+                 so what its run made is that person's. `who` still names the run.",
+            ),
         ],
     },
     ValueType {

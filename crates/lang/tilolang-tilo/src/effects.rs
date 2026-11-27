@@ -879,6 +879,11 @@ impl Host {
             self.runtime()
                 .project(&tilolang_runtime::Value::Actor(created.who)),
         );
+        out.insert(
+            "owner".into(),
+            self.runtime()
+                .project(&tilolang_runtime::Value::Actor(created.owner)),
+        );
         out.insert("at".into(), json!(created.at));
         if let Some(from) = created.from.filter(|from| reads(from)) {
             let app = self.app_of_type(&from.ty).unwrap_or_default();

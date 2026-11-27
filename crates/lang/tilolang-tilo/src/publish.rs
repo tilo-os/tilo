@@ -105,8 +105,8 @@ impl Caller {
         Some(by.acting_for(tilo_actions::Acting::person(person)))
     }
 
-    /// On whose behalf the caller invokes, as the app reads `invoker`: the actor, or the person
-    /// an automation runs for ([`tilo_actions::Acting::principal`]).
+    /// On whose behalf the caller invokes, as the app reads `invoker.principal()`: the actor, or
+    /// the person an automation runs for ([`tilo_actions::Acting::principal`]).
     #[must_use]
     pub fn principal(&self) -> tilolang_runtime::ids::Actor {
         self.acting_for()

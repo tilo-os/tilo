@@ -549,18 +549,13 @@ async fn events_of(host: &Host) -> Vec<tilo_action_services::workspace_events::E
 }
 
 /// The direct conversation with `label` in `read`, Chat's conversations root read as one of its
-/// people, as the item it lists: its item address, and the actor that opened it.
+/// people, as the item it lists: its item address, and who opened it and whose it is.
 fn direct_in(read: &Value, label: &str) -> Option<(String, Value)> {
     read["fields"]["channels"]["items"]
         .as_array()?
         .iter()
         .filter(|item| item["type"] == "Direct" && item["label"] == label)
-        .find_map(|item| {
-            Some((
-                item["item"].as_str()?.to_owned(),
-                item["created"]["who"]["actor"].clone(),
-            ))
-        })
+        .find_map(|item| Some((item["item"].as_str()?.to_owned(), item["created"].clone())))
 }
 
 /// A reminder the person's assistant set up itself, from the asking to the answer. The person
@@ -673,16 +668,23 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
         // person who saved it, so Chat opens the direct between the two of them, never one with
         // the shortcut's run, and the assistant answers where it was written.
         let read = read_root(host, host.workspace(), host.person()).await;
-        let (conversation, opened_by) = direct_in(&read, SCOUT).unwrap_or_else(|| {
+        let (conversation, opened) = direct_in(&read, SCOUT).unwrap_or_else(|| {
             panic!("her reminder opens a conversation with her assistant: {read}")
         });
+        assert_eq!(
+            opened["who"]["actor"],
+            json!({ "automation": reminder.id }),
+            "her reminder's run wrote it, and history says so: {opened}"
+        );
         assert!(
-            opened_by.get("member").is_some_and(|member| {
-                member
-                    .get("person")
-                    .is_some_and(|person| person.as_str() == Some(host.person()))
-            }),
-            "her reminder is her own write, not the shortcut's run's: {opened_by}"
+            opened["owner"]["actor"]
+                .get("member")
+                .is_some_and(|member| {
+                    member
+                        .get("person")
+                        .is_some_and(|person| person.as_str() == Some(host.person()))
+                }),
+            "her reminder is hers, written by her shortcut's run for her: {opened}"
         );
         let held = read_item(host, host.workspace(), host.person(), conversation).await;
         for said in [
@@ -694,9 +696,40 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
                 "the reminder and its answer are in her conversation with her assistant: {held}"
             );
         }
-        assert!(
-            !held.to_string().contains("automation"),
+        let her = json!({ "member": { "person": host.person() } });
+        let mut people: Vec<Value> = held["fields"]["people"]["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|person| person["actor"].clone())
+            .collect();
+        people.sort_by_key(Value::to_string);
+        let mut hers = vec![
+            her.clone(),
+            json!({ "member": { "agent": { "id": SCOUT_ID, "person": host.person() } } }),
+        ];
+        hers.sort_by_key(Value::to_string);
+        assert_eq!(
+            people, hers,
             "the conversation is hers with her assistant, not the shortcut's run: {held}"
+        );
+        let reminded = held["fields"]["messages"]["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|m| {
+                m["label"]
+                    .as_str()
+                    .is_some_and(|label| label.starts_with("Say that it is time to call home."))
+            })
+            .unwrap_or_else(|| panic!("the reminder is in her conversation: {held}"));
+        assert_eq!(
+            (
+                &reminded["created"]["who"]["actor"],
+                &reminded["created"]["owner"]["actor"]
+            ),
+            (&json!({ "automation": reminder.id }), &her),
+            "the reminder is hers, written by her shortcut's run: {reminded}"
         );
 
         // It reads as having run once, at its moment, and asks nothing more.

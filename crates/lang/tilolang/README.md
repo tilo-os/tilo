@@ -348,7 +348,11 @@ grants let read `r`. A person picker and a rich input's `@` drawer with nothing 
 offer the same people, so a package that has one uses the workspace's package. `invoker` is who invokes an action, and in a
 view the person it is shown to, who would invoke its actions. An actor says what it is: `p.name()`,
 `p.kind()` (`.person` or `.agent`, an `ActorKind`) and `p.role()` (`Option<Text>`, the
-workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
+workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it.
+`invoker.principal()` is whom the invoker writes for: the person a Shortcut's unattended run acts
+for, else the invoker. An app addresses and attributes by it (whose conversation a run writes
+in); every check of who may do what reads `invoker`, which for a run is the automation and
+never its person. A view
 that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
 offers `members(r)` of the resource its view shows (the workspace's members in a view of no
 resource) without the view declaring anything; the conversation's own people it offers first

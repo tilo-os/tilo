@@ -22,59 +22,59 @@ use crate::value::Value;
 use Imp::{
     Abort, ActAnswer, ActBlur, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder,
     ActClose, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo,
-    Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
-    Base64Decode, Blake3, BytesLength, CallFn, CallInputs, CallMembers, CanvasCombine,
-    CanvasCompare, CanvasDiff, CanvasDiffPicture, CanvasExport, CanvasFind, CanvasGrade,
-    CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen, CanvasRemoveAlong, CanvasSave,
-    CanvasSelect, CanvasSvg, CanvasSvgImport, CanvasWand, ChangeView, ClipboardCopyImage,
-    ClipboardCopySecret, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText, CollCount,
-    CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong,
-    CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollValues, CollWhere,
-    CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday,
-    Describe, DescribeRef, DeviceRefLit, DurationText, EditField, EngineCall, EngineCancel,
-    EngineCheck, EngineJob, EnginePicture, EngineStart, EngineState, EngineStream, EntryParts,
-    EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart,
-    EventPress, EventValue, FieldChanged, FileAt, FileBook, FileBookCover, FileBookInfo,
-    FileCompress, FileCopy, FileCopyTo, FileCrop, FileData, FileEncode, FileExtract, FileFiles,
-    FileHere, FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove, FileOfBytes,
-    FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart, FilePreview, FileReadPath,
-    FileRemove, FileRename, FileResize, FileRestore, FileSize, FileStat, FileText, FileThumbnail,
-    FileTrash, FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit, Filters, Find,
-    FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil, FloatCeilTo,
-    FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract, FloatGamma,
-    FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FloatMin, FloatPow,
-    FloatRound, FloatRoundTo, FloatSign, FloatSin, FloatSinh, FloatSqrt, FloatTan, FloatTanh,
-    FloatToDegrees, FloatToRadians, FloatToStr, FloatTrunc, FontFamilies, ForeignRef, Grep,
-    GroupBy, HeldClose, HeldOpen, HeldSaid, HeldSend, IdentPart, IntAbs, IntClamp, IntMax, IntMin,
-    IntToStr, InvocationPop, InvocationPush, Invoke, Invoked, Invoker, IsError, IsSome, JsonDecode,
-    JsonEncode, JsonParse, Keep, Lenses, LinesRun, Links, ListAvg, ListConcat, ListEnd, ListGetF,
-    ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
-    ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom, MapGetH, MapGetValue,
-    MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd,
-    MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV,
-    Notice, Notify, Now, Occurrences, OfType, Outside, OutsideAt, PageCall, PdfFields, PdfImport,
-    PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave, PdfText, PersonNamed, Phrase,
-    Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
-    RandomInt, RandomShuffle, Ranked, Reach, ReadText, ReadWith, RecNew, RecOwn, RecSetF, RecSetH,
-    RecSetI, RecordAt, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
-    ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended, RichCellWritten, RichEmbed,
-    RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart,
-    RichRelinked, RichReplaced, RichStyleCopied, RichStyleLook, RichStyleNames, RichStyleRemoved,
-    RichStyleSet, RichTableEdited, RichTime, RowKey, RowOpen, RunChanges, SeenBy, SetAdd,
-    SetRemove, Sha256, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges,
-    SheetRecords, SheetValues, Single, SomeB, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
-    Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith,
-    StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace,
-    StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper,
-    StrUrlDecode, StrUrlEncode, StrWords, Suggest, Take, TextBytes, TimeClock, TimeDay, TimeDayIn,
-    TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today, ToolContainerShell,
-    ToolContext, ToolDocumentApps, ToolOpenLink, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF,
-    TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor,
-    UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropB, UiPropF,
-    UiPropH, UiPropI, UiPropPic, Unreadable, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode,
-    VersionChange, VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders,
-    WebOk, WebPost, WebPostBytes, WebStatus, WebStatusText, WebText, WindowState, Withdraw, Word,
-    Zones,
+    Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorPrincipal, ActorRole,
+    AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength, CallFn, CallInputs, CallMembers,
+    CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture, CanvasExport, CanvasFind,
+    CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen, CanvasRemoveAlong,
+    CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport, CanvasWand, ChangeView,
+    ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText, ClipboardPasteImage,
+    ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs,
+    CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives,
+    CollRemove, CollValues, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart,
+    DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DeviceRefLit, DurationText,
+    EditField, EngineCall, EngineCancel, EngineCheck, EngineJob, EnginePicture, EngineStart,
+    EngineState, EngineStream, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF,
+    EnumSetH, EnumSetI, EventPart, EventPress, EventValue, FieldChanged, FileAt, FileBook,
+    FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCopyTo, FileCrop, FileData,
+    FileEncode, FileExtract, FileFiles, FileHere, FileImageInfo, FileList, FileMarkdown, FileMkdir,
+    FileMove, FileOfBytes, FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart,
+    FilePreview, FileReadPath, FileRemove, FileRename, FileResize, FileRestore, FileSize, FileStat,
+    FileText, FileThumbnail, FileTrash, FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip,
+    FilterLit, Filters, Find, FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt,
+    FloatCeil, FloatCeilTo, FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo,
+    FloatFract, FloatGamma, FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax,
+    FloatMin, FloatPow, FloatRound, FloatRoundTo, FloatSign, FloatSin, FloatSinh, FloatSqrt,
+    FloatTan, FloatTanh, FloatToDegrees, FloatToRadians, FloatToStr, FloatTrunc, FontFamilies,
+    ForeignRef, Grep, GroupBy, HeldClose, HeldOpen, HeldSaid, HeldSend, IdentPart, IntAbs,
+    IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoked, Invoker,
+    IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, LinesRun, Links, ListAvg,
+    ListConcat, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
+    ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom,
+    MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
+    MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
+    MissingV, ModelCall, NoneV, Notice, Notify, Now, Occurrences, OfType, Outside, OutsideAt,
+    PageCall, PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave,
+    PdfText, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
+    RandomFloat, RandomId, RandomInt, RandomShuffle, Ranked, Reach, ReadText, ReadWith, RecNew,
+    RecOwn, RecSetF, RecSetH, RecSetI, RecordAt, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI,
+    ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended,
+    RichCellWritten, RichEmbed, RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown,
+    RichMarked, RichNew, RichPart, RichRelinked, RichReplaced, RichStyleCopied, RichStyleLook,
+    RichStyleNames, RichStyleRemoved, RichStyleSet, RichTableEdited, RichTime, RowKey, RowOpen,
+    RunChanges, SeenBy, SetAdd, SetRemove, Sha256, SheetEdit, SheetEntry, SheetFile, SheetNumbers,
+    SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeB, SomeF, SomeH, SomeI,
+    SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat,
+    StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches,
+    StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat,
+    StrToInt, StrTrim, StrUpper, StrUrlDecode, StrUrlEncode, StrWords, Suggest, Take, TextBytes,
+    TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan,
+    TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenLink, ToolOpenWith,
+    ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
+    TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt,
+    UiChild, UiNode, UiOn, UiPropB, UiPropF, UiPropH, UiPropI, UiPropPic, Unreadable, Unseen,
+    UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange, VersionEnd, Versions, WallClock,
+    WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus,
+    WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -324,10 +324,10 @@ pub struct Core {
     /// Where a task's programs send what they change, in a host that runs no app's code
     /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
     pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
-    /// The member each automation the host admitted acts for ([`Runtime::acts_for`]): whom
-    /// `invoker` reads while one of its runs invokes, so what an app shows and groups by (whose
-    /// conversation it writes in) is that member's. Who may do what, and who a change says made
-    /// it, stay the automation.
+    /// The member each automation the host admitted acts for ([`Runtime::acts_for`]): what
+    /// `invoker.principal()` reads, so what an app addresses and groups by (whose conversation
+    /// a run writes in) is that member's. `invoker` itself, which every check of who may do
+    /// what reads, and who a change says made it, stay the automation.
     pub principals: RefCell<std::collections::HashMap<crate::ids::Actor, crate::ids::Actor>>,
     /// Whether [`Self::invoker`] takes this runtime's own actions too, as a host that holds no
     /// records needs, or only other apps'.
@@ -894,9 +894,8 @@ impl Core {
             | Ranked | VersionEnd | FieldChanged | Phrase | Word | EntryParts => {
                 self.platform_import(imp, a)
             }
-            Members | MayRead | Speakers | ActorId | ActorKind | ActorRole | ActorApp => {
-                self.members_import(imp, a)
-            }
+            Members | MayRead | Speakers | ActorId | ActorKind | ActorRole | ActorApp
+            | ActorPrincipal => self.members_import(imp, a),
             EditField => self.edit_field(a),
             Print | Find | ReadText | OfType | Keep | Grep | Describe | DescribeRef | ReadWith
             | PrintRows | CountBy | GroupBy | Take | Single | Me | ForeignRef | MatchGroup

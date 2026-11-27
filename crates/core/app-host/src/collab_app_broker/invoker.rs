@@ -55,8 +55,16 @@ fn invoked_with(
     let presence = execution
         .map(|execution| execution.presence(actor))
         .transpose()?;
-    // A Shortcut's step is admitted as its person: the invoker stays them.
-    let admitting = caller.filter(|caller| caller.acting().by == *actor.actor());
+    // A Shortcut's step is admitted as the person it runs for, and the app is told what it is:
+    // the automation acting for them, which every check of the app's reads as nobody at a
+    // screen.
+    let admitting = caller.filter(|caller| {
+        let acting = caller.acting();
+        acting.by == *actor.actor()
+            || (acting.is_automation()
+                && !acting.acted_for.is_empty()
+                && acting.principal() == actor.actor())
+    });
     // Without a caller, the admitted actor says whom an agent acts for.
     let admitted = admitting.map_or_else(|| actor.shown(), |caller| caller.acting().clone());
 
@@ -218,12 +226,14 @@ mod tests {
                 )
             );
 
-            // A Shortcut's step is its person's: the invoker stays the person.
+            // A Shortcut's step is admitted as its person, and the app is told it is the
+            // automation acting for them: no check of the app's reads it as the person.
             let step = tilo_actions::remote::Caller::local_person("owner").running_shortcut("morning");
+            let actor = BrokerActor::for_caller(&step);
             let context = host_set_invoker(
                 Some(tilo_actions::ActionContext::default()),
                 None,
-                &BrokerActor::for_caller(&step),
+                &actor,
                 Some(&step),
                 None,
             )
@@ -231,7 +241,12 @@ mod tests {
             .unwrap();
             assert_eq!(
                 context.invoker,
-                Some(tilo_actions::ActionInvoker::person("owner"))
+                Some(tilo_actions::ActionInvoker::admitted(step.acting()))
+            );
+            assert_eq!(
+                tilo_actions::ActionInvoker::delivered(actor.actor(), Some(&context)),
+                context.invoker.clone().unwrap(),
+                "the worker derives exactly the host-set invoker"
             );
         }
 

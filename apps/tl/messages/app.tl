@@ -680,7 +680,7 @@ action list_account_states(m: Messages) -> Text (
 /// Opens the conversation with a workspace member, on Tilo.
 action open_member(m: Messages, who: Actor) (icon: .message_circle, label: "Open person") {
     let s = if let held = session_of(m) { held } else { start_session(m) }
-    let c = member_choice(who, invoker)
+    let c = member_choice(who, invoker.principal())
     s.member = .some(who)
     s.contact = ""
     s.held = ""

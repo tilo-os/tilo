@@ -209,6 +209,7 @@ imports! {
     (ActorKind, "actor_kind", "i", "l"),
     (ActorRole, "actor_role", "i", "i"),
     (ActorApp, "actor_app", "i", "i"),
+    (ActorPrincipal, "actor_principal", "i", "i"),
 
     (EnumNew, "enum_new", "ii", "i"),
     (EnumSetI, "enum_set_i", "iil", ""),

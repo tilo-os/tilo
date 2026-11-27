@@ -89,7 +89,7 @@ action comment(
 
 /// Changes what a comment says. Only its author may.
 action edit(c: Comment, text: RichText = c.text) (icon: .pencil, label: "Edit") {
-    require created(c)?.who == invoker "Only its author can edit a comment"
+    require created(c)?.owner == invoker "Only its author can edit a comment"
     require not text.is_empty() "Write a comment first"
     c.text = text
 }
@@ -122,7 +122,7 @@ destructive action delete(all: Comments, c: Comment) (
     label: "Delete",
     field: comments,
 ) {
-    require created(c)?.who == invoker "Only its author can delete a comment"
+    require created(c)?.owner == invoker "Only its author can delete a comment"
     all.items.remove(c)
 }
 

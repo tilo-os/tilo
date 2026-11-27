@@ -542,6 +542,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "IMPORTS::actor_id" = "i -> i"
 "IMPORTS::actor_kind" = "i -> l"
 "IMPORTS::actor_name" = "i -> i"
+"IMPORTS::actor_principal" = "i -> i"
 "IMPORTS::actor_role" = "i -> i"
 "IMPORTS::agent_named" = "i -> i"
 "IMPORTS::arg_at" = "iii -> i"

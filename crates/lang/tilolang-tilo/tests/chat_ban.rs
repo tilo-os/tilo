@@ -189,3 +189,130 @@ fn a_member_who_does_not_moderate_is_offered_no_ban() {
     assert!(shown.contains(&"Message".to_owned()), "{shown:?}");
     assert!(!shown.contains(&"Ban".to_owned()), "{shown:?}");
 }
+
+/// A Shortcut's unattended run is the automation acting for its person, and Chat's checks of who
+/// may do what read the run, not the person: a run of a moderator's Shortcut, saved by them or by
+/// their agent, settles no report and edits none of their messages. What the run writes is still
+/// addressed as theirs: it writes in their own conversation.
+#[test]
+fn a_moderators_shortcut_run_moderates_nothing_and_writes_in_their_conversation() {
+    let ada = chat("ada");
+    let root = ada.host.root_of(APP).unwrap();
+    let all = Value::resource(&root);
+    ada.commit();
+    let meta = ada.host.package(APP).unwrap().meta;
+    let invoke = |who: &Actor, action: &str, args: Vec<Value>| {
+        let outcome = ada.host.runtime().invoke_action(
+            who,
+            (crate::fixtures::action_id(&meta, action).as_str(), args),
+        );
+        ada.commit();
+        outcome
+    };
+    let done = |result: Result<InvokeOutcome, _>| match result {
+        Ok(InvokeOutcome::Done(value)) => value,
+        other => panic!("{other:?}"),
+    };
+    let mo = person("mo");
+    let report = done(invoke(
+        &person("ben"),
+        "report_person",
+        vec![
+            all.clone(),
+            Value::Actor(person("cy")),
+            Value::text("Threats"),
+        ],
+    ));
+    let written = done(invoke(
+        &mo,
+        "write_to",
+        vec![
+            all.clone(),
+            Value::Actor(person("ben")),
+            rich("See you at four"),
+        ],
+    ));
+
+    for (saved_by, saver) in [
+        ("mo", tilo_actions::remote::Caller::own_person("mo")),
+        (
+            "mo's agent",
+            tilo_actions::remote::Caller::local_agent("scout", "mo"),
+        ),
+    ] {
+        let caller = shortcut_run(&ada, saver, saved_by);
+        let run = caller.actor.clone();
+        let refuses = |action: &str, args: Vec<Value>, says: &str| {
+            let refused = format!("{:?}", invoke(&run, action, args));
+            assert!(
+                refused.contains(says),
+                "a run of a Shortcut {saved_by} saved may not {action}: {refused}"
+            );
+        };
+
+        // It moderates nothing, and edits none of mo's messages.
+        let settle = vec![report.clone(), Value::text("Warned")];
+        refuses(
+            "decide",
+            settle,
+            "Only the workspace's moderators settle a report",
+        );
+        let edit = vec![written.clone(), rich("See you at five")];
+        refuses("edit", edit, "Only its author can edit a message");
+
+        // What it writes to ben is in mo's conversation with him, the one mo opened, written
+        // for mo as the host writes a run's call.
+        let made = {
+            let _for_mo = ada
+                .host
+                .store()
+                .acting_for(caller.on_behalf_of.clone(), caller.acting_for());
+            done(invoke(
+                &run,
+                "write_to",
+                vec![
+                    all.clone(),
+                    Value::Actor(person("ben")),
+                    rich("Time to call ben"),
+                ],
+            ))
+        };
+        // The message is mo's, written by the run: the run edits none of it, mo does.
+        let edit = vec![made.clone(), rich("Time to call ben now")];
+        refuses("edit", edit, "Only its author can edit a message");
+        done(invoke(
+            &mo,
+            "edit",
+            vec![made, rich("Time to call ben now")],
+        ));
+        let with_ben = |who: &Actor| {
+            let ben = vec![all.clone(), Value::Actor(person("ben"))];
+            done(invoke(who, "conversation_with", ben))
+        };
+        let (theirs, the_runs) = (with_ben(&mo), with_ben(&run));
+        assert_eq!(
+            theirs, the_runs,
+            "a run of a Shortcut {saved_by} saved finds mo's conversation with ben"
+        );
+        assert_ne!(theirs, Value::none(), "mo has a conversation with ben");
+    }
+    // The moderator settles it themselves.
+    done(invoke(&mo, "decide", vec![report, Value::text("Warned")]));
+}
+
+/// The run of a Shortcut `saver` saved, admitted to `r`'s host as its host admits one.
+fn shortcut_run(
+    r: &Replica,
+    saver: tilo_actions::remote::Caller,
+    saved_by: &str,
+) -> tilolang_tilo::publish::Caller {
+    let run = saver.running_shortcut(format!("reminder-{}", saved_by.len()));
+    let caller =
+        tilolang_tilo::publish::Caller::from(&tilo_actions::ActionInvoker::admitted(run.acting()));
+    r.host.admit_agent(&caller);
+    caller
+}
+
+fn rich(text: &str) -> Value {
+    Value::Rich(tilolang_runtime::rich::RichValue::from_text(text))
+}

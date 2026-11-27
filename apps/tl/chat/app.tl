@@ -610,13 +610,14 @@ fn recording_shown(recording: Option<File>) -> Bool {
 /// Opens the direct message between the invoker and `who`, in the sidebar, or the one already
 /// open between the two of them: two people have one conversation, not a new empty one each
 /// time. With yourself it is your notes to self. A person is someone of the workspace: one who
-/// is not in it is refused, since no one but its members reads what is written here.
+/// is not in it is refused, since no one but its members reads what is written here. A
+/// Shortcut's run opens its person's conversation: it writes for them.
 action message_person(all: Conversations, who: Actor) -> Direct (
     icon: .message_circle,
     label: "Message",
 ) {
-    require in_workspace(who, invoker) "{who.name()} is not in this workspace"
-    let people = people_of(invoker, who)
+    require in_workspace(who, invoker.principal()) "{who.name()} is not in this workspace"
+    let people = people_of(invoker.principal(), who)
     if let d = direct_of(all, people) {
         return d
     }
@@ -650,7 +651,7 @@ action conversation_with(all: Conversations, who: Actor) -> Option<Direct> (
     icon: .message_circle,
     label: "Conversation with",
 ) {
-    direct_of(all, people_of(invoker, who))
+    direct_of(all, people_of(invoker.principal(), who))
 }
 
 /// The direct conversation of `people`, each once, none while they have none.
@@ -829,8 +830,9 @@ action send(
         }
         d: Direct => {
             let sent = d.messages.insert(m)
-            for p in d.people.filter(p -> p != invoker and p.kind() == .person) {
-                notify(to: p, title: invoker.name(), body: words.text, opens: d)
+            let from = invoker.principal()
+            for p in d.people.filter(p -> p != from and p.kind() == .person) {
+                notify(to: p, title: from.name(), body: words.text, opens: d)
             }
             sent
         }
@@ -970,7 +972,7 @@ action set_share_access(m: Message, can_edit: Bool) (
     icon: .mouse_pointer_2,
     label: "Change what others may do",
 ) {
-    require created(m)?.who == invoker "Only whoever shared the window can change what others may do there"
+    require created(m)?.owner == invoker "Only whoever shared the window can change what others may do there"
     require still_shared(m) "The window is no longer shared"
     if let s = m.live_share {
         device.allow_remote_input(device.shares, tab: s.window, on: can_edit)
@@ -985,7 +987,7 @@ action stop_sharing(m: Message) (
     label: "Stop sharing",
     did: "stopped sharing a window",
 ) {
-    require created(m)?.who == invoker "Only whoever shared the window can stop sharing it"
+    require created(m)?.owner == invoker "Only whoever shared the window can stop sharing it"
     require still_shared(m) "The window is no longer shared"
     if let s = m.live_share {
         device.stop(device.shares, tab: s.window)
@@ -1210,7 +1212,7 @@ action edit(
     turn: Text = m.turn,
     reasoning: Text = m.reasoning,
 ) (icon: .pencil, label: "Edit") {
-    require created(m)?.who == invoker "Only its author can edit a message"
+    require created(m)?.owner == invoker "Only its author can edit a message"
     // An agent's answer is written as it comes, and its model may reason before it writes a
     // word: its message stands empty until then.
     require turn != "" or not body.is_empty() "Type a message first"
@@ -2897,7 +2899,7 @@ view thread_typing_here(of: Thread) {
 
 /// Edit, for whoever may edit the message (its author): puts the editor in its place.
 view edit_button(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    if created(m)?.who == invoker and not m.body.is_empty() {
+    if created(m)?.owner == invoker and not m.body.is_empty() {
         ui.Button("Edit", icon: .pencil, icon_only: true) {
             on press: set(revised, m.body).then(set(editing, m))
         }
@@ -3195,7 +3197,7 @@ view said(m: Message) {
 /// the share here; a share that ended says so in the window's place. The window stands as this
 /// device's shell holds it: the sharer's own window, or the place another member's share shows in.
 view live_share(m: Message, s: LiveShare) {
-    let mine = created(m)?.who == invoker
+    let mine = created(m)?.owner == invoker
     let held = device.shares.sharing.find(x -> x.tab == s.window)
     let watched = device.shares.watching.find(x -> x.tab == s.window)
     // The sharer's own device knows the share ended when the shell no longer shares the window,

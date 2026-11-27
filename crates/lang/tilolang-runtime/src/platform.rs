@@ -706,6 +706,7 @@ impl Core {
             .and_then(|a| a.icon.clone())
             .map(|icon| Box::new(Value::Text(icon)));
         let who = self.made_by(&v, of);
+        let owner = self.owner(&v, of);
         let looking = self.looking_now();
         let mine = v.run.is_none() && looking.as_ref() == Some(&who);
         let actor = self.actor(&who, mine);
@@ -736,6 +737,7 @@ impl Core {
             // How many items it changed, read by name; the action and the change it names
             // stand after the fields code reads by name (`host::action_id_at`).
             Value::Int(i64::from(v.count)),
+            Value::Actor(owner),
             Value::Text(v.action),
             Value::Text(v.change),
         ]))
@@ -960,6 +962,19 @@ impl Core {
     /// person's, as [`Core::made_by`] names them.
     pub(crate) fn whose(&self, v: &crate::store::Version, of: &ResourceRef) -> Actor {
         v.whose().unwrap_or_else(|| self.made_by(v, of))
+    }
+
+    /// Whose what the version `v` of `of` made is to a check of who may change it: whoever made
+    /// it ([`Core::made_by`]), except that a Shortcut's run writes for its person, so what an
+    /// automation made for someone is theirs. The run itself owns nothing it wrote, and an agent
+    /// owns what it wrote, as history names them both.
+    pub(crate) fn owner(&self, v: &crate::store::Version, of: &ResourceRef) -> Actor {
+        match (&v.who, v.acted_for.as_deref()) {
+            (Some(Actor::Automation(_)), Some(person)) => {
+                Actor::from(crate::ids::MemberId::person(person))
+            }
+            _ => self.made_by(v, of),
+        }
     }
 
     /// Who made the version `v` of `of`: its actor, or for a change the platform made that

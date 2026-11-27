@@ -830,7 +830,7 @@ action change_color(b: Book, m: Mark, color: Text) (did: "recoloured a highlight
 
 /// Rewrites what a note or a comment says. Only its author may.
 action edit_mark_text(b: Book, m: Mark, text: RichText) (icon: .pencil, label: "Edit a note") {
-    require created(m)?.who == invoker "Only its author can edit a note"
+    require created(m)?.owner == invoker "Only its author can edit a note"
     require not text.is_empty() "Write a note first"
     m.text = text
 }

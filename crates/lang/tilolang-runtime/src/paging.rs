@@ -23,7 +23,11 @@ use crate::value::ResourceRef;
 /// Who made a resource, when, and what it was made from: its first version.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Created {
+    /// Who made it: the automation, for a Shortcut's run.
     pub who: Actor,
+    /// Whose it is to a check of who may change it: the person a Shortcut's run made it for,
+    /// else whoever made it.
+    pub owner: Actor,
     /// ISO-8601 UTC.
     pub at: String,
     pub from: Option<ResourceRef>,
@@ -66,6 +70,7 @@ impl Runtime {
         let first = self.core.store.borrow().version_end(at, false)?;
         Ok(first.map(|version| Created {
             who: self.core.made_by(&version, at),
+            owner: self.core.owner(&version, at),
             from: version.from.clone(),
             at: version.at,
         }))
