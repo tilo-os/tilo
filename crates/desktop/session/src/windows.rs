@@ -130,12 +130,7 @@ fn window_reading(
         attention: handle.asks_attention(tab.id),
         // A window of its own that has not shown here yet: its app is starting, and its place
         // shows what is coming.
-        busy: !elsewhere
-            && size.is_none()
-            && matches!(
-                &tab.tile,
-                TileContent::Foreign { .. } | TileContent::LocalApp { .. }
-            ),
+        busy: starting_here(&tab.tile, elsewhere, size.is_some()),
         // What it shows has changes its app has not saved, as its bar says.
         modified: handle
             .bar_toolbar(tab.id)
@@ -184,6 +179,17 @@ fn app_of(tile: &TileContent) -> String {
             label.clone()
         }
     }
+}
+
+/// Whether a window of the tab's own has not shown here yet: its app is starting, and its place
+/// shows what is coming. A window that runs only on another device is not starting here.
+fn starting_here(tile: &TileContent, elsewhere: bool, measured: bool) -> bool {
+    !elsewhere
+        && !measured
+        && matches!(
+            tile,
+            TileContent::Foreign { .. } | TileContent::LocalApp { .. }
+        )
 }
 
 /// Who opened the window `tab`, as the shared desktop's record says: the agent whose run opened
