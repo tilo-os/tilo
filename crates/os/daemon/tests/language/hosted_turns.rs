@@ -99,8 +99,9 @@ async fn invoke(host: &Host, name: &str, arguments: Value) -> Result<Value, Acti
     Ok(output.value.unwrap_or_default())
 }
 
-/// What Chat's record holds of the workspace, as `person` reads it through Chat's own package.
-async fn read_root(host: &Host, workspace: &str, person: &str) -> Value {
+/// The resource `item` (a published id) of Chat's record as `person` reads it through Chat's own
+/// package: its fields, each collection as a page of the rows the collection lists.
+async fn read_item(host: &Host, workspace: &str, person: &str, item: String) -> Value {
     use tilo_actions::MemberId;
     use tl::runtime::Actor;
     let packages = tl::records::built_in(CHAT)
@@ -113,14 +114,15 @@ async fn read_root(host: &Host, workspace: &str, person: &str) -> Value {
         workspace,
         &packages,
         (viewer, person),
-        move |opened| {
-            opened
-                .host()
-                .answer_read(&json!({"item": CONVERSATIONS}), &reader)
-        },
+        move |opened| opened.host().answer_read(&json!({"item": item}), &reader),
     )
     .await
     .unwrap_or_else(|error| panic!("Chat's record reads: {error}"))
+}
+
+/// What Chat's record holds of the workspace, as `person` reads it through Chat's own package.
+async fn read_root(host: &Host, workspace: &str, person: &str) -> Value {
+    read_item(host, workspace, person, CONVERSATIONS.to_owned()).await
 }
 
 /// Add the person `Bo` as a viewer of the daemon's workspace, with a device of theirs, and
@@ -495,10 +497,37 @@ fn a_hosted_agent_uses_the_same_workspace_skills_actions() {
             crate::language::chat::chat_holds_soon(host, "I updated the workspace skill.").await,
             "the turn says what it changed once its tool answered"
         );
-        let read = read_root(host, host.workspace(), host.person()).await;
+        // The skill the person wrote, as they read it: its page holds the text, and the root the
+        // workspace reads still lists one skill, not a copy the turn made. The app answers a write
+        // before its changes reach the daemon's record, so the page is read until it holds the
+        // correction or the deadline passes.
+        let item = format!("tl:{CHAT}:{skill}");
+        let deadline = tilo_test_env::hang_deadline();
+        let read = loop {
+            let read = read_item(host, host.workspace(), host.person(), item.clone()).await;
+            if read.get("fields").and_then(|fields| fields.get("how")) == Some(&json!(CORRECTION)) {
+                break read;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the workspace's one skill holds the agent's correction: {read}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        let fields = read.get("fields").cloned().unwrap_or_default();
         assert!(
-            read.to_string().contains(CORRECTION) && !read.to_string().contains(INSTRUCTIONS),
-            "the workspace's one skill holds the agent's correction: {read}"
+            fields.get("work") == Some(&json!("Write the weekly report")),
+            "the correction leaves the rest of the skill as it was: {read}"
+        );
+        assert!(
+            !read.to_string().contains(INSTRUCTIONS),
+            "the corrected skill no longer holds what the person first wrote: {read}"
+        );
+        let root = read_root(host, host.workspace(), host.person()).await;
+        assert!(
+            root["fields"]["skills"]["count"] == json!(1)
+                && root["fields"]["skills"]["items"][0]["label"] == json!("Weekly report"),
+            "the workspace keeps the one skill the person wrote: {root}"
         );
     });
 }
