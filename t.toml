@@ -8563,7 +8563,9 @@ outputs = ["/target/publish/registry-server/payload.json", "/target/publish/regi
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["dispatch"]
+# The release key's token reaches release tags only (a dispatch of main is refused it), so
+# this applies there; a dispatch of main publishes the server's development tag unsigned.
+on = ["tag:v*"]
 
 [[check]]
 name = "publish-registry-server"
