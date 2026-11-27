@@ -768,7 +768,8 @@ impl AskedStore {
     /// Take in each of `asks`, a call kept in the workspace to be run at a device that keeps the
     /// person's root ([`tilo_actions::remote::asked::AT_ROOT`]), that this store does not keep yet: one nobody took
     /// waits here for the person's answer, as one written here does; one this device took before
-    /// it started again is run again, as the person answered it.
+    /// it started again is run again, as the person answered it. One the record says ended, or
+    /// another device took, waits here no more.
     pub fn take_in(&self, asks: Vec<KeptAsk>) {
         let here = self.here.get().cloned();
         let mut resumed = Vec::new();
@@ -776,19 +777,33 @@ impl AskedStore {
         // without it.
         let mut gone = Vec::new();
         let mut kept = self.kept.lock_recover();
-        let before = kept.records.len();
+        let mut moved = false;
         for ask in asks {
-            if ask.dispatch != tilo_actions::remote::asked::AT_ROOT
-                || ask.outcome.is_some()
-                || kept.find(&ask.at).is_some()
-            {
+            if ask.dispatch != tilo_actions::remote::asked::AT_ROOT {
                 continue;
             }
-            let status = match &ask.taken {
-                None => Status::Asked,
-                Some(taken) if Some(taken) == here.as_ref() => Status::Running,
-                // Another device of the person's took it, and runs it.
-                Some(_) => continue,
+            let ended_or_elsewhere = ask.outcome.is_some()
+                || ask
+                    .taken
+                    .as_ref()
+                    .is_some_and(|taken| Some(taken) != here.as_ref());
+            if ended_or_elsewhere {
+                // The record says how it went, or that another device of the person's runs it:
+                // nothing of it waits here, however this device's earlier reading of the
+                // record, one from before its own answer was written there, had it.
+                let before = kept.records.len();
+                kept.records
+                    .retain(|record| record.at != ask.at || record.status != Status::Asked);
+                moved |= kept.records.len() != before;
+                continue;
+            }
+            if kept.find(&ask.at).is_some() {
+                continue;
+            }
+            let status = if ask.taken.is_some() {
+                Status::Running
+            } else {
+                Status::Asked
             };
             let caller = ask.caller.restored();
             if status == Status::Running && !ask.sealed.is_empty() {
@@ -820,8 +835,9 @@ impl AskedStore {
                 held: None,
                 digest: None,
             });
+            moved = true;
         }
-        if kept.records.len() != before {
+        if moved {
             kept.moved();
         }
         drop(kept);
