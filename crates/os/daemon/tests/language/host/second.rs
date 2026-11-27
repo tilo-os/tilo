@@ -236,7 +236,7 @@ impl Second {
             .stdin(Stdio::null())
             .stdout(std::fs::File::create(&log).unwrap())
             .stderr(std::fs::File::create(self.home.join("fs.err")).unwrap())
-            .spawn()
+            .spawn_locked()
             .expect("the files daemon starts");
         self.mounts.borrow_mut().push(files);
         let deadline = Instant::now() + Duration::from_secs(120);

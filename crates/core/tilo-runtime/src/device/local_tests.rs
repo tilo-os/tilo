@@ -1016,7 +1016,7 @@ fn a_process_an_app_started_is_judged_as_that_app_and_never_its_person() {
     // The helper outlives the shell that started it; it is ended by its pid.
     let _ = std::process::Command::new("kill")
         .arg(helper.to_string())
-        .status();
+        .status_locked();
 }
 
 const SHELL_TEST: &str = "device::local::tests::a_shell_the_runtime_tells_of_acts_as_terminal_and_a_forged_record_is_refused";
@@ -1217,7 +1217,7 @@ fn a_shell_the_runtime_tells_of_acts_as_terminal_and_a_forged_record_is_refused(
     // The program outlives the shell that started it; it is ended by its pid.
     let _ = std::process::Command::new("kill")
         .arg(typed.to_string())
-        .status();
+        .status_locked();
 }
 
 const UNSEEN_TEST: &str = "device::local::tests::a_shells_endpoint_acts_as_terminal_where_the_daemon_sees_no_process_of_the_person";

@@ -19,6 +19,7 @@ mod cases {
 
     use crate::common::*;
     use serde_json::{Value as Json, json};
+    use tilo_test_env::SpawnUnderEnvLock as _;
     use tilolang_engine::Push;
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
@@ -887,7 +888,7 @@ mod cases {
     fn run(program: &str, args: &[&str]) {
         let status = std::process::Command::new(program)
             .args(args)
-            .status()
+            .status_locked()
             .unwrap_or_else(|e| panic!("{program}: {e}"));
         assert!(status.success(), "{program} {args:?}: {status}");
     }
@@ -979,7 +980,7 @@ mod cases {
         let sshd = Server(
             std::process::Command::new("/usr/sbin/sshd")
                 .args(["-D", "-e", "-f", &at("sshd_config")])
-                .spawn()
+                .spawn_locked()
                 .expect("OpenSSH's sshd"),
         );
         until("sshd to listen", || listening(ssh_port));
@@ -996,7 +997,7 @@ mod cases {
         let desk = Desk::over(real.clone(), Device::default());
         let me = std::process::Command::new("id")
             .arg("-un")
-            .output()
+            .output_locked()
             .unwrap();
         let me = String::from_utf8(me.stdout).unwrap().trim().to_owned();
 
@@ -1085,7 +1086,7 @@ mod cases {
             .arg("-f")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .and_then(|mut child| {
                 use std::io::Write as _;
                 child.stdin.take().unwrap().write_all(b"desk-pw\n")?;
@@ -1111,7 +1112,7 @@ mod cases {
                     "-nolisten",
                     "tcp",
                 ])
-                .spawn()
+                .spawn_locked()
                 .expect("TigerVNC's Xvnc"),
         );
         until("Xvnc to listen", || listening(vnc_port));
