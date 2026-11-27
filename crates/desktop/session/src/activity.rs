@@ -1014,6 +1014,8 @@ fn read_tree(
                 ));
             }
             read.push(fs_protocol::tree::FILES_APP, route, tree);
+        } else if !folder_moved {
+            // No folder was held at the last read, and none of its records moved since.
         } else if let Some(document) = held.document(fs_protocol::tree::FILES_APP, workspace, route)
         {
             noted(document.get_actor());
@@ -1376,7 +1378,12 @@ mod tests {
             self.held.take_changed()
         }
 
-        fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
+        fn document(
+            &self,
+            app: &str,
+            workspace: &str,
+            route: &str,
+        ) -> Option<ui::automerge::AutoCommit> {
             self.reads.borrow_mut().push(route.to_owned());
             self.held.document(app, workspace, route)
         }
