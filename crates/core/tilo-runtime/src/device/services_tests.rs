@@ -262,6 +262,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
                     instance: "p1".to_owned(),
                     resource: "files.entry:/tmp/synthetic-report".to_owned(),
                     at: Some(tilo_actions::remote::asked::PressPoint { x: 412, y: 96 }),
+                    control: None,
                 }),
                 own_shell: true,
             })

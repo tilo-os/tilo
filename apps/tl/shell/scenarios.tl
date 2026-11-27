@@ -3773,6 +3773,48 @@ scenario "a send that needs a yes" {
     )
 }
 
+/// A question a press on the shell's own surfaces asked: Quick settings' "Forget this network"
+/// waits for Ada, and the question stands beside the button in the bar it was pressed at.
+scenario "a press on the shell's own surfaces" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(
+        [
+            waiting_record(
+                "studio",
+                "invocations/shell-1",
+                "Forget this network",
+                invocations.Asker(device: .some(invocations.Named(id: "laptop", name: "Laptop"))),
+                5,
+                "",
+                .none,
+                [invocations.Fact(label: "Network", value: "Home")],
+                [],
+                false,
+                "",
+                .none,
+                .some(
+                    invocations.Pressed(
+                        device: "laptop",
+                        app: "so.tilo.shell",
+                        instance: "screen",
+                        resource: "",
+                        at: .none,
+                        control: .some(invocations.PressRect(x: 1100, y: 12, w: 120, h: 36)),
+                    ),
+                ),
+                .none,
+                invoker,
+                [],
+                [],
+                .some(.undoable),
+            ),
+        ],
+    )
+}
+
 /// What waits for the person in the notification centre: an agent's question with choices, a
 /// device's confirmation that takes away what Undo does not bring back, and a press made on
 /// another computer, each under who asks and where, long names and all.

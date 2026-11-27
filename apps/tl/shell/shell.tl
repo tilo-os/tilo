@@ -166,6 +166,10 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         }
         // Which screen is which, on each screen, for the moment after Settings was asked.
         identify_card()
+        // A question a press on the shell's own surfaces asked, beside the control it pressed:
+        // over the bar, the dock, quick settings and whatever surface stands over them, so the
+        // person answers it where they are looking.
+        asked_over_shell()
     }
 }
 

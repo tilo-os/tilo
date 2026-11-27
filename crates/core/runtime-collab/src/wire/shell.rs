@@ -132,13 +132,19 @@ pub struct VouchedApp {
 /// person's own calls on the shell's link prove themselves with it.
 pub const SHELL_SURFACES: u64 = u64::MAX;
 
+/// The window a press on the shell's own surfaces stands for in a question it asks: the shell's
+/// screen, no app's window. The whole shell draws it, so the question stands beside the control
+/// the person pressed wherever the shell is (`so.tilo.shell`'s `asked_over_shell` reads it).
+pub const SHELL_SCREEN: &str = "screen";
+
 /// Where on the shell's screen the person pressed an action: the window's tab key and the
 /// resource the action is on, as the shell names them. Only the window key and the resource
 /// travel: the daemon fills the device with itself and the app with the action's own, so a shell
 /// cannot claim another app's window or another device.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellPress {
-    /// The window's tab key, as the session publishes it (`device.Window.key`).
+    /// The window's tab key, as the session publishes it (`device.Window.key`), or
+    /// [`SHELL_SCREEN`] for the shell's own surfaces.
     pub instance: String,
     /// The resource the action acts on.
     pub resource: String,
@@ -146,6 +152,10 @@ pub struct ShellPress {
     /// drew the control: what the question stands at. `None` where the shell knows no point.
     /// Always written: the link's encoding is positional.
     pub at: Option<tilo_actions::remote::asked::PressPoint>,
+    /// The control the press answered, where the shell knew it: the question stands beside it,
+    /// never over it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<tilo_actions::remote::asked::PressRect>,
 }
 
 /// What a shell asks of the device's documents and actions.

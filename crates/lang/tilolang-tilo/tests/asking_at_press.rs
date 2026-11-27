@@ -249,6 +249,51 @@ tilo_test_env::scenario! {
     }
 }
 
+tilo_test_env::scenario! {
+    fn a_press_on_the_shells_own_surfaces_stands_beside_its_control;
+
+    phase it_stands_at_the_control_the_press_answered;
+    {
+        let (host, called) = staged("a press on the shell's own surfaces");
+        let desktop = desktop(&host);
+        let tree = desktop.tree();
+        assert!(
+            tree.of_kind("ui.ModalDialog").is_empty(),
+            "no question in the middle of the shell"
+        );
+        let [popover] = tree.of_kind("ui.Popover")[..] else {
+            panic!("one question stands beside the control: {tree:#?}");
+        };
+        assert_eq!(
+            given(popover.props.get("anchor")),
+            Some(&Value::List(vec![
+                Value::Float(1100.0),
+                Value::Float(12.0),
+                Value::Float(120.0),
+                Value::Float(36.0)
+            ])),
+            "beside the control the person pressed on the shell's own screen, never over it"
+        );
+        let shown = texts(popover);
+        assert!(
+            shown.iter().any(|text| text.contains("Home")),
+            "it shows what the call would do: {shown:?}"
+        );
+        assert!(
+            shown.iter().any(|text| text == "Hold Shift to skip"),
+            "Undo takes it back, so Shift skips it next time: {shown:?}"
+        );
+        desktop
+            .press(&confirm_button(&desktop, "Forget this network"))
+            .unwrap();
+        assert_eq!(
+            answers_of(&called, "studio/shell-1"),
+            ["approve"],
+            "the answer is the record's own resolve, and the call runs once"
+        );
+    }
+}
+
 /// The key of the confirm's button labelled `label`.
 fn confirm_button(desktop: &tilolang_runtime::ViewInstance, label: &str) -> String {
     desktop
@@ -311,6 +356,16 @@ mod focus {
             shell.holds_keyboard().as_deref(),
             Some("Don't allow"),
             "Enter must never send what nothing here can take back"
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_shells_own_surfaces_opens_on_its_answer() {
+        let shell = staged("a press on the shell's own surfaces");
+        assert_eq!(
+            shell.holds_keyboard().as_deref(),
+            Some("Forget this network"),
+            "the answer the press started takes the keyboard, as in a window"
         );
     }
 

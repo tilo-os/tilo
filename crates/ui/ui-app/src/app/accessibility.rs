@@ -968,15 +968,23 @@ impl App {
     /// other input brings the control into view as [`Self::set_focused_node`] does.
     pub(super) fn focus_for_input(&mut self, id: NodeId, event: &WindowEvent) {
         // The control the person's input answers stands where its node lays: a call it makes
-        // carries that rect, so their question stands beside it, never over it.
-        if tilo_ui_base::press::current().is_some() {
+        // carries that rect, so their question stands beside it, never over it. A window's own
+        // input names its press by the serial its host issued; the session's own surfaces name
+        // theirs by the press they are handling.
+        if tilo_ui_base::press::current().is_some()
+            || tilo_actions::remote::press_points::handled().is_some()
+        {
             let rect = tilo_ui_base::widget::layout_rect(
                 &self.layout.taffy,
                 id,
                 vello::kurbo::Point::ZERO,
             );
             if rect.width() > 0.0 && rect.height() > 0.0 {
-                tilo_ui_base::press::note_control(rect);
+                if tilo_ui_base::press::current().is_some() {
+                    tilo_ui_base::press::note_control(rect);
+                } else {
+                    tilo_ui_base::press::note_handled_control(rect);
+                }
             }
         }
         if matches!(event, WindowEvent::MouseInput { .. }) {

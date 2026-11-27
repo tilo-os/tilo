@@ -52,6 +52,14 @@ pub fn note_control(rect: crate::kurbo::Rect) {
     }
 }
 
+/// The press the person is making on the shell's own surfaces answered the control standing at
+/// `rect` in it: what a call the press makes carries, as [`note_control`] says for a window's own
+/// press. These surfaces name their press by the one the session is handling, not by a serial
+/// their host issued.
+pub fn note_handled_control(rect: crate::kurbo::Rect) {
+    tilo_actions::remote::press_points::note_handled(area_of(rect));
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a control's place in its window is a few thousand pixels at most"

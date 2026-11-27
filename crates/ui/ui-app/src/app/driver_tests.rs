@@ -213,6 +213,26 @@ fn a_click_says_the_rect_of_the_control_it_answered() {
         (at.x0, at.y0, at.width(), at.height()),
         "the rect of the button the pointer answered"
     );
+
+    // The session's own surfaces name their press by the one it is handling, not by a serial
+    // their host issued: the same rect is told under that press, for the call it makes.
+    const SHELL: u32 = 78;
+    tilo_ui_base::press::forget();
+    tilo_actions::remote::press_points::handling(Some(SHELL), || {
+        driver.click_named("add").expect("the button is drawn");
+    });
+    let told = tilo_actions::remote::press_points::of(SHELL)
+        .expect("the shell's press told the control it answered");
+    assert_eq!(
+        (
+            f64::from(told.x),
+            f64::from(told.y),
+            f64::from(told.w),
+            f64::from(told.h)
+        ),
+        (at.x0, at.y0, at.width(), at.height()),
+        "the rect of the button the shell's press answered"
+    );
 }
 
 #[test]

@@ -798,6 +798,7 @@ async fn an_apps_connection_is_refused_the_persons_shell() {
                 instance: "another-app's-window".to_owned(),
                 resource: "device:server".to_owned(),
                 at: None,
+                control: None,
             }),
         },
     )

@@ -35,6 +35,15 @@ pub fn note(serial: u32, at: PressRect) {
     points.push_back((serial, at));
 }
 
+/// The press the person is making on the shell's own surfaces answered the control standing at
+/// `rect`: noted under the serial [`handled`] names, where a call the press makes reads it, as a
+/// window's own press notes the control it answered.
+pub fn note_handled(rect: PressRect) {
+    if let Some(serial) = handled() {
+        note(serial, rect);
+    }
+}
+
 /// Where the control the press of `serial` answered stands, when the window said.
 #[must_use]
 pub fn of(serial: u32) -> Option<PressRect> {

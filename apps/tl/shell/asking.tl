@@ -79,10 +79,18 @@ fn pressed_in(q: invocations.Invocation, w: device.Window) -> Bool {
 }
 
 /// The questions no window here stands for: an agent's, a device's, and a press made on another
-/// device or in a window that is gone. Newest first.
+/// device or in a window that is gone. A press on the shell's own surfaces is not one of them: it
+/// stands beside the control it pressed (`asked_over_shell`). Newest first.
 fn asked_elsewhere() -> List<invocations.Invocation> {
     return waiting()
+        .filter(q -> not on_screen(q))
         .filter(q -> not device.windows.all.any(w -> not w.elsewhere and pressed_in(q, w)))
+}
+
+/// Whether `q` was asked by a press on the shell's own surfaces: the shell's screen, which no
+/// window stands for.
+fn on_screen(q: invocations.Invocation) -> Bool {
+    return q.asked?.pressed?.instance == "screen"
 }
 
 /// How many questions wait for the person: what the bell counts beside the unread notices.
@@ -168,6 +176,36 @@ view asked_over(w: device.Window) {
                         )
                         asked_at_press(q, a, "", asked.len() - 1)
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The newest question a press on the shell's own surfaces made, standing beside the control the
+/// person pressed, over the shell and every surface on it: the same popover a press in a window
+/// raises, anchored to the control in the shell's own room. It takes Escape, or a press outside
+/// it, as its way out; the older ones wait in the notification centre.
+view asked_over_shell() {
+    let asked = waiting().filter(q -> on_screen(q)).sort_by(q -> 0 - asked_at(q))
+    if let q = asked.at(0) {
+        if let a = q.asked {
+            if let control = a.pressed?.control {
+                ui.Popover(
+                    label: title_of(a),
+                    open: true,
+                    anchor: [
+                        control.x.to_float(),
+                        control.y.to_float(),
+                        control.w.to_float(),
+                        control.h.to_float(),
+                    ],
+                ) {
+                    on dismiss: host.resolve(
+                        resource(key_of(q), of: host.Invocation),
+                        resolution: "decline",
+                    )
+                    asked_at_press(q, a, title_of(a), asked.len() - 1)
                 }
             }
         }

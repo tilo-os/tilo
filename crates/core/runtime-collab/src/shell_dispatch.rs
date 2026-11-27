@@ -165,6 +165,25 @@ impl ShellDispatch {
         }
     }
 
+    /// The place a call the person's press on the shell's own surfaces made stands for: the
+    /// shell's screen, beside the control the press answered where the session noted it.
+    /// `None` for a call no press made, or one that is no invocation.
+    fn pressed_on_shell(
+        press: Option<u32>,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::wire::shell::ShellPress> {
+        let serial = press?;
+        let RemoteActionMessage::Invoke(request) = message else {
+            return None;
+        };
+        Some(crate::wire::shell::ShellPress {
+            instance: crate::wire::shell::SHELL_SCREEN.to_owned(),
+            resource: request.target.address.resource.clone(),
+            at: None,
+            control: tilo_actions::remote::press_points::of(serial),
+        })
+    }
+
     /// [`Self::ask`] on the dispatch's runtime, answered with what `answer` reads of its reply.
     fn asking<T: Send + 'static>(
         &self,
@@ -180,9 +199,10 @@ impl ShellDispatch {
         let press = (named.is_none() && matches!(message, RemoteActionMessage::Invoke(_)))
             .then(tilo_actions::remote::press_points::handled)
             .flatten();
+        let pressed = Self::pressed_on_shell(press, &message);
         self.0.runtime.spawn(async move {
             done.complete(
-                Self::ask_as(&shell, workspace, named, message, (None, press))
+                Self::ask_as(&shell, workspace, named, message, (pressed, press))
                     .await
                     .and_then(answer),
             );
@@ -324,15 +344,11 @@ impl ShellDispatch {
     ) -> Result<tilo_actions::ActionOutput, String> {
         let invocation = request.invocation;
         request.wait_ms = held();
-        let receipt = match Self::ask_as(
-            shell,
-            workspace.clone(),
-            None,
-            RemoteActionMessage::Invoke(request),
-            (None, press),
-        )
-        .await
-        .map_err(|error| error.to_string())?
+        let message = RemoteActionMessage::Invoke(request);
+        let pressed = Self::pressed_on_shell(press, &message);
+        let receipt = match Self::ask_as(shell, workspace.clone(), None, message, (pressed, press))
+            .await
+            .map_err(|error| error.to_string())?
         {
             RemoteActionMessage::Receipt(receipt) => receipt,
             other => return Err(format!("the daemon answered an action with {other:?}")),
