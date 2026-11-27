@@ -825,6 +825,22 @@ fn check_native_target(
             version: version.version.clone(),
         });
     }
+    // A language pack is data, the same bytes on every architecture: it binds `any` and no
+    // runtime, and no other kind of package may.
+    if target.is_any_architecture() {
+        let data = manifest.package.kind == tilo_app_package::Kind::LanguagePack
+            && target.validate().is_ok()
+            && target.runtime.is_none()
+            && target.interfaces.is_empty()
+            && manifest.package.native_runtime_binding().is_none();
+        return if data {
+            Ok(())
+        } else {
+            Err(BundleReviewError::UnsupportedTarget {
+                version: version.version.clone(),
+            })
+        };
+    }
     let architecture = match target.architecture.as_str() {
         "x86_64" => tilo_app_package::manifest::Arch::X86_64,
         "aarch64" => tilo_app_package::manifest::Arch::AArch64,
@@ -1051,6 +1067,58 @@ mod tests {
                     Err(BundleReviewError::TargetMismatch { .. })
                 ));
             }
+        }
+
+        phase a_language_pack_binds_every_architecture_and_an_app_does_not;
+        {
+            let pack = Manifest::from_toml_str(
+                r#"
+[package]
+id = "so.tilo.language-pack.de"
+version = "1.0.0"
+kind = "language-pack"
+
+[publisher]
+identity = "ed25519:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#,
+            )
+            .unwrap();
+            let mut entry = sample_entry("https://example.com/de.tapp");
+            let target = &mut entry.versions[0].tapp_mut().unwrap().target;
+            target.architecture = registry_types::ANY_ARCHITECTURE.into();
+            target.isa = registry_types::ANY_ARCHITECTURE.into();
+            assert!(check_native_target(&entry.versions[0], &pack).is_ok());
+
+            entry.versions[0].tapp_mut().unwrap().target.runtime =
+                Some("tilo-runtime/2026.07".into());
+            assert!(matches!(
+                check_native_target(&entry.versions[0], &pack),
+                Err(BundleReviewError::UnsupportedTarget { .. })
+            ));
+
+            entry.versions[0].tapp_mut().unwrap().target.runtime = None;
+            let identity = SigningIdentity::generate();
+            let (bytes, _) = signed_tapp(&identity);
+            let app = tilo_app_package::tapp::read(
+                std::io::Cursor::new(&bytes),
+                &mut tilo_app_package::DiscardBlobs,
+            )
+            .unwrap()
+            .meta
+            .manifest;
+            assert!(matches!(
+                check_native_target(&entry.versions[0], &app),
+                Err(BundleReviewError::UnsupportedTarget { .. })
+            ));
         }
 
         phase desktop_and_android_inspection_binds_the_signed_desktop_target;
