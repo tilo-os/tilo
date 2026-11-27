@@ -3,8 +3,9 @@
 //! the swap has played. A second choice mid-fade goes from the content the person saw, never from
 //! a ghost behind it. Reduced motion swaps in one frame.
 //!
-//! What a person sees is what is read: the shell's own frame, replayed on the CPU, at the frames
-//! between the choice of one tab and the next.
+//! What a person sees is what is read: the shell's own frame, composited as the desktop composites
+//! it, at the frames between the choice of one tab and the next. The frame's pixels are the stored
+//! 8-bit values the renderer blends, and the mix a cross-fade makes is read there.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -29,9 +30,9 @@ use ui::vello::kurbo::Rect;
 use crate::shell_staged::{SHELL, StagedWindow, ada};
 
 /// The scenario staged here: a window of three notes, the first in front.
-const SCENARIO: &str = "a window of several places";
+const SCENARIO: &str = "a window of several searches";
 /// The strip that window is, as the scenario names it: the row's strip named "Notes".
-const STRIP: &str = "s-r-Main-Notes";
+const STRIP: &str = "s-r-Main-Searches";
 
 const WINDOW: (u32, u32) = (1280, 800);
 const FRAME: Duration = Duration::from_millis(16);
@@ -44,31 +45,21 @@ fn staged(reduced: bool) -> StagedWindow {
     StagedWindow::staged(SCENARIO, WINDOW, theme)
 }
 
-/// The window as it is drawn now, replayed on the CPU: its pixels, `WINDOW` wide.
-fn shown_pixels(window: &StagedWindow) -> Vec<u8> {
-    let mut raster = ui::retained_raster::RetainedRaster::new(true);
-    assert!(
-        raster.on_cpu(),
-        "the CPU canvas is the one this test draws with"
-    );
-    let frame = ui::retained_raster::FrameContent {
-        scene: window.harness.scene(),
-        width: WINDOW.0,
-        height: WINDOW.1,
-        base_color: ui::vello::peniko::Color::TRANSPARENT,
-        damage_regions: &[],
-        scroll_copies: &[],
-        full_redraw: true,
-        backdrop: &tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
-    };
-    raster
-        .rasterize_to_cpu(frame)
-        .expect("the CPU canvas replays the shell's frame");
-    raster
-        .cpu_frame()
-        .expect("the pixels the CPU canvas drew")
-        .pixels
-        .to_vec()
+/// The window as it is drawn now, composited as the desktop composites it: its pixels, `WINDOW`
+/// wide.
+fn shown_pixels(
+    window: &StagedWindow,
+    frames: &mut tilo_ui_base::offscreen::OffscreenRenderer,
+) -> Vec<u8> {
+    window
+        .harness
+        .render_rgba_with(frames, ui::vello::peniko::Color::TRANSPARENT)
+}
+
+/// A frame the test reads the shell's scene through: the GPU's own compositor, over the backdrop
+/// the shell's chrome needs.
+fn frames() -> tilo_ui_base::offscreen::OffscreenRenderer {
+    tilo_ui_base::offscreen::OffscreenRenderer::new(WINDOW.0, WINDOW.1)
 }
 
 /// A pixel counts as changed when any of its channels moved by more than [`SHOWN`].
@@ -240,10 +231,12 @@ fn tab_names(window: &StagedWindow) -> Vec<String> {
     let tree = window.instance.root_tree().expect("the window's tree");
     tree.of_kind("ui.TabItem")
         .into_iter()
-        .filter_map(|tab| match tab.props.get("name") {
-            Some(Value::Text(name)) => Some(name.clone()),
-            _ => None,
-        })
+        .filter_map(
+            |tab| match tab.props.get("name").or_else(|| tab.props.get("title")) {
+                Some(Value::Text(name)) => Some(name.clone()),
+                _ => None,
+            },
+        )
         .collect()
 }
 
@@ -298,11 +291,23 @@ fn choose(window: &mut StagedWindow, at: Instant, place: &str) {
         tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         show_place(window, place);
     });
-    // The session wrote the layout: the window reads again what it showed of it.
+    // The session wrote the layout: the window reads again what it showed of it, over the
+    // frames the patches take to arrive, all at the instant the person chose.
     window.instance.store_moved();
-    for _ in 0..4 {
+    for _ in 0..8 {
         window.frame_at(at);
+        let shows = window
+            .instance
+            .root_tree()
+            .expect("the window's tree")
+            .of_kind("ui.Swapped")
+            .into_iter()
+            .any(|view| view.props.get("shown") == Some(&Value::text(place)));
+        if shows {
+            return;
+        }
     }
+    panic!("the view shows the tab chosen: {place:?}");
 }
 
 /// Frames of `window` at the live clock until its schedule owes none: nothing of the window is
@@ -342,11 +347,12 @@ const MIDDLE: Duration = Duration::from_micros(500);
 
 /// Frames of `window` from `start` through the swap, each with the instant it was read at.
 fn sampled(window: &mut StagedWindow, start: Instant) -> Vec<(Instant, Vec<u8>)> {
+    let mut canvas = frames();
     let mut frames = Vec::new();
     for step in 1..=70 {
         let at = start + SAMPLE * step;
         window.frame_at(at);
-        frames.push((at, shown_pixels(window)));
+        frames.push((at, shown_pixels(window, &mut canvas)));
     }
     frames
 }
@@ -355,11 +361,12 @@ fn sampled(window: &mut StagedWindow, start: Instant) -> Vec<(Instant, Vec<u8>)>
 fn choosing_another_tab_draws_the_content_it_showed_out_over_the_motion() {
     let start = ui::time::now();
     let mut window = staged(false);
+    let mut canvas = frames();
     come_to_rest(&mut window);
     let body = window_body(&window);
     let names = tab_names(&window);
     assert!(names.len() >= 3, "the window shows its tabs: {names:?}");
-    let before = shown_pixels(&window);
+    let before = shown_pixels(&window, &mut canvas);
     choose(&mut window, start, "p-1");
     let shows_chosen = |window: &StagedWindow| {
         window
@@ -378,7 +385,7 @@ fn choosing_another_tab_draws_the_content_it_showed_out_over_the_motion() {
     let played = start + Duration::from_secs(1);
     let held_on = sampled(&mut window, start);
     window.frame_at(played);
-    let after = shown_pixels(&window);
+    let after = shown_pixels(&window, &mut canvas);
     let content = changed_content(&before, &after, body);
     assert!(
         content.len() > 1_000,
@@ -422,17 +429,17 @@ fn choosing_another_tab_draws_the_content_it_showed_out_over_the_motion() {
 fn a_second_choice_mid_fade_goes_from_the_content_the_person_saw() {
     let start = ui::time::now();
     let mut window = staged(false);
+    let mut canvas = frames();
     come_to_rest(&mut window);
     let body = window_body(&window);
-    let before = shown_pixels(&window);
+    let before = shown_pixels(&window, &mut canvas);
     choose(&mut window, start, "p-1");
     window.frame_at(start + FRAME * 2);
     // While the first swap plays, the person chooses a third: the ghost of the first cannot
     // stand behind the one drawn in front.
     choose(&mut window, start + FRAME * 3, "p-2");
-    let played = start + Duration::from_secs(1);
-    window.frame_at(played);
-    let after = shown_pixels(&window);
+    settle(&mut window);
+    let after = shown_pixels(&window, &mut canvas);
     let content = changed_content(&before, &after, body);
     assert!(
         content.len() > 1_000,
@@ -450,11 +457,10 @@ fn a_second_choice_mid_fade_goes_from_the_content_the_person_saw() {
         "the newest tab stands"
     );
     // The window comes to rest on the newest tab alone: nothing of the tabs it passed through is
-    // drawn any more, and no ghost keeps asking for frames.
-    let still = start + Duration::from_secs(2);
-    window.frame_at(still);
+    // drawn any more, and a frame later is the same frame.
+    settle(&mut window);
     assert_eq!(
-        changed_content(&after, &shown_pixels(&window), body).len(),
+        changed_content(&after, &shown_pixels(&window, &mut canvas), body).len(),
         0,
         "the newest tab stands, and the swap has played"
     );
@@ -516,15 +522,9 @@ fn stage_screen(window: &StagedWindow) {
     );
 }
 
-/// An 8-bit sRGB channel as light: the renderer mixes premultiplied colour.
-fn light(byte: u8) -> f64 {
-    let value = f64::from(byte) / 255.0;
-    if value <= 0.04045 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
-    }
-}
+/// How far a channel may stand from the mix, of the 255 a stored value has: the renderer blends
+/// the frame's own 8-bit values, so the mix is read there.
+const MIX: f64 = 0.02 * 255.0;
 
 /// One pixel a frame's mix is read at: how far it stands from the linear mix, where it is, and
 /// the colour each of the three frames drew there.
@@ -544,17 +544,17 @@ type MixRead = (
 );
 
 /// The share `t` of the way from `before` to `after` the `frame` stands at, read off the pixels
-/// where the two differ, and the furthest any pixel of `body` stands from the linear mix of the
-/// two at that share: a true cross-fade mixes the two pages, whatever translucency their grounds
-/// have. Every pixel of the body is read, with no mask.
+/// where the two differ, and the furthest any pixel of `body` stands from the mix of the two at
+/// that share: a true cross-fade mixes the two pages, whatever translucency their grounds have.
+/// Every pixel of the body is read, with no mask.
 fn mix_of(frame: &[u8], before: &[u8], after: &[u8], content: &[usize], body: Rect) -> MixRead {
     let mut num = 0.0;
     let mut den = 0.0;
     for at in content {
         for channel in 0..3 {
-            let was = light(before[at * 4 + channel]);
-            let came = light(after[at * 4 + channel]);
-            let now = light(frame[at * 4 + channel]);
+            let was = f64::from(before[at * 4 + channel]);
+            let came = f64::from(after[at * 4 + channel]);
+            let now = f64::from(frame[at * 4 + channel]);
             num += (came - was) * (now - was);
             den += (came - was) * (came - was);
         }
@@ -581,11 +581,11 @@ fn mix_of(frame: &[u8], before: &[u8], after: &[u8], content: &[usize], body: Re
                 ((f64::from(y.saturating_sub(rows(body).start)) / span_y) * 4.0) as usize,
             );
             for channel in 0..3 {
-                let was = light(before[at + channel]);
-                let came = light(after[at + channel]);
-                let now = light(frame[at + channel]);
+                let was = f64::from(before[at + channel]);
+                let came = f64::from(after[at + channel]);
+                let now = f64::from(frame[at + channel]);
                 let off = (now - (was + t * (came - was))).abs();
-                if off > 0.02 {
+                if off > MIX {
                     over = over.saturating_add(1);
                     box_ = (box_.0.min(x), box_.1.min(y), box_.2.max(x), box_.3.max(y));
                     grid[cell.1.min(3)][cell.0.min(3)] += 1;
@@ -611,12 +611,13 @@ fn mix_of(frame: &[u8], before: &[u8], after: &[u8], content: &[usize], body: Re
 fn choosing_a_tab_paints_the_content_it_chose() {
     let start = ui::time::now();
     let mut window = staged(false);
+    let mut canvas = frames();
     come_to_rest(&mut window);
     let body = window_body(&window);
-    let before = shown_pixels(&window);
+    let before = shown_pixels(&window, &mut canvas);
     choose(&mut window, start, "p-1");
     settle(&mut window);
-    let after = shown_pixels(&window);
+    let after = shown_pixels(&window, &mut canvas);
     let content = changed_content(&before, &after, body);
     assert!(
         content.len() > 1_000,
@@ -653,11 +654,6 @@ fn choosing_a_tab_paints_the_content_it_chose() {
     );
 }
 
-// The strict middle frame is held off until the shell's view keeps its swap across a tab choice:
-// the window's body is built afresh under a new node, so the view never meets the content it
-// should keep beside the new one and no fade plays. The chosen content is drawn (the outcome test
-// holds that); the frames between come back with the swap kept.
-#[ignore = "the window's body is rebuilt under a new node, so no swap plays to hold to a mix"]
 #[test]
 fn the_midpoint_of_a_tab_swap_in_both_themes() {
     let start = ui::time::now();
@@ -671,6 +667,7 @@ fn the_midpoint_of_a_tab_swap_in_both_themes() {
         // frames of the way back, where the one the person leaves fades out under the one they
         // choose.
         let mut window = StagedWindow::staged(SCENARIO, WINDOW, theme);
+        let mut canvas = frames();
         stage_screen(&window);
         // The shell comes to rest before anything is read: a widget of its own still moving
         // would be a second change in the frames the swap is read from.
@@ -680,13 +677,13 @@ fn the_midpoint_of_a_tab_swap_in_both_themes() {
             body.width() > 600.0,
             "the window stands full, not a sliver: {body:?}"
         );
-        let first = shown_pixels(&window);
+        let first = shown_pixels(&window, &mut canvas);
         window
             .harness
             .render_png(&out.join(format!("{name}-old.png")));
         choose(&mut window, start, "p-1");
         settle(&mut window);
-        let second = shown_pixels(&window);
+        let second = shown_pixels(&window, &mut canvas);
         window
             .harness
             .render_png(&out.join(format!("{name}-new.png")));
@@ -737,15 +734,16 @@ fn the_midpoint_of_a_tab_swap_in_both_themes() {
         assert!(shows(&window), "the view shows the tab chosen");
         // The chosen tab's content is in the tree the frame draws and painted in its body: the
         // body stands on its own ground where both pages do, not on the window's bare surface.
-        let chosen = shown_pixels(&window);
+        let chosen = shown_pixels(&window, &mut canvas);
         let corner = (columns(body).start, rows(body).start);
         assert!(
             !moved(
                 pixel(&chosen, corner.0, corner.1),
                 pixel(&first, corner.0, corner.1)
             ),
-            "the chosen tab's body paints: {:?} where the body's ground stood",
-            pixel(&chosen, corner.0, corner.1)
+            "the chosen tab's body paints: {:?} where the body's ground stood {:?}",
+            pixel(&chosen, corner.0, corner.1),
+            pixel(&first, corner.0, corner.1)
         );
         let failed = window
             .instance
@@ -763,7 +761,7 @@ fn the_midpoint_of_a_tab_swap_in_both_themes() {
             // CPU takes to draw a frame: a frame costs more than the swap, and the live clock
             // would step over its middle.
             window.frame_at(back + MIDDLE * step);
-            let frame = shown_pixels(&window);
+            let frame = shown_pixels(&window, &mut canvas);
             let there = strength(&frame);
             // The view's own share of the fade: the page coming in, which is what the pixels of
             // a frame stand at. A frame the view is not swapping in has none.
@@ -848,20 +846,21 @@ fn captures() -> std::path::PathBuf {
 fn reduced_motion_swaps_the_tabs_in_one_frame() {
     let start = ui::time::now();
     let mut window = staged(true);
+    let mut canvas = frames();
     come_to_rest(&mut window);
     let body = window_body(&window);
-    let before = shown_pixels(&window);
+    let before = shown_pixels(&window, &mut canvas);
     choose(&mut window, start, "p-1");
     // The frames after the layout has settled on the tab chosen: the frame the new content
     // finds its place in is not a fade, and nothing between the tabs is drawn after it.
     let mut frames = Vec::new();
     for step in 7..12 {
         window.frame_at(start + FRAME * step);
-        frames.push(shown_pixels(&window));
+        frames.push(shown_pixels(&window, &mut canvas));
     }
     let played = start + Duration::from_secs(1);
     window.frame_at(played);
-    let after = shown_pixels(&window);
+    let after = shown_pixels(&window, &mut canvas);
     let content = changed_content(&before, &after, body);
     assert!(
         content.len() > 1_000,

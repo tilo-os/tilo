@@ -2154,6 +2154,43 @@ action a_foreign_place(a: Layout, strip: Text, index: Int, title: Text) -> Text 
     p.key
 }
 
+/// A place showing a search for `text` under the key `key`, with the two matches the notes app
+/// answered: the shell's own page, so a tab of such places swaps only the shell's content.
+action a_query_place_at(a: Layout, strip: Text, key: Text, text: Text) -> Text {
+    let p = a.places.insert(
+        LayoutPlace(
+            key: key,
+            strip: strip,
+            title: "Search: {text}",
+            name: "Search: {text}",
+            shell: "so.tilo.shell.strips",
+        ),
+    )
+    a.queries.insert(
+        LayoutQuery(
+            key: p.key,
+            text: text,
+            in_app: "so.tilo.notes",
+            kind: "notes.note",
+            state: "several",
+        ),
+    )
+    let i = 0
+    for n in notes.notebook.notes.take(2) {
+        a.refs.insert(
+            LayoutRef(
+                key: "m-{key}-{i}",
+                query: p.key,
+                address: n.id(),
+                title: n.title,
+                kind: "notes.note",
+            ),
+        )
+        i += 1
+    }
+    p.key
+}
+
 /// Adds a place showing a search for `text` to `strip`, with the two matches the notes app
 /// answered, and returns the place's key: the state a place stands in until the person chooses
 /// one of the resources it found (shell.md §8).
@@ -2311,6 +2348,23 @@ scenario "a window of several places" -> Layout {
     a_note_place(a, group, 0)
     a_note_place(a, group, 1)
     a_note_place(a, group, 2)
+    let single = a_strip(a, row, "Terminal", 667)
+    a_foreign_place(a, single, 3, "A terminal")
+    a.front = group
+    a
+}
+
+/// A window of three places the shell draws itself: three searches, each page the shell's own
+/// heading and matches, so a tab choice between them is the swap alone.
+scenario "a window of several searches" -> Layout {
+    let v = viewing
+    v.style = "so.tilo.shell:strips"
+    let a = root Layout
+    let row = a_workspace(a, "Main")
+    let group = a_strip(a, row, "Searches", 667)
+    a_query_place_at(a, group, "p-0", "quarterly plan")
+    a_query_place_at(a, group, "p-1", "standups")
+    a_query_place_at(a, group, "p-2", "monday")
     let single = a_strip(a, row, "Terminal", 667)
     a_foreign_place(a, single, 3, "A terminal")
     a.front = group

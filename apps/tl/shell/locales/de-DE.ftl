@@ -955,6 +955,15 @@ d-p5wzoqr5 = Fensterbedienelemente
 d-bmd7xmln = Ein Platz für eine Suche
     .doc = Fügt `strip` einen Platz hinzu, der eine Suche nach `text` zeigt, mit den beiden Treffern, die die Notizen-App geantwortet hat, und gibt den Schlüssel des Platzes zurück: der Zustand, in dem ein Platz steht, bis die Person eine der gefundenen Ressourcen wählt.
 
+d-44gfvqa5 = Ein Platz für eine Suche unter einem Schlüssel
+    .doc = Fügt `strip` unter dem Schlüssel `key` einen Platz hinzu, der eine Suche nach `text` zeigt, mit den beiden Treffern, die die Notizen-App geantwortet hat.
+
+d-44gfvqa5-strip = Spalte
+
+d-44gfvqa5-key = Schlüssel
+
+d-44gfvqa5-text = Text
+
 d-bmd7xmln-strip = Spalte
 
 d-bmd7xmln-text = Text
