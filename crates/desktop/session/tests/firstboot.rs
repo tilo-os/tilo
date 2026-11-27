@@ -61,8 +61,8 @@ fn the_machines_first_boot_sets_up_and_stops_in_the_new_session() {
 /// A machine with an identity of its own: the person's trees, this device's enrolled key and
 /// certificate, and nothing else on it.
 struct Machine {
-    /// The device key this process took as the daemon's: the session binary the tests start is the
-    /// daemon of its own run, so it is let go of before one starts.
+    /// The device key this process took while it provisioned the machine, as its daemon takes it:
+    /// let go of before the machine's daemon ([`DeviceDaemon`]) takes it in this process's place.
     taken_key: Option<tilo_device_identity::persist::DeviceKeyLock>,
     // The environment the identity lives in, restored before the directories it names are removed.
     _env: tilo_test_env::ScopedEnv,
@@ -80,10 +80,83 @@ impl Machine {
         std::fs::read(&self.paths.device_cert).expect("this device's certificate")
     }
 
-    /// Let go of the device key, so the session binary started next takes it as the daemon of its
-    /// own run.
+    /// Let go of the device key, so the machine's daemon takes it next.
     fn let_go_of_the_key(&mut self) {
         self.taken_key = None;
+    }
+}
+
+/// The device's daemon of `machine`, as the programs it starts reach it: the one process that
+/// takes the device key answers what the device is at the endpoint every program of the machine
+/// asks ([`tilo_device_identity::persist::device_public_key`]). A machine with an identity
+/// enrolled on it runs one, and a command that only verifies that identity asks it rather than
+/// reading the key, which no program but the daemon may.
+struct DeviceDaemon {
+    /// The key the daemon took, and keeps while it answers.
+    _key: tilo_device_identity::persist::DeviceKeyLock,
+    socket: PathBuf,
+    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl DeviceDaemon {
+    /// The daemon of `machine`, answering at the endpoint its programs resolve.
+    fn start(machine: &mut Machine) -> Self {
+        use std::io::{BufRead as _, Write as _};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        machine.let_go_of_the_key();
+        let socket =
+            tilo_device_identity::login::daemon::DeviceActions::here(machine.paths.clone())
+                .expect("the machine's daemon endpoint")
+                .native()
+                .to_path_buf();
+        let key =
+            persist::take_device_key(&machine.paths).expect("the daemon takes the device key");
+        let device = hex::encode(key.key().verifying_key().to_bytes());
+        let listener =
+            std::os::unix::net::UnixListener::bind(&socket).expect("the daemon's endpoint");
+        let stopping = std::sync::Arc::new(AtomicBool::new(false));
+        let stopped = std::sync::Arc::clone(&stopping);
+        let thread = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                if stopped.load(Ordering::Relaxed) {
+                    return;
+                }
+                // A caller writes its one call as it connects, and reads the answer it gets.
+                let mut request = String::new();
+                let _ = std::io::BufReader::new(stream.try_clone().expect("a stream of its own"))
+                    .read_line(&mut request);
+                let answer = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "content": [{"type": "text", "text": ""}],
+                        "structuredContent": {"status": "ok", "result": {"device": device}},
+                    },
+                });
+                let _ = writeln!(stream, "{answer}");
+            }
+        });
+        Self {
+            _key: key,
+            socket,
+            stopping,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for DeviceDaemon {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+
+        self.stopping.store(true, Ordering::Relaxed);
+        let _ = std::os::unix::net::UnixStream::connect(&self.socket);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -106,7 +179,11 @@ fn machine() -> Machine {
         .set("XDG_CONFIG_HOME", &config)
         .set("XDG_RUNTIME_DIR", &runtime)
         .set("TILO_IDENTITY_ROOT", &system)
-        .set(FILE_SECRETS_ENV, "1");
+        .set(FILE_SECRETS_ENV, "1")
+        // This machine's programs reach its own daemon, wherever this process's harness runs it
+        // from.
+        .remove(tilo_machine::DAEMON_PROFILE_VAR)
+        .remove(tilo_machine::DAEMON_NATIVE_VAR);
     // The account's own store below the identity directory, where every reader looks, and the
     // person's devices a certificate is checked against before anything signs with it.
     tilo_identity::sources::test_trust::install();
@@ -391,8 +468,8 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
 
 /// The session binary's answer to `flags` on `machine` , as the login runs it.
 fn run_session(machine: &mut Machine, flags: &[&str]) -> std::process::Output {
-    // The session binary is the daemon of its own run, and takes the device key itself: this
-    // process's take would refuse it.
+    // The key stays with the machine's daemon: a session binary this process starts reads the
+    // identity's device through it, and takes nothing.
     machine.let_go_of_the_key();
     // Started under the environment lock, which closes this test's scope while the child copies the
     // environment.
@@ -415,6 +492,9 @@ tilo_test_env::scenario! {
     phase the_session_binary_provisions_and_verifies_the_machines_identity;
     {
         let mut machine = machine();
+        // The machine runs its daemon, which holds the device key both commands read the enrolled
+        // identity through, as an installed machine's does when the installer runs them.
+        let _daemon = DeviceDaemon::start(&mut machine);
         // The host package's installer and its tests start the session this way,
         // so both commands have to answer on the new binary rather than the shell.
         let provisioned = run_session(&mut machine, &["--host-desktop", "--provision-identity"]);
