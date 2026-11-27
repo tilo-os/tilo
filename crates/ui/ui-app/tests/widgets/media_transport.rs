@@ -412,6 +412,113 @@ fn the_band_fits_every_window_width() {
     }
 }
 
+/// A band laid out for a finger gives the scrubber the square a finger reaches for, and the row of
+/// controls above it the same: the controls themselves grow to their target, and a band that kept
+/// the theme's smaller faces would give one less room than it takes.
+#[test]
+fn a_band_laid_out_for_a_finger_keeps_its_controls_their_target() {
+    let mut bare = Metrics::of(&Theme::dark());
+    bare.time = 32.0;
+    let mut finger = bare;
+    finger.target = 48.0;
+    let mut checked = 0_usize;
+    for width in [320.0, 390.0, 480.0, 768.0, 900.0, 1400.0, 3440.0] {
+        let (form, rects, height) =
+            layout_for_test(&playing(), &handed_for_test(&actions()), &finger, width);
+        assert!(
+            rects[SCRUBBER].height() >= finger.target - 0.5,
+            "{form:?} at {width}: the scrubber is a target tall ({:?})",
+            rects[SCRUBBER]
+        );
+        assert!(
+            rects[SCRUBBER].y1 <= height + 0.5,
+            "{form:?} at {width}: the scrubber stands in the band's {height:.0} height ({:?})",
+            rects[SCRUBBER]
+        );
+        let (_, _, at_rest) =
+            layout_for_test(&playing(), &handed_for_test(&actions()), &bare, width);
+        assert!(
+            height >= at_rest + finger.target - bare.scrub(),
+            "{form:?} at {width}: the band grows for the target the controls take ({height:.0} \
+             against {at_rest:.0})"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 7,
+        "the band was laid out at every width: {checked}"
+    );
+}
+
+/// A band never lays one control over another, however narrow it is and however large the type:
+/// where there is no room for the art beside the controls, the art is what gives way.
+#[test]
+fn a_narrow_band_lays_no_control_over_another() {
+    let mut m = Metrics::of(&Theme::dark());
+    m.time = 32.0;
+    m.target = 48.0;
+    let mut checked = 0_usize;
+    for width in (180..=640).step_by(20) {
+        let (form, rects, height) = layout_for_test(
+            &playing(),
+            &handed_for_test(&actions()),
+            &m,
+            f64::from(width),
+        );
+        for (first_index, first) in rects.iter().enumerate() {
+            if first.area() <= 0.0 {
+                continue;
+            }
+            for (second_index, second) in rects.iter().enumerate().skip(first_index + 1) {
+                if second.area() <= 0.0 {
+                    continue;
+                }
+                let both = first.intersect(*second);
+                assert!(
+                    both.area() <= 0.5,
+                    "{form:?} at {width}: {first_index} ({first:?}) covers {second_index} ({second:?})"
+                );
+            }
+        }
+        assert!(height > 0.0, "{form:?} at {width}: the band has a height");
+        checked += 1;
+    }
+    assert!(
+        checked >= 20,
+        "the band was laid out at every width: {checked}"
+    );
+}
+
+/// A band told it is reached by a finger grows the scrubber's row to the square a finger reaches
+/// for, and keeps the thin row the theme gives it for a mouse: the controls inside the band grow
+/// there, and the band lays out what they take.
+#[test]
+fn a_band_reached_by_a_finger_grows_its_scrubber() {
+    use tilo_ui_base::interaction::InteractionEnvironment;
+
+    let (mut h, _) = banded(playing(), 390);
+    h.set_interaction_environment(InteractionEnvironment::POINTER);
+    h.relayout_at((390, 700)).expect("layout settles");
+    let thin = control(&h, "transport.position")
+        .expect("the scrubber is there")
+        .height();
+
+    h.set_interaction_environment(InteractionEnvironment::TOUCH);
+    h.relayout_at((390, 700)).expect("layout settles");
+    let finger = control(&h, "transport.position")
+        .expect("the scrubber is there")
+        .height();
+
+    assert!(
+        finger >= 48.0 - 0.5,
+        "a finger's scrubber is a whole target tall: {finger:.0}"
+    );
+    assert!(
+        finger > thin,
+        "and taller than the mouse's {thin:.0}, which keeps the theme's row"
+    );
+}
+
 /// The component a view builds for `ui.MediaTransport` hands the window the band's
 /// manual region: its controls are placed by the band's own policy, never by a plain flow.
 #[test]

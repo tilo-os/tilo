@@ -838,150 +838,144 @@ view mixtape_list(lib: Library) {
 /// What the recommendations may draw on, and the artists the person ruled out.
 view taste_page(lib: Library) {
     let taste = lib.taste
-    std.page(lib) {
-        stack(gap: .related) {
-            ui.Section("What suggestions may draw on") {
-                ui.Button("Artists followed", toggled: taste.followed_artists) {
-                    on press: update_taste(lib, "followed_artists", not taste.followed_artists)
+    stack(gap: .group) {
+        ui.Section("What suggestions may draw on") {
+            ui.Button("Artists followed", toggled: taste.followed_artists) {
+                on press: update_taste(lib, "followed_artists", not taste.followed_artists)
+            }
+            ui.Button("Songs liked", toggled: taste.liked_songs) {
+                on press: update_taste(lib, "liked_songs", not taste.liked_songs)
+            }
+            ui.Button("Albums kept", toggled: taste.saved_albums) {
+                on press: update_taste(lib, "saved_albums", not taste.saved_albums)
+            }
+            ui.Button("Artists like these", toggled: taste.similar_artists) {
+                on press: update_taste(lib, "similar_artists", not taste.similar_artists)
+            }
+            ui.Text(
+                "Suggestions come from these choices alone: no listening history, and nothing asked of a catalogue.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        let preferred = lib.artists.filter(a -> taste.preferred.contains(a.key))
+        let hidden = lib.tracks.filter(t -> taste.hidden.contains(t.id))
+        if not preferred.is_empty() {
+            ui.Section("More of these artists") {
+                for a in preferred {
+                    row(gap: .tight, align: .center) {
+                        ui.ListRow(title: a.name, icon: .users, item: a)
+                        ui.Button("Stop preferring", icon: .x, icon_only: true) {
+                            on press: prefer_artist(lib, a)
+                        }
+                    }
                 }
-                ui.Button("Songs liked", toggled: taste.liked_songs) {
-                    on press: update_taste(lib, "liked_songs", not taste.liked_songs)
+            }
+        }
+        if not hidden.is_empty() {
+            ui.Section("Hidden songs") {
+                for t in hidden {
+                    row(gap: .tight, align: .center) {
+                        ui.ListRow(title: t.title, secondary: t.artist, icon: .music, item: t)
+                        ui.Button("Suggest this again", icon: .eye, icon_only: true) {
+                            on press: restore_rec(lib, t)
+                        }
+                    }
                 }
-                ui.Button("Albums kept", toggled: taste.saved_albums) {
-                    on press: update_taste(lib, "saved_albums", not taste.saved_albums)
+            }
+        }
+        ui.Section("Catalogue") {
+            ui.Button("YouTube Music", toggled: lib.catalogue == "youtube") {
+                on press: set_catalogue(lib, "youtube")
+            }
+            ui.Button("Spotify", toggled: lib.catalogue == "spotify") {
+                on press: set_catalogue(lib, "spotify")
+            }
+            ui.Button("Off") {
+                on press: set_catalogue(lib, "off")
+            }
+        }
+        ui.Section("Spotify") {
+            if lib.spotify_state == "connecting" {
+                ui.Link(lib.connect_url, label: "Sign in on Spotify")
+                ui.Button("I signed in", icon: .check) {
+                    on press: finish_spotify(lib)
                 }
-                ui.Button("Artists like these", toggled: taste.similar_artists) {
-                    on press: update_taste(lib, "similar_artists", not taste.similar_artists)
+            } else if lib.spotify_state == "connected" {
+                text(spotify_account_line(lib), role: .caption, secondary: true)
+                if lib.spotify_now != "" {
+                    text(lib.spotify_now, role: .subheading)
                 }
-                ui.Text(
-                    "Suggestions come from these choices alone: no listening history, and nothing asked of a catalogue.",
+                row(gap: .tight, align: .center, wrap: true) {
+                    ui.Button("Previous", icon: .skip_back) {
+                        on press: remote_previous(lib)
+                    }
+                    ui.Button(
+                        if lib.spotify_playing { "Pause" } else { "Play" },
+                        icon: if lib.spotify_playing { .pause } else { .play },
+                    ) {
+                        on press: if lib.spotify_playing {
+                            remote_pause(lib)
+                        } else { remote_play(lib) }
+                    }
+                    ui.Button("Next", icon: .skip_forward) {
+                        on press: remote_next(lib)
+                    }
+                    ui.Button("Refresh", icon: .refresh) {
+                        on press: spotify_devices(lib)
+                    }
+                    ui.Button("Disconnect", icon: .x) {
+                        on press: disconnect_spotify(lib)
+                    }
+                }
+                for d in lib.devices {
+                    ui.ListItem(item: d) {
+                        ui.ListRow(
+                            title: d.name,
+                            secondary: device_line(d),
+                            icon: if d.active { .speaker } else { .monitor },
+                        )
+                    }
+                    ui.Button(
+                        if d.active { "Playing here" } else { "Play here" },
+                        toggled: d.active,
+                    ) {
+                        on press: transfer_playback(lib, d)
+                    }
+                }
+            } else if lib.spotify_state == "expired" {
+                text(
+                    "Spotify ended the sign-in. Connect again to keep using what you keep there.",
                     role: .caption,
                     secondary: true,
                 )
-            }
-            let preferred = lib.artists.filter(a -> taste.preferred.contains(a.key))
-            let hidden = lib.tracks.filter(t -> taste.hidden.contains(t.id))
-            if not preferred.is_empty() {
-                ui.Section("More of these artists") {
-                    for a in preferred {
-                        row(gap: .tight, align: .center) {
-                            ui.ListRow(title: a.name, icon: .users, item: a)
-                            ui.Button("Stop preferring", icon: .x, icon_only: true) {
-                                on press: prefer_artist(lib, a)
-                            }
-                        }
-                    }
+                ui.Button("Reconnect Spotify", icon: .link) {
+                    on press: connect_spotify(lib)
+                }
+            } else if lib.spotify_state == "trouble" {
+                text(lib.spotify_trouble, role: .caption, secondary: true)
+                ui.Button("Connect Spotify", icon: .link) {
+                    on press: connect_spotify(lib)
+                }
+            } else {
+                ui.Button("Connect Spotify", icon: .link) {
+                    on press: connect_spotify(lib)
                 }
             }
-            if not hidden.is_empty() {
-                ui.Section("Hidden songs") {
-                    for t in hidden {
-                        row(gap: .tight, align: .center) {
-                            ui.ListRow(title: t.title, secondary: t.artist, icon: .music, item: t)
-                            ui.Button("Suggest this again", icon: .eye, icon_only: true) {
-                                on press: restore_rec(lib, t)
-                            }
-                        }
-                    }
+        }
+        if lib.spotify_state == "connected" {
+            ui.Section("What plays next there") {
+                ui.Button("Read Spotify's queue", icon: .refresh) {
+                    on press: spotify_queue(lib)
                 }
-            }
-            ui.Section("Catalogue") {
-                ui.Button("YouTube Music", toggled: lib.catalogue == "youtube") {
-                    on press: set_catalogue(lib, "youtube")
-                }
-                ui.Button("Spotify", toggled: lib.catalogue == "spotify") {
-                    on press: set_catalogue(lib, "spotify")
-                }
-                ui.Button("Off") {
-                    on press: set_catalogue(lib, "off")
-                }
-            }
-            ui.Section("Spotify") {
-                if lib.spotify_state == "connecting" {
-                    ui.Link(lib.connect_url, label: "Sign in on Spotify")
-                    ui.Button("I signed in", icon: .check) {
-                        on press: finish_spotify(lib)
-                    }
-                } else if lib.spotify_state == "connected" {
-                    text(spotify_account_line(lib), role: .caption, secondary: true)
-                    if lib.spotify_now != "" {
-                        text(lib.spotify_now, role: .subheading)
-                    }
-                    row(gap: .tight, align: .center, wrap: true) {
-                        ui.Button("Previous", icon: .skip_back) {
-                            on press: remote_previous(lib)
-                        }
-                        ui.Button(
-                            if lib.spotify_playing { "Pause" } else { "Play" },
-                            icon: if lib.spotify_playing { .pause } else { .play },
-                        ) {
-                            on press: if lib.spotify_playing {
-                                remote_pause(lib)
-                            } else { remote_play(lib) }
-                        }
-                        ui.Button("Next", icon: .skip_forward) {
-                            on press: remote_next(lib)
-                        }
-                        ui.Button("Refresh", icon: .refresh) {
-                            on press: spotify_devices(lib)
-                        }
-                        ui.Button("Disconnect", icon: .x) {
-                            on press: disconnect_spotify(lib)
-                        }
-                    }
-                    for d in lib.devices {
-                        ui.ListItem(item: d) {
-                            ui.ListRow(
-                                title: d.name,
-                                secondary: device_line(d),
-                                icon: if d.active { .speaker } else { .monitor },
-                            )
-                        }
-                        ui.Button(
-                            if d.active { "Playing here" } else { "Play here" },
-                            toggled: d.active,
-                        ) {
-                            on press: transfer_playback(lib, d)
-                        }
-                    }
-                } else if lib.spotify_state == "expired" {
-                    text(
-                        "Spotify ended the sign-in. Connect again to keep using what you keep there.",
-                        role: .caption,
-                        secondary: true,
-                    )
-                    ui.Button("Reconnect Spotify", icon: .link) {
-                        on press: connect_spotify(lib)
-                    }
-                } else if lib.spotify_state == "trouble" {
-                    text(lib.spotify_trouble, role: .caption, secondary: true)
-                    ui.Button("Connect Spotify", icon: .link) {
-                        on press: connect_spotify(lib)
-                    }
+                if lib.spotify_queue.is_empty() {
+                    text("Spotify's queue has not been read yet.", role: .caption, secondary: true)
                 } else {
-                    ui.Button("Connect Spotify", icon: .link) {
-                        on press: connect_spotify(lib)
-                    }
-                }
-            }
-            if lib.spotify_state == "connected" {
-                ui.Section("What plays next there") {
-                    ui.Button("Read Spotify's queue", icon: .refresh) {
-                        on press: spotify_queue(lib)
-                    }
-                    if lib.spotify_queue.is_empty() {
-                        text(
-                            "Spotify's queue has not been read yet.",
-                            role: .caption,
-                            secondary: true,
-                        )
-                    } else {
-                        for q in lib.spotify_queue {
-                            row(gap: .tight, align: .center) {
-                                ui.ListRow(title: q.title, secondary: queue_line(q), icon: .music)
-                                ui.Button("Play", icon: .play, icon_only: true) {
-                                    on press: remote_play(lib, q.key)
-                                }
+                    for q in lib.spotify_queue {
+                        row(gap: .tight, align: .center) {
+                            ui.ListRow(title: q.title, secondary: queue_line(q), icon: .music)
+                            ui.Button("Play", icon: .play, icon_only: true) {
+                                on press: remote_play(lib, q.key)
                             }
                         }
                     }

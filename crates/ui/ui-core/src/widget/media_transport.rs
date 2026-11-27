@@ -176,6 +176,10 @@ pub(crate) mod metrics_local {
         pub related: f64,
         pub tight: f64,
         pub swipe: f64,
+        /// The square a control takes where a person reaches it: a finger's minimum target, which
+        /// the controls themselves grow to. Zero where the band was laid out without one, as this
+        /// module's own tests lay it out.
+        pub target: f64,
     }
 
     impl Metrics {
@@ -197,13 +201,22 @@ pub(crate) mod metrics_local {
                 related: f64::from(rhythm.related),
                 tight: f64::from(rhythm.tight),
                 swipe: 2.0 * f64::from(theme.tokens.metrics.min_pointer_target),
+                target: 0.0,
             }
+        }
+
+        /// The side a control takes: the theme's, grown to the square a finger reaches for where
+        /// the pointer is coarse, as the control itself grows there.
+        pub fn control_side(&self) -> f64 {
+            self.control.max(self.target)
         }
 
         /// The scrubber's row: a caption line, never under a comfortable
         /// pointer target.
         pub fn scrub(&self) -> f64 {
-            self.caption.max(self.section + self.related)
+            self.caption
+                .max(self.section + self.related)
+                .max(self.target)
         }
 
         pub fn form(&self, width: f64) -> Form {
@@ -217,7 +230,7 @@ pub(crate) mod metrics_local {
         }
 
         pub fn top(&self, form: Form) -> f64 {
-            let control = self.control.max(self.play);
+            let control = self.control_side().max(self.play);
             if form == Form::Compact {
                 control.max(self.song)
             } else {
@@ -258,11 +271,20 @@ struct Shared {
     song: RefCell<SongFace>,
     scrub: Cell<Option<f64>>,
     art_lent: Cell<bool>,
+    /// The square a control takes where the person reaches it, as the widgets inside the band are
+    /// reached: a finger's minimum target, zero while no band has been told one.
+    target: Cell<f64>,
 }
 
 impl Shared {
     fn push(&self, event: TransportEvent) {
         self.events.borrow_mut().push(event);
+    }
+
+    /// How the band is reached: the controls inside it grow to the pointer's minimum target where
+    /// the pointer is coarse, so what the band lays out grows with them.
+    fn note_reach(&self, environment: tilo_ui_base::interaction::InteractionEnvironment) {
+        self.target.set(f64::from(environment.minimum_target()));
     }
 
     fn follow_song(&self, theme: &Theme, now: crate::time::Instant) {
@@ -734,6 +756,14 @@ impl Widget for SongLines {
 
     fn name(&self) -> &'static str {
         "TransportSong"
+    }
+
+    /// The song's line is in every band, so the band learns here how it is reached.
+    fn set_interaction_environment(
+        &mut self,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
+    ) {
+        self.shared.note_reach(environment);
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1649,6 +1679,9 @@ fn place_song(
 ) {
     let (mut x0, x1) = span;
     if on[ART] {
+        // The art takes what room the span has and never runs over the controls beside the song:
+        // a narrow band, or a large text scale, leaves a small cover rather than a covered button.
+        let art = art.min((x1 - x0).max(0.0));
         rects[ART] = square(x0, mid, art);
         x0 += art + m.sibling;
     }
@@ -1695,8 +1728,8 @@ fn layout(
             x: x1,
             mid,
         };
-        run.push_back(MORE, m.control, m.control, m.sibling);
-        run.push_back(VOLUME_MENU, m.control, m.control, m.sibling);
+        run.push_back(MORE, m.control_side(), m.control_side(), m.sibling);
+        run.push_back(VOLUME_MENU, m.control_side(), m.control_side(), m.sibling);
         run.push_back(NEXT, m.skip, m.skip, m.related);
         run.push_back(PLAY, m.play, m.play, m.related);
         run.push_back(PREVIOUS, m.skip, m.skip, m.sibling);
@@ -1714,8 +1747,8 @@ fn layout(
         x: left,
         mid: middle,
     };
-    run.push_back(LYRICS, m.control, m.control, m.tight);
-    run.push_back(LIKE, m.control, m.control, m.related);
+    run.push_back(LYRICS, m.control_side(), m.control_side(), m.tight);
+    run.push_back(LIKE, m.control_side(), m.control_side(), m.related);
     let song_end = run.x;
     place_song(&mut rects, on, m, (x0, song_end), m.play, middle);
     let mut run = Run {
@@ -1724,15 +1757,15 @@ fn layout(
         x: x1,
         mid: middle,
     };
-    run.push_back(VOLUME, m.small / 2.0, m.control, m.tight);
-    run.push_back(MUTE, m.control, m.control, m.related);
-    run.push_back(VOLUME_MENU, m.control, m.control, m.related);
-    run.push_back(QUEUE, m.control, m.control, m.related);
+    run.push_back(VOLUME, m.small / 2.0, m.control_side(), m.tight);
+    run.push_back(MUTE, m.control_side(), m.control_side(), m.related);
+    run.push_back(VOLUME_MENU, m.control_side(), m.control_side(), m.related);
+    run.push_back(QUEUE, m.control_side(), m.control_side(), m.related);
     let right = run.x + m.related;
     let (c0, c1) = (left + m.group, (right - m.group).max(left + m.group));
     let flank = |index: usize| {
         if on[index] {
-            m.control + m.sibling
+            m.control_side() + m.sibling
         } else {
             0.0
         }
@@ -1744,11 +1777,11 @@ fn layout(
         x: f64::midpoint(c0, c1) - row / 2.0,
         mid,
     };
-    run.push(SHUFFLE, m.control, m.sibling);
+    run.push(SHUFFLE, m.control_side(), m.sibling);
     run.push(PREVIOUS, m.skip, m.related);
     run.push(PLAY, m.play, m.related);
     run.push(NEXT, m.skip, m.sibling);
-    run.push(REPEAT, m.control, 0.0);
+    run.push(REPEAT, m.control_side(), 0.0);
     place_scrub(&mut rects, m, c0, c1, scrub_y);
     (form, rects, height)
 }
@@ -1902,14 +1935,18 @@ impl tilo_ui_base::widget::identity::concrete::Decorator for MediaTransport {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        if self.theme.as_ref() != Some(theme) {
-            let time = self.shared.metrics.get().time;
-            self.shared.metrics.set(Metrics {
-                time,
-                ..Metrics::of(theme)
-            });
-            self.theme = Some(theme.clone());
+        // The band lays out to the square a person reaches for as well as to the theme: a finger's
+        // minimum target, which the controls inside it grow to, is read where it was told.
+        let metrics = Metrics {
+            time: self.shared.metrics.get().time,
+            target: self.shared.target.get(),
+            ..Metrics::of(theme)
+        };
+        if self.shared.metrics.get() != metrics {
+            self.shared.metrics.set(metrics);
+            self.content.invalidation().invalidate();
         }
+        self.theme = Some(theme.clone());
         self.built_form = self.shared.form.get();
         Widget::build_layout(&mut self.content, taffy, theme, node_map)
     }
