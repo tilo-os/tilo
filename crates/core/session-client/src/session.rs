@@ -178,6 +178,11 @@ enum Command {
     LiveSessionEnded(WorkspaceId),
     /// The first consumer that reads the members' presence came, or the last one went.
     PresenceReaders,
+    /// The host closed the actions link of this epoch: the next ask dials its own.
+    ActionsLinkEnded(u64),
+    /// Dial the actions link again, answering the one dialled: an ask that found the link it
+    /// held closed asks again over this.
+    ActionsRedial(crate::Answer<Option<tilo_server_client::link::Link>>),
     /// `workspace_id`'s link brought a frame this device's replica took in.
     Heard(WorkspaceId, Box<direct::Heard>),
     /// `workspace_id`'s link carried the host's answer to one of this device's writes.
@@ -443,6 +448,7 @@ fn session_task(
         woke: Arc::default(),
         sent: BTreeMap::new(),
         actions: None,
+        actions_epoch: 0,
         latched: Latched::default(),
         lent,
         barriers: Vec::new(),
@@ -678,6 +684,9 @@ struct Task {
     sent: BTreeMap<(WorkspaceId, [u8; 32]), Vec<u8>>,
     /// The link this session asks its host's action service on, once it is up.
     actions: Option<tilo_server_client::link::Link>,
+    /// Which dial the actions link above came from: the link a host closed is forgotten by the
+    /// epoch it ended at, never one dialled since.
+    actions_epoch: u64,
     /// The one-off facts this session latches and clears as it acts on them.
     latched: Latched,
     /// The device service's member copies, for a session lent them: it dials no link of its own.
@@ -948,8 +957,8 @@ impl Task {
         }
         // A workspace this session was asked to join before its host placed it is asked for
         // again on every new connection ([`Cmd::JoinPlaced`]).
-        for workspace_id in self.placing.keys().copied() {
-            self.place(workspace_id);
+        for workspace_id in self.placing.clone().into_keys() {
+            self.place(workspace_id).await;
         }
         for workspace_id in self.workspaces.clone() {
             self.dial_link(workspace_id).await?;
@@ -973,7 +982,19 @@ impl Task {
             return;
         }
         match self.reach(Purpose::Actions).await {
-            Ok(link) => self.actions = Some(link),
+            Ok(link) => {
+                self.actions_epoch = self.actions_epoch.wrapping_add(1);
+                let epoch = self.actions_epoch;
+                let commands = self.commands.clone();
+                let watched = link.clone();
+                n0_future::task::spawn(async move {
+                    watched.closed().await;
+                    if let Some(commands) = commands.upgrade() {
+                        let _ = commands.send(Command::ActionsLinkEnded(epoch));
+                    }
+                });
+                self.actions = Some(link);
+            }
             Err(error) => {
                 tracing::info!(%error, "the host did not answer its action service");
             }
@@ -1896,7 +1917,7 @@ impl Task {
                         });
                         self.placing.insert(workspace_id, (workspace, name));
                     }
-                    self.place(workspace_id);
+                    self.place(workspace_id).await;
                 } else if self.join(workspace_id) {
                     self.dial_joined(workspace_id).await;
                 }
@@ -1945,6 +1966,18 @@ impl Task {
                 self.hear_presence();
                 true
             }
+            Command::ActionsLinkEnded(epoch) => {
+                if self.actions_epoch == epoch {
+                    self.actions = None;
+                }
+                true
+            }
+            Command::ActionsRedial(answer) => {
+                self.actions = None;
+                self.dial_actions().await;
+                let _ = answer.send(self.actions.clone());
+                true
+            }
             Command::Heard(workspace_id, heard) => {
                 self.brought(workspace_id, *heard);
                 true
@@ -1966,7 +1999,7 @@ impl Task {
                 true
             }
             Command::Client(Cmd::RemoteAction(workspace_id, to, frame)) => {
-                self.remote_action(workspace_id, to, &frame);
+                self.remote_action(workspace_id, to, &frame).await;
                 true
             }
             Command::Client(Cmd::WantContent(workspace_id, request)) => {
@@ -2052,7 +2085,7 @@ impl Task {
                 true
             }
             Command::Client(Cmd::Administer(request, done)) => {
-                self.administer(&request, done);
+                self.administer(&request, done).await;
                 true
             }
             Command::Client(Cmd::Revoke(entry)) => self.revoke(entry),
@@ -2176,7 +2209,10 @@ impl Task {
     /// this device as its owner. The workspace joins when the host answers, whatever it
     /// answers, so a session with no actions link asks again on its next connection
     /// ([`Self::dial_all`]).
-    fn place(&self, workspace_id: WorkspaceId) {
+    async fn place(&mut self, workspace_id: WorkspaceId) {
+        if self.actions.is_none() {
+            self.dial_actions().await;
+        }
         if self.actions.is_none() {
             return;
         }
@@ -2198,16 +2234,20 @@ impl Task {
         self.administer(
             &tilo_server_protocol::workspaces::WorkspacesRequest::Place { workspace, name },
             placed,
-        );
+        )
+        .await;
     }
 
     /// Administration requests are the host's actions now, asked over the actions link.
-    fn administer(
-        &self,
+    async fn administer(
+        &mut self,
         request: &tilo_server_protocol::workspaces::WorkspacesRequest,
         done: WorkspacesCompletion,
     ) {
         use tilo_actions::remote::{ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
+        if self.actions.is_none() {
+            self.dial_actions().await;
+        }
         let Some(link) = self.actions.clone() else {
             let _ = done.send(Err(tilo_session_actions::NOT_CONNECTED.into()));
             return;
@@ -2215,6 +2255,7 @@ impl Task {
         let signer = Arc::clone(&self.signer);
         let cert = self.config.cert.clone();
         let host = self.config.server_cert.device_public_key;
+        let commands = self.commands.clone();
         let request = request.clone();
         n0_future::task::spawn(async move {
             let answer = async {
@@ -2236,16 +2277,30 @@ impl Task {
                     .await
                     .map_err(|error| format!("this device could not sign the request: {error}"))?,
                 ));
-                let frame = ask_action(
+                let mut asked = ask_action(
                     &link,
-                    signer,
+                    Arc::clone(&signer),
                     cert.device_public_key,
                     "",
                     host,
-                    RemoteActionMessage::Invoke(invoke),
+                    RemoteActionMessage::Invoke(invoke.clone()),
                 )
-                .await
-                .map_err(|refusal| refusal.to_string())?;
+                .await;
+                // The link the host closed under the ask: dial another and ask it there.
+                if matches!(asked, Err(tilo_server_protocol::refusal::Refusal::NotReady))
+                    && let Some(fresh) = dialed_again(&commands).await
+                {
+                    asked = ask_action(
+                        &fresh,
+                        signer,
+                        cert.device_public_key,
+                        "",
+                        host,
+                        RemoteActionMessage::Invoke(invoke),
+                    )
+                    .await;
+                }
+                let frame = asked.map_err(|refusal| refusal.to_string())?;
                 let message = RemoteActionFrame::decode(&frame)
                     .map_err(|error| format!("the host's answer does not decode: {error}"))?
                     .message;
@@ -4269,7 +4324,10 @@ impl Task {
 
     /// Send a remote-action frame to device `to`: the host's action service carries it, and its
     /// answer comes back as what the session heard.
-    fn remote_action(&self, workspace_id: WorkspaceId, to: [u8; 32], frame: &[u8]) {
+    async fn remote_action(&mut self, workspace_id: WorkspaceId, to: [u8; 32], frame: &[u8]) {
+        if self.actions.is_none() {
+            self.dial_actions().await;
+        }
         let Some(link) = self.actions.clone() else {
             self.reports.emit(&Event::Remote(Heard::Undeliverable {
                 workspace_id,
@@ -4296,6 +4354,7 @@ impl Task {
         let user = self.config.cert.user_public_key;
         let reports = Arc::clone(&self.reports);
         let cert = self.config.cert.clone();
+        let commands = self.commands.clone();
         // A request naming no workspace asks the host itself: it proves its device by the
         // invocation it carries, which this device signs, and the link names the host scope.
         let host_scope = workspace_id == HOST_ITSELF;
@@ -4308,7 +4367,22 @@ impl Task {
             } else {
                 (workspace_id.to_string(), message)
             };
-            match ask_action(&link, signer, device, &scope, to, message).await {
+            let mut asked = ask_action(
+                &link,
+                Arc::clone(&signer),
+                device,
+                &scope,
+                to,
+                message.clone(),
+            )
+            .await;
+            // The link the host closed under the ask: dial another and ask it there.
+            if matches!(asked, Err(tilo_server_protocol::refusal::Refusal::NotReady))
+                && let Some(fresh) = dialed_again(&commands).await
+            {
+                asked = ask_action(&fresh, signer, device, &scope, to, message).await;
+            }
+            match asked {
                 Ok(frame) => reports.emit(&Event::Remote(Heard::Action {
                     workspace_id,
                     user,
@@ -4368,6 +4442,18 @@ async fn signed_host_message(
         request.signed = Some(Box::new(signed));
     }
     RemoteActionMessage::Invoke(request)
+}
+
+/// Ask the session for another actions link, for an ask that found the one it held closed.
+async fn dialed_again(
+    commands: &mpsc::WeakUnboundedSender<Command>,
+) -> Option<tilo_server_client::link::Link> {
+    let (answer, receipt) = crate::answer();
+    commands
+        .upgrade()?
+        .send(Command::ActionsRedial(answer))
+        .ok()?;
+    receipt.await.ok().flatten()
 }
 
 /// Ask `to`, a device of `workspace`, `message` through the host's action service, and answer the
