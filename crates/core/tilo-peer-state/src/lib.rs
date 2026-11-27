@@ -93,6 +93,7 @@ pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
 pub use state::Quarantined;
+pub use state::WorkspaceApps;
 pub use state::mail_send_lease;
 pub use state::{
     ActionStamp, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY,
@@ -110,7 +111,6 @@ pub use state::{
     seed_workspace_at, trigger_mark, unranked, workspace_device_actor_at, workspace_grants_of,
     workspace_host_actor, workspace_host_actor_at, workspace_seed,
 };
-pub use state::{AppVersionsMap, WorkspaceApps, read_apps_with};
 pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
 pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 pub use state::{Captured, changes_since, saved_whole};

@@ -2025,3 +2025,98 @@ async fn the_records_a_devices_roles_write_are_taken_and_opened_by_a_member() {
     member.shutdown().await;
     serving.shutdown().await;
 }
+
+/// Waits until `workspaces`' copy of `workspace` admits by the apps its own store holds, which
+/// run `version` of the notes app (`None`: none) and say it ran.
+async fn reads_its_stores_apps(
+    workspaces: &super::Workspaces,
+    workspace: &str,
+    version: Option<&str>,
+) {
+    tilo_test_env::within("the copy admits by the apps its store holds", async {
+        loop {
+            let (read, held) = {
+                let state = workspaces.workspace(workspace).await.unwrap();
+                let hosted = state.lock().await;
+                (hosted.peer().apps(), hosted.apps_in_store())
+            };
+            let running = read
+                .running()
+                .get(NOTES_APP)
+                .map(|installed| installed.release.version.clone());
+            // The app ran, installed now or not: a change of its records is set aside, never
+            // refused.
+            if held.as_ref() == Some(&*read)
+                && running.as_deref() == version
+                && !read.ran(NOTES_APP).is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+const NOTES_APP: &str = "so.tilo.notes";
+
+/// The apps a workspace runs are records of its store. Installing, uninstalling and undoing the
+/// uninstall each leave both devices, running in this one process, admitting by the apps their
+/// own store holds, and so does the member's copy opening again.
+#[tokio::test]
+async fn every_copy_admits_by_the_apps_its_own_store_holds() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Apps", 61).await;
+    let workspace = created.workspace.clone();
+    let workspace_id = WorkspaceId::parse(&workspace).expect("a workspace id");
+    let member = member_service(member_state.path(), device.clone()).await;
+    let copies = member.workspaces().clone();
+    copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let host = serving.workspaces();
+    let installed = tilo_peer_state::InstalledApp {
+        release: tilo_peer_state::workspace_membership::AppRelease {
+            app: NOTES_APP.into(),
+            version: "1.0.0".into(),
+            surface: hex::encode([5; 32]),
+            package: "00".repeat(32),
+            publisher: "00".repeat(32),
+            file: None,
+            dev: true,
+            pinned: false,
+            payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
+        },
+        installed_by: hex::encode(host.signing_device().cert.user_public_key),
+        installed_at_ns: 1,
+    };
+
+    host.write_app_records(&workspace, vec![(NOTES_APP.into(), Some(installed))])
+        .await
+        .expect("the owner installs the app");
+    reads_its_stores_apps(host, &workspace, Some("1.0.0")).await;
+    reads_its_stores_apps(&copies, &workspace, Some("1.0.0")).await;
+
+    let uninstall = host
+        .write_app_records(&workspace, vec![(NOTES_APP.into(), None)])
+        .await
+        .expect("the owner uninstalls it");
+    reads_its_stores_apps(host, &workspace, None).await;
+    reads_its_stores_apps(&copies, &workspace, None).await;
+
+    host.undo_apps_change(&workspace, &uninstall)
+        .await
+        .expect("the uninstall is taken back");
+    reads_its_stores_apps(host, &workspace, Some("1.0.0")).await;
+    reads_its_stores_apps(&copies, &workspace, Some("1.0.0")).await;
+
+    drop(copies);
+    member.shutdown().await;
+    let reopened = member_service(member_state.path(), device).await;
+    reads_its_stores_apps(reopened.workspaces(), &workspace, Some("1.0.0")).await;
+    reopened.shutdown().await;
+    serving.shutdown().await;
+}

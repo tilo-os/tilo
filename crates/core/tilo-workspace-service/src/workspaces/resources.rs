@@ -190,6 +190,9 @@ pub(super) struct Resources {
     /// changed a document: its snapshot and the views of it are brought up to date once, as the
     /// batch ends.
     batch: Option<bool>,
+    /// A change to the apps the workspace runs was taken in since the replica last read them
+    /// ([`Self::take_apps_moved`]).
+    apps_moved: bool,
 }
 
 /// One write of an action across several documents, held until the action's other writes are
@@ -335,6 +338,7 @@ impl Resources {
             transfers: tilo_peer_state::document_frame::Transfers::default(),
             actions: BTreeMap::new(),
             batch: None,
+            apps_moved: false,
         }
     }
 
@@ -475,8 +479,16 @@ impl Resources {
             .store_mut()
             .receive(doc, readers, changes, admit)
             .map_err(|error| error.to_string())?;
+        if tilo_resource_store::apps::holds_records(doc) && self.heads(doc) != before {
+            self.apps_moved = true;
+        }
         self.kept(doc, &before)?;
         Ok(refused)
+    }
+
+    /// Whether a change to the apps the workspace runs was taken in since this was last asked.
+    pub(super) fn take_apps_moved(&mut self) -> bool {
+        std::mem::take(&mut self.apps_moved)
     }
 
     /// The heads `doc` stands at, as the index knows it.
@@ -802,12 +814,26 @@ impl HostedWorkspace {
             {
                 let _ = store.declare(tilo_resource_store::reference::schema());
             }
+            // And the apps the workspace runs.
+            if store
+                .schema()
+                .get(tilo_resource_store::apps::KIND)
+                .is_none()
+            {
+                let _ = store.declare(tilo_resource_store::apps::schema());
+            }
         }
         if self.resources.declared != named {
             self.resources.declared = named;
             {
                 let mut store = self.resources.store_mut();
-                for (app, surface) in surfaces.resources() {
+                // The workspace's own surface names the apps it runs for the actions on them; the
+                // store keeps the system's type of them, declared above.
+                for (app, surface) in surfaces
+                    .resources()
+                    .into_iter()
+                    .filter(|(_, surface)| surface.kind != tilo_resource_store::apps::KIND)
+                {
                     if let Err(error) = store.declare(Schema::of_app(&app, &surface)) {
                         tracing::error!(%error, "the store keeps the type its surface declared before");
                     }
@@ -1429,9 +1455,12 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let mut hosted = state.lock().await;
         drop(hosted.store_with_surfaces(&self.inner.host.surfaces));
-        hosted
+        let taken = hosted
             .take_resources(author, (app, doc), envelope, None, false)
-            .await
+            .await;
+        self.follow_apps(&mut hosted);
+        drop(hosted);
+        taken
     }
 
     /// Hold `workspace` as a write holds it from the moment it is drafted until its change is
@@ -1503,6 +1532,7 @@ impl Workspaces {
         {
             tracing::warn!(workspace = %hosted.workspace(), %document_id, %error, "a retained resource write was not restored");
         }
+        self.follow_apps(&mut *hosted);
         true
     }
 
@@ -1565,7 +1595,7 @@ impl Workspaces {
         // knows, so they are declared before the change reaches it, as a restored write finds
         // them ([`Self::replay_resource_write`]): a store that declared none admits none.
         drop(self.store_of(&mut hosted));
-        if hosted
+        let taken = hosted
             .take_resources(
                 author,
                 (app_id, document_id),
@@ -1573,8 +1603,9 @@ impl Workspaces {
                 readers.as_deref(),
                 false,
             )
-            .await?
-        {
+            .await;
+        self.follow_apps(&mut hosted);
+        if taken? {
             // Whoever follows the workspace's writes (its bots) is woken by a resource's
             // change as by any, while the workspace is held, so it reads the change.
             self.tell_followers(&hosted, author, &message, false).await;
@@ -1851,11 +1882,11 @@ impl Workspaces {
             else {
                 return Err("a resource write must name its document".into());
             };
-            if hosted
+            let taken = hosted
                 .take_resources(author, (app, document), envelope, readers.as_deref(), whole)
-                .await?
-                != last
-            {
+                .await;
+            self.follow_apps(hosted);
+            if taken? != last {
                 return Err("the retained resource change did not reach the store".into());
             }
             if hosted.member.is_some() {

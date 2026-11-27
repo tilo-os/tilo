@@ -341,7 +341,7 @@ impl PeerWorkspaceMut<'_> {
         self.peer
             .certificate(&caller.device_public_key, now)
             .map_err(|error| error.to_string())?;
-        if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
+        if let Some(outcome) = StatePeer::apply_app_command(command) {
             return outcome;
         }
         if let Some(outcome) = self.peer.apply_trust_command(caller, command, key, now) {

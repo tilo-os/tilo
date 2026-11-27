@@ -108,6 +108,7 @@ mod moving_in;
 pub use moving_in::{MovedIn, MovingService, MovingWorkspace, moved_out, moving_out};
 mod host_invitations;
 mod hosts;
+mod installed_apps;
 use carried::Carried;
 mod clock;
 pub(crate) use clock::system_time;
@@ -644,6 +645,8 @@ impl HostedWorkspace {
             invitations,
         };
         workspace.publish_invitations();
+        // Admission decides by the apps the workspace runs as its store holds them.
+        let _read = workspace.read_apps();
         Ok(workspace)
     }
 

@@ -65,11 +65,16 @@ pub fn heads(held: &HeldOps) -> Vec<OpId> {
     heads.into_iter().collect()
 }
 
-/// The workspace's membership as `doc`'s operations make it, with the right each app `doc`
-/// runs has to its own records ([`crate::state::with_installed_apps`]).
+/// The workspace's membership as `doc`'s operations make it. No app has a right to its own
+/// records in it: that right is whether the app is installed, which the workspace's apps say and
+/// its document does not ([`crate::state::with_installed_apps`]).
 #[must_use]
 pub fn replay(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
-    crate::state::with_installed_apps(stored(doc, workspace), doc)
+    let mut policy = stored(doc, workspace);
+    policy
+        .grants
+        .retain(|grant| !tilo_action_policy::roles::is_app_records_grant(grant));
+    policy
 }
 
 /// The workspace's membership exactly as `doc`'s operations make it, the grants they keep

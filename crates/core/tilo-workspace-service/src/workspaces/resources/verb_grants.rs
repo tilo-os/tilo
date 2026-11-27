@@ -65,6 +65,19 @@ impl VerbGrants {
         let Some(access) = &self.access else {
             return false;
         };
+        // The apps the workspace runs are installed by whoever it lets install apps, whatever the
+        // verb: installing, uninstalling, or taking either back.
+        if kind == tilo_resource_store::apps::KIND {
+            return access
+                .policy
+                .check_action(
+                    &access.authority(),
+                    tilo_action_policy::roles::governance::INSTALL_APP,
+                    &tilo_action_policy::Context::at_time(self.now),
+                    false,
+                )
+                .is_ok();
+        }
         let node = access
             .policy
             .node()

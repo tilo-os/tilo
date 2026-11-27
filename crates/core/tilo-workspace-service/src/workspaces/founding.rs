@@ -144,7 +144,9 @@ fn record_registries(
 
 /// Record each of `defaults` as a version the new workspace runs, as the `workspace/apps#install`
 /// action records one: the same release validation, the same grant check, and the same authorship
-/// — the founder, whose device made the workspace and signs for it.
+/// — the founder, whose device made the workspace and signs for it. The workspace runs them from
+/// its founding; their records are written to its store once it is served
+/// ([`super::Workspaces::write_app_records`]).
 fn record_defaults(
     peer: &mut StatePeer,
     authority: &DeviceCert,
@@ -152,18 +154,42 @@ fn record_defaults(
     defaults: &[AppRelease],
     now: SystemTime,
 ) -> Result<(), String> {
+    let mut apps = peer.apps().as_ref().clone();
     for release in defaults {
-        let command = WorkspaceMembershipCommand::InstallApp(release.clone());
-        peer.workspace_mut()
-            .apply_workspace_membership_command(authority, &command, key, now)
-            .map_err(|error| {
-                format!(
-                    "the default app {} could not be recorded: {error}",
-                    release.app
-                )
-            })?;
+        let refused = |error: String| {
+            format!(
+                "the default app {} could not be recorded: {error}",
+                release.app
+            )
+        };
+        WorkspaceMembershipCommand::InstallApp(release.clone())
+            .validate()
+            .map_err(refused)?;
+        peer.grant_app_records(authority, &release.app, key, now)
+            .map_err(refused)?;
+        apps = apps.installing(&release.app, Some(founded(authority, release, now)));
+    }
+    if !defaults.is_empty() {
+        let _read = peer.read_apps(apps, now);
     }
     Ok(())
+}
+
+/// `release` as the founder `authority` installs it at `now`.
+pub(super) fn founded(
+    authority: &DeviceCert,
+    release: &AppRelease,
+    now: SystemTime,
+) -> tilo_peer_state::InstalledApp {
+    tilo_peer_state::InstalledApp {
+        release: release.clone(),
+        installed_by: hex::encode(authority.user_public_key),
+        installed_at_ns: now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .and_then(|since| u64::try_from(since.as_nanos()).ok())
+            .unwrap_or_default(),
+    }
 }
 
 #[cfg(test)]

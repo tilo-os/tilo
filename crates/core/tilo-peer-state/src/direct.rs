@@ -973,6 +973,8 @@ enum OnlyHere {
 /// before the tell were: the tell only ever takes bytes away.
 #[derive(Clone)]
 struct Opening {
+    /// This device dialled the link: the device at its other end is the host it syncs from.
+    dialled: bool,
     /// The peer version the other device's hello named, once it came.
     protocol: watch::Sender<Option<u32>>,
     /// The workspace document's heads it said it holds: `None` for a device
@@ -984,14 +986,31 @@ struct Opening {
 }
 
 impl Opening {
-    fn new() -> Self {
+    fn new(dialled: bool) -> Self {
         Self {
+            dialled,
             protocol: watch::channel(None).0,
             holds: Arc::default(),
             answered: watch::channel(false).0,
         }
     }
+
+    /// Whether this link sends its device the apps the workspace runs: this device accepted it,
+    /// and the device's hello names a peer version that reads them
+    /// ([`neighbour_wire::NeighbourMsg::WorkspaceApps`]).
+    fn sends_apps(&self) -> bool {
+        !self.dialled
+            && self
+                .protocol
+                .borrow()
+                .is_some_and(|protocol| protocol >= APPS_PEER_VERSION)
+    }
 }
+
+/// The first peer version that reads the apps a host sends
+/// ([`neighbour_wire::NeighbourMsg::WorkspaceApps`]): a device of an earlier one is never sent
+/// them, and decides by the app versions map as it always did.
+const APPS_PEER_VERSION: u32 = 73;
 
 /// Two devices of one workspace in one process, paired from the moment this
 /// was made ([`DirectSync::pairing`]): their link, ready to sync.
@@ -1352,6 +1371,9 @@ struct Inner {
     opening: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<RecordAsk>>>>,
     /// The frame bytes this device's links carried, each way ([`Traffic`]).
     traffic: Counters,
+    /// The apps the workspace runs as this device last told its links ([`DirectSync::tell_apps`]):
+    /// what a link sends its device as it answers its state.
+    apps_told: Arc<std::sync::Mutex<Option<Authored>>>,
     /// Answers a test loses, as a link that ended before they came
     /// ([`DirectSync::lose_answers`]).
     #[cfg(feature = "test-support")]
@@ -1443,6 +1465,7 @@ impl DirectSync {
             certificate: None,
             opening: Arc::default(),
             traffic: Counters::default(),
+            apps_told: Arc::default(),
             #[cfg(feature = "test-support")]
             lost_answers: Arc::default(),
         }))
@@ -1480,6 +1503,7 @@ impl DirectSync {
             certificate: self.0.certificate.clone(),
             opening: Arc::clone(&self.0.opening),
             traffic: self.0.traffic.clone(),
+            apps_told: Arc::clone(&self.0.apps_told),
             #[cfg(feature = "test-support")]
             lost_answers: Arc::clone(&self.0.lost_answers),
         }
@@ -1635,6 +1659,52 @@ impl DirectSync {
     #[must_use]
     pub fn replica(&self) -> Replica {
         self.0.replica.clone()
+    }
+
+    /// Tell the devices linked to this one the apps the workspace runs, `apps`, as this device
+    /// read them from the workspace's apps resource: each device keeping no store decides its
+    /// members' writes by them. A link sends them only to a device whose peer version reads
+    /// them, and sends the last told to each device as it answers its state.
+    pub fn tell_apps(&self, apps: &crate::WorkspaceApps) {
+        let Ok(workspace) = self.workspace() else {
+            return;
+        };
+        let told = Authored {
+            from: self.device(),
+            message: apps.message(&workspace.to_string()),
+            published: false,
+        };
+        *self.0.apps_told.lock_recover() = Some(told.clone());
+        let _ = self.0.outgoing.send(told);
+    }
+
+    /// Read `authored`, the apps a link brought, as the apps the workspace runs: only from the
+    /// host this device dialled, in its own frame, and only by a device whose engine owns its
+    /// copy and keeps no store to read them from. Any other device's apps are ignored.
+    fn read_host_apps(&self, remote: [u8; 32], authored: &Authored, opening: &Opening) {
+        let from_host = opening.dialled && authored.from == remote;
+        if !from_host || self.0.admission.is_none() {
+            tracing::debug!(
+                workspace = ?self.workspace().ok(),
+                from = %short(&authored.from),
+                "apps that are not the dialled host's own are ignored"
+            );
+            return;
+        }
+        let Ok(workspace) = self.workspace() else {
+            return;
+        };
+        let Some(apps) = crate::WorkspaceApps::sent(&authored.message, &workspace.to_string())
+        else {
+            return;
+        };
+        let read = self
+            .0
+            .replica
+            .write(|peer| peer.read_apps(apps, tilo_clock::wall()));
+        if read.is_some() {
+            self.0.changed.send_modify(bump);
+        }
     }
 
     /// The store this device keeps the workspace's history at, when it is a
@@ -3025,7 +3095,7 @@ impl DirectSync {
         // What the device at the link's other end said of itself as it opened:
         // its peer version and what it holds, and whether its state was
         // answered here yet ([`Opening`]).
-        let opening = Opening::new();
+        let opening = Opening::new(dialing);
         // What this link alone carries, besides what every link does: this
         // device's asks for the other's state, and its answers to the other's.
         let (own, only_here) = tokio::sync::mpsc::unbounded_channel();
@@ -3828,7 +3898,7 @@ impl DirectSync {
             &opened,
             // A device taking this one's store names no tell: its first ask
             // is answered the whole state.
-            &Opening::new(),
+            &Opening::new(false),
         )
         .await
     }
@@ -4463,6 +4533,10 @@ impl DirectSync {
             && authored.from == remote
         {
             opening.protocol.send_replace(Some(*protocol));
+        }
+        if matches!(authored.message, NeighbourMsg::WorkspaceApps { .. }) {
+            self.read_host_apps(remote, &authored, opening);
+            return;
         }
         // An ask another device made reached this one only because a
         // host forwarded it, and is not this device's to answer.
@@ -5680,6 +5754,9 @@ async fn send_authored(
         };
         match next {
             Ok(authored) if already_theirs(&authored, remote) || !takes(&authored.message) => {}
+            Ok(authored)
+                if matches!(authored.message, NeighbourMsg::WorkspaceApps { .. })
+                    && !opening.sends_apps() => {}
             Ok(authored) => {
                 // The governance that removes the device is the last frame it
                 // is sent, whichever path told this device of the removal.
@@ -5754,6 +5831,10 @@ async fn answer_only_here(
         }
         if told.is_some() {
             opening.answered.send_replace(true);
+        }
+        let apps = link.0.apps_told.lock_recover().clone();
+        if let Some(apps) = apps.filter(|_| opening.sends_apps()) {
+            write_authored(send, &apps).await?;
         }
     }
     Ok(())
@@ -5871,6 +5952,66 @@ mod tests {
         )
         .unwrap();
         DirectSync::new(peer, key.clone())
+    }
+
+    /// A copy reads the apps the workspace runs only from the host it dialled, in that host's own
+    /// frame, and only where its engine keeps no store to read them from: apps any other device
+    /// sends, or a device that dialled this one, are ignored.
+    #[test]
+    fn a_copy_reads_the_apps_only_its_host_tells_it() {
+        let root = SigningKey::from_bytes(&[0x57; 32]);
+        let roster = vec![device(&root, 0x58), device(&root, 0x59)];
+        let (host, other) = (roster[0].1.device_public_key, roster[1].1.device_public_key);
+        let stored = link(&roster, RevocationList::new());
+        let directory = tempfile::tempdir().unwrap();
+        let owner = crate::owner::open_file(&directory.path().join("joined.json")).unwrap();
+        let copy = DirectSync(Arc::new(Inner {
+            admission: Some(Admission {
+                owner,
+                workspace: tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap(),
+            }),
+            ..stored.copied()
+        }));
+        let release = crate::workspace_membership::AppRelease {
+            app: "so.tilo.notes".into(),
+            version: "1.0.0".into(),
+            surface: hex::encode([3; 32]),
+            package: "00".repeat(32),
+            publisher: "00".repeat(32),
+            file: None,
+            dev: false,
+            pinned: false,
+            payload: crate::workspace_membership::AppPayload::Tapp,
+        };
+        let apps = crate::WorkspaceApps::default()
+            .installing(
+                &release.app.clone(),
+                Some(crate::InstalledApp {
+                    release,
+                    installed_by: hex::encode(root.verifying_key().to_bytes()),
+                    installed_at_ns: 1,
+                }),
+            )
+            .at(vec![[9; 32]]);
+        let told = |from: [u8; 32]| Authored {
+            from,
+            message: apps.message(WORKSPACE),
+            published: false,
+        };
+        let runs = |link: &DirectSync| link.read(|peer| !peer.apps().running().is_empty());
+
+        stored.read_host_apps(host, &told(host), &Opening::new(true));
+        assert!(!runs(&stored), "a copy that keeps a store reads its own");
+        copy.read_host_apps(host, &told(other), &Opening::new(true));
+        assert!(!runs(&copy), "apps another device sends on are ignored");
+        copy.read_host_apps(other, &told(other), &Opening::new(false));
+        assert!(
+            !runs(&copy),
+            "a device that dialled this one is not its host"
+        );
+        copy.read_host_apps(host, &told(host), &Opening::new(true));
+        assert!(runs(&copy), "the host it dialled tells it the apps");
+        assert_eq!(copy.read(|peer| peer.apps().heads().to_vec()), [[9; 32]]);
     }
 
     /// The state a tell asks for is the changes its device lacks: heads this
@@ -6279,7 +6420,7 @@ mod tests {
             drop(live);
         };
         let admit = LinkAdmit::dialling();
-        let opening = Opening::new();
+        let opening = Opening::new(false);
         tokio::join!(
             member.admit_in_order(host_device, &asks, None, frames, history, &admit, &opening),
             reading_history

@@ -864,7 +864,7 @@ tilo_test_env::scenario! {
     // not merged, until its author runs the workspace's version and sends the same
     // changes naming that version's surface, with the record upgraded to it.
     {
-        use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
+        use crate::workspace_membership::AppRelease;
         const NEWER: [u8; 32] = [8; 32];
         let (mut peer, key, guest) = workspace_with(Role::Editor);
         let owner_key = SigningKey::from_bytes(&[2; 32]);
@@ -880,21 +880,15 @@ tilo_test_env::scenario! {
             pinned: false,
             payload: crate::workspace_membership::AppPayload::Tapp,
         };
-        let install = WorkspaceMembershipCommand::InstallApp(release.clone());
         let refused = peer
             .clone()
-            .workspace_mut()
-            .apply_workspace_membership_command(&guest, &install, &owner_key, now())
+            .grant_app_records(&guest, APP, &owner_key, now())
             .unwrap_err();
         assert!(
             refused.contains("Not allowed"),
             "an editor installs no app: {refused}"
         );
-        assert!(
-            peer.workspace_mut()
-                .apply_workspace_membership_command(&owner, &install, &owner_key, now())
-                .unwrap()
-        );
+        run_version(&mut peer, Some(release.clone()));
         let installed = peer
             .governance()
             .app_version(APP)
@@ -928,16 +922,7 @@ tilo_test_env::scenario! {
         assert_eq!(value(&peer), "\"x\"", "the guest's edit is kept");
 
         // Uninstalling takes the choice back.
-        assert!(
-            peer.workspace_mut()
-                .apply_workspace_membership_command(
-                    &owner,
-                    &WorkspaceMembershipCommand::UninstallApp { app: APP.into() },
-                    &owner_key,
-                    now(),
-                )
-                .unwrap()
-        );
+        run_version(&mut peer, None);
         assert!(peer.governance().app_versions().is_empty());
     }
 }
@@ -1349,19 +1334,22 @@ fn release_of(surface: [u8; 32], version: &str) -> crate::workspace_membership::
 }
 
 /// The workspace runs `release` of the test app from now on, as its owner chose; `None`
-/// uninstalls the app.
+/// uninstalls the app. The apps resource says so, and the copy reads it; the grant the oldest
+/// supported build reads is written or revoked beside it, as installing does.
 fn run_version(peer: &mut StatePeer, release: Option<crate::workspace_membership::AppRelease>) {
-    use crate::workspace_membership::WorkspaceMembershipCommand;
     let (owner_key, owner) = owner();
-    let command = match release {
-        Some(release) => WorkspaceMembershipCommand::InstallApp(release),
-        None => WorkspaceMembershipCommand::UninstallApp { app: APP.into() },
-    };
-    assert!(
-        peer.workspace_mut()
-            .apply_workspace_membership_command(&owner, &command, &owner_key, now())
-            .unwrap()
-    );
+    let installed = release.map(|release| crate::state::InstalledApp {
+        release,
+        installed_by: hex::encode(owner.user_public_key),
+        installed_at_ns: 0,
+    });
+    match installed {
+        Some(_) => peer.grant_app_records(&owner, APP, &owner_key, now()),
+        None => peer.revoke_app_records(&owner, APP, &owner_key, now()),
+    }
+    .unwrap();
+    let apps = peer.apps().installing(APP, installed);
+    let _report = peer.read_apps(apps, now());
 }
 
 /// `message`, naming the surface `surface` instead, signed again by its author.
@@ -1460,19 +1448,24 @@ fn a_change_is_decided_under_the_surface_it_names_and_a_refusal_stays_through_a_
     let refused = edit_to(&peer, &key, "y", 2);
     let refused = naming(refused, NEWER, &key);
     receive(&mut peer, &guest, refused.clone()).expect_err("the newer surface refuses it");
-    for (change, what) in [
-        (Some(release_of(PINNED, "1.0.0")), "going back a version"),
-        (None, "uninstalling the app"),
-    ] {
-        run_version(&mut peer, change);
-        peer.redecide_set_aside(now());
-        let again = receive(&mut peer, &guest, refused.clone());
-        assert!(
-            again.is_err(),
-            "{what} lets in nothing the newer surface refused"
-        );
-        assert_eq!(value(&peer), "\"x\"", "{what} merged nothing");
-    }
+    run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
+    peer.redecide_set_aside(now());
+    receive(&mut peer, &guest, refused.clone())
+        .expect_err("going back a version lets in nothing the newer surface refused");
+    assert_eq!(value(&peer), "\"x\"", "going back a version merged nothing");
+    // An app the workspace runs no more has its changes set aside: whether one was written
+    // while it ran is not something the change says.
+    run_version(&mut peer, None);
+    peer.redecide_set_aside(now());
+    let again = peer
+        .receive_from(
+            TransportOrigin::ServerDelta(guest.device_public_key),
+            refused,
+            now(),
+        )
+        .expect("set aside, not refused");
+    assert!(again.deferred, "uninstalling sets the change aside");
+    assert_eq!(value(&peer), "\"x\"", "uninstalling merged nothing");
 }
 
 /// Two copies of a workspace take in the same changes whatever order the changes and the
@@ -1576,6 +1569,16 @@ fn an_apps_own_records_are_its_while_it_is_installed() {
         Answer::Deny,
         "an app nobody installed keeps nothing"
     );
+    let (owner_key, owner) = owner();
+    assert!(
+        peer.grant_app_records(&owner, APP, &owner_key, now())
+            .unwrap()
+    );
+    assert_eq!(
+        may_change(&peer),
+        Answer::Deny,
+        "a grant the workspace keeps without the app installed gives it nothing"
+    );
     run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
     assert_eq!(
         may_change(&peer),
@@ -1602,6 +1605,57 @@ fn an_apps_own_records_are_its_while_it_is_installed() {
         !stored(&peer),
         "uninstalling still revokes the grant an older build reads"
     );
+}
+
+/// A copy that keeps no store decides an app's own writes by the apps its host last told it: it
+/// takes in one the app made while installed, and sets the next one aside once the uninstall
+/// reaches it, never refusing it, as it cannot tell whether the app wrote it before.
+#[test]
+fn a_copy_takes_an_installed_apps_write_and_sets_one_aside_once_the_uninstall_reaches_it() {
+    // An app writes no more than the member whose device runs it may, and only while installed.
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
+    let as_app = |peer: &StatePeer, to: &'static str, seq: u64| {
+        let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        let heads = doc.get_heads();
+        doc.put(ROOT, "value", to).unwrap();
+        let context = ActionContext {
+            what: Some(edit_value()),
+            ..ActionContext::for_resource("tab:1", KIND, "Test")
+        }
+        .with_invoker(tilo_actions::ActionInvoker::admitted(
+            &tilo_member_types::Acting::by_app(APP),
+        ));
+        doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
+        signed_write_at(&mut doc, &heads, &key, seq)
+    };
+    let (_, owner) = owner();
+    let installed = peer.apps().installing(
+        APP,
+        Some(crate::state::InstalledApp {
+            release: release_of(PINNED, "1.0.0"),
+            installed_by: hex::encode(owner.user_public_key),
+            installed_at_ns: 0,
+        }),
+    );
+    let _read = peer.read_apps(installed.clone(), now());
+    let write = as_app(&peer, "x", 1);
+    receive(&mut peer, &guest, write).expect("an installed app keeps its own records");
+    assert_eq!(value(&peer), "\"x\"");
+
+    let _read = peer.read_apps(installed.installing(APP, None), now());
+    let write = as_app(&peer, "y", 2);
+    let held = peer
+        .receive_from(
+            TransportOrigin::ServerDelta(guest.device_public_key),
+            write,
+            now(),
+        )
+        .expect("set aside, not refused");
+    assert!(held.deferred, "the uninstall sets the app's write aside");
+    assert_eq!(value(&peer), "\"x\"", "and merges nothing of it");
 }
 
 /// The test app's surface after a version that took its title away: everything else as before.

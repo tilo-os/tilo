@@ -90,7 +90,10 @@ fn forked(doc: &CachedDocument, heads: &BTreeSet<ChangeHash>) -> Result<CachedDo
         .iter()
         .find(|(held, _)| *held == key)
         .map(|(_, fork)| fork.clone());
-    if let Some(fork) = kept {
+    // Forks are kept for every copy of this process alike: each is read with the apps of the
+    // copy that judges by it.
+    if let Some(mut fork) = kept {
+        fork.with_apps(doc.apps_read());
         return Ok(fork);
     }
     let fork: CachedDocument = automerge::AutoCommit::from_document(
@@ -106,6 +109,8 @@ fn forked(doc: &CachedDocument, heads: &BTreeSet<ChangeHash>) -> Result<CachedDo
         }
         forks.push_back((key, fork.clone()));
     }
+    let mut fork = fork;
+    fork.with_apps(doc.apps_read());
     Ok(fork)
 }
 

@@ -6,7 +6,6 @@
 //! therefore copies only the documents it actually changes, and a durable
 //! snapshot re-saves only those.
 use automerge::AutoCommit;
-use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, OnceLock};
 
@@ -28,8 +27,17 @@ pub(crate) struct CachedDocument {
     since_checked: Option<Arc<Vec<automerge::Change>>>,
     /// [`Self::redemptions`], once read.
     redemptions: Arc<OnceLock<Result<Redemptions, String>>>,
-    /// [`PolicyData::workspace_policy`] of the workspace the document belongs to.
+    /// [`Self::stored_policy`], once read.
+    stored_policy: Arc<OnceLock<tilo_action_policy::WorkspacePolicy>>,
+    /// [`Self::workspace_policy`]: the stored policy with the apps [`Self::apps`] names.
     workspace_policy: Arc<OnceLock<tilo_action_policy::WorkspacePolicy>>,
+    /// The apps the workspace runs, as the copy holding this state last read them from the
+    /// workspace's apps resource ([`crate::state::WorkspaceApps`]): kept across the state's
+    /// changes, as which apps run is not this document's. `None` for a copy that read none yet,
+    /// which reads them from the app versions map the document keeps ([`Self::apps`]).
+    apps: Option<Arc<crate::state::WorkspaceApps>>,
+    /// The apps the document's app versions map names, once read.
+    map_apps: Arc<OnceLock<Arc<crate::state::WorkspaceApps>>>,
     /// The views of the state this one was changed from, when they were
     /// read: a change to a workspace of hundreds touches a row or two, so the
     /// rows whose bytes are as they were keep what reading them took
@@ -49,15 +57,7 @@ pub(crate) struct CachedDocument {
     named: Arc<OnceLock<Named>>,
     /// [`Self::newest_change_secs`], once asked.
     newest_change: Arc<OnceLock<Option<i64>>>,
-    /// [`Self::running_apps`], once asked.
-    running_apps: Arc<OnceLock<Arc<RunningApps>>>,
-    /// [`Self::ran_surfaces`], by app, as each was asked.
-    ran_surfaces: Arc<std::sync::Mutex<RanSurfaces>>,
 }
-/// The surfaces a workspace ran each app with, by app id, as each was asked.
-type RanSurfaces = BTreeMap<String, Arc<BTreeSet<[u8; 32]>>>;
-/// The apps a workspace runs, by app id.
-pub(crate) type RunningApps = BTreeMap<String, crate::state::InstalledApp>;
 /// A governance state's changes by the bytes a write names each by
 /// ([`collab_types::governance_head`]), and its changes that build on none.
 #[derive(Default)]
@@ -197,7 +197,10 @@ impl From<AutoCommit> for CachedDocument {
             certificates: Arc::default(),
             receipts: Arc::default(),
             since_checked: None,
+            stored_policy: Arc::default(),
             workspace_policy: Arc::default(),
+            apps: None,
+            map_apps: Arc::default(),
             redemptions: Arc::default(),
             earlier: None,
             stored: Arc::default(),
@@ -206,8 +209,6 @@ impl From<AutoCommit> for CachedDocument {
             security_basis: Arc::default(),
             named: Arc::default(),
             newest_change: Arc::default(),
-            running_apps: Arc::default(),
-            ran_surfaces: Arc::default(),
         }
     }
 }
@@ -235,13 +236,13 @@ impl DerefMut for CachedDocument {
         // made from here are told apart from them when this state is
         // followed.
         self.since_checked = None;
+        self.stored_policy = Arc::default();
         self.workspace_policy = Arc::default();
+        self.map_apps = Arc::default();
         self.redemptions = Arc::default();
         self.security_basis = Arc::default();
         self.named = Arc::default();
         self.newest_change = Arc::default();
-        self.running_apps = Arc::default();
-        self.ran_surfaces = Arc::default();
         Arc::make_mut(&mut self.doc)
     }
 }
@@ -251,10 +252,23 @@ impl CachedDocument {
     pub(crate) fn same_state(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.doc, &b.doc)
     }
-    /// The authority the document records for `workspace`: built once per
-    /// document state, not on every member's lookup.
+    /// The authority the document records for `workspace`, with the right each app the
+    /// workspace runs has to its own records ([`crate::state::with_installed_apps`]): built
+    /// once per document state and apps read.
     pub(crate) fn workspace_policy(&self, workspace: &str) -> &tilo_action_policy::WorkspacePolicy {
         let policy = self.workspace_policy.get_or_init(|| {
+            crate::state::with_installed_apps(self.stored_policy(workspace).clone(), &self.apps())
+        });
+        debug_assert_eq!(
+            policy.workspace, workspace,
+            "a document names one workspace"
+        );
+        policy
+    }
+    /// The authority the document records for `workspace`, without any app's right to its own
+    /// records: built once per document state.
+    fn stored_policy(&self, workspace: &str) -> &tilo_action_policy::WorkspacePolicy {
+        self.stored_policy.get_or_init(|| {
             let mut policy = crate::members::replay(&self.doc, workspace);
             // What the workspace's entry opens to visitors is decided by the entry itself, so
             // every device reading this state admits a visitor's call alike.
@@ -263,32 +277,35 @@ impl CachedDocument {
                     .visitor_grants(workspace),
             );
             policy
-        });
-        debug_assert_eq!(
-            policy.workspace, workspace,
-            "a document names one workspace"
-        );
-        policy
+        })
     }
-    /// The apps this state runs, as `read` reads them: read once per state.
-    pub(crate) fn running_apps(&self, read: impl FnOnce() -> RunningApps) -> Arc<RunningApps> {
-        Arc::clone(self.running_apps.get_or_init(|| Arc::new(read())))
-    }
-    /// The surfaces this state ran `app` with, as `read` reads them: read once per state and app.
-    pub(crate) fn ran_surfaces(
-        &self,
-        app: &str,
-        read: impl FnOnce() -> BTreeSet<[u8; 32]>,
-    ) -> Arc<BTreeSet<[u8; 32]>> {
-        use tilo_lock::MutexRecover as _;
-        if let Some(ran) = self.ran_surfaces.lock_recover().get(app) {
-            return Arc::clone(ran);
+    /// The apps the workspace runs, as the copy holding this state last read them; for a copy
+    /// that read none, as the app versions map of this state names them, which every build
+    /// before the apps resource decided by.
+    pub(crate) fn apps(&self) -> Arc<crate::state::WorkspaceApps> {
+        match &self.apps {
+            Some(apps) => Arc::clone(apps),
+            None => Arc::clone(
+                self.map_apps
+                    .get_or_init(|| Arc::new(crate::state::apps_in_map(&self.doc))),
+            ),
         }
-        let ran = Arc::new(read());
-        self.ran_surfaces
-            .lock_recover()
-            .insert(app.to_owned(), Arc::clone(&ran));
-        ran
+    }
+    /// The apps the copy holding this state read, if it read any.
+    pub(crate) fn apps_read(&self) -> Option<&Arc<crate::state::WorkspaceApps>> {
+        self.apps.as_ref()
+    }
+    /// This state, read with the apps `apps` names: the policy is built again with them.
+    pub(crate) fn with_apps(&mut self, apps: Option<&Arc<crate::state::WorkspaceApps>>) {
+        let same = match (&self.apps, apps) {
+            (Some(held), Some(apps)) => Arc::ptr_eq(held, apps),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.apps = apps.cloned();
+            self.workspace_policy = Arc::default();
+        }
     }
     /// The workspace's entry this state records: whom it lets in.
     pub(crate) fn workspace_entry(&self) -> tilo_action_policy::EntryPolicy {
@@ -397,6 +414,7 @@ impl CachedDocument {
             earlier: self.views().or_else(|| self.earlier.clone()),
             before: self.stored_before(),
             since_checked,
+            apps: self.apps.clone(),
             ..Self::from(doc)
         }
     }
@@ -416,7 +434,8 @@ impl CachedDocument {
     /// receipt it holds is one this state held and checked, and stays checked.
     pub(crate) fn rebased_into(&self, doc: AutoCommit) -> Self {
         let checked = self.receipts.get().is_some();
-        let state = Self::from(doc);
+        let mut state = Self::from(doc);
+        state.with_apps(self.apps.as_ref());
         if checked {
             state.receipts_checked();
         }

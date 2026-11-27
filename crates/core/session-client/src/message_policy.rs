@@ -88,6 +88,9 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         NeighbourMsg::IdentityHello { .. }
         | NeighbourMsg::MlsGovernanceWanted { .. }
         | NeighbourMsg::WriteRefusals { .. }
+        // The apps a workspace runs are read only from the host a copy is linked to, over that
+        // link, never from a member.
+        | NeighbourMsg::WorkspaceApps { .. }
         // Retired generations, refused where they enter (`NeighbourMsg::is_retired`): a shared
         // window's messages travel the workspace's live session (`tilo_live::share`), and content
         // is asked for and answered many at a time.

@@ -1562,6 +1562,16 @@ impl StatePeer {
         })
     }
 
+    /// Whether `envelope` is a change of an app the workspace ran and runs no more: one its
+    /// policy refuses is set aside, never refused, as whether it was written while the app ran is
+    /// not something a change of its records says, and the apps this copy read may trail the
+    /// workspace's. It is decided again when the workspace runs the app again.
+    fn ran_and_stopped(&self, app_id: &str, envelope: &SignedOp) -> bool {
+        envelope.kind == collab_types::OpKind::Change
+            && self.governance().app_version(app_id).is_none()
+            && self.ran_app(app_id)
+    }
+
     /// [`Self::authorize_document`] by the governance this peer holds.
     fn decide_written(
         &self,
@@ -1688,6 +1698,9 @@ impl StatePeer {
                 history,
             }),
             Ok(collab_types::Receipt::Hold) => {
+                Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
+            }
+            Err(_) if self.ran_and_stopped(app_id, envelope) => {
                 Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
             }
             Err(refusal) => {

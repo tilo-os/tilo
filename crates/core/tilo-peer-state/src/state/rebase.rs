@@ -86,7 +86,14 @@ impl StatePeer {
         if !workspace::base::carried(was, &mut doc, (&held_as, &actor)).map_err(err)? {
             return Ok(false);
         }
-        self.core.workspace_doc = Some(doc.into());
+        let apps = self
+            .core
+            .workspace_doc
+            .as_ref()
+            .and_then(|held| held.apps_read().cloned());
+        let mut carried: crate::cached_document::CachedDocument = doc.into();
+        carried.with_apps(apps.as_ref());
+        self.core.workspace_doc = Some(carried);
         Ok(true)
     }
 }

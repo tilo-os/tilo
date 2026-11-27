@@ -714,13 +714,15 @@ pub async fn install_app(
         pinned: false,
         payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
     };
+    let installed = tilo_peer_state::InstalledApp {
+        release,
+        installed_by: hex::encode(workspaces.signing_device().cert.user_public_key),
+        installed_at_ns: tilo_clock::unix_now_ns(),
+    };
     workspaces
-        .commit_own_change(
-            workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallApp(release),
-            None,
-        )
+        .write_app_records(workspace, vec![(app.to_owned(), Some(installed))])
         .await
+        .map(drop)
 }
 
 /// Uninstall `app` from `workspace` as the person this service's device acts for.
@@ -733,14 +735,9 @@ pub async fn uninstall_app(
     app: &str,
 ) -> Result<(), String> {
     workspaces
-        .commit_own_change(
-            workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::UninstallApp {
-                app: app.into(),
-            },
-            None,
-        )
+        .write_app_records(workspace, vec![(app.to_owned(), None)])
         .await
+        .map(drop)
 }
 
 /// Revoke the grant `id` in `workspace` as the person this service's device acts for, as the

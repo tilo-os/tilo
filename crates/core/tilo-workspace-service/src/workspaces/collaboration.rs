@@ -1470,16 +1470,18 @@ impl Workspaces {
             .schedule_answered(automation, trigger, mark))
     }
 
-    /// Choose the version of an app `workspace` runs for every member, or take
-    /// the choice back ([`WorkspaceMembershipCommand::InstallApp`],
-    /// [`WorkspaceMembershipCommand::UninstallApp`]), as a member the workspace
-    /// lets install apps. The choice is a workspace change every member
-    /// reads ([`Self::app_versions`]); each is to run it, and a
-    /// change made with another version waits until its author has.
+    /// Choose the version of an app `workspace` runs for every member, or take the choice back
+    /// ([`WorkspaceMembershipCommand::InstallApp`], [`WorkspaceMembershipCommand::UninstallApp`]),
+    /// as a member the workspace lets install apps. The choice is the app's record in the
+    /// workspace's apps resource, which every member reads ([`Self::app_versions`]) and undo takes
+    /// back; a change made with another version waits until the workspace runs it.
+    ///
+    /// The grant of the app's own records is written or revoked with it, for the devices of the
+    /// oldest build still supported, which read that grant rather than the record.
     ///
     /// # Errors
-    /// Refuses another command, a malformed release, and a member the workspace
-    /// does not let install apps.
+    /// Refuses another command, a malformed release, and a member the workspace does not let
+    /// install apps.
     ///
     /// [`WorkspaceMembershipCommand::InstallApp`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallApp
     /// [`WorkspaceMembershipCommand::UninstallApp`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::UninstallApp
@@ -1491,23 +1493,52 @@ impl Workspaces {
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        if !matches!(
-            command,
-            Command::InstallApp(_) | Command::UninstallApp { .. }
-        ) {
-            return Err(CollaborationError::new(
-                "only an install or uninstall changes an app version",
-            ));
-        }
-        self.govern_as_member(
-            workspace,
-            member,
-            request_id,
-            command,
-            governance::INSTALL_APP,
-            "app.version",
-        )
-        .await
+        let (app, release) = match &command {
+            Command::InstallApp(release) => (release.app.clone(), Some(release.clone())),
+            Command::UninstallApp { app } => (app.clone(), None),
+            _ => {
+                return Err(CollaborationError::new(
+                    "only an install or uninstall changes an app version",
+                ));
+            }
+        };
+        command.validate()?;
+        let now = tilo_clock::unix_now_ns();
+        let done = {
+            let state = self.workspace(workspace).await?;
+            let mut hosted = state.lock().await;
+            self.authorize(
+                member,
+                Some(&hosted),
+                WorkspaceOp::Govern(governance::INSTALL_APP),
+                now,
+            )?;
+            let key = self.inner.host.key.clone();
+            let installing = release.is_some();
+            self.administer(
+                &mut hosted,
+                request_id,
+                request_digest(&("app.version", &command))?,
+                |peer| {
+                    if installing {
+                        peer.grant_app_records(member, &app, &key, system_time(now))
+                    } else {
+                        peer.revoke_app_records(member, &app, &key, system_time(now))
+                    }
+                },
+                now,
+            )
+            .await?
+        };
+        let installed = release.map(|release| tilo_peer_state::InstalledApp {
+            release,
+            installed_by: hex::encode(member.user_public_key),
+            installed_at_ns: now,
+        });
+        self.write_app_records(workspace, vec![(app, installed)])
+            .await
+            .map_err(CollaborationError::new)?;
+        Ok(done)
     }
 
     /// The app versions `workspace` runs, as its governance records them now.

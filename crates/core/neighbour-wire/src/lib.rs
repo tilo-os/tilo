@@ -780,6 +780,16 @@ pub enum NeighbourMsg {
         cluster_id: String,
         hash: String,
     },
+    /// The apps workspace `cluster_id` runs, as the host at the other end of a link reads them
+    /// from the workspace's apps resource at `heads`: sent to a device that keeps no store, which
+    /// decides its members' writes by them. `apps` is their encoding
+    /// (`tilo_peer_state::WorkspaceApps`). Sent only to a device whose hello names a peer version
+    /// that reads it. Appended to preserve every existing Postcard discriminant.
+    WorkspaceApps {
+        cluster_id: String,
+        heads: Vec<[u8; 32]>,
+        apps: Vec<u8>,
+    },
 }
 
 impl NeighbourMsg {
@@ -904,7 +914,8 @@ impl NeighbourMsg {
             | Self::DocumentContentWants { .. }
             | Self::DocumentContentPieces { .. }
             | Self::DocumentContentKept { .. }
-            | Self::DocumentContentReleased { .. } => false,
+            | Self::DocumentContentReleased { .. }
+            | Self::WorkspaceApps { .. } => false,
         }
     }
 
@@ -960,6 +971,7 @@ impl NeighbourMsg {
             Self::DocumentContentPieces { .. } => "DocumentContentPieces",
             Self::DocumentContentKept { .. } => "DocumentContentKept",
             Self::DocumentContentReleased { .. } => "DocumentContentReleased",
+            Self::WorkspaceApps { .. } => "WorkspaceApps",
         }
     }
 }
@@ -1114,6 +1126,14 @@ mod tests {
             },
         ));
         all.extend(fixtures_pushed_content());
+        all.push((
+            "the apps a workspace runs",
+            NeighbourMsg::WorkspaceApps {
+                cluster_id: "workspace".into(),
+                heads: vec![[5; 32]],
+                apps: b"{}".to_vec(),
+            },
+        ));
         all
     }
 
@@ -1555,7 +1575,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 32;
+    const VARIANT_COUNT: usize = 33;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1606,7 +1626,7 @@ mod tests {
         (
             "identity hello",
             concat!(
-                "0948010101010101010101010101010101010101010101010101010101010101010102020202",
+                "0949010101010101010101010101010101010101010101010101010101010101010102020202",
                 "02020202020202020202020202020202020202020202020202020202064c6170746f70010000",
                 "000a004003030303030303030303030303030303030303030303030303030303030303030303",
                 "03030303030303030303030303030303030303030303030303030303030300",
@@ -1734,6 +1754,13 @@ mod tests {
             "1f040e736f2e74696c6f2e70686f746f7309776f726b7370616365026162",
         ),
         ("governance wanted", "1a09776f726b737061636502"),
+        (
+            "the apps a workspace runs",
+            concat!(
+                "2009776f726b7370616365010505050505050505050505050505050505050505050505050505",
+                "050505050505027b7d",
+            ),
+        ),
     ];
 
     /// A refusal is only kept by a receiver that can check it: the signature

@@ -596,6 +596,12 @@ impl Workspaces {
         .announcing(announcing);
         link.drop_refused_workspace_changes().await;
         self.inner.direct.serve(link.clone())?;
+        // The devices that keep no store read the apps the workspace runs from the link; a
+        // workspace whose governance kept them before its store did has them brought over.
+        self.tell_apps(workspace);
+        let workspaces = self.clone();
+        let id = workspace.workspace().to_owned();
+        tokio::spawn(async move { workspaces.bring_apps_over(&id).await });
         self.follow_link(workspace, &link);
         self.keep_pushing(workspace.workspace(), &link);
         Ok(())
