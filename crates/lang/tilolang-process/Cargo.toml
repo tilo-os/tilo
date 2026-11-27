@@ -117,7 +117,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libc.workspace = true
-tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
 uuid.workspace = true
 # The device's network, which an app's `web.get` and `web.post` reach once per request.
 tilo-tiles = { version = "0.1.0", path = "../../engines/tilo-tiles", optional = true }

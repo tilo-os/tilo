@@ -225,7 +225,7 @@ url.workspace = true
 percent-encoding.workspace = true
 form_urlencoded.workspace = true
 # First-frame marks are shared with the greeter's startup metrics capture.
-tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
 # Opens the engine libraries the toolkit uses on first use (`lazy-*`).
 tilo-engine-loader = { version = "0.1.0", path = "../../core/engine-loader", optional = true }
 # runtime-collab is the collaboration wire and its client. Its vocabulary
@@ -392,7 +392,7 @@ accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path =
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
-tilo-tts = { version = "0.1.0", path = "../../engines/tts" }
+tilo-tts = { version = "0.1.0", path = "../../platform/tts" }
 
 [target.'cfg(windows)'.dependencies]
 # The menu bar and Jump List History and Search live in (`host_chrome/windows.rs`).

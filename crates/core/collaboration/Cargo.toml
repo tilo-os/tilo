@@ -45,7 +45,7 @@ tilo-content = { version = "0.1.0", path = "../content", default-features = fals
 settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
 settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model" }
 registry-types = { package = "tilo-registry-types", version = "0.1.0", path = "../registry-types" }
-tilo-startup-metrics = { version = "0.1.0", path = "../tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
 serde.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 thiserror.workspace = true

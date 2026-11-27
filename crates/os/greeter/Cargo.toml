@@ -31,7 +31,7 @@ winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
 zeroize.workspace = true
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 greetd-client = { path = "../greetd-client" }
@@ -63,7 +63,7 @@ tempfile.workspace = true
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
 # The screen reader's recording speaker, to hear what it said.
-tilo-tts = { path = "../../engines/tts" }
+tilo-tts = { path = "../../platform/tts" }
 # A fake greetd that speaks the real conversation protocol over a socket.
 greetd_ipc = { version = "0.10", features = ["sync-codec"] }
 

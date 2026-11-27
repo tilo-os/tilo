@@ -64,7 +64,7 @@ tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
 tilo-clipboard = { path = "../../platform/tilo-clipboard", features = ["os"] }
 # Launch phase marks, handed to the app so its startup file covers the time
 # before its own `main` (run.rs, `splice_startup_marks`).
-tilo-startup-metrics = { path = "../tilo-startup-metrics" }
+tilo-startup-metrics = { path = "../../platform/startup-metrics" }
 clap.workspace = true
 serde.workspace = true
 # Also how `gpu.rs` reads an EGL vendor / Vulkan ICD manifest's

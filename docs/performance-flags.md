@@ -141,7 +141,7 @@ selection. Keep their values identical across steady-state comparisons.
 
 Sources: [ui-core startup](../crates/ui/ui-core/src),
 [session startup](../crates/desktop/session/src/main.rs),
-[startup metrics](../crates/core/tilo-startup-metrics/src/lib.rs).
+[startup metrics](../crates/platform/startup-metrics/src/lib.rs).
 
 ## UI dashboard benchmark
 

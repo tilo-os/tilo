@@ -42,7 +42,7 @@ tilo-resource = { path = "../../core/tilo-resource" }
 tilo-service = { path = "../service" }
 # The log target an app's own output is relayed under, which the session log
 # always keeps.
-tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
 # Bounded line cutting for what an app writes to its standard streams.
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-lock = { path = "../../platform/tilo-lock" }

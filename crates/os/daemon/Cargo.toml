@@ -170,7 +170,7 @@ tilo-peer-state = { path = "../../core/tilo-peer-state" }
 # A second computer's endpoint, reached through the relays this machine's devices use.
 tilo-endpoint-reachability = { path = "../../core/endpoint-reachability" }
 # The daemon's own log, handed the layers the harness writes.
-tilo-startup-metrics = { path = "../../core/tilo-startup-metrics" }
+tilo-startup-metrics = { path = "../../platform/startup-metrics" }
 # The MCP session a test's agent runs on the daemon, as `tilo mcp` serves its client.
 tilo-mcp = { path = "../../core/tilo-mcp", features = ["test-support"] }
 # A device's shell session, which the daemon's shell runs attach to.

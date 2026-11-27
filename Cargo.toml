@@ -526,9 +526,9 @@ members = [
     "crates/os/tilo-auth",
     "crates/os/tilo-rollback",
     "crates/core/tilo-seal",
-    "crates/core/tilo-startup-metrics",
+    "crates/platform/startup-metrics",
     "crates/vm/tinker",
-    "crates/engines/tts",
+    "crates/platform/tts",
     "crates/platform/wire-frame",
 
     # Text

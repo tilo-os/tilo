@@ -66,7 +66,7 @@ tokio = { workspace = true, optional = true, features = ["full"] }
 # The `time` module: the clock types and reads on every target.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tracing.workspace = true
-tilo-tts = { version = "0.1.0", path = "../../engines/tts" }
+tilo-tts = { version = "0.1.0", path = "../../platform/tts" }
 # The process inputs (`process::environment`): who the process is and where its
 # files live, kept with the current process.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }

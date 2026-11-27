@@ -26,7 +26,7 @@ tilo-workspace-directory = { path = "../../core/workspace-directory" }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http", "json"] }
 tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 tilo-workspace-join = { path = "../../core/workspace-join" }
-tilo-startup-metrics = { path = "../../core/tilo-startup-metrics" }
+tilo-startup-metrics = { path = "../../platform/startup-metrics" }
 tilo-rt = { path = "../../platform/tilo-rt" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tokio = { workspace = true, features = ["sync"] }

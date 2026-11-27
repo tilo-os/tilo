@@ -42,7 +42,7 @@ tilo-resource = { path = "../../core/tilo-resource" }
 tilo-paths.workspace = true
 # The `tracing` target the session log keeps whatever `RUST_LOG` says: every
 # certificate renewal a join depends on is reported under it.
-tilo-startup-metrics = { version = "0.1.0", path = "../../core/tilo-startup-metrics" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
 tracing.workspace = true
 zeroize.workspace = true
