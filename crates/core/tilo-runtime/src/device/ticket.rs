@@ -331,9 +331,9 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
     ];
     // The actions a desktop hands on to this daemon, as they are described everywhere.
     rows.extend(
-        tilo_actions::remote::device_tickets::HANDED_ON
+        tilo_server_protocol::device_tickets::HANDED_ON
             .into_iter()
-            .map(|action| row(tilo_actions::remote::device_tickets::descriptor(action))),
+            .map(|action| row(tilo_server_protocol::device_tickets::descriptor(action))),
     );
     // What the daemon does with the device key for the other programs of this computer.
     rows.extend(
@@ -1556,7 +1556,7 @@ impl Tickets {
         (action, args): (&str, &Value),
         confirmation: Option<tilo_actions::remote::Confirmation>,
     ) -> Result<Value, String> {
-        match tilo_actions::remote::device_tickets::device_in(args) {
+        match tilo_server_protocol::device_tickets::device_in(args) {
             Ok(Some(device)) if device != self.this() => {
                 if handed {
                     return Err("This server carries out only what is asked of itself.".to_owned());

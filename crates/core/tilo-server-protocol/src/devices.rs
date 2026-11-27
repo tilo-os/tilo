@@ -1,8 +1,8 @@
 //! The person's devices: the rule a device's name follows, and the list of them every device of
 //! theirs shows ([`fleet`]), joined from the records of their own workspace and who is here.
 
+use crate::device_tickets::{FleetDevice, KeyKind};
 use tilo_actions::remote::Here;
-use tilo_actions::remote::device_tickets::{FleetDevice, KeyKind};
 
 /// Whether a device's name is safe to render as one line.
 pub fn valid_device_label(label: &str) -> bool {

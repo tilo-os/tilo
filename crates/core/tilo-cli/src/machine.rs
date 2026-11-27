@@ -23,8 +23,8 @@ use clap::Subcommand;
 use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan};
 use tilo_action_services::machines;
 use tilo_actions::ActionAddress;
-use tilo_actions::remote::device_tickets;
 use tilo_control::front::{self, Spelling};
+use tilo_server_protocol::device_tickets;
 
 use crate::identity;
 

@@ -8,6 +8,7 @@ description = "The changes a device makes to its package cache: its daemon's pub
 
 [dependencies]
 tilo-actions = { path = "../actions" }
+tilo-server-protocol = { path = "../tilo-server-protocol" }
 tilo-app-package = { path = "../tilo-app-package" }
 package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }

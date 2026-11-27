@@ -15,7 +15,7 @@
 //! Code #2") as History names it. Whoever serves the server serves
 //! [`PROVIDER`]; a provider without one leaves the reads unanswered, and a view
 //! that follows them says so. A grant's key is one of the person's keys, taken
-//! back as every one is ([`tilo_actions::remote::device_tickets::REVOKE`]). Stopping an agent
+//! back as every one is (the device's `revoke` action). Stopping an agent
 //! ([`STOP`]) refuses its every call, cancels what it is running, and ends its
 //! run as the connection ending ends it: its session leaves the listing, until
 //! the person lets it go on ([`GO_ON`]).

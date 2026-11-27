@@ -455,7 +455,7 @@ impl Shared {
     /// It goes through the one dispatch as the person, to the provider of their keys, the way
     /// `tilo device revoke` does: the action asks them once before it runs.
     fn revoke_agent_grant(&self, grant: &str) {
-        use tilo_actions::remote::device_tickets;
+        use tilo_server_protocol::device_tickets;
         let tilo_actions::remote::InvokeArgument::Json(arguments) =
             device_tickets::Revoke::retired(grant).argument()
         else {

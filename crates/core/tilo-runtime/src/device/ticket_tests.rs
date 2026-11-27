@@ -943,8 +943,8 @@ async fn a_placed_device_is_refused(
     );
     for action in [
         ISSUE,
-        tilo_actions::remote::device_tickets::RENAME,
-        tilo_actions::remote::device_tickets::REVOKE,
+        tilo_server_protocol::device_tickets::RENAME,
+        tilo_server_protocol::device_tickets::REVOKE,
     ] {
         assert_eq!(
             asked_as(tickets, &placed, action).await,

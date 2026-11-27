@@ -12,7 +12,6 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use iroh::{EndpointAddr, EndpointId};
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::device_tickets;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
@@ -23,6 +22,7 @@ use tilo_device_identity::login::{
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
+use tilo_server_protocol::device_tickets;
 
 /// How long a device of the person's has to answer before it counts as out of reach.
 const REACH_WITHIN: Duration = Duration::from_secs(10);

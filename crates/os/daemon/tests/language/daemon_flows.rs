@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 use tilo_actions::remote::ActionProvider as _;
-use tilo_actions::remote::device_tickets;
+use tilo_server_protocol::device_tickets;
 
 use crate::language::host;
 use crate::language::host::said;

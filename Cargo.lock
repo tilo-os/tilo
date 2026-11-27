@@ -10112,6 +10112,7 @@ dependencies = [
  "tilo-paths",
  "tilo-runtime-bundle",
  "tilo-runtime-portal",
+ "tilo-server-protocol",
  "tracing",
  "workspace-hack",
 ]

@@ -16,8 +16,8 @@ use app_cli::device::{
     CHANGE_WAIT_MS, Daemon, Wire, install_file, line, line_at, on_app, update_offered, waited,
 };
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::device_tickets;
 use tilo_actions::remote::{ActionProvider as _, CatalogueQuery, RemoteActionTarget};
+use tilo_server_protocol::device_tickets;
 
 use crate::{Change, Report};
 

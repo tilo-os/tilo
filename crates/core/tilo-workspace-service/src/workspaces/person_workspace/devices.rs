@@ -377,7 +377,7 @@ impl KeyKind {
     /// What `cert` certifies.
     #[must_use]
     pub fn of(cert: &DeviceCert) -> Self {
-        use tilo_actions::remote::device_tickets::KeyKind as Listed;
+        use tilo_server_protocol::device_tickets::KeyKind as Listed;
         let capabilities = &cert.capabilities;
         match Listed::of(
             capabilities.placing.is_some(),

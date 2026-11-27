@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    ActionContract, ActionKind, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
-    ResultSpec, RiskLevel,
+use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
+use tilo_actions::{
+    ActionAddress, ActionContract, ActionKind, ActionParam, ConfirmationPolicy, OperationKind,
+    ParamType, ResultSpec, RiskLevel,
 };
-use {crate::ActionAddress, crate::remote::RemoteActionTarget};
 
 /// The provider the device's daemon answers tickets under.
 pub const PROVIDER: &str = "tilo.device";
@@ -69,15 +69,15 @@ pub const HANDED_ON: [&str; 7] = [
 
 /// How each of [`HANDED_ON`] is listed, wherever it is: the one description of each.
 #[must_use]
-pub fn descriptor(action: &str) -> Option<crate::ActionDescriptor> {
+pub fn descriptor(action: &str) -> Option<tilo_actions::ActionDescriptor> {
     let (label, description, kind, mut contract, params) = listed(action)?;
     // Only the person's root signs a revocation, and issues the ticket that lets a computer
     // in: a device that keeps none hands it on, and an agent that asks for one waits for
     // their yes.
     if matches!(action, ISSUE | REVOKE) {
-        contract.tags.push(crate::ROOT_ONLY_TAG.to_owned());
+        contract.tags.push(tilo_actions::ROOT_ONLY_TAG.to_owned());
     }
-    Some(crate::ActionDescriptor {
+    Some(tilo_actions::ActionDescriptor {
         did: None,
         semantic_identity: None,
         address: ActionAddress::new(RESOURCE, action),
@@ -85,13 +85,13 @@ pub fn descriptor(action: &str) -> Option<crate::ActionDescriptor> {
         resource_label: "Devices".to_owned(),
         action_label: label.to_owned(),
         keywords: Vec::new(),
-        state: crate::ActionState::default(),
+        state: tilo_actions::ActionState::default(),
         icon: None,
         description: Some(description.to_owned()),
-        locus: crate::ExecutionLocus::ClientLocal,
+        locus: tilo_actions::ExecutionLocus::ClientLocal,
         kind,
         contract,
-        input: crate::InputSpec::None,
+        input: tilo_actions::InputSpec::None,
         params,
         view: None,
     })
@@ -248,10 +248,10 @@ impl Revoke {
 
     /// The argument [`REVOKE`] is asked with.
     #[must_use]
-    pub fn argument(&self) -> crate::remote::InvokeArgument {
+    pub fn argument(&self) -> InvokeArgument {
         match serde_json::to_value(self) {
-            Ok(serde_json::Value::Object(named)) => crate::remote::InvokeArgument::Json(named),
-            _ => crate::remote::InvokeArgument::None,
+            Ok(serde_json::Value::Object(named)) => InvokeArgument::Json(named),
+            _ => InvokeArgument::None,
         }
     }
 }

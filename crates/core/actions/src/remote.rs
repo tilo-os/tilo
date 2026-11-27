@@ -52,9 +52,6 @@ mod confirmation;
 mod content_get;
 mod content_link;
 mod content_put;
-/// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon
-/// issues it, prints the one string, and the new computer logs in with it.
-pub mod device_tickets;
 mod pending;
 pub mod session_actions;
 mod vault;

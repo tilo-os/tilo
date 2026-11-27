@@ -218,10 +218,10 @@ fn a_confined_daemons_tenant_socket_serves_its_account_alone() {
             tilo_actions::remote::InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::RemoteActionTarget {
-                    provider: tilo_actions::remote::device_tickets::PROVIDER.to_owned(),
+                    provider: tilo_server_protocol::device_tickets::PROVIDER.to_owned(),
                     address: tilo_actions::ActionAddress::new(
-                        tilo_actions::remote::device_tickets::RESOURCE,
-                        tilo_actions::remote::device_tickets::ISSUE,
+                        tilo_server_protocol::device_tickets::RESOURCE,
+                        tilo_server_protocol::device_tickets::ISSUE,
                     ),
                 },
                 argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),

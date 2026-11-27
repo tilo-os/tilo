@@ -1383,11 +1383,11 @@ mod identity_admin_tests {
     use crate::test_support::{Grants as _, Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::admitted::top_level;
-    use tilo_actions::remote::device_tickets;
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, Admitted, Caller, Completer, Confirmation, InvokeArgument,
         InvokeRequest, Outcome, Pending, RemoteActionMessage, pending,
     };
+    use tilo_server_protocol::device_tickets;
     use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
     /// The host's identity store, in its place: it records each step it was

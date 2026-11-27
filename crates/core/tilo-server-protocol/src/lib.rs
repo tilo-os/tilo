@@ -30,6 +30,9 @@
 
 pub mod auth;
 pub mod config;
+/// Adding a computer to the person's devices with a one-use ticket: the computer's own daemon
+/// issues it, prints the one string, and the new computer logs in with it.
+pub mod device_tickets;
 pub mod devices;
 pub mod directory;
 pub mod entering;

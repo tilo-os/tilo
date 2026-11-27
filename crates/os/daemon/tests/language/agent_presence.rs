@@ -523,10 +523,10 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         // listing, and its key is refused from then on.
         let grant = still.grants[0].id.clone();
         let request = tilo_actions::remote::InvokeRequest {
-            argument: tilo_actions::remote::device_tickets::Revoke::retired(&grant).argument(),
+            argument: tilo_server_protocol::device_tickets::Revoke::retired(&grant).argument(),
             ..tilo_actions::remote::InvokeRequest::plain(
-                tilo_actions::remote::device_tickets::target(
-                    tilo_actions::remote::device_tickets::REVOKE,
+                tilo_server_protocol::device_tickets::target(
+                    tilo_server_protocol::device_tickets::REVOKE,
                 ),
                 serde_json::Map::new(),
             )
