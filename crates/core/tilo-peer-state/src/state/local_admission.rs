@@ -361,8 +361,8 @@ impl StatePeer {
             ) else {
                 return Vec::new();
             };
-            let claims = founded
-                .get_changes(&[])
+            let changes = founded.get_changes(&[]);
+            let mut claims: Vec<collab_types::ChangeClaim> = changes
                 .iter()
                 .filter_map(|change| {
                     tilo_failure::ignored!(
@@ -376,15 +376,61 @@ impl StatePeer {
                 })
                 .flatten()
                 .collect();
+            // The whole record: its changes are read from nothing.
+            let kinds = collab_types::claim::store_record_kinds(record, None, &changes);
+            collab_types::claim::name_record_kinds(&mut claims, &kinds);
             return self.footprints((app, record), claims);
         }
-        let Some(claims) = tilo_failure::ignored!(
+        let Some(mut claims) = tilo_failure::ignored!(
             "changes that name no action claim nothing",
             collab_admission::mutation_claims(mutation, collab_types::record_unit).ok()
         ) else {
             return Vec::new();
         };
+        self.name_store_kinds((app, record), mutation, &mut claims);
         self.footprints((app, record), claims)
+    }
+
+    /// Name in `claims`, of the changes `mutation` writes to `record`, the kinds of the records
+    /// each change writes, when `record` is a resource store's document: what every holder reads
+    /// from the records ([`collab_types::claim::store_record_kinds`]), read here from the record
+    /// as this state holds it. A write of any of this device's writers is claimed so, whichever
+    /// drafted it; one whose earlier changes this state does not hold is named by the store that
+    /// wrote it ([`Self::name_record_kinds`]).
+    fn name_store_kinds(
+        &self,
+        (app, record): (&str, &str),
+        mutation: &collab_types::DocumentMutation,
+        claims: &mut [collab_types::ChangeClaim],
+    ) {
+        if !collab_types::is_store_document(record) {
+            return;
+        }
+        let Some(changes) = tilo_failure::ignored!(
+            "changes that do not parse claim nothing",
+            collab_admission::parse_changes(mutation.data()).ok()
+        ) else {
+            return;
+        };
+        // A content document's kind is in its id; a document of resources is read where the
+        // changes build on what it holds.
+        let builds_on_held = collab_types::claim::store_content_kind(record).is_none()
+            && changes.iter().any(|change| !change.deps().is_empty());
+        let mut held = builds_on_held
+            .then(|| {
+                self.core.documents.get(&Route {
+                    app: app.into(),
+                    record: record.into(),
+                })
+            })
+            .flatten()
+            .map(|document| automerge::AutoCommit::clone(&document.doc));
+        let kinds = collab_types::claim::store_record_kinds(
+            record,
+            held.as_mut().map(automerge::AutoCommit::document),
+            &changes,
+        );
+        collab_types::claim::name_record_kinds(claims, &kinds);
     }
 
     /// Admit `envelope`, a local app's signed write to `record`, as a new

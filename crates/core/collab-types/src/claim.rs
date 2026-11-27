@@ -646,7 +646,9 @@ pub type RecordKinds = std::collections::BTreeMap<[u8; 32], std::collections::BT
 /// records themselves as they stand at the change's own earlier changes and after it, so a change
 /// of a record's kind names both, and every holder reads the same whatever else it holds. A
 /// content document holds one resource, whose kind its id names. A change whose records name no
-/// kind, or whose earlier changes are not here, is left out.
+/// kind, or whose earlier changes are not here, is left out. Every change of a store's document
+/// is read so, whatever it was written under: a device's own edit of a record and a store's stamp
+/// alike write records of the store's kinds.
 #[must_use]
 pub fn store_record_kinds(
     record: &str,
@@ -763,6 +765,26 @@ pub fn kinds_made_in(change: &automerge::Change) -> std::collections::BTreeSet<S
             _ => None,
         })
         .collect()
+}
+
+/// Whether `change` is written under a store's stamp. Every other label reads as a stamp too (an
+/// entry, a continuation, a framework change such as a record's derived founding or a native
+/// edit): outside a store's documents such a change is what its own message says it is.
+#[must_use]
+pub fn is_store_change(change: &automerge::Change) -> bool {
+    change
+        .message()
+        .is_some_and(|message| matches!(crate::Stamp::read(message), Some((Label::Stamp, _))))
+}
+
+/// The kind of the one resource `record`, a content document of a workspace's resource store,
+/// holds (`<readers>/<kind>/<id>~<n>`); `None` for any other document. Every holder reads it from
+/// the id alike, so a change of such a document that names no kind is decided against it.
+#[must_use]
+pub fn store_content_kind(record: &str) -> Option<&str> {
+    crate::is_store_document(record)
+        .then(|| content_kind(record))
+        .flatten()
 }
 
 /// The kind of the one resource a content document of a resource store holds, as its id names it

@@ -402,7 +402,7 @@ impl StatePeer {
         // carries, as a device without the key decides it; claims that name none yet (the
         // writer's own draft) leave it to where it is admitted.
         if self.store_write_without_its_base((app, record), mutation) {
-            if claims_name_no_kinds(write) {
+            if claims_name_no_kinds(record, write) {
                 return Err(OpenedRefusal::CannotDecide(
                     "the record is held here without the changes the write builds on".into(),
                 ));
@@ -432,7 +432,7 @@ impl StatePeer {
         // What a device without the key decided the write by must be what it carries: a write
         // that claims harmless actions to them and carries others is refused here.
         if !write.claims.is_empty() {
-            collab_admission::check_opened_mutation(write, mutation)
+            collab_admission::check_opened_mutation_of(write, Some(record), mutation)
                 .map_err(|refusal| self.refused_opened(app, record, write, &refusal))?;
         }
         Ok(())
@@ -1150,9 +1150,13 @@ fn name_refused(
     }
 }
 
-/// Whether `write`'s claims name none of the kinds it writes: the writer's own draft, before its
-/// store names them.
-fn claims_name_no_kinds(write: &SignedOp) -> bool {
+/// Whether `write`'s claims name none of the kinds it writes in `record`: the writer's own draft,
+/// before its store names them. A content document's id names its kind, which decides a claim
+/// that names none.
+fn claims_name_no_kinds(record: &str, write: &SignedOp) -> bool {
+    if collab_types::claim::store_content_kind(record).is_some() {
+        return write.claims.is_empty();
+    }
     write.claims.is_empty()
         || write.claims.iter().any(|claim| {
             collab_types::claim::whole_edit_kinds(&claim.action)

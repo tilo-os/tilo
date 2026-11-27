@@ -997,6 +997,35 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
         opened(&native, &native_read, naming(None, "tl.notes.Note")),
         Err(ReceiptRefusal::Misclaimed(_))
     ));
+
+    // In a store's document a device's own edit writes records of the store's kinds as a stamp
+    // does, and its writer names them: the claim names them, under no verb it was not written
+    // under.
+    let in_store = |claimed: ClaimedAction| {
+        let op = collab_types::op::SignedOp::new_unsigned(
+            Vec::new(),
+            collab_types::document_artifact_id(APP, WORKSPACE, "*/tl.notes#0"),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::document_attestation_id(APP, WORKSPACE, "*/tl.notes#0"),
+            collab_types::role::OpKind::Change,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        )
+        .with_claims(vec![ChangeClaim {
+            action: claimed,
+            ..native_read.clone()
+        }]);
+        crate::receipt::check_opened_mutation_of(
+            &op,
+            Some("*/tl.notes#0"),
+            &collab_types::op::DocumentMutation::Incremental(native.raw_bytes().to_vec()),
+        )
+    };
+    assert_eq!(in_store(naming(None, "tl.notes.Note")), Ok(()));
+    assert!(matches!(
+        in_store(naming(Some("new"), "tl.notes.Note")),
+        Err(ReceiptRefusal::Misclaimed(_))
+    ));
 }
 
 /// A store change that names no kind is a new write that says nothing of what it writes, and is
@@ -1027,4 +1056,83 @@ fn a_store_change_that_names_no_kind_is_refused_new_and_kept_as_it_was_in_replay
         decide(false)
     );
     assert_eq!(decide(true), Ok(Receipt::Admit));
+}
+
+/// A store's content document holds one resource, whose kind its id names. A change of it that
+/// names no kind (the record's derived founding, a step to its storage version, a device's own
+/// edit of it) is decided against that kind, never refused for naming none and never against the
+/// app's first resource. Only a store's stamp claims the kinds it writes: any other change's claim
+/// stays what its own message says, so the device that opens it finds it as claimed.
+#[test]
+fn a_content_documents_change_that_names_no_kind_is_decided_against_the_kind_its_id_names() {
+    // The app's first resource publishes no edit: a change decided against it would be refused.
+    let notes = Kinds::new([
+        TestKind("tl.notes", false, None),
+        TestKind("tl.notes.Note", true, None),
+    ]);
+    let content = WrittenDocument {
+        workspace: WORKSPACE,
+        app: APP,
+        document: "*/tl.notes.Note/n1~0",
+    };
+    let asked = std::cell::RefCell::new(Vec::new());
+    let surface_for = |kind: Option<&str>| {
+        asked.borrow_mut().push(kind.map(str::to_owned));
+        notes.surface(&content, kind, None)
+    };
+    // A framework change writes what its kind derives, and claims no unit of the record's.
+    for (action, units) in [
+        (
+            ClaimedAction::Framework(collab_types::FrameworkChange::Genesis),
+            Vec::new(),
+        ),
+        (
+            ClaimedAction::Framework(collab_types::FrameworkChange::Migrate),
+            Vec::new(),
+        ),
+        (
+            ClaimedAction::whole_resource_edit(String::new()),
+            vec![Vec::new()],
+        ),
+    ] {
+        assert_eq!(
+            check_claims_by_kind(
+                &[claim(1, action.clone(), units)],
+                &content,
+                None,
+                false,
+                &surface_for,
+                &|_, _, _| true,
+            ),
+            Ok(Receipt::Admit),
+            "{action:?}"
+        );
+    }
+    assert!(
+        asked
+            .borrow()
+            .iter()
+            .all(|kind| kind.as_deref() == Some("tl.notes.Note")),
+        "{:?}",
+        asked.borrow()
+    );
+
+    // A device's own edit of the record writes a record of the store's kind as a store's stamp
+    // does, and its store reads it so.
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "Groceries").unwrap();
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(collab_types::FrameworkChange::Native.change_message()),
+    );
+    let native = parse_changes(&doc.save()).unwrap().remove(0);
+    let stamped = store_change("tl.notes.Note");
+    let kinds = collab_types::claim::store_record_kinds(
+        content.document,
+        None,
+        &[native.clone(), stamped.clone()],
+    );
+    let note = std::iter::once("tl.notes.Note".to_owned()).collect();
+    assert_eq!(kinds.get(&native.hash().0), Some(&note));
+    assert_eq!(kinds.get(&stamped.hash().0), Some(&note));
 }

@@ -9,7 +9,8 @@ pub mod validator;
 
 pub use claim::{Maker, maker_of, mutation_claims, parse_changes};
 pub use receipt::{
-    check_opened_mutation, claimed_invokers, decide_op, decide_op_replayed, decide_opened,
+    check_opened_mutation, check_opened_mutation_of, claimed_invokers, decide_op,
+    decide_op_replayed, decide_opened,
 };
 pub use validator::{validate_admitted_inbound_op, validate_replayed_inbound_op};
 

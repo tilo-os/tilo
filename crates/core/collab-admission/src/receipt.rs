@@ -53,6 +53,23 @@ pub fn check_opened_mutation(
     op: &SignedOp,
     mutation: &DocumentMutation,
 ) -> Result<(), ReceiptRefusal> {
+    check_opened_mutation_of(op, None, mutation)
+}
+
+/// [`check_opened_mutation`] for a write to `record`, when the opener knows it. Every change of
+/// a resource store's document writes records of the store's kinds, a device's own edit of a
+/// record as much as the store's stamp: its claim may name the kinds of the records it writes,
+/// which whoever holds the record reads again where it applies the change. A change of any
+/// other document names a kind only when it is a store's stamp.
+///
+/// # Errors
+/// As [`check_opened_mutation`].
+pub fn check_opened_mutation_of(
+    op: &SignedOp,
+    record: Option<&str>,
+    mutation: &DocumentMutation,
+) -> Result<(), ReceiptRefusal> {
+    let in_store = record.is_some_and(collab_types::is_store_document);
     let DocumentMutation::Incremental(bytes) = mutation else {
         return Ok(());
     };
@@ -66,15 +83,8 @@ pub fn check_opened_mutation(
         let claimed = op.claims.iter().find(|claim| claim.change == read.change);
         let made = collab_types::claim::kinds_made_in(change);
         // A store's change names the kinds of the records it writes, read by whoever holds them;
-        // any other change names no kind at all, and is what its own message says it is. Only a
-        // store's stamp is a store's change: an entry, a continuation or a framework change (a
-        // native edit, the record's own) reads as a stamp too, and names no kind.
-        let store = change.message().is_some_and(|message| {
-            matches!(
-                collab_types::Stamp::read(message),
-                Some((tilo_actions::stamp::Label::Stamp, _))
-            )
-        });
+        // any other change names no kind at all, and is what its own message says it is.
+        let store = in_store || collab_types::claim::is_store_change(change);
         if claimed.is_none_or(|claimed| {
             !names_what_it_read(&claimed.action, &read.action, &made, store)
                 || claimed.invoker != read.invoker
@@ -303,7 +313,12 @@ fn decide_change_op(
             (imported, signer),
         );
     };
-    let surface_for = |kind: Option<&str>| source.surface(document, kind, op.surface.as_ref());
+    // A change of a store's content document that names no kind is of the one resource the
+    // document's id names.
+    let content = collab_types::claim::store_content_kind(document.document);
+    let kind = kind.or(content);
+    let surface_for =
+        |kind: Option<&str>| source.surface(document, kind.or(content), op.surface.as_ref());
     let Some(changes) = opened_changes(op, opened)? else {
         // A sealed op: the server decides the claims its envelope carries, each as who it names
         // ([`sealed_invoker`]); devices check the changes once they open them.

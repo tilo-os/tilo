@@ -1719,3 +1719,178 @@ async fn a_copied_disk_holds_its_workspace_as_a_member_copy_once_the_source_admi
         Some("Shared")
     );
 }
+
+/// The apps whose records a device's own roles write, each running from a package that declares
+/// only a resource of its own, as on a device: the records are the system's, judged by the types
+/// the system declares for them, which no package declares.
+#[cfg(feature = "files")]
+const DEVICE_WRITERS: [(&str, &str); 3] = [
+    (fs_protocol::tree::FILES_APP, "files.folder-view"),
+    (crate::workspaces::vault::APP, "passwords.item"),
+    (tilo_desktop_model::ownership::DESKTOP_APP, "desktop.item"),
+];
+
+/// Decide every change against the surfaces its app runs with, as a daemon does: the whole
+/// process's.
+#[cfg(feature = "files")]
+fn decide_as_a_daemon() {
+    let known = collab_types::app_surface::Surfaces::process();
+    crate::workspaces::person_workspace::declare_kinds(known).unwrap();
+    for (app, kind) in DEVICE_WRITERS {
+        let surface = format!(
+            r#"{{"format":2,"resources":[{{"fields":[{{"path":"title","readonly":true,"type":"text"}}],"kind":"{kind}","label":"Item","verbs":[{{"id":"type","kind":"undoable"}}],"version":1}}]}}"#
+        );
+        known.register_package(app, surface.as_bytes());
+    }
+    tilo_peer_state::decide_with_surfaces(
+        collab_types::Surfaces::from_source(Arc::new(collab_types::surface::ContentSurfaces::new(
+            |record, hash| {
+                let running = collab_types::app_surface::hash_of(record.app)?;
+                (hex::encode(running) == hash)
+                    .then(|| collab_types::app_surface::bytes_of(record.app).map(<[u8]>::to_vec))
+                    .flatten()
+            },
+        ))),
+        collab_types::app_surface::hash_of,
+    );
+}
+
+/// The device's own writes of `workspace`'s records, each as the role that keeps it writes it:
+/// the Files tree's record as the mount writes it (its derived founding and the mount's edit,
+/// then the whole record again with the next edit), the shared desktop as the layout writes it
+/// (the whole record each time, a view asked for in it), and the vault as Passwords keeps an
+/// entry and then another. None of the tree's or the layout's changes is a store's stamp.
+#[cfg(feature = "files")]
+async fn write_as_the_devices_roles(owners: &super::super::Workspaces, workspace: &str) {
+    use automerge::transaction::CommitOptions;
+    use tilo_automerge::ApplyIncoming as _;
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
+
+    let person = hex::encode(owners.signing_device().cert.user_public_key);
+    let member = tilo_actions::MemberId::person(person.clone());
+    let (app, kind) = (fs_protocol::tree::FILES_APP, fs_protocol::tree::TREE_KIND);
+    let record = fs_protocol::tree::chunk_document_id(0);
+    let mut tree = automerge::AutoCommit::new();
+    tree.apply_incoming([fs_protocol::tree::founding(workspace, &record).unwrap()])
+        .unwrap();
+    for (chunk, kind) in [(1, Some(kind)), (2, None)] {
+        fs_protocol::tree::list_chunk(&mut tree, chunk).unwrap();
+        tree.commit_with(CommitOptions::default().with_message(
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::member(
+                member.clone(),
+            )),
+        ));
+        owners
+            .own_record_write(workspace, (app, kind, &record), &tree.save_after(&[]))
+            .await
+            .expect("the workspace takes the tree's write");
+    }
+
+    let mut layout = tilo_desktop_model::record::founded(workspace).unwrap();
+    for (asked, kind) in [("files", Some(DESKTOP_KIND)), ("notes", None)] {
+        let view = tilo_desktop_model::asked::AskedView {
+            app_id: format!("so.tilo.{asked}"),
+            title: asked.to_owned(),
+            document: String::new(),
+            person: person.clone(),
+            opened_by: None,
+        };
+        tilo_desktop_model::asked::ask(&mut layout, &format!("{person}:{asked}:"), &view).unwrap();
+        layout.commit_with(CommitOptions::default().with_message(
+            tilo_desktop_model::shared_resource::housekeeping_message(&person),
+        ));
+        owners
+            .own_record_write(
+                workspace,
+                (DESKTOP_APP, kind, DESKTOP_DOCUMENT),
+                &layout.save(),
+            )
+            .await
+            .expect("the workspace takes the layout's write");
+    }
+
+    for (title, password) in [("Example", "correct horse"), ("Other", "battery staple")] {
+        let vault = owners.open_vault(workspace).await.unwrap();
+        owners
+            .write_vault(
+                &vault,
+                vec![accounts::vault_items::VaultChange::Keep(
+                    accounts::SecretItem::login(title, "ada", password),
+                )],
+                None,
+                None,
+            )
+            .await
+            .expect("the workspace takes the vault's write");
+    }
+}
+
+/// The device serving a workspace that runs Files, Passwords and the desktop from their packages
+/// writes their records as its own roles do, sealed: the Files tree, the shared desktop and the
+/// vault. The workspace takes every write, and a member device opens them and reads what they
+/// hold.
+#[cfg(feature = "files")]
+#[tokio::test]
+async fn the_records_a_devices_roles_write_are_taken_and_opened_by_a_member() {
+    if !tilo_test_env::in_own_process_here(
+        module_path!(),
+        "the_records_a_devices_roles_write_are_taken_and_opened_by_a_member",
+    ) {
+        return;
+    }
+    decide_as_a_daemon();
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Roles", 49).await;
+    let workspace = created.workspace.clone();
+    for (app, _) in DEVICE_WRITERS {
+        super::super::fixtures::install_app(serving.workspaces(), &workspace, app)
+            .await
+            .expect("the workspace runs the app");
+    }
+    write_as_the_devices_roles(serving.workspaces(), &workspace).await;
+
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let read = |app: &'static str, record: String| {
+        let (copies, workspace) = (copies.clone(), workspace.clone());
+        async move {
+            copies
+                .resource_document(&workspace, app, &record)
+                .await
+                .expect("the record reads")
+                .map(|bytes| automerge::AutoCommit::load(&bytes).expect("the record opens"))
+        }
+    };
+    tilo_test_env::within("the member opens every write", async {
+        loop {
+            let tree = read(
+                fs_protocol::tree::FILES_APP,
+                fs_protocol::tree::chunk_document_id(0),
+            )
+            .await;
+            let layout = read(
+                tilo_desktop_model::ownership::DESKTOP_APP,
+                tilo_desktop_model::ownership::DESKTOP_DOCUMENT.to_owned(),
+            )
+            .await;
+            let vault = copies.open_vault(&workspace).await;
+            if tree.is_some_and(|tree| fs_protocol::tree::listed_chunks(&tree) == [1, 2])
+                && layout.is_some_and(|layout| tilo_desktop_model::asked::asked(&layout).len() == 2)
+                && vault.is_ok_and(|vault| vault.entries().len() == 2)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    drop(copies);
+    member.shutdown().await;
+    serving.shutdown().await;
+}

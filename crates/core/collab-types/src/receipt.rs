@@ -815,6 +815,12 @@ pub fn check_claims_by_kind(
 ) -> Result<Receipt, ReceiptRefusal> {
     check_claimed_changes(claims, None)?;
     check_store_kinds(claims, document, replay)?;
+    // A change of a store's content document that names no kind is of the one resource the
+    // document's id names.
+    let content = crate::claim::store_content_kind(document.document);
+    let kind = kind.or(content);
+    let surface_for = |named: Option<&str>| surface_for(named.or(content));
+    let surface_for: &SurfaceFor<'_> = &surface_for;
     // What each change may write, before it is split by kind: a change over records of two
     // kinds writes what the surface of each of them lets it.
     let mut allowed: BTreeMap<[u8; 32], Vec<UnitPath>> = BTreeMap::new();
@@ -1009,11 +1015,13 @@ fn per_kind(claim: ChangeClaim) -> Vec<ChangeClaim> {
         .collect()
 }
 
-/// Refuse a change to a resource store's document that claims no kind of the records it writes:
-/// the document has no kind of its own to decide it against, so a claim naming none cannot be
-/// resolved without guessing. A content document holds one record, whose kind its id names: a
-/// change of it that names no kind (its genesis) is of that kind. `replay` for a write admitted before changes claimed their kinds,
-/// which is decided as it was admitted (`collab_admission::decide_op_replayed`).
+/// Refuse a change to a resource store's document of resources that claims no kind of the
+/// records it writes: the document has no kind of its own to decide it against, so a claim naming
+/// none cannot be resolved without guessing. A content document's id names the kind of the one
+/// resource it holds ([`crate::claim::store_content_kind`]), and a change of it that names none
+/// (its derived founding, a device's own edit of the record) is decided against that kind.
+/// `replay` for a write admitted before changes claimed their kinds, which is decided as it was
+/// admitted (`collab_admission::decide_op_replayed`).
 ///
 /// # Errors
 /// [`ReceiptRefusal::Misclaimed`].
@@ -1024,7 +1032,7 @@ pub fn check_store_kinds(
 ) -> Result<(), ReceiptRefusal> {
     if replay
         || !crate::is_store_document(document.document)
-        || crate::claim::content_kind(document.document).is_some()
+        || crate::claim::store_content_kind(document.document).is_some()
     {
         return Ok(());
     }
