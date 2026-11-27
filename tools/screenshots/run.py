@@ -204,21 +204,21 @@ def load_plan(entry: dict) -> Plan:
         relative = Path(item.get("path", ""))
         if not item.get("path") or relative.is_absolute() or ".." in relative.parts:
             raise ValueError(f"{path}: a home item's path is relative to the home: {item!r}")
-    for entry in journal:
-        unknown = set(entry) - {"minutes_ago", "priority", "unit", "identifier", "message", "pid"}
+    for staged in journal:
+        unknown = set(staged) - {"minutes_ago", "priority", "unit", "identifier", "message", "pid"}
         if unknown:
             raise ValueError(f"{path}: a journal entry has no {sorted(unknown)}")
-        if not isinstance(entry.get("minutes_ago"), int) or entry["minutes_ago"] < 0:
-            raise ValueError(f"{path}: a journal entry says how many minutes ago it was written: {entry!r}")
-        if entry.get("priority") not in range(8):
-            raise ValueError(f"{path}: a journal entry's priority is 0 (emergency) to 7 (debug): {entry!r}")
-        if not isinstance(entry.get("message"), str) or not entry["message"]:
-            raise ValueError(f"{path}: a journal entry has a message: {entry!r}")
+        if not isinstance(staged.get("minutes_ago"), int) or staged["minutes_ago"] < 0:
+            raise ValueError(f"{path}: a journal entry says how many minutes ago it was written: {staged!r}")
+        if staged.get("priority") not in range(8):
+            raise ValueError(f"{path}: a journal entry's priority is 0 (emergency) to 7 (debug): {staged!r}")
+        if not isinstance(staged.get("message"), str) or not staged["message"]:
+            raise ValueError(f"{path}: a journal entry has a message: {staged!r}")
         for name in ("unit", "identifier"):
-            if name in entry and not isinstance(entry[name], str):
-                raise ValueError(f"{path}: a journal entry's {name} is text: {entry!r}")
-        if "pid" in entry and (not isinstance(entry["pid"], int) or entry["pid"] < 1):
-            raise ValueError(f"{path}: a journal entry's pid is a process id: {entry!r}")
+            if name in staged and not isinstance(staged[name], str):
+                raise ValueError(f"{path}: a journal entry's {name} is text: {staged!r}")
+        if "pid" in staged and (not isinstance(staged["pid"], int) or staged["pid"] < 1):
+            raise ValueError(f"{path}: a journal entry's pid is a process id: {staged!r}")
     for item in files:
         if "base64" not in item:
             continue
