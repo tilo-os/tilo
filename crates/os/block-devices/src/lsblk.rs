@@ -17,6 +17,9 @@ pub struct BlockDevice {
     /// [`Lsblk::full_paths`]. A device-mapper device is listed by its mapping's name
     /// (`home`), not its kernel name.
     pub name: String,
+    /// `PATH`: the full device node (`/dev/sda1`), which `NAME` only is under
+    /// [`Lsblk::full_paths`].
+    pub path: Option<String>,
     /// `KNAME`: the kernel's own name (`dm-1` for the mapping `home`).
     pub kname: Option<String>,
     pub kind: String,
@@ -45,6 +48,8 @@ pub struct BlockDevice {
     /// `PARTTYPENAME`: what the partition type is called (`EFI System`,
     /// `Microsoft reserved`).
     pub parttypename: Option<String>,
+    /// `PARTN`: the partition's number in the table.
+    pub partn: Option<u32>,
     pub partuuid: Option<String>,
     pub pttype: Option<String>,
     pub ptuuid: Option<String>,
@@ -58,6 +63,7 @@ impl BlockDevice {
     pub fn from_json(value: &Value) -> Self {
         Self {
             name: string(value, "name").unwrap_or_default(),
+            path: string(value, "path"),
             kname: string(value, "kname"),
             kind: string(value, "type").unwrap_or_default(),
             size: number(value, "size").unwrap_or(0),
@@ -90,6 +96,7 @@ impl BlockDevice {
                 .unwrap_or_default(),
             parttype: string(value, "parttype"),
             parttypename: string(value, "parttypename"),
+            partn: number(value, "partn").and_then(|n| u32::try_from(n).ok()),
             partuuid: string(value, "partuuid"),
             pttype: string(value, "pttype"),
             ptuuid: string(value, "ptuuid"),
@@ -332,11 +339,13 @@ mod tests {
         {
             {
                 let devices = fixture(
-                    r#"{"blockdevices":[{"name":"sdc","model":"Old Stick  ","size":"8000000000",
-                    "type":"disk","rota":"0","rm":"1","ro":1,"fsused":"12",
+                    r#"{"blockdevices":[{"name":"sdc","path":"/dev/sdc","model":"Old Stick  ","size":"8000000000",
+                    "type":"disk","rota":"0","rm":"1","ro":1,"fsused":"12","partn":"3",
                     "mountpoint":"  ","mountpoints":[null," /media "]}]}"#,
                 );
                 let stick = &devices[0];
+                assert_eq!(stick.path.as_deref(), Some("/dev/sdc"));
+                assert_eq!(stick.partn, Some(3), "PARTN reads as a string too");
                 assert_eq!(stick.size, 8_000_000_000);
                 assert_eq!(stick.model.as_deref(), Some("Old Stick"));
                 assert!(!stick.rotational);

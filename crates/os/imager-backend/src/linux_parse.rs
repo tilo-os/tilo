@@ -1,20 +1,13 @@
 //! Pure parsers for the Linux adapter (`sfdisk --json`, `lsblk -J`, `/proc/self/mountinfo`,
 //! `/sys/class/power_supply`), free of I/O so they are tested on every development host.
 
+use block_devices::BlockDevice;
 use serde_json::Value;
 
 use super::platform::{Disk, Partition};
 
 fn as_u64(v: &Value) -> Option<u64> {
     v.as_u64().or_else(|| v.as_str()?.trim().parse().ok())
-}
-
-fn as_bool(v: &Value) -> Option<bool> {
-    v.as_bool().or_else(|| match v.as_str()?.trim() {
-        "1" => Some(true),
-        "0" => Some(false),
-        _ => None,
-    })
 }
 
 pub fn node_number(node: &str) -> Option<u32> {
@@ -126,56 +119,48 @@ pub struct LsblkDisk {
 }
 
 pub fn lsblk_disk(json: &str) -> Result<LsblkDisk, String> {
-    let root: Value = serde_json::from_str(json).map_err(|e| format!("lsblk JSON: {e}"))?;
-    let devices = root
-        .get("blockdevices")
-        .and_then(Value::as_array)
-        .ok_or("lsblk JSON has no devices")?;
+    let value: Value = serde_json::from_str(json).map_err(|e| format!("lsblk JSON: {e}"))?;
+    let devices = block_devices::lsblk::parse(&value).ok_or("lsblk JSON has no devices")?;
     let [disk] = devices.as_slice() else {
         return Err("lsblk returned more than one device".into());
     };
-    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
-    if text(disk, "type").as_deref() != Some("disk") {
+    if disk.kind != "disk" {
         return Err("disk-unsupported: the system device is not a whole disk".into());
     }
     let mut partitions = Vec::new();
-    for child in disk
-        .get("children")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
-        if text(child, "type").as_deref() != Some("part") {
-            continue;
-        }
+    for child in disk.children.iter().filter(|child| child.kind == "part") {
         partitions.push((
-            text(child, "name").ok_or("partition lacks a name")?,
+            present(&child.name).ok_or("partition lacks a name")?,
+            child.partn.ok_or("partition lacks PARTN")?,
             child
-                .get("partn")
-                .and_then(as_u64)
-                .and_then(|n| u32::try_from(n).ok())
-                .ok_or("partition lacks PARTN")?,
-            text(child, "partuuid")
+                .partuuid
+                .clone()
                 .ok_or("partition lacks PARTUUID")?
                 .to_ascii_lowercase(),
-            text(child, "parttype")
+            child
+                .parttype
+                .clone()
                 .ok_or("partition lacks PARTTYPE")?
                 .to_ascii_lowercase(),
         ));
     }
     Ok(LsblkDisk {
-        name: text(disk, "name").ok_or("disk lacks a name")?,
-        path: text(disk, "path").unwrap_or_default(),
-        size_bytes: disk.get("size").and_then(as_u64).ok_or("disk lacks SIZE")?,
-        sector_bytes: disk
-            .get("log-sec")
-            .and_then(as_u64)
-            .ok_or("disk lacks LOG-SEC")?,
-        removable: disk.get("rm").and_then(as_bool).unwrap_or(false),
-        pttype: text(disk, "pttype"),
-        ptuuid: text(disk, "ptuuid").map(|s| s.to_ascii_lowercase()),
+        name: present(&disk.name).ok_or("disk lacks a name")?,
+        path: disk.path.clone().unwrap_or_default(),
+        size_bytes: (disk.size != 0)
+            .then_some(disk.size)
+            .ok_or("disk lacks SIZE")?,
+        sector_bytes: disk.log_sec.ok_or("disk lacks LOG-SEC")?,
+        removable: disk.removable,
+        pttype: disk.pttype.clone(),
+        ptuuid: disk.ptuuid.clone().map(|s| s.to_ascii_lowercase()),
         partitions,
     })
+}
+
+/// A column that lsblk reports as an empty string reads as absent.
+fn present(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 /// Builds a [`Disk`] from lsblk plus sysfs `start`/`size` (always 512-byte units, whatever the
@@ -298,39 +283,19 @@ pub fn mount_source(mountinfo: &str, mountpoint: &str) -> Option<MountSource> {
 /// Whole disks under a device, from `lsblk -J -s -o NAME,TYPE <dev>`; `Err` when a RAID sits in
 /// between.
 pub fn backing_disks(json: &str) -> Result<Vec<String>, String> {
-    fn walk(v: &Value, out: &mut Vec<String>) -> Result<(), String> {
-        let kind = v.get("type").and_then(Value::as_str).unwrap_or_default();
-        if kind.starts_with("raid") || kind == "mpath" {
+    let value: Value = serde_json::from_str(json).map_err(|e| format!("lsblk JSON: {e}"))?;
+    let devices = block_devices::lsblk::parse(&value).unwrap_or_default();
+    let mut out = Vec::new();
+    for device in devices.iter().flat_map(BlockDevice::descendants) {
+        if device.kind.starts_with("raid") || device.kind == "mpath" {
             return Err("disk-unsupported: the system volume is on RAID".into());
         }
-        if kind == "disk" {
-            let name = v
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or("device lacks a name")?;
-            if !out.iter().any(|n| n == name) {
-                out.push(name.into());
+        if device.kind == "disk" {
+            let name = present(&device.name).ok_or("device lacks a name")?;
+            if !out.contains(&name) {
+                out.push(name);
             }
         }
-        for child in v
-            .get("children")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-        {
-            walk(child, out)?;
-        }
-        Ok(())
-    }
-    let root: Value = serde_json::from_str(json).map_err(|e| format!("lsblk JSON: {e}"))?;
-    let mut out = Vec::new();
-    for dev in root
-        .get("blockdevices")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
-        walk(dev, &mut out)?;
     }
     Ok(out)
 }
@@ -436,6 +401,10 @@ mod tests {
                 "rm":"0","ptuuid":"x","pttype":"gpt","partuuid":"0F0E0D0C-0000-4000-8000-000000000001",
                 "parttype":"C12A7328-F81F-11D2-BA4B-00A0C93EC93B","partn":1}]}]}"#;
                 let l = lsblk_disk(json).unwrap();
+                assert_eq!(l.name, "sda");
+                assert_eq!(l.path, "/dev/sda");
+                assert_eq!(l.partitions[0].0, "sda1");
+                assert_eq!(l.partitions[0].1, 1, "the partition's PARTN");
                 assert!(!l.removable);
                 // sysfs: start 2048 (512-byte units) = LBA 256 on 4Kn.
                 let d =
