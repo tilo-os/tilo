@@ -480,6 +480,12 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             .map(|(ty, item)| value_of_ty(host, meta, item, ty))
             .collect::<Result<_, _>>()
             .map(Value::Tuple),
+        // The runtime's own encoding of a file (`{"file": {…}}`), which an invocation records and
+        // a task's call carries, or the object a caller hands in (`{"content", "name", "media",
+        // "size"}`), which the action's published parameter declares ([`file_value`]).
+        (Ty::File, Json::Object(object)) if object.len() == 1 && object.contains_key("file") => {
+            from_json(json)
+        }
         (Ty::File, Json::Object(_)) => file_value(json),
         (Ty::Float, Json::Number(number)) => number
             .as_f64()
