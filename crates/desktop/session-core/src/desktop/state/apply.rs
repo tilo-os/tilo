@@ -17,8 +17,8 @@ use ui::widget::TabDescriptor;
 use crate::desktop::navigation::{self, Admitted, HistoryDirection, RouteIds, ScrollAction};
 
 use super::window_menu::{
-    group_at, join_group, move_to_display, move_to_strip, move_to_workspace, stop_desktop_control,
-    workspace_at,
+    OtherScreen, group_at, join_group, move_to_display, move_to_strip, move_to_workspace,
+    stop_desktop_control, workspace_at,
 };
 use super::{
     ACTIVITY_APP, DesktopHandle, Shared, TileSource, descriptor, find_group, find_tab, floats,
@@ -257,7 +257,21 @@ fn apply(
         // through the record of the person's devices, and closes this window once it did.
         Admitted::MoveToDevice(ids, device, output) => {
             if live(&shared.tree, ids) {
-                shared.device_moves.push((ids.tab, device, output));
+                // The screen as the menu offers it, for the device's name and whether it is
+                // online; a device with no screen known is offline.
+                let screen = shared
+                    .other_screens
+                    .iter()
+                    .find(|screen| screen.device == device)
+                    .cloned()
+                    .unwrap_or_else(|| OtherScreen {
+                        device_name: device.chars().take(8).collect(),
+                        device,
+                        ..Default::default()
+                    });
+                shared
+                    .device_moves
+                    .push((ids.tab, OtherScreen { output, ..screen }));
                 shared.wake.wake();
             }
             false

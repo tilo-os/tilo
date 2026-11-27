@@ -282,8 +282,8 @@ impl DesktopHandle {
     }
 
     /// The windows moved to another of the person's devices since the last call, in the order
-    /// they were: the tab, the device's key and its screen (empty for wherever it opens one).
-    pub fn take_device_moves(&self) -> Vec<(TabId, String, String)> {
+    /// they were: the tab and the screen (its `output` empty for wherever it opens one).
+    pub fn take_device_moves(&self) -> Vec<(TabId, OtherScreen)> {
         std::mem::take(&mut self.shared.borrow_mut().device_moves)
     }
 }

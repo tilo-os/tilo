@@ -236,20 +236,14 @@ impl Across {
             return Vec::new();
         };
         let local = hex::encode(attached.local);
-        let record = attached.devices.get();
-        let known: BTreeSet<String> = record
-            .listed(&attached.person)
-            .into_iter()
-            .map(|listed| listed.key)
-            .collect();
-        record
+        // The record keeps only offers its own devices made.
+        attached
+            .devices
+            .get()
             .continuity
             .iter()
-            .filter(|(from, kept)| {
-                kept.to == local
-                    && known.contains(from.as_str())
-                    && kept.shown_at(now_ms)
-                    && kept.answer_of(&local).is_none()
+            .filter(|(_, kept)| {
+                kept.to == local && kept.shown_at(now_ms) && kept.answer_of(&local).is_none()
             })
             .map(|(_, kept)| kept.clone())
             .filter(|kept| self.opened.insert((kept.from.clone(), kept.shown_ms)))
@@ -474,23 +468,70 @@ impl crate::Shared {
 
     /// Open here what the person took from another of their devices: the app at the resource it
     /// showed there, through the view it showed it through, or the app alone when it showed none.
+    /// A window another device showed here opens without asking, and the record hears whether it
+    /// opened, and why not.
     pub(crate) fn carry_out_continuity(&self) {
         let takes = self.continuity.borrow_mut().take_asked();
-        for take in takes {
-            if let Err(error) = self.open_front(take) {
-                tracing::warn!(%error, "taking an offer opened nothing");
-            }
-        }
         let shown = self.continuity.borrow_mut().shown_here(now_ms());
-        for offer in shown {
-            self.open_shown(&offer);
+        let shown = shown.into_iter().map(|offer| {
+            let take = Front {
+                app_id: offer.app_id.clone(),
+                app_name: offer.app_name.clone(),
+                resource: offer.resource.clone(),
+                view: offer.view.clone(),
+            };
+            (take, Some(offer))
+        });
+        for (take, shown) in takes.into_iter().map(|take| (take, None)).chain(shown) {
+            if let Some(offer) = &shown {
+                self.go_to(offer);
+            }
+            let (address, arguments) = if take.resource.is_empty() {
+                let mut arguments = Map::new();
+                arguments.insert("app".into(), take.app_id.clone().into());
+                (
+                    ActionAddress::new(
+                        tilo_session_core::desktop::verbs::CHROME_RESOURCE,
+                        "open-app",
+                    ),
+                    arguments,
+                )
+            } else {
+                let mut arguments = Map::new();
+                arguments.insert("resource".into(), take.resource.into());
+                if !take.view.is_empty() {
+                    arguments.insert("view".into(), take.view.into());
+                }
+                (
+                    ActionAddress::new(tilo_session_core::layout::RESOURCE, "open"),
+                    arguments,
+                )
+            };
+            let actor = Actor::from(MemberId::person(self.person.clone()));
+            let opened = self.published.invoke_as(
+                &actor,
+                &address,
+                &arguments,
+                &mut tilo_session_core::surfaces::Look::none(),
+            );
+            if let Err(error) = &opened {
+                tracing::warn!(%error, %take.app_id, "taking an offer opened nothing");
+            }
+            if let Some(offer) = shown {
+                let why = opened.is_err().then(|| self.not_opened(&offer.app_id));
+                self.continuity.borrow().answer(
+                    &offer.from,
+                    offer.shown_ms,
+                    why.is_none(),
+                    why.as_deref(),
+                );
+            }
         }
     }
 
-    /// Open here the window another device of the person's showed on this one: in the workspace
-    /// it was in when this device holds it, on the screen it names, and say in the record whether
-    /// it opened, and why not.
-    fn open_shown(&self, offer: &ContinuityOffer) {
+    /// Bring forward where a window shown here from another device opens: the workspace it was in
+    /// when this device holds it, and the screen of this device it names.
+    fn go_to(&self, offer: &ContinuityOffer) {
         if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&offer.workspace)
             && self
                 .handle
@@ -505,95 +546,45 @@ impl crate::Shared {
                     },
                 ));
         }
-        if let Some(display) = self.own_display(&offer.output) {
+        let Some(devices) = self.owner_devices.as_ref() else {
+            return;
+        };
+        let record = devices.devices();
+        let screen = record
+            .devices
+            .get(&tilo_resource::Id::from_raw(devices.who().1))
+            .and_then(|device| device.facts.get(crate::shared_displays::DISPLAYS))
+            .and_then(|value| crate::shared_displays::decoded(value))
+            .and_then(|shown| shown.into_iter().find(|screen| screen.id == offer.output));
+        if let Some(display) = screen.and_then(|screen| {
+            self.handle
+                .display_at_origin(f64::from(screen.x), f64::from(screen.y))
+        }) {
             self.handle.focus_display(display);
         }
-        let opened = self.open_front(Front {
-            app_id: offer.app_id.clone(),
-            app_name: offer.app_name.clone(),
-            resource: offer.resource.clone(),
-            view: offer.view.clone(),
-        });
-        let reason = opened.err().map(|error| {
-            tracing::warn!(%error, app = %offer.app_id, "a window shown here from another device did not open");
-            let installed = app_catalogue::apps::read_one_from_env(&offer.app_id)
-                .ok()
-                .flatten()
-                .is_some();
-            if installed {
-                crate::i18n::t("window-move-reason-no-start")
-            } else {
-                let device = self
-                    .owner_devices
-                    .as_ref()
-                    .map(|devices| devices.cert().device_label.clone())
-                    .unwrap_or_default();
-                crate::i18n::t_args(
-                    "window-move-reason-not-installed",
-                    &[
-                        ("app", crate::app_names::app_name(&offer.app_id).into()),
-                        ("device", device.into()),
-                    ],
-                )
-            }
-        });
-        self.continuity.borrow().answer(
-            &offer.from,
-            offer.shown_ms,
-            reason.is_none(),
-            reason.as_deref(),
-        );
     }
 
-    /// The display of this device whose screen `output` names, as this device keeps its screens in
-    /// the record of the person's devices.
-    fn own_display(&self, output: &str) -> Option<u32> {
-        let devices = self.owner_devices.as_ref()?;
-        let (_, local) = devices.who();
-        let record = devices.devices();
-        let shown = record
-            .devices
-            .get(&tilo_resource::Id::from_raw(local))?
-            .facts
-            .get(crate::shared_displays::DISPLAYS)
-            .and_then(|value| crate::shared_displays::decoded(value))?;
-        let screen = shown.iter().find(|screen| screen.id == output)?;
-        self.handle
-            .display_at_origin(f64::from(screen.x), f64::from(screen.y))
-    }
-
-    /// Open `take` here: the app at the resource it showed, through the view it showed it through,
-    /// or the app alone when it showed none.
-    fn open_front(&self, take: Front) -> Result<(), ApiError> {
-        let (address, arguments) = if take.resource.is_empty() {
-            let mut arguments = Map::new();
-            arguments.insert("app".into(), take.app_id.into());
-            (
-                ActionAddress::new(
-                    tilo_session_core::desktop::verbs::CHROME_RESOURCE,
-                    "open-app",
-                ),
-                arguments,
-            )
-        } else {
-            let mut arguments = Map::new();
-            arguments.insert("resource".into(), take.resource.into());
-            if !take.view.is_empty() {
-                arguments.insert("view".into(), take.view.into());
-            }
-            (
-                ActionAddress::new(tilo_session_core::layout::RESOURCE, "open"),
-                arguments,
-            )
-        };
-        let actor = Actor::from(MemberId::person(self.person.clone()));
-        self.published
-            .invoke_as(
-                &actor,
-                &address,
-                &arguments,
-                &mut tilo_session_core::surfaces::Look::none(),
-            )
-            .map(drop)
+    /// Why the app `app` shown here from another device did not open: it is not installed here,
+    /// or it did not start.
+    fn not_opened(&self, app: &str) -> String {
+        if app_catalogue::apps::read_one_from_env(app)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return crate::i18n::t("window-move-reason-no-start");
+        }
+        let device = self
+            .owner_devices
+            .as_ref()
+            .map(|devices| devices.cert().device_label.clone())
+            .unwrap_or_default();
+        crate::i18n::t_args(
+            "window-move-reason-not-installed",
+            &[
+                ("app", crate::app_names::app_name(app).into()),
+                ("device", device.into()),
+            ],
+        )
     }
 }

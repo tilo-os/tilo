@@ -664,9 +664,9 @@ impl Devices {
             view: offer.view.clone(),
             shown_ms: offer.shown_ms,
             until_ms: offer.until_ms,
-            to: Some(offer.to.clone()).filter(|to| !to.is_empty()),
-            output: Some(offer.output.clone()).filter(|output| !output.is_empty()),
-            workspace: Some(offer.workspace.clone()).filter(|workspace| !workspace.is_empty()),
+            to: offer.to.clone(),
+            output: offer.output.clone(),
+            workspace: offer.workspace.clone(),
         })
     }
 
@@ -935,13 +935,13 @@ pub struct OfferShown {
     pub until_ms: i64,
     /// The one device it is made to, by key; every other device when left out.
     #[serde(default)]
-    pub to: Option<String>,
+    pub to: String,
     /// The screen of that device it opens on, by the id its `displays` fact gives it.
     #[serde(default)]
-    pub output: Option<String>,
+    pub output: String,
     /// The workspace it was shown in, by id.
     #[serde(default)]
-    pub workspace: Option<String>,
+    pub workspace: String,
 }
 
 /// A window to show on another device: the app, the record it shows and the workspace it is in.
@@ -1782,32 +1782,12 @@ impl Devices {
             output,
             workspace,
         } = offer;
-        let (to, output, workspace) = (
-            to.unwrap_or_default(),
-            output.unwrap_or_default(),
-            workspace.unwrap_or_default(),
-        );
         validate_key(&from)?;
         if !self.devices.contains(&Id::from_raw(from.clone())) {
             return Err(Refusal::new("that key is not one of your devices"));
         }
-        if !to.is_empty()
-            && (to == from
-                || validate_key(&to).is_err()
-                || !self.devices.contains(&Id::from_raw(to.clone())))
-        {
+        if !to.is_empty() && (to == from || !self.devices.contains(&Id::from_raw(to.clone()))) {
             return Err(Refusal::new("a window is shown on another of your devices"));
-        }
-        if (to.is_empty() && !output.is_empty())
-            || output.len() > 160
-            || workspace.len() > 160
-            || [&output, &workspace]
-                .into_iter()
-                .any(|value| value.chars().any(char::is_control))
-        {
-            return Err(Refusal::new(
-                "a window is shown on one screen of the device it is shown on",
-            ));
         }
         if app_id.is_empty()
             || app_id.len() > 160
@@ -1823,9 +1803,12 @@ impl Devices {
             ));
         }
         if resource.len() > 512
-            || view.len() > 160
+            || [&view, &output, &workspace]
+                .into_iter()
+                .any(|value| value.len() > 160)
             || (resource.is_empty() && !view.is_empty())
-            || [&resource, &view]
+            || (to.is_empty() && !output.is_empty())
+            || [&resource, &view, &output, &workspace]
                 .into_iter()
                 .any(|value| value.chars().any(char::is_control))
         {
@@ -1932,9 +1915,9 @@ impl Devices {
             view: String::new(),
             shown_ms,
             until_ms: shown_ms.saturating_add(MAX_CONTINUITY_SHOWN_MS),
-            to: Some(device),
-            output,
-            workspace: Some(window.workspace).filter(|workspace| !workspace.is_empty()),
+            to: device,
+            output: output.unwrap_or_default(),
+            workspace: window.workspace,
         })
     }
 

@@ -240,8 +240,8 @@ pub struct Shared {
     /// ([`DesktopHandle::set_other_screens`]).
     pub other_screens: Vec<window_menu::OtherScreen>,
     /// The windows moved to another of the person's devices, waiting for the host
-    /// ([`DesktopHandle::take_device_moves`]): the tab, the device's key and its screen.
-    pub device_moves: Vec<(TabId, String, String)>,
+    /// ([`DesktopHandle::take_device_moves`]): the tab and the screen.
+    pub device_moves: Vec<(TabId, window_menu::OtherScreen)>,
     /// What the person may change and who made each strip, as the host answers it
     /// ([`DesktopHandle::set_rules`]); with none, nothing is refused.
     pub rules: Option<Rc<dyn crate::desktop::host::contract::DesktopRules>>,
