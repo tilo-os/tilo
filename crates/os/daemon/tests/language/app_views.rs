@@ -219,7 +219,7 @@ fn a_second_start_of_a_running_app_brings_its_window_forward() {
 /// The person's layout of `workspace`, as their shell reads it: its windows, each by key with the
 /// app it shows, and the strips.
 fn layout(native: &std::path::Path, workspace: &str) -> serde_json::Value {
-    use tilo_action_services::LineClient;
+    use tilo_action_line::LineClient;
     use tilo_actions::InvocationId;
     use tilo_actions::remote::{
         ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
@@ -257,8 +257,10 @@ fn window_showing(layout: &serde_json::Value, app: &str) -> serde_json::Value {
         .as_array()
         .and_then(|windows| windows.iter().find(|window| window["app"] == app))
         .and_then(|window| window["key"].as_str())
-        .map(|key| serde_json::json!(key))
-        .unwrap_or_else(|| panic!("the layout shows {app}: {layout}"))
+        .map_or_else(
+            || panic!("the layout shows {app}: {layout}"),
+            |key| serde_json::json!(key),
+        )
 }
 
 /// What `answer` settles to, waited for as a page's session waits.
