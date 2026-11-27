@@ -21,9 +21,9 @@ use tilo_runtime::device::capabilities::Mounting;
 #[cfg(unix)]
 use tilo_workspace_service::workspaces::providers::Reach;
 
-#[cfg(target_os = "linux")]
 #[cfg(not(target_os = "android"))]
 mod fabric;
+#[cfg(target_os = "linux")]
 mod stay_awake;
 mod vpn;
 
