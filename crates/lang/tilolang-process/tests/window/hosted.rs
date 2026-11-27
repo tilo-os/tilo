@@ -179,6 +179,89 @@ thread_local! {
     static DEVICE_TOOLS: std::cell::RefCell<
         Option<std::sync::Arc<runtime_interface::tools::Service>>,
     > = const { std::cell::RefCell::new(None) };
+    /// The device the windows opened from here on reach their broker through, as a session's
+    /// window does: what the window asks the device (a person's own press that waits for their
+    /// yes) and what the device tells it. None for a window the test opens on no session.
+    static LIVE_DEVICE: std::cell::RefCell<Option<WindowDevice>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A session window's connection to the device's dispatch, as the test plays it: the requests
+/// the window sent, and what the dispatch told it.
+#[derive(Clone)]
+struct WindowDevice {
+    sent: Rc<std::cell::RefCell<Vec<CollabRequest>>>,
+    inbound: Rc<std::cell::RefCell<std::collections::VecDeque<collaboration::CollabEvent>>>,
+    /// The route the window announced, until the dispatch acknowledged it.
+    announced: Rc<std::cell::RefCell<Option<RouteSpec>>>,
+}
+
+impl WindowDevice {
+    fn new() -> Self {
+        Self {
+            sent: Rc::new(std::cell::RefCell::new(Vec::new())),
+            inbound: Rc::new(std::cell::RefCell::new(std::collections::VecDeque::new())),
+            announced: Rc::new(std::cell::RefCell::new(None)),
+        }
+    }
+
+    /// Tell the window `message`, as the dispatch answers what it asked.
+    fn tell(&self, message: ui::tilo_actions::remote::RemoteActionMessage) {
+        self.inbound
+            .borrow_mut()
+            .push_back(collaboration::CollabEvent::RemoteAction { message });
+    }
+}
+
+/// The window's own end of [`WindowDevice`], as a window process holds its connection.
+struct WindowPeer(WindowDevice);
+
+impl collaboration::PeerTransport for WindowPeer {
+    fn is_connected(&self) -> bool {
+        true
+    }
+
+    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+        if let CollabRequest::Hello {
+            app_id,
+            cluster_id,
+            record,
+            ..
+        } = &request
+        {
+            *self.0.announced.borrow_mut() = Some(RouteSpec {
+                app_id: app_id.clone(),
+                cluster_id: *cluster_id,
+                document: record.clone(),
+            });
+        }
+        self.0.sent.borrow_mut().push(request);
+        Ok(())
+    }
+
+    fn poll(&mut self) -> Vec<collaboration::CollabEvent> {
+        self.0.inbound.borrow_mut().drain(..).collect()
+    }
+
+    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+        self.0.announced.borrow_mut().take().map(Ok)
+    }
+
+    fn join_route(
+        &mut self,
+        _: RouteSpec,
+        _: collab_types::document::ResourceType,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn send_to_route(&mut self, _: RouteSpec, request: CollabRequest) -> Result<(), String> {
+        self.send(request)
+    }
+
+    fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The window the person uses: the display-less driver, or the live `App` a window process
@@ -201,9 +284,19 @@ impl Window {
         Self::Harness(Box::new(harness))
     }
 
-    /// The live `App` a window process runs over `hosted`.
+    /// The live `App` a window process runs over `hosted`, over the device's dispatch the test
+    /// plays when the window was opened on a session ([`LIVE_DEVICE`]): a person's press that
+    /// waits for their yes goes through it, as it does at a session's window.
     fn live(hosted: HostedWindow) -> Self {
-        let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
+        let device = LIVE_DEVICE.with(|device| device.borrow().clone());
+        let mut app = match device {
+            Some(device) => ui::App::with_collaboration_manager(
+                ui::State::new(),
+                Box::new(hosted),
+                CollaborationManager::with_peer_transport(WindowPeer(device)),
+            ),
+            None => ui::App::new(ui::State::new(), Box::new(hosted)),
+        };
         app.init_layout();
         Self::Live(Box::new(app))
     }
@@ -363,7 +456,9 @@ impl Window {
             Self::Harness(window) => window.set_modifiers(&["shift".to_owned()]),
             Self::Live(app) => app.set_surface_modifiers(ModifiersState::SHIFT.into()),
         }
+        ui::widget::note_shift(true);
         self.press_named(name);
+        ui::widget::note_shift(false);
         match self {
             Self::Harness(window) => window.set_modifiers(&[]),
             Self::Live(app) => app.set_surface_modifiers(ModifiersState::empty().into()),
@@ -399,11 +494,13 @@ impl Window {
             }
             Self::Live(app) => {
                 app.set_surface_modifiers(ModifiersState::SHIFT.into());
+                ui::widget::note_shift(true);
                 Self::live_input(app, ui::synthetic_input::named_key(key));
                 Self::live_input(
                     app,
                     ui::synthetic_input::key_input(&Key::Named(key), ElementState::Released),
                 );
+                ui::widget::note_shift(false);
                 app.set_surface_modifiers(ModifiersState::empty().into());
             }
         }
@@ -559,6 +656,10 @@ pub(crate) struct Session {
     asks: Vec<Asked>,
     /// How many of the requests the instance sent the dispatch has read.
     dispatched: usize,
+    /// The window's own connection to the device's dispatch, for a live window: what it asked
+    /// the device, and how much of that the dispatch read.
+    window_device: Option<WindowDevice>,
+    window_dispatched: usize,
     /// The other apps installed in the workspace that the host runs beside the window's: the
     /// dispatch delivers the window's calls of their actions to them, and their answers back.
     served: Vec<Served>,
@@ -585,6 +686,9 @@ struct Served {
 /// the test answers it for the person ([`Session::allow_asked`]).
 struct Asked {
     request: ui::tilo_actions::remote::InvokeRequest,
+    /// The person's own press in the window asked the device for it, rather than the app's code
+    /// calling its own action: the window waits for the answer, as a control does.
+    from_window: bool,
     /// The id the allowed call was delivered to the instance under.
     delivered: Option<u64>,
     /// Whether its answer reached the run that waits on it.
@@ -1048,17 +1152,27 @@ impl Session {
         );
         hosted.arrived_early(early);
         host.add(hosted, watched);
+        let device = WindowDevice::new();
+        let window = LIVE_DEVICE.with(|live| {
+            *live.borrow_mut() = Some(device.clone());
+            let window = window(HostedWindow::over(theirs));
+            *live.borrow_mut() = None;
+            window
+        });
+        let live = matches!(window, Window::Live(_));
         Self {
             app,
             person,
             host,
-            window: window(HostedWindow::over(theirs)),
+            window,
             sent,
             woken,
             broker,
             invoked: 1,
             asks: Vec::new(),
             dispatched: 0,
+            window_device: live.then_some(device),
+            window_dispatched: 0,
             served: Vec::new(),
         }
     }
@@ -1151,6 +1265,7 @@ impl Session {
         let mut told = Vec::new();
         let mut handed = Vec::new();
         let mut calls = Vec::new();
+        let mut ended = Vec::new();
         let sent = self.sent.borrow();
         // What the test forgot was read already: the dispatch reads on from what is left.
         let from = if sent.len() < self.dispatched {
@@ -1194,6 +1309,7 @@ impl Session {
                     });
                     self.asks.push(Asked {
                         request: call.clone(),
+                        from_window: false,
                         delivered: None,
                         answered: false,
                         declined: false,
@@ -1208,28 +1324,22 @@ impl Session {
                     calls.push(call.clone());
                 }
                 CollabRequest::UpdateInvocation { id, update } if update.is_terminal() => {
-                    if let Some(kept) = self
-                        .asks
-                        .iter_mut()
-                        .find(|kept| kept.delivered == Some(*id) && !kept.answered)
-                    {
-                        kept.answered = true;
-                        let invocation = kept.request.invocation;
-                        told.push(RemoteActionMessage::Update {
-                            invocation,
-                            state: Some(InvocationState::new(invocation, update.clone())),
-                            correlation: None,
-                        });
-                    }
+                    ended.push((*id, update.clone()));
                 }
                 _ => {}
             }
         }
         drop(sent);
+        for (id, update) in ended {
+            if let Some(message) = self.answered_ask(id, &update) {
+                told.push(message);
+            }
+        }
+        let asked_of_the_window = self.dispatch_window();
         let called = !calls.is_empty();
         self.deliver_to_served(calls);
         told.extend(self.answers_of_served());
-        let moved = called || !told.is_empty() || !handed.is_empty();
+        let moved = asked_of_the_window || called || !told.is_empty() || !handed.is_empty();
         let mut inbox = inbox.borrow_mut();
         inbox.extend(handed);
         inbox.extend(
@@ -1237,6 +1347,126 @@ impl Session {
                 .map(|message| CollabEvent::RemoteAction { message }),
         );
         moved
+    }
+
+    /// The allowed call kept as the asked record `id` ended as `update`: how its caller hears
+    /// it — the app's own run, or the window whose press asked the device for it, which hears
+    /// there as a session's window does.
+    fn answered_ask(
+        &mut self,
+        id: u64,
+        update: &ui::tilo_actions::InvocationUpdate,
+    ) -> Option<ui::tilo_actions::remote::RemoteActionMessage> {
+        use ui::tilo_actions::remote::{InvocationState, RemoteActionMessage};
+        let kept = self
+            .asks
+            .iter_mut()
+            .find(|kept| kept.delivered == Some(id) && !kept.answered)?;
+        kept.answered = true;
+        let invocation = kept.request.invocation;
+        let state = Some(InvocationState::new(invocation, update.clone()));
+        if kept.from_window
+            && let Some(device) = &self.window_device
+        {
+            device.tell(RemoteActionMessage::Update {
+                invocation,
+                state: state.clone(),
+                correlation: None,
+            });
+        }
+        Some(RemoteActionMessage::Update {
+            invocation,
+            state,
+            correlation: None,
+        })
+    }
+
+    /// Play the dispatch for what the window asked the device: a person's press of an action
+    /// that waits for their yes is kept as its asked record, as the device keeps it, and the
+    /// window is told it waits; the yes sends it again with the person's approve, which runs it
+    /// at the app. Whether the window asked anything.
+    fn dispatch_window(&mut self) -> bool {
+        use ui::tilo_actions::remote::{
+            InvocationReceipt, InvocationState, ReceiptStatus, RemoteActionMessage,
+        };
+        let Some(device) = self.window_device.clone() else {
+            return false;
+        };
+        let sent = device.sent.borrow();
+        if sent.len() < self.window_dispatched {
+            self.window_dispatched = 0;
+        }
+        let mut asked = Vec::new();
+        for request in sent.iter().skip(self.window_dispatched) {
+            let CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(call),
+                ..
+            } = request
+            else {
+                continue;
+            };
+            asked.push(call.clone());
+        }
+        self.window_dispatched = sent.len();
+        drop(sent);
+        let mut moved = false;
+        for call in asked {
+            let invocation = call.invocation;
+            device.tell(RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Accepted,
+            }));
+            // A call that carries the person's approve already ran where it was asked; one their
+            // press made waits for it, as the device keeps it: the shell's asking view asks them.
+            if call.approval().is_none() && call.asks {
+                let waiting = ui::tilo_actions::InvocationUpdate::Progress {
+                    invocation,
+                    sequence: 1,
+                    phase: ui::tilo_actions::remote::asked::ASKED_PHASE.to_owned(),
+                    completed: None,
+                    total: None,
+                    message: Some(format!("asked/{}", invocation.0)),
+                };
+                device.tell(RemoteActionMessage::Update {
+                    invocation,
+                    state: Some(InvocationState::new(invocation, waiting)),
+                    correlation: None,
+                });
+                self.asks.push(Asked {
+                    request: call,
+                    from_window: true,
+                    delivered: None,
+                    answered: false,
+                    declined: false,
+                });
+                moved = true;
+                continue;
+            }
+            // What the window publishes the device runs by handing it back to the window, as the
+            // device does a call of the window's own provider.
+            let id = self.invoked;
+            self.invoked += 1;
+            let approval = call.approval().cloned();
+            self.deliver_to_window(id, &call, approval);
+            moved = true;
+        }
+        moved
+    }
+
+    /// Hand the window `call`, under `id`, as the device delivers a call of its own actions: the
+    /// window runs it where its tree puts it, as the person's.
+    fn deliver_to_window(
+        &self,
+        id: u64,
+        call: &ui::tilo_actions::remote::InvokeRequest,
+        approval: Option<ui::tilo_actions::remote::asked::Approval>,
+    ) {
+        if let Some(device) = &self.window_device {
+            device
+                .inbound
+                .borrow_mut()
+                .push_back(delivery(&self.person, id, call, approval));
+        }
     }
 
     /// Deliver `calls`, of the other installed apps' actions, to those apps' instances, as the
@@ -1296,11 +1526,13 @@ impl Session {
             .collect()
     }
 
-    /// The person allows every call the dispatch keeps asked: each is delivered to the instance
-    /// as the dispatch runs an allowed call, admitted for them, and its answer goes on to what
-    /// waits on it. How many there were.
+    /// The person allows every call the dispatch keeps asked: each is delivered again with their
+    /// approve where the dispatch runs it, admitted for them — to the instance for a call the
+    /// app's code made, to the window for one the person's press there made — and its answer
+    /// goes on to what waits on it. How many there were.
     fn allow_asked(&mut self) -> usize {
         let mut delivered = Vec::new();
+        let mut to_the_window = Vec::new();
         for kept in self
             .asks
             .iter_mut()
@@ -1309,15 +1541,23 @@ impl Session {
             let id = self.invoked;
             self.invoked += 1;
             kept.delivered = Some(id);
-            delivered.push(delivery(
+            let allowed = delivery(
                 &self.person,
                 id,
                 &kept.request,
                 Some(approval_of(&kept.request)),
-            ));
+            );
+            if kept.from_window {
+                to_the_window.push(allowed);
+            } else {
+                delivered.push(allowed);
+            }
         }
-        let allowed = delivered.len();
+        let allowed = delivered.len() + to_the_window.len();
         self.inbox().borrow_mut().extend(delivered);
+        if let Some(device) = &self.window_device {
+            device.inbound.borrow_mut().extend(to_the_window);
+        }
         self.settle();
         allowed
     }
@@ -1340,13 +1580,21 @@ impl Session {
                 invocation,
                 message: Some(ui::tilo_actions::remote::asked::DECLINED.to_owned()),
             };
-            told.push(CollabEvent::RemoteAction {
+            let update = CollabEvent::RemoteAction {
                 message: RemoteActionMessage::Update {
                     invocation,
                     state: Some(InvocationState::new(invocation, ended)),
                     correlation: None,
                 },
-            });
+            };
+            // The window asked for it, so the window hears it ended declined.
+            if kept.from_window
+                && let Some(device) = &self.window_device
+                && let CollabEvent::RemoteAction { message } = update.clone()
+            {
+                device.tell(message);
+            }
+            told.push(update);
         }
         let declined = told.len();
         self.inbox().borrow_mut().extend(told);
