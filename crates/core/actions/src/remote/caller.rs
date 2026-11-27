@@ -452,6 +452,34 @@ impl Caller {
         )
     }
 
+    /// An agent's own key: `user_public_key`'s root certified `device_public_key` as its agent
+    /// `agent_id` (an agent's grant), and the transport verified that certificate. Outside any
+    /// turn this server runs, it works for that person as a turn's agent works for the person
+    /// who asked it ([`Self::turn_person`]), decided on its own grants and theirs.
+    #[must_use]
+    pub fn agent_key(
+        agent_id: impl Into<String>,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+    ) -> Self {
+        Self {
+            turn_person: Some(user_public_key),
+            ..Self::delegated_agent(agent_id, user_public_key, device_public_key)
+        }
+    }
+
+    /// Whether this is an agent's own key ([`Self::agent_key`]): an agent working for its own
+    /// person on no roster turn.
+    #[must_use]
+    pub fn is_agent_key(&self) -> bool {
+        self.roster_created_at.is_none()
+            && !self.session_delegated
+            && self.acting.is_agent()
+            && self.device_public_key.is_some()
+            && self.turn_person.is_some()
+            && self.turn_person == self.user_public_key
+    }
+
     /// An agent a device handed its session to: `user_public_key`'s root certified the key
     /// `device_public_key` for `agent_id`, which is the device of `owner`, not the agent's
     /// person's. The change names the agent acting for its person, and `owner`'s device as the

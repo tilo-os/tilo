@@ -1023,13 +1023,10 @@ impl crate::PersonServices {
     ) -> Result<AskedTurn, ActionCallError> {
         let caller = turn.caller;
         let acting = caller.acting();
-        // This server's own agent, inside a turn: nothing else is a turn
-        // this server carries out.
-        if acting.app().is_some()
-            || !acting.is_agent()
-            || caller.roster_created_at().is_none()
-            || caller.turn().is_none()
-        {
+        // This server's own agent, inside a turn, or an agent's own key its person's root
+        // certified, working for that person: nothing else is a turn decided here.
+        let on_a_turn = caller.roster_created_at().is_some() && caller.turn().is_some();
+        if acting.app().is_some() || !acting.is_agent() || !(on_a_turn || caller.is_agent_key()) {
             return Err(UnknownAction);
         }
         let (Some(person), Some(agent), Some(workspace)) = (
@@ -1596,6 +1593,27 @@ impl crate::PersonServices {
             .map(drop)
     }
 
+    /// Whether the person `using` works for may see `item` in its workspace: what the
+    /// workspace's policy denies them of it is no item of theirs to have filled.
+    async fn person_sees(&self, using: &AskedTurn, item: &ItemRef) -> bool {
+        let Some(policy) = self.policy_of(&using.workspace).await else {
+            return false;
+        };
+        let node = TreePath::workspace(using.workspace.as_str())
+            .app(workspace_vault::PROVIDER)
+            .kind(workspace_vault::ITEM_KIND)
+            .resource(item.to_string());
+        policy
+            .party(&hex::encode(using.person))
+            .decide(
+                &node,
+                ActionKind::Read,
+                &Context::at_time(tilo_clock::wall()),
+            )
+            .answer
+            != Answer::Deny
+    }
+
     /// Release what the item `fill` names keeps, for the page at the site `fill` names, to
     /// whoever sends it on to that page's window, for `turn`, which `request` asked: at once
     /// where a grant of the workspace's lets this agent fill it there, or where its person
@@ -1616,6 +1634,12 @@ impl crate::PersonServices {
         let target = workspace_vault::target(workspace_vault::FILL_PAGE);
         let using = self.turn_uses_for(turn, &target).await?;
         let (item, site) = page_wanted(fill).map_err(ActionCallError::refused)?;
+        // An item the turn's person may not see is one the vault keeps nothing of for them.
+        if !self.person_sees(&using, fill.item).await {
+            return Err(ActionCallError::refused(
+                vault_items::ItemError::NotFound.to_string(),
+            ));
+        }
         let kind = {
             let items = self
                 .open_vault(&using.workspace)

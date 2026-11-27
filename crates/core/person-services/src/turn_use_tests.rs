@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Rule, TreePath};
 use tilo_actions::InvocationId;
-#[cfg(feature = "agents")]
-use tilo_actions::remote::ActionCallError::NotPermitted;
-use tilo_actions::remote::ActionCallError::{self, InvalidRequest, Refused, UnknownAction};
+use tilo_actions::remote::ActionCallError::{
+    self, InvalidRequest, NotPermitted, Refused, UnknownAction,
+};
 use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_user_identity::DeviceCert;
@@ -211,17 +211,6 @@ pub(crate) async fn listed(
     if !grants.is_empty() {
         crate::fixtures::record_grants(workspaces, workspace, &grants).await;
     }
-}
-
-/// The refusal the device's dispatch answers `who`, one of [`not_hosted_turns`], with: none
-/// knows the call. What a workspace keeps for a person (their vault's uses by reference, mail,
-/// calendars, connections) is offered here only to a turn this device carries out, so an agent
-/// another of the person's devices hands its session to is answered as the person themselves are.
-pub(crate) fn not_a_turn<T: std::fmt::Debug + PartialEq>(
-    who: &str,
-    refused: &Result<T, ActionCallError>,
-) {
-    assert_eq!(refused, &Err(UnknownAction), "{who}");
 }
 
 fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
@@ -700,7 +689,16 @@ async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
             caller: &asks,
             policy: None,
         };
-        not_a_turn(who, &dispatched(workspaces, &turn, &adding).await);
+        // A turn this device does not carry out is told no such call is offered; any other
+        // caller, none of them of the person this device belongs to, is refused, so an agent
+        // another of her devices hands its session to is answered as she herself is.
+        let a_turn = asks.acting().is_agent() && asks.turn().is_some();
+        let expected = if a_turn { UnknownAction } else { NotPermitted };
+        assert_eq!(
+            dispatched(workspaces, &turn, &adding).await,
+            Err(expected),
+            "{who}"
+        );
         assert!(workspaces.uses_offered(&turn).await.is_empty(), "{who}");
     }
 
@@ -983,8 +981,9 @@ async fn a_use_the_vault_refuses_asks_nobody() {
     );
     assert_eq!(
         dispatched(workspaces, &turn, &other).await,
-        Err(UnknownAction),
-        "only the uses by reference are taken here"
+        Err(NotPermitted),
+        "only the uses by reference are taken on a turn; the rest is refused to a member's \
+         device that is not of this device's person"
     );
     assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
     server.shutdown().await;

@@ -533,3 +533,89 @@ async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
     server.shutdown().await;
 }
+
+/// An agent's own key, its person's root certified as one of their agents, is decided the one
+/// way a turn's agent is: with its person's grant it fills at the login's own site, it is refused
+/// at any other site, and narrowed without a rule for this use it is refused. Another member's
+/// agent is refused an item the workspace keeps from that member exactly as an item the vault
+/// does not keep.
+#[tokio::test]
+async fn an_agents_own_key_fills_through_its_grants_and_another_members_private_item_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = serving(dir.path(), &key, &owner).await;
+    let workspaces = &crate::PersonServices::of(server.workspaces());
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bob = admit(workspaces, &workspace, &owner, 2).await;
+    let as_ada = caller(&ada);
+    let login = kept(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        ("login", SITE, PASSWORD),
+    )
+    .await;
+    let scout = Caller::agent_key("scout", ada.user_public_key, [0x5c; 32])
+        .in_workspace(workspace.as_str());
+    let turn = HostedTurn {
+        workspace: workspace_id,
+        caller: &scout,
+        policy: None,
+    };
+
+    // Its person's grant for this login at this site fills it there, and nowhere else.
+    always_fill(workspaces, (&workspace, &owner, &ada), "scout", &login).await;
+    assert_eq!(
+        text(release(workspaces, &turn, &fill(SITE, &login)).await).text(),
+        PASSWORD
+    );
+    let elsewhere =
+        refusal(release(workspaces, &turn, &fill("https://elsewhere.test", &login)).await);
+    assert!(!elsewhere.contains(PASSWORD), "{elsewhere}");
+
+    // Narrowed with no rule for a page's fill, it is refused before the vault is opened.
+    let policy = narrowing(&workspace_id.to_string(), &scout, &[]);
+    let narrowed = HostedTurn {
+        workspace: workspace_id,
+        caller: &scout,
+        policy: Some(&policy),
+    };
+    assert!(matches!(
+        release(workspaces, &narrowed, &fill(SITE, &login)).await,
+        Err(Refusal::NotPermitted)
+    ));
+
+    // Ada keeps the login from Bob: his agent's own key is refused it as a login the vault
+    // never kept is refused.
+    let private = tilo_action_policy::Grant::new(
+        "test-private:bob".to_owned(),
+        tilo_action_policy::Grantee::person(hex::encode(bob.user_public_key)),
+        tilo_action_policy::TreePath::workspace(workspace.as_str())
+            .app(workspace_vault::PROVIDER)
+            .kind(workspace_vault::ITEM_KIND)
+            .resource(login.to_string()),
+        KindSet::ALL,
+        Answer::Deny,
+        tilo_action_policy::Grantee::person(hex::encode(ada.user_public_key)),
+    );
+    workspaces
+        .put_workspace_grants(&workspace, &owner, rand::random(), vec![private])
+        .await
+        .unwrap();
+    let his_agent = Caller::agent_key("helper", bob.user_public_key, [0x6d; 32])
+        .in_workspace(workspace.as_str());
+    let his = HostedTurn {
+        workspace: workspace_id,
+        caller: &his_agent,
+        policy: None,
+    };
+    let kept_from_him = refusal(release(workspaces, &his, &fill(SITE, &login)).await);
+    let never_kept = ItemRef::parse("vault.item:0123456789abcdef0123456789abcdef").unwrap();
+    assert_eq!(
+        kept_from_him,
+        refusal(release(workspaces, &his, &fill(SITE, &never_kept)).await),
+        "a login kept from him is refused as one the vault never kept"
+    );
+    server.shutdown().await;
+}

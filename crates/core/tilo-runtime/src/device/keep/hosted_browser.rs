@@ -781,10 +781,15 @@ impl HostedBrowsers {
         let RemoteActionMessage::Invoke(request) = message else {
             return self.answered_or_asked_after(workspace_id, caller, message);
         };
-        let (page, window, window_device) = {
+        let (page, window, window_device, workspace) = {
             let open = self.open.lock_recover();
             let up = open.get(&workspace_id)?;
-            (up.page(), up.window.device, up.device.device_public_key)
+            (
+                up.page(),
+                up.window.device,
+                up.device.device_public_key,
+                up.workspace.clone(),
+            )
         };
         if !page.names(&request.target) {
             return None;
@@ -797,6 +802,16 @@ impl HostedBrowsers {
         let permitted = matches!(&request.confirmation, None | Some(Confirmation::Asked(_)));
         if !permitted {
             return answered_with(message, ActionCallError::NotPermitted);
+        }
+        // An agent's own key that fills a field from the vault is lent the item as itself, by
+        // the workspace's one decision on an agent's use of its vault; anyone else's fill is
+        // lent nothing here.
+        if request.target.address.action == FILL_PAGE_SECRET
+            && let Some(agent) = certificate
+                .and_then(|certificate| turn_fills::agent_key(certificate, caller, &workspace))
+            && let Err(refused) = self.lend_to_agent((workspace_id, window), agent, request)
+        {
+            return answered_with(message, refused);
         }
         if request.target.address.action == LET_LEAVE
             && let Some(answered) = self.let_leave(
@@ -1001,6 +1016,7 @@ impl HostedBrowsers {
                 });
                 let entry = handed.get_mut(&receipt.invocation)?;
                 answered(entry, &receipt.status);
+                self.fill_ended(receipt.invocation);
                 let count = ran && !covered;
                 entry.counted |= count;
                 drop(handed);
@@ -1026,6 +1042,7 @@ impl HostedBrowsers {
             | ReceiptStatus::Cancelled { .. } => {
                 let entry = handed.get_mut(&receipt.invocation)?;
                 answered(entry, &receipt.status);
+                self.fill_ended(receipt.invocation);
                 None
             }
         }

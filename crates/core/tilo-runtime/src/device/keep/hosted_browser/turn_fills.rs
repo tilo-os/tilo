@@ -28,14 +28,19 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Map, json};
+use std::future::Future;
+use std::pin::Pin;
 use tilo_action_services::environment_device::{ItemUse, ItemUsed};
+use tilo_actions::remote::asked::AskedFacts;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
     ReceiptStatus, RemoteActionMessage, pending,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
-use tilo_app_host::agents::windows::{PageWindow, Release, Releasing, TurnFill};
+use tilo_app_host::agents::windows::{PageWindow, Release, Releasing, TurnFill, releasing};
 use tilo_lock::MutexRecover as _;
+use tilo_user_identity::{AgentScope, DeviceCert};
+use tilo_workspace_records::vault::FillField;
 
 use super::HostedBrowsers;
 use tilo_server_protocol::WorkspaceId;
@@ -213,6 +218,94 @@ impl HostedBrowsers {
         Some((*authority.server.id.as_bytes(), authority.user_public_key))
     }
 
+    /// Keep what decides the fill `request` the agent `agent` asked of `workspace_id`'s window
+    /// (`window`) over its own connection: the workspace's one decision on an agent's use of its
+    /// vault, as that agent ([`tilo_app_host::agents::windows::releasing`]), once the window says
+    /// the site its page is at. Where the person is asked first, the call waits for them as the
+    /// window's held page actions do, and their approve hands it again.
+    ///
+    /// # Errors
+    ///
+    /// The fill names no field and item, this host holds no workspaces, or too many fills wait.
+    pub(super) fn lend_to_agent(
+        &self,
+        (workspace_id, window): (WorkspaceId, [u8; 32]),
+        agent: Caller,
+        request: &InvokeRequest,
+    ) -> Result<(), ActionCallError> {
+        let wanted = match &request.argument {
+            InvokeArgument::Json(arguments) => tilo_failure::ignored!(
+                "arguments that name no field are refused below, saying what a fill needs",
+                serde_json::from_value::<FillField>(serde_json::Value::Object(arguments.clone()))
+                    .ok()
+            ),
+            _ => None,
+        };
+        let Some(wanted) = wanted else {
+            return Err(ActionCallError::InvalidRequest {
+                reason: "a field to fill names its element in the page's outline and the vault \
+                         item to fill it from"
+                    .to_owned(),
+            });
+        };
+        let workspaces = self
+            .authority
+            .lock_recover()
+            .as_ref()
+            .and_then(|authority| authority.workspaces.as_ref()?.upgrade())
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "Browser is still starting. Try again in a minute.".to_owned(),
+            })?;
+        let item = wanted.item.to_string();
+        let asks: Arc<Mutex<Option<AskedFacts>>> = Arc::default();
+        let decide = releasing(
+            workspaces,
+            (agent, request.clone()),
+            wanted,
+            Arc::clone(&asks),
+        );
+        let this = self
+            .me()
+            .as_ref()
+            .map_or_else(std::sync::Weak::new, Arc::downgrade);
+        let invocation = request.invocation;
+        let releasing: Releasing = Box::new(move |origin: String| {
+            let decided: Pin<Box<dyn Future<Output = Release> + Send>> = Box::pin(async move {
+                let release = decide(origin).await;
+                if matches!(release, Release::Asked(_))
+                    && let Some(facts) = asks.lock_recover().take()
+                    && let Some(this) = this.upgrade()
+                {
+                    drop(this.keep_asked(invocation, &facts));
+                }
+                release
+            });
+            decided
+        });
+        let mut fills = self.turn_fills.0.lock_recover();
+        if fills.len() >= MAX_FILLS {
+            return Err(ActionCallError::Unavailable {
+                reason: "too many page fills are waiting for their window; ask again shortly"
+                    .into(),
+            });
+        }
+        fills.insert(
+            invocation,
+            Waiting {
+                workspace_id,
+                window,
+                item,
+                releasing: Some(releasing),
+            },
+        );
+        Ok(())
+    }
+
+    /// Forget the fill `invocation` once its window said how it ended.
+    pub(super) fn fill_ended(&self, invocation: InvocationId) {
+        self.turn_fills.0.lock_recover().remove(&invocation);
+    }
+
     /// `caller` asks for the text of the item a fill names
     /// ([`tilo_action_services::environment_device::USE_ITEM`]): answered for the device this
     /// server placed for `workspace_id`'s Browser and nobody else, for a fill this server
@@ -388,4 +481,32 @@ fn completed(answer: &ItemUsed) -> ReceiptStatus {
             },
         },
     }
+}
+
+/// The agent whose own key `certificate` is, as the caller its fill is decided as: where its
+/// person's root certified it as one of their agents for `workspace`, it is the key `caller`
+/// calls with, and it verifies now. `None` for any other key.
+pub(super) fn agent_key(
+    certificate: &DeviceCert,
+    caller: &Caller,
+    workspace: &str,
+) -> Option<Caller> {
+    let scope = certificate.capabilities.agent.as_ref()?;
+    let AgentScope::Agent(grant) = scope else {
+        return None;
+    };
+    let verified =
+        tilo_user_identity::verify_device_cert_at(certificate, tilo_clock::unix_now_ns());
+    (scope.reaches(workspace)
+        && caller.device_public_key() == Some(&certificate.device_public_key)
+        && caller.user_public_key() == Some(&certificate.user_public_key)
+        && verified.is_ok())
+    .then(|| {
+        Caller::agent_key(
+            grant.agent.clone(),
+            certificate.user_public_key,
+            certificate.device_public_key,
+        )
+        .in_workspace(workspace)
+    })
 }

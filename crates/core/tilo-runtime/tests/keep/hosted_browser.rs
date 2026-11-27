@@ -772,9 +772,17 @@ async fn window_served(
 
 /// [`window_session`], and the fills its page was handed, each waiting for the item.
 async fn window_filling(server: &Server, material: &Joined) -> (Arc<HeldFills>, RemoteDevice) {
+    window_filling_with(server, material, Asks::Never).await
+}
+
+/// [`window_filling`], with the window asking its person as `asks` says.
+async fn window_filling_with(
+    server: &Server,
+    material: &Joined,
+    asks: Asks,
+) -> (Arc<HeldFills>, RemoteDevice) {
     let fills = Arc::new(HeldFills::default());
-    let (_, _, remote) =
-        window_served_with(server, material, Asks::Never, Arc::clone(&fills)).await;
+    let (_, _, remote) = window_served_with(server, material, asks, Arc::clone(&fills)).await;
     (fills, remote)
 }
 
@@ -1041,6 +1049,27 @@ impl Fixture {
     /// the workspace lists. It reaches all of them: the server admits a key to
     /// the workspaces its certificate reaches and no other, which is where a
     /// key for one workspace is confined to it.
+    /// A key of the person's agent `agent` in the workspace, their root certified as that agent.
+    fn agent_key(&self, agent: &str) -> TestDevice {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[0x5c; 32]);
+        let now = tilo_clock::unix_now_ns();
+        let mut cert = DeviceCert {
+            user_public_key: self.user.user_pk,
+            device_public_key: sk.verifying_key().to_bytes(),
+            device_label: "Jane Doe's scout".into(),
+            capabilities: DeviceCapabilities::agent_grant(AgentScope::agent_in(
+                *WS.as_uuid().as_bytes(),
+                agent,
+            )),
+            issued_at_ns: now,
+            expires_at_ns: Some(now.saturating_add(24 * 60 * 60 * 1_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &self.user.user_sk).expect("the person's root certifies it");
+        TestDevice { sk, cert }
+    }
+
     fn key(&self, browser_pages: bool) -> TestDevice {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[0x4b; 32]);
         let now = tilo_clock::unix_now_ns();
@@ -4046,4 +4075,81 @@ async fn a_turns_fill_reaches_the_window_as_fill_page_secret_and_lends_its_login
         }
     }
     assert_eq!(asked.lock().unwrap().len(), 2, "nothing decided Bea's fill");
+}
+
+/// The person's agent on their laptop, with its own key their root certified as that agent, fills
+/// a field of the hosted page from the vault over its connection: the window's machine is lent
+/// the login for that fill only as the workspace's one decision on that agent's use of its vault
+/// decides it, here refused, since the vault keeps no such login. The agent's submission of the
+/// page still waits for the person.
+#[tokio::test]
+async fn an_agents_own_key_fills_through_the_vaults_decision_and_its_submit_waits_for_the_person() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let scout = fixture.agent_key("scout");
+    fixture.list_environment_and(&scout).await;
+    let material = fixture.environments.material();
+    let window_device = DeviceIdentity::of(&material);
+    let (fills, window) =
+        window_filling_with(&fixture.server.server, &material, Asks::Submit).await;
+    let window_caller = Caller::authenticated(fixture.user.user_pk, window_device.device_pubkey());
+    let linked = member_link(&fixture.server.server, &scout).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
+    let approver = fixture.approving_device().await;
+    let approver_actions = asking(&approver, WS_NAME).await;
+    let approver_caller = approver.caller(fixture.user.user_pk);
+
+    let fill = InvocationId::new();
+    let serde_json::Value::Object(named) = serde_json::json!({"element": "e7", "item": LOGIN})
+    else {
+        unreachable!("an object");
+    };
+    let request = as_asked(
+        &scout,
+        InvokeRequest {
+            argument: InvokeArgument::Json(named),
+            ..page(&scout, fill, FILL_PAGE_SECRET)
+        },
+    );
+    let asking_window =
+        tokio::spawn(async move { ActionProvider::invoke(&remote, &caller, request).await });
+    let (handed, fill_ends) = fills.next().await;
+    assert_eq!(handed.invocation, fill);
+    let decided = item_use(
+        &window,
+        (&window_device, &window_caller),
+        fill,
+        (LOGIN, LOGIN_SITE),
+    )
+    .await;
+    let Err(ActionCallError::Refused { reason }) = &decided else {
+        panic!("the vault keeps no such login: {decided:?}");
+    };
+    assert_ne!(
+        reason, "No fill this server handed this window waits for that item",
+        "the agent's fill is decided as the agent's use of the vault"
+    );
+    fills.end(
+        fill_ends,
+        fill,
+        tilo_actions::InvocationUpdate::Cancelled {
+            invocation: fill,
+            message: None,
+        },
+    );
+    drop(asking_window.await.unwrap());
+
+    // The same agent's submit of the page waits for the person.
+    let linked = member_link(&fixture.server.server, &scout).await;
+    let remote = asking(&linked, WS_NAME).await;
+    let caller = linked.caller(fixture.user.user_pk);
+    let receipt = ActionProvider::invoke(&remote, &caller, submit(&scout, InvocationId::new()))
+        .await
+        .expect("the host answers")
+        .expect("the window holds it for the person");
+    assert!(
+        !matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "the submit ran without its person: {receipt:?}"
+    );
+    asked(&approver_actions, &approver_caller).await;
 }

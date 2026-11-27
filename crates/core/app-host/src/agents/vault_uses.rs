@@ -14,8 +14,6 @@
 //! provider. A text released for a page passes through here once, on its way to be sealed to
 //! the window that fills it, in a type that prints nothing.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tilo_person_services::PersonServices;
 
@@ -27,17 +25,11 @@ use tilo_actions::remote::{
     InvokeRequest, Pending, RemoteActionTarget,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_person_services::hosted_use::PageFill;
 use tilo_workspace_records::vault::{self as workspace_vault, FillField};
-use zeroize::Zeroizing;
 
 use super::turn_provider::{Ending, Rows};
-use super::windows::{Release, Releasing, TurnFill};
+use super::windows::{TurnFill, releasing};
 use super::{Reply, ServerAgents, TurnProvider, WorkspaceId};
-
-/// What an agent is told of a page fill that waits for its person: nothing was filled yet.
-const ASKED_PAGE: &str = "Your person is asked whether you may fill this vault item into this \
-     site's page. Nothing was filled yet.";
 
 /// What one turn fills of a page from its person's vault. A turn's caller changes when its
 /// person writes again while it works, so each fill is taken as the caller of the tool call that
@@ -116,17 +108,12 @@ impl TurnUses {
             item: wanted.item.to_string(),
         };
         let asks: Arc<Mutex<Option<AskedFacts>>> = Arc::default();
-        let (this, by, asked, waits) = (
-            Arc::clone(self),
-            caller.clone(),
-            request.clone(),
+        let releasing = releasing(
+            self.agents.workspaces.clone(),
+            (caller.clone(), request.clone()),
+            wanted,
             Arc::clone(&asks),
         );
-        let releasing: Releasing = Box::new(move |origin| {
-            let decided: Pin<Box<dyn Future<Output = Release> + Send>> =
-                Box::pin(async move { this.release(&by, &asked, wanted, origin, &waits).await });
-            decided
-        });
         let filled = browsers
             .fill_for_turn(self.workspace_id, fill, releasing)
             .await;
@@ -134,41 +121,6 @@ impl TurnUses {
         match asked {
             Some(facts) => Err(ActionCallError::asks(facts)),
             None => filled,
-        }
-    }
-
-    /// Decide the fill `request` asked of what `wanted` names, for the site `origin` its
-    /// window says its page is at, as `caller`: the entry releases the item's text for that
-    /// site, or it waits for its person (what they are shown is left in `asks`), or it is
-    /// refused. A released text is handed on once, to be sealed to the window, and nothing
-    /// else here holds it.
-    async fn release(
-        &self,
-        caller: &Caller,
-        request: &InvokeRequest,
-        wanted: FillField,
-        origin: String,
-        asks: &Mutex<Option<AskedFacts>>,
-    ) -> Release {
-        let fill = PageFill {
-            site: &origin,
-            item: &wanted.item,
-            reason: wanted.reason.trim(),
-        };
-        let released = PersonServices::of(&self.agents.workspaces)
-            .release_for(caller, fill, request)
-            .await;
-        match released {
-            Ok(text) => Release::Text {
-                text: Zeroizing::new(text.text().to_owned()),
-                into: text.field().as_str(),
-            },
-            Err(ActionCallError::ConfirmationRequired(facts)) => {
-                *asks.lock_recover() = Some(*facts);
-                Release::Asked(ASKED_PAGE.to_owned())
-            }
-            Err(ActionCallError::Refused { reason }) => Release::Refused(reason),
-            Err(error) => Release::Refused(error.to_string()),
         }
     }
 }

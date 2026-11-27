@@ -145,3 +145,48 @@ pub enum Release {
 /// that origin.
 pub type Releasing =
     Box<dyn FnOnce(String) -> Pin<Box<dyn Future<Output = Release> + Send>> + Send>;
+
+/// What an agent is told of a page fill that waits for its person: nothing was filled yet.
+const ASKED_PAGE: &str = "Your person is asked whether you may fill this vault item into this \
+     site's page. Nothing was filled yet.";
+
+/// What decides the fill `request` that `caller` asked of what `wanted` names, once the window
+/// says the site its page is at: the workspace's one decision on an agent's use of its vault
+/// ([`tilo_person_services::PersonServices::release_for`]), as the agent itself, on its grants
+/// and its person's. A released text is handed on once, to be sealed to the window; a fill that
+/// waits for the person leaves what they are shown in `asks`.
+#[must_use]
+pub fn releasing(
+    workspaces: tilo_workspace_service::workspaces::Workspaces,
+    (caller, request): (Caller, InvokeRequest),
+    wanted: tilo_workspace_records::vault::FillField,
+    asks: Arc<std::sync::Mutex<Option<tilo_actions::remote::asked::AskedFacts>>>,
+) -> Releasing {
+    Box::new(move |origin: String| {
+        let decided: Pin<Box<dyn Future<Output = Release> + Send>> = Box::pin(async move {
+            let fill = tilo_person_services::hosted_use::PageFill {
+                site: &origin,
+                item: &wanted.item,
+                reason: wanted.reason.trim(),
+            };
+            let released = tilo_person_services::PersonServices::of(&workspaces)
+                .release_for(&caller, fill, &request)
+                .await;
+            match released {
+                Ok(text) => Release::Text {
+                    text: Zeroizing::new(text.text().to_owned()),
+                    into: text.field().as_str(),
+                },
+                Err(ActionCallError::ConfirmationRequired(facts)) => {
+                    *asks
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*facts);
+                    Release::Asked(ASKED_PAGE.to_owned())
+                }
+                Err(ActionCallError::Refused { reason }) => Release::Refused(reason),
+                Err(error) => Release::Refused(error.to_string()),
+            }
+        });
+        decided
+    })
+}

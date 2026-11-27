@@ -135,9 +135,10 @@ impl ActionProvider for OwnProcess {
                 .inspect_err(|why| tracing::info!(app = %self.app, %why, "a page login step continues no running call"))
                 .ok()
         });
-        // A fill the host that placed this workspace VM handed its Browser for a turn it carries
-        // out is lent by that host, which keeps what decides it; every other fill, the person's
-        // own, is decided by the vault here. Only a Linux machine is placed by a host.
+        // A fill an agent asked for, on a turn the host that placed this workspace VM carries
+        // out or with its own key, is lent by that host, which decides it as the agent; the
+        // person's own fill is decided by the vault here. Only a Linux machine is placed by a
+        // host.
         #[cfg(target_os = "linux")]
         if asked == Some(workspace_vault::PAGE_FILL)
             && let Some(host) = daemon.host_asks()
@@ -255,15 +256,14 @@ fn from_the_host(
 }
 
 /// Whether a page fill asked for the running call whose caller is `asked_by` is lent by the host
-/// that placed this machine (`placing`): a call that host made itself, for a turn it carries out.
-/// A call any other device made, the person's own, is not, and neither is one on a machine no
-/// host placed.
+/// that placed this machine (`placing`): a call that host made itself, for a turn it carries out,
+/// or an agent's. The person's own call is not, and no call is on a machine no host placed.
 #[cfg(target_os = "linux")]
 fn lent_by_host(asked_by: Option<&Caller>, placing: Option<[u8; 32]>) -> bool {
-    asked_by
-        .and_then(Caller::device_public_key)
-        .zip(placing)
-        .is_some_and(|(device, host)| *device == host)
+    let (Some(asked_by), Some(host)) = (asked_by, placing) else {
+        return false;
+    };
+    asked_by.device_public_key() == Some(&host) || asked_by.acting().is_agent()
 }
 
 /// Whether `frame` is a release, a find, a web call, a keep or a device key this connection's own
@@ -288,14 +288,17 @@ pub(crate) fn is_answered_for_this_process(
 mod tests {
     use super::*;
 
-    /// Only the call the placing host made itself is lent by it: the person's own call on their
-    /// device is decided by the vault on this machine, and a machine no host placed asks no host.
+    /// Only a call the placing host made itself, or an agent's, is lent by that host: the
+    /// person's own call on their device is decided by the vault on this machine, and a machine
+    /// no host placed asks no host.
     #[test]
-    fn a_fill_is_lent_by_the_host_only_for_a_call_the_host_made() {
-        let (host, persons_device, person) = ([1; 32], [2; 32], [3; 32]);
+    fn a_fill_is_lent_by_the_host_only_for_a_call_the_host_or_an_agent_made() {
+        let (host, persons_device, person, agents_key) = ([1; 32], [2; 32], [3; 32], [4; 32]);
         let by_host = Caller::authenticated(person, host);
         let by_person = Caller::authenticated(person, persons_device);
+        let by_agent = Caller::agent_key("scout", person, agents_key);
         assert!(lent_by_host(Some(&by_host), Some(host)));
+        assert!(lent_by_host(Some(&by_agent), Some(host)));
         assert!(!lent_by_host(Some(&by_person), Some(host)));
         assert!(!lent_by_host(Some(&by_host), None));
         assert!(!lent_by_host(None, Some(host)));
