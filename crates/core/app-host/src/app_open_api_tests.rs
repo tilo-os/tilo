@@ -71,6 +71,7 @@ fn open_app_request(
     on_behalf_of: Option<tilo_actions::InvocationId>,
 ) -> tilo_actions::remote::InvokeRequest {
     tilo_actions::remote::InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         on_behalf_of,
         target: tilo_actions::remote::RemoteActionTarget {

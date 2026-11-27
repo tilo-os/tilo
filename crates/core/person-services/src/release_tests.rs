@@ -78,6 +78,7 @@ impl HostConnections for Bridge {
 /// The release of `item`, as the bridge's process calls it: no arguments.
 fn release_of(item: &ItemRef) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: workspace_vault::ItemRef::target(item, workspace_vault::RELEASE),
         argument: InvokeArgument::None,
@@ -98,6 +99,7 @@ pub(crate) fn approve_and_grant(record: &RecordRef) -> InvokeRequest {
         ..Resolve::default()
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: workspace_invocations::PROVIDER.to_owned(),
@@ -489,6 +491,7 @@ async fn every_other_caller_is_refused_a_release_saying_why() {
 /// The find of the item tagged for `app` and `purpose`, as the app's held connection calls it.
 fn find_of(app: &str, purpose: &str) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: workspace_vault::PROVIDER.to_owned(),
@@ -767,6 +770,7 @@ fn keep_of(purpose: &str, value: &str, replacing: Option<&ItemRef>) -> InvokeReq
         argument.insert("replacing".to_owned(), json!(item.to_string()));
     }
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: workspace_vault::target(workspace_vault::KEEP),
         argument: InvokeArgument::Json(argument.as_object().cloned().unwrap()),

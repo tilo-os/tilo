@@ -2997,6 +2997,7 @@ mod provider_routing_tests {
 
     fn invoked(provider: &Arc<dyn ActionProvider + Send + Sync>, name: &str) {
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {

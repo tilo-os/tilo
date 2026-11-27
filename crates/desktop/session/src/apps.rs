@@ -621,6 +621,7 @@ impl Apps {
             (dispatch.clone(), state.wake.clone())
         };
         let request = InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target,
             argument: InvokeArgument::Json(arguments),

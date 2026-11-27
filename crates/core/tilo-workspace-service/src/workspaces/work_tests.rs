@@ -377,6 +377,7 @@ async fn a_device_takes_a_linux_run_when_it_runs_linux_and_has_room() {
         id: tilo_actions::InvocationId::new(),
         requester: cert.device_public_key,
         run: Box::new(tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_action_services::environment_commands::target(),
             argument: tilo_actions::remote::InvokeArgument::None,

@@ -47,6 +47,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         let invocation = tilo_actions::InvocationId::new();
         let request = InvokeRequest {
+            asks: false,
             invocation,
             target: tilo_actions::remote::ask_target(),
             argument,

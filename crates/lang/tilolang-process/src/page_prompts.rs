@@ -114,6 +114,7 @@ fn note(
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: tilo_actions::remote::application_action_target(workspace, app, page, action),
         argument: InvokeArgument::Json(arguments),
@@ -195,6 +196,7 @@ impl PagePrompts {
         }
         let invocation = InvocationId::new();
         let request = InvokeRequest {
+            asks: false,
             invocation,
             target: tilo_actions::remote::application_action_target(workspace, app, page, action),
             argument: InvokeArgument::Json(arguments),

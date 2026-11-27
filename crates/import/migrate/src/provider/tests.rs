@@ -242,6 +242,7 @@ fn request(action: &str, args: Value) -> InvokeRequest {
         panic!("arguments are an object")
     };
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {

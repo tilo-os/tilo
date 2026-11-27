@@ -52,6 +52,7 @@ fn asking(command: &str) -> InvokeRequest {
         panic!("a command is an object");
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: environment_commands::target(),
         argument: InvokeArgument::Json(map),
@@ -269,6 +270,7 @@ fn opening(material: &str) -> InvokeRequest {
         panic!("an open is an object");
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: browser::target(),
         argument: InvokeArgument::Json(map),
@@ -372,6 +374,7 @@ fn machine_request(
         panic!("a machine's request is an object");
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target,
         argument: InvokeArgument::Json(map),

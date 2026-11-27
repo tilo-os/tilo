@@ -248,6 +248,7 @@ mod tests {
                 )
             };
             let request = |confirmation| tilo_actions::remote::InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::RemoteActionTarget {

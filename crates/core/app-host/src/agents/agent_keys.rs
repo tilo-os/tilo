@@ -817,6 +817,7 @@ mod tests {
 
     fn request() -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             target: RemoteActionTarget {
                 provider: "so.tilo.notes".into(),
                 address: tilo_actions::api::ActionAddress::new("notes:1", "rename"),

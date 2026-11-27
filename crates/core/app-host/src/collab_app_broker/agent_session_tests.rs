@@ -72,6 +72,7 @@ fn agent_in_session(f: &Fixture) -> (AgentConnection, Caller) {
 
 fn append_request(invocation: u128) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
         target: RemoteActionTarget {

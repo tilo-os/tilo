@@ -57,6 +57,7 @@ pub fn request(
     on_behalf_of: Option<InvocationId>,
 ) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: target(action),
         argument: if arguments.is_empty() {

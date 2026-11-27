@@ -149,6 +149,7 @@ async fn answered(pending: Pending<RemoteActionMessage>) -> Result<Value, String
 /// The question `target` with `arguments` asks, as a connection asks the service.
 fn invocation(target: RemoteActionTarget, arguments: Map<String, Value>) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target,
         argument: InvokeArgument::Json(arguments),

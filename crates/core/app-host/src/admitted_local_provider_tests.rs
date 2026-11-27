@@ -44,6 +44,7 @@ fn member_device_certificate(
 
 fn local_host_request(directory: bool) -> tilo_actions::remote::InvokeRequest {
     tilo_actions::remote::InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: "903".into(),

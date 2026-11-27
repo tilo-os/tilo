@@ -234,6 +234,7 @@ mod tests {
 
     fn request(invocation: &own_device::Invocation) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: own_device::target(),

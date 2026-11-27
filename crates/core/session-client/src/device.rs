@@ -850,6 +850,7 @@ impl Device {
             &actions,
             &caller,
             InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation,
                 target,

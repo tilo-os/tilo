@@ -208,10 +208,12 @@ impl Peer {
     /// the broker does: against `resources`, what the app publishes. Admitted, it is accepted and
     /// delivered back to the app for `actor`; refused, the app hears why in its receipt.
     ///
-    /// A call whose action asks first and that carries no yes is kept as the device keeps its
-    /// asked record, accepted and not run ([`Driver::asking`]); the same call sent again with the
-    /// person's approve ([`Driver::confirm_asked`]) answers whatever the action asks, as the
-    /// broker takes it, and its handler reads the approve from the call's context. A call the
+    /// A call whose action asks first, or whose press waits for the person's yes
+    /// ([`tilo_actions::remote::InvokeRequest::asks`]), and that carries no yes is kept as the
+    /// device keeps its asked record, accepted and not run ([`Driver::asking`]); the same call
+    /// sent again with the person's approve ([`Driver::confirm_asked`]) answers whatever the
+    /// action asks, as the broker takes it, and its handler reads the approve from the call's
+    /// context. A call the
     /// person's `grants` leave to them (a guest's effect that reaches outside) is kept the same
     /// way, as the workspace decides it by the caller's grants; one the grants refuse is refused.
     fn admit_own(
@@ -304,10 +306,12 @@ impl Peer {
             }
         };
         // Nobody asked for an effect's edit, and the person at the device is never asked about it.
+        // Their press that waits for their yes (`asks`) is asked as the action's own ask is.
         if confirmation.is_none()
             && continued.is_none()
             && let Some(spec) = spec
             && (grants_ask
+                || request.asks
                 || policy
                     .as_ref()
                     .is_some_and(|policy| *policy != ConfirmationPolicy::None))

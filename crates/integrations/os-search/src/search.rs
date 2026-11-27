@@ -203,6 +203,7 @@ impl OsSearch {
         let receipt = answer(self.provider.invoke(
             &self.caller,
             InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation: InvocationId::new(),
                 target: entry.target,

@@ -351,6 +351,7 @@ pub mod calls {
             return Err("arguments are an object".to_owned());
         };
         let request = InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: format!("{RESOURCE_PROVIDER}:{app}:"),
@@ -452,6 +453,7 @@ mod tests {
             panic!("arguments are an object");
         };
         InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: format!("{RESOURCE_PROVIDER}:{CHAT}:"),
@@ -634,6 +636,7 @@ mod tests {
             .invoke(
                 caller,
                 InvokeRequest {
+                    asks: false,
                     invocation: tilo_actions::InvocationId::new(),
                     target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
                         caller.workspace().unwrap(),
@@ -1088,6 +1091,7 @@ mod tests {
             .run(
                 &cy,
                 InvokeRequest {
+                    asks: false,
                     invocation: tilo_actions::InvocationId::new(),
                     target: tilo_actions::remote::RemoteActionTarget {
                         provider: format!("{RESOURCE_PROVIDER}:{TASKS}:"),

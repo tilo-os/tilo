@@ -154,6 +154,7 @@ impl ResourceSource for ResourceLists {
         let list = LISTS.iter().find(|list| list.kind == kind)?;
         let read = list.read;
         let request = InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: list.provider.to_owned(),

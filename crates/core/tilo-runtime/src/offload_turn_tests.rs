@@ -83,6 +83,7 @@ fn request(input: &str) -> OffloadRequest {
 /// The invocation a person made of `request`.
 fn invoked(request: &OffloadRequest) -> InvokeRequest {
     tilo_actions::remote::InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: tilo_actions::remote::application_action_target(
             WORKSPACE,

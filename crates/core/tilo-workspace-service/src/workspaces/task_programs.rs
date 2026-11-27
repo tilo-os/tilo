@@ -508,6 +508,7 @@ mod tests {
 
     fn request(address: &ActionAddress, argument: &str) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: task_wire::PROVIDER.to_owned(),

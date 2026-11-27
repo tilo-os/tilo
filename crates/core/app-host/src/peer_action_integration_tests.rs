@@ -34,6 +34,7 @@ fn device_api(
 /// The fixture application's own action, invoked under `invocation`.
 fn invoke_request(invocation: tilo_actions::InvocationId) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget {
             provider: "71".into(),

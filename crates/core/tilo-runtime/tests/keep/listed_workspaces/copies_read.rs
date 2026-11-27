@@ -14,6 +14,7 @@ use super::*;
 /// tree publishes it at (`workspace/servers#keeps`).
 fn keeps(workspace: &str) -> RemoteActionMessage {
     RemoteActionMessage::Invoke(InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, "copies.read"),
         argument: InvokeArgument::Json(serde_json::Map::new()),

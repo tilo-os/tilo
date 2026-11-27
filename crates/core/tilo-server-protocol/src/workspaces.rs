@@ -1526,6 +1526,7 @@ pub fn administer_invoke(
     invocation: tilo_actions::InvocationId,
 ) -> Result<InvokeRequest, String> {
     Ok(InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
@@ -1602,6 +1603,7 @@ pub fn fetch_grant_invoke(
     invocation: tilo_actions::InvocationId,
 ) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget {
             provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
@@ -1644,6 +1646,7 @@ pub fn entry_invoke(
     invocation: tilo_actions::InvocationId,
 ) -> Result<InvokeRequest, String> {
     Ok(InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),

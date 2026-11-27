@@ -118,6 +118,7 @@ fn broker() -> (Arc<AppBrokerState>, String, String) {
 
 fn summarise() -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {

@@ -522,6 +522,7 @@ fn set_request(name: &str, value: Value) -> InvokeRequest {
     arguments.insert("name".to_owned(), Value::String(name.to_owned()));
     arguments.insert("value".to_owned(), value);
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: tilo_device_identity::login::PROVIDER.to_owned(),

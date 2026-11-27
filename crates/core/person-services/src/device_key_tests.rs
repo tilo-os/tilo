@@ -72,6 +72,7 @@ impl HostConnections for Bridge {
 /// The ask for the key of `purpose`, as the app's own process calls it.
 fn device_key_of(purpose: &str) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: workspace_vault::target(workspace_vault::DEVICE_KEY),
         argument: InvokeArgument::Json(json!({ "purpose": purpose }).as_object().cloned().unwrap()),

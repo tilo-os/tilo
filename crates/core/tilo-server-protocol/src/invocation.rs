@@ -1118,6 +1118,7 @@ mod tests {
 
     fn request() -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: "so.tilo.notes".into(),

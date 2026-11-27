@@ -654,6 +654,7 @@ fn viewed_put(
     let invocation = uuid::Uuid::new_v4().to_string();
     let signed = signer.map(|(key, cert)| {
         let mut request = tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId(uuid::Uuid::parse_str(&invocation).unwrap()),
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: tilo_actions::remote::RESOURCE_PROVIDER.to_owned(),

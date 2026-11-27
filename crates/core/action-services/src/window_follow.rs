@@ -46,6 +46,7 @@ pub struct Handoff<R> {
 #[must_use]
 pub fn request(action: &str, argument: &impl Serialize) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: PROVIDER.to_owned(),

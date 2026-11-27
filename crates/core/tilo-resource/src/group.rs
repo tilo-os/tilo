@@ -221,6 +221,12 @@ where
             .any(tilo_actions::Action::incoming_message)
     }
 
+    /// A gesture that sends something out of the system among others still
+    /// does.
+    fn leaves(&self) -> bool {
+        self.actions.iter().any(tilo_actions::Action::leaves)
+    }
+
     /// Undo cannot take a gesture back when it cannot take back a member.
     fn irreversible(&self) -> bool {
         self.actions.iter().any(tilo_actions::Action::irreversible)

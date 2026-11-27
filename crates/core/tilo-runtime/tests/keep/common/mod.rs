@@ -1475,6 +1475,7 @@ pub async fn servers_action(
             &Caller::authenticated(computer.cert.user_public_key, computer.device_pubkey())
                 .in_workspace(workspace.to_owned()),
             InvokeRequest {
+                asks: false,
                 invocation: InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),

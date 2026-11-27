@@ -4415,6 +4415,7 @@ impl Daemon {
         let caller = dispatch.caller(workspace);
         let provider = dispatch.provider(workspace)?;
         let request = InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: provider_name.to_owned(),
@@ -5578,6 +5579,7 @@ async fn workspace_verb(
     enter_the_key(workspaces, workspace, key).await;
     let caller = tilo_peer_state::key_caller::caller_of_key_here(key.cert());
     let request = InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, action),
         argument: InvokeArgument::Json(arguments),

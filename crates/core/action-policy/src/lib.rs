@@ -80,7 +80,7 @@ pub fn session_answers<'g>(
 }
 
 pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, OFFERED_SPAN_MS, Role};
-pub use kind::{ActionKind, KindSet};
+pub use kind::{ActionKind, Confirms, KindSet};
 pub use member_access::MemberAccess;
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use policy_edit::{PolicyEdit, PresetMutationError, sort_presets, until_secs};

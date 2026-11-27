@@ -1544,6 +1544,7 @@ fn workspace_call(
         panic!("a workspace action is called with its arguments");
     };
     let request = RemoteActionMessage::Invoke(InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
@@ -1587,6 +1588,7 @@ fn device_call(socket: &Path, action: &str, args: Value) -> tilo_actions::remote
         panic!("a device action is called with its arguments");
     };
     let request = RemoteActionMessage::Invoke(InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: tilo_device_identity::login::PROVIDER.to_owned(),

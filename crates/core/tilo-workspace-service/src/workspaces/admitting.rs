@@ -693,6 +693,7 @@ impl Workspaces {
         );
         let workspace = workspace_id.to_string();
         let request = InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),

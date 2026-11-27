@@ -393,6 +393,8 @@ pub mod __private {
         /// It also loses what Undo cannot bring back
         /// (`#[action(irreversible)]`).
         pub irreversible: bool,
+        /// What it does leaves the system for good (`#[action(leaves)]`).
+        pub leaves: bool,
         /// A change about the record rather than to it
         /// (`#[action(housekeeping)]`).
         pub housekeeping: bool,
@@ -618,6 +620,9 @@ pub mod __private {
             .flatten();
         if verb.irreversible {
             decl.tags.push(tilo_actions::IRREVERSIBLE_TAG.to_owned());
+        }
+        if verb.leaves {
+            decl.tags.push(tilo_actions::LEAVES_TAG.to_owned());
         }
         if verb.housekeeping {
             decl.tags.push(tilo_actions::HOUSEKEEPING_TAG.to_owned());

@@ -1237,6 +1237,7 @@ fn change_governance(session: &Served, workspace_id: WorkspaceId, change: &Chang
     let workspace = workspace_id.to_string();
     let (person, action, arguments) = member_change(change);
     let request = tilo_actions::remote::InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         on_behalf_of: None,
         target: tilo_actions::remote::RemoteActionTarget {
@@ -1448,6 +1449,7 @@ fn an_agent_is_refused_a_role(
         .invoke(
             &agent,
             tilo_actions::remote::InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 on_behalf_of: None,
                 target: tilo_actions::remote::RemoteActionTarget {

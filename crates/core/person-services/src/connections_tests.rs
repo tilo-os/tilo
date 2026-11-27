@@ -36,6 +36,7 @@ fn calling(action: &str, argument: Value) -> InvokeRequest {
         _ => InvokeArgument::None,
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: person_connections::target(action),
         argument,

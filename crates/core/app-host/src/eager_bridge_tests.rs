@@ -7,6 +7,7 @@ mod eager_bridge_tests {
 
     fn request(fixture: &LocalDirectoryFixture) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: fixture.peer_id.to_string(),

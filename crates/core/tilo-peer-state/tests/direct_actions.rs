@@ -58,6 +58,7 @@ fn now_ns() -> u64 {
 /// One invocation of an action, as a caller on another device sends it.
 fn invoke(invocation: InvocationId) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
@@ -1972,6 +1973,7 @@ impl ActionProvider for EntryOnly {
 /// host admits it in.
 fn scoped(invocation: InvocationId, resource: &str, action: &str) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {

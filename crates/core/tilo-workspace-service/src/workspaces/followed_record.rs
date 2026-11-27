@@ -157,6 +157,7 @@ mod tests {
             .answers;
         let ask = |invocation, keep: Invoke<Devices>| {
             let request = tilo_actions::remote::InvokeRequest {
+                asks: false,
                 invocation,
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: format!(

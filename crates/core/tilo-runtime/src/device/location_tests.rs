@@ -39,6 +39,7 @@ fn location(declared: &'static [&'static str], switched_off: bool) -> Location {
 
 fn request() -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: PROVIDER.to_owned(),

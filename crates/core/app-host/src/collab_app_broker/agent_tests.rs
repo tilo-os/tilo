@@ -643,6 +643,7 @@ fn stray_invoke(
             None,
             None,
             &InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: tilo_actions::remote::session_actions::PROVIDER.into(),
@@ -790,6 +791,7 @@ fn write_contacts(
             None,
             None,
             &InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: ContactDirectory::provider(),

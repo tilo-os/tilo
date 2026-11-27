@@ -715,6 +715,12 @@ pub struct InvokeRequest {
     /// request that brings it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed: Option<Box<SignedInvocation>>,
+    /// The person's own press of the action waits for their yes, as the window or the shell
+    /// that took the press decided it ([`crate::ActionContract::confirms`]): the dispatch asks
+    /// them first, as it does where the action's contract asks. It only ever adds an ask; left
+    /// out (`false`), the call is asked exactly as its contract and the caller's grants say.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub asks: bool,
 }
 
 impl InvokeRequest {
@@ -773,6 +779,7 @@ impl InvokeRequest {
             // Evidence of who asked, checked on its own: a retry the caller
             // signed again is still a retry.
             signed: _,
+            asks,
         } = self;
         *invocation == other.invocation
             && *target == other.target
@@ -782,6 +789,7 @@ impl InvokeRequest {
             && *revision == other.revision
             && *on_behalf_of == other.on_behalf_of
             && *appearance == other.appearance
+            && *asks == other.asks
     }
 
     /// An invocation of `target` with `arguments` and nothing else: no context, revision or
@@ -806,6 +814,7 @@ impl InvokeRequest {
             wait_ms: None,
             appearance: None,
             signed: None,
+            asks: false,
         }
     }
 }

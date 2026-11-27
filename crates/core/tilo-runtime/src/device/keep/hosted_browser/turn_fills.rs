@@ -299,6 +299,7 @@ fn fill_request(page: &PageWindow, fill: &TurnFill) -> InvokeRequest {
     arguments.insert("element".into(), json!(fill.element));
     arguments.insert("item".into(), json!(fill.item));
     InvokeRequest {
+        asks: false,
         invocation: fill.invocation,
         target: page.target(FILL_PAGE_SECRET),
         argument: InvokeArgument::Json(arguments),

@@ -119,6 +119,7 @@ impl ContentPuts for Steps {
 /// A step on `device`'s `vm` resource, as tilo-vm asks it.
 fn step(device: &str, action: &str) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {

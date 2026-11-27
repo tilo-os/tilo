@@ -986,6 +986,7 @@ mod tests {
             None,
             None,
             &InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
@@ -1285,6 +1286,7 @@ mod tests {
                         None,
                         None,
                         &InvokeRequest {
+                            asks: false,
                             on_behalf_of: None,
                             invocation: tilo_actions::InvocationId::new(),
                             target: RemoteActionTarget {
@@ -1390,6 +1392,7 @@ mod tests {
             assert!(app.try_recv().is_err(), "nothing ran");
 
             let mut request = InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: "5".into(),
@@ -2101,6 +2104,7 @@ mod tests {
                 None,
                 None,
                 &InvokeRequest {
+                    asks: false,
                     on_behalf_of: None,
                     invocation: tilo_actions::InvocationId::new(),
                     target: RemoteActionTarget {
@@ -2949,6 +2953,7 @@ mod tests {
                 None,
                 None,
                 &InvokeRequest {
+                    asks: false,
                     on_behalf_of: None,
                     invocation: tilo_actions::InvocationId::new(),
                     target: RemoteActionTarget {
@@ -2991,6 +2996,7 @@ mod tests {
             None,
             None,
             &InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {

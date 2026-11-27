@@ -260,6 +260,7 @@ tilo_test_env::scenario! {
         let invoke = tilo_ui_base::collaboration::CollabRequest::RemoteAction {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(
                 tilo_actions::remote::InvokeRequest {
+                    asks: false,
                     on_behalf_of: None,
                     invocation: tilo_actions::InvocationId::new(),
                     target: tilo_actions::remote::vault_target(

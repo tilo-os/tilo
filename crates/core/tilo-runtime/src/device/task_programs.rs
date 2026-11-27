@@ -473,6 +473,7 @@ mod tests {
     /// One program of an agent session, as its call names the step.
     fn step_call(program: &str) -> tilo_actions::remote::InvokeRequest {
         tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: wire::target(),
             argument: InvokeArgument::from_slot(Some(&format!(
@@ -519,6 +520,7 @@ mod tests {
             arguments["session"] = session.into();
         }
         let request = tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: wire::PROVIDER.to_owned(),

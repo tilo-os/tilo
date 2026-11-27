@@ -1235,6 +1235,7 @@ pub async fn output(
     let caller = host.caller();
     let provider = host.dispatch();
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target,
         argument: match &arguments {
@@ -1358,6 +1359,7 @@ pub fn running_record(page: &CataloguePage, workspace: &str, app: &str) -> Optio
 #[must_use]
 pub fn call(provider: &str, address: ActionAddress, arguments: &Value) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: provider.to_owned(),

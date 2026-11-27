@@ -162,6 +162,7 @@ impl Tickets {
         let service = ActionService::new(self.0.key.clone(), std::sync::Arc::new(NoActions));
         let remote = std::sync::Arc::new(service.remote(&self.0.endpoint, &addr, &workspace));
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {

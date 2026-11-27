@@ -571,6 +571,7 @@ impl DesktopWells {
     /// Each window on the layout, by its key, as its own page in the well it shows in.
     fn read(&self) -> Result<std::collections::BTreeMap<String, String>, PageRefusal> {
         let request = InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: crate::device::layout::PROVIDER.to_owned(),
@@ -1324,6 +1325,7 @@ impl Search {
     fn invoke(&mut self, label: String, run: RowRun, argument: InvokeArgument) {
         let invocation = InvocationId::new();
         let request = InvokeRequest {
+            asks: false,
             invocation,
             target: run.target,
             argument,

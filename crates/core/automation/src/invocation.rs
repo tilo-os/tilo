@@ -2137,6 +2137,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
         }
         Ok(Prepared {
             request: InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation: step_invocation_id(self.invocation, path),
                 target: tilo_actions::remote::RemoteActionTarget {

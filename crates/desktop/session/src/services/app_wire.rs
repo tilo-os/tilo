@@ -633,6 +633,13 @@ impl ServedServices {
         };
         let resources = services.resources();
         let confirmed = request.approval().is_some();
+        // The person's press that waits for their yes is kept as their asked record before
+        // anything of it runs, as one whose contract asks is.
+        if request.asks && !confirmed {
+            return Err(ActionCallError::ConfirmationRequired(Box::new(
+                self.facts(&resources, address),
+            )));
+        }
         // What the host that admitted the call attested of it: the person's approve it came back
         // with, and whether their own press made it. A tilolang service's run reads both as a
         // window's does, so what its code calls of its own runs as their act.

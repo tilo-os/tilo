@@ -156,6 +156,7 @@ fn set_alarm() -> InvokeRequest {
     let mut arguments = serde_json::Map::new();
     arguments.insert("at".into(), "07:00".into());
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {

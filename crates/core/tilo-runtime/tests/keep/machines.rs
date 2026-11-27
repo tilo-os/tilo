@@ -91,6 +91,7 @@ async fn host_answer(
         panic!("arguments are an object");
     };
     let invoke = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: HOST_PROVIDER.into(),
@@ -1070,6 +1071,7 @@ async fn machine_certified(
         panic!("the input is an object");
     };
     let request = InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {

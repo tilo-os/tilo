@@ -504,6 +504,7 @@ impl Wire {
         arguments: Map<String, Value>,
     ) -> Result<Value, String> {
         let request = InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: target.clone(),
             argument: InvokeArgument::Json(arguments),

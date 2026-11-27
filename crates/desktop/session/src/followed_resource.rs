@@ -588,6 +588,7 @@ impl Core {
         invoker: Option<tilo_actions::ActionInvoker>,
     ) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: format!("{RESOURCE_PROVIDER}:{}:{}", self.app, self.id),

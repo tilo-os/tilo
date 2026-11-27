@@ -1648,13 +1648,12 @@ impl<R: Resource> Dispatcher<R> {
 
     /// [`Self::submit_now`] of the person's own gesture on the surface: the
     /// button they pressed, the shortcut they typed, with arguments the
-    /// gesture itself supplied. Like a keystroke, such a gesture is its own
-    /// confirmation, so a destructive verb the surface offers with its own
-    /// way back (a message held so Undo takes it back unsent) applies now.
-    /// What has no way back (`#[action(irreversible)]`) is still asked first.
-    /// The confirmation stays with the callers who supply the arguments
-    /// themselves (the palette, a script, an agent): under any invocation,
-    /// an effect's handler or a past version this is
+    /// gesture itself supplied. It is their press, so it waits for their yes
+    /// where a press of it does ([`tilo_actions::press_confirms`]): a
+    /// destructive verb Undo takes back unless they hold Shift, what Undo
+    /// cannot take back and what leaves the system always. That goes through
+    /// the host, which asks them; everything else applies now. Under any
+    /// invocation (an agent's, an effect's handler, a past version) this is
     /// [`Self::submit_now`], and the host asks as for any caller.
     ///
     /// # Errors
@@ -1674,9 +1673,8 @@ impl<R: Resource> Dispatcher<R> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
-        // The gesture confirms only what has a way back: a verb that loses
-        // something Undo cannot bring back is asked first, as at every API.
-        if tilo_actions::Action::irreversible(&action) && asks(&action) {
+        // The person's press waits for their yes where a press of the action does.
+        if tilo_actions::press_confirms(&action).on_press(ui_core::widget::shift_held()) {
             return self.ask_first(invoke, &action);
         }
         let applied = self.apply_now_as(edits, &action, self.core.context(), true);

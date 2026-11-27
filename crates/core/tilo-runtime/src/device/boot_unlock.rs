@@ -161,6 +161,7 @@ impl BootUnlock {
         let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key);
         let invocation = InvocationId::new();
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {

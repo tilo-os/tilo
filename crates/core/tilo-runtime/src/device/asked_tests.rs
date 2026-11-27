@@ -151,6 +151,7 @@ fn send_mail() -> InvokeRequest {
     let mut arguments = serde_json::Map::new();
     arguments.insert("to".into(), "bo@example.com".into());
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {

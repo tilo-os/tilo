@@ -319,6 +319,7 @@ fn settings_lists_shortcuts(socket: &PathBuf) -> tilo_actions::remote::ReceiptSt
         let status = answered(
             &handle,
             RemoteActionMessage::Invoke(InvokeRequest {
+                asks: false,
                 invocation,
                 target: RemoteActionTarget {
                     provider: tilo_actions::remote::workspace_provider(WORKSPACE),

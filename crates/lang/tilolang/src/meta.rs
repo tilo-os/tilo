@@ -899,7 +899,7 @@ impl ActionMeta {
         if self.leaves {
             Confirms::Always
         } else {
-            self.class
+            tilo_action_policy::ActionKind::from(self.class)
                 .confirms(self.role.as_deref() == Some("destructive"))
         }
     }

@@ -224,6 +224,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let other = owner.clone().in_new_execution();
     let id = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: id,
         target: RemoteActionTarget {
@@ -818,6 +819,7 @@ fn the_session_hands_its_workspace_service_a_route_that_asks_the_workspaces_devi
         inputs: Vec::new(),
     };
     let invocation = || tilo_actions::remote::InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: "photos.library".into(),
@@ -1635,6 +1637,7 @@ fn the_desktop_keeps_what_its_device_says_of_itself_in_the_devices_record() {
         .invoke_blocking(
             &workspace,
             tilo_actions::remote::InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: format!("record:{}:{}", DEVICES.0, DEVICES.1),
@@ -1811,6 +1814,7 @@ async fn another_roles_asks_are_refused(role: &str) {
     let socket = role.strip_prefix("other:").expect("a role this test plays");
     let workspace = WorkspaceId::new().to_string();
     let membership = tilo_actions::remote::InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
             &workspace,
@@ -2163,6 +2167,7 @@ fn an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none() {
             argument.insert("wait".into(), true.into());
         }
         tilo_actions::remote::InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
@@ -2273,6 +2278,7 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
         let mut argument = serde_json::Map::new();
         argument.insert("server".into(), true.into());
         tilo_actions::remote::InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
@@ -2453,6 +2459,7 @@ fn founding_on_a_persons_device_is_told_it_has_one() {
     let (tree, agent) = daemon.connection_tree_in(None).unwrap();
     for action in [FOUND, RESTORE] {
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
@@ -3064,6 +3071,7 @@ fn a_development_build_installs_on_the_persons_own_connection() {
     let manifest = put(development_build_manifest().as_bytes());
     let program = put(b"a development build's own program");
     let request = InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target,
@@ -3346,6 +3354,7 @@ fn a_secret_answer_is_kept_out_of_every_invocation_record() {
     };
     let argument = json!({"item": reference.to_string(), "part": "secret"});
     let request = InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target,
@@ -3445,6 +3454,7 @@ fn a_secret_argument_is_kept_out_of_every_invocation_record() {
     );
     let ask =
         |provider: &str, resource: &str, action: &str, argument: serde_json::Value| InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {

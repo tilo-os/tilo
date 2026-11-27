@@ -2419,6 +2419,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_observations() {
                             actor: &actor,
                             approval: Some(&crate::app_core::TEST_APPROVAL),
                             broker_admitted: false,
+                            pressed: false,
                             invocation: tilo_actions::InvocationId::new(),
                             source_invocation: None,
                             ambient: None,

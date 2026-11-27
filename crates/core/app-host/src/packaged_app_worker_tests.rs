@@ -447,6 +447,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
                 ..Default::default()
             };
             let edit = |provider: String, id: &str| InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider,

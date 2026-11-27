@@ -1000,7 +1000,8 @@ mod tests {
     /// ([`tilolang::meta::ActionMeta::confirms`]): what leaves the system always confirms, a
     /// delete its app marks destructive confirms unless Shift is held, and the rest acts on a
     /// click. Its contract confirms every call of what leaves, and nothing of what acts on a
-    /// click.
+    /// click; and a press decided from its contract, as a window or the shell decides one, waits
+    /// as its runtime does: the rule is the one every app shares.
     #[test]
     fn every_fleet_actions_published_confirmation_is_what_its_press_waits_for() {
         use std::sync::Arc;
@@ -1036,6 +1037,12 @@ mod tests {
                 let published =
                     tilolang_tilo::publish::action_type(&meta, &kind, action, &planner, &words);
                 let confirms = action.confirms();
+                assert_eq!(
+                    published.contract.confirms(),
+                    confirms,
+                    "{app}: a press of `{}` decided from its contract",
+                    action.name,
+                );
                 let expected = match confirms {
                     Confirms::Always => Some(ConfirmationPolicy::Confirm),
                     Confirms::Never => Some(ConfirmationPolicy::None),

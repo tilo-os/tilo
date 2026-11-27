@@ -136,6 +136,7 @@ async fn create_watching_agent(
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
             .in_workspace(workspace);
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, WORKSPACE_AGENT_CREATE),
         argument: InvokeArgument::Json(serde_json::Map::from_iter([

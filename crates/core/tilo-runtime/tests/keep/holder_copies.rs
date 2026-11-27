@@ -470,6 +470,7 @@ async fn govern(
         panic!("arguments are an object");
     };
     let message = RemoteActionMessage::Invoke(InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(&workspace.workspace, action),
         argument: InvokeArgument::Json(argument),

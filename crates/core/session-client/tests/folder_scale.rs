@@ -145,6 +145,7 @@ impl Writer {
         let id = format!("agent-{}", n % 3);
         let signer = &self.agents[n % 3];
         let mut request = tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: fs_protocol::tree::FILES_APP.into(),

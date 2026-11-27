@@ -686,6 +686,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
     let ask_for = |cert: &DeviceCert, workspace: &str, action: &str| {
         let caller = caller_for(cert, workspace);
         let request = tilo_actions::remote::InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
@@ -927,6 +928,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
     let agent = Caller::delegated_agent("helper", root.verifying_key().to_bytes(), [33; 32])
         .in_workspace(studio.clone());
     let request = || tilo_actions::remote::InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
@@ -1103,6 +1105,7 @@ async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() 
     let caller = Caller::authenticated(carol_cert.user_public_key, carol_cert.device_public_key)
         .in_workspace(studio.clone());
     let restart = || tilo_actions::remote::InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {

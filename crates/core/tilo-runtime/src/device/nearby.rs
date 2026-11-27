@@ -1041,6 +1041,7 @@ async fn call(
         _ => return Err("an offer takes named arguments".to_owned()),
     };
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: PROVIDER.to_owned(),

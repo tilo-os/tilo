@@ -121,6 +121,7 @@ impl AppBrokerState {
         }
         argument.insert(IF_ABSENT.into(), true.into());
         let install = InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: RemoteActionTarget::workspace_governance(
                 &open.workspace,
@@ -443,6 +444,7 @@ mod tests {
         );
         let caller = Caller::local_person(editor).in_workspace(workspace_id.clone());
         let open = InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: workspace_provider(&workspace_id),

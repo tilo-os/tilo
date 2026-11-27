@@ -126,6 +126,7 @@ mod tests {
 
     fn request(action: &str, arguments: serde_json::Value) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: node_target("r1", NODE, action),

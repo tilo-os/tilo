@@ -352,6 +352,7 @@ mod durable_local_matrix {
     /// The rig's application's (peer 903) action, as invocation `id`.
     fn durable_request(id: tilo_actions::InvocationId) -> tilo_actions::remote::InvokeRequest {
         tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: id,
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: "903".into(),

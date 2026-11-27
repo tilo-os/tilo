@@ -50,6 +50,7 @@ fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
         _ => InvokeArgument::None,
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target,
         argument,

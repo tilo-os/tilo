@@ -436,6 +436,7 @@ fn to_window(
     arguments: Map<String, Value>,
 ) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation,
         target: window.target(action),
         argument: InvokeArgument::Json(arguments),

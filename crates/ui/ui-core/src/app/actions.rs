@@ -1073,7 +1073,7 @@ impl App {
             .alias(binding, resource.id.as_str())
             .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
         let address = tilo_actions::ActionAddress::new(alias, action);
-        self.invoke_via_broker(&address, Some(&serde_json::Map::new()), None)
+        self.invoke_via_broker(&address, Some(&serde_json::Map::new()), None, false)
     }
 
     /// Admit a locally initiated operation at the session broker before the
@@ -1083,12 +1083,17 @@ impl App {
     /// load-bearing for Effects: if the app crashes while doing external work,
     /// history retains an admitted/incomplete operation instead of losing the
     /// action entirely.
+    ///
+    /// `asks`: the person's own press of it waits for their yes
+    /// ([`tilo_actions::remote::InvokeRequest::asks`]), so the dispatch asks them first even where
+    /// the action's contract asks nobody.
     #[cfg(feature = "model")]
     pub(super) fn invoke_via_broker(
         &mut self,
         address: &tilo_actions::ActionAddress,
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
+        asks: bool,
     ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let mut made = None;
         let started = Self::dispatch_broker_request(
@@ -1097,7 +1102,12 @@ impl App {
             address,
             typed_arguments,
             argument,
-            |request_id, request| made = Some((request_id, request)),
+            |request_id, request| {
+                made = Some((
+                    request_id,
+                    tilo_actions::remote::InvokeRequest { asks, ..request },
+                ));
+            },
         )?;
         if let Some((request_id, request)) = made {
             self.note_started_window_invocation(request.invocation, address);
@@ -1143,6 +1153,7 @@ impl App {
         send(
             request_id,
             tilo_actions::remote::InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::RemoteActionTarget {
@@ -1223,7 +1234,7 @@ impl App {
             && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred
             && !broker_admitted
         {
-            return self.invoke_via_broker(address, broker_arguments, broker_argument);
+            return self.invoke_via_broker(address, broker_arguments, broker_argument, false);
         }
         let source_invocation = broker_admitted.then_some(invocation).flatten();
         debug_assert!(
@@ -1243,7 +1254,7 @@ impl App {
             ));
         }
         if action.locus() == tilo_actions::ExecutionLocus::ServerPreferred && !broker_admitted {
-            return self.invoke_via_broker(address, broker_arguments, broker_argument);
+            return self.invoke_via_broker(address, broker_arguments, broker_argument, false);
         }
         // Only admitted local document execution owns a new change boundary.
         // Encoding failures and broker routing must leave the caller's pending
@@ -1375,7 +1386,7 @@ impl App {
                 },
             );
         }
-        self.invoke_via_broker(&address, arguments, argument)
+        self.invoke_via_broker(&address, arguments, argument, false)
     }
 
     /// Invoke the action `address` names, at the component instance `address.instance_id`
@@ -1444,6 +1455,7 @@ impl App {
                 actor: &actor,
                 approval: None,
                 broker_admitted: false,
+                pressed: false,
                 invocation,
                 source_invocation: None,
                 ambient: None,
@@ -1481,6 +1493,7 @@ impl App {
             broker_admitted,
             invocation,
             ambient_context: ambient,
+            pressed,
             ..
         } = *request;
         let _entry = target
@@ -1532,6 +1545,7 @@ impl App {
                 actor,
                 approval,
                 broker_admitted,
+                pressed,
                 invocation: id,
                 source_invocation: broker_admitted.then_some(invocation).flatten(),
                 ambient,
@@ -1785,6 +1799,7 @@ impl App {
             broker_admitted,
             invocation,
             ambient_context,
+            pressed,
         } = *request;
         // Ordinary local requests use the permission-projected, cached
         // resource surface (including retained bound rows).
@@ -1853,6 +1868,7 @@ impl App {
                 typed_arguments.as_ref(),
                 argument,
                 approval,
+                pressed,
             )?;
         }
         crate::invocation_scope::check_continuation(
@@ -1909,7 +1925,7 @@ impl App {
             && !broker_admitted
             && self.collaboration.manager.is_connected()
         {
-            return self.invoke_via_broker(address, typed_arguments.as_ref(), argument);
+            return self.invoke_via_broker(address, typed_arguments.as_ref(), argument, false);
         }
         if kind == tilo_actions::OperationKind::Document {
             let request = ResourceInvocation::new(address, actor)
@@ -2291,6 +2307,7 @@ impl App {
         }
         let request_id = self.take_broker_request_id()?;
         let request = tilo_actions::remote::InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
@@ -3364,6 +3381,24 @@ impl App {
             .filter(|cache| cache.key == key)
             .is_some_and(|cache| {
                 tilo_actions::api::resolve(&cache.declared, &intent.address).is_some()
+            })
+    }
+
+    /// Whether the person's press of what `intent` calls, as the window declares it, waits for
+    /// their yes ([`crate::bound_dispatch::press_asks`]): what the device asks where the window
+    /// does not offer the action itself.
+    #[cfg(feature = "model")]
+    pub(crate) fn declared_press_asks(&self, intent: &tilo_actions::ControlInvocation) -> bool {
+        let key = self.ensure_declared_resource_cache();
+        self.actions
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .and_then(|cache| tilo_actions::api::resolve(&cache.declared, &intent.address))
+            .is_some_and(|spec| {
+                spec.confirms_for(Some(&intent.arguments), None)
+                    .on_press(crate::widget::shift_held())
             })
     }
 

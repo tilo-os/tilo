@@ -769,6 +769,7 @@ fn app_calls(
 /// A call of the bridge's channel's `send` in `workspace`, signed by `signer` when given.
 fn send(workspace: &str, signer: Option<(&DeviceCert, &SigningKey)>) -> InvokeRequest {
     let request = InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: tilo_actions::remote::application_provider_token(workspace, BRIDGE),

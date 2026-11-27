@@ -212,6 +212,7 @@ impl Remote {
             )));
         };
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {

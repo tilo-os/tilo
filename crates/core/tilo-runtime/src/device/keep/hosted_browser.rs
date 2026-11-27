@@ -2730,6 +2730,7 @@ mod tests {
         {
             use tilo_actions::remote::{APPLICATION_OPEN_ACTION, workspace_provider};
             let open = |resource: &str, action: &str| InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 on_behalf_of: None,
                 target: RemoteActionTarget {
@@ -2762,6 +2763,7 @@ mod tests {
         {
             use tilo_actions::remote::{APPLICATION_OPEN_ACTION, workspace_provider};
             let open = |resource: &str, app: Option<&str>| InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 on_behalf_of: None,
                 target: RemoteActionTarget {

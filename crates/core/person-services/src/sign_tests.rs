@@ -112,6 +112,7 @@ fn signing(item: &ItemRef, place: &str, data: &[u8], namespace: &str) -> InvokeR
     }
     argument.insert("reason".into(), json!("To sign your commit."));
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: workspace_vault::ItemRef::target(item, workspace_vault::SIGN),
         argument: InvokeArgument::Json(argument),

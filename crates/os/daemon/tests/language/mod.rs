@@ -224,6 +224,7 @@ pub(crate) async fn govern(
         panic!("arguments are an object");
     };
     let request = InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, operation),
         argument: InvokeArgument::Json(arguments),

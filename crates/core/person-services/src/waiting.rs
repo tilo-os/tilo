@@ -66,6 +66,7 @@ pub(crate) async fn answered_by(
         panic!("an answer is an object");
     };
     let answer = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: workspace_invocations::PROVIDER.to_owned(),

@@ -178,6 +178,7 @@ fn a_transform_cancelled_while_it_runs_stops_and_reads_cancelled() {
 /// The summarise request this test sends: a transform of one page.
 fn summarise_request() -> Result<InvokeRequest, String> {
     Ok(InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {

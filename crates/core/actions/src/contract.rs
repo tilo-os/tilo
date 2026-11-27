@@ -6,7 +6,7 @@
 //! be retried, how it completes, and what it returns.
 
 use serde::{Deserialize, Serialize};
-pub use tilo_action_policy::ActionKind;
+pub use tilo_action_policy::{ActionKind, Confirms};
 
 use crate::action::{OperationKind, undo_takes_back};
 use crate::context::ChangeKind;
@@ -420,6 +420,13 @@ pub const COMPENSATED_UNDO_TAG: &str = "undo:compensated";
 /// account's secret every device forgets): it cannot be taken back, so a
 /// destructive one is confirmed through every API.
 pub const IRREVERSIBLE_TAG: &str = "undo:irreversible";
+
+/// [`ActionContract::tags`] entry of an action that leaves the system for good
+/// (`#[action(leaves)]`: a message sent to people outside it): a person's own
+/// press of it always confirms first, Shift held or not
+/// ([`ActionContract::confirms`]). A call an agent or a bot makes runs on its
+/// grants and the action's own asks.
+pub const LEAVES_TAG: &str = "press:leaves";
 
 /// Contract tag on the declaration of a housekeeping verb: a change about the
 /// record rather than to it (`#[action(housekeeping)]`, such as marking a
@@ -1233,6 +1240,40 @@ impl ActionContract {
         (self.kind == ActionKind::Undoable
             || self.tags.iter().any(|tag| tag == COMPENSATED_UNDO_TAG))
             && !self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG)
+    }
+
+    /// What a person's own press of the action waits for: one that leaves
+    /// the system ([`LEAVES_TAG`]) always confirms, a destructive one confirms
+    /// unless Shift is held where Undo takes it back and always where it
+    /// cannot, and the rest acts on the press
+    /// ([`ActionKind::confirms`]). An agent's or a bot's call is decided by
+    /// its grants and [`Self::confirmation`] alone.
+    #[must_use]
+    pub fn confirms(&self) -> Confirms {
+        self.confirms_as(self.risk, self.can_be_undone())
+    }
+
+    /// [`Self::confirms`] of one invocation whose risk is `risk` and which
+    /// Undo takes back when `undoable`.
+    #[must_use]
+    pub fn confirms_as(&self, risk: RiskLevel, undoable: bool) -> Confirms {
+        if self.leaves() {
+            return Confirms::Always;
+        }
+        let kind = if undoable {
+            ActionKind::Undoable
+        } else if self.kind == ActionKind::Read {
+            ActionKind::Read
+        } else {
+            ActionKind::Outside
+        };
+        kind.confirms(risk == RiskLevel::Destructive)
+    }
+
+    /// Whether the action leaves the system for good. See [`LEAVES_TAG`].
+    #[must_use]
+    pub fn leaves(&self) -> bool {
+        self.tags.iter().any(|tag| tag == LEAVES_TAG)
     }
 
     /// Whether an invocation of this action must be confirmed before it

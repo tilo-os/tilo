@@ -195,6 +195,7 @@ fn listed(
 fn offered(row: &tilo_actions::remote::CatalogueRow) -> InvokeRequest {
     let action = row.action.as_ref().expect("the row offers an action");
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: row.provider.clone(),
@@ -437,6 +438,7 @@ fn read_text(workspace: &str, arguments: Value) -> InvokeRequest {
         panic!("the arguments are an object")
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: tilo_actions::remote::workspace_provider(workspace),

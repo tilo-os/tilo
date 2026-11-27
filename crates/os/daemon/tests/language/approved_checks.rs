@@ -535,6 +535,7 @@ async fn run_check(
     let provider = host.dispatch();
     let caller = host.caller();
     let request = InvokeRequest {
+        asks: false,
         invocation,
         target: host::app_action(host, APP, resource, "run-approved-check"),
         argument: InvokeArgument::Json(

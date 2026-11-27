@@ -41,6 +41,7 @@ fn request(action: &str, args: Value) -> InvokeRequest {
         panic!("a setting action takes an object");
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: super::PROVIDER.to_owned(),

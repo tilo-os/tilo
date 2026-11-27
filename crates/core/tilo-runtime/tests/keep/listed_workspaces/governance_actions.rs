@@ -104,6 +104,7 @@ pub(super) fn invocation(
         panic!("arguments are an object");
     };
     RemoteActionMessage::Invoke(InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: provider.into(),
@@ -201,6 +202,7 @@ fn invite(workspace: &str) -> RemoteActionMessage {
     let mut argument = serde_json::Map::new();
     argument.insert("role".into(), "editor".into());
     RemoteActionMessage::Invoke(InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, "invite"),
         argument: InvokeArgument::Json(argument),

@@ -1402,6 +1402,7 @@ mod tests {
 
     fn request(token: &str) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: token.into(),

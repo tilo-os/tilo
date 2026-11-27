@@ -681,7 +681,7 @@ impl Guild {
     }
 
     /// Send a message through a channel's webhook.
-    #[action]
+    #[action(leaves)]
     pub fn send(
         &mut self,
         cx: &mut ActionCx,

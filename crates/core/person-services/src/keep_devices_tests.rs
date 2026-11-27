@@ -62,6 +62,7 @@ fn request(
     argument: InvokeArgument,
 ) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target,
         argument,

@@ -38,6 +38,7 @@ const THEIRS: &str = "made-up-kept-password-17";
 /// `action` at the vault, as the window's process calls it with `argument`.
 fn call(target: RemoteActionTarget, argument: &Value) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target,
         argument: InvokeArgument::Json(argument.as_object().cloned().unwrap()),

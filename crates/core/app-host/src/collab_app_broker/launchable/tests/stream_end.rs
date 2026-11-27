@@ -45,6 +45,7 @@ tilo_test_env::scenario! {
             "new-window",
         );
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {

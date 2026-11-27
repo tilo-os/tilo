@@ -198,6 +198,7 @@ fn request(provider: &str, resource: &str, action: &str, arguments: Value) -> In
         _ => InvokeArgument::None,
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: provider.to_owned(),

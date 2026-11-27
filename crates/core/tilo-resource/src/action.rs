@@ -588,6 +588,12 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
         false
     }
 
+    /// Whether the operation leaves the system for good. `#[resource]`
+    /// generates it from `#[action(leaves)]`.
+    fn leaves(&self) -> bool {
+        false
+    }
+
     /// Whether only the app's own code applies this operation
     /// (`#[action(by_app)]`): it is declared to no caller, and an action API that
     /// decodes one refuses it. `#[resource]` generates it.
@@ -1648,6 +1654,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
 
     fn irreversible(&self) -> bool {
         self.operation.irreversible()
+    }
+
+    fn leaves(&self) -> bool {
+        self.operation.leaves()
     }
 
     /// A verb that declares its undo is undone by applying that verb, and a

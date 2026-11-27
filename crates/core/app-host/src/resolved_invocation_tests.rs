@@ -188,6 +188,7 @@ fn directory_request(
     confirmation: Option<tilo_actions::remote::Confirmation>,
 ) -> tilo_actions::remote::InvokeRequest {
     tilo_actions::remote::InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: fixture.peer_id.to_string(),

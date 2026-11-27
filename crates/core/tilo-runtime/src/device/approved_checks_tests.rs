@@ -549,6 +549,7 @@ fn undeclared_kind(workspace: &str, action: &str, asked: &str, kind: OperationKi
 /// The app's call to run `check_id` as that invocation's work.
 fn run_call(check_id: &str) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: tilo_action_services::approved_checks::PROVIDER.to_owned(),

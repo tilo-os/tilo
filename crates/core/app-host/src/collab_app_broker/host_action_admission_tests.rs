@@ -57,6 +57,7 @@ fn descriptor() -> ActionDescriptor {
 
 fn request(descriptor: &ActionDescriptor) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: "host-test".into(),

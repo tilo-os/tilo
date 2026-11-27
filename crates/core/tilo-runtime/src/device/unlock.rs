@@ -458,6 +458,7 @@ impl Unlock {
         let caller = Caller::authenticated(self.person, self.local);
         let invocation = InvocationId::new();
         let asked = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {

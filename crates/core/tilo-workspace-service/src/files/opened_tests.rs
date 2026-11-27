@@ -320,6 +320,7 @@ impl Put {
         (key, cert): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     ) -> tilo_actions::remote::InvokeRequest {
         let mut request = tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: tilo_actions::remote::workspace_provider(&self.name),

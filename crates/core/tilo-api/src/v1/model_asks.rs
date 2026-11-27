@@ -37,6 +37,7 @@ pub(super) async fn ask(
     arguments.insert("workspace".into(), json!(workspace));
     arguments.insert("request".into(), Value::Object(request));
     let asked = InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget {
             provider: PROVIDER.into(),

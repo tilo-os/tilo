@@ -69,6 +69,7 @@ test-notes-add = Add a note
 test-notes-remove = Remove a note
 test-notes-clear = Remove every note
 test-notes-forget = Forget every note, with what each device kept beside the document:
+test-notes-send = Send the notes to someone outside the workspace
 
 ## crates/sdk/tilo-app-test-host/tests/direct_records.rs
 test-direct = Direct conversation

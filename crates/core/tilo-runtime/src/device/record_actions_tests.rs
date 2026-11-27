@@ -128,6 +128,7 @@ async fn act(
             &Caller::authenticated(cert.user_public_key, cert.device_public_key)
                 .in_workspace(workspace.to_owned()),
             InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: format!("{RESOURCE_PROVIDER}:{}:{}", record.app, record.id()),

@@ -3669,6 +3669,7 @@ mod app_close_tests {
 
     fn close_request(workspace: &str) -> tilo_actions::remote::InvokeRequest {
         tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: tilo_actions::remote::workspace_provider(workspace),

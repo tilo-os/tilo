@@ -31,6 +31,7 @@ fn made_from(fixture: &LocalDirectoryFixture, kind: &str, resource: &str) -> Inv
         .to_json(),
     );
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: fixture.peer_id.to_string(),

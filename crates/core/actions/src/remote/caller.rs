@@ -1154,6 +1154,7 @@ mod tests {
     /// A call made in the session `session` names, in a work group of `kind`.
     fn call_in(kind: &str, session: Option<&str>) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             invocation: crate::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: "chat".into(),

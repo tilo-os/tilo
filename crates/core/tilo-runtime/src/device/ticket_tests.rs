@@ -113,6 +113,7 @@ async fn ask_issuer_saying(
     };
     argument.extend(more);
     let request = InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
@@ -151,6 +152,7 @@ async fn asked_as(
     action: &str,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
     let request = InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
@@ -182,6 +184,7 @@ pub(super) async fn ask_on(
     };
     let invocation = InvocationId::new();
     let request = InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
@@ -1915,6 +1918,7 @@ fn a_device_request(
     invocation: InvocationId,
 ) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
@@ -2133,6 +2137,7 @@ impl RevokeAtRoot {
     fn a_revoke_request(invocation: InvocationId) -> InvokeRequest {
         let revoked = hex::encode([9; 32]);
         InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {

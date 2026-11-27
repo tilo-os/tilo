@@ -1962,6 +1962,7 @@ impl App {
                     ),
                     &target.address.address,
                     &arguments,
+                    true,
                 )
                 .map(|_| true)
                 .map_err(|error| error.to_string())

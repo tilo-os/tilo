@@ -1278,6 +1278,7 @@ impl Account {
                     );
                 };
                 let asked = InvokeRequest {
+                    asks: false,
                     invocation: id,
                     target: model_providers::models::ask(),
                     argument: InvokeArgument::Json(request.clone()),
@@ -1634,6 +1635,7 @@ impl Account {
         };
         let actions = key.device.actions(entered);
         let request = InvokeRequest {
+            asks: false,
             invocation: id,
             target,
             argument: InvokeArgument::Json(arguments),
@@ -1967,6 +1969,7 @@ impl Certifying {
             );
         };
         let request = InvokeRequest {
+            asks: false,
             invocation: id,
             target: RemoteActionTarget {
                 provider: crate::keys::CERTIFY_PROVIDER.to_owned(),
@@ -2689,6 +2692,7 @@ async fn workspace_verb_as(
         .await
         .map_err(|error| refused(&error))?;
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, action),
         argument: InvokeArgument::Json(arguments),

@@ -50,6 +50,7 @@ impl Placement {
         };
         // The invocation the app made, which the device that takes the turn runs.
         let invoked = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: ask.invocation,
             target: offload_place::target(),

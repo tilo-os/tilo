@@ -278,6 +278,7 @@ mod tests {
     /// The open of the app `app`, addressed to the workspace `workspace`.
     fn open_of(app: &str, workspace: &str) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: workspace_provider(workspace),

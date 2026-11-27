@@ -260,6 +260,9 @@ struct ActionOptions {
     field: Option<String>,
     destructive: bool,
     irreversible: bool,
+    /// `leaves`: what it does leaves the system for good (a message sent to
+    /// people outside it), so a person's press of it always confirms first.
+    leaves: bool,
     housekeeping: bool,
     external: bool,
     /// Queues nothing though its record queues: an undoable change of the
@@ -305,6 +308,7 @@ impl ActionOptions {
             field: None,
             destructive: false,
             irreversible: false,
+            leaves: false,
             housekeeping: false,
             external: false,
             local: false,
@@ -356,6 +360,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.destructive = true;
         } else if meta.path.is_ident("irreversible") {
             options.irreversible = true;
+        } else if meta.path.is_ident("leaves") {
+            options.leaves = true;
         } else if meta.path.is_ident("housekeeping") {
             options.housekeeping = true;
         } else if meta.path.is_ident("incoming_message") {
@@ -395,7 +401,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.step = Some(crate::step_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `did = \"...\"`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `items = param`, `prepare = path`, `item = field`, `audience = \"agents\"`, `by_app`, `step = \"create\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `keywords`, `icon`, `did = \"...\"`, `field`, `moderation`, `destructive`, `irreversible`, `leaves`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `items = param`, `prepare = path`, `item = field`, `audience = \"agents\"`, `by_app`, `step = \"create\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -1201,6 +1207,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     let mut change_kinds = Vec::new();
     let mut incoming = Vec::new();
     let mut irreversibles = Vec::new();
+    let mut leaving = Vec::new();
     let mut by_app_arms = Vec::new();
     let mut by_app_ids = Vec::new();
     let mut compensations = Vec::new();
@@ -1475,6 +1482,9 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         if verb.options.irreversible {
             irreversibles.push(quote!(Self::#variant(..) => true,));
         }
+        if verb.options.leaves {
+            leaving.push(quote!(Self::#variant(..) => true,));
+        }
         if verb.options.by_app {
             by_app_arms.push(quote!(Self::#variant(..) => true,));
             by_app_ids.push(id.clone());
@@ -1679,6 +1689,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             |kind| quote!(::core::option::Option::Some(#krate::__private::StepKind::#kind)),
         );
         let irreversible = verb.options.irreversible;
+        let leaves = verb.options.leaves;
         let housekeeping = verb.options.housekeeping;
         let answer = if verb.options.answers {
             quote!(Made)
@@ -1779,6 +1790,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 field: #field,
                 destructive: #destructive,
                 irreversible: #irreversible,
+                leaves: #leaves,
                 housekeeping: #housekeeping,
                 answer: #krate::__private::VerbAnswer::#answer,
                 incoming_message: #incoming_message,
@@ -2231,6 +2243,19 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
+    let leaves_fn = if leaving.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn leaves(&self) -> bool {
+                #[allow(unreachable_patterns, reason = "every other operation stays in the system")]
+                match self {
+                    #(#leaving)*
+                    _ => false,
+                }
+            }
+        }
+    };
     let incoming_fn = if incoming.is_empty() {
         quote!()
     } else {
@@ -2419,6 +2444,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #change_kind
             #incoming_fn
             #irreversible_fn
+            #leaves_fn
             #by_app_fn
             #compensation_fns
 

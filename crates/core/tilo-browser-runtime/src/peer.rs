@@ -1971,6 +1971,7 @@ impl WasmPeer {
         let caller =
             tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
         let message = RemoteActionMessage::Invoke(InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget::workspace_governance(

@@ -124,6 +124,7 @@ impl Checked {
     pub fn forwarded(&self, workspace: &str, original: &InvokeRequest) -> InvokeRequest {
         let confirmation = original.confirmation.clone();
         InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: original.invocation,
             target: tilo_actions::remote::application_action_target(
@@ -240,6 +241,7 @@ mod tests {
             .check()
             .unwrap();
             let original = InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: target(),

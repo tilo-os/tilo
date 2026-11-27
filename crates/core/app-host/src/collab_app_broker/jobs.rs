@@ -167,6 +167,7 @@ impl AppBrokerState {
             let _ = launcher.windowless(app, workspace, None);
         }
         let request = InvokeRequest {
+            asks: false,
             invocation: handler_invocation(parent, workspace, app, &resource, &action),
             target: RemoteActionTarget {
                 provider: tilo_actions::remote::workspace_provider(workspace),

@@ -39,6 +39,55 @@ impl ActionKind {
     }
 }
 
+impl ActionKind {
+    /// What a person's own press of an action of this kind waits for, `destructive` when its
+    /// declaration marks it so: a destructive action undo takes back confirms unless Shift is
+    /// held, one undo cannot take back always confirms, and the rest acts on the press. What
+    /// leaves the system always confirms, whatever its kind; its declaration says so apart from
+    /// its kind. An agent's, an automation's or another app's call is decided by its grants and
+    /// the action's own asks, never by this.
+    #[must_use]
+    pub const fn confirms(self, destructive: bool) -> Confirms {
+        match (destructive, self) {
+            (false, _) => Confirms::Never,
+            (true, Self::Undoable) => Confirms::UnlessShift,
+            (true, Self::Read | Self::Outside) => Confirms::Always,
+        }
+    }
+}
+
+/// What a person's own press of an action waits for before it runs: the one rule every window,
+/// the shell and every language's apps decide a press by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Confirms {
+    /// It acts on the press: copying, opening, playing, refreshing, making a new thing.
+    Never,
+    /// It confirms first, and Shift held on the press skips that: a destructive action undo
+    /// takes back (a delete).
+    UnlessShift,
+    /// It confirms first, Shift held or not: it leaves the system, or is destructive and undo
+    /// cannot take it back.
+    Always,
+}
+
+impl Confirms {
+    /// Whether a press, with Shift held when `shift`, waits for the person's yes.
+    #[must_use]
+    pub const fn on_press(self, shift: bool) -> bool {
+        match self {
+            Self::Never => false,
+            Self::UnlessShift => !shift,
+            Self::Always => true,
+        }
+    }
+
+    /// Whether a plain press confirms: what an action's contract and its catalogue offer say.
+    #[must_use]
+    pub const fn by_default(self) -> bool {
+        self.on_press(false)
+    }
+}
+
 impl fmt::Display for ActionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -124,5 +173,23 @@ impl<'de> Deserialize<'de> for KindSet {
         Ok(Vec::<ActionKind>::deserialize(deserializer)?
             .into_iter()
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An irreversible destructive press always confirms, Shift held or not; Shift skips only
+    /// the confirmation of what undo takes back; nothing else confirms.
+    #[test]
+    fn shift_skips_only_what_undo_takes_back() {
+        for shift in [false, true] {
+            assert!(ActionKind::Outside.confirms(true).on_press(shift));
+            assert_eq!(ActionKind::Undoable.confirms(true).on_press(shift), !shift);
+            for kind in ActionKind::ALL {
+                assert!(!kind.confirms(false).on_press(shift), "{kind}");
+            }
+        }
     }
 }

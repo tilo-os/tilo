@@ -79,6 +79,7 @@ fn run_request(session: &str, command: &str) -> InvokeRequest {
         panic!("a run's argument is an object");
     };
     InvokeRequest {
+        asks: false,
         target: environment_commands::target(),
         argument: InvokeArgument::Json(argument),
         invocation: InvocationId::new(),

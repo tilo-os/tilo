@@ -121,6 +121,7 @@ fn fixture_owned_by(
 
 fn request() -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {

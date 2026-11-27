@@ -1250,6 +1250,7 @@ impl Surfaces {
         );
         app.actions.by_invocation.insert(invocation, id);
         app.actions.send(RemoteActionMessage::Invoke(InvokeRequest {
+            asks: false,
             invocation,
             target: RemoteActionTarget {
                 provider: app.actions.provider.clone(),

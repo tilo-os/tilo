@@ -65,6 +65,7 @@ async fn import(
 ) -> Result<Value, ActionCallError> {
     let device = workspaces.lease_device(workspace).await;
     let request = InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: PROVIDER.to_owned(),

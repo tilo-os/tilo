@@ -84,6 +84,7 @@ fn edit(
         .unwrap();
     let invocation = InvocationId::new();
     let mut request = InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget {
             provider: "test.app".into(),

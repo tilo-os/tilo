@@ -35,6 +35,7 @@ async fn try_ask(
     argument: Value,
 ) -> Result<RemoteActionMessage, String> {
     let message = RemoteActionMessage::Invoke(InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, action),
         argument: InvokeArgument::Json(match argument {

@@ -46,6 +46,7 @@ async fn ordinary_person_requested_uuid_survives_actual_delivery_and_completion(
         let caller = Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());
         assert!(caller.execution_id().is_none(), "no fabricated execution lease");
         let request = InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: fixture.peer_id.to_string(),
@@ -129,6 +130,7 @@ async fn an_effects_follow_up_names_the_root_its_window_published_under_an_alias
             let caller =
                 Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());
             let request = InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: OWN_PROVIDER.into(),

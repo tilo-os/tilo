@@ -483,6 +483,7 @@ pub fn record_invocation(
     use tilo_actions::remote::{InvokeArgument, MAX_REMOTE_WAIT, RemoteActionTarget};
 
     tilo_actions::remote::InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget {
             provider: format!("record:{app}:"),

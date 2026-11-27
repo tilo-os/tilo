@@ -120,6 +120,7 @@ impl Server {
             "dev": false,
         });
         let request = InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),

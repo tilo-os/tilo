@@ -326,12 +326,16 @@ impl App {
         }
     }
 
+    /// Send the person's own call of `address` on `target` through the device's dispatch, which
+    /// asks them first where the action, their grants, or (`asks`) their press of it waits for
+    /// their yes ([`crate::bound_dispatch::press_asks`]).
     #[cfg(feature = "model")]
     pub(crate) fn ask_through_device(
         &mut self,
         target: &crate::bound_dispatch::local_target::LocalResourceTarget,
         address: &tilo_actions::ActionAddress,
         arguments: &crate::bound_dispatch::ControlContinuationArguments,
+        asks: bool,
     ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         use crate::bound_dispatch::local_target::LocalResourceTarget;
         // The device knows the call by the address this window publishes it under: a component's
@@ -347,7 +351,7 @@ impl App {
             LocalResourceTarget::Outer => address.clone(),
         };
         let (argument, typed) = arguments.as_api_arguments();
-        self.invoke_via_broker(&published, typed, argument)
+        self.invoke_via_broker(&published, typed, argument, asks)
     }
 }
 

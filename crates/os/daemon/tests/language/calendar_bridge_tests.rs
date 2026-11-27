@@ -215,6 +215,7 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
         .invoke(
             &herself,
             InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 // Added as Settings adds it: the workspace's own mail accounts, in its tree.
                 target: tilo_actions::remote::RemoteActionTarget {

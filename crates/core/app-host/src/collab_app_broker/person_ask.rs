@@ -159,6 +159,7 @@ mod tests {
 
     fn request(argument: &serde_json::Value) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: InvocationId::new(),
             target: tilo_actions::remote::ask_target(),

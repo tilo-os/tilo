@@ -116,6 +116,7 @@ pub(crate) fn request_of(target: RemoteActionTarget, argument: Value) -> InvokeR
         _ => InvokeArgument::None,
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target,
         argument,

@@ -42,6 +42,7 @@ impl<H: ActionProvider + Send + Sync> SessionTools<H> {
     async fn step(&self, action: &str, argument: InvokeArgument) -> Result<Value, String> {
         let invocation = InvocationId::new();
         let request = InvokeRequest {
+            asks: false,
             invocation,
             target: wire::target(action),
             argument,

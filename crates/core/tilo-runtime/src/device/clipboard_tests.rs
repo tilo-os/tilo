@@ -226,6 +226,7 @@ async fn ask(
         .invoke(
             caller,
             InvokeRequest {
+                asks: false,
                 invocation: InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: PROVIDER.to_owned(),

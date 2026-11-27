@@ -886,6 +886,7 @@ impl Answers {
         invocation: InvocationId,
     ) -> Result<ActionOutput, ActionCallError> {
         let request = InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: tilo_actions::remote::application_action_target(
                 workspace,

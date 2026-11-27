@@ -236,6 +236,7 @@ impl ProgramAsks {
             },
         );
         let request = InvokeRequest {
+            asks: false,
             invocation,
             target: RemoteActionTarget {
                 provider: PROVIDER.to_owned(),

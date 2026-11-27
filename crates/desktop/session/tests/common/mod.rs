@@ -1996,6 +1996,7 @@ pub fn invocation(
     wait_ms: Option<u32>,
 ) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: target.clone(),
         argument: match args.as_object() {

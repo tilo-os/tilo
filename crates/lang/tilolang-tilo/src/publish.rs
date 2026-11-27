@@ -579,9 +579,14 @@ fn described(
 }
 
 /// What `action`'s calls confirm: what leaves the system confirms every call, as it does every
-/// press of it ([`ActionMeta::confirms`]). A destructive one confirms where undo cannot take it
-/// back, as a native verb does; a press of it confirms all the same unless Shift is held.
+/// press of it ([`ActionMeta::confirms`]), and says so ([`tilo_actions::LEAVES_TAG`]), so a window
+/// or the shell deciding a press of it from its contract decides it as the runtime does. A
+/// destructive one confirms where undo cannot take it back, as a native verb does; a press of it
+/// confirms all the same unless Shift is held.
 fn confirmation(contract: &mut tilo_actions::ActionContract, action: &ActionMeta) {
+    if action.leaves && !contract.leaves() {
+        contract.tags.push(tilo_actions::LEAVES_TAG.to_owned());
+    }
     if action.confirms() == tilolang::meta::Confirms::Always {
         contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
     } else {

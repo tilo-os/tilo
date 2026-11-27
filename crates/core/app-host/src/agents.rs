@@ -2475,6 +2475,7 @@ fn target_named(route: &DocumentRoute, resource: &str, action: &str) -> RemoteAc
 /// What asks for `target` with `argument`: an invocation of its own.
 fn invocation_of(target: RemoteActionTarget, argument: InvokeArgument) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target,
         argument,

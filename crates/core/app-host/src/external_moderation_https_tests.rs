@@ -146,6 +146,7 @@ mod https_completion {
             unreachable!("the argument is an object")
         };
         tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId(invocation),
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: peer.to_string(),

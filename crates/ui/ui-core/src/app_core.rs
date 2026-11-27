@@ -340,6 +340,9 @@ pub(crate) struct ResourceInvocation<'a> {
     pub(crate) broker_admitted: bool,
     pub(crate) invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient_context: Option<&'a tilo_actions::ActionContext>,
+    /// The person's own press made it (a control, a palette row, a menu item): it waits for their
+    /// yes as [`tilo_actions::ActionContract::confirms`] says a press does.
+    pub(crate) pressed: bool,
 }
 
 impl<'a> ResourceInvocation<'a> {
@@ -355,7 +358,13 @@ impl<'a> ResourceInvocation<'a> {
             broker_admitted: false,
             invocation: None,
             ambient_context: None,
+            pressed: false,
         }
+    }
+
+    pub(crate) fn pressed(mut self, pressed: bool) -> Self {
+        self.pressed = pressed;
+        self
     }
 
     pub(crate) fn argument(mut self, argument: Option<&'a str>) -> Self {
@@ -949,6 +958,7 @@ impl crate::app::App {
                 &target,
                 &invocation.address,
                 &crate::bound_dispatch::ControlContinuationArguments::Json(invocation.arguments),
+                true,
             ),
             started => started,
         }

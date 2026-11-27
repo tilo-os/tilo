@@ -464,6 +464,7 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
     let made = from_laptop
         .invoke_until_settled(
             tilo_actions::remote::InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::RemoteActionTarget {

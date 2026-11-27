@@ -60,6 +60,7 @@ impl Account {
         arguments: Map<String, Value>,
     ) -> Result<Value, String> {
         let request = InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target,
             argument: InvokeArgument::Json(arguments),

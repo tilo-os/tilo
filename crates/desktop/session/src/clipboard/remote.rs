@@ -181,6 +181,7 @@ fn request(action: &str, arguments: Value) -> InvokeRequest {
         _ => InvokeArgument::None,
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: wire::PROVIDER.to_owned(),

@@ -292,6 +292,7 @@ fn make_thumbnails_request(workspace: &str, hashes: &[String]) -> OffloadRequest
 /// `workspace`'s `make-thumbnails` over `hashes`, as Photos' API sends it.
 fn invocation(workspace: &str, hashes: &[String]) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: application_action_target(workspace, PHOTOS, LIBRARY, "make-thumbnails"),
         argument: InvokeArgument::Json(photos_argument(hashes)),

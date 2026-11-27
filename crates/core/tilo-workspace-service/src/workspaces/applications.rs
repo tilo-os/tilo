@@ -72,6 +72,7 @@ impl Workspaces {
             arguments,
         } = asked;
         let request = InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::application_resource_target(
                 workspace, app, record, resource, action,

@@ -269,6 +269,7 @@ fn a_catalogue_larger_than_a_frame_travels_in_pages_that_each_fit_one() {
 
 fn archive(invocation: InvocationId) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {

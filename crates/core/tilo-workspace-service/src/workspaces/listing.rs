@@ -943,6 +943,7 @@ pub(crate) mod entry_tests {
             panic!("arguments are an object");
         };
         InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget::workspace_governance(workspace, verb),
             argument: if argument.is_empty() {

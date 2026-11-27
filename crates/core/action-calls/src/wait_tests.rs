@@ -156,6 +156,7 @@ fn waiting_observe(invocation: InvocationId, wait_ms: u32) -> RemoteActionMessag
 
 fn rename(invocation: InvocationId, wait_ms: Option<u32>) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget {
             provider: "7".into(),

@@ -104,6 +104,7 @@ pub fn linux_take_request(run: &InvokeRequest) -> InvokeRequest {
         _ => InvokeArgument::None,
     };
     InvokeRequest {
+        asks: false,
         invocation: run.invocation,
         target: RemoteActionTarget {
             provider: WORK_PROVIDER.to_owned(),
@@ -172,6 +173,7 @@ impl Job {
             _ => InvokeArgument::None,
         };
         InvokeRequest {
+            asks: false,
             invocation,
             target: RemoteActionTarget {
                 provider: WORK_PROVIDER.to_owned(),

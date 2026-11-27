@@ -54,6 +54,7 @@ fn adding(title: &str, secret: &str) -> InvokeRequest {
         unreachable!("arguments are an object")
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: workspace_vault::target(workspace_vault::ADD),
         argument: InvokeArgument::Json(arguments),
@@ -307,6 +308,7 @@ fn account_adding(workspace: &str, address: &str, password: &str) -> InvokeReque
         unreachable!("arguments are an object")
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
@@ -337,6 +339,7 @@ async fn kept_accounts(
 
     let page = service.in_workspace_as(workspace_id, ada);
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: workspace_accounts::target(workspace_accounts::LIST),
         argument: InvokeArgument::Json(json!({}).as_object().cloned().unwrap_or_default()),

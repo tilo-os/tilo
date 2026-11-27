@@ -34,6 +34,7 @@ fn child_request(
     app: &str,
 ) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: child_id(parent, workspace, app),
         target: RemoteActionTarget {
             provider: workspace_provider(workspace),

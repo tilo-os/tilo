@@ -229,6 +229,7 @@ fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
         panic!("arguments are an object");
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target,
         argument: InvokeArgument::Json(argument),

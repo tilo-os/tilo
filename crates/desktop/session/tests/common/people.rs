@@ -1354,6 +1354,7 @@ impl Device {
         };
         let invocation = tilo_actions::InvocationId::new();
         let request = RemoteActionMessage::Invoke(tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation,
             target: RemoteActionTarget {
                 provider: tilo_device_identity::login::PROVIDER.to_owned(),

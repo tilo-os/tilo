@@ -15,6 +15,7 @@ fn membership(workspace: &str, command: &WorkspaceMembershipCommand) -> InvokeRe
         serde_json::to_value(command).expect("a change encodes"),
     );
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, MEMBERSHIP),
         argument: InvokeArgument::Json(arguments),

@@ -77,6 +77,7 @@ impl AgentsChange {
     fn request(self, workspace: &str) -> tilo_actions::remote::InvokeRequest {
         let (operation, arguments) = self.call();
         tilo_actions::remote::InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
                 workspace, operation,

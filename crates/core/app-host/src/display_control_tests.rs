@@ -232,6 +232,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
             ))
             .in_workspace(env.route.cluster_id.clone());
             let request = tilo_actions::remote::InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 on_behalf_of: None,
                 target: tilo_actions::remote::RemoteActionTarget {

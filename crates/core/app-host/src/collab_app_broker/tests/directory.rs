@@ -515,6 +515,7 @@ async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
             let mut fixture = local_directory_fixture();
             let (caller, _) = fixture_caller(&fixture);
             let request = InvokeRequest {
+                asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: fixture.peer_id.to_string(),

@@ -281,6 +281,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     let made = settled(chat_answers.invoke(
         &caller_bea,
         InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: chat_provider.clone(),

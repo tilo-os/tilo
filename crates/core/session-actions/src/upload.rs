@@ -235,6 +235,7 @@ pub fn landing_request(
     argument.insert("content".into(), content.into());
     argument.insert("name".into(), name.into());
     Some(InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: workspace_provider(workspace),

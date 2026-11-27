@@ -188,7 +188,9 @@ pub(super) struct Asking<'a> {
 impl AppBrokerState {
     /// Whether `offered` waits for the person's yes before it runs, and whether this call carries
     /// it: the one decision for an action that asks, for an ask the workspace's grants leave to
-    /// the person (`asks`), and for what the store has a person approve on a trusted sheet.
+    /// the person (`asks`), for the person's press that waits for their yes
+    /// ([`tilo_actions::remote::InvokeRequest::asks`], which only ever adds an ask), and for what
+    /// the store has a person approve on a trusted sheet.
     ///
     /// A call nobody approved is refused with what the person is shown, and the dispatch that
     /// carried it keeps it as its asked record; the same call comes back with their approve
@@ -205,6 +207,7 @@ impl AppBrokerState {
         let (surface, action) = offered;
         let store = requires_store_approval(&surface.app_id, &action.action);
         let policy = action.contract.confirmation_for_argument(inputs.argument);
+        let asks = asks || inputs.request.is_some_and(|request| request.asks);
         if !asks && !store && matches!(policy, tilo_actions::ConfirmationPolicy::None) {
             return Ok(false);
         }
@@ -385,6 +388,58 @@ mod tests {
         assert!(
             facts.answered_where_asked(),
             "a password is typed only on the device that asked"
+        );
+    }
+
+    /// The person's press that waits for their yes (`asks`) is asked though the action's contract
+    /// asks nobody; a call that does not say so is asked all the same where the contract asks.
+    /// The flag only ever adds an ask: no caller skips one by leaving it out.
+    #[test]
+    fn a_press_that_asks_adds_an_ask_and_skips_none() {
+        let state =
+            AppBrokerState::test_state_only(None, crate::services::ProcessServices::default());
+        let surface = PublishedSurface {
+            peer_id: 1,
+            app_id: "so.tilo.browser".into(),
+            route: tilo_broker_core::CrdtRoute::app("so.tilo.browser", "cluster"),
+            actions: Vec::new(),
+            live: true,
+        };
+        let actor = BrokerActor::person("ada");
+        let decide = |action: &PublishedAction, asks: bool| {
+            let request = tilo_actions::remote::InvokeRequest {
+                asks,
+                ..tilo_actions::remote::InvokeRequest::plain(
+                    tilo_actions::remote::RemoteActionTarget {
+                        provider: "so.tilo.browser".into(),
+                        address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
+                    },
+                    serde_json::Map::new(),
+                )
+            };
+            let inputs = Asking {
+                request: Some(&request),
+                caller: None,
+                argument: None,
+                actor: &actor,
+                token: None,
+            };
+            state
+                .asks_first(1, &(surface.clone(), action.clone()), &inputs, false)
+                .map_err(|refused| matches!(refused, Refusal::Asks(_)))
+        };
+        let mut unasked = sign_in();
+        unasked.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
+        assert_eq!(decide(&unasked, false), Ok(false), "nobody is asked");
+        assert_eq!(
+            decide(&unasked, true),
+            Err(true),
+            "the press waits for their yes"
+        );
+        assert_eq!(
+            decide(&sign_in(), false),
+            Err(true),
+            "what the contract asks is asked though the call does not say so"
         );
     }
 

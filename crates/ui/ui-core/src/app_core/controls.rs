@@ -119,7 +119,8 @@ impl crate::app::App {
         let actor = tilo_actions::Actor::Member(self.local_author().clone());
         let request = ResourceInvocation::new(&pending.address, &actor)
             .argument(argument.as_deref())
-            .ambient_context(Some(&pending.context));
+            .ambient_context(Some(&pending.context))
+            .pressed(true);
         let (target, started) = match &pending.history_target {
             // History is a window's own, and the web build draws no window.
             #[cfg(not(target_arch = "wasm32"))]
@@ -165,7 +166,7 @@ impl crate::app::App {
                     LocalResourceTarget::Component(bound) => bound.address.address.clone(),
                     LocalResourceTarget::Outer => pending.address.clone(),
                 };
-                self.ask_through_device(&target, &address, &arguments)
+                self.ask_through_device(&target, &address, &arguments, true)
             }
             started => started,
         }
@@ -250,7 +251,7 @@ impl crate::app::App {
         address: &ActionAddress,
         arguments: ControlContinuationArguments,
     ) -> bool {
-        match self.ask_through_device(target, address, &arguments) {
+        match self.ask_through_device(target, address, &arguments, true) {
             Ok(_) => true,
             Err(error) => {
                 self.refuse_visibly(&error);
@@ -390,11 +391,13 @@ impl crate::app::App {
             // workspace decides it, and its refusal is said over the window when it answers. The
             // control is told what became of the press, as one the window offers is.
             if says_refusal && acting.is_none() && self.declares(&intent) {
+                let asks = self.declared_press_asks(&intent);
                 let arguments = ControlContinuationArguments::Json(intent.arguments);
                 let started = self.ask_through_device(
                     &LocalResourceTarget::Outer,
                     &intent.address,
                     &arguments,
+                    asks,
                 );
                 if let Err(error) = &started {
                     self.refuse_visibly(error);
@@ -445,7 +448,8 @@ impl crate::app::App {
         let result = self.invoke_outer_control(
             &ResourceInvocation::new(&intent.address, &actor)
                 .argument(Some(&json))
-                .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
+                .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref()))
+                .pressed(acting.is_none() && says_refusal),
         );
         drop(scopes);
         if says_refusal
@@ -546,7 +550,8 @@ impl crate::app::App {
             target,
             &ResourceInvocation::new(&target.address.address, &actor)
                 .argument(Some(&argument))
-                .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
+                .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref()))
+                .pressed(acting.is_none() && on_behalf_of.is_none() && origin.is_persons()),
         );
         drop(answering);
         drop(scopes);

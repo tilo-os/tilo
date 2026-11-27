@@ -90,6 +90,7 @@ fn caller() -> Caller {
 
 fn request() -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {

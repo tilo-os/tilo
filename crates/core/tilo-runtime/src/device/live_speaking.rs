@@ -69,6 +69,7 @@ pub(crate) struct Joined {
 /// The call of `action` of the device's live sessions with `argument`.
 pub(crate) fn request(action: &str, argument: serde_json::Value) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: PROVIDER.to_owned(),

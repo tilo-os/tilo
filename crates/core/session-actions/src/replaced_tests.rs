@@ -99,6 +99,7 @@ fn caller() -> Caller {
 
 fn watch(id: InvocationId) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: id,
         target: RemoteActionTarget {

@@ -76,6 +76,7 @@ fn uninstall(workspaces: &ServiceWorkspaces, workspace: &str, app: &str) {
     let person =
         Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(workspace);
     let request = InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),

@@ -112,6 +112,7 @@ fn filling(wanted: &FillPage) -> InvokeRequest {
         panic!("a fill reads as an object");
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: workspace_vault::target(workspace_vault::FILL_PAGE),
         argument: InvokeArgument::Json(argument),

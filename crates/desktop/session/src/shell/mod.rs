@@ -2089,22 +2089,28 @@ fn serve_shell(shared: &crate::Shared, shell: &Shell, workspace: &str) {
                     .map_err(|error| error.to_string());
             }
             let address = ActionAddress::new(resource, action);
-            // An action whose contract waits for the person's yes is their asked record: the
-            // call goes to the device's dispatch, which keeps it and says what it asks, and
-            // the shell draws the question. Their yes sends the same call back here, which
-            // runs it confirmed; anything else runs nothing. Shift skips a question only where
-            // Undo takes the action back, as it does everywhere. A question asks a yes; one
-            // whose contract wants a typed phrase keeps its own flow.
+            // A press that waits for the person's yes is their asked record: the call goes to
+            // the device's dispatch, which keeps it and says what it asks, and the shell draws
+            // the question. Their yes sends the same call back here, which runs it confirmed;
+            // anything else runs nothing. It waits where the action's contract asks, which
+            // Shift skips only where Undo takes the action back, and where a press of it
+            // confirms (`ActionSpec::confirms_for`): a delete Undo takes back unless Shift is
+            // held, what Undo cannot take back and what leaves the system always. A question
+            // asks a yes; one whose contract wants a typed phrase keeps its own flow.
             if !workspace.is_empty()
                 && daemon.link().is_ok()
                 && let Some((_, spec)) = tilo_actions::api::locate(&resources, &address)
-                && matches!(
-                    spec.confirmation_for_json(arguments),
-                    tilo_actions::ConfirmationPolicy::Confirm
-                )
-                && !ui::widget::shift_skips_confirmation(spec.contract.can_be_undone())
+                && let policy = spec.confirmation_for_json(arguments)
+                && !matches!(policy, tilo_actions::ConfirmationPolicy::Phrase { .. })
+                && let asks = spec
+                    .confirms_for(Some(arguments), None)
+                    .on_press(ui::widget::shift_held())
+                && (asks
+                    || (policy == tilo_actions::ConfirmationPolicy::Confirm
+                        && !ui::widget::shift_skips_confirmation(spec.contract.can_be_undone())))
             {
                 let request = tilo_actions::remote::InvokeRequest {
+                    asks,
                     argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
                     ..tilo_actions::remote::InvokeRequest::plain(
                         tilo_actions::remote::RemoteActionTarget {

@@ -105,6 +105,7 @@ fn dispatch() -> crate::ShellDispatch {
 
 fn invoked(wait_ms: Option<u32>) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: "so.tilo.session".to_owned(),

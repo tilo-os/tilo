@@ -440,6 +440,7 @@ async fn call(
         _ => return Err("a share takes named arguments".to_owned()),
     };
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: PROVIDER.to_owned(),

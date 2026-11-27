@@ -509,6 +509,7 @@ impl Invocations {
 /// An invocation of `target` with `argument`, as the instance's own call.
 fn request(target: tilo_actions::remote::RemoteActionTarget, argument: &Value) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target,
         argument: InvokeArgument::Json(argument.as_object().cloned().unwrap_or_default()),

@@ -1875,6 +1875,7 @@ mod identity_admin_tests {
 
     fn request(step: &str, confirmation: Option<Confirmation>) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: device_tickets::target(step),
@@ -2330,6 +2331,7 @@ mod settings_documents_tests {
 
     fn lock_after(minutes: u32, confirmation: Option<Confirmation>) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
@@ -2686,6 +2688,7 @@ mod own_device_verdict_tests {
 
     fn request() -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
@@ -2951,6 +2954,7 @@ mod own_provider_tests {
             .registered(PROVIDER)
             .expect("the provider is registered");
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: Some(tilo_actions::InvocationId::new()),
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
@@ -3124,6 +3128,7 @@ mod registered_ask_tests {
         );
         let caller = Caller::local_person(person).in_workspace(&workspace_id);
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {

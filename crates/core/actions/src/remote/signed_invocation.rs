@@ -437,6 +437,7 @@ mod tests {
 
     fn request(argument: InvokeArgument) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: "so.tilo.notes".into(),

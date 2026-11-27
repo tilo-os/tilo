@@ -192,6 +192,7 @@ fn call(provider: &str) -> InvokeRequest {
     arguments.insert("variable".into(), json!("GITHUB_TOKEN"));
     arguments.insert("item".into(), json!(ITEM));
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: provider.to_owned(),
@@ -221,6 +222,7 @@ fn answer(record: &RecordRef, answer: Offer) -> InvokeRequest {
         unreachable!("a resolution is a JSON object");
     };
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: workspace_invocations::PROVIDER.to_owned(),

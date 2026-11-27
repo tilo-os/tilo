@@ -1068,7 +1068,7 @@ impl crate::services::PublishedResources for DeviceServer {
 async fn an_apps_own_connection_is_never_answered_as_another_app() {
     use tilo_actions::api::ActionAddress;
     use tilo_actions::remote::{
-        InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
+        InvokeRequest, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
     };
 
     tokio::task::LocalSet::new()
@@ -1124,24 +1124,16 @@ async fn an_apps_own_connection_is_never_answered_as_another_app() {
                 "the device's published reading answers no app's connection on its own"
             );
 
-            let invoke = RemoteActionMessage::Invoke(InvokeRequest {
-                invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::RemoteActionTarget {
+            let invoke = RemoteActionMessage::Invoke(InvokeRequest::plain(
+                tilo_actions::remote::RemoteActionTarget {
                     provider: "record:so.tilo.settings:device:server".to_owned(),
                     address: ActionAddress::new("device:server", "set-work"),
                 },
-                argument: InvokeArgument::Json(serde_json::Map::from_iter([(
+                serde_json::Map::from_iter([(
                     "work".to_owned(),
                     serde_json::Value::from("anyone"),
-                )])),
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-                signed: None,
-            });
+                )]),
+            ));
             let answered = endpoint
                 .call(Operation::Command {
                     record: channel.clone(),

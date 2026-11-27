@@ -19,6 +19,7 @@ const CONTACTS: &str = "tilo.contacts.identities";
 fn add_contact(label: &str, invoker: Option<tilo_actions::ActionInvoker>) -> InvokeRequest {
     let arguments = json!({"person": uuid::Uuid::new_v4().to_string(), "label": label});
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: format!(

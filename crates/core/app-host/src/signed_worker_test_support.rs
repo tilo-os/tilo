@@ -480,6 +480,7 @@ pub fn invoke_request(
     argument: Option<serde_json::Value>,
 ) -> tilo_actions::remote::InvokeRequest {
     tilo_actions::remote::InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         on_behalf_of: None,
         target: tilo_actions::remote::RemoteActionTarget {

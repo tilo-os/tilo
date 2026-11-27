@@ -383,6 +383,7 @@ mod tests {
         {
             use crate::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
             let mut request = InvokeRequest {
+                asks: false,
                 invocation: crate::InvocationId(uuid::Uuid::from_u128(1)),
                 target: RemoteActionTarget {
                     provider: "p".into(),

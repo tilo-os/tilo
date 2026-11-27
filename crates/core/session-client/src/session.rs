@@ -4445,6 +4445,7 @@ pub async fn ask_ticket(
     use tilo_server_protocol::refusal::Refusal;
     let invocation = tilo_actions::InvocationId::new();
     let mut message = RemoteActionMessage::Invoke(InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {

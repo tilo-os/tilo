@@ -38,6 +38,7 @@ async fn asking(
 
 fn invoke(invocation: InvocationId) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {

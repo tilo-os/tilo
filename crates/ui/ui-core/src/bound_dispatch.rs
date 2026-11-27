@@ -1948,31 +1948,39 @@ pub(crate) fn admit_local_action(
     )
 }
 
-/// Whether the person's own call of `spec` with these arguments waits for their yes, as the
-/// action's contract declares it ([`tilo_actions::ConfirmationPolicy`]):
+/// Whether the person's own call of `spec` with these arguments waits for their yes:
 /// [`tilo_actions::ApiError::ConfirmationRequired`] when it does and `approval`, their approve of
 /// the asked record the call was kept as, is not there. The window then sends the call through the
 /// device's dispatch, where it is kept as that record and comes back approved once they allow it;
-/// what the phrase they typed must say is checked where it is admitted. Shift skips it for what
-/// Undo takes back ([`crate::widget::shift_skips_confirmation`]).
+/// what the phrase they typed must say is checked where it is admitted.
+///
+/// It waits where the action's contract asks ([`tilo_actions::ConfirmationPolicy`]), which Shift
+/// skips for what Undo takes back ([`crate::widget::shift_skips_confirmation`]), and, when their
+/// press made it (`pressed`), where a press of it confirms
+/// ([`tilo_actions::ActionSpec::confirms_for`]): a delete Undo takes back unless Shift is held,
+/// what Undo cannot take back and what leaves the system always.
 #[cfg(feature = "model")]
 pub(crate) fn press_asks(
     spec: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
     approval: Option<&tilo_actions::remote::asked::Approval>,
+    pressed: bool,
 ) -> Result<(), tilo_actions::ApiError> {
     let confirmation = match typed {
         Some(arguments) => spec.confirmation_for_json(arguments),
         None => spec.confirmation_for_argument(argument),
     };
-    if approval.is_some()
-        || matches!(confirmation, tilo_actions::ConfirmationPolicy::None)
-        || crate::widget::shift_skips_confirmation(spec.contract.can_be_undone())
-    {
-        Ok(())
-    } else {
+    let contract_asks = !matches!(confirmation, tilo_actions::ConfirmationPolicy::None)
+        && !crate::widget::shift_skips_confirmation(spec.contract.can_be_undone());
+    let press_asks = pressed
+        && spec
+            .confirms_for(typed, argument)
+            .on_press(crate::widget::shift_held());
+    if approval.is_none() && (contract_asks || press_asks) {
         Err(tilo_actions::ApiError::ConfirmationRequired)
+    } else {
+        Ok(())
     }
 }
 
@@ -3030,6 +3038,8 @@ pub(crate) struct ResourceActionRequest<'a> {
     /// again ([`press_asks`]).
     pub(crate) approval: Option<&'a tilo_actions::remote::asked::Approval>,
     pub(crate) broker_admitted: bool,
+    /// The person's own press made it ([`press_asks`]).
+    pub(crate) pressed: bool,
     pub(crate) invocation: tilo_actions::InvocationId,
     pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
@@ -3068,6 +3078,7 @@ fn perform_resource_action(
         actor,
         approval,
         broker_admitted,
+        pressed,
         invocation,
         source_invocation,
         ambient,
@@ -3146,7 +3157,7 @@ fn perform_resource_action(
                     // included where it waited for one; what this window was told of its actions
                     // only shows its controls.
                     if !broker_admitted {
-                        press_asks(spec, arguments.as_ref(), argument, approval)?;
+                        press_asks(spec, arguments.as_ref(), argument, approval, pressed)?;
                     }
                     // A record another workspace holds is decided there: its grants and the
                     // person's answers about it are the workspace's, and this window's view of

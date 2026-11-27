@@ -144,6 +144,7 @@ pub async fn find_servers(token: String) -> Result<Vec<Server>, FindError> {
 #[must_use]
 pub fn bridge_requests(workspace: &str, token: &str, server: &Server) -> [InvokeRequest; 2] {
     let invoke = |verb: &str, argument: serde_json::Map<String, serde_json::Value>| InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget::workspace_governance(workspace, verb),
         argument: InvokeArgument::Json(argument),

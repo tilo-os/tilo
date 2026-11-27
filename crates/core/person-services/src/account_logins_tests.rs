@@ -599,6 +599,7 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
 /// the workspace's accounts, with `argument`.
 fn asking(action: &str, argument: &serde_json::Value) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: workspace_accounts::target(action),
         argument: InvokeArgument::Json(argument.as_object().unwrap().clone()),
@@ -1028,6 +1029,7 @@ async fn a_device_that_may_not_read_the_vault_releases_its_connection_nothing() 
     let item = ItemRef::parse("vault.item:0123456789abcdef0123456789abcdef").unwrap();
     let process = AppProcess::connection(BRIDGE);
     let call = InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_workspace_records::vault::ItemRef::target(&item, workspace_vault::RELEASE),
         argument: InvokeArgument::None,
@@ -1134,6 +1136,7 @@ impl HostConnections for MailHeld {
 /// The release of `item`, as Mail's own connection calls it: no arguments.
 fn release_of(item: &ItemRef) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: workspace_vault::ItemRef::target(item, workspace_vault::RELEASE),
         argument: InvokeArgument::None,

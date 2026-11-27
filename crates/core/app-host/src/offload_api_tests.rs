@@ -94,6 +94,7 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
                 let caller =
                     Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());
                 let request = InvokeRequest {
+                    asks: false,
                     invocation: tilo_actions::InvocationId::new(),
                     target: RemoteActionTarget {
                         provider: fixture.peer_id.to_string(),

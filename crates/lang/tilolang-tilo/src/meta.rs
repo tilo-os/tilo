@@ -14,12 +14,8 @@ use tilolang::meta::FilterKind;
 
 /// The contract kind an effect class stands for.
 #[must_use]
-pub const fn action_kind(class: EffectClass) -> tilo_actions::ActionKind {
-    match class {
-        EffectClass::Read => tilo_actions::ActionKind::Read,
-        EffectClass::Undoable => tilo_actions::ActionKind::Undoable,
-        EffectClass::Outside => tilo_actions::ActionKind::Outside,
-    }
+pub fn action_kind(class: EffectClass) -> tilo_actions::ActionKind {
+    class.into()
 }
 
 /// Every type `meta` names that the platform reads (each field's, enum case field's, action

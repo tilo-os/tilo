@@ -54,6 +54,7 @@ async fn a_zone_chosen_on_one_device_is_the_zone_another_device_of_theirs_reads(
         unreachable!()
     };
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: formats::target(formats::CHOOSE_ZONE),
         argument: InvokeArgument::Json(argument),

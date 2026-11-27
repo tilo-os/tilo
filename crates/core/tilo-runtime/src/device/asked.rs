@@ -786,6 +786,7 @@ impl asked::AskedReads for DeviceAsked {
         facts: AskedFacts,
     ) -> Pending<Decided> {
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {

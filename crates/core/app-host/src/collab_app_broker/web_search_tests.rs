@@ -48,6 +48,7 @@ fn broker(web: WebSearch) -> (Arc<AppBrokerState>, String, String) {
 
 fn search(arguments: serde_json::Map<String, serde_json::Value>) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {

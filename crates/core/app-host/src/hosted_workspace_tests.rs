@@ -192,6 +192,7 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
             };
             let request =
                 |fixture: &LocalDirectoryFixture, action: &PublishedAction| InvokeRequest {
+                    asks: false,
                     invocation: tilo_actions::InvocationId::new(),
                     target: RemoteActionTarget {
                         provider: fixture.peer_id.to_string(),
@@ -362,6 +363,7 @@ fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
         Arc::new(AppliesRecords(Arc::clone(&applied_here))),
     );
     let request = || InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: format!("{}:notes:a-note", tilo_actions::remote::RESOURCE_PROVIDER),

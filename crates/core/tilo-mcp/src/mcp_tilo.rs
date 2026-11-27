@@ -926,6 +926,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         let invocation = tilo_actions::InvocationId::new();
         let request = InvokeRequest {
+            asks: false,
             invocation,
             target: task_programs::target(),
             argument: InvokeArgument::Json(fields),

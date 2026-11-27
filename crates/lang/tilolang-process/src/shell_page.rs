@@ -556,6 +556,7 @@ fn fill(instance: &Instance, published: &str, reading: &Value) -> Result<(), Str
 /// A call of the layout's action `action` with `argument`, as the person at the page.
 fn invoke(action: &str, argument: Value) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: LAYOUT_PROVIDER.to_owned(),

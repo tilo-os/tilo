@@ -1,7 +1,9 @@
-//! A destructive verb of a document is undoable: from whatever path it
-//! comes it applies at once, nobody is asked, and Undo takes it back. Only
-//! what Undo cannot take back asks the person, from a gesture and through the
-//! API alike: the call is refused until they allow it, and comes back with their yes.
+//! Confirmation is a property of a press. A person's own press of a destructive verb Undo takes
+//! back asks first, and Shift held on the press skips that; one Undo cannot take back asks with
+//! Shift held too; one that leaves the system always asks; every other press acts. An agent's or
+//! a script's call runs on its grants and the action's own asks: what Undo takes back runs
+//! unasked, what it cannot is asked of the person through the API alike, refused until they allow
+//! it and coming back with their yes.
 
 use tilo_app::prelude::*;
 use tilo_app_test_host::TestApp;
@@ -53,6 +55,17 @@ impl Notes {
     pub fn forget(&mut self) {
         self.notes = Collection::new();
     }
+
+    /// Send the notes to someone outside the workspace.
+    #[action(leaves)]
+    pub fn send(&mut self, cx: &mut ActionCx) {
+        self.notes.push(
+            cx.id(),
+            Note {
+                text: "sent".into(),
+            },
+        );
+    }
 }
 
 struct NotesApp;
@@ -71,59 +84,126 @@ impl ResourceApp for NotesApp {
             ),
             cx.button("clear", Notes::CLEAR.with(())),
             cx.button("forget", Notes::FORGET.with(())),
+            cx.button("send", Notes::SEND.with(())),
+            cx.button("add", Notes::ADD.with("Bread")),
             cx.button("keep open", Notes::paths().open_minutes.set(60)),
         ])
     }
 }
 
-tilo_test_env::scenario! {
-    fn a_destructive_verb_through_the_api_asks_only_for_what_undo_cannot_take_back;
+/// Hold Shift, or let go of it, as the window's modifier change says.
+fn hold_shift<A: ResourceApp>(app: &mut TestApp<A>, held: bool) {
+    let names: Vec<String> = if held {
+        vec!["shift".into()]
+    } else {
+        Vec::new()
+    };
+    app.harness().set_modifiers(&names);
+}
 
-    phase an_undoable_destructive_verb_applies_at_once_and_undo_takes_it_back;
-    // An undoable destructive verb applies at once and offers Undo, with no
-    // confirmation.
+/// Press `control` on a fresh window holding one note, with Shift `held`.
+fn press(control: &str, held: bool) -> TestApp<NotesApp> {
+    let mut app = TestApp::<NotesApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    let mut app = app.reopen().unwrap();
+    hold_shift(&mut app, held);
+    app.harness().click_named(control).unwrap();
+    app.settle();
+    hold_shift(&mut app, false);
+    app
+}
+
+/// An agent acting for the person at the window.
+fn agent() -> tilo_actions::Actor {
+    tilo_actions::Actor::Member(tilo_actions::MemberId::agent("helper", "ada"))
+}
+
+tilo_test_env::scenario! {
+    fn a_press_confirms_by_what_the_action_does;
+
+    phase an_undoable_destructive_press_asks_first;
+    // A delete Undo takes back asks the person first: nothing is removed until they answer, and
+    // their yes removes it.
     {
-        let mut app = TestApp::<NotesApp>::new().unwrap();
-        app.invoke(Notes::ADD.with("Milk")).unwrap();
-        let mut app = app.reopen().unwrap();
-        app.harness().click_named("remove").unwrap();
-        app.settle();
-        assert_eq!(app.asking(), None, "nobody is asked");
+        let mut app = press("remove", false);
+        assert!(app.asking().is_some(), "the person is asked first");
+        assert_eq!(app.state().notes.len(), 1, "nothing is removed yet");
+        assert!(app.confirm_asked().is_some(), "the person allows it");
+        assert!(app.state().notes.is_empty(), "then it is removed");
+        assert!(app.undo(), "Undo takes it back");
+        assert_eq!(app.state().notes.len(), 1);
+    }
+
+    phase shift_skips_the_ask_of_an_undoable_destructive_press;
+    // With Shift held the delete applies at once, and Undo takes it back.
+    {
+        let mut app = press("remove", true);
+        assert_eq!(app.asking(), None, "with Shift nobody is asked");
         assert!(
             app.state().notes.is_empty(),
-            "the verb applied at once: {:?}",
+            "it applied at once: {:?}",
             app.harness().control_failures()
         );
         assert!(app.undo(), "Undo takes it back");
         assert_eq!(app.state().notes.len(), 1);
     }
 
-    phase an_irreversible_destructive_verb_through_the_api_asks_first;
-    // What Undo cannot take back is asked first through the API: the
-    // person's press of a control for an irreversible destructive verb.
+    phase an_irreversible_press_asks_with_shift_held_too;
+    // What Undo cannot take back is asked first, Shift held or not.
+    {
+        for held in [false, true] {
+            let mut app = press("forget", held);
+            assert!(app.asking().is_some(), "Shift {held}: the person is asked first");
+            assert_eq!(app.state().notes.len(), 1, "Shift {held}: nothing is forgotten yet");
+        }
+    }
+
+    phase a_press_that_leaves_the_system_asks;
+    // What leaves the system is asked first, Shift held or not, though it destroys nothing.
+    {
+        for held in [false, true] {
+            let mut app = press("send", held);
+            assert!(app.asking().is_some(), "Shift {held}: the person is asked first");
+            assert_eq!(app.state().notes.len(), 1, "Shift {held}: nothing is sent yet");
+        }
+        let mut app = press("send", false);
+        assert!(app.confirm_asked().is_some(), "the person allows it");
+        assert_eq!(app.state().notes.len(), 2, "then it is sent");
+    }
+
+    phase an_ordinary_press_just_acts;
+    {
+        let mut app = press("add", false);
+        assert_eq!(app.asking(), None, "nobody is asked");
+        assert_eq!(app.state().notes.len(), 2, "the note is added at once");
+    }
+
+    phase an_agents_call_of_an_undoable_destructive_action_runs_on_its_grants;
+    // Asking is a property of the person's press: an agent's call of a delete Undo takes back
+    // runs on its grants, unasked, and Undo takes it back.
     {
         let mut app = TestApp::<NotesApp>::new().unwrap();
         app.invoke(Notes::ADD.with("Milk")).unwrap();
-        let mut app = app.reopen().unwrap();
-        app.harness().click_named("forget").unwrap();
+        let address = tilo_actions::ActionAddress::new("test.notes", "clear");
+        app.harness()
+            .invoke_action_as(&agent(), &address, &serde_json::Map::new(), None)
+            .expect("the agent's call runs on its grants");
         app.settle();
-        assert!(app.asking().is_some(), "the person is asked first");
-        assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
+        assert_eq!(app.asking(), None, "nobody is asked");
+        assert!(app.state().notes.is_empty(), "cleared at once");
+        assert!(app.undo(), "Undo takes it back");
+        assert_eq!(app.state().notes.len(), 1);
     }
 
-    phase an_undoable_destructive_verb_without_arguments_applies_at_once;
+    phase a_call_by_name_of_an_undoable_destructive_verb_applies_at_once;
+    // A script's call is no press: what Undo takes back applies at once.
     {
         let mut app = TestApp::<NotesApp>::new().unwrap();
         app.invoke(Notes::ADD.with("Milk")).unwrap();
         app.invoke(Notes::ADD.with("Eggs")).unwrap();
-        app.harness().click_named("clear").unwrap();
-        app.settle();
+        app.invoke(Notes::CLEAR.with(())).expect("it applies at once");
         assert_eq!(app.asking(), None, "nobody is asked");
-        assert!(
-            app.state().notes.is_empty(),
-            "the verb applied at once: {:?}",
-            app.harness().control_failures()
-        );
+        assert!(app.state().notes.is_empty());
         assert!(app.undo(), "Undo takes it back");
         assert_eq!(app.state().notes.len(), 2);
     }
@@ -283,22 +363,57 @@ fn applies_now_without_asking(now: Now) {
     );
 }
 
-/// An undoable removal applies at once and Undo takes it back, by whichever path it comes: the
-/// person's own gesture, a gesture under an invocation, a verb, a removal, a group, a typed
-/// removal, and the queued API's field edit.
+/// An undoable removal a surface applies now, or makes under an agent's invocation, applies at
+/// once and Undo takes it back, by whichever path it comes: a gesture under an invocation, a
+/// verb, a removal, a group and a typed removal.
 #[test]
-fn an_undoable_removal_applies_at_once_by_every_path() {
+fn an_undoable_removal_applied_now_applies_at_once_by_every_path() {
     for now in [
-        Now::Gesture,
         Now::InvokedGesture,
         Now::Verb,
         Now::Removal,
         Now::Group,
         Now::Typed,
-        Now::Queued,
     ] {
         APPLIED.with(|applied| applied.borrow_mut().clear());
         applies_now_without_asking(now);
+    }
+}
+
+/// The person's own press of an undoable removal on a surface, `now`, asks them first; with
+/// Shift held it applies at once and Undo takes it back.
+fn asks_unless_shift(now: Now) {
+    for held in [false, true] {
+        let mut app = TestApp::<RemoverApp>::new().unwrap();
+        app.invoke(Notes::ADD.with("Milk")).unwrap();
+        app.invoke(Notes::ADD.with("Eggs")).unwrap();
+        hold_shift(&mut app, held);
+        NOW.set(Some(now));
+        app.settle();
+        hold_shift(&mut app, false);
+        if held {
+            assert_eq!(app.asking(), None, "{now:?} with Shift: nobody is asked");
+            assert_eq!(
+                app.state().notes.len(),
+                1,
+                "{now:?} with Shift: applied at once: {:?}",
+                app.harness().control_failures()
+            );
+            assert!(app.undo(), "{now:?}: Undo takes it back");
+            assert_eq!(app.state().notes.len(), 2);
+        } else {
+            assert!(app.asking().is_some(), "{now:?}: the person is asked first");
+            assert_eq!(app.state().notes.len(), 2, "{now:?}: nothing removed yet");
+        }
+    }
+}
+
+/// The person's own gesture on a surface, and the removal it submits, are their press: an
+/// undoable removal asks first unless Shift is held.
+#[test]
+fn a_surfaces_press_of_an_undoable_removal_asks_unless_shift() {
+    for now in [Now::Gesture, Now::Queued] {
+        asks_unless_shift(now);
     }
 }
 
@@ -332,16 +447,6 @@ tilo_test_env::scenario! {
     {
         asks_before_forgetting(Now::IrreversibleVerb);
     }
-}
-
-/// Hold Shift, or let go of it, as the window's modifier change says.
-fn hold_shift<A: ResourceApp>(app: &mut TestApp<A>, held: bool) {
-    let names: Vec<String> = if held {
-        vec!["shift".into()]
-    } else {
-        Vec::new()
-    };
-    app.harness().set_modifiers(&names);
 }
 
 /// Press "forget", which Undo cannot take back, on a fresh window with one note.
@@ -426,20 +531,6 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().open_minutes, 0);
         hold_shift(&mut app, false);
     }
-
-    phase shift_never_skips_the_hosts_question_for_what_undo_cannot_take_back;
-    // What Undo cannot take back is asked by the host though Shift is held.
-    {
-        let mut app = TestApp::<NotesApp>::new().unwrap();
-        app.invoke(Notes::ADD.with("Milk")).unwrap();
-        let mut app = app.reopen().unwrap();
-        hold_shift(&mut app, true);
-        app.harness().click_named("forget").unwrap();
-        app.settle();
-        assert!(app.asking().is_some(), "the person is asked first");
-        assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
-        hold_shift(&mut app, false);
-    }
 }
 
 tilo_test_env::scenario! {
@@ -452,9 +543,12 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<NotesApp>::new().unwrap();
         let remove = app.harness().targets()["remove"];
-        // With no note there is nothing to remove: the action refuses.
+        // With no note there is nothing to remove: the action refuses. Shift held skips the
+        // ask of the delete, so the press runs at once.
+        hold_shift(&mut app, true);
         app.harness().click_named("remove").unwrap();
         app.settle();
+        hold_shift(&mut app, false);
         let notice = app
             .harness()
             .control_notice()
@@ -534,6 +628,29 @@ tilo_test_env::scenario! {
             "by its name the person is asked first: {asked:?}"
         );
         assert_eq!(app.state().notes.len(), 1, "nothing is forgotten before they answer");
+    }
+
+    phase an_agents_call_of_an_irreversible_destructive_verb_asks_the_person;
+    // An agent's call of what Undo cannot take back is asked of the person as theirs is: refused
+    // until they answer, and carried out with their approve.
+    {
+        let mut app = TestApp::<NotesApp>::new().unwrap();
+        app.invoke(Notes::ADD.with("Milk")).unwrap();
+        let address = tilo_actions::ActionAddress::new("test.notes", "forget");
+        let asked = app
+            .harness()
+            .invoke_action_as(&agent(), &address, &serde_json::Map::new(), None);
+        assert!(
+            matches!(asked, Err(tilo_actions::ApiError::ConfirmationRequired)),
+            "the agent's call waits for the person: {asked:?}"
+        );
+        assert_eq!(app.state().notes.len(), 1, "nothing is forgotten before they answer");
+        let approval = app.harness().approval();
+        app.harness()
+            .invoke_action_as(&agent(), &address, &serde_json::Map::new(), Some(&approval))
+            .expect("with the person's approve it is carried out");
+        app.settle();
+        assert!(app.state().notes.is_empty(), "approved, the notes are forgotten");
     }
 
     phase an_irreversible_destructive_verb_asks_first_inside_apply;

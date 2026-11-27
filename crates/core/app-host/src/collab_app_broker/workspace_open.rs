@@ -310,6 +310,7 @@ mod tests {
 
     fn request(workspace: &str) -> InvokeRequest {
         InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: tilo_actions::remote::workspace_provider(workspace),

@@ -459,6 +459,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                 }]);
             let mut app = rig.state.capture_invocations_for_test(903);
             let edit = |action: &str| InvokeRequest {
+                asks: false,
                 on_behalf_of: Some(invocation),
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {

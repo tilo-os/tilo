@@ -327,6 +327,7 @@ pub(crate) async fn ask(
         &workspace,
     ));
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: PROVIDER.to_owned(),

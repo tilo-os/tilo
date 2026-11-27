@@ -512,6 +512,7 @@ impl RemoteActions {
     ) -> InvocationCall {
         let answer = Arriving::pending(self.source());
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of,
             invocation,
             target,
@@ -557,6 +558,7 @@ impl RemoteActions {
         let invocation = InvocationId::new();
         let answer = Arriving::pending(self.source());
         let request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation,
             target,

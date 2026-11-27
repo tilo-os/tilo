@@ -844,6 +844,7 @@ fn an_approve_the_app_sends_on_its_own_frame_is_refused_as_forged() {
     let mut driver = worker_driver(Worker::erasing(&erased));
     let invocation = InvocationId::new();
     let forged = InvokeRequest {
+        asks: false,
         on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {

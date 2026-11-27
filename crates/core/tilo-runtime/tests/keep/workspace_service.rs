@@ -102,6 +102,7 @@ async fn host_answer(
         panic!("arguments are an object");
     };
     let mut invoke = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.into(),

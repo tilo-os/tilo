@@ -1684,6 +1684,7 @@ async fn hand_on(reached: &OtherHost, workspace: &str) -> Result<(), String> {
 /// The invocation of the host operation `action` with `arguments`.
 fn host_invocation(action: &str, arguments: Map<String, Value>) -> InvokeRequest {
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.into(),

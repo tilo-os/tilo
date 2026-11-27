@@ -2422,6 +2422,7 @@ fn the_persons_services_start_when_this_device_founds_them() {
     // One call to the device's actions, over the frame wire every client reaches it with.
     let call = |action: &str| -> ReceiptStatus {
         let request = RemoteActionMessage::Invoke(InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: tilo_device_identity::login::PROVIDER.to_owned(),
@@ -3886,6 +3887,7 @@ fn a_sign_in_as_someone_else_answers_the_calls_in_flight_and_hands_nothing_on() 
 
     let call = |path: &str| {
         let request = InvokeRequest {
+            asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: "test".to_owned(),

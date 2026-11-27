@@ -319,6 +319,7 @@ mod tests {
         let named: Vec<String> = digests.iter().map(hex::encode).collect();
         let caller = Caller::local_person("ada").in_workspace("w");
         let request = InvokeRequest {
+            asks: false,
             invocation: InvocationId::new(),
             target: tilo_actions::remote::application_action_target("w", APP, RESOURCE, ACTION),
             argument: InvokeArgument::Json(

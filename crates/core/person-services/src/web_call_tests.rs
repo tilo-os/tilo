@@ -64,6 +64,7 @@ fn call(url: &str, key: &Value, more: Value) -> InvokeRequest {
         argument.extend(more);
     }
     InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: workspace_vault::target(workspace_vault::WEB_CALL),
         argument: InvokeArgument::Json(argument),

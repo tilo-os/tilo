@@ -116,6 +116,7 @@ fn call(provider: &str, (resource, action): (&str, &str), arguments: Value) -> I
         panic!("a call's arguments are named");
     };
     InvokeRequest {
+        asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: provider.to_owned(),

@@ -271,6 +271,14 @@ pub trait Action: std::fmt::Debug {
         None
     }
 
+    /// Whether this value leaves the system for good (a message sent to
+    /// people outside it), so a person's own press of it always confirms
+    /// first. See [`LEAVES_TAG`](crate::LEAVES_TAG). Must be a pure function
+    /// of `self`.
+    fn leaves(&self) -> bool {
+        false
+    }
+
     /// Whether this value loses something Undo cannot bring back, beside
     /// the document change Undo reverts (an account's secret every device
     /// forgets). See [`IRREVERSIBLE_TAG`](crate::IRREVERSIBLE_TAG). Must be
@@ -347,6 +355,25 @@ pub fn asks_first(
     irreversible: bool,
 ) -> bool {
     risk.requires_confirmation_when(undo_takes_back(kind, change, irreversible))
+}
+
+/// What a person's own press of `action` waits for, as its contract says it
+/// ([`ActionContract::confirms`](crate::ActionContract::confirms)), read from
+/// the value itself.
+#[must_use]
+pub fn press_confirms<A: Action + ?Sized>(action: &A) -> crate::Confirms {
+    if action.leaves() {
+        return crate::Confirms::Always;
+    }
+    let kind = action.action_kind();
+    let kind = if undo_takes_back(kind, action.change_kind(), action.irreversible()) {
+        crate::ActionKind::Undoable
+    } else if kind == crate::ActionKind::Read {
+        crate::ActionKind::Read
+    } else {
+        crate::ActionKind::Outside
+    };
+    kind.confirms(action.risk() == crate::RiskLevel::Destructive)
 }
 
 /// A serialized action ready to cross a process/network boundary: the

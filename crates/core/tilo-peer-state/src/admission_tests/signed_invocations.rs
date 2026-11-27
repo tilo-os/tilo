@@ -116,6 +116,7 @@ fn caller_context(
 ) -> ActionContext {
     let invocation = InvocationId::new();
     let mut request = InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget {
             provider: "so.tilo.test".into(),
@@ -157,6 +158,7 @@ fn agents_step(cert: &DeviceCert, key: &SigningKey, verb: &str, now: SystemTime)
     let kind = tilo_actions::remote::WORKSPACE_AGENTS_KIND;
     let invocation = InvocationId::new();
     let mut request = InvokeRequest {
+        asks: false,
         invocation,
         target: RemoteActionTarget::workspace_governance(
             WORKSPACE,
@@ -693,6 +695,7 @@ tilo_test_env::scenario! {
         let mut undoing = caller_context(caller_invoker(&ac), &ac, &a, now);
         let invocation = InvocationId::new();
         let mut request = InvokeRequest {
+            asks: false,
             invocation,
             target: RemoteActionTarget {
                 provider: tilo_actions::remote::MODERATION_PROVIDER.into(),
@@ -1418,6 +1421,7 @@ fn files_open(
     now: SystemTime,
 ) -> InvokeRequest {
     let mut request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: tilo_actions::remote::workspace_provider(WORKSPACE),

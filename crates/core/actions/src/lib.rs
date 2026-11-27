@@ -367,7 +367,8 @@ pub mod tree;
 
 pub use action::{
     Action, ActionError, ActionId, ActionStep, Declined, Doc, EncodedAction, ExecutionLocus,
-    MAX_TEXT_BYTES, OperationKind, RECALL_SUMMARY_BYTES, asks_first, codes, undo_takes_back,
+    MAX_TEXT_BYTES, OperationKind, RECALL_SUMMARY_BYTES, asks_first, codes, press_confirms,
+    undo_takes_back,
 };
 pub use agent_disclosure::hidden_from_agents;
 pub use api::{
@@ -385,16 +386,16 @@ pub use context::{
 };
 pub use contract::{
     AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
-    Audience, Availability, CARRIER_TAG, COMPENSATED_UNDO_TAG, ConfirmationPolicy,
+    Audience, Availability, CARRIER_TAG, COMPENSATED_UNDO_TAG, ConfirmationPolicy, Confirms,
     DOCUMENT_READ_TAG, ExecutionMode, HOST_RENDER_TAG, HOST_UNSUPPORTED_CODE, HOUSEKEEPING_TAG,
-    INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG, IRREVERSIBLE_TAG, MAX_OFFLOAD_CPU_TIME_MS,
-    MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES,
-    OPENS_HIT_TAG, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, ORIGIN_FACET,
-    OUTSIDE_CAPABILITY_PREFIX, OWN_DEVICE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, READERS_FACET,
-    REQUIRES_HOST_PREFIX, REQUIRES_NATIVE_PATHS_TAG, RESOURCE_READ_TAG, ROOT_ONLY_TAG,
-    ROUTED_CHANGE_TAG, ResultSpec, RetryPolicy, RiskLevel, SCREEN_PLACE_TAG, SCREEN_TAG,
-    SEARCH_KIND_PREFIX, SEARCH_TAG, SECRET_ANSWER_TAG, UNTRUSTED_CONTENT_TAG, action_node,
-    phrase_is_meaningful, resource_node,
+    INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG, IRREVERSIBLE_TAG, LEAVES_TAG,
+    MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG,
+    MIN_OFFLOAD_MEMORY_BYTES, OPENS_HIT_TAG, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG,
+    ORIGIN_FACET, OUTSIDE_CAPABILITY_PREFIX, OWN_DEVICE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG,
+    READERS_FACET, REQUIRES_HOST_PREFIX, REQUIRES_NATIVE_PATHS_TAG, RESOURCE_READ_TAG,
+    ROOT_ONLY_TAG, ROUTED_CHANGE_TAG, ResultSpec, RetryPolicy, RiskLevel, SCREEN_PLACE_TAG,
+    SCREEN_TAG, SEARCH_KIND_PREFIX, SEARCH_TAG, SECRET_ANSWER_TAG, UNTRUSTED_CONTENT_TAG,
+    action_node, phrase_is_meaningful, resource_node,
 };
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
 pub use emoji::{MAX_CUSTOM_NAME, custom_emoji_name, valid_custom_emoji_name};

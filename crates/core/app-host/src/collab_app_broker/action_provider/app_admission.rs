@@ -151,6 +151,7 @@ mod own_view_lookup_tests {
         phase only_linking_and_opening_a_resource_are_open_to_every_app;
         {
             let request = |provider: &str, action: &str| tilo_actions::remote::InvokeRequest {
+                asks: false,
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::RemoteActionTarget {
@@ -276,6 +277,7 @@ mod invitation_request_tests {
         action: &str,
     ) -> tilo_actions::remote::InvokeRequest {
         tilo_actions::remote::InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
@@ -451,6 +453,7 @@ mod own_history_request_tests {
 
     fn read(target: RemoteActionTarget, argument: InvokeArgument) -> RemoteActionMessage {
         RemoteActionMessage::Invoke(InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target,

@@ -218,6 +218,7 @@ impl Fixture {
             time,
         };
         let request = InvokeRequest {
+            asks: false,
             invocation,
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: workspace_provider(&workspace_id),

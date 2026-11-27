@@ -750,6 +750,7 @@ fn answer_asked(desktop: &mut Desktop, record: &str, yes: bool) -> Result<(), St
         Value::from(if yes { "approve" } else { "decline" }),
     );
     let request = InvokeRequest {
+        asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: tilo_actions::remote::WORKSPACE_INVOCATIONS_PROVIDER.to_owned(),
@@ -798,6 +799,7 @@ fn invoke(
         InvokeArgument::Json(args)
     };
     let request = InvokeRequest {
+        asks: false,
         invocation,
         target,
         argument,

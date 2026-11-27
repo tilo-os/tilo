@@ -2338,6 +2338,47 @@ impl ActionSpec {
             .map_or_else(|_| self.contract.need(), |args| self.need_for_args(&args))
     }
 
+    /// What a person's own press of one invocation waits for, by the value it carries (`json`, or
+    /// the palette's `argument`, as [`Self::need_for`] reads them): the contract's
+    /// [`confirms`](ActionContract::confirms) of that invocation's risk and of whether Undo takes
+    /// it back. Arguments that do not bind are what the declaration says.
+    #[must_use]
+    pub fn confirms_for(
+        &self,
+        json: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+    ) -> crate::Confirms {
+        if self.risk_of.is_none() && self.undo_of.is_none() {
+            return self.contract.confirms();
+        }
+        let bound = match (json, argument) {
+            (Some(json), _) => self
+                .without_bound(json)
+                .and_then(|json| ActionArgs::bind_json(&self.params, &json))
+                .ok(),
+            (None, Some(text)) => match text.strip_prefix(crate::ARGUMENTS_JSON_PREFIX) {
+                Some(json) => {
+                    return serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                        json,
+                    )
+                    .map_or_else(
+                        |_| self.contract.confirms(),
+                        |arguments| self.confirms_for(Some(&arguments), None),
+                    );
+                }
+                None => ActionArgs::bind(&self.params, primary_argument(&self.params, text)).ok(),
+            },
+            (None, None) => ActionArgs::bind(&self.params, Vec::new()).ok(),
+        };
+        bound.map_or_else(
+            || self.contract.confirms(),
+            |args| {
+                self.contract
+                    .confirms_as(self.risk_for(&args), self.undoable_for(&args))
+            },
+        )
+    }
+
     /// Decide per invocation whether Undo takes it back, for an action that
     /// carries others (a group: Undo takes it back only when it takes back
     /// every member). Without it, the contract's

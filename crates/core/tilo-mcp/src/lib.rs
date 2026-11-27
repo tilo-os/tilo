@@ -2082,6 +2082,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // time the invocation moves, not only once it ends.
         let following = self.observed(invocation).await.is_some();
         let mut request = InvokeRequest {
+            asks: false,
             on_behalf_of: None,
             invocation,
             target,

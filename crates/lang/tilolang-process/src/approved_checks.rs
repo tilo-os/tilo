@@ -147,6 +147,7 @@ impl Checks {
         let mut arguments = serde_json::Map::new();
         arguments.insert(approved_checks::ARGUMENT.to_owned(), check_id.into());
         self.send(RemoteActionMessage::Invoke(InvokeRequest {
+            asks: false,
             invocation: call,
             target: RemoteActionTarget {
                 provider: approved_checks::PROVIDER.to_owned(),
