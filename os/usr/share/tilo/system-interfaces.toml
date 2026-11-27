@@ -27,7 +27,7 @@ shell-ui = 39
 
 # App ↔ runtime: every service under [runtime] below
 # (crates/core/runtime-interface/interface.toml).
-runtime = 56
+runtime = 57
 
 # App ↔ messaging service: the person's messaging accounts for Messages, on
 # the messaging service only that app is handed

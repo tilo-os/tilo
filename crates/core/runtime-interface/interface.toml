@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one range for all of them: the image serves
 # every version from `oldest` to `version`.
 name = "runtime"
-version = 56
+version = 57
 version_const = "crates/core/runtime-interface/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 oldest_const = "crates/core/runtime-interface/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
@@ -1749,10 +1749,13 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Vouch" = "struct"
 "Vouch.app" = "#1 Option<VouchedApp>"
 "Vouch.connection" = "#0 u32"
+"Vouch.program" = "#3 Option<VouchedProgram>"
 "Vouch.to" = "#2 HandedTo"
 "VouchedApp" = "struct"
 "VouchedApp.process" = "#1 u32"
 "VouchedApp.ticket" = "#0 u64"
+"VouchedProgram" = "struct"
+"VouchedProgram.exe" = "#0 PathBuf"
 "VpnRoute" = "enum external"
 "VpnRoute::dns_routing" = "#2 unit"
 "VpnRoute::import" = "#3 unit"
