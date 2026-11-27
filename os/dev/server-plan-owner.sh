@@ -8,6 +8,8 @@
 #   server-plan-owner.sh ROOT wait          wait until the session answers
 #   server-plan-owner.sh ROOT stop          stop the session and its bus
 #   server-plan-owner.sh ROOT cmd CMD...    start a command in the profile
+#   server-plan-owner.sh ROOT diagnose      every thread's stack of the daemon and
+#                                           the session, into the profile's logs
 #
 # ROOT is a private directory on the guest; nothing of the person's real
 # profile is read. `cmd` carries the same XDG and identity environment the
@@ -77,7 +79,9 @@ start_daemon() {
     return 0
   fi
   printf -- '--- the device daemon started\n' >> "$root/logs/device-daemon.log"
-  env RUST_LOG="${TILO_SERVER_CYCLE_DAEMON_LOG:-info}" \
+  # Debug from the first line unless the cycle names another level: a step that stalls says
+  # what it was doing when it stopped answering. The transports' own chatter stays at info.
+  env RUST_LOG="${TILO_SERVER_CYCLE_DAEMON_LOG:-debug,iroh=info,iroh_relay=info,quinn=info,quinn_proto=info,netlink_proto=info,hickory_proto=info,hickory_resolver=info,swarm_discovery=info,h2=info,hyper=info,hyper_util=info,rustls=info,wgpu_core=warn,wgpu_hal=warn,naga=warn,smithay=info,calloop=info}" \
     setsid "$(guest_bin tilo-runtime)" >> "$root/logs/device-daemon.log" 2>&1 < /dev/null &
   printf '%s\n' "$!" > "$root/daemon.pid"
   # The daemon names its endpoint in its profile as a link, whatever directory a socket's path
@@ -160,6 +164,7 @@ case "$mode" in
     setsid "$session_bin" --backend headless --size 1280x800 \
       >> "$root/logs/session.log" 2>&1 &
     printf '%s\n' "$!" > "$root/session.pid"
+    date +%s > "$root/session.started"
     ;;
   wait)
     profile_env
@@ -187,6 +192,39 @@ case "$mode" in
   cmd)
     profile_env
     exec "$@"
+    ;;
+  diagnose)
+    # What the daemon and the session were doing once the session's first
+    # asks had 45 seconds to be answered: every thread's stack, by whichever
+    # debugger the image carries, and what the kernel says of each thread
+    # otherwise.
+    if [ -s "$root/session.started" ]; then
+      waited=$(( $(date +%s) - $(<"$root/session.started") ))
+      [ "$waited" -ge 45 ] || sleep $(( 45 - waited ))
+    fi
+    for name in daemon session; do
+      out="$root/logs/stacks-$name.txt"
+      pid="$(cat "$root/$name.pid" 2>/dev/null || true)"
+      if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        echo "the $name is not running" > "$out"
+        continue
+      fi
+      {
+        echo "# $name, pid $pid, $(date -u +%FT%TZ), $(( $(date +%s) - $(cat "$root/session.started" 2>/dev/null || date +%s) )) s after the session started"
+        if command -v gdb >/dev/null 2>&1; then
+          timeout 120 gdb -p "$pid" -batch -nx -ex 'set pagination off' -ex 'thread apply all bt' 2>&1
+        elif command -v eu-stack >/dev/null 2>&1; then
+          timeout 120 eu-stack -p "$pid" 2>&1
+        else
+          echo "# no gdb or eu-stack on this image: each thread's name, wait channel, syscall and kernel stack"
+          for task in /proc/"$pid"/task/*; do
+            echo "## thread $(basename "$task") $(cat "$task/comm" 2>/dev/null) wchan=$(cat "$task/wchan" 2>/dev/null) state=$(awk '{print $3}' "$task/stat" 2>/dev/null)"
+            cat "$task/syscall" 2>/dev/null
+            cat "$task/stack" 2>/dev/null
+          done
+        fi
+      } > "$out" 2>&1
+    done
     ;;
   *)
     echo "unknown mode: $mode" >&2

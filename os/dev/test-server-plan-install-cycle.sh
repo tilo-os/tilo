@@ -313,6 +313,9 @@ owner_cmd tilo machine add --os server --name "$server_name" \
   || {
     cat "$evidence/03-plan.txt" >&2
     TILO_SSH_BOUND=30 owner ssh "tail -n 120 $owner_root/logs/session.log" >&2 2>&1 || true
+    # What the daemon and the session were doing while the plan went
+    # unanswered, kept with the profile's logs.
+    TILO_SSH_BOUND=400 owner_profile diagnose >&2 2>&1 || true
     die 'the machine could not be planned'
   }
 plan_id="$(sed -n 's/^plan \([0-9a-f]\{32\}\).*/\1/p' "$evidence/03-plan.txt" | head -n 1)"
