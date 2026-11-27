@@ -5,8 +5,9 @@
 # product font catalog), and the programs a capture runs through. OUT/bin holds
 # the daemon, the launcher, the installer, the tilolang tool, the runtime bundle
 # tool and fonts/, OUT/lib the runtime's libraries, OUT/runtime the bundles a
-# profile mounts, and OUT/install one development build per native app, the
-# form a daemon installs.
+# profile mounts (the apps' runtime, the tilolang runtime and Browser's Chromium
+# engine), and OUT/install one development build per native app, the form a
+# daemon installs.
 #
 # Usage: tools/screenshots/build.sh OUT
 set -euo pipefail
@@ -100,6 +101,24 @@ tilolang_version=$(tilolang_runtime_version "$repo_root")
 tilolang_bake_runtime "$out/bin/tilo-runtime-bundle" "$target/thin-app/tilolang-process" \
     "$out/bin/tilolang-std" "$repo_root" "$identity" "$runtimes/$tilolang_version" \
     "$tilolang_version"
+
+# Browser's Chromium engine, as its own signed runtime bundle: the browser's manifest requires it,
+# and a device installs the app and its runtimes in one step. An image installs the bundle; a
+# session signs it from the engine build it is given (`TILO_CHROMIUM_ENGINE`, the `chromium-engine`
+# check's output) or, for a developer's run of this build, builds it here.
+engine_tree=${TILO_CHROMIUM_ENGINE:+$TILO_CHROMIUM_ENGINE/chromium}
+if [[ -z $engine_tree ]]; then
+    python3 scripts/browser/build-host.py --work "$target" \
+        --runtime "$target/screenshots-chromium" --jobs "${CARGO_BUILD_JOBS:-$(nproc)}"
+    engine_tree=$target/screenshots-chromium/chromium
+fi
+[[ -x $engine_tree/tilo-chromium-host ]] \
+    || { echo "no Chromium engine in $engine_tree: set TILO_CHROMIUM_ENGINE to the tree it is in" >&2; exit 1; }
+engine_version=$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\(.*\)";$/\1/p' \
+    "$repo_root/crates/engines/tilo-webview/src/chromium/runtime.rs")
+[[ -n $engine_version ]] || { echo "the Chromium runtime names no RUNTIME_VERSION" >&2; exit 1; }
+"$out/bin/tilo-runtime-bundle" build --version "$engine_version" --arch "$(uname -m)" \
+    --from / --include "$engine_tree" --identity "$identity" --out "$runtimes/$engine_version"
 
 # Each app of the collection as the development build a disposable profile
 # installs: the manifest with the runtime this build baked, and its payload files,

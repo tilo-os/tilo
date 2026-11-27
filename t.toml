@@ -3854,10 +3854,14 @@ name = "app-screenshots"
 # Each capture runs in the app its device's daemon starts, in the app's own sandbox: the job starts
 # sandboxes of its own.
 isolation = "nested"
-# The pinned CEF archive (SHA-256 in scripts/browser/cef-lock.json), which builds the
-# Chromium engine Browser's pictures need, and the build scripts' pinned assets.
+# The Chromium engine Browser renders pages with is its own check's (`chromium-engine`): one build
+# of the pinned CEF archive (SHA-256 in scripts/browser/cef-lock.json) answers every tree, and this
+# job signs it as the runtime bundle Browser requires rather than downloading and compiling
+# Chromium again. The build scripts' pinned assets are the job's other reach.
 egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
-run = "bash tools/ci/ensure-browser-dependencies.sh\ncommand -v cmake >/dev/null || dnf install -y cmake\npython3 scripts/browser/build-host.py --jobs 8\nbash tools/screenshots/build.sh \"$CARGO_TARGET_DIR/app-screenshots-build\"\nrm -rf /target/app-screenshots\nTILO_CHROMIUM_HOST=\"$PWD/target/chromium/tilo-chromium-host\" \\\n  bash tools/test-env.sh python3 -I tools/screenshots/run.py --out /target/app-screenshots \\\n  --bin-dir \"$CARGO_TARGET_DIR/app-screenshots-build/bin\" \\\n  --apps \"${T_INPUT_APPS:-}\"\n"
+needs = ["chromium-engine"]
+env = { TILO_CHROMIUM_ENGINE = "/target/chromium-engine" }
+run = "bash tools/ci/ensure-browser-dependencies.sh\nbash tools/screenshots/build.sh \"$CARGO_TARGET_DIR/app-screenshots-build\"\nrm -rf /target/app-screenshots\nbash tools/test-env.sh python3 -I tools/screenshots/run.py --out /target/app-screenshots \\\n  --bin-dir \"$CARGO_TARGET_DIR/app-screenshots-build/bin\" \\\n  --apps \"${T_INPUT_APPS:-}\"\n"
 dispatch_inputs = { apps = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/app-screenshots/**"]
