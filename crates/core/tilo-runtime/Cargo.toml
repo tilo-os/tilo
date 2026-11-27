@@ -53,7 +53,7 @@ required-features = ["test-support"]
 futures = { workspace = true, default-features = true }
 if-addrs = { version = "0.15.0", default-features = false }
 iroh-base.workspace = true
-tilo-action-services = { version = "0.1.0", path = "../action-services", features = ["test-support"] }
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 tilo-action-line = { version = "0.1.0", path = "../action-line" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }

@@ -122,7 +122,7 @@ tilo-seal = { version = "0.1.0", path = "../../core/tilo-seal" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
 
 [dev-dependencies]
-tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
+tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 # The tests use the test tools behind `test-support`.
 tilo-app = { path = ".", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }

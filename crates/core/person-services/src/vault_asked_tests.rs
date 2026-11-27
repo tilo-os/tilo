@@ -459,7 +459,7 @@ async fn an_asked_mail_account_keeps_its_password_in_memory_alone() {
 /// it is taken for a secret.
 #[tokio::test]
 async fn an_action_listed_only_as_it_is_asked_is_taken_for_all_secret() {
-    use tilo_action_services::TestProvider;
+    use tilo_actions::remote::TestProvider;
     use tilo_actions::remote::{CataloguePage, RemoteActionTarget};
 
     let dir = tempfile::tempdir().unwrap();

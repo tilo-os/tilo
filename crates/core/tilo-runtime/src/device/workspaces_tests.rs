@@ -1041,9 +1041,9 @@ fn declaring(
     provider: &'static str,
     action: &'static str,
     kind: tilo_actions::ActionKind,
-) -> tilo_action_services::TestProvider {
+) -> tilo_actions::remote::TestProvider {
     use tilo_actions::remote::{CataloguePage, CatalogueRow};
-    tilo_action_services::TestProvider::new().with_catalogue(move |_, query| {
+    tilo_actions::remote::TestProvider::new().with_catalogue(move |_, query| {
         let row = CatalogueRow::for_action(
             provider,
             provider,

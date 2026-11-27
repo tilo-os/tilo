@@ -18,20 +18,17 @@ use media::audio_output::{Factory, Observation, Output};
 use tilo_action_line::LineClient;
 use tilo_actions::remote::audio_output::{self, Request, Snapshot};
 
-use crate::time::Duration;
+use tilo_clock::time::Duration;
 
 /// How often a full device queue is asked again, until [`audio_output::DEADLINE`].
 const RETRY: Duration = Duration::from_millis(5);
 
-/// Install the device's output as this process's governed sound, when its launcher handed it a
-/// connection. A host process has none and keeps its own output.
-pub(crate) fn install_from_launcher() {
-    let Some(handed) = tilo_action_line::handed::connection() else {
-        return;
-    };
+/// Install the device's output, on the connection the process's launcher handed it, as this
+/// process's governed sound.
+pub(crate) fn install(line: Arc<LineClient>) {
     media::audio_output::install(Arc::new(LineFactory {
         shared: Arc::new(Shared {
-            line: handed.line,
+            line,
             observed: Mutex::new(None),
             failure: Mutex::new(None),
             backpressure: Mutex::new(0),
@@ -168,7 +165,7 @@ impl Output for LineOutput {
             .sequence
             .checked_add(1)
             .ok_or("Audio output sequence exhausted")?;
-        let deadline = crate::time::now().checked_add(audio_output::DEADLINE);
+        let deadline = tilo_clock::now().checked_add(audio_output::DEADLINE);
         loop {
             let snapshot = self
                 .shared
@@ -194,7 +191,7 @@ impl Output for LineOutput {
             if let Ok(mut pressed) = self.shared.backpressure.lock() {
                 *pressed = pressed.saturating_add(1);
             }
-            if deadline.is_none_or(|deadline| crate::time::now() >= deadline) {
+            if deadline.is_none_or(|deadline| tilo_clock::now() >= deadline) {
                 self.shared.fail("Governed audio output timed out");
                 return Err("Governed audio output timed out".into());
             }

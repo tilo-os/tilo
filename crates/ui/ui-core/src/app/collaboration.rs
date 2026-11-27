@@ -307,7 +307,7 @@ impl App {
     ) {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let Some(handed) = tilo_action_line::handed::connection() else {
+            let Some(line) = crate::presence_line::installed() else {
                 return;
             };
             let Some(payload) = payload.to_live() else {
@@ -316,7 +316,7 @@ impl App {
             let said = collab_types::presence::Said { key, payload };
             match serde_json::to_value(&said) {
                 Ok(said) => {
-                    if let Err(error) = handed.line.say_presence(&said) {
+                    if let Err(error) = line.say(&said) {
                         tracing::debug!(%error, "the person's presence was not said");
                     }
                 }
@@ -342,11 +342,11 @@ impl App {
     fn drain_line_presence(&mut self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let Some(handed) = tilo_action_line::handed::connection() else {
+            let Some(line) = crate::presence_line::installed() else {
                 return false;
             };
             let mut shown = false;
-            for heard in handed.line.presence_heard() {
+            for heard in line.heard() {
                 let heard = match serde_json::from_str::<collab_types::presence::Heard>(&heard) {
                     Ok(heard) => heard,
                     Err(error) => {

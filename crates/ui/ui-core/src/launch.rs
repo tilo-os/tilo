@@ -528,9 +528,6 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_process::raise_open_file_limit();
     init_app_log();
     tilo_ui_base::collaboration::install_channel_settings();
-    // A launcher-handed connection carries the device's sound output; a host process has none.
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::audio_output::install_from_launcher();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)
 }

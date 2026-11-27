@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use collab_types::store::{Cell, Query, Value, wire::Command};
 use ed25519_dalek::SigningKey;
 use serde_json::json;
-use tilo_action_services::TestProvider;
+use tilo_actions::remote::TestProvider;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending,
     ReceiptStatus, RemoteActionTarget, WORKSPACE_AGENT_CREATE, WORKSPACE_AGENT_UPDATE,

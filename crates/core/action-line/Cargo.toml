@@ -22,7 +22,7 @@ serde_json = { version = "1.0", features = ["raw_value"] }
 tracing.workspace = true
 
 [dev-dependencies]
-tilo-action-services = { path = "../action-services", features = ["test-support"] }
+tilo-actions = { path = "../actions", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 blake3.workspace = true
 

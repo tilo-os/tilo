@@ -137,7 +137,7 @@ mod tests {
     use std::sync::Arc;
     use tilo_actions::api::ActionAddress;
     use tilo_actions::remote::{InvokeRequest, RemoteActionTarget};
-    use {tilo_action_services::TestProvider, tilo_actions::remote::ReceiptStatus};
+    use tilo_actions::remote::{ReceiptStatus, TestProvider};
 
     #[test]
     fn a_line_is_answered_by_the_provider_or_refused() {

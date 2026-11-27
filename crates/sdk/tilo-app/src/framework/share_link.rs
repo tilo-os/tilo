@@ -532,9 +532,9 @@ mod tests {
     }
 
     /// A host answering with what the shell's `issue-invitation` answers.
-    fn shell(value: serde_json::Value) -> std::sync::Arc<tilo_action_services::TestProvider> {
+    fn shell(value: serde_json::Value) -> std::sync::Arc<tilo_actions::remote::TestProvider> {
         std::sync::Arc::new(
-            tilo_action_services::TestProvider::new().completing(move |_| {
+            tilo_actions::remote::TestProvider::new().completing(move |_| {
                 tilo_actions::ActionOutput {
                     value: Some(value.clone()),
                     resources: Vec::new(),

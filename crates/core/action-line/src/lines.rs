@@ -519,12 +519,12 @@ fn store_line(correlation: u64, result: Result<serde_json::Value, ActionCallErro
 mod tests {
     use super::*;
     use crate::LineClient;
-    use tilo_action_services::TestProvider;
     use std::collections::HashMap;
     use std::io::BufReader;
     use std::os::unix::net::UnixStream;
     use tilo_actions::api::ActionAddress;
     use tilo_actions::outcome::{ActionOutput, InvocationId};
+    use tilo_actions::remote::TestProvider;
     use tilo_actions::remote::{
         CataloguePage, CatalogueQuery, Completer, ContentGets, ContentPiece, ContentPut,
         ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus,

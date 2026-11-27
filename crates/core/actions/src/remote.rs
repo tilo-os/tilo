@@ -79,6 +79,8 @@ mod session_state;
 mod shared_provider;
 mod store_commands;
 mod surfaces;
+#[cfg(any(test, feature = "test-support"))]
+mod test_provider;
 pub use session_state::{SessionState, SyncState, WorkspaceState};
 mod wait;
 mod watch;
@@ -134,6 +136,8 @@ pub use resource_read::{
     device_job_path, device_record_address, device_record_space, parse_device_record_space,
     parse_job_path, read_resources, readings_from, readings_of, reads_answer,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use test_provider::TestProvider;
 pub use wait::{MAX_REMOTE_WAIT, MAX_REMOTE_WAIT_MS, UpdateMark, settle_with};
 
 use crate::api::ActionAddress;

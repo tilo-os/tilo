@@ -2945,7 +2945,7 @@ mod refusal_tests {
 #[cfg(test)]
 mod provider_routing_tests {
     use super::*;
-    use tilo_action_services::TestProvider;
+    use tilo_actions::remote::TestProvider;
     use tilo_actions::remote::{
         ActionCallError, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
         InvokeRequest, Pending,

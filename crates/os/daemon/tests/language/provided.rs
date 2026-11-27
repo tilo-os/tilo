@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use tilo_action_services::TestProvider;
+use tilo_actions::remote::TestProvider;
 use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow, InvokeArgument};
 use tilo_actions::{ActionAddress, ActionOutput, InvocationUpdate};
 

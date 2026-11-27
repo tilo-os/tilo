@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use runtime_collab::ShellClient;
 use serde_json::{Map, json};
-use tilo_action_services::TestProvider;
+use tilo_actions::remote::TestProvider;
 use tilo_actions::remote::{
     ActionProvider as _, CataloguePage, CatalogueRow, Completer, Confirmation, InvocationReceipt,
     InvokeArgument, InvokeRequest, RemoteActionTarget,

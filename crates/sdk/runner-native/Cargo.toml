@@ -24,6 +24,14 @@ dx12-shader-cache = ["ui-core/dx12-shader-cache"]
 ui-core = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["native", "model"] }
 # The Automerge workers an app's binary is started as; `run` serves them before the app starts.
 tilo-automerge-isolate.workspace = true
+# The connection an app's launcher hands it: the device's sound output and the person's presence
+# travel on it, installed here so the toolkit links none of the daemon's transport.
+tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+serde_json.workspace = true
+tracing.workspace = true
 
 # Location and screen capture through the XDG Desktop Portal exist only on
 # Linux; this is the one place the SDK turns them on, so no app selects a

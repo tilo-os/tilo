@@ -126,9 +126,6 @@ pub mod local_document_action;
 pub use {action_locus::ActionUiRoute, action_locus::PaintedActionMarker};
 #[cfg(feature = "model")]
 pub mod action_palette;
-/// An app's sound on its device's output, over the connection its launcher handed it.
-#[cfg(not(target_arch = "wasm32"))]
-mod audio_output;
 pub mod author;
 pub mod content_zoom;
 pub mod control_hints;
@@ -136,6 +133,10 @@ pub mod control_notice;
 /// What is running: one cancellable job with a body, which the whole system can see and which outlives
 /// the window that started it.
 pub mod jobs;
+/// The person's presence said and heard on the connection an app's launcher handed it, which
+/// the runner installs before the app starts.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod presence_line;
 /// The actions the host publishes itself, named for apps to call through `ui`.
 pub use {tilo_app_id::apps, tilo_app_id::chat};
 pub mod shell;

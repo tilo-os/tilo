@@ -2189,7 +2189,7 @@ async fn an_agents_daily_event_fires_at_its_persons_eight_across_a_clock_change(
     let workspace = workspaces.create("Home").await.unwrap().workspace;
     let _agents = crate::agents::ServerAgents::on_device(
         workspaces.clone(),
-        Arc::new(tilo_action_services::TestProvider::new()),
+        Arc::new(tilo_actions::remote::TestProvider::new()),
         Arc::new(crate::agent_record_tests::Keyed),
     );
     let made = ask_agents(

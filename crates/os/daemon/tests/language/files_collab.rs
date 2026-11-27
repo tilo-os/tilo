@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tilo_action_services::TestProvider;
+use tilo_actions::remote::TestProvider;
 use tilo_actions::remote::{
     ActionProvider as _, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
     ViewResourceQuery,

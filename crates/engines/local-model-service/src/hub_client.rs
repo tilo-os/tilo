@@ -385,8 +385,8 @@ mod tests {
 
     use super::*;
     use serde_json::json;
-    use tilo_action_services::TestProvider;
     use tilo_actions::ActionOutput;
+    use tilo_actions::remote::TestProvider;
 
     /// The provider the terminal sign-in sets a key on: the one this computer runs, or the one
     /// a person names; several local providers are refused asking for one.

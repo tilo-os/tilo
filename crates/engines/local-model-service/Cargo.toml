@@ -72,7 +72,6 @@ name = "tilo-model-manager"
 path = "src/main.rs"
 
 [dependencies]
-tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
 tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
 tilo-paths.workspace = true
 tilo-machine.workspace = true

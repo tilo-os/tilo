@@ -13,10 +13,6 @@ homepage.workspace = true
 name = "tilo_action_services"
 path = "src/lib.rs"
 
-[features]
-# `test_provider::TestProvider`, a closure-built action host for other crates' tests.
-test-support = []
-
 [dependencies]
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }

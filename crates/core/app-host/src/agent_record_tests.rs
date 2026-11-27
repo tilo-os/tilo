@@ -109,7 +109,7 @@ async fn an_agent_installs_with_its_triggers_pauses_resumes_and_leaves_with_them
     // This device runs the workspace's agents, each under the key the device makes for it.
     let _agents = crate::agents::ServerAgents::on_device(
         workspaces.clone(),
-        std::sync::Arc::new(tilo_action_services::TestProvider::new()),
+        std::sync::Arc::new(tilo_actions::remote::TestProvider::new()),
         std::sync::Arc::new(Keyed),
     );
     let engine = workspaces

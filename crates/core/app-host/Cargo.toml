@@ -21,7 +21,7 @@ files = ["tilo-workspace-service/files", "dep:fs-protocol", "dep:ui"]
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
 [dependencies]
-tilo-action-services = { version = "0.1.0", path = "../action-services", features = ["test-support"] }
+tilo-action-services = { version = "0.1.0", path = "../action-services" }
 # The workspace service the apps are served on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps"] }
 tilo-workspace-records = { path = "../workspace-records" }

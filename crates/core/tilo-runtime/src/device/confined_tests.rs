@@ -308,7 +308,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
 
     // The host decides a call as the placed device: its key, its person named for history, the
     // records its certificate names, and never the person.
-    let probe = Arc::new(tilo_action_services::TestProvider::new());
+    let probe = Arc::new(tilo_actions::remote::TestProvider::new());
     hosted
         .providers()
         .serve_placed(

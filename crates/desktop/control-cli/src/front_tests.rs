@@ -3,7 +3,7 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tilo_action_services::TestProvider;
+use tilo_actions::remote::TestProvider;
 use tilo_actions::remote::{self, CataloguePage, CatalogueResource, InvokeRequest};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionOutput, ActionParam, ActionState, ExecutionLocus,

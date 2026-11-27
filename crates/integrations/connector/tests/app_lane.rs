@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use collab_types::presence::CallPresence;
 use key_group::{ContentKeys, KeyGroup, MemberKey};
-use tilo_action_services::{TestProvider};
-use tilo_action_line::{LineClient};
+use tilo_action_line::LineClient;
+use tilo_actions::remote::TestProvider;
 use tilo_actions::remote::call::{
     BridgedCall, CallAudio, CallLink as SaidLink, CallReport as SaidReport, CallStatus,
     OutsideCall, OutsidePerson,

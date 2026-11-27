@@ -343,7 +343,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     );
 
     let (model, asked) = scripted(owner.clone());
-    let provider = Arc::new(tilo_action_services::TestProvider::new());
+    let provider = Arc::new(tilo_actions::remote::TestProvider::new());
     // Scout asks under its own key, which the person's root certified for it: no device of the
     // person's signs for it.
     let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
@@ -449,7 +449,7 @@ async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
     post(workspaces, &workspace, cert, "a spam offer").await;
 
     let (model, asked) = scripted(owner.clone());
-    let provider = Arc::new(tilo_action_services::TestProvider::new());
+    let provider = Arc::new(tilo_actions::remote::TestProvider::new());
     let agents =
         ServerAgents::on_device(workspaces.clone(), provider, Arc::new(super::Keys([7; 32])))
             .scripted(model);

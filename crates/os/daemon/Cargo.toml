@@ -81,7 +81,7 @@ iroh.workspace = true
 hex.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
+tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
 # The display the apps a language test's daemon starts draw on: a headless compositor, as a
 # nested session's own, publishing its name where the daemon reads it.

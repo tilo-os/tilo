@@ -1370,8 +1370,8 @@ impl ActionProvider for SessionActions {
 mod tests {
     use std::sync::Arc;
 
-    use tilo_action_services::TestProvider;
     use tilo_actions::remote::ContentPutStep;
+    use tilo_actions::remote::TestProvider;
 
     use super::*;
 

@@ -6,8 +6,8 @@ use std::sync::Mutex;
 
 use tilo_lock::MutexRecover as _;
 
-use tilo_actions::outcome::{ActionOutput, InvocationId};
-use tilo_actions::remote::{
+use crate::outcome::{ActionOutput, InvocationId};
+use crate::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ReceiptStatus,
 };

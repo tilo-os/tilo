@@ -3064,8 +3064,8 @@ const OWN_DEVICE_PROBE: &str = "so.tilo.probe.device";
 
 /// A provider offering `probe-device#publish`, an action of the invoker's own device whose
 /// contract asks its person every time: it records what it was asked, and nothing else.
-fn own_device_probe() -> Arc<tilo_action_services::TestProvider> {
-    use tilo_action_services::TestProvider;
+fn own_device_probe() -> Arc<tilo_actions::remote::TestProvider> {
+    use tilo_actions::remote::TestProvider;
     use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow};
     Arc::new(TestProvider::new().with_catalogue(move |caller, query| {
         let row = CatalogueRow::for_action(

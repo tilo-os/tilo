@@ -526,14 +526,14 @@ const WORKSPACES_TEST: &str = "device::local::tests::the_native_endpoint_serves_
 const ASKS: &str = "so.tilo.probe";
 
 /// A provider offering `probe#publish`, which asks its person before it runs.
-fn asking() -> Arc<tilo_action_services::TestProvider> {
+fn asking() -> Arc<tilo_actions::remote::TestProvider> {
     probe(tilo_actions::ConfirmationPolicy::Confirm)
 }
 
 /// A provider offering `probe#publish`, confirmed as `confirmation` says.
 fn probe(
     confirmation: tilo_actions::ConfirmationPolicy,
-) -> Arc<tilo_action_services::TestProvider> {
+) -> Arc<tilo_actions::remote::TestProvider> {
     probe_named(ASKS, confirmation)
 }
 
@@ -541,8 +541,8 @@ fn probe(
 fn probe_named(
     named: &'static str,
     confirmation: tilo_actions::ConfirmationPolicy,
-) -> Arc<tilo_action_services::TestProvider> {
-    use tilo_action_services::TestProvider;
+) -> Arc<tilo_actions::remote::TestProvider> {
+    use tilo_actions::remote::TestProvider;
     use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow};
     Arc::new(TestProvider::new().with_catalogue(move |caller, query| {
         let row = CatalogueRow::for_action(

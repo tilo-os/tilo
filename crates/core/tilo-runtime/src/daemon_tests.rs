@@ -3769,7 +3769,7 @@ fn a_shell_link_answers_why_the_persons_part_did_not_start() {
 fn a_sign_in_as_someone_else_answers_the_calls_in_flight_and_hands_nothing_on() {
     use io::{BufRead as _, Write as _};
     use std::sync::{Arc, Mutex, atomic::Ordering};
-    use tilo_action_services::TestProvider;
+    use tilo_actions::remote::TestProvider;
     use tilo_actions::remote::{
         ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
         RemoteActionMessage, RemoteActionTarget, pending,

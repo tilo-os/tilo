@@ -682,8 +682,8 @@ fn holds_windows(shared: &Shared, workspace: &str) -> bool {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use tilo_action_services::TestProvider;
     use tilo_actions::remote::CatalogueProvider;
+    use tilo_actions::remote::TestProvider;
 
     const WORKSPACE: &str = "11111111-1111-4111-8111-111111111111";
     const SHOWN: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";

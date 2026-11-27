@@ -74,7 +74,7 @@ fn the_tenants_connection_is_the_persons_unnamed_agent() {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    let probe = Arc::new(tilo_action_services::TestProvider::new());
+    let probe = Arc::new(tilo_actions::remote::TestProvider::new());
     daemon.provide("so.tilo.probe", Arc::clone(&probe) as _);
     let tenant = tenant(&root, crate::seats::own_account());
     std::fs::create_dir_all(&tenant.sockets).unwrap();
@@ -170,7 +170,7 @@ fn a_confined_daemons_tenant_socket_serves_its_account_alone() {
     };
     confined(tilo_desktop_model::WorkspaceId::new());
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    let probe = Arc::new(tilo_action_services::TestProvider::new());
+    let probe = Arc::new(tilo_actions::remote::TestProvider::new());
     daemon.provide("so.tilo.probe", Arc::clone(&probe) as _);
     // No connection of a confined device's is the person's, its own account's included: the
     // workspace it names is its host's, which it does not hold.

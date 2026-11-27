@@ -48,9 +48,6 @@ pub mod server_account;
 
 pub mod task_programs;
 
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_provider;
-
 pub mod window_follow;
 
 pub mod workspace_events;
@@ -70,8 +67,6 @@ pub mod workspace_invocations;
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
-#[cfg(any(test, feature = "test-support"))]
-pub use test_provider::TestProvider;
 
 /// The providers whose actions a workspace's host answers for a person in it: what the host
 /// keeps for them rather than for the workspace (a person's log of what they were told, the
