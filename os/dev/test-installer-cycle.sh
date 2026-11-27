@@ -786,7 +786,7 @@ if [ "$oobe_started" -ne 1 ]; then
   python3 "$dev_dir/serial-console.py" "$run/serial.sock" \
     --log "$out/target-console.log" --login "$TILO_USER:$TILO_PASS" \
     --timeout 60 --deadline 300 \
-    --run 'journalctl -b -o short-monotonic --no-pager -p 4; journalctl -b -o short-monotonic --no-pager _UID=$(id -u); for log in ~/.local/state/tilo/session-logs/*; do echo "== $log"; tail -c 150000 "$log"; done; echo "== id"; id; echo "== groups of the running session"; for pid in $(pgrep -x tilo-session); do grep -E "^(Name|Uid|Gid|Groups):" /proc/$pid/status; done; echo "== identity files"; ls -laZ /var/lib/tilo/user-identity /var/lib/tilo/device /var/lib/tilo/device-private' \
+    --run 'journalctl -b -o short-monotonic --no-pager -p 4; journalctl -b -o short-monotonic --no-pager _UID=$(id -u); for log in ~/.local/state/tilo/session-logs/*; do echo "== $log"; tail -c 150000 "$log"; done; echo "== id"; id; echo "== groups of the running session"; for pid in $(pgrep -x tilo-session); do grep -E "^(Name|Uid|Gid|Groups):" /proc/$pid/status; done; echo "== identity files"; ls -laZ /var/lib/tilo/user-identity /var/lib/tilo/device /var/lib/tilo/device-private; echo "== the device daemon"; systemctl status tilo-runtime tilo-device-key-init --no-pager -l | head -n 40; journalctl -b -o short-monotonic --no-pager -u tilo-runtime -u tilo-device-key-init | tail -n 150' \
     > "$out/target-journal.txt" 2> "$out/target-journal-console.txt" || true
   die "first installed boot did not reach direct OOBE"
 fi
