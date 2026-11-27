@@ -361,8 +361,9 @@ pub(super) fn presence_stamp(session: &Session<'_>, hash: &mut impl std::hash::H
 /// tab is mapped: it is what a tool aims at to press something the row names. `frames` is how
 /// many frames the window's client committed: a window showing the same thing keeps its count,
 /// so two reads that agree say it drew nothing between them. `resource` is what the window
-/// shows, as its bar carries it when the person picks it up: null until the app says what the
-/// window shows. `item` is the item the window was opened on (a document of its app's library),
+/// shows, as its bar carries it when the person picks it up: the record its place is on, which
+/// a window shows whether its app maps a surface of its own or the shell draws it (a tilolang
+/// app's window maps none). `item` is the item the window was opened on (a document of its app's library),
 /// which a restart opens it on again: null for a window opened on none.
 pub(super) fn window_rows(
     tree: &Layout,
@@ -404,8 +405,11 @@ pub(super) fn window_rows(
                     }
                     let (kind, app_id) = tile_kind(&tab.tile);
                     let window = window_of_tile(&tab.tile);
-                    // What the window's bar carries, on a window that stands.
-                    let resource = window.and_then(|_| resource_of(tab.id));
+                    // What the window shows, as its bar carries it: the record its place stands
+                    // on. A window this session maps no surface for — a tilolang app's, which
+                    // the shell draws — shows its record all the same, so only where the window
+                    // is drawn is read of the surface (below).
+                    let resource = resource_of(tab.id);
                     let rect = window
                         .and_then(&rect_of)
                         .map_or(Json::Null, |(x, y, width, height)| {

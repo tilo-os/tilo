@@ -239,7 +239,8 @@ tilo_test_env::scenario! {
         // The frame draws the one window it has mapped; the other tab is an app to open again, with
         // no window of its own yet.
         let frames = |id: u64| if id == 7 { 41 } else { 0 };
-        // The window's app says what it shows; the tab with no window shows nothing.
+        // The window's app says what it shows; the tab with no window of its own is on no
+        // record, so it shows nothing.
         let resources = |tab: u64| (tab == 100).then(|| "notes.page:groceries".to_owned());
         // The window was opened on one document of its app's library.
         let items = |tab: u64| (tab == 100).then(|| "tl:so.tilo.pdf-viewer:lib/a".to_owned());
