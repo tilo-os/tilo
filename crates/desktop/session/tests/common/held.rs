@@ -131,15 +131,11 @@ pub fn fixture() -> Fixture {
     }
 }
 
-/// Where the device's daemon keeps the service that holds its workspaces, below its state
-/// directory: the state root its service is opened on when it starts
+/// Where the device's daemon keeps the service that holds its workspaces and the key service
+/// beside it, below its state directory: what it opens when it starts
 /// (`tilo_runtime::device::workspaces`).
-pub fn daemon_service_root(state: &Path) -> PathBuf {
-    state
-        .join("tilo")
-        .join("device")
-        .join("own")
-        .join("service")
+fn device_dir(state: &Path) -> PathBuf {
+    state.join("tilo").join("device").join("own")
 }
 
 /// This computer's copy of the workspace `workspace` under `state`, as `cert`'s device in a
@@ -170,7 +166,6 @@ pub fn workspace_founded_on_this_device_then(
     key: &SigningKey,
     then: impl AsyncFnOnce(&tilo_workspace_service::service::WorkspaceService),
 ) {
-    let root = daemon_service_root(state);
     let workspace_id = WorkspaceId::parse(workspace).expect("a workspace id");
     let owner = owner::open_file(
         &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
@@ -188,32 +183,30 @@ pub fn workspace_founded_on_this_device_then(
             .bind()
             .await
             .expect("this device's endpoint");
-        // The service writes as the device, and its member copies act as it, as the session's
-        // own service does when it opens this store again.
+        // The service is opened as the daemon opens it on this directory: as the device, with
+        // the key service beside it that founding a workspace seals its records with.
         let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(key.clone());
-        let identity = tilo_workspace_service::service::ServiceIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key.clone(),
-            device_cert: cert.clone(),
-            revocations: tilo_user_identity::RevocationList::new(),
-        };
-        let service = tilo_workspace_service::service::WorkspaceService::open(
-            tilo_workspace_service::service::ServiceConfig {
-                // The service names no address of its own until something needs it reachable, as
-                // the session's own service does: nothing here waits for a server to name it.
-                reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
-                member: Some(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-                    cert: cert.clone(),
-                    signer,
-                })),
-                ..tilo_workspace_service::service::ServiceConfig::new(
-                    root,
-                    tilo_server_protocol::WorkSetting::none(),
-                )
+        let tilo_workspace_service::own_device::Opened {
+            service,
+            keys: _keys,
+        } = tilo_workspace_service::own_device::open_in(
+            &device_dir(state),
+            tilo_workspace_service::own_device::Device {
+                cert,
+                signer: &signer,
+                itself: None,
             },
-            identity,
+            tilo_workspace_service::own_device::vault_key(key),
             endpoint.clone(),
+            Arc::new(tilo_workspace_keys::NoSealChecks),
             None,
+            |config| tilo_workspace_service::service::ServiceConfig {
+                // The service names no address of its own until something needs it
+                // reachable, as the session's own service does: nothing here waits for a
+                // server to name it.
+                reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
+                ..config
+            },
         )
         .await
         .expect("this device's own workspace service opens");
