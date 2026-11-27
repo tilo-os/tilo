@@ -494,6 +494,19 @@ impl Workspaces {
         }
     }
 
+    /// [`Self::keep_content`] ahead of the keepers already kept: the record content of what this
+    /// device wants is asked before what it keeps of what members push. An answer to a want this
+    /// device made and a push to it are the same message, and the keeper that knows the wants
+    /// has to see it first.
+    pub(crate) fn keep_content_first(&self, keeper: &Arc<dyn ContentKeeper>) {
+        let mut keepers = self.inner.content.keepers.write_recover();
+        keepers.retain(|kept| kept.strong_count() > 0);
+        let keeper = Arc::downgrade(keeper);
+        if !keepers.iter().any(|kept| Weak::ptr_eq(kept, &keeper)) {
+            keepers.insert(0, keeper);
+        }
+    }
+
     /// `frame`, a piece of content the member device `from` sent this host
     /// in `workspace`: to the keeper that asked for it, or, when it is a
     /// surface the host asked for, into the content store the host decides

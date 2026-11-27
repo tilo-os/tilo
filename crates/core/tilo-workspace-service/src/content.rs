@@ -978,7 +978,10 @@ pub fn routes_content(
     workspaces.keep_shelf(Arc::clone(&shelf));
     workspaces.serve_content(Arc::new(ShelfContent(shelf)));
     let keeper: Arc<dyn ContentKeeper> = Arc::new(MemberContent::new(Arc::clone(&content)));
-    workspaces.keep_content(&keeper);
+    // Ahead of what this device keeps of what its members push: an answer to a want this device
+    // made and a push to it are the same message, and only this keeper knows which of its wants
+    // the answer is for.
+    workspaces.keep_content_first(&keeper);
     RouteContentService { content, keeper }
 }
 
