@@ -417,77 +417,97 @@ fn unseal_with(
     }
 }
 
+/// A record its type keeps for its author alone (`readers: author`, as Messages keeps a person's
+/// unsent drafts) is placed by the workspace's store in a document of that person's reader set:
+/// its id binds the set, and it is sealed to a group of its own whose keys only the person's
+/// devices hold. The workspace's owner and its other members read every shared record, and none
+/// of this one.
 #[test]
-fn a_viewers_drafts_are_signed_and_sealed_for_their_devices() {
-    use crate::state::document_capture::{KeptDocument, PeerDocumentReadError};
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario: who holds the keys, the write, each device's read, and a removal"
+)]
+fn an_authors_own_records_are_sealed_for_their_devices_alone() {
+    use crate::state::document_capture::KeptDocument;
     use collab_types::{ContentRetention, DocumentMutation};
 
     const APP: &str = "so.tilo.messages";
-    let (mut peer, owner_key, member_key, member, second, now) =
+    let (mut peer, owner_key, member_key, member, second, third, now) =
         crate::admission_tests::seeded_editor_with_second_device();
-    let person = hex::encode(member.user_public_key);
-    put_member(&mut peer, &person, Role::Viewer);
+    put_member(&mut peer, &hex::encode(third.user_public_key), Role::Editor);
     peer.select_exact_admissions().unwrap();
     let owner = owner_key.verifying_key().to_bytes();
     let device = member.device_public_key;
-    let drafts = collab_types::document::DocumentId::of_member(&person, "messages.drafts")
+    let readers = collab_types::Readers::people([member.user_public_key])
         .unwrap()
-        .as_str()
-        .to_owned();
+        .text();
+    let drafts = format!(
+        "{}/messages.Draft#0",
+        collab_types::reader_set_name(&readers)
+    );
     let route = (APP, drafts.as_str());
     let workspace = collab_types::WorkspaceId::parse(peer.workspace_id()).unwrap();
-    let group = neighbour_wire::KeyScope::document(workspace, route.0, route.1, None)
+    assert!(
+        neighbour_wire::KeyScope::document(workspace, APP, &drafts, None).is_none(),
+        "the document's id names its readers: it has no group but theirs"
+    );
+    let group = neighbour_wire::KeyScope::document(workspace, APP, &drafts, Some(&readers))
         .unwrap()
         .group();
+    assert_ne!(group, workspace, "not the workspace's own group");
+    let shared = peer.document_key_holders(APP, &drafts, now).unwrap();
+    assert!(
+        shared.contains(&owner) && shared.contains(&third.device_public_key),
+        "the owner and the other member read the workspace's records: {shared:?}"
+    );
+    assert_eq!(
+        peer.document_key_holders_read_by(route, Some(&readers), now)
+            .unwrap(),
+        [device, second.device_public_key].into(),
+        "the group follows the person to both devices and excludes the owner and the other member"
+    );
+
     let mut first_group =
         key_group::KeyGroup::create(group, key_group::MemberKey::generate(device).unwrap())
             .unwrap();
     let (second_group, keys) =
         group_for_two_devices(group, &mut first_group, second.device_public_key);
-    assert_eq!(
-        peer.document_key_holders(APP, &drafts, now).unwrap(),
-        [device, second.device_public_key].into(),
-        "the group follows the person to both devices and excludes the owner"
-    );
     let mut written = automerge::AutoCommit::new();
     written.put(ROOT, "body", "see you at noon").unwrap();
     let frame = DocumentMutation::Snapshot(written.save()).encode().unwrap();
     assert!(
-        peer.draft_write(route, None, &frame, None, device, 0, now)
-            .is_err()
+        peer.draft_write(route, Some(&readers), &frame, None, device, 0, now)
+            .is_err(),
+        "never kept in the clear"
     );
     let artifact = collab_types::document_artifact_id(APP, peer.workspace_id(), &drafts);
-    let draft = |key: &SigningKey| {
-        let mut seal = |plaintext: &[u8]| {
-            keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
-                .map_err(|error| error.to_string())
-        };
-        peer.draft_write(
+    let mut seal = |plaintext: &[u8]| {
+        keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
+            .map_err(|error| error.to_string())
+    };
+    let mut own = peer
+        .draft_write(
             route,
-            None,
+            Some(&readers),
             &frame,
             Some(&mut seal),
-            key.verifying_key().to_bytes(),
+            device,
             0,
             now,
         )
-    };
-    // The workspace owner cannot found another person's record: their device's own grants refuse
-    // it before it is sealed, as every device that opens it would.
-    let refused = draft(&owner_key).unwrap_err();
-    assert!(refused.contains("not granted"), "{refused}");
-    let mut own = draft(&member_key).unwrap();
+        .unwrap();
     collab_types::sign_op(&mut own, &member_key).unwrap();
-    peer.admit_new_local_document(APP, &drafts, own, now)
+    peer.admit_new_local_document_read_by(route, Some(&readers), own, now)
         .unwrap();
 
+    let body = |doc: &automerge::Automerge| {
+        doc.get(ROOT, "body")
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok())
+    };
     let second_keys = second_group.content_keys().unwrap();
     let mut unseal = unseal_with(&second_keys);
     let mut held = KeptDocument::default();
-    assert!(matches!(
-        peer.open_document(owner, route, now, usize::MAX, Some(&mut unseal), &mut held),
-        Err(PeerDocumentReadError::Denied)
-    ));
     let own_drafts = peer
         .open_document(
             second.device_public_key,
@@ -497,26 +517,44 @@ fn a_viewers_drafts_are_signed_and_sealed_for_their_devices() {
             Some(&mut unseal),
             &mut held,
         )
-        .expect("the other Viewer device reads what their first device kept");
-    assert_eq!(
-        own_drafts
-            .get(ROOT, "body")
-            .unwrap()
-            .and_then(|(value, _)| value.into_string().ok())
-            .as_deref(),
-        Some("see you at noon")
-    );
+        .expect("the person's second device reads what their first kept");
+    assert_eq!(body(own_drafts).as_deref(), Some("see you at noon"));
+    // What the owner and the other member hold are the workspace's keys, which open none of it.
+    for (outsider, who) in [(owner, "the owner"), (third.device_public_key, "a member")] {
+        let theirs = key_group::KeyGroup::create(
+            workspace,
+            key_group::MemberKey::generate(outsider).unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        let mut unseal = unseal_with(&theirs);
+        let mut held = KeptDocument::default();
+        let opened = peer.open_document(
+            outsider,
+            route,
+            now,
+            usize::MAX,
+            Some(&mut unseal),
+            &mut held,
+        );
+        assert!(
+            !opened.is_ok_and(|doc| body(doc).is_some()),
+            "{who} reads none of it"
+        );
+    }
 
     sign_as_owner(
         &mut peer,
-        tilo_action_policy::Change::RemoveMember { person },
+        tilo_action_policy::Change::RemoveMember {
+            person: hex::encode(member.user_public_key),
+        },
     );
-    assert!(peer.check_document_read(owner, APP, &drafts, now).is_err());
     assert!(
-        peer.document_key_holders(APP, &drafts, now)
+        peer.document_key_holders_read_by(route, Some(&readers), now)
             .unwrap()
             .is_empty(),
-        "retained ownership cannot fall back to shared readership after removal"
+        "once the person leaves, no device takes the keys of what they kept, the owner's neither"
     );
 }
 

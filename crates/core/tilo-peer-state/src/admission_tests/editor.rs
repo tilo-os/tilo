@@ -19,28 +19,32 @@ pub(crate) fn other_owner() -> (SigningKey, DeviceCert) {
 /// [`seeded`], with the workspace owned by another person ([`other_owner`],
 /// whose device the returned key belongs to) and the fixture's person an
 /// Editor of it, a member whose grants an owner can narrow, with a second
-/// certified device of that member in the initial workspace.
+/// certified device of that member in the initial workspace, and the device of a
+/// third person, certified there and no member yet.
 pub(crate) fn seeded_editor_with_second_device() -> (
     StatePeer,
     SigningKey,
     SigningKey,
     DeviceCert,
     DeviceCert,
+    DeviceCert,
     SystemTime,
 ) {
     let (_, other_device, _, _, _) = fixtures();
-    let (peer, owner, signer, device, now) = editor_with_devices(Some(other_device.clone()));
-    (peer, owner, signer, device, other_device, now)
+    let (_, third_person) = crate::fixture::device(70, 71);
+    let (peer, owner, signer, device, now) =
+        editor_with_devices([other_device.clone(), third_person.clone()]);
+    (peer, owner, signer, device, other_device, third_person, now)
 }
 
 fn editor_with_devices(
-    second: Option<DeviceCert>,
+    extra: impl IntoIterator<Item = DeviceCert>,
 ) -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (_, _, b, bc, now) = fixtures();
     let (owner_key, owner) = other_owner();
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut certificates = vec![owner.clone(), bc.clone()];
-    certificates.extend(second);
+    certificates.extend(extra);
     let mut doc = crate::workspace::candidate(
         None,
         &seed_workspace(workspace, &owner, &certificates).unwrap(),
