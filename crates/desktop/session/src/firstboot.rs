@@ -96,27 +96,34 @@ mod tests {
         (env, home)
     }
 
-    /// This device, with a key of its own under `home`, and the person's settings for this test's
-    /// thread holding `steps`: each device's step of setup, by the device's key.
+    /// This device, with a key of its own under `home` that this test's process took as the
+    /// device's daemon takes it, and the person's settings for this test's thread holding `steps`:
+    /// each device's step of setup, by the device's key.
     #[cfg(target_os = "linux")]
     fn device(
         env: &mut tilo_test_env::ScopedEnv,
         home: &std::path::Path,
         steps: impl FnOnce(&str) -> serde_json::Map<String, serde_json::Value>,
-    ) -> settings_store::SourceScope {
+    ) -> (
+        settings_store::SourceScope,
+        tilo_device_identity::persist::DeviceKeyLock,
+    ) {
         env.set("TILO_IDENTITY_ROOT", home.join("identity-root"));
         let paths = tilo_onboarding_session::firstboot::collaboration_identity_paths();
         let key = tilo_device_identity::persist::adopt_device_key(&paths, &[5; 32])
             .expect("this device's key");
+        let taken = tilo_device_identity::persist::take_device_key(&paths)
+            .expect("this process takes the device's key, as its daemon");
         let this_device = hex::encode(key.verifying_key().as_bytes());
         let mut settings = serde_json::Map::new();
         settings.insert(
             tilo_onboarding_session::ceremony::PROGRESS_SECTION.to_owned(),
             serde_json::Value::Object(steps(&this_device)),
         );
-        settings_store::scoped_source(Some(std::sync::Arc::new(
+        let settings = settings_store::scoped_source(Some(std::sync::Arc::new(
             settings_store::HostDocument::new(settings, |_| Ok(())),
-        )))
+        )));
+        (settings, taken)
     }
 
     tilo_test_env::scenario! {
@@ -146,7 +153,7 @@ mod tests {
             let (mut env, home) = home();
             // The step setup recorded for this device once its identity was made, as the person's
             // settings hold it: setup the person had not finished.
-            let _settings = device(&mut env, home.path(), |this_device| {
+            let _device = device(&mut env, home.path(), |this_device| {
                 serde_json::Map::from_iter([(this_device.to_owned(), "identity-ready".into())])
             });
             assert!(
@@ -164,7 +171,7 @@ mod tests {
             let (mut env, home) = home();
             // The person's settings reach all their devices: another one's step is kept under that
             // device's key, and this device's own setup is finished.
-            let _settings = device(&mut env, home.path(), |this_device| {
+            let _device = device(&mut env, home.path(), |this_device| {
                 serde_json::Map::from_iter([
                     ("cd".repeat(32), "tour-organise".into()),
                     (this_device.to_owned(), serde_json::Value::Null),
