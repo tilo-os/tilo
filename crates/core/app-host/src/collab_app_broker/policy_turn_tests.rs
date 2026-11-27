@@ -299,6 +299,37 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
     });
 }
 
+/// The broker a daemon runs over `workspaces`, its socket in `directory`, and its thread's id.
+#[cfg(target_os = "linux")]
+fn serving_daemon(
+    directory: &std::path::Path,
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    authority: &crate::services::WorkspaceAuthorityHandle,
+) -> (crate::collab_broker::BrokerHandle, String) {
+    super::tests::secure_socket_parent(directory).expect("private socket directory");
+    let services = ProcessServices {
+        workspace_memberships: Some(tilo_workspace_service::workspaces::ProfileMemberships::new(
+            workspaces.clone(),
+            Arc::clone(authority),
+        ) as Arc<_>),
+        ..ProcessServices::default()
+    };
+    // The kernel's 15-byte name of `tilo-collab-broker`.
+    tilo_test_env::idle::spawned_thread("tilo-collab-bro", || {
+        crate::collab_broker::spawn_with_test_services(
+            directory.join("policy.sock"),
+            Some(Arc::clone(authority)),
+            PeerPublisher::disabled(),
+            None,
+            services,
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("test broker")
+    })
+}
+
 /// The daemon's broker over the workspaces its device hosts, wired as the daemon wires it: a
 /// person a grant lets read a workspace keeps the window it opened there only while the grant
 /// stands. Idle, the broker sleeps through what a one-second clock would wake it for; when the
@@ -308,7 +339,7 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
 #[test]
 fn a_revoked_grant_drops_the_window_it_let_in_on_the_announcement() {
     use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
-    use tilo_workspace_service::workspaces::{ProfileMemberships, fixtures};
+    use tilo_workspace_service::workspaces::fixtures;
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let state_root = tempfile::tempdir().unwrap();
     let (key, cert) = fixtures::hosting_device();
@@ -339,29 +370,8 @@ fn a_revoked_grant_drops_the_window_it_let_in_on_the_announcement() {
     change(tilo_action_policy::Change::Grant(grant.clone()));
 
     let directory = tempfile::tempdir().expect("temporary socket directory");
-    super::tests::secure_socket_parent(directory.path()).expect("private socket directory");
     let authority: crate::services::WorkspaceAuthorityHandle = Arc::new(workspaces.clone());
-    let services = ProcessServices {
-        workspace_memberships: Some(ProfileMemberships::new(
-            workspaces.clone(),
-            Arc::clone(&authority),
-        ) as Arc<_>),
-        ..ProcessServices::default()
-    };
-    // The kernel's 15-byte name of `tilo-collab-broker`.
-    let (broker, tid) = tilo_test_env::idle::spawned_thread("tilo-collab-bro", || {
-        crate::collab_broker::spawn_with_test_services(
-            directory.path().join("policy.sock"),
-            Some(Arc::clone(&authority)),
-            PeerPublisher::disabled(),
-            None,
-            services,
-            None,
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            Arc::new(FanoutState::new()),
-        )
-        .expect("test broker")
-    });
+    let (broker, tid) = serving_daemon(directory.path(), &workspaces, &authority);
     let state = Arc::clone(broker.app_action_broker().unwrap().state());
 
     // The guest's window on a record of the workspace, admitted for the grant.
@@ -373,7 +383,7 @@ fn a_revoked_grant_drops_the_window_it_let_in_on_the_announcement() {
         })
         .unwrap()
         .expect("the grant lets the guest in");
-    admitted.certificate = Some(guest.clone());
+    admitted.certificate = Some(guest);
     let native = state
         .native_roster_for_subscriber(&route, &admitted)
         .unwrap()
@@ -397,7 +407,7 @@ fn a_revoked_grant_drops_the_window_it_let_in_on_the_announcement() {
 
     // The owner takes the grant back: the window is dropped on the announcement.
     let revoked = std::time::Instant::now();
-    change(tilo_action_policy::Change::Revoke(grant.id.clone()));
+    change(tilo_action_policy::Change::Revoke(grant.id));
     tilo_test_env::wait_until("the window dropped", || {
         loop {
             match window.try_recv() {
