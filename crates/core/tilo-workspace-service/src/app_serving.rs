@@ -1311,7 +1311,11 @@ impl ActionProvider for EntryOperations {
                 reason: "an entry names its entry and certificate".into(),
             }));
         };
-        let (entering, cert) = match tilo_server_protocol::workspaces::entered_request(arguments) {
+        let tilo_server_protocol::workspaces::EntryAsked {
+            entering,
+            cert,
+            takes_list,
+        } = match tilo_server_protocol::workspaces::entered_request(arguments) {
             Ok(asked) => asked,
             Err(reason) => return Pending::ready(Err(ActionCallError::InvalidRequest { reason })),
         };
@@ -1341,7 +1345,19 @@ impl ActionProvider for EntryOperations {
                 access: None,
                 proof: [0; 64],
             };
-            let entered = crate::handshake::Admit::enter(&workspaces, &cert, entry).await;
+            let mut entered = crate::handshake::Admit::enter(&workspaces, &cert, entry).await;
+            // Protocol 71 inline list: a device that takes the member list from the join service
+            // is told where, and not sent it here, where a list of a few hundred people does not
+            // fit an action's answer. Once every device takes it there, the entry sends none.
+            if takes_list
+                && let tilo_server_protocol::entering::Entered::Sign {
+                    governance,
+                    host: Some(_),
+                    ..
+                } = &mut entered
+            {
+                governance.clear();
+            }
             completer.complete(
                 tilo_server_protocol::workspaces::entered_answer(&entered)
                     .map(|output| tilo_actions::remote::InvocationReceipt {

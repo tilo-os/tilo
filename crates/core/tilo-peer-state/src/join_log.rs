@@ -1352,7 +1352,7 @@ impl JoinLog {
 /// Whether the endpoint that sent a membership request may speak for the
 /// device the request certifies: its own key, or one that device signed a
 /// delegation for, in force at `now` and naming exactly this endpoint.
-fn membership_endpoint(
+pub(crate) fn membership_endpoint(
     request: &MembershipChallengeRequest,
     remote_endpoint: [u8; 32],
     now: u64,

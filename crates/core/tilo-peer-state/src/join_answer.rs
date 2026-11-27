@@ -131,6 +131,21 @@ pub trait JoinWorkspaces: Send + Sync {
         let _ = (workspace, device, signed_invitation, now);
         std::future::ready(Ok(()))
     }
+
+    /// Whether this device's entry answered `device`, asking under `request_id`, at most a while
+    /// before `now`, that it may sign its own admission into `workspace`: the device is then
+    /// given the member list it signs on ([`JoinTransportRequest::EntryList`]), as the entry's
+    /// answer gave it before. A store that answers no entry answered none.
+    fn entry_answered(
+        &self,
+        workspace: &str,
+        device: &tilo_user_identity::DeviceCert,
+        request_id: [u8; 32],
+        now: u64,
+    ) -> bool {
+        let _ = (workspace, device, request_id, now);
+        false
+    }
 }
 
 /// The workspace-join exchange answered for the workspaces in `S`.
@@ -158,9 +173,11 @@ pub fn requested_workspace(
             invitation_workspace(&request.signed_invitation, now)?
         }
         JoinTransportRequest::Complete(request) => request.proof.challenge.workspace_id,
-        JoinTransportRequest::MembershipChallenge(request) => request.workspace_id,
+        JoinTransportRequest::MembershipChallenge(request)
+        | JoinTransportRequest::EntryList(request) => request.workspace_id,
         JoinTransportRequest::MembershipComplete(request) => request.proof.challenge.workspace_id,
         JoinTransportRequest::ResolveInvitation { reference, .. } => reference.workspace,
+        JoinTransportRequest::Since { request, .. } => requested_workspace(request, now)?,
     })
 }
 
@@ -230,12 +247,25 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
         request: JoinTransportRequest,
         now: u64,
     ) -> JoinTransportResponse {
-        self.decide(remote_endpoint, request, now)
-            .await
-            .unwrap_or_else(|error| JoinTransportResponse::Error {
-                code: error.code(),
-                message: error.to_string(),
-            })
+        let refused = |error: JoinError| JoinTransportResponse::Error {
+            code: error.code(),
+            message: error.to_string(),
+        };
+        // A device that holds the governance up to some heads already is sent the rest of it.
+        let JoinTransportRequest::Since { heads, request } = request else {
+            return self
+                .decide(remote_endpoint, request, now)
+                .await
+                .unwrap_or_else(refused);
+        };
+        let answered = if matches!(*request, JoinTransportRequest::Since { .. }) {
+            refused(JoinError::new("a request since some heads names no other"))
+        } else {
+            self.decide(remote_endpoint, *request, now)
+                .await
+                .unwrap_or_else(refused)
+        };
+        crate::member_list_since::trimmed(answered, heads)
     }
 
     /// Decide one workspace-join request from the device at
@@ -275,7 +305,49 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
                 self.answer_membership_complete(&workspace, remote_endpoint, &request, now)
                     .await?
             }
+            JoinTransportRequest::EntryList(request) => {
+                self.answer_entry_list(&workspace, remote_endpoint, &request, now)
+                    .await?
+            }
+            JoinTransportRequest::Since { .. } => {
+                return Err(JoinError::new("a request since some heads names no other"));
+            }
         })
+    }
+
+    /// The member list for a device this device's entry answered that it may sign its own
+    /// admission into `workspace`, under the request id that entry was asked with, from the
+    /// endpoint at `remote_endpoint`: the device's own key, or one it signed for. The list the
+    /// entry's answer carried before, to the same device for the same entry, and to no other.
+    async fn answer_entry_list(
+        &self,
+        workspace: &str,
+        remote_endpoint: [u8; 32],
+        request: &MembershipChallengeRequest,
+        now: u64,
+    ) -> Result<JoinTransportResponse, JoinError> {
+        crate::join_log::membership_endpoint(request, remote_endpoint, now)?;
+        if !self
+            .0
+            .entry_answered(workspace, &request.device_cert, request.request_id, now)
+        {
+            return Err(JoinError::new(
+                "this host did not answer this device's entry that it may sign itself in",
+            ));
+        }
+        self.0
+            .with_workspace(workspace, |workspace| {
+                let hosted = workspace.hosted();
+                if hosted.workspace_id != request.workspace_id {
+                    return Err(JoinError::new(
+                        "membership request does not match authenticated workspace endpoint",
+                    ));
+                }
+                Ok(JoinTransportResponse::EntryList {
+                    governance: hosted.governance()?,
+                })
+            })
+            .await
     }
 
     /// The invitation `signed_invitation` inspected as this device reads it.

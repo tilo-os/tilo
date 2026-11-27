@@ -438,6 +438,19 @@ pub enum JoinTransportRequest {
         reference: native::InvitationRef,
         device_cert: DeviceCert,
     },
+    /// The member list a device signs its own admission on, asked by a device the workspace's
+    /// entry answered that it may sign itself in: the request names the entry's own request id,
+    /// and the certificate and endpoint the entry was asked from. Answered
+    /// [`JoinTransportResponse::EntryList`], so the list reaches the device here, once and
+    /// binary, rather than in the entry's answer.
+    EntryList(MembershipChallengeRequest),
+    /// `request`, from a device that holds the workspace's governance up to `heads` already: the
+    /// governance its answer carries is only what does not build into them
+    /// ([`JoinTransportResponse::Since`]).
+    Since {
+        heads: Vec<[u8; 32]>,
+        request: Box<JoinTransportRequest>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -538,9 +551,26 @@ pub enum JoinTransportResponse {
     Complete(JoinBootstrap),
     MembershipChallenge(MembershipChallengeResponse),
     MembershipComplete(JoinBootstrap),
-    Error { code: u16, message: String },
+    Error {
+        code: u16,
+        message: String,
+    },
     OwnerMembershipComplete(OwnerBootstrapV1),
-    ResolvedInvitation { signed_invitation: Vec<u8> },
+    ResolvedInvitation {
+        signed_invitation: Vec<u8>,
+    },
+    /// The workspace's governance, as encoded neighbour messages: what a device the entry
+    /// answered writes its own admission on ([`JoinTransportRequest::EntryList`]).
+    EntryList {
+        governance: Vec<Vec<u8>>,
+    },
+    /// The answer to a [`JoinTransportRequest::Since`]: the governance `response` carries is only
+    /// what does not build into `heads`, the ones the device named, or the whole of it where
+    /// `heads` is empty (the host does not hold every one the device named).
+    Since {
+        heads: Vec<[u8; 32]>,
+        response: Box<JoinTransportResponse>,
+    },
 }
 
 /// Sign an invitation grant with the issuer device's `key`, which answers at once

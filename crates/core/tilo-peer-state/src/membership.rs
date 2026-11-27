@@ -6,6 +6,7 @@
 use std::future::Future;
 
 use crate::join::{self, JoinTransportRequest, JoinTransportResponse, WorkspaceId};
+use crate::member_list_since::received;
 use tilo_user_identity::{DeviceCert, EndpointDelegation};
 
 /// How long the statement a membership request carries that its endpoint
@@ -22,6 +23,9 @@ const MEMBERSHIP_DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 /// names this exchange. The answer is checked by whoever takes it in. With it
 /// comes the row the device signed of its own, on top of `earlier`, what it
 /// signed into the workspace before: empty where the workspace lists it already.
+/// `held` is the workspace's governance as the device holds it already, as it
+/// entered: the host then sends only what it lacks
+/// ([`crate::member_list_since`]), and the answer holds the whole.
 ///
 /// # Errors
 /// The serving device cannot be reached, or refuses the proof.
@@ -32,23 +36,23 @@ pub async fn prove<F, Fut>(
     workspace_id: WorkspaceId,
     device: &DeviceCert,
     signer: &dyn collab_types::signer::DeviceSigner,
-    earlier: &[Vec<u8>],
+    (earlier, held): (&[Vec<u8>], &[Vec<u8>]),
 ) -> Result<(join::JoinBootstrap, Vec<Vec<u8>>), String>
 where
     F: Fn(JoinTransportRequest) -> Fut,
     Fut: Future<Output = Result<JoinTransportResponse, String>>,
 {
     let delegation = endpoint_delegation(endpoint, device, signer).await?;
-    let (challenge, governance) = match ask(JoinTransportRequest::MembershipChallenge(
-        join::MembershipChallengeRequest {
+    let challenge = since(
+        JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
             workspace_id,
             device_cert: device.clone(),
             request_id,
             delegation,
-        },
-    ))
-    .await?
-    {
+        }),
+        held,
+    )?;
+    let (challenge, governance) = match received(ask(challenge).await?, held)? {
         JoinTransportResponse::MembershipChallenge(value) => (value.challenge, value.governance),
         JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
         _ => return Err("the host answered no membership challenge".into()),
@@ -66,17 +70,66 @@ where
     )
     .await?;
     let proof = join::sign_membership_proof(challenge, signer).await?;
-    match ask(JoinTransportRequest::MembershipComplete(
-        join::MembershipCompleteRequest {
+    let complete = since(
+        JoinTransportRequest::MembershipComplete(join::MembershipCompleteRequest {
             proof,
             admission: admission.clone(),
-        },
-    ))
-    .await?
-    {
+        }),
+        held,
+    )?;
+    match received(ask(complete).await?, held)? {
         JoinTransportResponse::MembershipComplete(bootstrap) => Ok((bootstrap, admission)),
         JoinTransportResponse::Error { message, .. } => Err(refused(&message)),
         _ => Err("the host answered no membership".into()),
+    }
+}
+
+/// `request`, asked since the heads of `held`, the governance this device holds, where it holds
+/// any: the host's answer, put back together by [`received`], is the one `request` alone has.
+///
+/// # Errors
+/// `held` is not a workspace's governance.
+fn since(request: JoinTransportRequest, held: &[Vec<u8>]) -> Result<JoinTransportRequest, String> {
+    if held.is_empty() {
+        return Ok(request);
+    }
+    Ok(JoinTransportRequest::Since {
+        heads: crate::member_list_since::heads(held)?,
+        request: Box::new(request),
+    })
+}
+
+/// The member list a device signs its own admission into `workspace_id` on, as the workspace's
+/// host gives it to a device its entry answered may sign itself in, asked under the entry's
+/// `request_id` by `device` from `endpoint` through `ask`. `held` is what the device holds of it
+/// already, from an earlier answer of the same entry: the host then sends only the rest. The
+/// whole list.
+///
+/// # Errors
+/// The host cannot be reached, or refuses: its entry did not answer this device so.
+pub async fn entry_list<F, Fut>(
+    (endpoint, ask): ([u8; 32], F),
+    request_id: [u8; 32],
+    workspace_id: WorkspaceId,
+    device: &DeviceCert,
+    signer: &dyn collab_types::signer::DeviceSigner,
+    held: &[Vec<u8>],
+) -> Result<Vec<Vec<u8>>, String>
+where
+    F: Fn(JoinTransportRequest) -> Fut,
+    Fut: Future<Output = Result<JoinTransportResponse, String>>,
+{
+    let delegation = endpoint_delegation(endpoint, device, signer).await?;
+    let request = JoinTransportRequest::EntryList(join::MembershipChallengeRequest {
+        workspace_id,
+        device_cert: device.clone(),
+        request_id,
+        delegation,
+    });
+    match received(ask(since(request, held)?).await?, held)? {
+        JoinTransportResponse::EntryList { governance } => Ok(governance),
+        JoinTransportResponse::Error { message, .. } => Err(refused(&message)),
+        _ => Err("the host answered no member list".into()),
     }
 }
 

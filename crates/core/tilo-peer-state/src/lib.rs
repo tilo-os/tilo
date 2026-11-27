@@ -29,6 +29,7 @@ pub mod key_directory;
 mod link_proof;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub mod loopback;
+pub mod member_list_since;
 pub mod membership;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub mod sealed_records;

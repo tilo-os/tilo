@@ -56,6 +56,7 @@ use tilo_server_client::link::Purpose;
 
 mod agent_session;
 mod connect;
+mod entry_list;
 mod host_voice;
 mod live_session;
 
@@ -340,6 +341,11 @@ pub trait MemberLinks: collab_types::signer::MaybeSendSync {
     fn forget_own_admission(&self, workspace: WorkspaceId, device: &[u8; 32]) {
         let _ = (workspace, device);
     }
+
+    /// Keep `list`, `workspace`'s member list as this device holds it once it entered, its own
+    /// admission on it, for the proof of membership with which the device service takes the
+    /// workspace in ([`Self::take_in`]): the host sends that proof only what the list lacks.
+    fn keep_entered_list(&self, workspace: WorkspaceId, list: Vec<Vec<u8>>);
 }
 
 /// [`start_session`] for a session of a device that lends it what its own session runs
@@ -415,6 +421,7 @@ fn session_task(
         signer,
         store,
         dial: Dial::for_page(&vault),
+        entered_lists: entry_list::EnteredLists::default(),
         reports: Arc::clone(&reports),
         workspaces,
         placing: BTreeMap::new(),
@@ -596,6 +603,9 @@ struct Task {
     store: Arc<dyn PeerStore>,
     /// Where this session dials its host from, kept across reconnects.
     dial: Dial,
+    /// The member list of each workspace this session entered and has not taken in yet
+    /// ([`entry_list`]).
+    entered_lists: entry_list::EnteredLists,
     /// What this session reports to its links.
     reports: Arc<Reports>,
     workspaces: BTreeSet<WorkspaceId>,
@@ -1086,16 +1096,23 @@ impl Task {
         let Some(entering) = self.config.entering.clone() else {
             return false;
         };
-        let answer = ask_entry(
-            (self.actions.as_ref(), self.own_store()),
+        let store = self.own_store();
+        let answer = Box::pin(ask_entry(
+            (self.actions.as_ref(), store.clone()),
+            &self.list_from(),
             Arc::clone(&self.signer),
             self.config.cert.clone(),
             self.config.server_cert.device_public_key,
             &entering,
-        )
+        ))
         .await;
         match answer {
-            Ok(entered) => {
+            Ok((entered, list)) => {
+                entry_list::keep_entered(
+                    (store.as_ref(), &self.entered_lists),
+                    &entering.workspace,
+                    list,
+                );
                 let state = entry_state(&entered);
                 let refused = match &state {
                     crate::Entry::Refused { code, message, .. } => Some((*code, message.clone())),
@@ -1133,12 +1150,33 @@ impl Task {
         let host = self.config.server_cert.device_public_key;
         let actions = self.actions.clone();
         let store = self.own_store();
+        let (list_from, lists) = (self.list_from(), Arc::clone(&self.entered_lists));
         n0_future::task::spawn(async move {
-            let answer = ask_entry((actions.as_ref(), store), signer, cert, host, &entering)
-                .await
-                .map_err(|failure| LinkError::Unavailable(failure.message));
+            let answer = ask_entry(
+                (actions.as_ref(), store.clone()),
+                &list_from,
+                signer,
+                cert,
+                host,
+                &entering,
+            )
+            .await
+            .map(|(entered, list)| {
+                entry_list::keep_entered((store.as_ref(), &lists), &entering.workspace, list);
+                entered
+            })
+            .map_err(|failure| LinkError::Unavailable(failure.message));
             let _ = done.send(answer);
         });
+    }
+
+    /// Where an entry of this session takes the member list it signs on: the host's join
+    /// service, over the dialer this session made.
+    fn list_from(&self) -> entry_list::ListFrom {
+        entry_list::ListFrom {
+            dialer: self.dial.made(),
+            server_cert: self.config.server_cert.clone(),
+        }
     }
 
     /// Dial `workspace_id`'s link and start what reads it, unless it runs already.
@@ -1324,6 +1362,13 @@ impl Task {
     /// membership it answered does not hold here.
     async fn take_in(&mut self, workspace_id: WorkspaceId) -> Result<(), LinkError> {
         let (served, hint) = self.entry_hint(workspace_id).await?;
+        // The member list this device holds since it entered: the host sends the proof only what
+        // it lacks.
+        let held = self
+            .entered_lists
+            .lock_recover()
+            .remove(&workspace_id)
+            .unwrap_or_default();
         let dialer = self.dial.dialer(&self.config, self.signer.as_ref()).await?;
         let bootstrap = match dialer.server().carrier() {
             tilo_server_client::Carrier::WebTransport => {
@@ -1342,7 +1387,7 @@ impl Task {
                     workspace_id,
                     &self.config.cert,
                     self.signer.as_ref(),
-                    &[],
+                    (&[], &held),
                 )
                 .await
                 .map(|(bootstrap, _)| bootstrap)
@@ -1357,7 +1402,7 @@ impl Task {
                     workspace_id,
                     &self.config.cert,
                     self.signer.as_ref(),
-                    &[],
+                    (&[], &held),
                 )
                 .await
                 .map(|(bootstrap, _)| bootstrap)
@@ -1404,15 +1449,22 @@ impl Task {
             through: tilo_server_protocol::entering::Through::Entry,
             admission: Vec::new(),
         };
-        let answered = ask_entry(
-            (self.actions.as_ref(), self.own_store()),
+        let store = self.own_store();
+        let (answered, list) = Box::pin(ask_entry(
+            (self.actions.as_ref(), store.clone()),
+            &self.list_from(),
             Arc::clone(&self.signer),
             self.config.cert.clone(),
             self.config.server_cert.device_public_key,
             &entering,
-        )
+        ))
         .await
         .map_err(|failure| LinkError::Unavailable(failure.message))?;
+        entry_list::keep_entered(
+            (store.as_ref(), &self.entered_lists),
+            &entering.workspace,
+            list,
+        );
         let host = match answered {
             tilo_server_protocol::entering::Entered::Admitted {
                 host: Some(host), ..
@@ -5022,21 +5074,25 @@ async fn ask_fetch_grant(
 /// Ask the host to admit this device through `entering`, on the actions link and in the entry
 /// scope: an uncertified device reaches nothing else there. Where the host answers that the
 /// workspace lets the device in once it signs its own admission
-/// ([`Entered::Sign`](tilo_server_protocol::entering::Entered::Sign)), the device signs it with
-/// its own key ([`tilo_peer_state::own_admission::sign_entry`]) and asks again with it: no host
-/// signs anyone in. A host whose member list moved to a newer base while the device signed
-/// answers with that list again, and the device signs on it, up to
-/// [`SIGN_TRIES`](tilo_server_protocol::entering::SIGN_TRIES) times. The host's last answer.
+/// ([`Entered::Sign`](tilo_server_protocol::entering::Entered::Sign)), the device takes the
+/// workspace's member list from the host's join service (`list_from`), signs its admission on it
+/// with its own key ([`tilo_peer_state::own_admission::sign_entry`]) and asks again with it: no
+/// host signs anyone in. A host whose member list moved to a newer base while the device signed
+/// answers so again, and the device takes what it lacks of the list and signs on it, up to
+/// [`SIGN_TRIES`](tilo_server_protocol::entering::SIGN_TRIES) times. The host's last answer, and
+/// the member list as the device holds it once admitted, its own admission on it: empty where it
+/// signed none.
 async fn ask_entry(
     (actions, store): (
         Option<&tilo_server_client::link::Link>,
         Option<Arc<dyn MemberLinks>>,
     ),
+    list_from: &entry_list::ListFrom,
     signer: Arc<dyn tilo_server_client::DeviceSigner>,
     cert: DeviceCert,
     host: [u8; 32],
     entering: &tilo_server_protocol::entering::Entering,
-) -> Result<tilo_server_protocol::entering::Entered, EntryFailure> {
+) -> Result<(tilo_server_protocol::entering::Entered, Vec<Vec<u8>>), EntryFailure> {
     use tilo_server_protocol::entering::{Entered, SIGN_TRIES, Through};
     let mut answered =
         ask_entry_once(actions, Arc::clone(&signer), cert.clone(), host, entering).await?;
@@ -5053,14 +5109,23 @@ async fn ask_entry(
             store.forget_own_admission(workspace, &cert.device_public_key);
         }
     };
+    let mut list = entry_list::SignedOn::default();
     for _ in 0..SIGN_TRIES {
         let Entered::Sign {
             governance,
             through,
+            host: list_at,
         } = answered
         else {
-            return Ok(answered);
+            return Ok((answered, Vec::new()));
         };
+        list.take(
+            list_from,
+            (governance, list_at),
+            (&cert, signer.as_ref()),
+            entering,
+        )
+        .await?;
         let invitation = match &through {
             Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
             Through::Entry => None,
@@ -5075,7 +5140,7 @@ async fn ask_entry(
             .unwrap_or_default();
         let admission = tilo_peer_state::own_admission::sign_entry(
             &entering.workspace,
-            (&governance, &own),
+            (&list.list, &own),
             (invitation, entering.request_id),
             Some(entering.name.as_str()),
             (&cert, signer.as_ref()),
@@ -5100,7 +5165,7 @@ async fn ask_entry(
         drop(turn);
         let with_admission = tilo_server_protocol::entering::Entering {
             through,
-            admission,
+            admission: admission.clone(),
             ..entering.clone()
         };
         answered = match ask_entry_once(
@@ -5122,12 +5187,12 @@ async fn ask_entry(
         };
         match &answered {
             // The device is in: its row is the workspace's, and its next admission builds on it.
-            Entered::Admitted { .. } => return Ok(answered),
+            Entered::Admitted { .. } => return Ok((answered, list.held(&admission)?)),
             // The entry refused the device under the row it signed: the row is not the
             // workspace's.
             Entered::Refused(_) => {
                 forget_refused();
-                return Ok(answered);
+                return Ok((answered, Vec::new()));
             }
             // The member list moved on while the device signed: the row built on what it
             // replaced is not the workspace's, and the device signs again on the list answered.

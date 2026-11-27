@@ -1090,6 +1090,9 @@ type FramesArriving = HashMap<([u8; 32], String), (String, Vec<u8>)>;
 /// Where a served workspace's follower is asked to answer once it took in what its link told it.
 type Follower = tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>;
 
+/// [`WorkspacesInner::entries_answered`]'s map.
+type EntriesAnswered = HashMap<(String, [u8; 32], [u8; 32]), (DeviceCert, u64)>;
+
 struct WorkspacesInner {
     /// What a crate built on these workspaces keeps beside them while they live, one value of
     /// each type ([`Workspaces::kept`]).
@@ -1117,6 +1120,11 @@ struct WorkspacesInner {
     /// list before it is a member device's, by workspace and device
     /// ([`tilo_peer_state::direct::LinkScope::lists_itself`]).
     listing_themselves: std::sync::Mutex<std::collections::BTreeSet<(WorkspaceId, [u8; 32])>>,
+    /// The entries this host answered that their device may sign its own admission, by
+    /// workspace, device and the entry's request id: the certificate the entry was asked with,
+    /// and until when the join service gives that device the member list for it
+    /// ([`Workspaces::entry_answer_stands`]).
+    entries_answered: std::sync::Mutex<EntriesAnswered>,
     /// What hears a device's hello this build's peer protocol does not work with
     /// ([`Workspaces::observing_versions`]): the daemon tells the person which side updates.
     versions:
@@ -1755,6 +1763,7 @@ impl Workspaces {
                 direct,
                 link_remotes: std::sync::Mutex::default(),
                 listing_themselves: std::sync::Mutex::default(),
+                entries_answered: std::sync::Mutex::default(),
                 versions: std::sync::Arc::default(),
                 agent_sessions: personal::AgentSessions::default(),
                 records,

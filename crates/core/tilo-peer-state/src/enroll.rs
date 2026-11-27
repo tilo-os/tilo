@@ -254,7 +254,7 @@ pub async fn prepare_and_complete(
                 grant.workspace_id,
                 &device,
                 identity.signer.as_ref(),
-                &[],
+                (&[], &[]),
             )
             .await?;
             current(&identity, identity_topic, &device)?;
@@ -283,7 +283,7 @@ pub async fn prepare_and_complete(
                 grant.workspace_id,
                 &device,
                 identity.signer.as_ref(),
-                &[],
+                (&[], &[]),
             )
             .await?;
             current(&identity, identity_topic, &device)?;
@@ -355,7 +355,8 @@ fn expired(code: u16, message: &str) -> bool {
 
 /// The workspace's current state for a device that is a member
 /// ([`crate::membership::prove`]), asked of the host at `host` over iroh, and the
-/// row the device signed on top of `earlier`.
+/// row the device signed on top of `earlier`; the host sends only what `held`, the
+/// governance the device holds already, lacks.
 ///
 /// # Errors
 /// The serving device cannot be reached, or refuses the proof.
@@ -365,7 +366,7 @@ pub async fn prove_membership(
     workspace_id: WorkspaceId,
     device: &DeviceCert,
     signer: &dyn collab_types::signer::DeviceSigner,
-    earlier: &[Vec<u8>],
+    (earlier, held): (&[Vec<u8>], &[Vec<u8>]),
 ) -> Result<(join::JoinBootstrap, Vec<Vec<u8>>), String> {
     let mut request_id = [0; 32];
     rand_core::Rng::fill_bytes(
@@ -384,7 +385,38 @@ pub async fn prove_membership(
         workspace_id,
         device,
         signer,
-        earlier,
+        (earlier, held),
+    )
+    .await
+}
+
+/// The member list a device signs its own admission into `workspace_id` on
+/// ([`crate::membership::entry_list`]), asked over iroh of the host at `host` whose entry answered
+/// the device's entry `request_id` that it may sign itself in. The host sends only what `held`, the
+/// list the device took for an earlier answer of the same entry, lacks.
+///
+/// # Errors
+/// The host cannot be reached, or refuses.
+pub async fn entry_list(
+    client: &WorkspaceJoinClient,
+    host: &iroh::EndpointAddr,
+    (workspace_id, request_id): (WorkspaceId, [u8; 32]),
+    device: &DeviceCert,
+    signer: &dyn collab_types::signer::DeviceSigner,
+    held: &[Vec<u8>],
+) -> Result<Vec<Vec<u8>>, String> {
+    crate::membership::entry_list(
+        (client.endpoint_public_key(), |request| async move {
+            client
+                .request(host.clone(), request)
+                .await
+                .map_err(|error| error.to_string())
+        }),
+        request_id,
+        workspace_id,
+        device,
+        signer,
+        held,
     )
     .await
 }
@@ -418,7 +450,7 @@ pub async fn renew_membership(
         topic,
         &renewed,
         identity.signer.as_ref(),
-        &[],
+        (&[], &[]),
     )
     .await?;
     current(&identity, topic, &renewed)?;

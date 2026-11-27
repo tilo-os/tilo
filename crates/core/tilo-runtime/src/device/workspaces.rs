@@ -1493,6 +1493,10 @@ impl tilo_session_client::MemberLinks for MemberLinks {
         self.0.workspaces().member_up(workspace).ok()
     }
 
+    fn keep_entered_list(&self, workspace: WorkspaceId, list: Vec<Vec<u8>>) {
+        self.0.workspaces().keep_entered_list(workspace, list);
+    }
+
     fn own_admissions(&self, workspace: WorkspaceId, device: &[u8; 32]) -> Vec<Vec<u8>> {
         self.0.workspaces().own_admissions(workspace, device)
     }

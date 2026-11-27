@@ -1207,6 +1207,7 @@ pub(crate) mod entry_tests {
         let Entered::Sign {
             governance,
             through,
+            ..
         } = Admit::enter(workspaces, &guest, entry(asked.clone())).await
         else {
             panic!("the open entry asks the guest to sign itself in");

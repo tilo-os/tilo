@@ -2103,6 +2103,16 @@ impl JoinWorkspaces for Workspaces {
             .await
             .map_err(CollaborationError::new)
     }
+
+    fn entry_answered(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        now: u64,
+    ) -> bool {
+        self.entry_answer_stands(workspace, device, request_id, now)
+    }
 }
 
 impl HostedWorkspace {

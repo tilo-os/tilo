@@ -76,23 +76,40 @@ impl Workspaces {
         // The host answers its member list again where it moved on while this device signed:
         // the device signs on it, a bounded number of times.
         let mut entered = ask(&remote, &device.cert, &entering).await?;
+        // The member list as this device holds it, its own admission on it once the host took
+        // that: what its proof of membership below is sent only the rest of.
+        let mut list = Vec::new();
         for _ in 0..tilo_server_protocol::entering::SIGN_TRIES {
             let Entered::Sign {
                 governance,
                 through,
+                host: list_at,
             } = entered
             else {
                 break;
             };
-            entered = self
-                .sign_and_ask(
-                    &remote,
+            // Whether it takes the list from the host's join service: only a host that serves it
+            // there sends a proof only what the device lacks of it.
+            let taken = list_at.is_some() && governance.is_empty();
+            list = self
+                .entry_list(
                     &device,
-                    &entering,
-                    (workspace, &governance),
-                    through,
+                    (workspace, entering.request_id, &host.server_cert),
+                    (governance, list_at),
+                    &list,
                 )
                 .await?;
+            let (answered, admission) = self
+                .sign_and_ask(&remote, &device, &entering, (workspace, &list), through)
+                .await?;
+            entered = answered;
+            if matches!(entered, Entered::Admitted { .. }) {
+                list = if taken {
+                    tilo_peer_state::member_list_since::with_own(&list, &admission)?
+                } else {
+                    Vec::new()
+                };
+            }
         }
         let hint = match entered {
             Entered::Admitted {
@@ -115,7 +132,7 @@ impl Workspaces {
         let (served, _) = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(&hint)
             .map_err(|error| error.to_string())?;
         let bootstrap = self
-            .prove_own(&device, &served.endpoint_addr, workspace)
+            .prove_own(&device, &served.endpoint_addr, workspace, &list)
             .await?;
         // The person's own computer asked for this join: it is theirs on every device, taken in
         // by their list where this device follows one.
@@ -128,9 +145,51 @@ impl Workspaces {
 }
 
 impl Workspaces {
+    /// The member list this device signs its own admission into `workspace` on, as the entry's
+    /// answer to its request `request_id` at the host `entry_host` gives it: the list it carries,
+    /// from a host or for a device that asks so; else taken from the join service at `list_at`,
+    /// that host's signed address, binary, and only what `held`, the list this device took for an
+    /// earlier answer of the same entry, lacks.
+    async fn entry_list(
+        &self,
+        device: &super::MemberDevice,
+        (workspace, request_id, entry_host): (
+            WorkspaceId,
+            [u8; 32],
+            &tilo_user_identity::DeviceCert,
+        ),
+        (governance, list_at): (Vec<Vec<u8>>, Option<Vec<u8>>),
+        held: &[Vec<u8>],
+    ) -> Result<Vec<Vec<u8>>, String> {
+        // A host with no address for the workspace sends the list in the answer, and so does a
+        // host from before the join service gave it (Protocol 71 inline list).
+        let Some(list_at) = list_at.filter(|_| governance.is_empty()) else {
+            return Ok(governance);
+        };
+        let hint: TransportHint = postcard::from_bytes(&list_at).map_err(|error| {
+            format!("the host's address for the workspace does not read: {error}")
+        })?;
+        if hint.host.device_public_key != entry_host.device_public_key {
+            return Err("the workspace is kept by another host than its entry names".into());
+        }
+        let (served, _) = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(&hint)
+            .map_err(|error| error.to_string())?;
+        tilo_peer_state::owner::enroll::entry_list(
+            &tilo_peer_state::join_transport::WorkspaceJoinClient::new(
+                self.inner.host.endpoint.clone(),
+            ),
+            &served.endpoint_addr,
+            (workspace, request_id),
+            &device.cert,
+            device.signer.as_ref(),
+            held,
+        )
+        .await
+    }
+
     /// Sign this device's own admission on `governance`, as the entry answered `entering`, on
     /// top of what it signed into the workspace before, and ask the entry again with it, coming
-    /// `through` the way the entry said: the entry's last answer.
+    /// `through` the way the entry said: the entry's last answer, and the admission it signed.
     async fn sign_and_ask(
         &self,
         remote: &Arc<tilo_peer_state::actions::RemoteDevice>,
@@ -138,7 +197,7 @@ impl Workspaces {
         entering: &Entering,
         (workspace, governance): (WorkspaceId, &[Vec<u8>]),
         through: Through,
-    ) -> Result<Entered, String> {
+    ) -> Result<(Entered, Vec<Vec<u8>>), String> {
         let invitation = match &through {
             Through::Invitation { invitation, .. } => Some(invitation.as_slice()),
             Through::Entry => None,
@@ -176,7 +235,7 @@ impl Workspaces {
         if !matches!(answered, Ok(Entered::Admitted { .. })) {
             self.forget_own_admission(workspace, &key);
         }
-        answered
+        Ok((answered?, signed.admission))
     }
 }
 

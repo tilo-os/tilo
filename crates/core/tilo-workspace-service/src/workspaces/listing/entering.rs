@@ -6,6 +6,7 @@
 //! admission it signed itself: an entry that would let it in is answered
 //! [`Entered::Sign`] first, and the device asks again with what it signed.
 
+use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::directory::EntryJoin;
 use tilo_server_protocol::entering::{EnterRefusal, Entered, Entering, Entry, Through};
 use tilo_server_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
@@ -121,8 +122,12 @@ impl Admit for Workspaces {
             // says to strangers, with no invitation.
             let member_device = match entering.through {
                 Through::Entry => {
-                    self.member_device(cert, &entering.workspace, &entering.admission)
-                        .await
+                    self.member_device(
+                        cert,
+                        (&entering.workspace, entering.request_id),
+                        &entering.admission,
+                    )
+                    .await
                 }
                 Through::Invitation { .. } => None,
             };
@@ -176,7 +181,9 @@ impl Admit for Workspaces {
                             invitation: presented.invitation,
                             token,
                         };
-                        return self.sign_on(&entering.workspace, through).await;
+                        return self
+                            .sign_on(&entering.workspace, (cert, entering.request_id), through)
+                            .await;
                     }
                     entered(
                         self.redeem_on_connection(
@@ -226,13 +233,16 @@ impl Workspaces {
     ) -> Entered {
         if admission.is_empty() {
             return match self.entry(cert, workspace, name).await {
-                Ok(Listed::Open) => self.sign_on(workspace, Through::Entry).await,
+                Ok(Listed::Open) => {
+                    self.sign_on(workspace, (cert, request_id), Through::Entry)
+                        .await
+                }
                 Ok(Listed::Invited(issued)) => {
                     let through = Through::Invitation {
                         invitation: issued.signed_invitation,
                         token: None,
                     };
-                    self.sign_on(workspace, through).await
+                    self.sign_on(workspace, (cert, request_id), through).await
                 }
                 Err(refused) => Entered::Refused(refused),
             };
@@ -285,22 +295,90 @@ impl Workspaces {
             .any(|dep| !own.contains(dep) && !hosted.peer().workspace_holds_change(dep))
     }
 
-    /// What a device that may come into `workspace` is answered before it
-    /// signs its own admission: the workspace's member list it writes it on,
-    /// and how to come back with it (`through`).
-    async fn sign_on(&self, workspace: &str, through: Through) -> Entered {
+    /// What `cert`'s device, which may come into `workspace` by its entry
+    /// `request_id`, is answered before it signs its own admission: the
+    /// workspace's member list it writes it on, where this host's join service
+    /// gives it that list for this entry (its signed address), and how to come
+    /// back with it (`through`). The join service gives the list to this device
+    /// for this entry for [`ENTERING_DEADLINE`] from now
+    /// ([`Self::entry_answer_stands`]).
+    ///
+    /// [`ENTERING_DEADLINE`]: tilo_server_protocol::entering::ENTERING_DEADLINE
+    async fn sign_on(
+        &self,
+        workspace: &str,
+        (cert, request_id): (&DeviceCert, [u8; 32]),
+        through: Through,
+    ) -> Entered {
         use tilo_peer_state::join_log::GovernanceMessages as _;
-        let governance = match self.workspace(workspace).await {
-            Ok(hosted) => hosted.lock().await.peer().governance_messages(),
+        let answer = match self.workspace(workspace).await {
+            Ok(hosted) => {
+                let hosted = hosted.lock().await;
+                // A host with no address of its own for the workspace sends the list in its
+                // answer, as it did before it took the list apart.
+                let host = match self
+                    .transport_hint(&hosted)
+                    .map_err(|error| error.to_string())
+                    .and_then(|hint| postcard::to_stdvec(&hint).map_err(|error| error.to_string()))
+                {
+                    Ok(host) => Some(host),
+                    Err(error) => {
+                        tracing::warn!(%workspace, %error, "this host has no address to give an entering device the member list at; it sends the list in its answer");
+                        None
+                    }
+                };
+                let governance = hosted.peer().governance_messages();
+                drop(hosted);
+                governance.map(|governance| (governance, host))
+            }
             Err(error) => Err(error.to_string()),
         };
-        match governance {
-            Ok(governance) => Entered::Sign {
-                governance,
-                through,
-            },
+        match answer {
+            Ok((governance, host)) => {
+                self.answered_entry(workspace, cert, request_id);
+                Entered::Sign {
+                    governance,
+                    through,
+                    host,
+                }
+            }
             Err(reason) => Entered::Refused(refused(reason)),
         }
+    }
+
+    /// Note that this host answered `cert`'s device, asking `workspace`'s entry under
+    /// `request_id`, that it may sign its own admission: its join service gives that device the
+    /// member list for that entry ([`Self::entry_answer_stands`]) until [`ENTERING_DEADLINE`] from
+    /// now. Answers no longer given are let go.
+    ///
+    /// [`ENTERING_DEADLINE`]: tilo_server_protocol::entering::ENTERING_DEADLINE
+    fn answered_entry(&self, workspace: &str, cert: &DeviceCert, request_id: [u8; 32]) {
+        let now = tilo_clock::unix_now_ns();
+        let deadline = u64::try_from(tilo_server_protocol::entering::ENTERING_DEADLINE.as_nanos())
+            .unwrap_or(u64::MAX);
+        let mut answered = self.inner.entries_answered.lock_recover();
+        answered.retain(|_, (_, until)| *until > now);
+        answered.insert(
+            (workspace.to_owned(), cert.device_public_key, request_id),
+            (cert.clone(), now.saturating_add(deadline)),
+        );
+    }
+
+    /// Whether this host answered `cert`'s device, asking `workspace`'s entry under `request_id`,
+    /// that it may sign its own admission, and that answer still stands at `now`: the device is
+    /// given the member list it signs on, as the answer gave it before, and no other device is.
+    pub(crate) fn entry_answer_stands(
+        &self,
+        workspace: &str,
+        cert: &DeviceCert,
+        request_id: [u8; 32],
+        now: u64,
+    ) -> bool {
+        self.inner
+            .entries_answered
+            .lock_recover()
+            .get(&(workspace.to_owned(), cert.device_public_key, request_id))
+            .is_some_and(|(answered, until)| answered == cert && *until > now)
     }
 
     /// Let `cert`'s person, named `name`, in through `workspace`'s entry: the
@@ -607,7 +685,7 @@ impl Workspaces {
     async fn member_device(
         &self,
         cert: &DeviceCert,
-        workspace: &str,
+        (workspace, request_id): (&str, [u8; 32]),
         admission: &[Vec<u8>],
     ) -> Option<Entered> {
         if !person_device(cert) {
@@ -648,7 +726,10 @@ impl Workspaces {
             if !listed {
                 if admission.is_empty() {
                     drop(hosted);
-                    return Some(self.sign_on(workspace, Through::Entry).await);
+                    return Some(
+                        self.sign_on(workspace, (cert, request_id), Through::Entry)
+                            .await,
+                    );
                 }
                 if let Err(error) = self.take_own_row(&mut hosted, cert, admission, now).await {
                     return Some(Entered::Refused(refused(error)));
@@ -786,6 +867,7 @@ impl Workspaces {
             let Entered::Sign {
                 governance,
                 through,
+                ..
             } = answered
             else {
                 return Ok(answered);
@@ -1009,6 +1091,156 @@ mod tests {
     /// one that is not listed at all, at the part they hold there: a
     /// Moderator stays a Moderator, never the listing's default. A stranger
     /// is still turned away from both.
+    /// The member list an entry's answer used to carry goes from the host's join service to the
+    /// device the entry answered that it may sign itself in, for that entry and while the answer
+    /// stands, and to nobody else: not to another device under the entry's id, not to the device
+    /// from an endpoint that does not speak for it, not under another entry. A device that holds
+    /// the list already is sent only what it lacks, which together with what it holds is the
+    /// whole.
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one entry's list asked for every way a device may ask it, each refusal named"
+    )]
+    async fn the_member_list_goes_only_to_the_device_its_entry_answered() {
+        use tilo_peer_state::join::{
+            JoinTransportRequest, JoinTransportResponse, MembershipChallengeRequest,
+        };
+        use tilo_peer_state::member_list_since;
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = hosting_device();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let lounge = workspaces.create("Lounge").await.unwrap();
+        workspaces
+            .publish(
+                &lounge.workspace,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: Role::Viewer,
+                },
+            )
+            .await
+            .unwrap();
+        let ada = SigningKey::from_bytes(&rand::random());
+        let (_, guest) = device_of(&ada, DeviceCapabilities::member());
+        let request_id = rand::random();
+        let Entered::Sign {
+            governance, host, ..
+        } = Admit::enter(
+            workspaces,
+            &guest,
+            Entry {
+                entering: Entering {
+                    workspace: lounge.workspace.clone(),
+                    name: "Ada".into(),
+                    request_id,
+                    through: Through::Entry,
+                    admission: Vec::new(),
+                },
+                access: None,
+                proof: [0; 64],
+            },
+        )
+        .await
+        else {
+            panic!("the open entry asks the guest to sign itself in");
+        };
+        assert!(host.is_some(), "the answer says where the list is");
+
+        let join = workspaces.join_service();
+        let ask = |cert: &DeviceCert, request_id| {
+            JoinTransportRequest::EntryList(MembershipChallengeRequest {
+                workspace_id: lounge.workspace_id,
+                device_cert: cert.clone(),
+                request_id,
+                delegation: None,
+            })
+        };
+        let now = tilo_clock::unix_now_ns();
+        assert_eq!(
+            join.answer(guest.device_public_key, ask(&guest, request_id), now)
+                .await,
+            JoinTransportResponse::EntryList {
+                governance: governance.clone()
+            },
+            "the device the entry answered is given the list"
+        );
+        let (_, other) = device_of(&ada, DeviceCapabilities::member());
+        let lapsed = now.saturating_add(
+            u64::try_from(tilo_server_protocol::entering::ENTERING_DEADLINE.as_nanos()).unwrap(),
+        );
+        for (refused, endpoint, request, at) in [
+            (
+                "another device under the entry's id",
+                other.device_public_key,
+                ask(&other, request_id),
+                now,
+            ),
+            (
+                "an endpoint that does not speak for the device",
+                other.device_public_key,
+                ask(&guest, request_id),
+                now,
+            ),
+            (
+                "another entry",
+                guest.device_public_key,
+                ask(&guest, rand::random()),
+                now,
+            ),
+            (
+                "once the answer lapsed",
+                guest.device_public_key,
+                ask(&guest, request_id),
+                lapsed,
+            ),
+        ] {
+            assert!(
+                matches!(
+                    join.answer(endpoint, request, at).await,
+                    JoinTransportResponse::Error { .. }
+                ),
+                "{refused} is refused the list"
+            );
+        }
+
+        let since = join
+            .answer(
+                guest.device_public_key,
+                JoinTransportRequest::Since {
+                    heads: member_list_since::heads(&governance).unwrap(),
+                    request: Box::new(ask(&guest, request_id)),
+                },
+                now,
+            )
+            .await;
+        let JoinTransportResponse::Since { heads, response } = &since else {
+            panic!("a request since some heads is answered so: {since:?}");
+        };
+        assert_eq!(heads, &member_list_since::heads(&governance).unwrap());
+        let JoinTransportResponse::EntryList { governance: rest } = response.as_ref() else {
+            panic!("the answer is the list: {response:?}");
+        };
+        let sent: usize = rest.iter().map(Vec::len).sum();
+        let whole: usize = governance.iter().map(Vec::len).sum();
+        assert!(
+            sent < whole / 10,
+            "only what the device lacks: {sent} of {whole} bytes"
+        );
+        let JoinTransportResponse::EntryList { governance: back } =
+            member_list_since::received(since, &governance).unwrap()
+        else {
+            panic!("the answer is the list");
+        };
+        assert_eq!(
+            member_list_since::heads(&back).unwrap(),
+            member_list_since::heads(&governance).unwrap()
+        );
+        server.shutdown().await;
+    }
+
     #[tokio::test]
     async fn a_members_further_device_enters_through_the_entry_at_their_part() {
         let dir = tempfile::tempdir().unwrap();
@@ -1119,6 +1351,7 @@ mod tests {
         let Entered::Sign {
             governance,
             through,
+            ..
         } = Admit::enter(workspaces, &tab, asked).await
         else {
             panic!("the entry lets a further device of a member sign its own row");

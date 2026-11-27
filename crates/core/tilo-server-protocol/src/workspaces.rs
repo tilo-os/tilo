@@ -1631,7 +1631,18 @@ pub fn entry_invoke(
     })
 }
 
-/// The arguments [`ENTER_ENTRY`] carries `entering` and `cert` as.
+/// The [`ENTER_ENTRY`] argument, `true`, of a device that takes the member list it signs its
+/// admission on from the host's join service, where [`crate::entering::Entered::Sign`] says,
+/// rather than in the entry's answer: every device from the build that added it on. A device
+/// that does not send it is answered the list in the answer, as before, which a member list of a
+/// few hundred people does not fit.
+///
+/// Protocol 71 inline list: this argument, [`EntryAsked::takes_list`] and every block marked so
+/// go once no supported build is as old as 61782b0f16a (protocol 71).
+pub const ENTRY_TAKES_LIST: &str = "takes_list";
+
+/// The arguments [`ENTER_ENTRY`] carries `entering` and `cert` as, saying the device takes the
+/// member list from the host's join service ([`ENTRY_TAKES_LIST`]).
 ///
 /// # Errors
 /// They do not encode.
@@ -1644,7 +1655,18 @@ pub fn entry_arguments(
     Ok(serde_json::Map::from_iter([
         ("entering".to_owned(), entering),
         ("cert".to_owned(), cert),
+        (ENTRY_TAKES_LIST.to_owned(), serde_json::Value::Bool(true)),
     ]))
+}
+
+/// An [`ENTER_ENTRY`] ask as the host reads it from the action's JSON arguments.
+#[derive(Clone, Debug)]
+pub struct EntryAsked {
+    pub entering: crate::entering::Entering,
+    pub cert: tilo_user_identity::DeviceCert,
+    /// Whether the device takes the member list from the host's join service
+    /// ([`ENTRY_TAKES_LIST`]). Protocol 71 inline list.
+    pub takes_list: bool,
 }
 
 /// The entry and the certificate [`ENTER_ENTRY`] was asked with, read from the action's JSON
@@ -1654,7 +1676,7 @@ pub fn entry_arguments(
 /// The arguments name no entry or certificate, or they do not decode.
 pub fn entered_request(
     arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(crate::entering::Entering, tilo_user_identity::DeviceCert), String> {
+) -> Result<EntryAsked, String> {
     let entering = arguments
         .get("entering")
         .cloned()
@@ -1665,7 +1687,16 @@ pub fn entered_request(
         .ok_or("the action names no certificate")?;
     let entering = serde_json::from_value(entering).map_err(|error| error.to_string())?;
     let cert = serde_json::from_value(cert).map_err(|error| error.to_string())?;
-    Ok((entering, cert))
+    // Protocol 71 inline list.
+    let takes_list = arguments
+        .get(ENTRY_TAKES_LIST)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Ok(EntryAsked {
+        entering,
+        cert,
+        takes_list,
+    })
 }
 
 /// The answer [`ENTER_ENTRY`] gives `entered` as: the entry's answer under `entered`, which

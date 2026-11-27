@@ -35,9 +35,10 @@
 //! **The admission is the device's own.** No host signs anyone into a
 //! workspace: the device writes its own admission on the workspace's member
 //! list and signs it. An entry that would let the device in is first
-//! answered [`Entered::Sign`], with the member list and how to come back (the
-//! invitation the entry issued it, or as it came); the device asks again with
-//! the changes it signed ([`Entering::admission`]): its redemption of the
+//! answered [`Entered::Sign`], with where it takes the member list from (the
+//! host's join service) and how to come back (the invitation the entry issued
+//! it, or as it came); the device asks again with the changes it signed
+//! ([`Entering::admission`]): its redemption of the
 //! invitation, or, for a further device of someone the workspace has in it,
 //! its own device row. The host passes them on unchanged, and every device of
 //! the workspace judges them under the device that signed them.
@@ -183,15 +184,27 @@ pub enum Entered {
     /// The workspace did not admit the device. The host closes the session.
     Refused(EnterRefusal),
     /// The workspace lets the device in once it signs its own admission:
-    /// written on `governance`, the workspace's member list as encoded
-    /// neighbour messages, and asked again `through` (the invitation the
-    /// entry issued it, or as the device came) with those changes as its
-    /// [`Entering::admission`]. Answered again, with the list as it is
-    /// now, to an admission signed on one the host has since moved to a
-    /// newer base.
+    /// written on the workspace's member list, and asked again `through` (the
+    /// invitation the entry issued it, or as the device came) with those
+    /// changes as its [`Entering::admission`]. Answered again, with the list
+    /// as it is now, to an admission signed on one the host has since moved to
+    /// a newer base.
+    ///
+    /// The device takes the list from the host's join service, at `host` (a
+    /// `tilo_workspace_join::TransportHint`, postcard), asking under the
+    /// entry's request id: binary and once, where a list of a few hundred
+    /// people does not fit an action's answer. `governance` is empty then. A
+    /// device that did not say it takes the list there
+    /// ([`crate::workspaces::ENTRY_TAKES_LIST`]) is sent the list here, as
+    /// encoded neighbour messages, and so is every device by a host from
+    /// before `host` was sent, which sends none. Protocol 71 inline list:
+    /// `governance` goes with [`crate::workspaces::ENTRY_TAKES_LIST`].
     Sign {
+        #[serde(default)]
         governance: Vec<Vec<u8>>,
         through: Through,
+        #[serde(default, with = "serde_bytes")]
+        host: Option<Vec<u8>>,
     },
 }
 

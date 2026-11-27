@@ -69,6 +69,11 @@ impl Dial {
         Some((dialer, self.delegation.clone().unwrap_or_default()))
     }
 
+    /// The dialer this session made to reach its host, once it made one.
+    pub(super) fn made(&self) -> Option<Arc<Dialer>> {
+        self.dialer.clone()
+    }
+
     pub(super) fn for_page(vault: &[u8; 32]) -> Self {
         Self {
             key: blake3::derive_key("tilo page endpoint v1", vault),

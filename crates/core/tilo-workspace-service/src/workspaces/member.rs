@@ -24,6 +24,7 @@ use collab_types::SignedOp;
 use collab_types::signer::DeviceSigner;
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+use tilo_lock::MutexRecover as _;
 use tilo_peer_state::MissingPrerequisite;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::TransportOrigin;
@@ -130,6 +131,10 @@ pub(super) struct Members {
     /// Told whenever a served write is noted, answered or refused: a `served`
     /// that waits subscribes before it reads, and reads again after each tick.
     served_changed: tokio::sync::watch::Sender<u64>,
+    /// The member list of each workspace this device's session entered and its service has not
+    /// taken in yet, as the device holds it with its own admission on it
+    /// ([`Workspaces::keep_entered_list`]): its proof of membership is sent only the rest.
+    entered: std::sync::Mutex<std::collections::HashMap<WorkspaceId, Vec<Vec<u8>>>>,
 }
 
 impl Default for Members {
@@ -147,6 +152,7 @@ impl Default for Members {
             writes: tokio::sync::broadcast::channel(WRITES_HELD).0,
             served: std::sync::Mutex::default(),
             served_changed: tokio::sync::watch::channel(0).0,
+            entered: std::sync::Mutex::default(),
         }
     }
 }
@@ -894,20 +900,41 @@ impl Workspaces {
         holds_copies(&device.cert)?;
         let (address, _) =
             WorkspaceDeviceHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
+        let entered = self
+            .inner
+            .member
+            .entered
+            .lock_recover()
+            .remove(&workspace)
+            .unwrap_or_default();
         let bootstrap = self
-            .prove_own(&device, &address.endpoint_addr, workspace)
+            .prove_own(&device, &address.endpoint_addr, workspace, &entered)
             .await?;
         self.hold_member(&device, &bootstrap, hint).await
+    }
+
+    /// Keep `list`, `workspace`'s member list as this device's session holds it once it entered
+    /// it, its own admission on it, for the proof of membership that takes the workspace in here:
+    /// the host sends that proof only what the list lacks, so the list reaches the device once.
+    pub fn keep_entered_list(&self, workspace: WorkspaceId, list: Vec<Vec<u8>>) {
+        self.inner
+            .member
+            .entered
+            .lock_recover()
+            .insert(workspace, list);
     }
 
     /// Prove `device`'s membership of `workspace` at the device serving it at `host`: what it
     /// answers. A row of its own the device signs there builds on what it signed into the
     /// workspace before, a redemption still on its way among it, and is kept for the next.
+    /// `held` is the workspace's governance as the device holds it already, as it entered: the
+    /// host sends only the rest.
     async fn prove_own(
         &self,
         device: &MemberDevice,
         host: &iroh::EndpointAddr,
         workspace: WorkspaceId,
+        held: &[Vec<u8>],
     ) -> Result<tilo_peer_state::join::JoinBootstrap, String> {
         let key = device.cert.device_public_key;
         let _turn = tilo_peer_state::own_admission::signing_turn(&workspace.to_string(), key).await;
@@ -917,7 +944,7 @@ impl Workspaces {
             workspace,
             &device.cert,
             device.signer.as_ref(),
-            &self.own_admissions(workspace, &key),
+            (&self.own_admissions(workspace, &key), held),
         )
         .await?;
         self.keep_own_admission(workspace, &key, &signed)?;
