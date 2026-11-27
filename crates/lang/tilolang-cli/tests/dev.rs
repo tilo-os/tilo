@@ -299,7 +299,11 @@ fn a_dev_build_installs_into_the_store_its_session_runs_on() {
     // no bundle.
     let unused = state.join("apps/runtimes");
     std::fs::create_dir_all(&unused).unwrap();
-    std::fs::write(unused.join(".tilolang-version"), "0.1.0+tilolang.ffffffffffffffff\n").unwrap();
+    std::fs::write(
+        unused.join(".tilolang-version"),
+        "0.1.0+tilolang.ffffffffffffffff\n",
+    )
+    .unwrap();
 
     let runtime = scratch.path().join("runtime");
     write_session(&state, &runtime, &store);
@@ -401,11 +405,7 @@ fn write_session(
 /// in the store the launcher reads, records every call's stores in `calls`, and answers the ids a
 /// development build of the counter runs under.
 #[cfg(unix)]
-fn write_installer(
-    install: &std::path::Path,
-    calls: &std::path::Path,
-    tilolang: &str,
-) {
+fn write_installer(install: &std::path::Path, calls: &std::path::Path, tilolang: &str) {
     std::fs::write(
         install,
         format!(
