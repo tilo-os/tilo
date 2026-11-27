@@ -1972,6 +1972,7 @@ d-agpwsfhm = Telefon
     .w-no-workspaces-here-yet = Noch keine Arbeitsbereiche hier
     .w-back = Zurück
     .w-apps = Apps
+    .w-apps-can-t-run-on-this = Apps laufen auf diesem Telefon nicht
     .w-no-apps-yet = Noch keine Apps
 
 d-iworlvwt = Schnelleinstellungen

@@ -57,6 +57,9 @@ pub struct Seen {
     pub apps: Vec<App>,
     /// Why the last ask failed, in the words the person reads.
     pub refused: Option<String>,
+    /// Why this device runs none of a workspace's apps, in the words the person reads: what its
+    /// Apps page says above them.
+    pub apps_refused: Option<String>,
 }
 
 /// The worker's side the window holds: where it asks, and what it reads.
@@ -97,19 +100,23 @@ pub fn capabilities(
 impl Worker {
     /// Start the device's daemon on `profile` and the thread that serves the phone's asks; what
     /// the person is told is shown through `notifier`, and `wake` wakes the window when what it
-    /// shows moved.
+    /// shows moved. `runs_apps` is whether this device can run a workspace's apps, or why not.
     ///
     /// # Errors
     /// The daemon did not start.
     pub fn start(
         profile: &Path,
         notifier: Arc<dyn Notifier>,
+        runs_apps: Result<(), String>,
         wake: impl Fn() + Send + 'static,
     ) -> anyhow::Result<Self> {
         mount();
         let device = Device::start(profile)?;
         let (asks, asked) = std::sync::mpsc::channel();
-        let seen = Arc::new(Mutex::new(Seen::default()));
+        let seen = Arc::new(Mutex::new(Seen {
+            apps_refused: runs_apps.err(),
+            ..Seen::default()
+        }));
         let open = Arc::new(Mutex::new(None));
         let watches = Arc::new(Held::default());
         let serving = Arc::clone(&seen);
@@ -354,6 +361,7 @@ fn serve(
                 workspace: workspace.clone(),
                 apps,
                 refused,
+                apps_refused: now.apps_refused.take(),
             };
             drop(now);
             wake();

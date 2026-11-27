@@ -380,7 +380,10 @@ fn installed_apps() -> Apps {
                 .collect()
         })
         .unwrap_or_default();
-    Apps { installed }
+    Apps {
+        installed,
+        ..Apps::default()
+    }
 }
 
 impl SessionControls {

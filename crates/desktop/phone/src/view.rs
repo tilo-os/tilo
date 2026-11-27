@@ -359,7 +359,10 @@ impl Origin for PhoneOrigin {
             "workspaces": seen.devices.workspaces,
             "refused": seen.refused.unwrap_or_default(),
         });
-        let apps = serde_json::json!({ "installed": seen.apps });
+        let apps = serde_json::json!({
+            "installed": seen.apps,
+            "refused": seen.apps_refused.unwrap_or_default(),
+        });
         for (id, ty, reading) in [(DEVICES, "Devices", devices), (APPS, "Apps", apps)] {
             let ty = format!("{}#{ty}", tilolang_tilo::platform::DEVICE_APP);
             let Some(target) = ResourceRef::parse_id(id, &ty) else {

@@ -690,7 +690,6 @@ pub fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String 
 /// What the Android activity this process runs hands out: the APK's assets.
 #[cfg(all(target_os = "android", feature = "native"))]
 pub mod android {
-    use std::ffi::CString;
     use std::sync::OnceLock;
 
     use winit::platform::android::activity::AndroidApp;
@@ -705,36 +704,62 @@ pub mod android {
     /// The APK's asset `name` (`tilo/manifest.toml`), read: what an app reads of itself from the APK
     /// it was installed from, which no file of the app's own can stand in for.
     ///
+    /// Read through the published context's `AssetManager`, not the activity's: the app's file
+    /// provider starts the device daemon, which reads its manifest, before any activity runs.
+    ///
     /// # Errors
-    /// No activity runs yet, or the APK has no such asset.
+    /// The app published no context yet, or the APK has no such asset.
     pub fn read_asset(name: &str) -> std::io::Result<Vec<u8>> {
-        let app = app().ok_or_else(|| std::io::Error::other("no Android activity"))?;
-        let c_name = CString::new(name).map_err(std::io::Error::other)?;
-        let mut asset = app.asset_manager().open(&c_name).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "missing from the APK")
-        })?;
-        let mut bytes = Vec::new();
-        std::io::copy(&mut asset, &mut bytes)?;
-        Ok(bytes)
+        tilo_process::android::with_activity(|env, context| {
+            let assets = env
+                .call_method(
+                    context,
+                    "getAssets",
+                    "()Landroid/content/res/AssetManager;",
+                    &[],
+                )?
+                .l()?;
+            let path = env.new_string(name)?;
+            let stream = env
+                .call_method(
+                    &assets,
+                    "open",
+                    "(Ljava/lang/String;)Ljava/io/InputStream;",
+                    &[(&path).into()],
+                )?
+                .l()?;
+            let buffer = env.new_byte_array(CHUNK)?;
+            let mut chunk = vec![0i8; CHUNK as usize];
+            let mut bytes = Vec::new();
+            loop {
+                let read = env
+                    .call_method(&stream, "read", "([B)I", &[(&buffer).into()])?
+                    .i()?;
+                let Ok(read) = usize::try_from(read) else {
+                    break;
+                };
+                env.get_byte_array_region(&buffer, 0, &mut chunk[..read])?;
+                bytes.extend(chunk[..read].iter().map(|b| b.to_ne_bytes()[0]));
+            }
+            env.call_method(&stream, "close", "()V", &[])?;
+            Ok(bytes)
+        })
+        .map_err(|error| std::io::Error::other(format!("the APK's {name}: {error}")))
     }
+
+    /// How much of an asset one call into Java reads.
+    const CHUNK: i32 = 64 * 1024;
 
     /// Copy the APK's asset `name` (`tilo/fonts/manifest.toml`) to `to`, making its directory: what
     /// an app copies out of its APK on first start, since Android hands assets out as streams only.
     ///
     /// # Errors
-    /// No activity runs yet, the APK has no such asset, or `to` cannot be written.
+    /// The app published no context yet, the APK has no such asset, or `to` cannot be written.
     pub fn copy_asset(name: &str, to: &std::path::Path) -> std::io::Result<()> {
-        use std::io::Write as _;
-        let app = app().ok_or_else(|| std::io::Error::other("no Android activity"))?;
-        let c_name = CString::new(name).map_err(std::io::Error::other)?;
-        let mut asset = app.asset_manager().open(&c_name).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "missing from the APK")
-        })?;
+        let bytes = read_asset(name)?;
         if let Some(parent) = to.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut file = std::fs::File::create(to)?;
-        std::io::copy(&mut asset, &mut file)?;
-        file.flush()
+        std::fs::write(to, bytes)
     }
 }

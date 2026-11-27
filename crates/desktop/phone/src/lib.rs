@@ -57,9 +57,11 @@ fn worker() -> Result<&'static worker::Worker, String> {
     static WORKER: OnceLock<Result<worker::Worker, String>> = OnceLock::new();
     WORKER
         .get_or_init(|| {
-            declare_carried_runtimes();
+            let runs_apps = declare_carried_runtimes().inspect_err(|why| {
+                tracing::error!(why, "this phone runs no workspace apps");
+            });
             let wake = ui::wake::WakeHandle::new();
-            worker::Worker::start(&profile(), notifier(), move || wake.wake())
+            worker::Worker::start(&profile(), notifier(), runs_apps, move || wake.wake())
                 .map_err(|e| format!("{e:#}"))
         })
         .as_ref()
@@ -139,41 +141,45 @@ fn start_device() {
 /// from carries names them: the exact Tilo runtime build it links and the tilolang runtime it
 /// runs tilolang apps on. A workspace app that names one of them then installs on this phone
 /// without it being fetched, and one that names another is refused with both named.
-fn declare_carried_runtimes() {
-    let Some(manifest) = signed_manifest() else {
+///
+/// # Errors
+/// The APK's manifest is missing, unreadable or not its build's, or names no exact build: why
+/// this phone runs none of a workspace's apps, which its Apps page shows.
+fn declare_carried_runtimes() -> Result<(), String> {
+    let Some(manifest) = signed_manifest()? else {
         // A developer's build has no APK: its runtimes are the device's own, as a desktop's are.
-        return;
+        return Ok(());
     };
-    if let Err(error) = tilo_runtime::device::packages::carry_runtimes(&manifest) {
-        tracing::warn!(%error, "the runtimes this app carries are not declared");
-    }
+    tilo_runtime::device::packages::carry_runtimes(&manifest)
 }
 
 /// This app's own signed package manifest, as the APK it was installed from carries it: the
-/// build's statement of the runtime it links, which packaging stamps and signs. `None` where the
-/// app runs from a developer's build, or the manifest does not verify.
+/// build's statement of the runtime it links, which packaging stamps and signs.
+///
+/// # Errors
+/// The APK carries none, or it does not read or verify.
 #[cfg(target_os = "android")]
-fn signed_manifest() -> Option<tilo_app_package::Manifest> {
+fn signed_manifest() -> Result<Option<tilo_app_package::Manifest>, String> {
     let bytes = ui::platform::android::read_asset("tilo/manifest.toml")
-        .inspect_err(|error| tracing::warn!(%error, "this app carries no signed manifest"))
-        .ok()?;
+        .map_err(|error| format!("this app's own manifest can't be read: {error}"))?;
     let text = String::from_utf8(bytes)
-        .inspect_err(|error| tracing::warn!(%error, "this app's manifest is not text"))
-        .ok()?;
+        .map_err(|error| format!("this app's own manifest is not text: {error}"))?;
     let manifest = tilo_app_package::Manifest::from_toml_str(&text)
-        .inspect_err(|error| tracing::warn!(%error, "this app's manifest does not parse"))
-        .ok()?;
+        .map_err(|error| format!("this app's own manifest does not parse: {error}"))?;
     manifest
         .verify_signature()
-        .inspect_err(|error| tracing::warn!(%error, "this app's manifest is not its build's"))
-        .ok()?;
-    Some(manifest)
+        .map_err(|error| format!("this app's own manifest is not its build's: {error}"))?;
+    Ok(Some(manifest))
 }
 
 /// `None` off Android: a build with no APK carries no manifest of its own.
 #[cfg(not(target_os = "android"))]
-fn signed_manifest() -> Option<tilo_app_package::Manifest> {
-    None
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Android's reads the APK, which can fail"
+)]
+fn signed_manifest() -> Result<Option<tilo_app_package::Manifest>, String> {
+    Ok(None)
 }
 
 /// The phone's device as a file provider reaches it: the same worker the view asks, started here

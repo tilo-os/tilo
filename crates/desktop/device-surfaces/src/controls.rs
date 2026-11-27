@@ -38,6 +38,10 @@ pub enum NightLightEffect {
 )]
 pub struct Apps {
     pub installed: Vec<App>,
+    /// Why this device runs none of a workspace's apps, in the words a person reads; empty when
+    /// it can run them.
+    #[serde(default)]
+    pub refused: String,
 }
 
 /// An application installed on this device: its package id, which `open-app` names, its name in

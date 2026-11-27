@@ -59,6 +59,13 @@ view phone() {
                     spacer
                 }
                 ui.Section("Apps") {
+                    if device.apps.refused != "" {
+                        ui.Banner(
+                            "Apps can't run on this phone",
+                            message: device.apps.refused,
+                            kind: .error,
+                        )
+                    }
                     if device.apps.installed.is_empty() {
                         ui.EmptyState("No apps yet", icon: .app_window, inline: true)
                     }
