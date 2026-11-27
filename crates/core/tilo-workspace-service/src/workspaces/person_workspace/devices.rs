@@ -2708,6 +2708,7 @@ mod tests {
                 ..offer(1_000)
             },
             ContinuityOffer {
+                resource: String::new(),
                 view: "a view".into(),
                 ..offer(1_000)
             },
