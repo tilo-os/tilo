@@ -1625,61 +1625,34 @@ struct Answered {
 /// beside it and whether it can run. The window's catalogue and the action directory carry the
 /// same answer, so both are shown it the same way.
 trait Offers {
-    /// What `offered` sets here: the action's label, its icon and whether it can run.
-    fn shown(
-        &mut self,
-    ) -> (
-        &mut String,
-        &mut Option<String>,
-        &mut tilo_actions::Availability,
-    );
-
-    /// Show `offered` here; whether that moved anything.
-    fn offers(&mut self, offered: &tilolang_tilo::host::Offered) -> bool {
-        fn set<T: PartialEq + Clone>(held: &mut T, said: Option<&T>) -> bool {
-            let Some(said) = said.filter(|said| **said != *held) else {
-                return false;
-            };
-            held.clone_from(said);
-            true
-        }
-        let (label, icon, availability) = self.shown();
-        let icon_said = offered.icon.clone().map(Some);
-        set(label, offered.label.as_ref())
-            | set(icon, icon_said.as_ref())
-            | set(availability, offered.availability.as_ref())
-    }
+    fn offers(&mut self, offered: &tilolang_tilo::host::Offered);
 }
 
 impl Offers for ActionDescriptor {
-    fn shown(
-        &mut self,
-    ) -> (
-        &mut String,
-        &mut Option<String>,
-        &mut tilo_actions::Availability,
-    ) {
-        (
-            &mut self.action_label,
-            &mut self.icon,
-            &mut self.contract.availability,
-        )
+    fn offers(&mut self, offered: &tilolang_tilo::host::Offered) {
+        if let Some(label) = &offered.label {
+            self.action_label.clone_from(label);
+        }
+        if let Some(icon) = &offered.icon {
+            self.icon = Some(icon.clone());
+        }
+        if let Some(availability) = &offered.availability {
+            self.contract.availability = availability.clone();
+        }
     }
 }
 
 impl Offers for collaboration::ExportedAction {
-    fn shown(
-        &mut self,
-    ) -> (
-        &mut String,
-        &mut Option<String>,
-        &mut tilo_actions::Availability,
-    ) {
-        (
-            &mut self.action_label,
-            &mut self.icon,
-            &mut self.contract.availability,
-        )
+    fn offers(&mut self, offered: &tilolang_tilo::host::Offered) {
+        if let Some(label) = &offered.label {
+            self.action_label.clone_from(label);
+        }
+        if let Some(icon) = &offered.icon {
+            self.icon = Some(icon.clone());
+        }
+        if let Some(availability) = &offered.availability {
+            self.contract.availability = availability.clone();
+        }
     }
 }
 
@@ -3412,13 +3385,11 @@ impl Hosted {
     /// answers are known, and costs only the rows that came into view.
     ///
     /// `shown` is [`Instance::shown_resources`] as the caller read it this frame: reading it
-    /// builds a reference to every row the window shows, so a frame reads it once. Adds to
-    /// `moved` the resources whose descriptors the answers changed.
+    /// builds a reference to every row the window shows, so a frame reads it once.
     fn answer_what_the_window_shows(
         &mut self,
         shown: &BTreeSet<String>,
         descriptors: &mut [ActionDescriptor],
-        moved: &mut BTreeSet<String>,
     ) {
         let Some(host) = self.instance.host() else {
             return;
@@ -3430,29 +3401,28 @@ impl Hosted {
             if !shown.contains(&descriptor.address.resource) {
                 continue;
             }
-            // What the app says of the action on its resource now, as the window shows it: what
-            // it is called there, the icon beside it, and whether it can run ([`Answers`]).
-            if let Some(offered) = self.answers.answer(
-                &host,
-                at,
-                &descriptor.address.resource,
-                &descriptor.address.action,
-            ) && descriptor.offers(&offered)
-            {
-                moved.insert(descriptor.address.resource.clone());
-            }
+            self.show_offer(&host, at, descriptor);
         }
+    }
+
+    /// What the app says of `descriptor`'s action on its resource now, as the window shows it:
+    /// what it is called there, the icon beside it, and whether it can run ([`Answers`]).
+    fn show_offer(&mut self, host: &Host, at: u64, descriptor: &mut ActionDescriptor) {
+        let Some(offered) = self.answers.answer(
+            host,
+            at,
+            &descriptor.address.resource,
+            &descriptor.address.action,
+        ) else {
+            return;
+        };
+        descriptor.offers(&offered);
     }
 
     /// Dim, for the person at the window, an action the rules of a document that holds its own
     /// keys deny them, saying so in their words. One the rules answer Ask stays pressable: the
     /// press stops on the Ask bar.
-    /// Adds to `moved` the resources whose descriptors that changed.
-    fn apply_document_grants(
-        &self,
-        descriptors: &mut [ActionDescriptor],
-        moved: &mut BTreeSet<String>,
-    ) {
+    fn apply_document_grants(&self, descriptors: &mut [ActionDescriptor]) {
         use tilo_action_policy::{Answer, Context, TreePath};
 
         let route = self.connection.route();
@@ -3475,14 +3445,10 @@ impl Hosted {
                 .field(need.field.as_deref().unwrap_or(""))
                 .action(&descriptor.address.action);
             if access.answer(&node, need.kind, &context) == Answer::Deny {
-                let denied = tilo_actions::Availability::Unavailable {
+                descriptor.contract.availability = tilo_actions::Availability::Unavailable {
                     code: tilo_actions::Availability::NOT_ALLOWED.to_owned(),
                     reason: self.phrases.say("tilolang-ask-denied", &[]),
                 };
-                if descriptor.contract.availability != denied {
-                    descriptor.contract.availability = denied;
-                    moved.insert(descriptor.address.resource.clone());
-                }
             }
         }
     }
@@ -4955,9 +4921,8 @@ impl Hosted {
             return Err(violations);
         }
         let mut descriptors = tilo_actions::api::survey(&resources);
-        let mut moved = BTreeSet::new();
-        self.answer_what_the_window_shows(rows, &mut descriptors, &mut moved);
-        self.apply_document_grants(&mut descriptors, &mut moved);
+        self.answer_what_the_window_shows(rows, &mut descriptors);
+        self.apply_document_grants(&mut descriptors);
         if self.surveyed.len() >= SURVEYED
             && let Some(oldest) = self.surveyed.keys().next().cloned()
         {
@@ -5185,29 +5150,37 @@ impl Hosted {
         // The survey the patched descriptors were read of stands for inputs no publication reads
         // again: they are patched in place rather than copied.
         self.surveyed.retain(|_, kept| !Rc::ptr_eq(kept, &held));
+        // What the answers were read of, to send only the resources whose descriptors moved.
+        let before = answered.then(|| Rc::clone(&held));
         let mut descriptors = Rc::unwrap_or_clone(held);
         let _phase = tilo_resource::profiling::Phase::start("tl.host.relabel");
-        let mut moved = BTreeSet::new();
         for (resource, label) in &labels {
             for index in state.indices(resource).unwrap_or_default() {
                 if let Some(descriptor) = descriptors.get_mut(*index) {
                     descriptor.resource_label.clone_from(label);
                 }
             }
-            moved.insert(resource.clone());
         }
         self.directory_behind = true;
         if answered {
-            self.answer_what_the_window_shows(rows, &mut descriptors, &mut moved);
+            self.answer_what_the_window_shows(rows, &mut descriptors);
             // What a document's own rules deny the person is read again with them, as a
             // surface read whole reads it.
-            self.apply_document_grants(&mut descriptors, &mut moved);
+            self.apply_document_grants(&mut descriptors);
         }
-        // Only the resources whose descriptors moved are shaped again and sent.
-        let changed: Vec<&str> = moved.iter().map(String::as_str).collect();
-        let published = state
-            .patched(&descriptors, &changed)
-            .map(|delta| (delta, state));
+        let published = if let Some(before) = &before {
+            let (delta, state) =
+                SurfacePublication::next(Some((&state, before.as_slice())), &descriptors);
+            Some((delta, state))
+        } else {
+            let changed: Vec<&str> = labels
+                .iter()
+                .map(|(resource, _)| resource.as_str())
+                .collect();
+            state
+                .relabel(&descriptors, &changed)
+                .map(|delta| (delta, state))
+        };
         let Some((delta, state)) = published else {
             // What the broker holds of these resources is unknown: the caller reads the surface
             // whole this turn, as a reset.

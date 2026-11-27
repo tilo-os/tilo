@@ -527,76 +527,37 @@ impl SurfacePublication {
             .map(|held| held.indices.as_slice())
     }
 
-    /// The delta for the `changed` resources, whose entries in `descriptors` were patched in
-    /// place (a label, or what an action is called there, its icon and whether it can run):
-    /// `descriptors` are the ones this state was built from, with only theirs patched. The state
-    /// is then that delta applied. Costs what the `changed` resources hold, whatever the surface.
+    /// The delta for resources whose own fields (a label) changed in `descriptors`, which are
+    /// the descriptors this state was built from with only those fields patched; the state is
+    /// then that delta applied. Costs what the `changed` resources hold, whatever the surface.
     /// `None`, changing nothing, when one of them is not published.
-    pub fn patched<E: SurfaceEntry>(
+    pub fn relabel<E: SurfaceEntry>(
         &mut self,
         descriptors: &[E],
         changed: &[&str],
     ) -> Option<SurfaceDelta> {
-        if changed
-            .iter()
-            .any(|name| !self.resources.contains_key(*name))
-        {
-            return None;
-        }
-        let held_templates: HashSet<ShapeId> = self.templates.keys().copied().collect();
-        let held_shapes: HashSet<ShapeId> = self.templates.values().flatten().copied().collect();
-        let mut delta = SurfaceDelta::default();
-        let mut moved = false;
+        let mut resources = Vec::with_capacity(changed.len());
         for name in changed {
-            let Some(held) = self.resources.get(*name) else {
-                continue;
-            };
-            let workspace = held.resource.fields.workspace.clone();
-            let Some((resource, shapes)) = shaped(
-                name,
-                &held.indices,
-                descriptors,
-                workspace,
-                &mut self.shapes,
-            ) else {
-                continue;
-            };
-            if resource == held.resource {
-                continue;
-            }
-            let template = resource.template;
-            moved |= template != held.resource.template;
-            for (id, shape) in &shapes {
-                if !held_shapes.contains(id) && !delta.shapes.iter().any(|(sent, _)| sent == id) {
-                    delta.shapes.push((*id, ExportedAction::clone(shape)));
-                }
-            }
-            let members = || shapes.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-            if !held_templates.contains(&template)
-                && !delta.templates.iter().any(|(sent, _)| *sent == template)
-            {
-                delta.templates.push((template, members()));
-            }
-            self.templates.entry(template).or_insert_with(members);
-            if let Some(held) = self.resources.get_mut(*name) {
-                held.resource = resource.clone();
-            }
-            delta.resources.push(resource);
-        }
-        if moved {
-            // What the broker holds once it applies the delta: the templates its resources name,
-            // and the shapes those name.
-            let named: HashSet<ShapeId> = self
-                .resources
-                .values()
-                .map(|held| held.resource.template)
-                .collect();
-            self.templates.retain(|id, _| named.contains(id));
-            let named: HashSet<&ShapeId> = self.templates.values().flatten().collect();
-            self.shapes.retain(|_, shapes| {
-                shapes.retain(|(_, id)| named.contains(id));
-                !shapes.is_empty()
+            let held = self.resources.get(*name)?;
+            let descriptor = descriptors.get(*held.indices.first()?)?;
+            let mut fields = descriptor.exported().resource_fields();
+            fields.workspace.clone_from(&held.resource.fields.workspace);
+            resources.push(SurfaceResource {
+                resource: (*name).to_owned(),
+                fields,
+                template: held.resource.template,
+                unavailable: held.resource.unavailable.clone(),
             });
+        }
+        let mut delta = SurfaceDelta::default();
+        for resource in resources {
+            let Some(held) = self.resources.get_mut(&resource.resource) else {
+                continue;
+            };
+            if held.resource != resource {
+                held.resource = resource.clone();
+                delta.resources.push(resource);
+            }
         }
         Some(delta)
     }
@@ -909,42 +870,6 @@ mod tests {
             let mut reset_again = catalogue();
             reset_again.resources = vec![resource("z", "Z", 10)];
             assert_eq!(first.then(reset_again.clone()), reset_again);
-        }
-
-        phase a_patch_sends_only_what_moved_and_holds_what_a_whole_surface_does;
-        {
-            let on = |resource: &str, action: &str, label: &str| ExportedAction {
-                resource: resource.into(),
-                resource_kind: "notes.page".into(),
-                resource_label: resource.to_uppercase(),
-                ..shape(action, label)
-            };
-            let mut entries = vec![
-                on("a", "apply", "Apply"),
-                on("a", "open", "Open"),
-                on("b", "apply", "Apply"),
-                on("b", "open", "Open"),
-            ];
-            let (delta, mut state) = SurfacePublication::next(None, &entries);
-            let mut table = SurfaceTable::default();
-            table.apply(&delta).unwrap();
-            // What `b`'s open is called there now, and that it cannot run.
-            entries[3].action_label = "Open here".into();
-            entries[3].contract.availability = tilo_actions::Availability::Unavailable {
-                code: "busy".into(),
-                reason: "Busy".into(),
-            };
-            entries[2].resource_label = "B renamed".into();
-            entries[3].resource_label = "B renamed".into();
-            let patch = state.patched(&entries, &["a", "b"]).unwrap();
-            assert_eq!(patch.resources.len(), 1, "only the resource that moved is sent");
-            table.apply(&patch).unwrap();
-            let (whole, _) = SurfacePublication::next(None, &entries);
-            let mut fresh = SurfaceTable::default();
-            fresh.apply(&whole).unwrap();
-            assert_eq!(table.actions(), fresh.actions());
-            assert!(state.patched(&entries, &["a", "b"]).unwrap().is_empty());
-            assert!(state.patched(&entries, &["c"]).is_none());
         }
     }
 }

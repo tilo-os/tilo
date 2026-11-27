@@ -1754,11 +1754,6 @@ impl Core {
         let Some(newest) = self.store.borrow().newest(at)? else {
             return Ok(None);
         };
-        // A newest version the person made, or the resource's making, is never unseen: the
-        // marks they read are not asked for (every row of a list the person just wrote).
-        if !crate::seen::is_marked(&newest, person) {
-            return Ok(None);
-        }
         let mark = self.seen_mark_of_tree(person, at);
         let runs = self.seen_runs(person);
         Ok(crate::seen::unseen(std::slice::from_ref(&newest), person, mark.as_ref(), &runs).pop())
