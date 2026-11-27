@@ -4817,3 +4817,188 @@ fn the_overviews_shared_out_list_names_what_the_workspace_shares_and_taking_one_
     );
     keep(&mut session, "shell-overview-shared-out-taken-back");
 }
+
+/// The menus the bar opens: where each stands, and what each of its rows does.
+mod bar_menus {
+    use super::*;
+
+    /// The workspace menu opens from the bar's chip and stands under it, inside the display, in both
+    /// appearances: what a person reads and presses, kept as the shot a review looks at.
+    #[test]
+    fn the_workspace_menu_stands_under_its_chip() {
+        let _settled = tilo_ui_base::motion::testing::settled();
+        for (appearance, dark) in [("light", false), ("dark", true)] {
+            let mut session = session();
+            until_settled(&mut session, |session| {
+                says(session, &shell(session).workspace)
+            });
+            set_appearance(&mut session, dark);
+            until_settled(&mut session, |session| {
+                appearance_mode(session) == serde_json::json!(appearance)
+            });
+            let name = shell(&session).workspace;
+            let chip = crate::common::wait_for(&mut session, "the workspace chip", |session| {
+                session.shell_control(&name)
+            });
+            press_at_rest(&mut session, &name);
+            let menu = crate::common::wait_for(&mut session, "the workspace menu", |session| {
+                session.step(Duration::from_millis(16)).expect("a turn");
+                crate::common::on_screen(session, "New workspace")
+            });
+            assert!(
+                menu.1 >= chip.1 + chip.3,
+                "the menu stands under the chip it came from: {menu:?} under {chip:?}"
+            );
+            assert!(
+                menu.0 >= 0.0 && menu.0 + menu.2 <= f64::from(WIDTH),
+                "and inside the display: {menu:?}"
+            );
+            // The frame the capture reads is drawn after the reading changes.
+            drawn(&mut session);
+            keep(&mut session, &format!("workspace-menu-{appearance}"));
+        }
+    }
+
+    /// Every row the workspace menu offers opens what it says it opens: the screen it leaves after
+    /// a press is not the screen the menu closes back to. A row whose press leaves everything as it
+    /// was is a row that does nothing.
+    #[test]
+    fn every_row_of_the_workspace_menu_opens_what_it_says() {
+        let _settled = tilo_ui_base::motion::testing::settled();
+        for kind in 0..7 {
+            let mut session = session();
+            let workspace = shell(&session).workspace;
+            let rows = [
+                "New workspace".to_owned(),
+                "Join a workspace".to_owned(),
+                "Workspace settings".to_owned(),
+                "Overview".to_owned(),
+                "History".to_owned(),
+                format!("Rename {workspace}"),
+                format!("Delete {workspace}"),
+            ];
+            let row = rows[kind].clone();
+            until_settled(&mut session, |session| says(session, &workspace));
+            // What the screen is when the menu is down again: the baseline its row is read against.
+            open_workspace_menu(&mut session, &workspace);
+            crate::common::key(&mut session, crate::common::KEY_ESCAPE);
+            crate::common::until(&mut session, "the menu put away", |session| {
+                session.step(Duration::from_millis(16)).expect("a turn");
+                crate::common::on_screen(session, "New workspace").is_none()
+            });
+            let baseline = screen(&session);
+
+            open_workspace_menu(&mut session, &workspace);
+            press_at_rest(&mut session, &row);
+            for _ in 0..40 {
+                session.step(Duration::from_millis(16)).expect("a turn");
+            }
+            assert_ne!(
+                baseline,
+                screen(&session),
+                "the workspace menu's {row:?} opens nothing: it leaves the screen as it was"
+            );
+        }
+    }
+
+    /// Open the workspace menu from the bar's chip, once its rows stand.
+    fn open_workspace_menu(session: &mut Session, workspace: &str) {
+        press_at_rest(session, workspace);
+        crate::common::until(session, "the workspace menu", |session| {
+            session.step(Duration::from_millis(16)).expect("a turn");
+            crate::common::on_screen(session, "New workspace").is_some()
+        });
+    }
+
+    /// What the shell shows, as a row that opens something changes it: the surface over the
+    /// windows, the workspaces and places the person has, and every word and role assistive
+    /// technology reads but the clock's minute — a field the bar took up has no name of its own.
+    fn screen(session: &Session) -> (String, usize, usize, Vec<String>, Vec<String>) {
+        let clock = time(session).clock;
+        let mut labels = session.accessible_labels();
+        labels.retain(|label| *label != clock);
+        let mut roles: Vec<String> = session
+            .a11y_windows()
+            .iter()
+            .flat_map(|(_, _, tree)| tree.nodes.iter())
+            .map(|(_, node)| format!("{:?}", node.role()))
+            .collect();
+        roles.sort();
+        (
+            here(session),
+            session.handle().read(|tree| tree.workspaces.len()),
+            crate::common::places(session).len(),
+            labels,
+            roles,
+        )
+    }
+
+    /// The power menu opens from the bar's own power button — the quick settings' Power, which the
+    /// bar's charge leads to — and stands under it: every row it offers is clear of the button it
+    /// came from and inside the display, never at the window's corner.
+    #[test]
+    fn the_power_menu_stands_under_the_bar_button_that_opened_it() {
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let mut session = device_session_over(WIDTH, HEIGHT, Device { charging: true });
+        until_settled(&mut session, |session| says(session, "61%, charging"));
+        // The charge is the bar's way into the quick settings, where the Power button is.
+        press_at_rest(&mut session, "61%, charging");
+        let button = crate::common::wait_for(
+            &mut session,
+            "the quick settings' Power button",
+            |session| {
+                session.step(Duration::from_millis(16)).expect("a turn");
+                session.shell_control("Power")
+            },
+        );
+
+        press_at(&mut session, "Power", WIDTH, HEIGHT);
+        let rows = crate::common::wait_for(&mut session, "the power menu", |session| {
+            session.step(Duration::from_millis(16)).expect("a turn");
+            let rows: Vec<(f64, f64, f64, f64)> =
+                ["Log out", "Switch user", "Sleep", "Restart", "Shut down"]
+                    .into_iter()
+                    .filter_map(|row| session.shell_control(row))
+                    .collect();
+            (rows.len() == 5).then_some(rows)
+        });
+        let left = rows.iter().map(|(x, ..)| *x).fold(f64::INFINITY, f64::min);
+        let top = rows
+            .iter()
+            .map(|(_, y, ..)| *y)
+            .fold(f64::INFINITY, f64::min);
+        let right = rows
+            .iter()
+            .map(|(x, _, w, _)| x + w)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let bottom = rows
+            .iter()
+            .map(|(_, y, _, h)| y + h)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            left >= 0.0 && top >= 0.0 && right <= f64::from(WIDTH) && bottom <= f64::from(HEIGHT),
+            "the menu stands inside the display: {left} {top} {right} {bottom}"
+        );
+        let (bx, by, bw, bh) = button;
+        assert!(
+            left < bx + bw && right > bx,
+            "its rows stand in the button's column: {left}..{right} against {bx}..{}",
+            bx + bw
+        );
+        assert!(
+            top >= by + bh,
+            "and under the button, not over it: the menu starts at {top}, the button ends at {}",
+            by + bh
+        );
+        // What the menu reads in, in both appearances: the shot a review looks at.
+        for (appearance, dark) in [("light", false), ("dark", true)] {
+            set_appearance(&mut session, dark);
+            until_settled(&mut session, |session| {
+                appearance_mode(session) == serde_json::json!(appearance)
+            });
+            // The frame the capture reads is drawn after the reading changes.
+            drawn(&mut session);
+            keep(&mut session, &format!("power-menu-{appearance}"));
+        }
+    }
+}

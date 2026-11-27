@@ -1763,6 +1763,10 @@ impl ShellPart {
     fn took_press(&mut self) {
         if let Some(press) = tilo_session_core::surface::handled_press() {
             self.press = Some(press);
+            // The press is the shell's own window's, so the window notes the control it answered
+            // beside what the views run of it: a popover a press opens stands under that control,
+            // not at the window's corner. The views run in this process, where the note is read.
+            tilo_ui_base::press::note(press);
         }
     }
 

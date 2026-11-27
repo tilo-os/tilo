@@ -78,10 +78,11 @@ view peek_card(p: device.Peek) {
 }
 
 /// The power menu: what this session may do to itself and this computer — locking, logging out,
-/// switching user, sleeping, restarting or shutting down — as rows under the bar's trailing end.
-/// The session says what it offers and each row is its own action (`desktop:power-menu`), so what
-/// a press does, the question a destructive one asks first and what an agent can ask for are one
-/// thing.
+/// switching user, sleeping, restarting or shutting down — as rows under the control that opened
+/// it: the quick settings' Power button, else the bar's trailing end for one a key or an agent
+/// opened. The session says what it offers and each row is its own action (`desktop:power-menu`),
+/// so what a press does, the question a destructive one asks first and what an agent can ask for
+/// are one thing.
 view power_sheet() {
     let m = device.power_menu
     if m.open {

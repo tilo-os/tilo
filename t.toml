@@ -3912,6 +3912,18 @@ outputs = ["/target/shell-ui-shots/**"]
 timeout_secs = 3600
 default = false
 
+# Pictures of the shell's bar menus in both appearances: the workspace menu under its chip, and
+# the power menu under the Power button the bar's charge leads to (crates/desktop/session/tests/
+# shell.rs). Only when named.
+[[check]]
+name = "shell-menus-shots"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "rm -rf /target/shell-menus-shots\nTL_SHELL_SHOTS=/target/shell-menus-shots bash tools/test-env.sh cargo test --locked -p tilo-session --test it -- shell::bar_menus::\n"
+requires = ["arch=x86_64"]
+outputs = ["/target/shell-menus-shots/**"]
+timeout_secs = 3600
+default = false
+
 # Pictures of the bar a person sees between two machines
 # (crates/desktop/session/tests/people_between_devices.rs): the arrival notice, the wave notice and
 # a follower's face on their bar, in the workspace's dark theme and in the light one. Those tests

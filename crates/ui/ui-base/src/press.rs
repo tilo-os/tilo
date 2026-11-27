@@ -73,6 +73,19 @@ fn area_of(rect: crate::kurbo::Rect) -> tilo_actions::remote::asked::PressRect {
     }
 }
 
+/// The rect of the control the press this thread's window is handling answered, when the window
+/// noted one: the button, row or key a panel the press opened stands beside.
+#[must_use]
+pub fn control() -> Option<crate::kurbo::Rect> {
+    let at = tilo_actions::remote::press_points::of(current()?)?;
+    Some(crate::kurbo::Rect::new(
+        f64::from(at.x),
+        f64::from(at.y),
+        f64::from(at.x.saturating_add(at.w)),
+        f64::from(at.y.saturating_add(at.h)),
+    ))
+}
+
 /// Forget the newest input, so a test's press does not outlive it on a reused thread.
 pub fn forget() {
     NEWEST.with(|newest| newest.set(None));

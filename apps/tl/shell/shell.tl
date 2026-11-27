@@ -189,8 +189,9 @@ template view band(content: View) {
         // The About sheet stands over the windows, a question the person asked.
         about_sheet()
     } else if device.overlays.here == "power" {
-        // The power menu hangs under the bar's trailing end, over the windows the
-        // person was working in.
+        // The power menu hangs under the control that opened it — the quick settings'
+        // Power button, or the bar's trailing end for one a key or an agent opened — over
+        // the windows the person was working in.
         power_sheet()
     } else if device.overlays.here == "peek" {
         // The keys a held Super reaches stand over the windows. The shell's own work

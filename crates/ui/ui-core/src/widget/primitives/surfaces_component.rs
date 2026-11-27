@@ -731,6 +731,10 @@ pub struct DeclaredPopover {
     at: Option<Point>,
     /// The control it stands beside, from where it is declared ([`PopoverProps::anchor`]).
     anchor: Option<Rect>,
+    /// The control the press that opened it answered, in the window's own coordinates, when the
+    /// window noted one ([`tilo_ui_base::press::control`]): a menu a view declares with no anchor
+    /// stands beside the button that opened it.
+    opened_by: Option<Rect>,
     /// The control's place in the window, as the panel was last placed beside it.
     placed: Option<Rect>,
 }
@@ -766,11 +770,19 @@ impl DeclaredPopover {
             let close = props.dismiss.clone();
             popover = popover.on_dismiss(move || close.fire(None));
         }
+        let at = point_of(props.at.as_deref());
+        let anchor = rect_of(props.anchor.as_deref());
+        // A popover that opens as it is declared, with no control of its own named, stands beside
+        // the control the person pressed to open it.
+        let opened_by = (props.open && anchor.is_none() && at.is_none())
+            .then(tilo_ui_base::press::control)
+            .flatten();
         Self {
             popover,
             rect: Rect::ZERO,
-            at: point_of(props.at.as_deref()),
-            anchor: rect_of(props.anchor.as_deref()),
+            at,
+            anchor,
+            opened_by,
             placed: None,
         }
     }
@@ -817,15 +829,30 @@ impl Widget for DeclaredPopover {
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
-        if let Some(anchor) = self.anchor {
-            // Declared beside a control of where it stands: that control's rect in the window.
-            let placed = anchor + self.rect.origin().to_vec2();
+        // What the panel hangs beside: the control the view named, else the control the press
+        // that opened it answered, else — for a popover that names neither — the place the view
+        // declared it, which is where the view puts it under the button it belongs to. A panel
+        // that stands beside nothing would open at the window's corner.
+        let beside = self
+            .anchor
+            .map(|anchor| anchor + self.rect.origin().to_vec2())
+            .or(self.opened_by)
+            .or_else(|| {
+                let named_point = self.at.is_some();
+                (self.popover.is_open() && !named_point).then_some(Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x0,
+                    self.rect.y0,
+                ))
+            });
+        if let Some(beside) = beside {
             self.popover.set_aim(None);
             // Only when the control moved: a panel placed at the same rect each layout would
             // repaint every frame.
-            if self.placed != Some(placed) {
-                self.popover.set_anchor(placed);
-                self.placed = Some(placed);
+            if self.placed != Some(beside) {
+                self.popover.set_anchor(beside);
+                self.placed = Some(beside);
             }
         } else {
             self.placed = None;
@@ -933,6 +960,17 @@ impl Described for DeclaredPopover {
         let anchor = rect_of(anchor.as_deref());
         if self.anchor != anchor {
             self.anchor = anchor;
+            self.placed = None;
+        }
+        // Opening now, naming no control of its own: it stands beside the control the person
+        // pressed to open it. A popover that closes forgets that control, so the next opening
+        // stands where its own press or its view puts it.
+        let was_open = self.popover.is_open();
+        if open && !was_open && self.anchor.is_none() && self.at.is_none() {
+            self.opened_by = tilo_ui_base::press::control();
+            self.placed = None;
+        } else if !open {
+            self.opened_by = None;
             self.placed = None;
         }
         let popover = &mut self.popover;
@@ -1209,5 +1247,47 @@ mod tests {
             !popover.popover().is_open(),
             "a popover the host closed shut"
         );
+    }
+    /// A popover a view declares with no anchor and no point of its own stands beside the control
+    /// the press that opened it answered: below it, or above it where the window has no room
+    /// there, inside the window — never at its corner.
+    #[test]
+    fn a_declared_popover_opens_under_the_control_that_opened_it() {
+        use tilo_ui_base::press;
+
+        /// The panel a popover opened by a press on `control` paints, in an 800 by 600 window.
+        fn panel_under(control: Rect) -> Rect {
+            const PRESS: u32 = 73;
+            press::note(PRESS);
+            press::note_control(control);
+            let mut open = DeclaredPopover::new(PopoverProps {
+                label: Some("Power".into()),
+                open: true,
+                ..PopoverProps::default()
+            });
+            open.popover()
+                .set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            crate::testing::lay_out(&mut open, 800.0, 600.0).expect("the popover lays out");
+            let panel = open.popover().rect();
+            press::forget();
+            panel
+        }
+
+        // A control under the window's bar: the panel opens below it, in its column.
+        let panel = panel_under(Rect::new(600.0, 8.0, 660.0, 40.0));
+        assert!(panel.y0 >= 40.0, "below the control it answered: {panel:?}");
+        assert!(panel.y0 < 60.0, "just below it: {panel:?}");
+        assert!(
+            panel.x0 >= 600.0 && panel.x1 <= 800.0,
+            "in the control's column, inside the window: {panel:?}"
+        );
+
+        // A control at the window's foot: no room below, so the panel opens above it.
+        let panel = panel_under(Rect::new(600.0, 540.0, 660.0, 596.0));
+        assert!(
+            panel.y1 <= 540.0,
+            "above the control, whose room below cannot hold it: {panel:?}"
+        );
+        assert!(panel.y0 >= 0.0, "and inside the window: {panel:?}");
     }
 }
