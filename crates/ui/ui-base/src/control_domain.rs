@@ -95,7 +95,10 @@ pub enum ControlOwner {
     Component(crate::widget::component_walk::Binding),
 }
 impl ControlOwner {
-    fn origin(&self, invocation: &ControlInvocation) -> PendingControlOrigin {
+    fn origin(
+        &self,
+        #[cfg(feature = "model")] invocation: &ControlInvocation,
+    ) -> PendingControlOrigin {
         match self {
             Self::Outer(root_lifetime) => PendingControlOrigin::Outer {
                 root_lifetime: *root_lifetime,
@@ -403,7 +406,10 @@ impl ControlDomain {
                             producer.borrow_mut().pending.drain(..)
                         {
                             #[cfg_attr(not(feature = "model"), allow(unused_mut))]
-                            let mut origin = owner.origin(&invocation);
+                            let mut origin = owner.origin(
+                                #[cfg(feature = "model")]
+                                &invocation,
+                            );
                             #[cfg(feature = "model")]
                             if let PendingControlOrigin::Component(target) = &mut origin {
                                 target.input = physical_text;
