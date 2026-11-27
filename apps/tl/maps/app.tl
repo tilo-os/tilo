@@ -319,28 +319,37 @@ action take_in(a: Atlas, places: List<Place>) (icon: .map_pin, label: "Take in p
     }
 }
 
-/// Takes the places another app or an agent found into the map.
-action accept_places(a: Atlas, places: List<Place>) (
+/// Takes the places another app or an agent found into the map. `places` carries them as JSON:
+/// what a caller elsewhere has never stored here is data, not references to this map's records.
+action accept_places(a: Atlas, places: Text) (
     icon: .map_pin,
     label: "Accept places",
     did: "took in places a search found",
 ) {
-    for one in places {
-        if let known = a.places.find(p -> p.key == one.key and one.key != "") {
-            known.name = one.name
-            known.address = one.address
-            known.category = one.category
-            known.latitude = one.latitude
-            known.longitude = one.longitude
-            known.phone = one.phone
-            known.website = one.website
-            // A place the person kept is still found by a search that brings it: it stands in
-            // the results and stays theirs.
-            known.found = true
-        } else {
-            // What a search or another app found is the search's, until the person keeps it.
-            one.found = true
-            a.places.insert(one)
+    match json.decode<List<Place>>(places) {
+        .ok(handed) => {
+            for one in handed {
+                if let known = a.places.find(p -> p.key == one.key and one.key != "") {
+                    known.name = one.name
+                    known.address = one.address
+                    known.category = one.category
+                    known.latitude = one.latitude
+                    known.longitude = one.longitude
+                    known.phone = one.phone
+                    known.website = one.website
+                    // A place the person kept is still found by a search that brings it: it stands
+                    // in the results and stays theirs.
+                    known.found = true
+                } else {
+                    // What a search or another app found is the search's, until the person keeps
+                    // it: a place it handed over as kept stays kept.
+                    one.found = true
+                    a.places.insert(one)
+                }
+            }
+        }
+        .err(why) => {
+            a.status = "The places could not be read: {why}"
         }
     }
 }
@@ -1213,7 +1222,10 @@ action search(a: Atlas, query: Text) uses web, time (
         a.status = found.why
         return
     }
-    accept_places(a, ranked_places(found.found, words, a.centre_latitude, a.centre_longitude))
+    accept_places(
+        a,
+        json.encode(ranked_places(found.found, words, a.centre_latitude, a.centre_longitude)),
+    )
     for old in a.recents.filter(r -> r.query.lower() == words.lower()) {
         a.recents.remove(old)
     }
@@ -1992,7 +2004,9 @@ action open_link(a: Atlas, link: Text) -> host.Resource uses web, time (
             } else {
                 accept_places(
                     a,
-                    ranked_places(found.found, words, a.centre_latitude, a.centre_longitude),
+                    json.encode(
+                        ranked_places(found.found, words, a.centre_latitude, a.centre_longitude),
+                    ),
                 )
                 for old in a.recents.filter(r -> r.query.lower() == words.lower()) {
                     a.recents.remove(old)

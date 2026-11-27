@@ -385,6 +385,40 @@ mod cases {
         assert!(m.saved().is_empty());
     }
 
+    phase a_place_another_app_hands_over_is_shown_and_kept_as_it_sent_it;
+    {
+        let m = Maps::new();
+        // Places another app or an agent found: data it has never stored in this map.
+        let handed = r#"[{"name":"LX Factory","key":"pt-3","category":"shop",
+            "latitude":38.7033,"longitude":-9.1789,"saved":true}]"#;
+        m.call(
+            "accept_places",
+            vec![Value::resource(&m.root), Value::text(handed)],
+        );
+        let places = m.places();
+        assert_eq!(places.len(), 1, "the place landed in the map");
+        assert!(
+            m.flag(&places[0], "found"),
+            "a place handed over stands in the results"
+        );
+        assert!(
+            m.flag(&places[0], "saved"),
+            "a place handed over as kept is kept"
+        );
+        // The window opens on the results, with no search typed: what was handed over shows
+        // there, because it is what was found.
+        let mut window = m.window();
+        window.poll_patches().unwrap();
+        let rows: Vec<String> = of_kind(window.tree(), "ui.ListRow")
+            .into_iter()
+            .map(|row| props_text(row, "title"))
+            .collect();
+        assert!(
+            rows.iter().any(|title| title == "LX Factory"),
+            "the results list what was handed over: {rows:?}"
+        );
+    }
+
     phase a_found_place_keeps_its_name_and_position_across_searches;
     {
         let m = Maps::new();
