@@ -632,6 +632,7 @@ view reactions(n: other.Note) {
                     {"id": "Ask.words", "name": "words", "type": "Text"},
                     {"id": "Ask.status", "name": "status", "type": "enum Status"},
                     {"id": "Ask.person", "name": "person", "type": "Option<Actor>"},
+                    {"id": "Ask.output", "name": "output", "type": "Option<json.Value>"},
                 ]},
             ],
             "enums": [
@@ -695,7 +696,9 @@ view asking() {
                 &all,
                 &listing(&json!([
                     {"id": "a1", "words": "Send the report?", "status": "waiting", "person": "me"},
-                    {"id": "a2", "words": "Book the room?", "status": "running", "person": "me"},
+                    // What an action answered is any JSON, which the record carries as it is.
+                    {"id": "a2", "words": "Book the room?", "status": "running", "person": "me",
+                     "output": {"room": "B2", "seats": [4, 6]}},
                     {"id": "a3", "words": "Pay the invoice?", "status": "waiting", "person": "you"},
                     {"id": "a4", "words": "Read the folder", "status": "running"},
                 ])),
@@ -725,6 +728,23 @@ view asking() {
             // Each listed record is the app's own, by its id: what answering it names.
             let ask = ResourceRef::parse_id("a5", "tilo.listed#Ask").expect("an id");
             assert_eq!(rt.read(&ask, "words").unwrap(), Value::text("Delete the draft?"));
+            let answered = ResourceRef::parse_id("a1", "tilo.listed#Ask").expect("an id");
+            rt.set_reading(
+                &all,
+                &listing(&json!([
+                    {"id": "a1", "words": "Send the report?", "status": "running", "person": "me",
+                     "output": {"sent": true}},
+                    {"id": "a5", "words": "Delete the draft?", "status": "waiting", "person": "me"},
+                ])),
+            )
+            .expect("a listing");
+            opened.poll_patches().unwrap();
+            assert_eq!(drawn(&opened), ["Delete the draft?"], "{}", dump(opened.tree()));
+            assert_eq!(
+                rt.read(&answered, "output").unwrap(),
+                Value::Opt(Some(Box::new(Value::Json(Box::new(json!({"sent": true})))))),
+                "a record's JSON reads as the JSON its reading holds"
+            );
         }
     }
 

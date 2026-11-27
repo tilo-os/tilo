@@ -1211,12 +1211,13 @@ impl Decoder<'_> {
                     .ok_or_else(|| format!("the bytes (`{hash}`) are not on this device")),
             }),
             Ty::Map(inner) => self.map(json, inner),
+            // Any JSON, as the reading holds it: what an invocation's action answered.
+            Ty::Json => Ok(Value::Json(Box::new(json.clone()))),
             Ty::Action
             | Ty::View
             | Ty::Choice(_)
             | Ty::Sort(_)
             | Ty::Response
-            | Ty::Json
             | Ty::File
             | Ty::Error => Err(format!(
                 "a value of type `{}` is not read from another app's reading",
