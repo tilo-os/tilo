@@ -591,9 +591,12 @@ mod tests {
             );
         }
         wells.note_unmapped("place");
-        assert!(
-            painted(&mut well) > 0,
-            "a window that goes shows the skeleton again"
-        );
+        {
+            let _settled = tilo_ui_base::motion::testing::settled();
+            assert!(
+                painted(&mut well) > 0,
+                "a window that goes shows the skeleton again"
+            );
+        }
     }
 }

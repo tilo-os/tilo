@@ -1402,9 +1402,13 @@ mod tests {
         assert!(!windows(&tree, &handle)[0].busy);
 
         // Its app asked for the person: the window behind the one they look at wears it.
-        let behind: u64 = read[1].key.parse().expect("a tab id");
+        let behind_at = read
+            .iter()
+            .position(|window| !window.focused)
+            .expect("a window behind the one in front");
+        let behind: u64 = read[behind_at].key.parse().expect("a tab id");
         assert!(handle.ask_attention(behind));
-        assert!(windows(&tree, &handle)[1].attention);
+        assert!(windows(&tree, &handle)[behind_at].attention);
 
         // Someone else is at it now.
         handle.set_pointer_faces(std::collections::HashMap::from([(
@@ -1412,9 +1416,9 @@ mod tests {
             vec![("Bo".to_owned(), "#3366cc".to_owned())],
         )]));
         let read = windows(&tree, &handle);
-        assert_eq!(read[1].presence.len(), 1, "one person is one face");
-        assert_eq!(read[1].presence[0].name, "Bo");
-        assert_eq!(read[1].presence[0].colour, "#3366cc");
+        assert_eq!(read[behind_at].presence.len(), 1, "one person is one face");
+        assert_eq!(read[behind_at].presence[0].name, "Bo");
+        assert_eq!(read[behind_at].presence[0].colour, "#3366cc");
 
         // Its document has changes it has not saved, as its bar declares.
         handle.declare_bar(
@@ -1426,7 +1430,7 @@ mod tests {
             }),
         );
         handle.follow_bars();
-        assert!(windows(&tree, &handle)[1].modified);
+        assert!(windows(&tree, &handle)[behind_at].modified);
     }
 
     fn surfaces() -> Surfaces {
