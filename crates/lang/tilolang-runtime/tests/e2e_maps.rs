@@ -1450,6 +1450,36 @@ mod cases {
         assert_eq!(ask["most_zoom"], 15);
     }
 
+    phase the_attribution_sheet_says_whose_data_the_map_is;
+    {
+        let m = Maps::new();
+        let mut window = m.window();
+        window.poll_patches().unwrap();
+        let attribution = of_kind(window.tree(), "ui.Button")
+            .into_iter()
+            .find(|node| props_text(node, "label") == "Attribution")
+            .expect("the window offers to say whose data its imagery is")
+            .key
+            .clone();
+        window.fire(&attribution, "press").expect("the sheet opens");
+        window.poll_patches().unwrap();
+        let dialogs = of_kind(window.tree(), "ui.ModalDialog");
+        assert_eq!(dialogs.len(), 1, "the attribution sheet stands open");
+        assert_eq!(
+            dialogs[0].props.get("open"),
+            Some(&Value::Bool(true)),
+            "the sheet is open: {:?}",
+            dialogs[0].props.get("open")
+        );
+        assert_eq!(props_text(dialogs[0], "title"), "Attribution");
+        assert!(
+            of_kind(window.tree(), "ui.Text").iter().any(|node| {
+                props_text(node, "value") == "Map data and map tiles © OpenStreetMap contributors."
+            }),
+            "the sheet says whose data the map is"
+        );
+    }
+
     phase the_window_shows_who_is_at_a_place;
     {
         let m = Maps::new();
