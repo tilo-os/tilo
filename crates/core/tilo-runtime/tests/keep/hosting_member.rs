@@ -901,32 +901,119 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     hosting_device.stop().await;
 }
 
-/// A workspace moves from one server to another: the new one keeps it
-/// first, then the old one lets it go, and the workspace's member reaches it
-/// at the new one.
+/// A server of the person that took part in their workspace as a member first, as a server
+/// signed in with a ticket does, is handed the workspace later: it holds the workspace from then
+/// on, served over the workspace's link, so the device handing it over hears that it keeps every
+/// change, what a member writes before and after reaches the server's own copy, and neither
+/// device keeps replaying what its store holds. A workspace moves from one server to another: the
+/// new one keeps it first, then the old one lets it go, and the workspace's member reaches it at
+/// the new one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::too_many_lines,
-    reason = "one scenario whose servers and links live until it ends"
+    reason = "one scenario: the hand-over, the move and their servers stay together"
 )]
-async fn a_workspace_moves_from_one_server_to_another() {
+async fn a_handed_workspace_is_held_and_moved_between_servers() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
     let site = TestUser::fresh("Site");
     let made_on = serve_on(&alice, &laptop, WorkSetting::none()).await;
+    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let workspaces = made_on.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
+    // Alice's phone writes through the laptop, sealed with the keys her devices share.
     workspaces
         .enter(&workspace.workspace, (&phone.cert, &phone.sk))
         .await
         .unwrap();
-    // Two servers of the site, each letting Alice in.
+    let on_laptop = member_at(&made_on, &phone, workspace.workspace_id).await;
+    let before = write_sealed_at(
+        &on_laptop,
+        &made_on,
+        workspace.workspace_id,
+        "note:1",
+        "before the hand-over",
+    )
+    .await;
+    host_holds(&made_on, workspace.workspace_id, (APP, "note:1"), &before).await;
+
+    // The server takes part in the workspace as one of Alice's devices: a member copy synced
+    // with the laptop.
+    workspaces
+        .enter(&workspace.workspace, (&nas.cert, &nas.sk))
+        .await
+        .unwrap();
+    let at_server = server.host.workspaces();
+    at_server.set_member_device(std::sync::Arc::new(
+        tilo_workspace_service::workspaces::MemberDevice {
+            cert: nas.cert.clone(),
+            signer: std::sync::Arc::new(nas.sk.clone()),
+        },
+    ));
+    let laptop_hint = workspaces
+        .hosts(&workspace.workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|hint| hint.host == laptop.cert)
+        .expect("the laptop names its own address");
+    tilo_test_env::within(
+        "the server to hold the workspace as a member copy",
+        at_server.hold_as_member(workspace.workspace_id, &laptop_hint),
+    )
+    .await
+    .expect("the laptop admits the server as Alice's device");
+    assert!(at_server.is_member(&workspace.workspace).await.unwrap());
+
+    // Handed the workspace, the server holds it: the hand-over answers only once the server
+    // said it keeps every change the laptop keeps.
+    let hint = tilo_test_env::within(
+        "the laptop to hand the server the workspace",
+        workspaces.attach_server(
+            &workspace.workspace,
+            nas.device_pubkey(),
+            server.host.node_addr(),
+            CopyRole::KeyHolder,
+        ),
+    )
+    .await
+    .expect("the server that was a member holds the workspace");
+    assert!(
+        workspaces
+            .hosts(&workspace.workspace)
+            .await
+            .unwrap()
+            .contains(&hint),
+        "the workspace names the server among its holders"
+    );
+    assert!(
+        !at_server.is_member(&workspace.workspace).await.unwrap(),
+        "the server holds the workspace itself, not as a member copy"
+    );
+    // The server carries the laptop's sealed writes from before the hand-over and after it.
+    host_holds(&server, workspace.workspace_id, (APP, "note:1"), &before).await;
+    let after = write_sealed_at(
+        &on_laptop,
+        &made_on,
+        workspace.workspace_id,
+        "note:2",
+        "after the hand-over",
+    )
+    .await;
+    host_holds(&server, workspace.workspace_id, (APP, "note:2"), &after).await;
+    // Neither device replays what its store keeps for the workspace over and over: the
+    // changes the server made as a member are the workspace's own once, and no replay of
+    // them arms another.
+    still(|| (workspaces.replays(), at_server.replays())).await;
+
+    // Two servers of the site, each letting Alice in, and the workspace moves between them.
     let mut kept = Vec::new();
     for name in ["old", "new"] {
         let device = site.enrol(name, DeviceCapabilities::member());
-        let server = serve_on(&site, &device, WorkSetting::own_person()).await;
-        let at_site = server.host.workspaces();
+        let site_server = serve_on(&site, &device, WorkSetting::own_person()).await;
+        let at_site = site_server.host.workspaces();
         assert!(
             at_site
                 .offer_own_workspaces(tilo_workspace_service::workspaces::OwnWorkspaceOffer::free(
@@ -940,7 +1027,7 @@ async fn a_workspace_moves_from_one_server_to_another() {
             .declare_owner(&home.workspace, alice.user_pk, None)
             .await
             .unwrap();
-        kept.push((device, server));
+        kept.push((device, site_server));
     }
     let mut kept = kept.into_iter();
     let (old, old_server) = kept.next().unwrap();
@@ -954,7 +1041,6 @@ async fn a_workspace_moves_from_one_server_to_another() {
         )
         .await
         .unwrap();
-
     let confirmed = workspaces
         .move_holder(
             &workspace.workspace,
@@ -1028,121 +1114,11 @@ async fn a_workspace_moves_from_one_server_to_another() {
         "{refused:?}"
     );
 
-    drop(at_new);
+    drop((at_new, on_laptop));
     old_server.stop().await;
     new_server.stop().await;
-    made_on.stop().await;
-}
-
-/// A server of the person that took part in their workspace as a member first, as a server
-/// signed in with a ticket does, is handed the workspace later: it holds the workspace from then
-/// on, served over the workspace's link, so the device handing it over hears that it keeps every
-/// change, what a member writes before and after reaches the server's own copy, and neither device
-/// keeps replaying what its store holds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_server_that_joined_as_a_member_holds_the_workspace_it_is_handed() {
-    let alice = TestUser::fresh("Alice");
-    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
-    let phone = alice.enrol("phone", DeviceCapabilities::primary());
-    let nas = alice.enrol("nas", DeviceCapabilities::member());
-    let hosting_device = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
-    let workspaces = hosting_device.host.workspaces();
-    let workspace = workspaces.create("Notes").await.unwrap();
-    // Alice's phone writes through the laptop, sealed with the keys her devices share.
-    workspaces
-        .enter(&workspace.workspace, (&phone.cert, &phone.sk))
-        .await
-        .unwrap();
-    let on_laptop = member_at(&hosting_device, &phone, workspace.workspace_id).await;
-    let before = write_sealed_at(
-        &on_laptop,
-        &hosting_device,
-        workspace.workspace_id,
-        "note:1",
-        "before the hand-over",
-    )
-    .await;
-    host_holds(
-        &hosting_device,
-        workspace.workspace_id,
-        (APP, "note:1"),
-        &before,
-    )
-    .await;
-
-    // The server takes part in the workspace as one of Alice's devices: a member copy synced
-    // with the laptop.
-    workspaces
-        .enter(&workspace.workspace, (&nas.cert, &nas.sk))
-        .await
-        .unwrap();
-    let at_server = server.host.workspaces();
-    at_server.set_member_device(std::sync::Arc::new(
-        tilo_workspace_service::workspaces::MemberDevice {
-            cert: nas.cert.clone(),
-            signer: std::sync::Arc::new(nas.sk.clone()),
-        },
-    ));
-    let laptop_hint = workspaces
-        .hosts(&workspace.workspace)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|hint| hint.host == laptop.cert)
-        .expect("the laptop names its own address");
-    tilo_test_env::within(
-        "the server to hold the workspace as a member copy",
-        at_server.hold_as_member(workspace.workspace_id, &laptop_hint),
-    )
-    .await
-    .expect("the laptop admits the server as Alice's device");
-    assert!(at_server.is_member(&workspace.workspace).await.unwrap());
-
-    // Handed the workspace, the server holds it: the hand-over answers only once the server
-    // said it keeps every change the laptop keeps.
-    let hint = tilo_test_env::within(
-        "the laptop to hand the server the workspace",
-        workspaces.attach_server(
-            &workspace.workspace,
-            nas.device_pubkey(),
-            server.host.node_addr(),
-            CopyRole::KeyHolder,
-        ),
-    )
-    .await
-    .expect("the server that was a member holds the workspace");
-    assert!(
-        workspaces
-            .hosts(&workspace.workspace)
-            .await
-            .unwrap()
-            .contains(&hint),
-        "the workspace names the server among its holders"
-    );
-    assert!(
-        !at_server.is_member(&workspace.workspace).await.unwrap(),
-        "the server holds the workspace itself, not as a member copy"
-    );
-    // The server carries the laptop's sealed writes from before the hand-over and after it.
-    host_holds(&server, workspace.workspace_id, (APP, "note:1"), &before).await;
-    let after = write_sealed_at(
-        &on_laptop,
-        &hosting_device,
-        workspace.workspace_id,
-        "note:2",
-        "after the hand-over",
-    )
-    .await;
-    host_holds(&server, workspace.workspace_id, (APP, "note:2"), &after).await;
-    // Neither device replays what its store keeps for the workspace over and over: the
-    // changes the server made as a member are the workspace's own once, and no replay of
-    // them arms another.
-    still(|| (workspaces.replays(), at_server.replays())).await;
-
-    drop(on_laptop);
     server.stop().await;
-    hosting_device.stop().await;
+    made_on.stop().await;
 }
 
 /// A device that is handed a workspace keeps its files under the
