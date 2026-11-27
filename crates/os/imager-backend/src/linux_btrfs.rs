@@ -161,9 +161,11 @@ impl Held {
             .find(|p| p.number == number)
             .ok_or("Btrfs partition absent from selected GPT")?;
         let argument = format!("/proc/{}/fd/{}", std::process::id(), root.as_raw_fd());
-        let (fsid, bytes) = show(&run(Command::new("/usr/bin/btrfs")
+        let mut btrfs_show = Command::new("/usr/bin/btrfs");
+        btrfs_show
             .args(["filesystem", "show", "--raw"])
-            .arg(&argument))?)?;
+            .arg(&argument);
+        let (fsid, bytes) = show(&run(btrfs_show)?)?;
         if bytes > partition_bytes(partition, disk.sector_bytes)? {
             return Err("Btrfs filesystem and GPT original sizes differ".into());
         }
@@ -269,9 +271,11 @@ impl Held {
             return Err("Btrfs retained partition moved".into());
         }
         let argument = self.argument();
-        let (fsid, filesystem_bytes) = show(&run(Command::new("/usr/bin/btrfs")
+        let mut btrfs_show = Command::new("/usr/bin/btrfs");
+        btrfs_show
             .args(["filesystem", "show", "--raw"])
-            .arg(&argument))?)?;
+            .arg(&argument);
+        let (fsid, filesystem_bytes) = show(&run(btrfs_show)?)?;
         if fsid != self.fsid {
             return Err("Btrfs filesystem identity changed".into());
         }
@@ -313,10 +317,12 @@ impl Held {
         if exclusive.trim() != "none" {
             return Err("Btrfs exclusive operation requires completion".into());
         }
-        let scrub = run(Command::new("/usr/bin/btrfs")
+        let mut scrub_status = Command::new("/usr/bin/btrfs");
+        scrub_status
             .env("LC_ALL", "C")
             .args(["scrub", "status"])
-            .arg(argument))?;
+            .arg(argument);
+        let scrub = run(scrub_status)?;
         if !scrub.lines().any(|line| {
             line.trim() == "no stats available"
                 || line.split_whitespace().collect::<Vec<_>>() == ["Status:", "finished"]
@@ -324,9 +330,11 @@ impl Held {
         }) {
             return Err("Btrfs scrub must finish before resize".into());
         }
-        let minimum = run(Command::new("/usr/bin/btrfs")
+        let mut min_dev_size = Command::new("/usr/bin/btrfs");
+        min_dev_size
             .args(["inspect-internal", "min-dev-size", "--id", "1"])
-            .arg(argument))?;
+            .arg(argument);
+        let minimum = run(min_dev_size)?;
         let minimum_fields: Vec<_> = minimum.split_whitespace().collect();
         if minimum_fields.get(1) != Some(&"bytes") {
             return Err("Btrfs minimum size format unavailable".into());
@@ -356,13 +364,15 @@ impl Held {
             return Err("Btrfs filesystem resize outside reviewed bounds".into());
         }
         let argument = self.argument();
-        run(Command::new("/usr/bin/btrfs")
+        let mut resize = Command::new("/usr/bin/btrfs");
+        resize
             .args(["filesystem", "resize"])
             .arg(format!("1:{bytes}"))
-            .arg(&argument))?;
-        run(Command::new("/usr/bin/btrfs")
-            .args(["filesystem", "sync"])
-            .arg(&argument))?;
+            .arg(&argument);
+        run(resize)?;
+        let mut sync = Command::new("/usr/bin/btrfs");
+        sync.args(["filesystem", "sync"]).arg(&argument);
+        run(sync)?;
         if self.facts(platform)?.filesystem_bytes != bytes {
             return Err("Btrfs filesystem resize readback failed".into());
         }
@@ -382,10 +392,9 @@ impl Held {
         }
         let before = platform.system_disk()?;
         let disk_argument = self.disk_argument();
-        let mut exact_before: serde_json::Value =
-            serde_json::from_str(&run(Command::new("sfdisk")
-                .arg("--json")
-                .arg(&disk_argument))?)
+        let mut read_table = Command::new("sfdisk");
+        read_table.arg("--json").arg(&disk_argument);
+        let mut exact_before: serde_json::Value = serde_json::from_str(&run(read_table)?)
             .map_err(|_| "Btrfs complete GPT readback invalid")?;
         let selected = before
             .partitions
@@ -434,17 +443,19 @@ impl Held {
             .ok_or("Btrfs GPT entry invalid")?
             .insert("size".into(), serde_json::Value::from(sectors));
         // --part-size changes only size; every other field is read back below.
-        run(Command::new("sfdisk")
+        let mut resize_partition = Command::new("sfdisk");
+        resize_partition
             .args(["--no-reread", "--no-tell-kernel", "--part-size"])
             .arg(&disk_argument)
             .arg(&number)
-            .arg(sectors.to_string()))?;
+            .arg(sectors.to_string());
+        run(resize_partition)?;
         self.disk.sync_all().map_err(|_| "Btrfs GPT sync failed")?;
         self.check_disk()?;
-        let exact_after: serde_json::Value = serde_json::from_str(&run(Command::new("sfdisk")
-            .arg("--json")
-            .arg(&disk_argument))?)
-        .map_err(|_| "Btrfs complete GPT readback invalid")?;
+        let mut read_back = Command::new("sfdisk");
+        read_back.arg("--json").arg(&disk_argument);
+        let exact_after: serde_json::Value = serde_json::from_str(&run(read_back)?)
+            .map_err(|_| "Btrfs complete GPT readback invalid")?;
         if exact_after != exact_before {
             return Err("Btrfs GPT resize changed unreviewed attributes or names".into());
         }
@@ -459,10 +470,12 @@ impl Held {
         if after != expected {
             return Err("Btrfs GPT resize changed another reviewed field".into());
         }
-        run(Command::new("partx")
+        let mut update = Command::new("partx");
+        update
             .args(["--update", "--nr"])
             .arg(number)
-            .arg(&disk_argument))?;
+            .arg(&disk_argument);
+        run(update)?;
         let after = self.facts(platform)?;
         if after.size_bytes != bytes || after.kernel_partition_bytes != bytes {
             return Err("Btrfs GPT or kernel resize readback failed".into());

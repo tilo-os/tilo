@@ -45,15 +45,24 @@ impl Drop for LinuxPlatform {
     }
 }
 
-fn run(command: &mut Command) -> IoResult<String> {
-    let output = command
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("{}: {e}", command.get_program().display()))?;
+/// Partition tools answer in seconds; a Btrfs resize and sync on a large
+/// volume is the slowest. The ceiling stops one that never answers.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const COMMAND_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
+
+fn run(command: Command) -> IoResult<String> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let output = bounded_command::run_prepared_with_limits(
+        command,
+        None,
+        COMMAND_OUTPUT_LIMIT,
+        COMMAND_OUTPUT_LIMIT,
+        COMMAND_TIMEOUT,
+    )
+    .map_err(|e| format!("{program}: {e}"))?;
     if !output.status.success() {
         return Err(format!(
-            "{} failed: {}",
-            command.get_program().display(),
+            "{program} failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
@@ -87,10 +96,11 @@ pub fn resolve_system_disk() -> Result<PathBuf, Blocker> {
         let Some(name) = source_name(&source) else {
             continue;
         };
-        let json = run(Command::new("lsblk")
+        let mut lsblk = Command::new("lsblk");
+        lsblk
             .args(["-J", "-s", "-o", "NAME,TYPE"])
-            .arg(format!("/dev/{name}")))
-        .map_err(|_| Blocker::DiskUnsupported)?;
+            .arg(format!("/dev/{name}"));
+        let json = run(lsblk).map_err(|_| Blocker::DiskUnsupported)?;
         for disk in linux_parse::backing_disks(&json).map_err(|_| Blocker::DiskUnsupported)? {
             if !disks.contains(&disk) {
                 disks.push(disk);
@@ -133,17 +143,11 @@ fn mounted_backing_disks() -> Result<Vec<String>, String> {
 
 #[cfg(target_os = "linux")]
 fn backing_disks_of(node: &Path) -> Result<Vec<String>, String> {
-    let json = match Command::new("lsblk")
-        .args(["-J", "-s", "-o", "NAME,TYPE"])
-        .arg(node)
-        .stdin(Stdio::null())
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).into_owned()
-        }
-        // A device that vanished from this namespace backs no disk of ours.
-        _ => return Ok(Vec::new()),
+    let mut lsblk = Command::new("lsblk");
+    lsblk.args(["-J", "-s", "-o", "NAME,TYPE"]).arg(node);
+    // A device that vanished from this namespace backs no disk of ours.
+    let Ok(json) = run(lsblk) else {
+        return Ok(Vec::new());
     };
     match linux_parse::backing_disks(&json) {
         Ok(disks) => Ok(disks),
@@ -307,14 +311,16 @@ impl LinuxPlatform {
     }
 
     fn lsblk_disk(&self) -> IoResult<Disk> {
-        let json = run(Command::new("lsblk")
+        let mut lsblk = Command::new("lsblk");
+        lsblk
             .args([
                 "-J",
                 "-b",
                 "-o",
                 "NAME,PATH,TYPE,SIZE,LOG-SEC,RM,PTUUID,PTTYPE,PARTUUID,PARTTYPE,PARTN",
             ])
-            .arg(&self.disk))?;
+            .arg(&self.disk);
+        let json = run(lsblk)?;
         let l = linux_parse::lsblk_disk(&json)?;
         let disk = l.name.clone();
         linux_parse::disk_from_lsblk(&l, &|part| {
@@ -553,34 +559,18 @@ impl LinuxPlatform {
         } else {
             "rw,nosuid,nodev"
         };
-        let mounted = Command::new("mount")
-            .args(["-o", options])
-            .arg(&node)
-            .arg(&dir)
-            .output();
-        let mounted = match mounted {
-            Ok(output) if output.status.success() => Ok(()),
-            Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-            Err(error) => Err(error.to_string()),
-        };
-        if let Err(error) = mounted {
+        let mut mount = Command::new("mount");
+        mount.args(["-o", options]).arg(&node).arg(&dir);
+        if let Err(error) = run(mount) {
             let _ = std::fs::remove_dir(&dir);
             return Err(format!(
                 "the staged root cannot be mounted to place its ticket: {error}"
             ));
         }
         let outcome = body(&dir);
-        let unmounted = Command::new("umount")
-            .arg(&dir)
-            .output()
-            .map_err(|e| e.to_string())
-            .and_then(|output| {
-                output
-                    .status
-                    .success()
-                    .then_some(())
-                    .ok_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_owned())
-            });
+        let mut umount = Command::new("umount");
+        umount.arg(&dir);
+        let unmounted = run(umount).map(|_| ());
         let _ = std::fs::remove_dir(&dir);
         match (outcome, unmounted) {
             (Err(error), _) => Err(error),
@@ -594,7 +584,9 @@ impl Platform for LinuxPlatform {
     fn system_disk(&self) -> IoResult<Disk> {
         let size = self.size_bytes()?;
         let sector = self.logical_sector()?;
-        let mut disk = match run(Command::new("sfdisk").arg("--json").arg(&self.disk)) {
+        let mut sfdisk = Command::new("sfdisk");
+        sfdisk.arg("--json").arg(&self.disk);
+        let mut disk = match run(sfdisk) {
             Ok(json) => linux_parse::disk_from_sfdisk(&json, size, sector)?,
             Err(_) => self.lsblk_disk()?,
         };
@@ -689,16 +681,19 @@ impl Platform for LinuxPlatform {
             .iter()
             .find(|p| super::same_guid(&p.guid, &guid))
             .ok_or("the new partition did not appear in the table")?;
-        let _ = run(Command::new("partx").arg("-u").arg(&self.disk));
+        let mut rescan = Command::new("partx");
+        rescan.arg("-u").arg(&self.disk);
+        let _ = run(rescan);
         let deadline = tilo_clock::now()
             .checked_add(Duration::from_secs(10))
             .ok_or("partition wait deadline overflow")?;
         let mut added = false;
         while self.partition_node(&guid, p.number).is_err() {
             if !added {
-                let _ = run(Command::new("partx")
-                    .args(["-a", "--nr", &p.number.to_string()])
-                    .arg(&self.disk));
+                let mut add = Command::new("partx");
+                add.args(["-a", "--nr", &p.number.to_string()])
+                    .arg(&self.disk);
+                let _ = run(add);
                 added = true;
             }
             Self::settle();
@@ -726,13 +721,15 @@ impl Platform for LinuxPlatform {
                 .map_err(|e| format!("staging partition is in use; unmount it first ({e})"))?,
         );
         let number = p.number.to_string();
-        run(Command::new("sfdisk")
+        let mut remove = Command::new("sfdisk");
+        remove
             .args(["--no-reread", "--delete"])
             .arg(&self.disk)
-            .arg(&number))?;
-        let _ = run(Command::new("partx")
-            .args(["-d", "--nr", &number])
-            .arg(&self.disk));
+            .arg(&number);
+        run(remove)?;
+        let mut unmap = Command::new("partx");
+        unmap.args(["-d", "--nr", &number]).arg(&self.disk);
+        let _ = run(unmap);
         Self::settle();
         Ok(())
     }

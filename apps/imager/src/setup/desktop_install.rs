@@ -336,12 +336,9 @@ mod native {
         ffi::OsString,
         fs::OpenOptions,
         io::Read,
-        os::{
-            fd::AsRawFd,
-            unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-        },
+        os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
         path::Path,
-        process::{Command, Stdio},
+        process::Command,
         time::Duration,
     };
 
@@ -657,123 +654,94 @@ mod native {
         pub stderr: String,
     }
 
-    pub(super) fn run_command(
-        program: &str,
-        args: &[OsString],
-        read_only: bool,
-    ) -> Result<Output, String> {
-        run_command_with_capture_check(program, args, read_only, || Ok(()))
-    }
+    /// A read-only query answers within seconds; a transaction unpacks a
+    /// package and runs its scriptlets, so only a hung one meets its deadline.
+    const READ_ONLY_TIMEOUT: Duration = Duration::from_secs(15);
+    const TRANSACTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+    /// A transaction's diagnostics are kept whole enough to explain a failure;
+    /// past this the bounded runner stops one that would never end.
+    const TRANSACTION_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 
-    pub(super) fn run_command_with_capture_check(
-        program: &str,
-        args: &[OsString],
-        read_only: bool,
-        mut capture_check: impl FnMut() -> Result<(), String>,
-    ) -> Result<Output, String> {
-        let (mut stdout, stdout_writer) =
-            std::io::pipe().map_err(|_| "Cannot create native stdout capture.")?;
-        let (mut stderr, stderr_writer) =
-            std::io::pipe().map_err(|_| "Cannot create native stderr capture.")?;
-        for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
-            // SAFETY: both descriptors belong to live pipe readers held here.
-            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-            {
-                return Err("Cannot configure command output capture.".into());
-            }
-        }
-        let mut child = Command::new(program)
+    /// The fixed environment every native package tool runs in.
+    fn prepared(program: &str, args: &[OsString]) -> Command {
+        let mut command = Command::new(program);
+        command
             .args(args)
             .env_clear()
             .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
             .env("LC_ALL", "C")
             .env("HOME", "/root")
-            .env("DEBIAN_FRONTEND", "noninteractive")
-            .stdin(Stdio::null())
-            .stdout(stdout_writer)
-            .stderr(stderr_writer)
-            .spawn()
-            .map_err(|_| format!("Cannot execute {program}."))?;
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let mut overflow = false;
-        let mut capture_error = None;
-        let start = ui::time::now();
-        let capture = loop {
-            for result in [
-                capture_check(),
-                drain(&mut stdout, &mut out, &mut overflow),
-                drain(&mut stderr, &mut err, &mut overflow),
-            ] {
-                if let Err(error) = result {
-                    capture_error.get_or_insert(error);
-                }
-            }
-            if read_only && let Some(error) = capture_error.take() {
-                break Err(error);
-            }
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    for result in [
-                        drain(&mut stdout, &mut out, &mut overflow),
-                        drain(&mut stderr, &mut err, &mut overflow),
-                    ] {
-                        if let Err(error) = result {
-                            capture_error.get_or_insert(error);
-                        }
-                    }
-                    if let Some(error) = capture_error {
-                        break Err(error);
-                    }
-                    if read_only && overflow {
-                        break Err("Read-only command exceeded its output bound.".into());
-                    }
-                    break Ok(Output {
-                        code: status.code().unwrap_or(-1),
-                        stdout: String::from_utf8_lossy(&out).into_owned(),
-                        stderr: String::from_utf8_lossy(&err).into_owned(),
-                    });
-                }
-                Ok(None) => (),
-                Err(_) => {
-                    capture_error.get_or_insert_with(|| "Cannot track native command.".into());
-                }
-            }
-            if read_only && (start.elapsed() > Duration::from_secs(15) || overflow) {
-                break Err("Read-only command exceeded its time/output bound.".into());
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        if capture.is_err() {
-            if read_only {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
-        }
-        capture
+            .env("DEBIAN_FRONTEND", "noninteractive");
+        command
     }
 
-    fn drain(
-        reader: &mut impl Read,
-        output: &mut Vec<u8>,
-        overflow: &mut bool,
-    ) -> Result<(), String> {
-        let mut buffer = [0; 4096];
-        for _ in 0..64 {
-            match reader.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let retain = n.min(OUTPUT_LIMIT.saturating_sub(output.len()));
-                    output.extend_from_slice(buffer.get(..retain).ok_or("Invalid output length.")?);
-                    *overflow |= retain != n;
+    fn captured(output: bounded_command::Output) -> Output {
+        Output {
+            code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
+
+    pub(super) fn run_command(
+        program: &str,
+        args: &[OsString],
+        read_only: bool,
+    ) -> Result<Output, String> {
+        if read_only {
+            return bounded_command::run_prepared_with_limits(
+                prepared(program, args),
+                None,
+                OUTPUT_LIMIT,
+                OUTPUT_LIMIT,
+                READ_ONLY_TIMEOUT,
+            )
+            .map(captured)
+            .map_err(|error| match error {
+                bounded_command::Error::Timeout(_) => {
+                    format!("Read-only command timed out: {program}.")
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => (),
-                Err(_) => return Err("Cannot capture native command diagnostics.".into()),
+                bounded_command::Error::OutputTooLarge { .. } => {
+                    "Read-only command exceeded its output bound.".into()
+                }
+                _ => format!("Cannot execute {program}."),
+            });
+        }
+        run_command_with_capture_check(program, args, || Ok(()))
+    }
+
+    /// Run a native transaction, polling `capture_check` while it works so a
+    /// failure to follow it is never reported as success. That failure never
+    /// interrupts the transaction: its own exit is the outcome.
+    pub(super) fn run_command_with_capture_check(
+        program: &str,
+        args: &[OsString],
+        mut capture_check: impl FnMut() -> Result<(), String>,
+    ) -> Result<Output, String> {
+        let mut running = bounded_command::spawn_prepared(
+            prepared(program, args),
+            None,
+            TRANSACTION_OUTPUT_LIMIT,
+            TRANSACTION_TIMEOUT,
+        )
+        .map_err(|_| format!("Cannot execute {program}."))?;
+        let mut capture_error = None;
+        loop {
+            if let Err(error) = capture_check() {
+                capture_error.get_or_insert(error);
+            }
+            match running.try_wait() {
+                Some(Ok(output)) => {
+                    return capture_error.map_or_else(|| Ok(captured(output)), Err);
+                }
+                Some(Err(_)) => {
+                    return Err(capture_error.unwrap_or_else(|| {
+                        "Native command exceeded its time or output bound.".into()
+                    }));
+                }
+                None => std::thread::sleep(Duration::from_millis(10)),
             }
         }
-        Ok(())
     }
 
     pub(super) fn run_install_command(
@@ -1259,7 +1227,6 @@ mod tests {
                         "recording-transaction".into(),
                         marker.as_os_str().into(),
                     ],
-                    false,
                     || {
                         if std::mem::replace(&mut injected, true) {
                             Ok(())
