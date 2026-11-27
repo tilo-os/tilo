@@ -1,6 +1,6 @@
 # Maps (tilolang): saved places, and one place opened on the map. Map tiles and
 # routing need the network; the places are given to the app as an agent or
-# another app hands them over.
+# another app hands them over, and the places panel's Saved segment lists them.
 
 [[situation]]
 name = "saved-places"
@@ -8,6 +8,9 @@ title = "Saved places for a weekend in Lisbon"
 
 [[situation.steps]]
 invoke = { resource = "tl:so.tilo.maps:root-xlmztacf", action = "accept_places", args = { places = [{ name = "Mosteiro dos Jerónimos", key = "pt-1", category = "landmark", address = "Praça do Império 1400-206, Lisboa", latitude = 38.6979, longitude = -9.2068, saved = true }, { name = "Pastéis de Belém", key = "pt-2", category = "cafe", address = "Rua de Belém 84-92, 1300-085 Lisboa", latitude = 38.6975, longitude = -9.2032, saved = true }, { name = "LX Factory", key = "pt-3", category = "shop", address = "Rua Rodrigues de Faria 103, 1300-501 Lisboa", latitude = 38.7033, longitude = -9.1789, saved = true }, { name = "Miradouro da Senhora do Monte", key = "pt-4", category = "park", address = "Largo Monte, 1170-107 Lisboa", latitude = 38.7191, longitude = -9.1327, saved = true }, { name = "Museu Nacional do Azulejo", key = "pt-5", category = "museum", address = "Rua da Madre de Deus 4, 1900-312 Lisboa", latitude = 38.7247, longitude = -9.1137, saved = true }] } }
+
+[[situation.steps]]
+press = "Saved"
 
 [[situation]]
 name = "place-card"

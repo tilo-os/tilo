@@ -1,7 +1,7 @@
 # Feeds: a library of subscriptions from the app's own scenario, the unread
-# place, and an empty library. Fetching needs the network; the fixtures are the
-# articles the app stages. The reading face, size and paper are each reader's
-# own view state on an article's page, which a plan cannot set.
+# place, an article opened in the reader's own face, size and paper, and an
+# empty library. Fetching needs the network; the fixtures are the articles the
+# app stages. A list row pressed opens the article's page, as a person opens it.
 
 [[situation]]
 name = "subscriptions"
@@ -15,6 +15,24 @@ scenario = "a library of feeds"
 
 [[situation.steps]]
 perform = { target = "key:item:unread", action = "activate" }
+
+[[situation]]
+name = "article"
+title = "An article in a larger, sepia reader"
+scenario = "a library of feeds"
+workspace = true
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.feeds:root-u5mhrzrx", action = "begin_reading", bind = "reader" }
+
+[[situation.steps]]
+invoke = { resource = "{{reader.resources.0}}", action = "larger_text" }
+
+[[situation.steps]]
+invoke = { resource = "{{reader.resources.0}}", action = "set_paper", args = { paper = "sepia" } }
+
+[[situation.steps]]
+press = "A quiet morning in the city"
 
 [[situation]]
 name = "empty"

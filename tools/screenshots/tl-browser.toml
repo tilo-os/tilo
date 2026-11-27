@@ -1,8 +1,30 @@
-# Browser: a page after an afternoon of browsing, from the app's own scenario.
-# The library of bookmarks and history opens from the page's menu, a press a
-# plan cannot make, and no published action opens it; pages need the network.
+# Browser: a page after an afternoon of browsing, from the app's own scenario,
+# and the library of bookmarks and history its page's menu opens. Pages need the
+# network; the pages visited and the bookmarks are the scenario's fixtures.
 
 [[situation]]
 name = "first-afternoon"
 title = "A page after an afternoon of browsing"
 scenario = "a first afternoon"
+
+[[situation]]
+name = "bookmarks"
+title = "The pages saved, under their folders"
+scenario = "a first afternoon"
+
+[[situation.steps]]
+press = "Page"
+
+[[situation.steps]]
+press = "Bookmarks"
+
+[[situation]]
+name = "history"
+title = "The pages visited, newest first"
+scenario = "a first afternoon"
+
+[[situation.steps]]
+press = "Page"
+
+[[situation.steps]]
+press = "History"

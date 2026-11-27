@@ -1,7 +1,5 @@
-# Slides: a deck built through the deck's actions. The overview and the
-# presenter's speaker notes are the window's own toolbar views, which a plan
-# reaches only by pressing a button it cannot address; the deck's slide is what
-# the window shows.
+# Slides: a deck built through the deck's actions, its overview, and the
+# presenter's view with the speaker notes over each slide.
 
 [[situation]]
 name = "pitch-deck"
@@ -18,3 +16,42 @@ invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "add_slides", 
   {"title": "Pilot results", "body": "312 trees inspected in six weeks\nInspection time down from 20 to 7 minutes per tree\nEvery storm report on the map within the hour", "layout": "title_content"},
   {"title": "Next steps", "body": "Two more districts in spring\nOpen data export for researchers", "layout": "title_content"}
 ]''' } }
+
+[[situation]]
+name = "overview"
+title = "Every slide of the deck at once"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "set_title", args = { title = "Field Notes" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "add_slides", args = { outline = '''[
+  {"title": "Field Notes", "body": "A notebook for the people who maintain city trees", "layout": "title"},
+  {"title": "The problem", "body": "Inspections live on paper and in three spreadsheets\nNobody can see which trees were checked this year\nStorm damage reports arrive by phone", "layout": "title_content"},
+  {"title": "What we built", "body": "Every tree on one map, with its history\nInspections recorded on site, offline\nReports shared with the parks office the moment they sync", "layout": "title_content"},
+  {"title": "Pilot results", "body": "312 trees inspected in six weeks\nInspection time down from 20 to 7 minutes per tree\nEvery storm report on the map within the hour", "layout": "title_content"},
+  {"title": "Next steps", "body": "Two more districts in spring\nOpen data export for researchers", "layout": "title_content"}
+]''' } }
+
+[[situation.steps]]
+press = "All slides"
+
+[[situation]]
+name = "speaker-notes"
+title = "The presenter's view, with the speaker's notes"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "set_title", args = { title = "Field Notes" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "add_slides", args = { outline = '''[
+  {"title": "Field Notes", "body": "A notebook for the people who maintain city trees", "layout": "title", "notes": "Thank the parks office for six weeks of access, and the four inspectors who let us watch them work."},
+  {"title": "The problem", "body": "Inspections live on paper and in three spreadsheets\nNobody can see which trees were checked this year\nStorm damage reports arrive by phone", "layout": "title_content", "notes": "Hold on the storm reports: last winter's ice took down eleven trees that had no inspection on record."},
+  {"title": "What we built", "body": "Every tree on one map, with its history\nInspections recorded on site, offline\nReports shared with the parks office the moment they sync", "layout": "title_content", "notes": "Offline first mattered more than we expected: half the trees stand where there is no signal."}
+]''' } }
+
+[[situation.steps]]
+press = "Present"
+
+[[situation.steps]]
+press = "Presenter"

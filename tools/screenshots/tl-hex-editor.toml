@@ -1,7 +1,5 @@
 # Hex editor: file headers seeded into the profile and opened through the app's
-# action, listed in the library. The bytes are a document's own window, opened
-# by pressing its row; a plan reaches an app through its published actions only,
-# so the library is what a capture shows.
+# action, listed in the library; a row pressed opens the bytes' own window.
 
 [[file]]
 path = "sunset.png"
@@ -33,3 +31,19 @@ invoke = { resource = "{{document.resources.0}}", action = "overwrite_bytes", ar
 
 [[situation.steps]]
 invoke = { resource = "{{document.resources.0}}", action = "insert_bytes", args = { offset = 33, bytes = "2c 20 63 6f 66 66 65 65" } }
+
+[[situation]]
+name = "bytes"
+title = "A text file's bytes, with an edit"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/notes.txt" }, bind = "document" }
+
+[[situation.steps]]
+invoke = { resource = "{{document.resources.0}}", action = "overwrite_bytes", args = { offset = 10, bytes = "4f 41 54" } }
+
+[[situation.steps]]
+invoke = { resource = "{{document.resources.0}}", action = "insert_bytes", args = { offset = 33, bytes = "2c 20 63 6f 66 66 65 65" } }
+
+[[situation.steps]]
+press = "notes.txt"
