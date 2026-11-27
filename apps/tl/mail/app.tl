@@ -1407,7 +1407,7 @@ destructive action purge(t: Thread) (icon: .trash, label: "Delete permanently") 
 }
 
 /// Deletes every conversation in the account's trash from the mailbox and its server for good,
-/// each as `purge` does. A view offers this behind a confirmation, as nothing undoes it.
+/// each as `purge` does. Nothing undoes it, so a press of it confirms first.
 destructive action empty_trash(a: Account) (icon: .trash, label: "Empty trash") {
     require not a.threads.matching("is:trash").is_empty() "The trash is empty"
     let trashed = a.threads.matching("is:trash")
@@ -2171,27 +2171,20 @@ view waiting_list(waiting: List<Draft>) {
     }
 }
 
-/// Emptying the trash, behind a confirmation: nothing undoes it, so the first press says what
-/// it would do and the second does it.
+/// Emptying the trash: nothing undoes it, so its press confirms on the system's confirm before
+/// anything leaves the server.
 view trash_bar(a: Account) {
-    state confirming: Bool
     let trashed = a.threads.matching("is:trash")
     if not trashed.is_empty() {
         stack(padding: .group) {
             ui.Banner(
-                if confirming {
-                    "Delete {trashed.len()} conversations permanently?"
-                } else { "Empty the trash" },
-                message: if confirming {
-                    "This can't be undone."
-                } else {
-                    "Every conversation in it is deleted from this mailbox and the server."
-                },
-                kind: if confirming { .error } else { .neutral },
+                "Empty the trash",
+                message: "Every conversation in it is deleted from this mailbox and the server.",
+                kind: .neutral,
                 icon: .trash,
-                action: if confirming { "Delete permanently" } else { "Empty trash" },
+                action: "Empty trash",
             ) {
-                on act: if confirming { empty_trash(a) } else { set(confirming, true) }
+                on act: empty_trash(a)
             }
         }
     }
@@ -2623,7 +2616,6 @@ fn unfiled(d: Draft) -> Text {
 /// in the trash offers to delete it permanently, behind a confirmation, since nothing undoes it.
 view conversation(t: Thread) {
     state draft: Text
-    state confirming: Bool
     // A conversation no account of this workspace sent has nothing to reply from, so its window
     // keeps no reply bar rather than an empty one.
     let answered = can_answer(t)
@@ -2713,7 +2705,7 @@ view conversation(t: Thread) {
                     foot: {
                         stack(gap: .none) {
                             if t.boxes.any(b -> b == "trash") {
-                                trash_offer(t, confirming)
+                                trash_offer(t)
                             }
                             reply_bar(t, draft)
                         }
@@ -2723,7 +2715,7 @@ view conversation(t: Thread) {
             } else {
                 stack(fill, gap: .none) {
                     if t.boxes.any(b -> b == "trash") {
-                        trash_offer(t, confirming)
+                        trash_offer(t)
                     }
                     conversation_messages(t)
                 }
@@ -2732,24 +2724,18 @@ view conversation(t: Thread) {
     }
 }
 
-/// The offer to delete a trashed conversation for good, behind a confirmation: nothing undoes
-/// it, so the first press says what it would do and the second does it.
-template view trash_offer(t: Thread, confirming: State<Bool>) {
+/// The offer to delete a trashed conversation for good: nothing undoes it, so its press
+/// confirms on the system's confirm before anything leaves the server.
+template view trash_offer(t: Thread) {
     stack(padding: .group) {
         ui.Banner(
-            if confirming {
-                "Delete this conversation permanently?"
-            } else { "It is in the trash" },
-            message: if confirming {
-                "This can't be undone."
-            } else {
-                "It stays here until you delete it permanently."
-            },
-            kind: if confirming { .error } else { .neutral },
+            "It is in the trash",
+            message: "It stays here until you delete it permanently.",
+            kind: .neutral,
             icon: .trash,
             action: "Delete permanently",
         ) {
-            on act: if confirming { purge(t) } else { set(confirming, true) }
+            on act: purge(t)
         }
     }
 }

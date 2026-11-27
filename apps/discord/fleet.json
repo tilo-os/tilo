@@ -25,7 +25,7 @@
       "description": "",
       "kind": "outside",
       "operation": "document",
-      "confirm": false,
+      "confirm": true,
       "asks": [
         {
           "name": "op",
@@ -640,7 +640,7 @@
       "description": "",
       "kind": "outside",
       "operation": "effect",
-      "confirm": true,
+      "confirm": false,
       "asks": [
         {
           "name": "token",

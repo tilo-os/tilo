@@ -54,3 +54,4 @@ resource = "example.counter"
 action = "reset"
 label = "Reset the count"
 operation = "document"
+confirm = true

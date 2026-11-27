@@ -88,6 +88,7 @@ action = "send"
 label = "Send a message"
 kind = "outside"
 operation = "document"
+confirm = true
 asks = "op"
 [[offers]]
 resource = "discord.guild"
@@ -301,7 +302,6 @@ resource = "discord.guild"
 action = "set-bot-token"
 label = "Set bot token"
 kind = "outside"
-confirm = true
 asks = "token"
 [[offers]]
 resource = "discord.guild"

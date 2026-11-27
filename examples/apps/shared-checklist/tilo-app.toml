@@ -54,3 +54,4 @@ resource = "example.checklist"
 action = "clear-done"
 label = "Remove checked items"
 operation = "document"
+confirm = true

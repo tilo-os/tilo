@@ -667,9 +667,7 @@ d-77noqogh = Entwurfszeile
 d-bbuecgsi = Unterhaltung
     .w-reply-to = Antwort auf { $subject }
     .w-reply = Antworten
-    .w-delete-this-conversation-permanently = Diese Unterhaltung endgültig löschen?
     .w-it-is-in-the-trash = Sie ist im Papierkorb
-    .w-this-can-t-be-undone = Das lässt sich nicht rückgängig machen.
     .w-it-stays-here-until-you-delete = Sie bleibt hier, bis du sie endgültig löschst.
     .w-delete-permanently = Endgültig löschen
     .w-reply-all = Allen antworten
@@ -847,11 +845,8 @@ d-dbquqaba = Postausgangsliste
     .w-nothing-is-waiting-to-be-sent = Nichts wartet darauf, gesendet zu werden
 
 d-jecmuxlv = Papierkorb-Leiste
-    .w-delete-conversations-permanently = { $len } Unterhaltungen endgültig löschen?
     .w-empty-the-trash = Papierkorb leeren
-    .w-this-can-t-be-undone = Das lässt sich nicht rückgängig machen.
     .w-every-conversation-in-it-is-deleted = Jede Unterhaltung darin wird aus diesem Postfach und vom Server gelöscht.
-    .w-delete-permanently = Endgültig löschen
     .w-empty-trash = Papierkorb leeren
 
 d-buu2swtx = Entwurfsliste

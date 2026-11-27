@@ -1117,10 +1117,9 @@ fn read_on_the_server(servers: &Servers) -> bool {
 
 // USER REQUIREMENT: what the mail server sets back acts at once, the person's press and an
 // agent's call alike: opening a conversation and Mark as read confirm nothing, an agent's
-// Mark as read goes by its grants, and undo of it marks it unread on the server again. Deleting
-// for good is what the server cannot take back, and that press confirms.
+// Mark as read goes by its grants, and undo of it marks it unread on the server again.
 #[test]
-fn what_the_server_sets_back_acts_at_once_and_a_deletion_for_good_confirms() {
+fn what_the_server_sets_back_acts_at_once() {
     let servers = servers();
     let (_connector, mut session) = window_of(account(&servers));
     synced(&mut session);
@@ -1202,8 +1201,17 @@ fn what_the_server_sets_back_acts_at_once_and_a_deletion_for_good_confirms() {
     session.until("the server to hold it read", |_| {
         read_on_the_server(&servers)
     });
+}
 
-    // Deleting it for good from the server confirms first, and nothing leaves before the yes.
+// USER REQUIREMENT: deleting a conversation for good from its server is what nothing takes
+// back, and one press of Delete permanently confirms on the system's confirm alone: the offer
+// asks nothing of its own, and nothing leaves the server's trash before the yes.
+#[test]
+fn a_deletion_for_good_confirms_once_on_the_systems_confirm() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let plan = session.thread("Launch plan");
     session.call("delete", &plan, &json!({}));
     session.until("the server to put it in the trash", |_| {
         servers.imap.messages("[Gmail]/Trash").len() == 2
@@ -1216,13 +1224,24 @@ fn what_the_server_sets_back_acts_at_once_and_a_deletion_for_good_confirms() {
         .expect("the trashed conversation offers to delete it for good")
         .key
         .clone();
-    view.fire(&offer, "act")
-        .expect("the offer asks what it would do");
-    view.poll_patches().expect("the offer says it");
     let outcome = view.fire(&offer, "act").expect("the press runs");
     assert!(
         matches!(outcome, tilolang_tilo::runtime::InvokeOutcome::Asked(_)),
-        "deleting for good confirms: {outcome:?}"
+        "one press of Delete permanently confirms on the system's confirm: {outcome:?}"
+    );
+    view.poll_patches()
+        .expect("the conversation shows what the press left");
+    let banners: Vec<_> = view
+        .tree()
+        .of_kind("ui.Banner")
+        .into_iter()
+        .filter_map(|banner| banner.props.get("title").and_then(RtValue::as_text))
+        .map(ToOwned::to_owned)
+        .collect();
+    assert_eq!(
+        banners,
+        ["It is in the trash"],
+        "the offer asks nothing of its own beside the system's confirm"
     );
     session.settle();
     assert_eq!(

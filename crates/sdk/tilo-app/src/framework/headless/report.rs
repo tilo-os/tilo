@@ -208,7 +208,7 @@ fn report_surface(
 /// settings, save its link, which the shell's own search finds on every
 /// desktop whether Settings is open or not.
 fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value> {
-    use tilo_actions::{Collects, ConfirmationPolicy, InputSpec};
+    use tilo_actions::{Collects, InputSpec};
 
     let reserved = reserved_action_ids();
     let mut offers = Vec::new();
@@ -272,7 +272,10 @@ fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value>
         if action.resource_kind != address {
             offer.insert("resource-kind".into(), action.resource_kind.clone().into());
         }
-        if !matches!(contract.confirmation, ConfirmationPolicy::None) {
+        // What a press of it waits for, by the one rule every window and every language's
+        // apps decide a press by: what leaves the system confirms, and a destructive change
+        // undo takes back confirms unless Shift is held.
+        if contract.confirms().by_default() {
             offer.insert("confirm".into(), true.into());
         }
         if let Some(asks) = asks {
@@ -376,5 +379,97 @@ impl Drop for Collecting {
     fn drop(&mut self) {
         controls::UNBOUND.with(|unbound| *unbound.borrow_mut() = None);
         controls::OPENED.with(|opened| *opened.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_actions::{
+        ActionContract, ActionKind, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionLocus,
+        LEAVES_TAG, ResourceSpec, RiskLevel,
+    };
+
+    /// An action of the closed app's own resource with `contract`.
+    fn action(id: &str, contract: ActionContract) -> ActionSpec {
+        ActionSpec::immediate_encoded(
+            id,
+            id,
+            ExecutionLocus::ClientLocal,
+            EncodedAction::written("notes.note".to_owned(), Vec::new()),
+        )
+        .with_contract(contract)
+    }
+
+    /// A closed app's offer confirms by what a press of it waits for, as a tilolang app's does:
+    /// what leaves the system and an irreversible deletion confirm; an outside change the service
+    /// takes back, and a call only an agent's grants decide, act on the press.
+    #[test]
+    fn an_offer_confirms_by_what_its_press_waits_for() {
+        let contract = |kind, risk, tags: &[&str], confirmation| ActionContract {
+            kind,
+            risk,
+            tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            confirmation,
+            ..ActionContract::default()
+        };
+        let resources = vec![
+            ResourceSpec::new("notes.note", "notes.note", "Notes")
+                .with_action(action(
+                    "post",
+                    contract(
+                        ActionKind::Outside,
+                        RiskLevel::default(),
+                        &[LEAVES_TAG],
+                        ConfirmationPolicy::None,
+                    ),
+                ))
+                .with_action(action(
+                    "purge",
+                    contract(
+                        ActionKind::Outside,
+                        RiskLevel::Destructive,
+                        &[],
+                        ConfirmationPolicy::Confirm,
+                    ),
+                ))
+                .with_action(action(
+                    "mark-read",
+                    contract(
+                        ActionKind::Outside,
+                        RiskLevel::default(),
+                        &[],
+                        ConfirmationPolicy::None,
+                    ),
+                ))
+                .with_action(action(
+                    "rename",
+                    contract(
+                        ActionKind::Undoable,
+                        RiskLevel::default(),
+                        &[],
+                        ConfirmationPolicy::Confirm,
+                    ),
+                )),
+        ];
+        let offers = super::offers_of(&resources);
+        let confirms = |id: &str| {
+            offers
+                .iter()
+                .find(|offer| offer["action"] == id)
+                .unwrap_or_else(|| panic!("the closed app offers {id}: {offers:?}"))
+                .get("confirm")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        };
+        assert!(confirms("post"), "what leaves the system confirms");
+        assert!(confirms("purge"), "an irreversible deletion confirms");
+        assert!(
+            !confirms("mark-read"),
+            "what the service takes back acts on the press"
+        );
+        assert!(
+            !confirms("rename"),
+            "a change nothing destroys acts on the press"
+        );
     }
 }
