@@ -127,14 +127,70 @@ for each in vm_a vm_b; do
 done
 
 # --- the person is founded on A, and issues B's ticket ------------------------
-founding="$(TILO_SSH_BOUND=180 vm_a ssh 'tilo login --new-identity --name tester --json --ticket device')" \
-  || die "A could not make the person its daemon holds"
-printf '%s\n' "$founding" > "$out/founding.json"
-ticket="$(printf '%s\n' "$founding" \
-  | jq -r '[(.tickets // [])[] | select(.kind == "device") | .ticket][0] // empty')"
-[ -n "$ticket" ] || die "founding the person issued no ticket for a computer"
+# A device founds its person through the first-use ceremony its signed-in
+# session runs: the session, as the account, writes the identity the daemon
+# makes. Driving that ceremony over AT-SPI is the same path the installed
+# desktop's check takes, so the founding stays a page a person walks.
+vm_a wait
+vm_a login --passcode-only "$TILO_PASS"
+for attempt in $(seq 1 120); do
+  vm_a ssh 'busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1' && break
+  [ "$attempt" -lt 120 ] || die "the compositor did not start for A's first use"
+  sleep 1
+done
+TILO_SSH_BOUND=900 vm_a test native-atspi-smoke.sh oobe-actions \
+  || die "A's first-use ceremony did not finish"
+for attempt in $(seq 1 60); do
+  vm_a ssh "test -s $identity_dir/primary.json" && break
+  [ "$attempt" -lt 60 ] || die "A's first use wrote no identity"
+  sleep 1
+done
+note "A founded the person at its first use"
+
+# A ticket is the person's own to issue: `tilo device add` asks them, and the
+# person answers on an asking card. The answer is the same invocation the
+# session's sheet resolves, taken here from the session's own action log, so
+# no UI is needed for it.
+: > "$out/ticket-issue.txt"
+vm_a ssh "nohup sh -c 'XDG_RUNTIME_DIR=/run/user/\$(id -u) tilo device add --json --no-wait \
+  > /tmp/joined-ticket.json 2>/tmp/joined-ticket.err </dev/null' >/dev/null 2>&1 &"
+found=""
+for attempt in $(seq 1 180); do
+  listed="$(vm_a ssh 'XDG_RUNTIME_DIR=/run/user/$(id -u) tilo read invocations/workspace --json' 2>>"$out/ticket-issue.txt" || true)"
+  printf '%s\n' "$listed" >> "$out/ticket-issue.txt"
+  found="$(jq -r '[.items // [] | .[]
+      | select(.status == "waiting")
+      | select((.asked.action // .action // "") | endswith("#issue"))][0]
+      | select(.) | "\(.id) \(.asked.workspace)"' <<<"$listed" 2>/dev/null || true)"
+  [ -z "$found" ] || break
+  if [ $((attempt % 15)) -eq 0 ]; then
+    note "still waiting for the asking card (${attempt}s)"
+  fi
+  sleep 1
+done
+[ -n "$found" ] || die "the person was never asked to add a computer"
+read -r issue_invocation issue_workspace <<<"$found"
+note "the person is asked to add a computer: $issue_invocation"
+vm_a ssh "XDG_RUNTIME_DIR=/run/user/\$(id -u) tilo do --in-person \
+  'invocations/workspace/$issue_invocation#resolve' resolution=approve -w '$issue_workspace'" \
+  > "$out/ticket-answer.txt" 2>&1 \
+  || { cat "$out/ticket-answer.txt" >&2; die "the asking card could not be answered"; }
+for attempt in $(seq 1 120); do
+  vm_a ssh 'test -s /tmp/joined-ticket.json' && break
+  [ "$attempt" -lt 120 ] || {
+    vm_a ssh 'cat /tmp/joined-ticket.err' >&2 || true
+    die "adding a computer issued no ticket"
+  }
+  sleep 1
+done
+vm_a ssh 'cat /tmp/joined-ticket.json' > "$out/ticket.json" 2>/dev/null || true
+ticket="$(jq -r '.ticket // empty' "$out/ticket.json" 2>/dev/null || true)"
+if [ -z "$ticket" ]; then
+  vm_a ssh 'cat /tmp/joined-ticket.err' >&2 || true
+  die "the issued ticket could not be read"
+fi
 case "$ticket" in tilo1*) ;; *) die "the issued ticket is not a Tilo ticket" ;; esac
-note "the person is founded on A, which issued a ticket for B"
+note "A issued a ticket for B"
 
 # --- B joins the person with it ----------------------------------------------
 # `-` takes the ticket on standard input, so it never shows in a process list.
