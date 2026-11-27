@@ -36,6 +36,8 @@ pub mod backups_engine;
 pub mod call;
 pub mod canvas;
 /// What a device kept of its apps before anyone signed in, carried into the workspace at sign-in.
+/// It joins each app's window connection, so it is built with the windows.
+#[cfg(feature = "app-launch")]
 pub mod carry;
 pub mod connection;
 #[cfg(feature = "app-launch")]
