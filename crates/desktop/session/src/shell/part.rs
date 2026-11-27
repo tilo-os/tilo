@@ -168,6 +168,13 @@ pub struct SessionLink {
     /// part reads it on its own runtime, so a second display's part never misses one the first
     /// part took.
     layout_generation: Cell<u64>,
+    /// The person's layout written into the shell's `Layout` root, once for the whole shell: every
+    /// part reads the same reading from the one record they share, so a writer per part would
+    /// insert its own item for each strip and the shell would draw one window once per display.
+    layout_writer: RefCell<LayoutWriter>,
+    /// The layout generation written into that root, whichever part wrote it: the next generation
+    /// is one part's to write and every part reads it.
+    layout_written: Cell<u64>,
     /// The readings of the resources the places name, by their session id: each with its type
     /// as the shell's runtime names another app's (`<app>#<Type>`) and its JSON.
     readings: RefCell<BTreeMap<String, (String, serde_json::Value)>>,
@@ -263,6 +270,26 @@ impl SessionLink {
         self.layout_generation
             .set(self.layout_generation.get().wrapping_add(1));
         true
+    }
+
+    /// Write the layout the session published into the shell's `Layout` root, once for the whole
+    /// shell: the parts share the record that root is in, so the first part to read a generation
+    /// writes it and every part reads what it wrote. A writer per part would insert its own item
+    /// for each strip into that one root, and the shell would draw each window once per display.
+    /// Whether anything was written.
+    pub fn write_layout(&self, cx: &OriginCx<'_>) -> bool {
+        let generation = self.layout_generation.get();
+        if self.layout_written.get() >= generation {
+            return false;
+        }
+        let Some(reading) = self.layout.borrow().clone() else {
+            return false;
+        };
+        let wrote = self.layout_writer.borrow_mut().write(cx, &reading);
+        if wrote {
+            self.layout_written.set(generation);
+        }
+        wrote
     }
 
     /// Run what the shell asked through `invoke` (the session's API), keeping each refusal.
@@ -405,8 +432,6 @@ impl SessionLink {
 /// The session as the origin of a shell's `session.*` resources. See the module docs.
 pub struct SessionOrigin {
     link: Rc<SessionLink>,
-    /// What it wrote of the person's layout into the shell's `Layout` root.
-    layout: LayoutWriter,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
@@ -435,7 +460,6 @@ impl SessionOrigin {
         Self {
             loaded: BTreeMap::new(),
             link,
-            layout: LayoutWriter::default(),
             layout_seen: Cell::new(0),
             readings_seen: RefCell::new(BTreeMap::new()),
             packages_seen: Cell::new(0),
@@ -474,18 +498,17 @@ impl SessionOrigin {
 }
 
 impl SessionOrigin {
-    /// Write the person's layout into the shell's `Layout` root, when the session
-    /// published one the origin has not written yet. Whether anything was written.
-    fn poll_layout(&mut self, cx: &OriginCx<'_>) -> bool {
+    /// Write the person's layout into the shell's `Layout` root, when the session published one
+    /// the shell has not written yet. The write is the whole shell's, not this part's: every part
+    /// reads the one record, so the part that reads a generation first writes it and the others
+    /// find it there. Whether anything was written.
+    fn poll_layout(&self, cx: &OriginCx<'_>) -> bool {
         let generation = self.link.layout_generation.get();
         if generation <= self.layout_seen.get() {
             return false;
         }
         self.layout_seen.set(generation);
-        let Some(reading) = self.link.layout.borrow().clone() else {
-            return false;
-        };
-        self.layout.write(cx, &reading)
+        self.link.write_layout(cx)
     }
 }
 

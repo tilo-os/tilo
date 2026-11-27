@@ -743,7 +743,9 @@ fn each_display_draws_its_own_strip_and_only_the_primary_carries_the_whole_bar()
     let shown_first = crate::common::drawn_name(&session, &titles[0]);
     let shown_second = crate::common::drawn_name(&session, &titles[1]);
     // Each display's part says its own strip's window and no other's, as a screen reader reads
-    // each display's page.
+    // each display's page. The move is the session's, not a frame's: the shell draws the new
+    // arrangement on the passes after it, and what a screen reader reads is that frame.
+    until_at_rest(&mut session);
     part_showing(&mut session, &shown_first);
     part_showing(&mut session, &shown_second);
     let trees = shell_trees(&session);
@@ -875,6 +877,9 @@ fn a_part_made_before_a_layout_reads_it_too() {
         active_place(session) == Some(second)
     });
     move_to(&mut session, second);
+    // The move is the session's, not a frame's: the parts draw the arrangement it made on the
+    // passes after it, and what a screen reader reads is that frame.
+    until_at_rest(&mut session);
     let shown = crate::common::drawn_name(&session, &titles[1]);
     let first_shown = crate::common::drawn_name(&session, &titles[0]);
     part_showing(&mut session, &shown);

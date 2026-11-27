@@ -891,6 +891,119 @@ fn one_window_layout() -> LayoutReading {
     }
 }
 
+/// Each display's part draws its own display's strips and no other's, and only the display in use
+/// carries the whole bar. The part reads the display it stands on as its own (`device.screen`),
+/// so the strips it filters by that display are its own, and its bar is the whole one exactly
+/// when it is the display in use.
+#[test]
+fn a_part_draws_its_own_displays_strips_and_no_others() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let reading = LayoutReading {
+        person: "Pat".to_owned(),
+        rows: vec![LayoutRowReading {
+            key: "r1".to_owned(),
+            workspace: "w1".to_owned(),
+            name: "Main".to_owned(),
+            current: true,
+            ..LayoutRowReading::default()
+        }],
+        workspaces: vec![LayoutWorkspaceReading {
+            key: "w1".to_owned(),
+            name: "Home".to_owned(),
+            current: true,
+            ..LayoutWorkspaceReading::default()
+        }],
+        strips: vec![
+            LayoutStripReading {
+                key: "s0".to_owned(),
+                workspace: "w1".to_owned(),
+                row: "r1".to_owned(),
+                display: 0,
+                width: 500,
+                active: "p0".to_owned(),
+                ..LayoutStripReading::default()
+            },
+            LayoutStripReading {
+                key: "s1".to_owned(),
+                workspace: "w1".to_owned(),
+                row: "r1".to_owned(),
+                display: 1,
+                width: 500,
+                active: "p1".to_owned(),
+                ..LayoutStripReading::default()
+            },
+        ],
+        places: vec![
+            LayoutPlaceReading {
+                key: "p0".to_owned(),
+                strip: "s0".to_owned(),
+                title: "Groceries".to_owned(),
+                ..LayoutPlaceReading::default()
+            },
+            LayoutPlaceReading {
+                key: "p1".to_owned(),
+                strip: "s1".to_owned(),
+                title: "Packing list".to_owned(),
+                ..LayoutPlaceReading::default()
+            },
+        ],
+        ..LayoutReading::default()
+    };
+    let display =
+        |id: i64, connector: &str, primary: bool| tilo_session_core::shell::LayoutDisplayReading {
+            id,
+            connector: connector.to_owned(),
+            name: connector.to_owned(),
+            width: 1280,
+            height: 800,
+            scale: 1.0,
+            primary,
+            ..tilo_session_core::shell::LayoutDisplayReading::default()
+        };
+    let (mut first, _) = part_with(reading.clone());
+    first.set_screen(Some(display(0, "HEADLESS-1", true)));
+    for _ in 0..6 {
+        first.prepare_frame();
+        first.draw();
+    }
+    assert!(
+        first.says("Groceries"),
+        "the display in use draws its own window: {:?}",
+        first.accessible_labels()
+    );
+    assert!(
+        !first.says("Packing list"),
+        "and no other display's: {:?}",
+        first.accessible_labels()
+    );
+    assert!(
+        first.says("Notifications"),
+        "the display in use carries the whole bar: {:?}",
+        first.accessible_labels()
+    );
+    let (mut second, _) = super::tests_support::part_beside(&first, reading);
+    second.set_screen(Some(display(1, "HEADLESS-2", false)));
+    for _ in 0..6 {
+        second.prepare_frame();
+        second.draw();
+    }
+    assert!(
+        second.says("Packing list"),
+        "the other display draws its own window: {:?}",
+        second.accessible_labels()
+    );
+    assert!(
+        !second.says("Groceries"),
+        "and no other display's: {:?}",
+        second.accessible_labels()
+    );
+    assert!(
+        !second.says("Notifications"),
+        "the other display carries the compact bar, with no bell: {:?}",
+        second.accessible_labels()
+    );
+}
+
 /// Where the menu of the window the part shows as `name` stands, when it shows one. The strips
 /// say a window's name three times: its frame is named for it, and so is the bar it is lifted
 /// and aimed at by, both of them groups, and so is the window's own menu in that bar, which lists
