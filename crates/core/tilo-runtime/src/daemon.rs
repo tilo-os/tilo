@@ -422,7 +422,7 @@ impl Person {
             if left.is_zero() {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "the person's services did not start",
+                    format!("they were still starting after {} s", within.as_secs()),
                 ));
             }
             services = self
