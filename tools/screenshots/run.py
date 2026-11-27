@@ -443,16 +443,25 @@ class Session:
             "TILO_LAUNCHER_BIN": str(args.bin_dir / "tilo-launcher"),
             "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE": str(runtime / "runtime-publishers.txt"),
         })
-        # The device looks for a runtime in its own store (`tilo-apps/runtimes/<version>`), which
-        # its services reach without the environment this script starts it with: the bundles this
-        # build baked are linked there too, so an install finds the runtime an app pins (Browser's
-        # Chromium engine) and the launcher starts that app on it.
-        store = Path(env["XDG_DATA_HOME"]) / "tilo-apps" / "runtimes"
-        store.mkdir(parents=True, exist_ok=True)
-        for bundle in sorted((runtime / "runtime").iterdir()):
-            linked = store / bundle.name
-            if (bundle / "bundle.toml").is_file() and not linked.exists():
-                linked.symlink_to(bundle, target_is_directory=True)
+        # The device looks for a runtime in its own store (`<data>/runtimes/<version>`), which its
+        # services reach with a data directory of their own rather than the environment this
+        # script starts it with: the bundles this build baked are linked where a device keeps
+        # them, under every data directory a service of it may resolve, so an install finds the
+        # runtime an app pins (Browser's Chromium engine) and the launcher starts that app on it.
+        candidates = [
+            Path(env["XDG_DATA_HOME"]) / "tilo-apps",
+            self.home / ".local" / "share" / "tilo-apps",
+        ]
+        bundles = [bundle for bundle in sorted((runtime / "runtime").iterdir())
+                   if (bundle / "bundle.toml").is_file()]
+        for data in candidates:
+            store = data / "runtimes"
+            store.mkdir(parents=True, exist_ok=True)
+            for bundle in bundles:
+                linked = store / bundle.name
+                if not linked.exists():
+                    linked.symlink_to(bundle, target_is_directory=True)
+        print(f"     {plan.app}: runtimes linked as {[b.name for b in bundles]}", flush=True)
         started = time.monotonic()
         with self.log.open("wb") as out:
             self.daemon = subprocess.Popen(
