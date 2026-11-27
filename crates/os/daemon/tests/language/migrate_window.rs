@@ -27,6 +27,8 @@ use crate::language::host;
 
 /// The Migrations app.
 const MIGRATE: &str = "so.tilo.migrate";
+/// The type of the Migrations app's records of one source each.
+const MIGRATION: &str = "tl.so.tilo.migrate.Migration";
 /// The package a device's migrations are published as.
 const ENGINE: &str = "so.tilo.migrate.engine";
 
@@ -205,9 +207,12 @@ async fn migration(host: &host::Host) -> String {
             .await
             .expect("the catalogue answers")
             .expect("the catalogue lists the app");
+        // A migration's own record: the device's engine, which the app calls, lists its `start`
+        // too, on the device's migrations (`devices/<device>/migrate`).
         let found = page.rows.iter().find_map(|row| {
             let action = row.action.as_ref()?;
-            (action.address.action == "start").then(|| action.address.resource.clone())
+            (action.address.action == "start" && row.resource.kind == MIGRATION)
+                .then(|| action.address.resource.clone())
         });
         if let Some(resource) = found {
             return resource;

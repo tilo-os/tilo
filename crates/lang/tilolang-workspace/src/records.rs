@@ -770,6 +770,51 @@ pub(crate) fn store(record: Record) -> ResourceStore {
     ResourceStore::new(Rc::new(record))
 }
 
+/// `record` opened by `open` over its store, its app's code reading the files its workspace
+/// holds ([`WorkspaceFiles`]): an action handed a file reads it here as a window of the app
+/// reads it.
+///
+/// # Errors
+/// As `open`.
+fn on_record(
+    record: Record,
+    open: impl FnOnce(ResourceStore) -> Result<Opened, String>,
+) -> Result<Opened, String> {
+    let files = WorkspaceFiles(record.clone());
+    let opened = open(store(record))?;
+    opened.host.runtime().set_blobs(files);
+    Ok(opened)
+}
+
+/// What an app's code reads of files on this device with no window of it open: the content its
+/// record's workspace holds, through the workspace's one reader of it, and nothing else. Nobody
+/// is at a window to choose a file or name where one is saved.
+struct WorkspaceFiles(Record);
+
+/// What an app running with no window is told when it asks a person for a file.
+const NOBODY_AT_A_WINDOW: &str =
+    "nobody is at a window of this app to choose a file; name the file instead";
+
+impl runtime::blob::BlobHost for WorkspaceFiles {
+    fn read(&self, hash: &str) -> Option<Vec<u8>> {
+        self.0
+            .content(hash)
+            .inspect_err(|why| tracing::debug!(hash, why, "an app's file is not read here"))
+            .ok()
+    }
+
+    fn choose(
+        &self,
+        _: &runtime::blob::FileRequest,
+    ) -> Result<Vec<runtime::blob::FileValue>, String> {
+        Err(NOBODY_AT_A_WINDOW.to_owned())
+    }
+
+    fn save(&self, _: &runtime::blob::SaveRequest, _: &[u8]) -> Result<(), String> {
+        Err(NOBODY_AT_A_WINDOW.to_owned())
+    }
+}
+
 /// `record` opened through `package` for `viewer`, with `policy` the workspace's: the app's
 /// built-in package, the module this device installed, or the packages a program compiled here.
 ///
@@ -793,21 +838,27 @@ pub(crate) fn opened_with(
                     bundle.meta.app
                 ));
             }
-            Opened::open_loading(store(record), (viewer, None, policy), app, |host| {
-                host.load_bundle(&bundle)
-                    .map(drop)
-                    .map_err(|error| format!("{app} does not load: {error}"))
+            on_record(record, |store| {
+                Opened::open_loading(store, (viewer, None, policy), app, |host| {
+                    host.load_bundle(&bundle)
+                        .map(drop)
+                        .map_err(|error| format!("{app} does not load: {error}"))
+                })
             })
         }
         Some(Package::Compiled(compiled)) => {
             let packages: &Packages = compiled
                 .as_language()
                 .ok_or_else(|| format!("{app}'s package is another language's"))?;
-            Opened::open(store(record), packages, viewer, policy)
+            on_record(record, |store| {
+                Opened::open(store, packages, viewer, policy)
+            })
         }
         Some(Package::BuiltIn) | None => {
             let packages = built_in(app)?.ok_or_else(|| runs_elsewhere(app))?;
-            Opened::open(store(record), &packages, viewer, policy)
+            on_record(record, |store| {
+                Opened::open(store, &packages, viewer, policy)
+            })
         }
     }
 }
@@ -830,7 +881,9 @@ pub async fn with_tl_record<R: Send + 'static>(
     let packages = packages.clone();
     let policy = workspaces.policy_of(workspace).await.map(Arc::new);
     tokio::task::spawn_blocking(move || {
-        let mut opened = Opened::open(store(record), &packages, viewer, policy)?;
+        let mut opened = on_record(record, |store| {
+            Opened::open(store, &packages, viewer, policy)
+        })?;
         work(&mut opened)
     })
     .await
@@ -884,7 +937,9 @@ impl Records for crate::Service {
             }
         };
         let viewer = Actor::Member(tilo_actions::MemberId::person(record.reader().to_owned()));
-        match Opened::open(store(record), &packages, viewer, policy) {
+        match on_record(record, |store| {
+            Opened::open(store, &packages, viewer, policy)
+        }) {
             Ok(opened) => Some(opened.rows()),
             Err(error) => {
                 tracing::warn!(%app, %error, "a record read does not open");
@@ -908,7 +963,9 @@ impl Records for crate::Service {
             }
         };
         let viewer = Actor::Member(tilo_actions::MemberId::person(record.reader().to_owned()));
-        match Opened::open(store(record), &packages, viewer, policy) {
+        match on_record(record, |store| {
+            Opened::open(store, &packages, viewer, policy)
+        }) {
             Ok(opened) => Some(opened.page(query)),
             Err(error) => {
                 tracing::warn!(%app, %error, "a record read does not open");
@@ -931,7 +988,9 @@ impl Records for crate::Service {
             }
         };
         let viewer = Actor::Member(tilo_actions::MemberId::person(record.reader().to_owned()));
-        match Opened::open(store(record), &packages, viewer, policy) {
+        match on_record(record, |store| {
+            Opened::open(store, &packages, viewer, policy)
+        }) {
             Ok(opened) => match opened.changes() {
                 Ok(changes) => Some(changes),
                 Err(error) => {
@@ -1070,9 +1129,11 @@ impl Records for crate::Service {
                     code: "runs_elsewhere".into(),
                     reason: runs_elsewhere(app),
                 })?;
-        Opened::open_with(store(record), &packages, viewer, Some(access), Some(policy))
-            .map_err(ApiError::Failed)?
-            .invoke_published(&address, &arguments, &invoker, &context)
+        on_record(record, |store| {
+            Opened::open_with(store, &packages, viewer, Some(access), Some(policy))
+        })
+        .map_err(ApiError::Failed)?
+        .invoke_published(&address, &arguments, &invoker, &context)
     }
 
     fn serve(&self, workspaces: &Workspaces) {

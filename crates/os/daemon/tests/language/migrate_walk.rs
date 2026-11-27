@@ -94,10 +94,11 @@ async fn refused(steps: &Arc<Steps>, action: &str, args: Value) -> String {
 }
 
 /// What `tilo_ls` of `path` lists in `workspace`, as the person's agent reads it there.
-async fn listed_in(agent: &host::Agent, workspace: &str, path: &str) -> String {
+async fn listed_in(host: &host::Host, workspace: &str, path: &str) -> String {
     let (text, failed) = said(
-        &agent
-            .tool("tilo_ls", &json!({"workspace": workspace, "path": path}))
+        &host
+            .agent_in(workspace)
+            .tool("tilo_ls", &json!({"path": path}))
             .await,
     );
     assert!(!failed, "{path} lists in {workspace}: {text}");
@@ -257,13 +258,13 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
         .await;
         assert_eq!(landed.answer["state"], "complete", "{:#}", landed.answer);
         assert!(
-            listed_in(&agent, &lab, "contacts")
+            listed_in(host.as_ref(), &lab, "contacts")
                 .await
                 .contains("Grace Hopper"),
             "the address book is the lab's"
         );
         assert!(
-            !listed_in(&agent, host.workspace(), "contacts")
+            !listed_in(host.as_ref(), host.workspace(), "contacts")
                 .await
                 .contains("Grace Hopper"),
             "the device's own workspace has none of it"
@@ -397,10 +398,14 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
 /// The migrations the Migrations app offers in `workspace`, as the person's catalogue lists
 /// them there: the resources its `start` is published on.
 async fn migrations_offered(host: &host::Host, workspace: &str) -> Vec<String> {
-    let page = host
-        .dispatch()
+    // The person's catalogue in that workspace is the one their own connection there reads.
+    let (own, person) = host
+        .daemon()
+        .own_connection_in(workspace)
+        .expect("the person's own connection reaches the workspace");
+    let page = own
         .query(
-            &host.caller().in_workspace(workspace.to_owned()),
+            &person,
             CatalogueQuery {
                 app_id: Some(MIGRATE.to_owned()),
                 action: Some("start".to_owned()),

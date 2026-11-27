@@ -418,7 +418,51 @@ fn opened_chunk(
         .map(|clear| clear.to_vec())
 }
 
+/// What a workspace keeps of a hash, and the manifest it is when it names a file of the tree.
+type Stored = (Vec<u8>, Option<Manifest>);
+
 impl OpenedFiles {
+    /// What `workspace` keeps of `hash`, and the manifest it is when it names a file of the
+    /// tree: `None` when the workspace keeps none of it, the error when a manifest does not read.
+    fn stored(&self, workspace: WorkspaceId, hash: &str) -> Option<Result<Stored, String>> {
+        let stored = self.read(workspace, hash)?;
+        if !is_manifest(&stored) {
+            return Some(Ok((stored, None)));
+        }
+        Some(
+            Manifest::decode(&stored)
+                .map(|manifest| (stored, Some(manifest)))
+                .map_err(|error| error.to_string()),
+        )
+    }
+
+    /// The whole of the content `hash` names in `workspace`: content put into it as it was
+    /// given, and a file of its tree, which the tree names by its manifest, as the file the
+    /// manifest describes, its chunks opened with the workspace's Files keys where they seal it.
+    /// What an app's own code reads of a file its workspace holds.
+    ///
+    /// # Errors
+    /// The workspace keeps none of it here, it is larger than a record may reference, or a
+    /// piece of its file is missing or does not open.
+    pub fn content(&self, workspace: WorkspaceId, hash: &str) -> Result<Vec<u8>, String> {
+        let named = format!("tilo.content:{hash}");
+        let (stored, manifest) = self
+            .stored(workspace, hash)
+            .ok_or_else(|| format!("this workspace keeps none of {named} on this device"))?
+            .map_err(|error| format!("{named} does not read: {error}"))?;
+        let Some(manifest) = manifest else {
+            return Ok(stored);
+        };
+        let size = manifest.total_len();
+        let most = crate::content::MAX_CONTENT_BYTES;
+        if size > most {
+            return Err(format!(
+                "{named} is {size} bytes, and a read of it whole takes at most {most}"
+            ));
+        }
+        self.file_range(workspace, &manifest, 0..size, &named)
+    }
+
     /// These reads as the content gets of the workspaces they read ([`ContentGets`]).
     #[must_use]
     pub fn into_gets(self) -> std::sync::Arc<dyn ContentGets> {

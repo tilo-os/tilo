@@ -165,6 +165,11 @@ pub(super) struct ContentSlot {
     pub(super) owed: Mutex<OwedAsks>,
     /// The content this device pushed to its workspaces' hosts.
     pub(super) pushes: super::pushes::Pushes,
+    /// The shelf this device keeps its workspaces' content on, once its record content is
+    /// served from it ([`crate::content::routes_content`]): what its own runs read a
+    /// workspace's content from ([`Workspaces::workspace_content`]).
+    #[cfg(feature = "content")]
+    pub(super) shelf: std::sync::OnceLock<Arc<dyn crate::content::ContentShelf>>,
 }
 
 /// Asks owed, at most this many contents at once; past it, the oldest go.
@@ -228,6 +233,41 @@ impl ContentSlot {
 }
 
 impl Workspaces {
+    /// Keep `kept` as the shelf this device keeps its workspaces' content on: what a run here
+    /// reads a workspace's content from. The first shelf stays.
+    #[cfg(feature = "content")]
+    pub(crate) fn keep_shelf(&self, kept: Arc<dyn crate::content::ContentShelf>) {
+        let _ = self.inner.content.shelf.set(kept);
+    }
+
+    /// The bytes of the content `hash` names in `workspace`, as an app's own code running on
+    /// this device reads a file its workspace holds: what was put into the workspace, and a file
+    /// of its tree as the file, read where the workspace's files are read
+    /// ([`crate::files::OpenedFiles`]). Only `workspace`'s content answers.
+    ///
+    /// # Errors
+    /// Why there are no bytes: this device keeps no content of its workspaces, the workspace
+    /// holds none of `hash`, or its file does not open here.
+    pub fn workspace_content(&self, workspace: &str, hash: &str) -> Result<Vec<u8>, String> {
+        #[cfg(feature = "files")]
+        {
+            let kept = self
+                .inner
+                .content
+                .shelf
+                .get()
+                .ok_or("this device keeps no content of its workspaces")?;
+            let id = WorkspaceId::parse(workspace)
+                .ok_or_else(|| format!("{workspace:?} names no workspace"))?;
+            crate::files::OpenedFiles::new(self.clone(), Arc::clone(kept)).content(id, hash)
+        }
+        #[cfg(not(feature = "files"))]
+        {
+            let _ = (workspace, hash);
+            Err("this device keeps no content of its workspaces".to_owned())
+        }
+    }
+
     /// Answer members' requests for content from `content`, beside whatever
     /// else this host serves.
     pub fn serve_content(&self, content: Arc<dyn WorkspaceContent>) {

@@ -975,6 +975,7 @@ pub fn routes_content(
             device: workspaces.device_cert().device_public_key,
         }),
     );
+    workspaces.keep_shelf(Arc::clone(&shelf));
     workspaces.serve_content(Arc::new(ShelfContent(shelf)));
     let keeper: Arc<dyn ContentKeeper> = Arc::new(MemberContent::new(Arc::clone(&content)));
     workspaces.keep_content(&keeper);

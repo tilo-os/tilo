@@ -371,6 +371,16 @@ impl Record {
         &self.reader
     }
 
+    /// The bytes of the content `hash` names that the record's workspace holds: what the app's
+    /// own code reads of a file an action is handed ([`Workspaces::workspace_content`]). Only
+    /// the record's workspace answers.
+    ///
+    /// # Errors
+    /// Why the workspace holds none of it here.
+    pub fn content(&self, hash: &str) -> Result<Vec<u8>, String> {
+        self.workspaces.workspace_content(&self.workspace, hash)
+    }
+
     /// Why the workspace refused the first write it refused through this record, when it
     /// refused one: what was written before it stands, and nothing after it was sent.
     #[must_use]
