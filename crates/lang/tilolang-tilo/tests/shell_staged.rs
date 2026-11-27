@@ -44,6 +44,27 @@ pub(crate) fn load(host: &Host, called: &Called) {
             .unwrap_or_else(|why| panic!("{}: {why}", compiled.meta.app));
     }
     host.runtime().set_foreign_invoker(called.clone());
+    stage_device_settings(host);
+}
+
+/// The session's device settings a staged shell reads, as the device holds them before it draws:
+/// the widget layer (`settings.widgets`) and the control hints (`settings.control_hints`). A
+/// test's host publishes no session, so both read nothing and each view waits on a reading that
+/// never comes, drawing the toolkit's page-shaped loading skeleton over the desktop while it
+/// shows. The widgets read as a new install leaves them (nothing plays, nobody is here) and the
+/// hints as the person turned them off, so nothing of theirs stands on the shell and a capture
+/// shows the surface it is of. A scenario that stages either replaces its reading.
+fn stage_device_settings(host: &Host) {
+    crate::fixtures::set_reading(
+        host,
+        "devices/{device}/settings/widgets",
+        &serde_json::json!({}),
+    );
+    crate::fixtures::set_reading(
+        host,
+        "settings/control-hints",
+        &serde_json::json!({"learned": {"enabled": false, "known": [], "shown": {}}}),
+    );
 }
 
 /// The shell's package and the packages it uses, built once from `apps/tl/shell`, with the
