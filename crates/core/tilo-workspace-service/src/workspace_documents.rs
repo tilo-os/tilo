@@ -79,6 +79,29 @@ impl WorkspaceDocuments {
         }
     }
 
+    /// The next `count` sequence numbers of this device's own writes of `record` of `app` in
+    /// `workspace`, the first of them: none at or below `floor`, the last the record gave the
+    /// device's line. The block they come from is durable before this answers
+    /// ([`tilo_peer_state::store::Store::reserve_sequence`]).
+    ///
+    /// # Errors
+    ///
+    /// The block could not be written.
+    pub(crate) fn reserve_sequence(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+        author: [u8; 32],
+        floor: u64,
+        count: u64,
+    ) -> Result<u64, String> {
+        let lineage = tilo_peer_state::store::Lineage::of(app, record, author);
+        self.store
+            .reserve_sequence(workspace, lineage, floor, count)
+            .map_err(|error| error.to_string())
+    }
+
     /// This host's device key: the author of what [`Self::commit`] keeps.
     #[must_use]
     pub const fn device(&self) -> [u8; 32] {
