@@ -59,9 +59,17 @@ impl Hosts {
     /// invocations. A device that keeps a copy of a placed workspace still applies the actions a
     /// provider here applies to that copy, which carries them to the host whenever it is
     /// reached, so a change made offline waits for no one. A device confined to one workspace
-    /// keeps no copy, and its host answers every one.
+    /// keeps no copy, and its host answers every one. The other devices of a workspace are
+    /// reached through these hosts too, as an answer to an ask another device keeps is.
     pub(crate) fn placed(workspaces: &Arc<ServiceWorkspaces>) -> Arc<Self> {
         let hosts = Self::of(workspaces);
+        let reaching = Arc::clone(&hosts);
+        workspaces
+            .copies()
+            .providers()
+            .reach_devices_through(Arc::new(move |workspace: &str, device: [u8; 32]| {
+                reaching.reach(workspace, device)
+            }));
         let placed = Arc::clone(&hosts);
         let answer = if workspaces.confined().is_some() {
             HostsAnswer::Every

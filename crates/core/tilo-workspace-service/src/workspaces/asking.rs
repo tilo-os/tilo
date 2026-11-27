@@ -313,9 +313,8 @@ impl Workspaces {
         let Some(reading) = self.reading(workspace).await else {
             return Err(nothing_asked());
         };
-        let (devices, keeper) = reading.replica.read(|peer| {
-            let devices = peer
-                .certificates()
+        let devices = reading.replica.read(|peer| {
+            peer.certificates()
                 .into_iter()
                 .filter(|certificate| {
                     certificate.user_public_key == person
@@ -324,16 +323,12 @@ impl Workspaces {
                         && answers_on_a_device_of_theirs(caller, Some(certificate))
                 })
                 .map(|certificate| certificate.device_public_key)
-                .collect::<Vec<_>>();
-            (
-                devices,
-                super::standing::keeping_device_elsewhere(peer, &this_device),
-            )
+                .collect::<Vec<_>>()
         });
         let workspace = workspace.to_string();
         let mut asked: futures::stream::FuturesUnordered<_> = devices
             .into_iter()
-            .filter_map(|device| self.reached(device, keeper.as_ref(), &workspace))
+            .filter_map(|device| self.providers().device(&workspace, device))
             .map(|device| ActionProvider::invoke(&device, caller, request.clone()))
             .collect();
         // The device that keeps the record answers it; every other one has nothing asked under
@@ -357,27 +352,6 @@ impl Workspaces {
             }
         }
         Err(refused.unwrap_or_else(nothing_asked))
-    }
-
-    /// The actions of `device`, a device of `workspace`, as this device reaches it: over the
-    /// link `device` holds open to this one, else dialled, at the address it signed into the
-    /// workspace where it is `keeper`, the device keeping the workspace, and by its key
-    /// otherwise.
-    fn reached(
-        &self,
-        device: [u8; 32],
-        keeper: Option<&([u8; 32], iroh::EndpointAddr)>,
-        workspace: &str,
-    ) -> Option<tilo_peer_state::actions::RemoteDevice> {
-        let service = self.action_service();
-        if let Some(linked) = service.remote_held(device, workspace) {
-            return Some(linked);
-        }
-        let address = match keeper {
-            Some((kept_by, address)) if *kept_by == device => address.clone(),
-            _ => iroh_base::EndpointAddr::new(iroh_base::EndpointId::from_bytes(&device).ok()?),
-        };
-        Some(service.remote(&self.inner.host.endpoint, &address, workspace))
     }
 
     /// Answer `request`, a person's `<record>#resolve`, as `caller`, from the records this

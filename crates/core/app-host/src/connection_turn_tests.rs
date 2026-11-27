@@ -536,9 +536,49 @@ async fn a_call_to_a_connection_goes_to_the_device_that_has_its_lease() {
     assert!(!desktop_has.runs_app(), "never on both");
 }
 
-/// Where this device's app calls send a call to an app that keeps a connection: the device that
-/// has the lease, reached over the link it has to it.
-struct Leased(Workspaces);
+/// How a device in these tests reaches the others, as the runtime's hosts do: where this
+/// device's app calls send a call to an app that keeps a connection (the device that has the
+/// lease, reached over the link it has to it), and where its answer to an ask another device
+/// keeps goes. A device it was told the address of stands in for the network's discovery.
+#[derive(Clone)]
+struct Leased {
+    workspaces: Workspaces,
+    discovered: Vec<([u8; 32], iroh_base::EndpointAddr)>,
+}
+
+impl Leased {
+    fn of(workspaces: &Workspaces) -> Self {
+        Self {
+            workspaces: workspaces.clone(),
+            discovered: Vec::new(),
+        }
+    }
+
+    /// The actions of `device`: over its link, else dialled where it was discovered, else by
+    /// its key.
+    fn device(&self, workspace: &str, device: [u8; 32]) -> tilo_peer_state::actions::RemoteDevice {
+        let service = self.workspaces.action_service();
+        if let Some(linked) = service.remote_held(device, workspace) {
+            return linked;
+        }
+        match self.discovered.iter().find(|(found, _)| *found == device) {
+            Some((_, address)) => tilo_workspace_service::workspaces::fixtures::reach_device_at(
+                &self.workspaces,
+                address,
+                workspace,
+            ),
+            None => reach(&self.workspaces, device, workspace),
+        }
+    }
+
+    /// Reach the other devices of `self`'s workspaces this way from now on.
+    fn reach_devices(self) {
+        let providers = self.workspaces.providers();
+        providers.reach_devices_through(Arc::new(move |workspace: &str, device: [u8; 32]| {
+            Some(self.device(workspace, device))
+        }));
+    }
+}
 
 impl crate::services::HostedWorkspaces for Leased {
     fn host_actions(&self, _: &str) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
@@ -551,11 +591,11 @@ impl crate::services::HostedWorkspaces for Leased {
         app: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ConnectionActions> + Send + 'a>> {
         Box::pin(async move {
-            match connection_call(&self.0, workspace, app).await {
+            match connection_call(&self.workspaces, workspace, app).await {
                 ConnectionCall::Here => ConnectionActions::Here,
                 ConnectionCall::Unplaced(why) => ConnectionActions::Unplaced(why),
                 ConnectionCall::On(device) => {
-                    ConnectionActions::On(Arc::new(reach(&self.0, device, workspace)))
+                    ConnectionActions::On(Arc::new(self.device(workspace, device)))
                 }
             }
         })
@@ -566,7 +606,7 @@ impl crate::services::HostedWorkspaces for Leased {
         workspace: &str,
         device: [u8; 32],
     ) -> Option<tilo_peer_state::actions::RemoteDevice> {
-        Some(reach(&self.0, device, workspace))
+        Some(self.device(workspace, device))
     }
 }
 
@@ -755,7 +795,7 @@ fn app_calls(
         Some(membership.authority()),
         crate::services::ProcessServices {
             providers: Some(workspaces.providers()),
-            hosted_workspaces: Some(Arc::new(Leased(workspaces.clone()))),
+            hosted_workspaces: Some(Arc::new(Leased::of(workspaces))),
             // A call is admitted with its evidence, as on a device.
             journal_root: Some(journal.to_path_buf()),
             ..membership.services()
@@ -1049,6 +1089,12 @@ async fn phone_joins(
     knows(phone.workspaces(), workspace, laptop_device).await;
     let phone_device = phone.workspaces().device_cert().device_public_key;
     knows(laptop.workspaces(), workspace, phone_device).await;
+    // The phone finds the laptop as the network's discovery would let it.
+    Leased {
+        discovered: vec![(laptop_device, laptop.node_addr())],
+        ..Leased::of(phone.workspaces())
+    }
+    .reach_devices();
     phone
 }
 
@@ -1204,15 +1250,6 @@ async fn a_call_its_person_must_allow_waits_for_their_answer(
     // nothing, and the agent reads on the desktop that they declined.
     let declined = post();
     let record = waits_in_its_record(&on_desktop, agent, declined.clone()).await;
-    // The phone finds the laptop as the network's discovery would let it.
-    let found = tilo_workspace_service::workspaces::fixtures::reach_device_at(
-        pair.phone.workspaces(),
-        &pair.laptop.node_addr(),
-        pair.workspace,
-    )
-    .certificate()
-    .await;
-    assert!(found.is_ok(), "the phone reaches the laptop: {found:?}");
     let answered = answer(
         pair.phone.workspaces(),
         &person(pair.phone_device),

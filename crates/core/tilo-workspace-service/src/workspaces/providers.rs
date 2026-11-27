@@ -247,6 +247,8 @@ struct Inner {
     /// The hosts of the workspaces placed on another device, once the embedder says where they
     /// are reached.
     hosts: std::sync::RwLock<Option<(HostsOf, HostsAnswer)>>,
+    /// How this device reaches another device of a workspace, once the embedder says.
+    devices: std::sync::RwLock<Option<DevicesOf>>,
     /// What answers for the seat while a person's shell serves it ([`Providers::serve_seat`]):
     /// held apart from the providers a call names, so no caller reaches it.
     seat: std::sync::RwLock<Option<ServedSeat>>,
@@ -274,6 +276,11 @@ pub struct ServedSeat {
 /// The actions of the host a workspace is placed on, by workspace: `None` for one this device
 /// hosts itself or holds alone.
 pub type HostsOf = Arc<dyn Fn(&str) -> Option<Arc<dyn ActionProvider + Send + Sync>> + Send + Sync>;
+
+/// The actions of a device of a workspace, by workspace and device key, as this device reaches
+/// it: `None` where it cannot.
+pub type DevicesOf =
+    Arc<dyn Fn(&str, [u8; 32]) -> Option<tilo_peer_state::actions::RemoteDevice> + Send + Sync>;
 
 /// Which typed actions of a placed workspace's records its host answers rather than this device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -790,6 +797,23 @@ impl Providers {
     /// to that host from now on, those `answer` says ([`Self::invoke`]).
     pub fn place_on_hosts(&self, hosts: HostsOf, answer: HostsAnswer) {
         *self.0.hosts.write_recover() = Some((hosts, answer));
+    }
+
+    /// Reach the other devices of a workspace through `devices` from now on ([`Self::device`]).
+    pub fn reach_devices_through(&self, devices: DevicesOf) {
+        *self.0.devices.write_recover() = Some(devices);
+    }
+
+    /// The actions of `device`, a device of `workspace`, as the embedder reaches it: `None`
+    /// before it says how, or where it cannot.
+    #[must_use]
+    pub fn device(
+        &self,
+        workspace: &str,
+        device: [u8; 32],
+    ) -> Option<tilo_peer_state::actions::RemoteDevice> {
+        let devices = self.0.devices.read_recover().clone()?;
+        devices(workspace, device)
     }
 
     /// The actions of the host the workspace `caller` asks in is placed on, for `request` when it
