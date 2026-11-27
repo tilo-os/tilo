@@ -147,16 +147,6 @@ fn strip_of(session: &Session, place: u64) -> Option<u64> {
     crate::common::strip_of(session, place).map(|strip| crate::common::number(&strip.key))
 }
 
-/// The places of the strip `strip`, in the record's order.
-fn places_of(session: &Session, strip: u64) -> Vec<u64> {
-    let key = strip.to_string();
-    crate::common::places(session)
-        .into_iter()
-        .filter(|place| place.strip == key)
-        .map(|place| crate::common::number(&place.key))
-        .collect()
-}
-
 /// The share of its row the strip `strip` keeps, in per-mille.
 fn width_of(session: &Session, strip: u64) -> i64 {
     crate::common::strip(session, strip).map_or_else(
@@ -227,11 +217,6 @@ fn let_go(session: &mut Session) {
     session.step(Duration::from_millis(16)).expect("step");
 }
 
-/// The middle of the rect `(x, y, w, h)` an on-screen control stands in.
-fn middle((x, y, w, h): (f64, f64, f64, f64)) -> (f64, f64) {
-    (x + w / 2.0, y + h / 2.0)
-}
-
 /// The window's own bar, by the name it says: the widest node the shell lays out with that name,
 /// since the window's bar and the pill showing its place both say it.
 fn bar_of(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
@@ -252,7 +237,7 @@ fn trailing_edge((x, y, w, h): (f64, f64, f64, f64)) -> (f64, f64) {
 }
 
 /// Where a window's leading edge is, on its bar: the border with the window before it.
-fn leading_edge((x, y, w, h): (f64, f64, f64, f64)) -> (f64, f64) {
+fn leading_edge((x, y, _w, h): (f64, f64, f64, f64)) -> (f64, f64) {
     (x + 2.0, y + h / 2.0)
 }
 
@@ -523,13 +508,11 @@ fn the_edge_light_and_size_chip_read_in_both_themes() {
                 .expect("the pointer");
             session.step(Duration::from_millis(16)).expect("step");
         }
-        let said: Vec<String> = session
-            .accessible_labels()
-            .into_iter()
-            .filter(|label| label.contains(" by "))
-            .collect();
         assert!(
-            !said.is_empty(),
+            session
+                .accessible_labels()
+                .iter()
+                .any(|label| label.contains(" by ")),
             "the size the edge is taking reads in the {name} theme"
         );
         crate::common::shot(&mut session, &format!("strips-edge-{name}"));

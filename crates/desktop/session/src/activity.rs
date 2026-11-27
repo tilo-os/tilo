@@ -1404,7 +1404,7 @@ mod tests {
         let kind = ResourceType::new("word-processor.document");
         let ids: Vec<DocumentId> = ["a", "b", "c"]
             .into_iter()
-            .map(|name| DocumentId::for_file(&format!("/run/tilo/chosen/records/0/{name}.txt")))
+            .map(|name| DocumentId::for_file(format!("/run/tilo/chosen/records/0/{name}.txt")))
             .collect();
         for id in &ids {
             let mut document = ui::automerge::AutoCommit::new();
