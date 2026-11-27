@@ -2508,10 +2508,27 @@ impl Driver {
         };
         // The address is one this window publishes, read the way an action's resource argument
         // is ([`Self::reference_arguments`]): the published resource names the app the run
-        // installed, and the row that presents it is the one a person opens.
+        // installed, and the row that presents it is the one a person opens — by the line it is
+        // titled with, which is how that row is reached by name too.
         let resources = self.resources();
         let published = find_resource(&resources, resource)?;
         let node = self.control_node_of_resource(published.id.as_str()).ok()?;
+        let title = self
+            .app
+            .inspect_node(node, |widget| {
+                widget
+                    .accessibility()
+                    .and_then(|access| access.title.or(access.name))
+            })
+            .ok()
+            .flatten()?;
+        let by_title = self.a11y_nodes_named(&title).into_iter().find(|id| {
+            self.a11y_node(*id)
+                .is_some_and(|described| described.supports_action(wanted))
+        });
+        if by_title.is_some() {
+            return by_title;
+        }
         let id = accesskit::NodeId(u64::from(node).saturating_add(1));
         self.a11y_nodes()
             .iter()
