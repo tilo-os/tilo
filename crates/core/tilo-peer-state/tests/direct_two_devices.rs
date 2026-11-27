@@ -426,7 +426,7 @@ impl Hosted {
         let b_dir = tempfile::tempdir().unwrap();
         let b = stored(&DirectSync::new(b, b_key.clone()), &b_dir);
         let host_endpoint = localhost_endpoint(&a_key).await;
-        let router = iroh::protocol::Router::builder(host_endpoint.clone())
+        let host_router = iroh::protocol::Router::builder(host_endpoint.clone())
             .accept(DIRECT_ALPN, a.clone())
             .spawn();
         let b_endpoint = localhost_endpoint(&b_key).await;
@@ -451,7 +451,7 @@ impl Hosted {
             _b_dir: b_dir,
             host_endpoint,
             b_endpoint,
-            router,
+            router: host_router,
             link,
         }
     }
@@ -486,7 +486,7 @@ async fn taken_in(
 ) -> std::collections::BTreeMap<&'static str, (usize, usize)> {
     let mut taken: std::collections::BTreeMap<&'static str, (usize, usize)> =
         std::collections::BTreeMap::new();
-    let end = tokio::time::Instant::now() + window;
+    let end = tokio::time::Instant::now().checked_add(window).unwrap();
     while let Ok(Some(heard)) = tokio::time::timeout_at(end, reader.recv()).await {
         let bytes = postcard::to_allocvec(&heard.message).map_or(0, |bytes| bytes.len());
         let entry = taken.entry(heard.message.kind()).or_default();
@@ -549,7 +549,7 @@ async fn a_device_that_holds_nothing_is_sent_everything() {
     let joined = StatePeer::from_join(
         WORKSPACE,
         hosted.a_cert.clone(),
-        hosted.a.read(|a| a.certificates()),
+        hosted.a.read(tilo_peer_state::StatePeer::certificates),
         &[],
         SystemTime::now(),
     )
