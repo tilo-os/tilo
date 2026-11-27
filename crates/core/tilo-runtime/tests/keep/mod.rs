@@ -18,7 +18,6 @@ mod linux_browser;
 mod linux_turn;
 mod machines;
 
-mod auth_reject;
 #[cfg(feature = "agents")]
 mod bridged_avatar;
 mod browser_transport;

@@ -88,7 +88,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     let server = start(scratch.path(), &alice, &host).await;
     let hosted = create_and_enter(&server, &laptop, "Private app records").await;
     let workspace = hosted.workspace_id;
-    members::admit(&server, &host, &member, &hosted.workspace).await;
+    admit(&server, &host, &member, &hosted.workspace).await;
     admit_viewer(&server, &host, &viewer, &hosted.workspace).await;
 
     let member_link = Linked::open(&server, &member, workspace)

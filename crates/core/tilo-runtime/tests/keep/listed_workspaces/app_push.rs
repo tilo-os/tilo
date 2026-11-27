@@ -82,8 +82,8 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     let server = start(state.path(), &alice, &host).await;
     let workspaces = server.workspaces().unwrap();
     let workspace = workspaces.create("Lounge").await.unwrap();
-    super::members::admit(&server, &host, &laptop, &workspace.workspace).await;
-    super::members::admit(&server, &host, &phone, &workspace.workspace).await;
+    admit(&server, &host, &laptop, &workspace.workspace).await;
+    admit(&server, &host, &phone, &workspace.workspace).await;
     let who = hex::encode(laptop.cert.user_public_key);
     workspaces
         .put_workspace_grants(

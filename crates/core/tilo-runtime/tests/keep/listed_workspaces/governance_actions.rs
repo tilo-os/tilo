@@ -231,7 +231,7 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
         .enter(&workspace.workspace, (&laptop.cert, &laptop.sk))
         .await
         .unwrap();
-    super::members::admit(&server, &host, &phone, &workspace.workspace).await;
+    admit(&server, &host, &phone, &workspace.workspace).await;
 
     // Alice's laptop invites through the action: the workspace records it, as
     // the administration entry would have.
@@ -484,7 +484,7 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
         .enter(&workspace.workspace, (&laptop.cert, &laptop.sk))
         .await
         .unwrap();
-    super::members::admit(&server, &host, &phone, &workspace.workspace).await;
+    admit(&server, &host, &phone, &workspace.workspace).await;
     let phone_link = subscribed(&server, &phone, workspace.workspace_id).await;
 
     // Removing is published on the person it removes, and answers the people left.

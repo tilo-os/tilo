@@ -133,6 +133,35 @@ async fn reaches(server: &Server, device: &TestDevice, host: &TestDevice) -> boo
         .is_ok()
 }
 
+/// A device whose certificate chains to another person's root is refused the
+/// workspace's link: the host proves the device it admits, and Bob's
+/// certificate is Bob's, not the member's it would take to enter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_of_another_person_opens_no_link() {
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let stranger = bob.enrol("bob-laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let server = start(state.path(), &alice, &host).await;
+    let plans = create_and_enter(&server, &laptop, "Plans").await;
+
+    assert!(
+        Linked::open(&server, &laptop, plans.workspace_id)
+            .await
+            .is_ok(),
+        "the workspace admits Alice's laptop"
+    );
+    assert!(
+        Linked::open(&server, &stranger, plans.workspace_id)
+            .await
+            .is_err(),
+        "a device of another person is refused the workspace's link"
+    );
+    server.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_workspace_it_hosts() {
     let alice = TestUser::fresh("Alice");
