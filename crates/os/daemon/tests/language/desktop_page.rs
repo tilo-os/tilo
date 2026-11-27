@@ -131,6 +131,11 @@ impl Page {
 
     /// `act` on the page, or with none, what moved on it since: its patches as one piece.
     async fn act(&self, act: Option<(u32, PageAction)>) -> String {
+        self.try_act(act).await.expect("the page is acted on")
+    }
+
+    /// [`Self::act`], or why the device refused the page.
+    async fn try_act(&self, act: Option<(u32, PageAction)>) -> Result<String, PageRefusal> {
         let pages = self.daemon.pages().unwrap();
         let patches = answered(pages.act(
             self.workspace,
@@ -142,9 +147,8 @@ impl Page {
                 signed: None,
             }),
         ))
-        .await
-        .expect("the page is acted on");
-        patched(&patches)
+        .await?;
+        Ok(patched(&patches))
     }
 
     /// The page as it moves, until `shows` is true of what it showed: the page whole first, then
@@ -153,14 +157,30 @@ impl Page {
         if shows(&self.opened.body) {
             return self.opened.body.clone();
         }
-        tilo_test_env::within(what, async {
+        let last = std::sync::Mutex::new(String::new());
+        let moving = async {
             loop {
                 let moved = self.act(None).await;
                 if shows(&moved) {
                     return moved;
                 }
+                if !moved.is_empty() {
+                    *last.lock().unwrap() = moved;
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
+        };
+        // Given up on before the harness's own bound, so the failure says what the page showed.
+        tilo_test_env::within(what, async {
+            tokio::time::timeout(Duration::from_secs(120), moving)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "{what}: the page showed {}\nand last moved {}",
+                        self.opened.body,
+                        last.lock().unwrap()
+                    )
+                })
         })
         .await
     }
@@ -540,23 +560,39 @@ fn a_press_on_the_desktop_page_changes_only_what_its_person_may() {
             )
             .await;
         let theirs = Page::of(&daemon, &workspace, &viewer).await;
-        presses_close_to_no_avail(&computer, &theirs, "a viewer's press closes nothing").await;
+        let close = tasks_close(&theirs).await;
+        presses_close_to_no_avail(
+            &computer,
+            (&theirs, close),
+            "a viewer's press closes nothing",
+        )
+        .await;
         theirs.close();
         the_persons_press_closes_it(&host, &computer).await;
     });
 }
 
-/// `page`, open on the workspace's desktop page while the computer shows Tasks: its press of the
-/// window's Close, answered, leaves the window where it is (`why` names whose press it is).
-async fn presses_close_to_no_avail(computer: &Computer, page: &Page, why: &str) {
+/// The Close button of the Tasks window `page` shows, once it shows it.
+async fn tasks_close(page: &Page) -> u32 {
     let shown = page
         .until("the page shows the window", |html| {
             button_in_window(html, "Tasks", "Close").is_some()
         })
         .await;
-    let close = button_in_window(&shown, "Tasks", "Close").unwrap();
-    page.act(Some((close, PageAction::Activate))).await;
-    page.act(None).await;
+    button_in_window(&shown, "Tasks", "Close").unwrap()
+}
+
+/// `page`'s press of `close`, the Close of the Tasks window the computer shows, refused or
+/// answered, leaves the window where it is (`why` names whose press it is).
+async fn presses_close_to_no_avail(computer: &Computer, (page, close): (&Page, u32), why: &str) {
+    if page
+        .try_act(Some((close, PageAction::Activate)))
+        .await
+        .is_ok()
+    {
+        // Whatever the press set going has ended by the page's next answer.
+        let _ = page.try_act(None).await;
+    }
     assert_eq!(computer.window_apps().await, [TASKS], "{why}");
 }
 
@@ -587,8 +623,17 @@ fn a_revoked_browser_key_acts_on_no_desktop_page() {
             "Ada's old browser",
             tilo_user_identity::DeviceCapabilities::member(),
         );
+        // The key is kept in the record of the person's devices, as every key their root
+        // certifies is: where its revocation is written.
+        tilo_workspace_service::workspaces::person_workspace::devices::keep(
+            daemon.workspaces(),
+            &cert,
+        )
+        .await
+        .expect("the person's devices record keeps the browser's key");
         let reader = host::linked(&cert, &workspace);
         let page = Page::of(&daemon, &workspace, &reader).await;
+        let close = tasks_close(&page).await;
 
         let revoke = tilo_actions::remote::InvokeRequest {
             argument: tilo_server_protocol::device_tickets::Revoke::retired(&hex::encode(
@@ -615,7 +660,12 @@ fn a_revoked_browser_key_acts_on_no_desktop_page() {
             ),
             "{revoked:?}"
         );
-        presses_close_to_no_avail(&computer, &page, "a revoked key's press closes nothing").await;
+        presses_close_to_no_avail(
+            &computer,
+            (&page, close),
+            "a revoked key's press closes nothing",
+        )
+        .await;
         page.close();
         let again = open(&daemon, &workspace, &reader).await;
         assert!(
@@ -643,10 +693,15 @@ fn a_removed_persons_browser_acts_on_no_desktop_page() {
             )
             .await;
         let page = Page::of(&daemon, &workspace, &editor).await;
+        let close = tasks_close(&page).await;
         host.remove_person(&workspace, editor.1.user_public_key)
             .await;
-        presses_close_to_no_avail(&computer, &page, "a removed person's press closes nothing")
-            .await;
+        presses_close_to_no_avail(
+            &computer,
+            (&page, close),
+            "a removed person's press closes nothing",
+        )
+        .await;
         page.close();
         let again = open(&daemon, &workspace, &editor).await;
         assert!(
@@ -710,8 +765,13 @@ fn another_persons_agent_key_reaches_no_host_action_on_a_desktop_page() {
                 workspace: collab_types::WorkspaceId::parse(&workspace).unwrap(),
                 opened,
             };
-            presses_close_to_no_avail(&computer, &page, "an agent key's press closes nothing")
-                .await;
+            let close = tasks_close(&page).await;
+            presses_close_to_no_avail(
+                &computer,
+                (&page, close),
+                "an agent key's press closes nothing",
+            )
+            .await;
             page.close();
         }
         the_persons_press_closes_it(&host, &computer).await;
