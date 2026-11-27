@@ -227,6 +227,17 @@ view desktop_style_settings(s: Shell) {
                 }
             }
         }
+        toggle("Magnify the item under the pointer", bind: s.dock_zoom)
+        if s.dock_zoom {
+            ui.Slider(
+                bind: s.dock_zoom_amount,
+                label: "Magnification",
+                min: 0.1,
+                max: 1.5,
+                step: 0.1,
+                shows_value: true,
+            )
+        }
         ui.ToggleGroup(caption: "When the dock shows", fill: true) {
             for showing in cases(Showing) {
                 ui.Segment(showing.label(), chosen: s.dock_showing == showing) {

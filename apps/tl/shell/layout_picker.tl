@@ -267,5 +267,15 @@ view dock_settings(s: Shell) {
         toggle("Running apps", bind: s.dock_running)
         toggle("Launcher entry", bind: s.dock_launcher)
         toggle("Magnify the item under the pointer", bind: s.dock_zoom)
+        if s.dock_zoom {
+            ui.Slider(
+                bind: s.dock_zoom_amount,
+                label: "Magnification",
+                min: 0.1,
+                max: 1.5,
+                step: 0.1,
+                shows_value: true,
+            )
+        }
     }
 }

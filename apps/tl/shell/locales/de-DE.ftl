@@ -66,6 +66,9 @@ d-h5oo7js2 = Launcher im Dock
 d-5n4s55tz = Dock-Zoom
     .doc = Ein Klick auf die Symbole des Docks vergrößert den Eintrag unter dem Zeiger, wie es das Dock von macOS tut.
 
+d-xf2a4hwd = Dock-Vergrößerung
+    .doc = Wie viel größer ein Dock-Eintrag unter dem Zeiger ist, wenn vergrößert wird: in seiner Mitte anderthalbmal so groß, ein paar Einträge weiter wieder seine eigene Größe.
+
 d-cejnvssb-filter-preset = Vorgabe
 
 d-cejnvssb-filter-based_on = Basiert auf
@@ -101,6 +104,8 @@ d-cejnvssb-filter-dock_running = Laufende im Dock
 d-cejnvssb-filter-dock_launcher = Launcher im Dock
 
 d-cejnvssb-filter-dock_zoom = Dock-Zoom
+
+d-cejnvssb-filter-dock_zoom_amount = Dock-Vergrößerung
 
 d-sfhd6wko = Leistenteil
     .doc = Ein Teil der oberen Leiste, in der Reihenfolge der Person.
@@ -352,6 +357,11 @@ d-z2w4wlev = Das Dock vergrößern
     .doc = Ob das Dock den Eintrag unter dem Zeiger vergrößert.
 
 d-z2w4wlev-on = Unter dem Zeiger
+
+d-pltwqaur = Wie sehr das Dock vergrößert
+    .doc = Wie viel größer der Eintrag unter dem Zeiger steht: mehr ergibt ein kühneres Dock, und nichts lässt jeden Eintrag seine Größe behalten.
+
+d-pltwqaur-amount = Vergrößerung
 
 d-vurzkuat = Verschieben
     .doc = Setzt ein Leistenteil zu dem, vor das es kommt, wo das Teil jetzt auch steht: die eine Aktion, die ein Ziehen abschickt, und dieselbe Änderung aus den Einstellungen, einem Tastenkürzel oder von einem Agenten.
@@ -677,6 +687,7 @@ d-e25dashr = Dockeinstellungen
     .w-running-apps = Laufende Apps
     .w-launcher-entry = Launcher-Eintrag
     .w-magnify-the-item-under-the-pointer = Den Eintrag unter dem Zeiger vergrößern
+    .w-magnification = Vergrößerung
 
 d-clgbrhsn = Hinweise
     .w-notifications = Benachrichtigungen
@@ -1186,6 +1197,8 @@ d-tcyusdmx = Einstellungen des Desktopstils
     .w-show-the-dock = Dock zeigen
     .w-dock-edge = Dock-Kante
     .w-dock-size = Dock-Größe
+    .w-magnify-the-item-under-the-pointer = Den Eintrag unter dem Zeiger vergrößern
+    .w-magnification = Vergrößerung
     .w-when-the-dock-shows = Wann das Dock zeigt
 
 d-naeq6y2p = Einstellungen des Reihenstils

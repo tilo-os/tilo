@@ -166,21 +166,27 @@ fn dock_item_name(item: DockItem) -> Text {
 /// is new, or the mark that it wants the person), as a dock has always badged an app. The count is
 /// the button's own (`count:`), so it stands on the glyph and never on the tile beside it, and the
 /// name read out says it.
+///
+/// Magnified, the tile under the pointer grows and the run gives it the room, as a dock's icons
+/// do: the growth is the toolkit's (`ui.Magnify`), where the pointer is known between frames, so
+/// a neighbouring item makes room in the same frame rather than a rebuild later.
 view dock_tile(s: Shell, item: DockItem) {
     let title = dock_item_name(item)
     let name = if item.badge == 0 { title } else { "{title}, {item.badge} new" }
-    ui.Button(
-        name,
-        icon: item.icon,
-        icon_only: true,
-        role: .plain,
-        size: if s.dock_size == .small {
-            .small
-        } else if s.dock_size == .large { .large } else { .regular },
-        count: item.badge,
-        dot: item.attention,
-        alert: item.attention,
-    ) {
-        on press: open_item(s, item.key)
+    ui.Magnify(zoom: if s.dock_zoom { s.dock_zoom_amount } else { 0.0 }) {
+        ui.Button(
+            name,
+            icon: item.icon,
+            icon_only: true,
+            role: .plain,
+            size: if s.dock_size == .small {
+                .small
+            } else if s.dock_size == .large { .large } else { .regular },
+            count: item.badge,
+            dot: item.attention,
+            alert: item.attention,
+        ) {
+            on press: open_item(s, item.key)
+        }
     }
 }

@@ -129,6 +129,7 @@ mod settings_storage;
 mod settings_users;
 mod settings_windows;
 mod shell_compiles;
+mod shell_magnify_shot;
 mod shell_media;
 mod shell_staged;
 mod slides_agent_words;

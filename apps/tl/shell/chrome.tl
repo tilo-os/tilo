@@ -153,6 +153,9 @@ type Shell {
     /// A click on the dock's icons magnifies the item under the pointer, as macOS's Dock
     /// does.
     dock_zoom: Bool = false
+    /// How much larger a dock item is under the pointer, when it magnifies: half again as large
+    /// at its middle (`0.5`), falling away to its own size a few items off.
+    dock_zoom_amount: Float = 0.5
     /// Whether the chosen style's own settings stand over the shell (`style_settings`), opened
     /// from the bar's style menu: the one place a person changes the style they show without an
     /// agent, as `shell.md` §6 says. It is the person's document, so
@@ -510,6 +513,16 @@ action set_dock_zoom(s: Shell, on: Bool (label: "Under the pointer")) (
     group: "Dock",
 ) {
     s.dock_zoom = on
+    s.tuned = true
+}
+
+/// How much larger the item under the pointer stands: more is a bolder dock, and nothing
+/// leaves every item its size.
+action set_dock_zoom_amount(s: Shell, amount: Float (label: "Magnification")) (
+    label: "How much the dock magnifies",
+    group: "Dock",
+) {
+    s.dock_zoom_amount = amount
     s.tuned = true
 }
 

@@ -105,7 +105,8 @@ scenario "a full dock" {
     s.dock_items.insert(DockItem(key: "a30", title: "Video", icon: "play"))
 }
 
-/// The dock on the leading edge, as a person who works in a wide column sets it.
+/// The dock on the leading edge, as a person who works in a wide column sets it, magnifying the
+/// item under the pointer as the dock's setting does.
 scenario "the dock on the left" {
     let d = root Layout
     d.person = "Ada Lovelace"
@@ -118,6 +119,7 @@ scenario "the dock on the left" {
     let s = shell
     s.dock_edge = .left
     s.dock_fit = .floating
+    s.dock_zoom = true
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
     s.dock_items.insert(DockItem(key: "chat", title: "Chat", icon: "message-square", running: true))

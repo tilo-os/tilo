@@ -960,6 +960,18 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked -p tilolang-tilo --test it -- shell_compiles::"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 
+# Pictures of a dock magnifying under the pointer, on the foot and up the leading edge, in both
+# themes: the captures of the tests that assert the item under the pointer grows past its
+# neighbours and the run gives it the room. Only when named.
+[[check]]
+name = "shell-magnify-shots"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "rm -rf /target/shell-magnify-shots\nTILO_SHELL_MAGNIFY_SHOTS=/target/shell-magnify-shots cargo test --locked -p tilolang-tilo --test it -- shell_magnify_shot::\n"
+env = { CARGO_PROFILE_DEV_DEBUG = "0" }
+outputs = ["/target/shell-magnify-shots/**"]
+timeout_secs = 3600
+default = false
+
 # Every app's committed surface.toml against its code, on every change: an
 # app's types, its actions and its stored fields are what the SDK's generated
 # types, the OS's view of an app that is not running and another device's
