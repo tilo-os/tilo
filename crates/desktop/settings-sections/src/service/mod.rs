@@ -149,6 +149,11 @@ impl SettingsService {
             }
         }
         for (id, app, mut held) in app_preferences(&device) {
+            // A system section keeps some apps' settings at their address: those are the
+            // section's, and the app declares no preferences beside them.
+            if crate::system_section_of(&app).is_some() {
+                continue;
+            }
             let Some(at) = resources.iter().position(|kept| kept.id.as_str() == id) else {
                 resources.push(ui::framework::app_preferences(
                     &id,
@@ -276,6 +281,11 @@ fn app_preferences(
                 let Value::Object(held) = held else {
                     return None;
                 };
+                // A system section keeps some apps' settings at their address: those are the
+                // section's, and the app declares no preferences beside them.
+                if crate::system_section_of(&app).is_some() {
+                    return None;
+                }
                 Some((
                     placement::address(section, Some(&app), device).id,
                     app,
@@ -416,6 +426,15 @@ impl Service for SettingsService {
         let stored = self.records.stored_at(resource);
         // An app's preferences, and a section kept among them as it reads them.
         if let Some((section, app, _)) = preference_at(resource, "set-") {
+            // A system section keeps some apps' settings at their own address: what stands
+            // there is what the section wrote, never an app's preferences beside them, and
+            // never a field's default shown as one the person chose.
+            if crate::system_section_of(&app).is_some_and(|(kept, _)| kept == section) {
+                return SettingsDocument::Session
+                    .section(section)
+                    .get(&app)
+                    .cloned();
+            }
             let mut held = SettingsDocument::Session
                 .section(section)
                 .get(&app)
