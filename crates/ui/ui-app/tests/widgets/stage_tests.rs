@@ -679,3 +679,15 @@ fn a_dragged_place_snaps_to_the_page_and_the_places_beside_it() {
     );
     host.dispatch_to_root(&synthetic_input::mouse_release());
 }
+
+/// The box the stage stands in is the stage's, so the container around it draws it.
+#[test]
+fn a_stage_answers_the_box_it_stands_in() {
+    let mut host = harness();
+    host.poll_frame().expect("the frame draws");
+    assert_eq!(
+        shown(&mut host).get_rect().width(),
+        800.0,
+        "a container sees the stage's box"
+    );
+}

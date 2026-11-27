@@ -598,7 +598,7 @@ mod cases {
                     ("font_size", Value::Opt(Some(Box::new(Value::Float(40.0))))),
                 ],
             );
-            let view = s.window();
+            let mut view = s.window();
             let mut stages = Vec::new();
             of_kind(view.tree(), "ui.Stage", &mut stages);
             let stage = stages
@@ -636,6 +636,20 @@ mod cases {
             assert!(
                 rail.len() > 1,
                 "the rail shows the slide as a picture of itself beside the stage"
+            );
+            // Presenting opens the presenter's view: the slide, the next one and its notes.
+            let present = button_named(&view, "Present").key.clone();
+            view.press(&present).unwrap();
+            view.poll_patches().unwrap();
+            let mut texts = Vec::new();
+            of_kind(view.tree(), "ui.Text", &mut texts);
+            assert!(
+                texts
+                    .iter()
+                    .any(|text| text.props.get("value").and_then(Value::as_text)
+                        == Some("Speaker notes")),
+                "the presenter's view offers the speaker's notes: {}",
+                dump(view.tree())
             );
         }
 

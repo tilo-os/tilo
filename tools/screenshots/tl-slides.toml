@@ -52,6 +52,3 @@ invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "add_slides", 
 
 [[situation.steps]]
 press = "Present"
-
-[[situation.steps]]
-press = "Presenter"

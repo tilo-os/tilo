@@ -1498,11 +1498,14 @@ view deck(d: Deck) {
                         }
                         if d.slides.len() > 0 {
                             ui.Button("Present", icon: .play, role: .primary, key: "p") {
+                                // A person presenting on this device sees the presenter's
+                                // view: the slide, the next one, and what they say over it.
+                                // The audience's screen is the presentation itself.
                                 on press: begin_presenting(d)
                                     .then(set(presenting, true))
-                                    .then(set(presenter, false))
+                                    .then(set(presenter, true))
                                     .then(
-                                        set(notes_shown, false),
+                                        set(notes_shown, true),
                                     )
                                     .then(set(blanked, ""))
                             }
@@ -1630,7 +1633,7 @@ view slide_page(s: Slide) {
         content: {
             ui.Scroll {
                 stack(gap: .group, padding: .related) {
-                    slide_picture(d, s, "Slide", .none)
+                    slide_picture(d, s, "Slide")
                     ui.Text("Speaker notes", role: .caption, secondary: true)
                     ui.BlockEditor(bind: s.notes, placeholder: "What you say over this slide")
                 }
@@ -1649,7 +1652,7 @@ view box_page(e: Element) {
             content: {
                 ui.Scroll {
                     stack(gap: .group, padding: .related) {
-                        slide_picture(d, s, "Slide", .none)
+                        slide_picture(d, s, "Slide")
                         ui.Text("The box's words", role: .caption, secondary: true)
                         ui.BlockEditor(bind: e.body, placeholder: "Add text", size: e.font_size)
                     }
@@ -1746,7 +1749,8 @@ view slide_stage(
     pan: State<List<Float>>,
     editing: State<Bool>,
 ) {
-    layers(fill) {
+    // The page's own shape: the width given, and the height the slide's 1280 × 720 takes.
+    layers(fill, aspect: 16.0 / 9.0) {
         ui.Stage(
             name: "Slide",
             canvas: [1280, 720],
@@ -2140,7 +2144,7 @@ view present_view(
             ) {
             }
         } else if presenter {
-            presenter_view(d, shown, current, notes_shown)
+            presenter_view(d, shown, current)
         } else if let s = shown {
             ui.Stage(
                 name: "Presentation",
@@ -2260,7 +2264,7 @@ fn clock_text(seconds: Int) -> Text {
 }
 
 /// The presenter's view: the slide being shown, the next one, and what the speaker says.
-view presenter_view(d: Deck, shown: Option<Slide>, current: State<Text>, notes_shown: State<Bool>) {
+view presenter_view(d: Deck, shown: Option<Slide>, current: State<Text>) {
     split(side: .trailing, collapse: .stack) {
         primary(min: 24rem) {
             stack(gap: .related) {
@@ -2269,7 +2273,7 @@ view presenter_view(d: Deck, shown: Option<Slide>, current: State<Text>, notes_s
                         "Slide {(d.slides.index_of(s) ?? 0) + 1} of {d.slides.len()}",
                         role: .subheading,
                     )
-                    slide_picture(d, s, "Current", .none)
+                    slide_picture(d, s, "Current")
                 }
             }
         }
@@ -2277,7 +2281,7 @@ view presenter_view(d: Deck, shown: Option<Slide>, current: State<Text>, notes_s
             stack(gap: .related) {
                 if let next = next_slide(d, current) {
                     ui.Text("Next", role: .subheading)
-                    slide_picture(d, next, "Next slide", .some(216.0))
+                    slide_picture(d, next, "Next slide")
                 } else {
                     ui.Text("End of the presentation", role: .body, secondary: true)
                 }
@@ -2299,25 +2303,22 @@ view presenter_view(d: Deck, shown: Option<Slide>, current: State<Text>, notes_s
     }
 }
 
-/// A slide as a picture of itself: what the rail, the presenter and the overview show.
-view slide_picture(d: Deck, s: Slide, name: Text, height: Option<Float>) {
-    ui.Stage(
-        name: name,
-        canvas: [1280, 720],
-        background: slide_ground(d, s),
-        height: height,
-        aspect: 16 / 9,
-    ) {
-        for e in s.elements {
-            ui.StagePin(
-                name: element_label(e),
-                item: e.id(),
-                x: e.x,
-                y: e.y,
-                width: e.w,
-                height: e.h,
-            ) {
-                element_view(d, s, e, "", false, 1.0)
+/// A slide as a picture of itself: what the rail, the presenter and the overview show. The page
+/// stands in a box the slide's own shape sets, so it is drawn however wide the window gives it.
+view slide_picture(d: Deck, s: Slide, name: Text) {
+    layers(fill, aspect: 16.0 / 9.0) {
+        ui.Stage(name: name, canvas: [1280, 720], background: slide_ground(d, s)) {
+            for e in s.elements {
+                ui.StagePin(
+                    name: element_label(e),
+                    item: e.id(),
+                    x: e.x,
+                    y: e.y,
+                    width: e.w,
+                    height: e.h,
+                ) {
+                    element_view(d, s, e, "", false, 1.0)
+                }
             }
         }
     }
@@ -2342,7 +2343,7 @@ view overview_grid(d: Deck, current: State<Text>, overview: State<Bool>) {
                         selected: s.id() == current,
                     ) {
                         on activate: set(current, s.id()).then(set(overview, false))
-                        slide_picture(d, s, "Slide {index + 1}", .some(162.0))
+                        slide_picture(d, s, "Slide {index + 1}")
                     }
                 }
             }

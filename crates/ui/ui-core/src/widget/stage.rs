@@ -1280,6 +1280,12 @@ impl Widget for Stage {
         self.layout_dirty = false;
     }
 
+    /// The box the stage stands in. Without it a container takes the stage for a widget that
+    /// paints nothing and leaves it out of its frames, however the page is placed.
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
             || self.layout_dirty
