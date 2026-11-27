@@ -2929,13 +2929,14 @@ fn a_trashed_message_is_deleted_for_good_on_the_server() {
     session.until("the server to delete it for good", |_| {
         servers.imap.messages("[Gmail]/Trash").is_empty()
     });
-    assert!(
+    // The record leaves the workspace as the window's store takes the deletion in: what is
+    // waited for is the store's change, not a moment after the server answered.
+    session.until("the window to take the deletion in", |session| {
         !session
             .threads()
             .iter()
-            .any(|thread| session.text(thread, "subject") == "Launch plan"),
-        "the conversation goes with its last message"
-    );
+            .any(|thread| session.text(thread, "subject") == "Launch plan")
+    });
     // The untouched conversation is still there, in the inbox.
     assert_eq!(session.threads().len(), 1);
     assert_eq!(servers.imap.messages("INBOX").len(), 1);
