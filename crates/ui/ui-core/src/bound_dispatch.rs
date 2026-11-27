@@ -1,7 +1,9 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
 #[cfg(feature = "model")]
 mod bound_widget;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "model", not(any(test, feature = "test-support"))))]
+pub(crate) use bound_widget::history_owner;
+#[cfg(all(feature = "model", any(test, feature = "test-support")))]
 #[doc(hidden)]
 pub use bound_widget::history_owner;
 #[cfg(feature = "model")]
