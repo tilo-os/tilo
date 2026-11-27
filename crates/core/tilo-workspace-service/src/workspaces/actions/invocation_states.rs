@@ -175,6 +175,7 @@ pub(super) fn still_running(
                 .log()
                 .complete(&invocation, failed(invocation, &error.to_string()));
         }
+        actions.moved();
     });
     receipt
 }

@@ -469,6 +469,29 @@ impl RecordRef {
             message: Some(format!("{}/{}", self.workspace, self.record)),
         }
     }
+
+    /// The record `update` says its invocation waits in for its person ([`Self::waiting`]):
+    /// `None` for an update that says anything else.
+    #[must_use]
+    pub fn waited_in(update: &crate::InvocationUpdate) -> Option<Self> {
+        let crate::InvocationUpdate::Progress {
+            phase,
+            message: Some(message),
+            ..
+        } = update
+        else {
+            return None;
+        };
+        if phase != ASKED_PHASE {
+            return None;
+        }
+        let (workspace, record) = message.split_once('/')?;
+        Some(Self {
+            workspace: workspace.to_owned(),
+            record: record.to_owned(),
+            device: None,
+        })
+    }
 }
 
 /// What writes a call that waits for a person's yes as its own invocation

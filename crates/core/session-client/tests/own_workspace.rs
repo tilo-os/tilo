@@ -25,7 +25,7 @@ use std::sync::Arc;
 use serde_json::{Map, json};
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_session_client::device::{Device, DeviceRefusal};
+use tilo_session_client::device::{Awaiting, Device, DeviceRefusal};
 use tilo_session_client::{Outbox as _, PeerConfig};
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 use tilo_workspace_service::workspaces::OwnWorkspaceOffer;
@@ -70,6 +70,34 @@ async fn take_in(
             .expect("the person's device takes the workspace in"),
         id
     );
+}
+
+/// How long a key follows an operation its person was asked about, once they answered.
+const FOLLOWING: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The person answers the question `awaiting` waits in with `resolution`, from `device`, a device
+/// of theirs in the workspace that keeps the question.
+async fn answer(device: &Device, awaiting: &Awaiting, resolution: &str) {
+    let workspace = tilo_server_protocol::WorkspaceId::parse(&awaiting.ask.workspace)
+        .expect("the question is kept in a workspace");
+    assert!(
+        device.holds(workspace),
+        "the person's device is in the workspace that keeps the question: {awaiting:?}"
+    );
+    device
+        .ask_host(
+            workspace,
+            tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    &awaiting.ask.record,
+                    tilo_actions::remote::asked::RESOLVE,
+                ),
+            },
+            Map::from_iter([("resolution".into(), json!(resolution))]),
+        )
+        .await
+        .expect("the person's answer is taken");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -429,16 +457,90 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         )
         .await
         .unwrap_err();
-    // Its grant names one workspace: making another is the person's to allow,
-    // so they are asked on the devices that hold their identity.
-    assert_eq!(made.code, "awaiting_approval", "{made:?}");
+    // Its grant names one workspace: making another is the person's to allow, so they are asked
+    // on the devices that hold their identity. The host keeps the make for them, and the key
+    // reads that it waits, and in which record.
+    assert_eq!(made.code, DeviceRefusal::AWAITING_APPROVAL, "{made:?}");
+    let more = made.awaiting.expect("the make that waits is named");
     assert!(
         script
             .enter_workspace(&elsewhere.workspace, "A script")
             .await
             .is_err()
     );
+    // Bob says no on his tab, and the key that followed the make reads his no: nothing is made.
+    answer(&device, &more, "decline").await;
+    let declined = script
+        .answer_of(&more, FOLLOWING)
+        .await
+        .expect_err("a declined make makes nothing");
+    assert_eq!(declined.code, DeviceRefusal::DECLINED, "{declined:?}");
+    assert_eq!(declined.awaiting, None);
     script.close();
+
+    // A key Bob made for all his workspaces deletes one of them only once he says yes: its
+    // delete waits for him, and his yes answers it with the deletion.
+    let scratch = device
+        .enter_own_workspace("en-US", Some("Scratch"), "Bob", |_| false, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        device.join(&scratch.workspace).await.unwrap(),
+        scratch.workspace_id
+    );
+    let helper_key = new_key();
+    let helper_cert = tilo_server_client::certification::issue_agent_grant(
+        &bob,
+        helper_key.verifying_key().to_bytes(),
+        "A helper",
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        Some(tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000)),
+    )
+    .await
+    .unwrap();
+    let helper = Device::over(
+        PeerConfig {
+            host: host.iroh(),
+            cert: helper_cert,
+            server_cert: host_device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+            entering: None,
+        },
+        Arc::new(helper_key),
+        "A helper",
+    );
+    helper.connected().await.unwrap();
+    let deleting = helper
+        .host_action(
+            tilo_server_protocol::workspaces::DELETE_WORKSPACE,
+            Map::from_iter([("workspace".into(), json!(scratch.workspace))]),
+        )
+        .await
+        .expect_err("deleting waits for Bob");
+    assert_eq!(
+        deleting.code,
+        DeviceRefusal::AWAITING_APPROVAL,
+        "{deleting:?}"
+    );
+    let deleting = deleting.awaiting.expect("the delete that waits is named");
+    assert!(
+        workspaces
+            .own_workspaces_of(&bob_person)
+            .contains(&scratch.workspace),
+        "nothing is deleted before his yes"
+    );
+    answer(&device, &deleting, "approve").await;
+    helper
+        .answer_of(&deleting, FOLLOWING)
+        .await
+        .expect("his yes deletes it, and the key reads the deletion");
+    assert!(
+        !workspaces
+            .own_workspaces_of(&bob_person)
+            .contains(&scratch.workspace),
+        "his yes deleted the workspace"
+    );
+    helper.close();
 
     laptop_peer.close();
     tab.close();

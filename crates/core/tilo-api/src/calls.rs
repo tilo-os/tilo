@@ -857,15 +857,17 @@ impl Calls {
     }
 
     /// Run `action` on the account's `resource` (`account/workspaces`, `create`), which no
-    /// workspace keeps: what it answered. One put to the person, who has not answered yet, is
-    /// refused as waiting for them: it is done once they allow it.
+    /// workspace keeps: what it answered. One put to the person is followed while they decide,
+    /// for a while ([`Self::follow`]); one they have not answered by then is refused as waiting
+    /// for them: it is done once they allow it.
     ///
     /// # Errors
-    /// The action was refused or failed.
+    /// The action was refused or failed, the person declined it, or it still waits for them.
     pub async fn account(&self, resource: &str, action: &str, args: &Value) -> Result<Value> {
-        let mut answer = self
+        let answer = self
             .invoke(None, &format!("{resource}#{action}"), args, None, None)
             .await?;
+        let mut answer = self.follow(None, answer).await?;
         if answer.get("status").and_then(Value::as_str) == Some("pending") {
             return Err(anyhow::Error::new(Refusal {
                 code: crate::v1::AWAITING_APPROVAL.to_owned(),

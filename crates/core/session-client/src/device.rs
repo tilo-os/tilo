@@ -6,8 +6,10 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 use tilo_action_services::server_account::Refusal;
 use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::asked::RecordRef;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_client::login::Admission;
@@ -861,39 +863,44 @@ impl Device {
             },
         )
         .await?;
-        let unfinished =
-            || DeviceRefusal::unanswered("the server did not finish what was asked of it");
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
             ReceiptStatus::Failed { error } => Err(DeviceRefusal::failed(&error.message)),
             ReceiptStatus::Rejected { error } => Err(DeviceRefusal::of(&error)),
             ReceiptStatus::Cancelled { .. } => Err(unfinished()),
-            // Still going when the wait for its answer ran out (a server
-            // making hundreds of workspaces at once): followed until it ends.
+            // Still going when the wait for its answer ran out (a server making hundreds of
+            // workspaces at once), or kept for its person's yes: followed until it ends, or until
+            // it says it waits for them.
             ReceiptStatus::Accepted => {
                 let now = tilo_clock::now();
-                let until = now.checked_add(FINISHING).unwrap_or(now);
-                let settled = tilo_actions::remote::settle_with(
+                followed(
                     &actions,
                     &caller,
-                    receipt.invocation,
-                    None,
-                    until,
+                    (receipt.invocation, UpdateMark::Accepted),
+                    now.checked_add(FINISHING).unwrap_or(now),
                 )
                 .await
-                .flatten()
-                .ok_or_else(unfinished)?;
-                match settled.update {
-                    InvocationUpdate::Succeeded { output, .. } => {
-                        Ok(output.value.unwrap_or_default())
-                    }
-                    InvocationUpdate::Failed { error, .. } => {
-                        Err(DeviceRefusal::failed(&error.message))
-                    }
-                    _ => Err(unfinished()),
-                }
             }
         }
+    }
+
+    /// What the operation `awaiting` came to once its person answered: the operation's answer
+    /// after their yes, a refusal ([`DeviceRefusal::DECLINED`]) after their no. Followed for up
+    /// to `wait`; still waiting for them then, it is refused as [`DeviceRefusal::AWAITING_APPROVAL`]
+    /// again, with what follows it on.
+    ///
+    /// # Errors
+    /// The person declined it, the operation failed once they allowed it, it still waits for
+    /// them, or the server did not answer.
+    pub async fn answer_of(&self, awaiting: &Awaiting, wait: Wait) -> Result<Value, DeviceRefusal> {
+        let now = tilo_clock::now();
+        followed(
+            &awaiting.actions,
+            &self.caller(),
+            (awaiting.invocation, awaiting.seen),
+            now.checked_add(wait).unwrap_or(now),
+        )
+        .await
     }
 
     /// Who this session asks as: the person whose device it is.
@@ -915,6 +922,95 @@ impl Device {
         self.peer.close();
     }
 }
+
+/// The server's answer to the operation `invocation` it accepted, followed from the update `seen`
+/// until `until`: its answer once it ends, or, while it waits in its asked record for its person,
+/// a refusal that says so and names what follows it ([`DeviceRefusal::awaiting`]).
+async fn followed(
+    actions: &SessionActions,
+    caller: &Caller,
+    (invocation, mut seen): (tilo_actions::InvocationId, UpdateMark),
+    until: tilo_clock::time::Instant,
+) -> Result<Value, DeviceRefusal> {
+    loop {
+        let state =
+            tilo_actions::remote::settle_with(actions, caller, invocation, Some(seen), until)
+                .await
+                .flatten()
+                .ok_or_else(unfinished)?;
+        if let Some(ask) = RecordRef::waited_in(&state.update) {
+            return Err(DeviceRefusal::awaiting(Awaiting {
+                invocation,
+                ask,
+                seen: UpdateMark::of(&state.update),
+                actions: actions.clone(),
+            }));
+        }
+        match state.update {
+            InvocationUpdate::Succeeded { output, .. } => {
+                return Ok(output.value.unwrap_or_default());
+            }
+            InvocationUpdate::Failed { error, .. } => {
+                return Err(DeviceRefusal::failed(&error.message));
+            }
+            InvocationUpdate::Cancelled { message, .. }
+                if message.as_deref() == Some(tilo_actions::remote::asked::DECLINED) =>
+            {
+                return Err(DeviceRefusal::declined());
+            }
+            InvocationUpdate::Cancelled { .. } => return Err(unfinished()),
+            moving => {
+                // Moved on and still going: followed from where it stands now, until it stands
+                // still past `until`.
+                let now = UpdateMark::of(&moving);
+                if now == seen || tilo_clock::now() >= until {
+                    return Err(unfinished());
+                }
+                seen = now;
+            }
+        }
+    }
+}
+
+/// An operation the server did not finish within the span it was followed.
+fn unfinished() -> DeviceRefusal {
+    DeviceRefusal::unanswered("the server did not finish what was asked of it")
+}
+
+/// An operation of the server's own that waits in its asked record for its person's yes: what a
+/// caller follows on ([`Device::answer_of`]) until they answer, on a device that holds their
+/// identity.
+#[derive(Clone, serde::Serialize)]
+pub struct Awaiting {
+    /// The operation's invocation, which answers how it ended.
+    pub invocation: tilo_actions::InvocationId,
+    /// The record its person answers it in.
+    pub ask: RecordRef,
+    /// How far its updates had got when it was last read.
+    #[serde(skip)]
+    seen: UpdateMark,
+    /// The device's actions it was asked through, which follow it.
+    #[serde(skip)]
+    actions: SessionActions,
+}
+
+impl std::fmt::Debug for Awaiting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Awaiting")
+            .field("invocation", &self.invocation)
+            .field("ask", &self.ask)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The same operation, waiting in the same record.
+impl PartialEq for Awaiting {
+    fn eq(&self, other: &Self) -> bool {
+        self.invocation == other.invocation && self.ask == other.ask
+    }
+}
+
+impl Eq for Awaiting {}
 
 /// The server's receipt for `request`, asked again under the same invocation while it answers
 /// [`ActionCallError::Unanswered`]: that answer does not say nothing ran, and the same invocation
@@ -1080,6 +1176,7 @@ pub async fn entering_certificate(
             refusal: None,
             retry_after_ms: None,
             entry: None,
+            awaiting: None,
         });
     };
     tilo_server_client::invite::guest_certificate(root, device.device_public_key(), label, now_ns)
@@ -1090,6 +1187,7 @@ pub async fn entering_certificate(
             refusal: None,
             retry_after_ms: None,
             entry: None,
+            awaiting: None,
         })
 }
 
@@ -1128,6 +1226,7 @@ pub async fn invitation_entry(
                 refusal: None,
                 retry_after_ms: None,
                 entry: None,
+                awaiting: None,
             }
         })?;
     let cert = entering_certificate(
@@ -1273,6 +1372,7 @@ pub async fn entered(peer: &Link) -> Result<Admission, DeviceRefusal> {
                     refusal: None,
                     retry_after_ms: retry_after_secs.map(|secs| secs.saturating_mul(1000)),
                     entry: entry.clone(),
+                    awaiting: None,
                 })));
             }
             None => {}
@@ -1312,6 +1412,10 @@ pub struct DeviceRefusal {
     /// about a wait list the workspace keeps, which its page offers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry: Option<tilo_server_protocol::directory::EntryRefused>,
+    /// The operation, where it waits for its person's yes ([`Self::AWAITING_APPROVAL`]): what
+    /// follows it until they answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub awaiting: Option<Awaiting>,
 }
 
 impl DeviceRefusal {
@@ -1326,8 +1430,10 @@ impl DeviceRefusal {
     /// The device holds no certificate it could enter with, and no root to certify it.
     pub const NO_CERTIFICATE: &'static str = "no_certificate";
     /// The operation waits for the person to approve it on a device that holds their identity,
-    /// and goes on once they allow it.
+    /// and goes on once they allow it ([`Self::awaiting`] follows it).
     pub const AWAITING_APPROVAL: &'static str = tilo_actions::remote::AWAITING_APPROVAL;
+    /// The person declined the operation: nothing of it was done.
+    pub const DECLINED: &'static str = tilo_actions::remote::asked::DECLINED;
     /// The server does not know the person yet: its operator declares them an owner, or an
     /// invitation brings them in.
     pub const NOT_ON_THIS_SERVER: &'static str = tilo_actions::remote::NOT_ON_THIS_SERVER;
@@ -1339,13 +1445,6 @@ impl DeviceRefusal {
     #[must_use]
     pub fn of(error: &ActionCallError) -> Self {
         match error {
-            // The server put it to the person, who has not answered yet: it goes on once they
-            // allow it.
-            ActionCallError::Refused { reason }
-                if reason.starts_with(tilo_actions::remote::AWAITING_APPROVAL) =>
-            {
-                Self::awaiting_approval()
-            }
             // A refusal the host names in a code of its own: the code, and what it said.
             ActionCallError::Refused { reason } => {
                 match [Self::NOT_ON_THIS_SERVER, Self::HOSTS_NONE_FOR_PEOPLE]
@@ -1360,6 +1459,7 @@ impl DeviceRefusal {
                         refusal: None,
                         retry_after_ms: None,
                         entry: None,
+                        awaiting: None,
                     },
                     None => Self::said(error.code(), reason),
                 }
@@ -1375,6 +1475,7 @@ impl DeviceRefusal {
             refusal: None,
             retry_after_ms: None,
             entry: None,
+            awaiting: None,
         }
     }
 
@@ -1384,9 +1485,9 @@ impl DeviceRefusal {
         Self::said(Self::FAILED, message)
     }
 
-    /// The operation waits for its person's approval ([`Self::AWAITING_APPROVAL`]).
+    /// The operation `awaiting` waits for its person's approval ([`Self::AWAITING_APPROVAL`]).
     #[must_use]
-    pub fn awaiting_approval() -> Self {
+    pub fn awaiting(awaiting: Awaiting) -> Self {
         Self {
             code: Self::AWAITING_APPROVAL.to_owned(),
             message: "Waiting for your approval: Tilo asks you on the devices that hold your \
@@ -1395,6 +1496,20 @@ impl DeviceRefusal {
             refusal: None,
             retry_after_ms: None,
             entry: None,
+            awaiting: Some(awaiting),
+        }
+    }
+
+    /// The person declined the operation ([`Self::DECLINED`]).
+    #[must_use]
+    pub fn declined() -> Self {
+        Self {
+            code: Self::DECLINED.to_owned(),
+            message: "You declined it, so nothing was done.".to_owned(),
+            refusal: None,
+            retry_after_ms: None,
+            entry: None,
+            awaiting: None,
         }
     }
 
@@ -1407,6 +1522,7 @@ impl DeviceRefusal {
             refusal: None,
             retry_after_ms: None,
             entry: None,
+            awaiting: None,
         }
     }
 
@@ -1419,6 +1535,7 @@ impl DeviceRefusal {
             refusal: None,
             retry_after_ms: None,
             entry: None,
+            awaiting: None,
         }
     }
 
@@ -1432,6 +1549,7 @@ impl DeviceRefusal {
                 refusal: None,
                 retry_after_ms: None,
                 entry: Some(entry),
+                awaiting: None,
             };
         }
         let refusal = Refusal::from_reason(reason);
@@ -1443,6 +1561,7 @@ impl DeviceRefusal {
             refusal,
             retry_after_ms: None,
             entry: None,
+            awaiting: None,
         }
     }
 }
@@ -1466,6 +1585,7 @@ impl From<CertifyError> for DeviceRefusal {
                 refusal: None,
                 retry_after_ms: None,
                 entry: None,
+                awaiting: None,
             },
             other => Self::unanswered(&other.to_string()),
         }

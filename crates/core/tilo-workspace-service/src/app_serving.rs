@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+use tilo_lock::MutexRecover as _;
+
 use tilo_actions::remote::{ActionProvider, Caller, Pending, RemoteActionMessage, ResourceReads};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::page::{
@@ -79,6 +81,20 @@ pub trait AppActionServer: Send + Sync {
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
         let _ = (caller, certificate, message);
+        None
+    }
+
+    /// Resolves the next time the host's own operation `id`, which `caller` on the device
+    /// `certificate` names asked ([`Self::serve_host`]), may have moved, as
+    /// [`ActionProvider::next_change`] says: so whoever follows one that waits for its person
+    /// hears their answer when it comes. `None` where this server cannot tell.
+    fn host_change(
+        &self,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<Pending<()>> {
+        let _ = (caller, certificate, id);
         None
     }
 
@@ -898,7 +914,48 @@ pub(crate) struct HostOperations {
     /// The workspaces held here: whose people, beside whom the operator trusts, the host
     /// knows.
     workspaces: crate::workspaces::WeakWorkspaces,
+    /// The operations the host accepted without answering them at once, each followed by the
+    /// device that asked it.
+    followed: Arc<std::sync::Mutex<Followed>>,
     runtime: tokio::runtime::Handle,
+}
+
+/// How many accepted operations the host follows for the devices that asked them: the oldest
+/// beyond it is let go of, ended or not, and its asker hears nothing more of it.
+const FOLLOWED: usize = 1024;
+
+/// The operations [`HostOperations`] accepted, by invocation, oldest first.
+#[derive(Default)]
+struct Followed {
+    by_id: std::collections::HashMap<tilo_actions::InvocationId, Asker>,
+    order: std::collections::VecDeque<tilo_actions::InvocationId>,
+}
+
+/// Who asked an operation the host accepted: the device whose link it came over, and the
+/// caller and certificate the operation runs as, so each look at it is asked as its invoke was.
+#[derive(Clone)]
+struct Asker {
+    device: [u8; 32],
+    caller: Caller,
+    certificate: tilo_user_identity::DeviceCert,
+    /// Whether its asker has read that it waits for its person: until then a look at it answers
+    /// at once ([`HostOperations::next_change`]).
+    told: bool,
+}
+
+impl Followed {
+    fn follow(&mut self, invocation: tilo_actions::InvocationId, asker: Asker) {
+        if self.by_id.contains_key(&invocation) {
+            return;
+        }
+        self.by_id.insert(invocation, asker);
+        self.order.push_back(invocation);
+        while self.order.len() > FOLLOWED {
+            if let Some(oldest) = self.order.pop_front() {
+                self.by_id.remove(&oldest);
+            }
+        }
+    }
 }
 
 impl HostOperations {
@@ -920,7 +977,44 @@ impl HostOperations {
             server,
             revocations,
             workspaces,
+            followed: Arc::default(),
             runtime: tokio::runtime::Handle::current(),
+        }
+    }
+
+    /// Who asked the operation `id`, where `caller`'s device is the one that asked it: no other
+    /// device follows it.
+    fn asker(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Asker> {
+        let device = caller.device_public_key()?;
+        self.followed
+            .lock_recover()
+            .by_id
+            .get(id)
+            .filter(|asker| asker.device == *device)
+            .cloned()
+    }
+
+    /// How the operation `id` stands, as the host answers `asker` for it.
+    fn state_for(
+        &self,
+        asker: &Asker,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        let mut answer = self.server.serve_host(
+            &asker.caller,
+            &asker.certificate,
+            RemoteActionMessage::Observe {
+                correlation: 0,
+                invocation: *id,
+                wait_ms: None,
+                seen: None,
+            },
+        )?;
+        match answer.poll_ready() {
+            tilo_actions::remote::PendingPoll::Ready(RemoteActionMessage::Update {
+                state, ..
+            }) => state,
+            _ => None,
         }
     }
 
@@ -969,43 +1063,6 @@ impl HostOperations {
     }
 }
 
-/// Whether the host's operation `receipt` accepted waits in its asked record for its person's
-/// yes ([`tilo_actions::remote::asked::ASKED_PHASE`]).
-async fn asked_of_its_person(
-    server: &dyn AppActionServer,
-    (caller, certificate): (&Caller, &tilo_user_identity::DeviceCert),
-    receipt: &tilo_actions::remote::InvocationReceipt,
-) -> bool {
-    if !matches!(
-        receipt.status,
-        tilo_actions::remote::ReceiptStatus::Accepted
-    ) {
-        return false;
-    }
-    let Some(observed) = server.serve_host(
-        caller,
-        certificate,
-        RemoteActionMessage::Observe {
-            correlation: 0,
-            invocation: receipt.invocation,
-            wait_ms: None,
-            seen: None,
-        },
-    ) else {
-        return false;
-    };
-    matches!(
-        observed.await,
-        Some(RemoteActionMessage::Update {
-            state: Some(tilo_actions::remote::InvocationState {
-                update: tilo_actions::InvocationUpdate::Progress { ref phase, .. },
-                ..
-            }),
-            ..
-        }) if phase == tilo_actions::remote::asked::ASKED_PHASE
-    )
-}
-
 /// Whether `target` asks this host to hold a workspace another host serves.
 fn asks_to_hold(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
     target.provider == tilo_server_protocol::workspaces::HOST_ACTIONS_PROVIDER
@@ -1034,12 +1091,13 @@ impl ActionProvider for HostOperations {
 
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> Pending<
         Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
         use tilo_actions::remote::ActionCallError;
+        let asking = caller.device_public_key().copied();
         let certificate = match self.certificate(&request) {
             Ok(certificate) => certificate,
             Err(error) => return Pending::ready(Err(error)),
@@ -1058,6 +1116,7 @@ impl ActionProvider for HostOperations {
         }
         let caller = tilo_peer_state::key_caller::caller_of_key_here(&certificate);
         let server = Arc::clone(&self.server);
+        let followed = Arc::clone(&self.followed);
         let (completer, answer) = tilo_actions::remote::pending();
         self.runtime.spawn(async move {
             let Some(reply) =
@@ -1074,44 +1133,89 @@ impl ActionProvider for HostOperations {
                 }));
                 return;
             };
-            completer.complete(Ok(
-                if asked_of_its_person(&*server, (&caller, &certificate), &receipt).await {
-                    // Kept as its asked record until its person answers on a device that holds
-                    // their identity; whoever asked hears that it waits for them. This operation is
-                    // the host's own, in no workspace whose invocations the asker reads.
-                    tilo_actions::remote::InvocationReceipt {
-                        invocation: receipt.invocation,
-                        status: tilo_actions::remote::ReceiptStatus::Rejected {
-                            error: ActionCallError::Refused {
-                                reason: tilo_actions::remote::AWAITING_APPROVAL_REASON.to_owned(),
-                            },
-                        },
-                    }
-                } else {
-                    receipt
-                },
-            ));
+            // Accepted and not answered yet (its work goes on, or it waits in its asked record for
+            // its person's yes): the device that asked follows it from here, as the caller and
+            // certificate it runs as.
+            if let (tilo_actions::remote::ReceiptStatus::Accepted, Some(device)) =
+                (&receipt.status, asking)
+            {
+                followed.lock_recover().follow(
+                    receipt.invocation,
+                    Asker {
+                        device,
+                        caller,
+                        certificate,
+                        told: false,
+                    },
+                );
+            }
+            completer.complete(Ok(receipt));
         });
         answer
     }
 
     fn observe(
         &self,
-        _caller: &Caller,
-        _id: &tilo_actions::InvocationId,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::InvocationState> {
-        None
+        let asker = self.asker(caller, id)?;
+        let state = self.state_for(&asker, id);
+        if state.as_ref().is_some_and(waits_for_its_person)
+            && let Some(asker) = self.followed.lock_recover().by_id.get_mut(id)
+        {
+            asker.told = true;
+        }
+        state
     }
 
+    /// An operation that waits for its person is followed until they answer once its asker has
+    /// read that it waits: its first look answers at once, so the receipt of an operation kept
+    /// for a person who may take hours is never held for them.
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        let asker = self.asker(caller, id)?;
+        if !asker.told
+            && self
+                .state_for(&asker, id)
+                .as_ref()
+                .is_some_and(waits_for_its_person)
+        {
+            return None;
+        }
+        self.server
+            .host_change(&asker.caller, &asker.certificate, id)
+    }
+
+    /// Stopping an operation that waits for its person withdraws its question; one under way is
+    /// the host's to refuse.
     fn cancel(
         &self,
-        _caller: &Caller,
-        _id: &tilo_actions::InvocationId,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
     ) -> Pending<Result<(), tilo_actions::remote::ActionCallError>> {
-        Pending::ready(Err(
-            tilo_actions::remote::ActionCallError::UnknownInvocation,
-        ))
+        use tilo_actions::remote::ActionCallError;
+        let Some(asker) = self.asker(caller, id) else {
+            return Pending::ready(Err(ActionCallError::UnknownInvocation));
+        };
+        let Some(answer) = self.server.serve_host(
+            &asker.caller,
+            &asker.certificate,
+            RemoteActionMessage::Cancel { invocation: *id },
+        ) else {
+            return Pending::ready(Err(ActionCallError::UnknownInvocation));
+        };
+        answer.map(|answer| match answer {
+            RemoteActionMessage::CancelResponse { result, .. } => result,
+            _ => Err(ActionCallError::Unavailable {
+                reason: "the host answered no cancel".into(),
+            }),
+        })
     }
+}
+
+/// Whether `state` waits in its asked record for its person's yes.
+fn waits_for_its_person(state: &tilo_actions::remote::InvocationState) -> bool {
+    tilo_actions::remote::asked::RecordRef::waited_in(&state.update).is_some()
 }
 
 /// The entry a device asks before it is a member, answered on the host's action service for the

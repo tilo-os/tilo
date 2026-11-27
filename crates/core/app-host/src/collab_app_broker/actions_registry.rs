@@ -302,10 +302,6 @@ fn answered(
             invocation,
             serde_json::to_value(record(InvocationStatus::Waiting, None)).unwrap_or_default(),
         ),
-        Err(error) if error.awaits_person() => completed(
-            invocation,
-            serde_json::to_value(record(InvocationStatus::Waiting, None)).unwrap_or_default(),
-        ),
         Err(error) => InvocationReceipt {
             invocation,
             status: ReceiptStatus::Rejected { error },

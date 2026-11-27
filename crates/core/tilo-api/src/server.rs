@@ -126,8 +126,8 @@ pub enum ServerError {
     NoHolder,
     /// It waits for the person to approve it on a device that holds their
     /// identity, and goes on once they allow it there: what the person is
-    /// told.
-    AwaitingApproval(String),
+    /// told, and the operation, which follows it until they answer.
+    AwaitingApproval(String, Box<tilo_session_client::device::Awaiting>),
     /// The server is part of a Tilo desktop, which answers its own
     /// workspaces and keeps no account: nothing makes, branches or deletes
     /// workspaces or keys there.
@@ -145,7 +145,7 @@ impl std::fmt::Display for ServerError {
         match self {
             Self::NotFound => f.write_str("no such workspace of yours"),
             Self::KeyRevoked => f.write_str("this key was revoked"),
-            Self::AwaitingApproval(said) | Self::NotOnThisServer(said) => f.write_str(said),
+            Self::AwaitingApproval(said, _) | Self::NotOnThisServer(said) => f.write_str(said),
             Self::NoAccountHere => f.write_str(
                 "This Tilo desktop answers its own workspaces only: do this in Tilo itself.",
             ),
@@ -201,10 +201,19 @@ impl From<CertifyError> for ServerError {
     }
 }
 
+/// `refusal`, with a workspace that is not the person's own answered as no such workspace, so a
+/// guess learns nothing.
+pub fn not_yours_not_found(refusal: DeviceRefusal) -> ServerError {
+    match ServerError::from(refusal) {
+        ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => ServerError::NotFound,
+        other => other,
+    }
+}
+
 impl From<DeviceRefusal> for ServerError {
     fn from(refusal: DeviceRefusal) -> Self {
-        if refusal.code == DeviceRefusal::AWAITING_APPROVAL {
-            return Self::AwaitingApproval(refusal.message);
+        if let Some(awaiting) = refusal.awaiting {
+            return Self::AwaitingApproval(refusal.message, Box::new(awaiting));
         }
         if refusal.code == DeviceRefusal::NOT_ON_THIS_SERVER {
             return Self::NotOnThisServer(refusal.message);
@@ -432,29 +441,35 @@ impl Server {
     }
 
     /// Make one of the person's workspaces as `connection`, with the server's own operation
-    /// `action` (making one, or branching one of theirs) and its `arguments`: the workspace it
-    /// made, or, asked again under the same id, the one it made before. The grant enters it only
-    /// once a run acts there ([`Server::enter`]).
+    /// `action` (making one, or branching one of theirs) and its `arguments`, under
+    /// `invocation`: the workspace it made, or, asked again under the same id, the one it made
+    /// before. The grant enters it only once a run acts there ([`Server::enter`]).
     ///
     /// # Errors
-    /// Not one of the person's own workspaces to branch ([`ServerError::NotFound`]), or the server
-    /// refused (a branch naming what did not come) or was not reached.
+    /// Not one of the person's own workspaces to branch ([`ServerError::NotFound`]), the server
+    /// refused (a branch naming what did not come) or was not reached, or it waits for the
+    /// person ([`ServerError::AwaitingApproval`], answered by [`Self::made`] once they allow it).
     pub async fn make(
         &self,
         connection: &Connection,
         action: &str,
         arguments: Map<String, Value>,
+        invocation: tilo_actions::InvocationId,
     ) -> Result<Workspace, ServerError> {
         let output = connection
             .device
-            .host_action(action, arguments)
+            .server_action_as(action, arguments, invocation)
             .await
-            .map_err(|refusal| match ServerError::from(refusal) {
-                ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => {
-                    ServerError::NotFound
-                }
-                other => other,
-            })?;
+            .map_err(not_yours_not_found)?;
+        Self::made(connection, output)
+    }
+
+    /// The workspace the server answered making one of the person's with (`output`), as
+    /// `connection` reaches it.
+    ///
+    /// # Errors
+    /// The server answered no workspace.
+    pub fn made(connection: &Connection, output: Value) -> Result<Workspace, ServerError> {
         let made: tilo_server_protocol::workspaces::CreatedWorkspace =
             serde_json::from_value(output).map_err(|error| {
                 ServerError::Unavailable(format!("the server answered no workspace: {error}"))
@@ -464,15 +479,17 @@ impl Server {
     }
 
     /// Delete the person's own `workspace` as `connection` (reaching all
-    /// their workspaces): final, with everything the server keeps of it.
+    /// their workspaces), under `invocation`: final, with everything the server keeps of it.
     ///
     /// # Errors
     /// Not one of the person's own workspaces ([`ServerError::NotFound`]),
-    /// or the server refused or was not reached.
+    /// the server refused or was not reached, or it waits for the person
+    /// ([`ServerError::AwaitingApproval`], deleted once they allow it).
     pub async fn delete(
         &self,
         connection: &Connection,
         workspace: &str,
+        invocation: tilo_actions::InvocationId,
     ) -> Result<(), ServerError> {
         if tilo_server_protocol::WorkspaceId::parse(workspace).is_none() {
             return Err(ServerError::NotFound);
@@ -481,19 +498,20 @@ impl Server {
         arguments.insert("workspace".into(), json!(workspace));
         connection
             .device
-            .host_action(
+            .server_action_as(
                 tilo_server_protocol::workspaces::DELETE_WORKSPACE,
                 arguments,
+                invocation,
             )
             .await
-            .map_err(|refusal| match ServerError::from(refusal) {
-                ServerError::RefusedWorkspace(WorkspaceRefusal::NotYourOwn) => {
-                    ServerError::NotFound
-                }
-                other => other,
-            })?;
-        lock(&connection.entered).remove(workspace);
+            .map_err(not_yours_not_found)?;
+        Self::deleted(connection, workspace);
         Ok(())
+    }
+
+    /// The person's `workspace` was deleted: `connection` enters it no more.
+    pub fn deleted(connection: &Connection, workspace: &str) {
+        lock(&connection.entered).remove(workspace);
     }
 
     /// Name the workspace `workspace` `name` as `connection`: the one name the

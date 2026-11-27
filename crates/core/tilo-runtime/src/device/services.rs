@@ -6631,8 +6631,8 @@ impl RuntimeActionProvider {
         self.invoke_as_session(caller, request, session)
     }
 
-    /// The call itself, as the session's own run: recorded as its invocation, and, where it
-    /// waits for the person's yes, noted as waiting so the listing shows it.
+    /// The call itself, as the session's own run, recorded as its invocation: one kept for the
+    /// person's yes where it was sent says so in its state, which the listing reads.
     fn invoke_as_session(
         &self,
         caller: &Caller,
@@ -6640,7 +6640,6 @@ impl RuntimeActionProvider {
         session: &AdmittedRuntimeSession,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let runs_as = session.acting().clone();
-        let invocation = request.invocation;
         self.invocations.record(
             caller,
             session.acting(),
@@ -6648,22 +6647,7 @@ impl RuntimeActionProvider {
             Some(&self.workspace),
             (Arc::clone(&session.provider), runs_as.clone()),
         );
-        let records = Arc::clone(&self.invocations);
-        session
-            .provider
-            .invoke(&runs_as, request)
-            .map(move |result| {
-                // A call the person is asked about goes on and ends once they decide: the record
-                // says it waits for them, which the listing shows.
-                if result
-                    .as_ref()
-                    .err()
-                    .is_some_and(ActionCallError::awaits_person)
-                {
-                    records.note_waiting(&invocation);
-                }
-                result
-            })
+        session.provider.invoke(&runs_as, request)
     }
 
     /// The run the person's own call waits on as its asked record: the press it came from,

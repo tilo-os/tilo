@@ -818,15 +818,7 @@ impl Invocations {
             Some(original),
         );
         let (provider, runs_as) = recorded.route.clone();
-        let waiting = Arc::clone(records);
         provider.invoke(&runs_as, request).map(move |result| {
-            if result
-                .as_ref()
-                .err()
-                .is_some_and(ActionCallError::awaits_person)
-            {
-                waiting.note_waiting(&fresh);
-            }
             result.map(|_| InvocationReceipt {
                 invocation: asked,
                 status: ReceiptStatus::Completed {

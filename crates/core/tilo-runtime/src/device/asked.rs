@@ -393,16 +393,6 @@ impl DeviceAsked {
         provider
             .invoke(&acting, request.clone())
             .map(move |answered| match refused_for_a_yes(&answered) {
-                // Kept where it was sent, for its person to answer there: it goes on, and the
-                // listing says it waits for them.
-                None if answered
-                    .as_ref()
-                    .err()
-                    .is_some_and(ActionCallError::awaits_person) =>
-                {
-                    me.invocations.note_waiting(&call.invocation);
-                    answered
-                }
                 Some(facts) if call.approval().is_none() => me.keep(
                     Waiting {
                         run,

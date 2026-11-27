@@ -1069,9 +1069,10 @@ async fn a_signed_agents_invocation_asks_before_deleting_a_workspace() {
     let waits = settled(operations.invoke(&caller(&agent), deleting))
         .await
         .unwrap();
-    assert!(
-        !matches!(waits.status, ReceiptStatus::Completed { .. }),
-        "deleting waits for its person: {waits:?}"
+    assert_eq!(
+        waits.status,
+        ReceiptStatus::Accepted,
+        "deleting is accepted and waits for its person: {waits:?}"
     );
     let asked = tilo_actions::remote::asked::AskedRecords::asked_of(
         &*workspaces.asked_records().unwrap(),
@@ -1080,6 +1081,22 @@ async fn a_signed_agents_invocation_asks_before_deleting_a_workspace() {
     assert!(
         asked.iter().any(|asked| asked.workspace == workspace),
         "the question waits for the person: {asked:?}"
+    );
+    // The device that asked follows it, and reads the record it waits in; no other device reads
+    // anything of it.
+    let state = operations
+        .observe(&caller(&agent), &waits.invocation)
+        .expect("the device that asked follows it");
+    assert!(
+        tilo_actions::remote::asked::RecordRef::waited_in(&state.update)
+            .is_some_and(|ask| asked.iter().any(|asked| asked.record == ask)),
+        "it waits in the record its person is asked in: {state:?}"
+    );
+    assert!(
+        operations
+            .observe(&caller(&own_key), &waits.invocation)
+            .is_none(),
+        "another device follows none of it"
     );
     assert!(
         workspaces.owns(&person, &workspace),

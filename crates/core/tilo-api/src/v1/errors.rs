@@ -116,7 +116,7 @@ impl From<crate::server::ServerError> for ApiError {
                 )
             }
             // Never "unreached": the person is asked, and it is done once they allow it.
-            ServerError::AwaitingApproval(_) => {
+            ServerError::AwaitingApproval(..) => {
                 Self::new(crate::v1::AWAITING_APPROVAL, error.to_string())
             }
             // Nothing that can read the workspace answered: what to do is in

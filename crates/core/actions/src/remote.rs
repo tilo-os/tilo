@@ -1008,8 +1008,9 @@ impl InvocationState {
 /// [`ApiError::ConfirmationRequired`]: crate::api::ApiError::ConfirmationRequired
 pub const CONFIRMATION_REQUIRED_CODE: &str = "action_confirmation_required";
 
-/// The phase of an invocation's [`InvocationUpdate::Progress`] while it waits for its person to
-/// approve it on a device that holds their identity: it goes on once they allow it.
+/// The code a caller reads for a call that waits for its person to approve it on a device that
+/// holds their identity, which its state says ([`asked::ASKED_PHASE`]): it goes on once they
+/// allow it.
 pub const AWAITING_APPROVAL: &str = "awaiting_approval";
 
 /// The code a server refuses a person it does not know yet with: its operator has not declared
@@ -1044,10 +1045,6 @@ pub fn not_on_this_server(person: &[u8; 32]) -> ActionCallError {
         ),
     }
 }
-
-/// The reason a provider refuses its caller for now with, when what it asked was put to its
-/// person and they have not answered: the invocation goes on, and is done once they allow it.
-pub const AWAITING_APPROVAL_REASON: &str = "awaiting_approval: it waits for its person to approve it on a device that holds their identity";
 
 /// Why a provider would not do what was asked. Every variant but [`Self::Unanswered`] means
 /// nothing ran.
@@ -1177,13 +1174,6 @@ impl ActionCallError {
         Self::Unavailable {
             reason: reason.into(),
         }
-    }
-
-    /// Whether this answer says the invocation waits for its person: the call goes on and ends
-    /// once they decide.
-    #[must_use]
-    pub fn awaits_person(&self) -> bool {
-        matches!(self, Self::Refused { reason } if reason == AWAITING_APPROVAL_REASON)
     }
 
     /// Stable machine-readable code.

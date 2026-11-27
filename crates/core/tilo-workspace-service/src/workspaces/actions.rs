@@ -3786,6 +3786,9 @@ pub(crate) struct Shared {
     >,
     /// The calls that wait in their asked records (`asked_calls`).
     pub(super) asked_calls: AskedCalls,
+    /// Told each time a call that was not answered at once moved: its person answered it, or its
+    /// work ended. What a follow of the host's own operations waits on ([`ServiceWorkspaceActions::host_change`]).
+    moved: tokio::sync::watch::Sender<()>,
 }
 
 /// The calls that wait in their asked records, each with the workspace and the device certificate
@@ -3812,6 +3815,7 @@ impl ServiceWorkspaceActions {
                 mcp_follows: Mutex::default(),
                 live: Mutex::default(),
                 asked_calls: Mutex::default(),
+                moved: tokio::sync::watch::channel(()).0,
             }),
         }
     }
@@ -3990,6 +3994,35 @@ impl ServiceWorkspaceActions {
     /// Whether `caller` started invocation `id` here.
     fn admitted(&self, caller: &Caller, id: &InvocationId) -> bool {
         self.log().get(caller, id).is_some()
+    }
+
+    /// A call that was not answered at once moved: whoever follows one wakes and reads it again.
+    pub(super) fn moved(&self) {
+        self.shared.moved.send_replace(());
+    }
+
+    /// Resolves the next time the host's own operation `id`, asked by `caller` on the device
+    /// `certificate` names, may have moved: while it waits for its person's yes, once they
+    /// answer, and while its work goes on, once it ends. `None` for one that ended, or that is
+    /// not `caller`'s.
+    pub(crate) fn host_change(
+        &self,
+        certificate: &DeviceCert,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> Option<Pending<()>> {
+        // Taken before the state is read, so a move in between still wakes the follow.
+        let mut moved = self.shared.moved.subscribe();
+        if let Some(change) = self.as_host(certificate).next_change(caller, id) {
+            return Some(change);
+        }
+        if self.log().get(caller, id)?.is_terminal() {
+            return None;
+        }
+        Some(self.spawn(async move {
+            // Bounded, as a waiter's deadline is only checked when woken.
+            let _ = tokio::time::timeout(FOLLOW_WAKE, moved.changed()).await;
+        }))
     }
 
     /// The answer `work` gives, on the server's runtime: a workspace is decided
@@ -4371,10 +4404,12 @@ impl InWorkspace {
                 ))
                 .await
             });
-            match answered_within(&mut work, wait).await {
+            let answered = match answered_within(&mut work, wait).await {
                 Some(ran) => ended(&host, &call, ran).await,
                 None => Ok(still_running(&host, call, work)),
-            }
+            };
+            host.moved();
+            answered
         })
     }
 }
@@ -4723,6 +4758,15 @@ impl AppActionServer for HostActionServer {
         tilo_actions::remote::serve(&self.governance.as_host(certificate), caller, message)
     }
 
+    fn host_change(
+        &self,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        id: &InvocationId,
+    ) -> Option<Pending<()>> {
+        self.governance.host_change(certificate, caller, id)
+    }
+
     fn route(
         &self,
         workspace_id: WorkspaceId,
@@ -4929,6 +4973,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
         );
         drop(log);
         drop(asking);
+        server.moved();
         let here = InWorkspace {
             server,
             workspace_id,
@@ -4969,6 +5014,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             );
         }
         drop(log);
+        server.moved();
     }
 
     fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
@@ -4997,6 +5043,7 @@ impl tilo_actions::remote::asked::AskedDispatch for HostAsked {
             ),
         );
         drop(log);
+        server.moved();
         Ok(())
     }
 }

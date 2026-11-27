@@ -651,9 +651,15 @@ struct Running {
 enum Run {
     /// The person is asked for a key: its poll secret.
     Key(String),
+    /// A workspace's host keeps it for its person's yes, as this state says, and the account
+    /// follows it there until they answer.
+    Awaiting(InvocationState),
     /// It ended so.
     Ended(InvocationState),
 }
+
+/// What an operation the person is asked about answers once they decide.
+type Decided = std::pin::Pin<Box<dyn std::future::Future<Output = Outcome> + Send>>;
 
 /// What an action answered.
 pub(crate) enum Outcome {
@@ -667,6 +673,9 @@ pub(crate) enum Outcome {
     Held(SessionActions),
     /// Run at a provider, recorded so its caller follows it there by its receipt.
     Ran(Box<InvocationReceipt>),
+    /// Asked of the server, which keeps it for the person's yes in the record named: the caller
+    /// follows it here, and it ends as the server answers once they decide.
+    Awaiting(tilo_actions::remote::asked::RecordRef, Decided),
     Failed {
         code: &'static str,
         message: String,
@@ -707,7 +716,7 @@ pub(crate) fn refused(error: &ServerError) -> Outcome {
         ServerError::Unavailable(_) => {
             failed("unavailable", error.to_string(), "try again shortly")
         }
-        ServerError::AwaitingApproval(_) => failed(
+        ServerError::AwaitingApproval(..) => failed(
             crate::v1::AWAITING_APPROVAL,
             error.to_string(),
             "tell the person to approve it in their Tilo; it is done once they allow it",
@@ -753,6 +762,40 @@ pub(crate) fn not_branched(error: &ServerError) -> Option<Outcome> {
         format!("The branch wasn't made: {part} didn't come along. Nothing of it was kept."),
         "try the same call again in a little while; if the same part fails again, tell the person",
     ))
+}
+
+/// How long one follow of an operation the person is asked about waits for their answer before
+/// the account looks whether it still keeps the invocation.
+const DECIDING: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The state invocation `id` ends in once it answered `outcome`.
+fn ended(id: InvocationId, outcome: Outcome) -> InvocationState {
+    let update = match outcome {
+        Outcome::Ok(value) => InvocationUpdate::Succeeded {
+            invocation: id,
+            output: ActionOutput {
+                value: Some(value),
+                ..ActionOutput::default()
+            },
+        },
+        Outcome::Failed {
+            code,
+            message,
+            next,
+        } => InvocationUpdate::Failed {
+            invocation: id,
+            error: failure(code, message, &next),
+        },
+        _ => InvocationUpdate::Failed {
+            invocation: id,
+            error: failure(
+                "unavailable",
+                "the server answered nothing the operation ends with".to_owned(),
+                "try again",
+            ),
+        },
+    };
+    InvocationState::new(id, update)
 }
 
 /// The failure `outcome` says, as an invocation ends with it.
@@ -940,6 +983,15 @@ impl Account {
                 }
             }
             Outcome::Ran(receipt) => receipt.status,
+            Outcome::Awaiting(ask, decided) => {
+                self.keep(id, Run::Awaiting(InvocationState::new(id, ask.waiting(id))));
+                let account = self.clone();
+                tokio::spawn(async move {
+                    let outcome = decided.await;
+                    account.keep(id, Run::Ended(ended(id, outcome)));
+                });
+                ReceiptStatus::Accepted
+            }
             Outcome::Failed {
                 code,
                 message,
@@ -1030,18 +1082,13 @@ impl Account {
                 "only one of the person's devices keeps workspaces",
                 "ask it on the device that is to keep the workspace",
             ),
-            Op::CreateWorkspace | Op::BranchWorkspace => {
-                let (action, arguments) = match server_operation(op, args) {
-                    Ok(asked) => asked,
-                    Err(outcome) => return outcome,
-                };
-                match key.server().make(&key, action, arguments).await {
-                    Ok(made) => Outcome::Ok(json!({"workspace": made})),
-                    Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
-                }
-            }
+            Op::CreateWorkspace | Op::BranchWorkspace => self.make(key, op, id, args).await,
             Op::RenameWorkspace => rename_workspace(&key, args).await,
-            Op::DeleteWorkspace => server.delete_workspace(&grant, &key, args).await,
+            Op::DeleteWorkspace => {
+                server
+                    .delete_workspace(self, (&grant, &key), (id, args))
+                    .await
+            }
             Op::Unattended => self.unattended(&key, id, args).await,
             Op::CreateKey => server.create_key(args),
             Op::MintKey => server.mint(&grant, &key, args).await,
@@ -1614,6 +1661,58 @@ impl Account {
         })
     }
 
+    /// Make one of the key's person's workspaces, or branch one, as `op` and `args` say, under
+    /// `id`: the workspace, at once or once the person allowed it.
+    async fn make(&self, key: Arc<Connection>, op: Op, id: InvocationId, args: &Value) -> Outcome {
+        let (action, arguments) = match server_operation(op, args) {
+            Ok(asked) => asked,
+            Err(outcome) => return outcome,
+        };
+        let made = key.server().make(&key, action, arguments, id).await;
+        let answered = |made: Result<crate::server::Workspace, ServerError>| match made {
+            Ok(made) => Outcome::Ok(json!({"workspace": made})),
+            Err(error) => not_branched(&error).unwrap_or_else(|| refused(&error)),
+        };
+        match made {
+            Err(ServerError::AwaitingApproval(_, awaiting)) => {
+                let ask = awaiting.ask.clone();
+                let account = self.clone();
+                Outcome::Awaiting(
+                    ask,
+                    Box::pin(async move {
+                        answered(
+                            account
+                                .decided(&key, *awaiting, id)
+                                .await
+                                .and_then(|output| crate::server::Server::made(&key, output)),
+                        )
+                    }),
+                )
+            }
+            made => answered(made),
+        }
+    }
+
+    /// What the server answered the operation `awaiting` once the person decided, as `key`
+    /// asked it: followed while it waits for them and the account still keeps the invocation
+    /// `id` it answers.
+    async fn decided(
+        &self,
+        key: &Connection,
+        mut awaiting: tilo_session_client::device::Awaiting,
+        id: InvocationId,
+    ) -> Result<Value, ServerError> {
+        loop {
+            match key.device.answer_of(&awaiting, DECIDING).await {
+                Err(tilo_session_client::device::DeviceRefusal {
+                    awaiting: Some(still),
+                    ..
+                }) if self.knows(&self.0.caller, &id) => awaiting = still,
+                answered => return answered.map_err(crate::server::not_yours_not_found),
+            }
+        }
+    }
+
     /// How the key the person was asked for under `poll` went, as invocation `id`.
     fn key_state(server: &Server, id: InvocationId, poll: &str) -> InvocationState {
         let ended = |code: &str, message: &str, next: &str| InvocationUpdate::Failed {
@@ -1762,7 +1861,7 @@ impl ActionProvider for Account {
         }
         let running = crate::lock(&self.0.running);
         match running.by_id.get(id)? {
-            Run::Ended(state) => Some(state.clone()),
+            Run::Ended(state) | Run::Awaiting(state) => Some(state.clone()),
             Run::Key(poll) => {
                 let poll = poll.clone();
                 drop(running);
@@ -2010,7 +2109,12 @@ impl ActionProvider for Joined {
 
 impl Server {
     /// Delete the workspace `args` names, and every key that reached only it.
-    async fn delete_workspace(&self, grant: &Grant, key: &Connection, args: &Value) -> Outcome {
+    async fn delete_workspace(
+        self: &Arc<Self>,
+        account: &Account,
+        (grant, key): (&Grant, &Arc<Connection>),
+        (id, args): (InvocationId, &Value),
+    ) -> Outcome {
         let Some(workspace) = field(args, "workspace") else {
             return failed(
                 "invalid_arguments",
@@ -2018,11 +2122,33 @@ impl Server {
                 "pass {workspace: \"<id>\"}; account/workspaces#list names them",
             );
         };
-        if let Err(error) = key.server().delete(key, workspace).await {
-            return refused(&error);
+        match key.server().delete(key, workspace, id).await {
+            Ok(()) => {}
+            // The person is asked: deleted, and its keys revoked, once they allow it.
+            Err(ServerError::AwaitingApproval(_, awaiting)) => {
+                let ask = awaiting.ask.clone();
+                let (server, account, key) = (Arc::clone(self), account.clone(), Arc::clone(key));
+                let (person, workspace) = (grant.person.clone(), workspace.to_owned());
+                return Outcome::Awaiting(
+                    ask,
+                    Box::pin(async move {
+                        if let Err(error) = account.decided(&key, *awaiting, id).await {
+                            return refused(&error);
+                        }
+                        crate::server::Server::deleted(&key, &workspace);
+                        server.workspace_deleted(&person, &workspace).await
+                    }),
+                );
+            }
+            Err(error) => return refused(&error),
         }
-        // Every key that reached only that workspace goes with it.
-        let revoked = self.revoke_keys_for(&grant.person, workspace).await;
+        self.workspace_deleted(&grant.person, workspace).await
+    }
+
+    /// `person`'s `workspace` was deleted: every key that reached only that workspace goes with
+    /// it.
+    async fn workspace_deleted(&self, person: &str, workspace: &str) -> Outcome {
+        let revoked = self.revoke_keys_for(person, workspace).await;
         Outcome::Ok(json!({"deleted": workspace, "revoked_keys": revoked}))
     }
 

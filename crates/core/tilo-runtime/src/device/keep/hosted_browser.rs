@@ -1827,6 +1827,15 @@ impl tilo_workspace_service::app_serving::AppActionServer for Beside {
         self.rest()?.serve_host(caller, certificate, message)
     }
 
+    fn host_change(
+        &self,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<Pending<()>> {
+        self.rest()?.host_change(caller, certificate, id)
+    }
+
     /// Whether the host answers at all: the Browser answers the listings of what it serves, so
     /// it does wherever it is up.
     fn answers(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
