@@ -8,6 +8,7 @@
 )]
 
 use super::*;
+use tilo_app_window::reconcile::display;
 
 /// A task's row menu runs the command it names: Complete marks the task done, whether it is
 /// pressed where it is drawn or by its name, and the menu closes both times — while the tasks
