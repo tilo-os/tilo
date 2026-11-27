@@ -421,15 +421,16 @@ window-move-ask-they-see = Alle in { $workspace } sehen das Fenster und was es �
 window-move-ask-you-leave = In { $workspace } läuft sie dann nicht mehr, und was dieser Arbeitsbereich führt, bleibt dort.
 window-move-ask-carry = Verschieben
 window-move-ask-stay = Lassen
-window-move-failed-title = { $app } ist in { $workspace } nicht gestartet
-window-move-failed-body = Das Fenster blieb in { $workspace }.
-window-move-record-failed-title = { $app } konnte nicht nach { $workspace } mitnehmen, was es zeigt
-window-move-record-failed-body = Das Fenster blieb in { $workspace }: { $reason }.
+window-move-stayed-title = { $app } wurde nicht nach { $place } verschoben
+window-move-stayed-body = Das Fenster blieb in { $workspace }: { $reason }.
 window-move-reason-record = sein Eintrag lässt sich nicht in diesen Arbeitsbereich verschieben
 window-move-reason-unsaved = die App hat nicht gesichert, was sie zeigt
 window-move-reason-storage = dieser Rechner konnte ihn dort nicht ablegen
 window-move-reason-no-window = die App hat dort kein Fenster geöffnet
 window-move-reason-no-start = die App ist dort nicht gestartet
+window-move-reason-offline = { $device } ist offline
+window-move-reason-no-answer = { $device } hat es nicht geöffnet
+window-move-reason-not-installed = { $app } ist auf { $device } nicht installiert
 
 ## The person's own card in the top bar: what it offers about who they are.
 profile-action-pair-device = Gerät hinzufügen

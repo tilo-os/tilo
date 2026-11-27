@@ -8,9 +8,13 @@
 //! `session:continuity`; taking it is one of the resource's own verbs, which answers the record and
 //! asks the loop to open the app at the resource it showed, as any other open here is, and putting
 //! it away answers the record alone.
+//!
+//! An offer made to this device alone is a window the person showed or moved here from another of
+//! their devices: it draws no chip, and is opened on the pass that reads it, in the workspace and
+//! on the screen it names, and answered with whether it opened and why not.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
@@ -83,6 +87,9 @@ pub(crate) struct Across {
     looked: Option<(u64, String)>,
     /// The apps the person took here since the loop last opened them.
     asked: Vec<Front>,
+    /// The windows other devices showed here that this device opened, by the device and the
+    /// moment: each is opened once, before the record carries its answer back.
+    opened: BTreeSet<(String, i64)>,
 }
 
 impl Across {
@@ -107,11 +114,6 @@ impl Across {
         self.record
             .as_ref()
             .filter(|attached| attached.continuity.apps_permitted())
-    }
-
-    /// The record this session reaches, for the service that publishes the offer.
-    pub(crate) fn record(&self) -> Option<FollowedResource<Devices>> {
-        self.attached().map(|attached| attached.devices.clone())
     }
 
     /// The apps the person took here since this was last taken, for the loop to open.
@@ -154,7 +156,7 @@ impl Across {
             view: front.view,
             shown_ms: now_ms,
             until_ms: now_ms.saturating_add(HOLD_MS),
-            answers: Vec::new(),
+            ..ContinuityOffer::default()
         };
         attached
             .devices
@@ -196,7 +198,12 @@ impl Across {
         let mut best: Option<(&str, &ContinuityOffer)> = None;
         for (id, kept) in record.continuity.iter() {
             let from = id.as_str();
-            if from == local || !labels.contains_key(from) || !kept.shown_at(now_ms) {
+            // An offer made to one device is a window shown there, never a chip.
+            if from == local
+                || !kept.to.is_empty()
+                || !labels.contains_key(from)
+                || !kept.shown_at(now_ms)
+            {
                 continue;
             }
             if kept.answer_of(&local).is_some() {
@@ -220,6 +227,47 @@ impl Across {
             },
             Some(kept.until_ms),
         )
+    }
+
+    /// The windows another device of the person's showed on this one that it has not opened yet,
+    /// each once. Shown whether or not the person lets apps continue: they asked for each.
+    fn shown_here(&mut self, now_ms: i64) -> Vec<ContinuityOffer> {
+        let Some(attached) = self.record.as_ref() else {
+            return Vec::new();
+        };
+        let local = hex::encode(attached.local);
+        let record = attached.devices.get();
+        let known: BTreeSet<String> = record
+            .listed(&attached.person)
+            .into_iter()
+            .map(|listed| listed.key)
+            .collect();
+        record
+            .continuity
+            .iter()
+            .filter(|(from, kept)| {
+                kept.to == local
+                    && known.contains(from.as_str())
+                    && kept.shown_at(now_ms)
+                    && kept.answer_of(&local).is_none()
+            })
+            .map(|(_, kept)| kept.clone())
+            .filter(|kept| self.opened.insert((kept.from.clone(), kept.shown_ms)))
+            .collect()
+    }
+
+    /// Say in the record that this device took the offer `from` made at `at_ms`, or did not, and
+    /// why not where it could not open it.
+    fn answer(&self, from: &str, at_ms: i64, taken: bool, reason: Option<&str>) {
+        let Some(attached) = self.record.as_ref() else {
+            return;
+        };
+        let answering = Devices::answering_continuity(from, at_ms, &attached.local, taken, reason);
+        attached.devices.invoke_unwaited(&answering, |made| {
+            if let Err(error) = made {
+                tracing::warn!(%error, "an answer to an offer was not kept in the record");
+            }
+        });
     }
 
     /// The offer `id` names, as the record says it: the device that made it and the offer itself,
@@ -302,25 +350,15 @@ impl Served {
     }
 
     /// Say in the record that the person took the offer `from` made here, or put it away here.
-    fn answer(&self, offer: &str, from: &str, at_ms: i64, taken: bool) -> Result<(), ApiError> {
+    fn answer(&self, from: &str, at_ms: i64, taken: bool) -> Result<(), ApiError> {
         let across = self.across.borrow();
-        let (Some(record), Some(local)) = (
-            across.record(),
-            across.attached().map(|attached| attached.local),
-        ) else {
+        if across.attached().is_none() {
             return Err(ApiError::Unavailable {
                 code: "no-record".to_owned(),
                 reason: "this device reaches none of your other devices".to_owned(),
             });
-        };
-        drop(across);
-        let answering = Devices::answering_continuity(from, at_ms, &local, taken);
-        let named = offer.to_owned();
-        record.invoke_unwaited(&answering, move |made| {
-            if let Err(error) = made {
-                tracing::warn!(%error, offer = %named, "an answer to an offer was not kept in the record");
-            }
-        });
+        }
+        across.answer(from, at_ms, taken, None);
         Ok(())
     }
 }
@@ -347,7 +385,7 @@ impl Service for Served {
         match decode::<ContinuityAction>(&self.resources(), resource, action, arguments)? {
             ContinuityAction::Take { offer } => {
                 let (from, kept) = self.answering(&offer)?;
-                self.answer(&offer, &from, kept.shown_ms, true)?;
+                self.answer(&from, kept.shown_ms, true)?;
                 self.across.borrow_mut().asked.push(Front {
                     app_id: kept.app_id,
                     app_name: kept.app_name,
@@ -359,7 +397,7 @@ impl Service for Served {
             }
             ContinuityAction::Dismiss { offer } => {
                 let (from, kept) = self.answering(&offer)?;
-                self.answer(&offer, &from, kept.shown_ms, false)?;
+                self.answer(&from, kept.shown_ms, false)?;
                 self.answered = Some(offer);
                 self.read = None;
             }
@@ -439,36 +477,123 @@ impl crate::Shared {
     pub(crate) fn carry_out_continuity(&self) {
         let takes = self.continuity.borrow_mut().take_asked();
         for take in takes {
-            let (address, arguments) = if take.resource.is_empty() {
-                let mut arguments = Map::new();
-                arguments.insert("app".into(), take.app_id.clone().into());
-                (
-                    ActionAddress::new(
-                        tilo_session_core::desktop::verbs::CHROME_RESOURCE,
-                        "open-app",
-                    ),
-                    arguments,
-                )
+            if let Err(error) = self.open_front(take) {
+                tracing::warn!(%error, "taking an offer opened nothing");
+            }
+        }
+        let shown = self.continuity.borrow_mut().shown_here(now_ms());
+        for offer in shown {
+            self.open_shown(&offer);
+        }
+    }
+
+    /// Open here the window another device of the person's showed on this one: in the workspace
+    /// it was in when this device holds it, on the screen it names, and say in the record whether
+    /// it opened, and why not.
+    fn open_shown(&self, offer: &ContinuityOffer) {
+        if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&offer.workspace)
+            && self
+                .handle
+                .read(|tree| tree.workspaces.iter().any(|held| held.id() == workspace))
+        {
+            let _ = self
+                .handle
+                .dispatch(tilo_session_core::desktop::navigation::Verb::Chrome(
+                    tilo_session_core::desktop::navigation::ChromeEffect::SwitchWorkspace {
+                        workspace: Some(workspace.to_string()),
+                        delta: None,
+                    },
+                ));
+        }
+        if let Some(display) = self.own_display(&offer.output) {
+            self.handle.focus_display(display);
+        }
+        let opened = self.open_front(Front {
+            app_id: offer.app_id.clone(),
+            app_name: offer.app_name.clone(),
+            resource: offer.resource.clone(),
+            view: offer.view.clone(),
+        });
+        let reason = opened.err().map(|error| {
+            tracing::warn!(%error, app = %offer.app_id, "a window shown here from another device did not open");
+            let installed = app_catalogue::apps::read_one_from_env(&offer.app_id)
+                .ok()
+                .flatten()
+                .is_some();
+            if installed {
+                crate::i18n::t("window-move-reason-no-start")
             } else {
-                let mut arguments = Map::new();
-                arguments.insert("resource".into(), take.resource.into());
-                if !take.view.is_empty() {
-                    arguments.insert("view".into(), take.view.into());
-                }
-                (
-                    ActionAddress::new(tilo_session_core::layout::RESOURCE, "open"),
-                    arguments,
+                let device = self
+                    .owner_devices
+                    .as_ref()
+                    .map(|devices| devices.cert().device_label.clone())
+                    .unwrap_or_default();
+                crate::i18n::t_args(
+                    "window-move-reason-not-installed",
+                    &[
+                        ("app", crate::app_names::app_name(&offer.app_id).into()),
+                        ("device", device.into()),
+                    ],
                 )
-            };
-            let actor = Actor::from(MemberId::person(self.person.clone()));
-            if let Err(error) = self.published.invoke_as(
+            }
+        });
+        self.continuity.borrow().answer(
+            &offer.from,
+            offer.shown_ms,
+            reason.is_none(),
+            reason.as_deref(),
+        );
+    }
+
+    /// The display of this device whose screen `output` names, as this device keeps its screens in
+    /// the record of the person's devices.
+    fn own_display(&self, output: &str) -> Option<u32> {
+        let devices = self.owner_devices.as_ref()?;
+        let (_, local) = devices.who();
+        let record = devices.devices();
+        let shown = record
+            .devices
+            .get(&tilo_resource::Id::from_raw(local))?
+            .facts
+            .get(crate::shared_displays::DISPLAYS)
+            .and_then(|value| crate::shared_displays::decoded(value))?;
+        let screen = shown.iter().find(|screen| screen.id == output)?;
+        self.handle
+            .display_at_origin(f64::from(screen.x), f64::from(screen.y))
+    }
+
+    /// Open `take` here: the app at the resource it showed, through the view it showed it through,
+    /// or the app alone when it showed none.
+    fn open_front(&self, take: Front) -> Result<(), ApiError> {
+        let (address, arguments) = if take.resource.is_empty() {
+            let mut arguments = Map::new();
+            arguments.insert("app".into(), take.app_id.into());
+            (
+                ActionAddress::new(
+                    tilo_session_core::desktop::verbs::CHROME_RESOURCE,
+                    "open-app",
+                ),
+                arguments,
+            )
+        } else {
+            let mut arguments = Map::new();
+            arguments.insert("resource".into(), take.resource.into());
+            if !take.view.is_empty() {
+                arguments.insert("view".into(), take.view.into());
+            }
+            (
+                ActionAddress::new(tilo_session_core::layout::RESOURCE, "open"),
+                arguments,
+            )
+        };
+        let actor = Actor::from(MemberId::person(self.person.clone()));
+        self.published
+            .invoke_as(
                 &actor,
                 &address,
                 &arguments,
                 &mut tilo_session_core::surfaces::Look::none(),
-            ) {
-                tracing::warn!(%error, %take.app_id, "taking an offer opened nothing");
-            }
-        }
+            )
+            .map(drop)
     }
 }

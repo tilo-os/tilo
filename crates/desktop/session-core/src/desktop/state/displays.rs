@@ -336,6 +336,19 @@ impl DesktopHandle {
         self.read(|tree| tree.outputs.primary())
     }
 
+    /// The display whose top-left corner stands at `(x, y)` among this device's displays, in its
+    /// logical coordinates: how a screen another device names is found here.
+    #[must_use]
+    pub fn display_at_origin(&self, x: f64, y: f64) -> Option<u32> {
+        self.read(|tree| {
+            tree.outputs
+                .displays
+                .iter()
+                .find(|display| (display.x - x).abs() < 0.5 && (display.y - y).abs() < 0.5)
+                .map(|display| display.id)
+        })
+    }
+
     /// The display window `group` shows on, while there are several.
     #[must_use]
     pub fn display_of(&self, group: GroupId) -> Option<u32> {

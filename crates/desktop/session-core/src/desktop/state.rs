@@ -236,6 +236,12 @@ pub struct Shared {
     /// the host ([`DesktopHandle::take_workspace_share_asks`]).
     /// Each with the person's press that chose the row, when one did.
     pub workspace_share_asks: Vec<(TabId, bool, Option<u32>)>,
+    /// The person's other devices' screens a window may move to, as the host last read them
+    /// ([`DesktopHandle::set_other_screens`]).
+    pub other_screens: Vec<window_menu::OtherScreen>,
+    /// The windows moved to another of the person's devices, waiting for the host
+    /// ([`DesktopHandle::take_device_moves`]): the tab, the device's key and its screen.
+    pub device_moves: Vec<(TabId, String, String)>,
     /// What the person may change and who made each strip, as the host answers it
     /// ([`DesktopHandle::set_rules`]); with none, nothing is refused.
     pub rules: Option<Rc<dyn crate::desktop::host::contract::DesktopRules>>,

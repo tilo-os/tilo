@@ -48,7 +48,9 @@
 //! ([`ContinuityOffer`]): the device that had it in front writes it ([`Devices::offer_continuity`]),
 //! and a device the person takes the offer on, or puts it away on, says so
 //! ([`Devices::answer_continuity`]), so the bar there draws the chip once and a newer offer is a
-//! new one to answer.
+//! new one to answer. An offer made to one device, at one of its screens, is a window shown or
+//! moved there ([`Devices::show_window_on_device`]): that device opens it without asking and says
+//! whether it could, and a device that moved its window there closes its own once it did.
 //!
 //! What the person's root signs lives in their record: the mark of the device
 //! that keeps it ([`Devices::mark_root_holder`]) and the revocation of one it
@@ -221,6 +223,15 @@ pub struct ContinuityOffer {
     pub until_ms: i64,
     /// The devices the person took the offer on or put it away on, each once.
     pub answers: Vec<ContinuityAnswer>,
+    /// The one device it is made to, by key, which opens it without asking; empty for an offer
+    /// every other device of theirs draws as a chip.
+    pub to: String,
+    /// The screen of [`Self::to`] it opens on, as that device names its outputs in its `displays`
+    /// fact; empty for wherever that device opens a window.
+    pub output: String,
+    /// The workspace it was shown in, by id: the device it is made to opens it there when it holds
+    /// it; empty for its workspace in front.
+    pub workspace: String,
 }
 
 impl ContinuityOffer {
@@ -234,10 +245,13 @@ impl ContinuityOffer {
     /// neither taken nor put it away there.
     #[must_use]
     pub fn answer_of(&self, device: &str) -> Option<bool> {
-        self.answers
-            .iter()
-            .find(|answer| answer.device == device)
-            .map(|answer| answer.taken)
+        self.answered_by(device).map(|answer| answer.taken)
+    }
+
+    /// The answer `device` gave it, with why it did not open it there.
+    #[must_use]
+    pub fn answered_by(&self, device: &str) -> Option<&ContinuityAnswer> {
+        self.answers.iter().find(|answer| answer.device == device)
     }
 }
 
@@ -258,6 +272,8 @@ pub struct ContinuityAnswer {
     pub device: String,
     /// They opened what it offered here, rather than putting it away.
     pub taken: bool,
+    /// Why the device it was made to could not open it, in the person's words; empty otherwise.
+    pub reason: String,
 }
 
 /// One move of a Bluetooth accessory from one of the person's devices to another, and how far it
@@ -648,19 +664,29 @@ impl Devices {
             view: offer.view.clone(),
             shown_ms: offer.shown_ms,
             until_ms: offer.until_ms,
+            to: Some(offer.to.clone()).filter(|to| !to.is_empty()),
+            output: Some(offer.output.clone()).filter(|output| !output.is_empty()),
+            workspace: Some(offer.workspace.clone()).filter(|workspace| !workspace.is_empty()),
         })
     }
 
     /// The action that says the person took the offer `from` made at `at_ms` on `device`, or put
-    /// it away there.
+    /// it away there; `reason` says why a device an offer was made to could not open it.
     #[must_use]
     pub fn answering_continuity(
         from: &str,
         at_ms: i64,
         device: &[u8; 32],
         taken: bool,
+        reason: Option<&str>,
     ) -> tilo_resource::Invoke<Self> {
-        Self::ANSWER_CONTINUITY.with((from.to_owned(), at_ms, hex::encode(device), taken))
+        Self::ANSWER_CONTINUITY.with((
+            from.to_owned(),
+            at_ms,
+            hex::encode(device),
+            taken,
+            reason.map(str::to_owned),
+        ))
     }
 
     /// The action that keeps `answer` as what the person answered a boot.
@@ -907,6 +933,29 @@ pub struct OfferShown {
     pub shown_ms: i64,
     /// When the offer stops being worth showing, ms since the epoch.
     pub until_ms: i64,
+    /// The one device it is made to, by key; every other device when left out.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// The screen of that device it opens on, by the id its `displays` fact gives it.
+    #[serde(default)]
+    pub output: Option<String>,
+    /// The workspace it was shown in, by id.
+    #[serde(default)]
+    pub workspace: Option<String>,
+}
+
+/// A window to show on another device: the app, the record it shows and the workspace it is in.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct WindowShown {
+    /// The workspace it is in, by id.
+    pub workspace: String,
+    /// The app that shows it, by id.
+    pub app: String,
+    /// The record it shows, by its address; empty for the app opened on nothing of its own.
+    #[serde(default)]
+    pub record: String,
 }
 
 /// The hand-over one device of the person's asks for another's keyboard and pointer.
@@ -1729,10 +1778,36 @@ impl Devices {
             view,
             shown_ms,
             until_ms,
+            to,
+            output,
+            workspace,
         } = offer;
+        let (to, output, workspace) = (
+            to.unwrap_or_default(),
+            output.unwrap_or_default(),
+            workspace.unwrap_or_default(),
+        );
         validate_key(&from)?;
         if !self.devices.contains(&Id::from_raw(from.clone())) {
             return Err(Refusal::new("that key is not one of your devices"));
+        }
+        if !to.is_empty()
+            && (to == from
+                || validate_key(&to).is_err()
+                || !self.devices.contains(&Id::from_raw(to.clone())))
+        {
+            return Err(Refusal::new("a window is shown on another of your devices"));
+        }
+        if (to.is_empty() && !output.is_empty())
+            || output.len() > 160
+            || workspace.len() > 160
+            || [&output, &workspace]
+                .into_iter()
+                .any(|value| value.chars().any(char::is_control))
+        {
+            return Err(Refusal::new(
+                "a window is shown on one screen of the device it is shown on",
+            ));
         }
         if app_id.is_empty()
             || app_id.len() > 160
@@ -1775,6 +1850,9 @@ impl Devices {
             shown_ms,
             until_ms,
             answers: Vec::new(),
+            to,
+            output,
+            workspace,
         };
         match self.continuity.get_mut(&id) {
             Some(kept) => *kept = offer,
@@ -1796,7 +1874,17 @@ impl Devices {
         at_ms: i64,
         device: String,
         taken: bool,
+        reason: Option<String>,
     ) -> Result<(), Refusal> {
+        let reason = reason.unwrap_or_default();
+        if reason.len() > 512
+            || reason.chars().any(char::is_control)
+            || (taken && !reason.is_empty())
+        {
+            return Err(Refusal::new(
+                "only an offer that was not taken says why, in up to 512 bytes",
+            ));
+        }
         validate_key(&from)?;
         validate_key(&device)?;
         if !self.devices.contains(&Id::from_raw(device.clone())) {
@@ -1809,9 +1897,45 @@ impl Devices {
             return Err(Refusal::new("that device offers something newer"));
         }
         if kept.answer_of(&device).is_none() {
-            kept.answers.push(ContinuityAnswer { device, taken });
+            kept.answers.push(ContinuityAnswer {
+                device,
+                taken,
+                reason,
+            });
         }
         Ok(())
+    }
+
+    /// Show a window on another of your devices
+    ///
+    /// `window` opens on the device `device`, on its screen `output` (wherever it opens a window
+    /// when left out), as the device `from` asks at `at_ms` (now when left out): the same app on
+    /// the same record, never a picture of it. The device it is shown on opens it and says whether
+    /// it could ([`Self::answer_continuity`]); a device that moves its window there closes its own
+    /// once it did.
+    #[action]
+    pub fn show_window_on_device(
+        &mut self,
+        from: String,
+        device: String,
+        window: WindowShown,
+        output: Option<String>,
+        at_ms: Option<i64>,
+    ) -> Result<(), Refusal> {
+        let shown_ms =
+            at_ms.unwrap_or_else(|| i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX));
+        self.offer_continuity(OfferShown {
+            from,
+            app_name: window.app.clone(),
+            app_id: window.app,
+            resource: window.record,
+            view: String::new(),
+            shown_ms,
+            until_ms: shown_ms.saturating_add(MAX_CONTINUITY_SHOWN_MS),
+            to: Some(device),
+            output,
+            workspace: Some(window.workspace).filter(|workspace| !workspace.is_empty()),
+        })
     }
 
     /// Keep the group `group` led by `device`, called `name`, with its `members` (the postcard
@@ -2701,7 +2825,7 @@ mod tests {
             view: String::new(),
             shown_ms,
             until_ms: shown_ms + 60_000,
-            answers: Vec::new(),
+            ..ContinuityOffer::default()
         };
         assert!(
             devices
@@ -2759,6 +2883,7 @@ mod tests {
                 1_000,
                 &phone,
                 false,
+                None,
             ))
             .expect("the phone puts it away");
         devices
@@ -2767,6 +2892,7 @@ mod tests {
                 1_000,
                 &phone,
                 true,
+                None,
             ))
             .expect("a second answer changes nothing");
         let kept = devices
@@ -2783,7 +2909,8 @@ mod tests {
                     &laptop_key,
                     2_000,
                     &phone,
-                    true
+                    true,
+                    None
                 ))
                 .is_err(),
             "an answer names the offer it was made for"
@@ -2794,7 +2921,8 @@ mod tests {
                     &laptop_key,
                     1_000,
                     &other,
-                    true
+                    true,
+                    None
                 ))
                 .is_err(),
             "a device the record does not keep answers nothing"
@@ -2840,6 +2968,103 @@ mod tests {
                 .is_some_and(|kept| kept.shown_ms == 400_000),
             "the newer offer is the one the record keeps"
         );
+    }
+
+    /// A window shown on one device is an offer made to that device alone, at one of its screens:
+    /// it names another device of the person's, and the device it is made to says why when it
+    /// could not open it.
+    #[test]
+    fn a_window_is_shown_on_one_other_device_at_one_screen() {
+        let (laptop, phone) = ([1; 32], [2; 32]);
+        let (laptop_key, phone_key) = (hex::encode(laptop), hex::encode(phone));
+        let mut devices = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
+        for key in [&laptop_key, &phone_key] {
+            devices
+                .apply(Devices::KEEP_DEVICE.with((key.clone(), "00".to_owned())))
+                .expect("the device is kept");
+        }
+        let window = WindowShown {
+            workspace: "work".into(),
+            app: "so.tilo.files".into(),
+            record: "home/welcome.txt".into(),
+        };
+        let show = |to: &str, output: Option<&str>| {
+            Devices::SHOW_WINDOW_ON_DEVICE.with((
+                laptop_key.clone(),
+                to.to_owned(),
+                window.clone(),
+                output.map(str::to_owned),
+                Some(1_000),
+            ))
+        };
+        let stranger = hex::encode([9; 32]);
+        for (to, why) in [
+            (laptop_key.as_str(), "the device it is on"),
+            ("00", "no device's key"),
+            (stranger.as_str(), "a device the record does not keep"),
+        ] {
+            assert!(
+                devices.apply(show(to, None)).is_err(),
+                "{why} shows nothing"
+            );
+        }
+        devices
+            .apply(show(&phone_key, Some("DEL-1234")))
+            .expect("the laptop shows the window on the phone's screen");
+        let kept = devices
+            .state()
+            .unwrap()
+            .continuity
+            .get(&Id::from_raw(laptop_key.clone()))
+            .cloned()
+            .expect("the offer is kept");
+        assert_eq!(
+            (
+                kept.to.as_str(),
+                kept.output.as_str(),
+                kept.workspace.as_str(),
+                kept.app_id.as_str(),
+                kept.resource.as_str()
+            ),
+            (
+                phone_key.as_str(),
+                "DEL-1234",
+                "work",
+                "so.tilo.files",
+                "home/welcome.txt"
+            )
+        );
+        assert!(
+            devices
+                .apply(Devices::answering_continuity(
+                    &laptop_key,
+                    1_000,
+                    &phone,
+                    true,
+                    Some("not installed")
+                ))
+                .is_err(),
+            "an offer that was taken says no why"
+        );
+        devices
+            .apply(Devices::answering_continuity(
+                &laptop_key,
+                1_000,
+                &phone,
+                false,
+                Some("Files isn't installed on the phone"),
+            ))
+            .expect("the phone says why it could not open it");
+        let kept = devices
+            .state()
+            .unwrap()
+            .continuity
+            .get(&Id::from_raw(laptop_key))
+            .cloned()
+            .expect("the offer is kept");
+        let answer = kept.answered_by(&phone_key).expect("the phone answered");
+        assert!(!answer.taken);
+        assert_eq!(answer.reason, "Files isn't installed on the phone");
     }
 
     #[test]

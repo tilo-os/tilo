@@ -92,6 +92,116 @@ fn waits_showing(what: &str, site: &Site, device: &Device, app: &str, resource: 
     });
 }
 
+/// The tab of the window of `app` on `device` that shows `resource`.
+fn tab_showing(device: &Device, app: &str, resource: &str) -> Option<String> {
+    let windows = device.ask(&json!({"op": "windows"}));
+    windows["answer"]["windows"]
+        .as_array()?
+        .iter()
+        .find(|row| row["app_id"] == app && row["resource"] == resource)
+        .map(|row| row["tab"].to_string())
+}
+
+/// The named controls on `device`'s shell whose name ends with `suffix`.
+fn targets_ending(device: &Device, suffix: &str) -> Vec<String> {
+    let listed = device.ask(&json!({"op": "list_targets"}));
+    listed["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|target| target["name"].as_str())
+        .filter(|name| name.ends_with(suffix))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A window moved from the laptop onto a screen of the phone: the window's menu offers the phone's
+/// screen, the phone opens the same app on the same record there, and the laptop's window closes.
+/// With the phone off, the window stays on the laptop and the person is told why.
+#[test]
+fn a_window_moves_onto_a_screen_of_another_device() {
+    seed_the_apps();
+    let (site, _ada, laptop, mut phone) = two_devices_of_one_person_with_apps();
+
+    let notebook = root_of(&laptop, NOTES);
+    open_here(&laptop, &notebook);
+    waits_showing(
+        "the laptop shows its notebook",
+        &site,
+        &laptop,
+        NOTES,
+        &notebook,
+    );
+    let tab = tab_showing(&laptop, NOTES, &notebook).expect("the notebook's window");
+
+    // The window's menu offers the phone's screen, by its name and the phone's.
+    let open = laptop
+        .offered("desktop:window-menu", "open")
+        .expect("the laptop publishes the window menu");
+    // The laptop learns the phone's screens from the record of the person's devices, so the menu
+    // offers them once that has reached it: until then it is opened again.
+    let screen = tilo_test_env::wait_for("the menu offers the phone's screen", || {
+        let opened = laptop.act(&open, &json!({ "tab": tab }));
+        assert!(opened.get("err").is_none(), "the menu opens: {opened}");
+        if targets_ending(&laptop, "Move to display").is_empty() {
+            return None;
+        }
+        laptop.press("Move to display");
+        targets_ending(&laptop, " on Ada's phone")
+            .into_iter()
+            .next()
+    });
+    laptop.press(&screen);
+
+    // The phone opens the same notebook, and the laptop's window goes.
+    waits_showing(
+        "the phone shows the notebook moved to it",
+        &site,
+        &phone,
+        NOTES,
+        &notebook,
+    );
+    waited(
+        "the laptop's window closes once the phone shows it",
+        &site,
+        &[&laptop, &phone],
+        || tab_showing(&laptop, NOTES, &notebook).is_none(),
+    );
+
+    // With the phone off, a move leaves the window where it is and says why.
+    let tasks = root_of(&laptop, TASKS);
+    open_here(&laptop, &tasks);
+    waits_showing("the laptop shows its tasks", &site, &laptop, TASKS, &tasks);
+    let tab = tab_showing(&laptop, TASKS, &tasks).expect("the tasks' window");
+    let phone_publisher = phone.publisher().expect("the phone's publisher");
+    phone.stop();
+    waited("the laptop sees the phone go", &site, &[&laptop], || {
+        !laptop
+            .present(&site.workspace)
+            .iter()
+            .any(|(publisher, _)| *publisher == phone_publisher)
+    });
+    let move_tab = laptop
+        .offered("desktop:chrome", "move-tab")
+        .expect("the laptop publishes moving a window");
+    let phone_key = hex::encode(phone.cert.device_public_key);
+    let moved = laptop.act(&move_tab, &json!({"tab": tab, "to": {"device": phone_key}}));
+    assert!(
+        moved.get("err").is_none(),
+        "an agent moves the window as a person does: {moved}"
+    );
+    waited(
+        "the laptop says the window stayed, as the phone is offline",
+        &site,
+        &[&laptop],
+        || shows(&laptop, "Ada's phone is offline"),
+    );
+    assert!(
+        tab_showing(&laptop, TASKS, &tasks).is_some(),
+        "the window stays on the laptop"
+    );
+}
+
 /// Another of the person's devices has an app in front, and this one is offered to continue it
 /// where it was: taken once, put away once, and offered again when that device's front moves.
 #[test]

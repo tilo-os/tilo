@@ -255,6 +255,37 @@ pub struct Facts {
     /// What the session reads of the window's share with its workspace; `None` for a window that
     /// cannot be shared from this device.
     pub workspace_share: Option<WorkspaceShare>,
+    /// The person's other devices' screens the window may move to.
+    pub screens: Vec<OtherScreen>,
+}
+
+/// A screen of another of the person's devices, as the window's menu offers moving a window there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OtherScreen {
+    /// The device, by key (lowercase hex).
+    pub device: String,
+    /// What the person calls the device.
+    pub device_name: String,
+    /// The screen, as the device names it in its `displays` fact.
+    pub output: String,
+    /// What the screen is called.
+    pub name: String,
+    /// The device is on a session with this one now: a window can move there.
+    pub online: bool,
+}
+
+impl DesktopHandle {
+    /// The person's other devices' screens a window's menu offers to move it to, as the host
+    /// reads them now.
+    pub fn set_other_screens(&self, screens: Vec<OtherScreen>) {
+        self.shared.borrow_mut().other_screens = screens;
+    }
+
+    /// The windows moved to another of the person's devices since the last call, in the order
+    /// they were: the tab, the device's key and its screen (empty for wherever it opens one).
+    pub fn take_device_moves(&self) -> Vec<(TabId, String, String)> {
+        std::mem::take(&mut self.shared.borrow_mut().device_moves)
+    }
 }
 
 /// One row of a window's menu: what it does, how it reads, and why it cannot be chosen when it
@@ -368,6 +399,15 @@ pub fn move_to_display_id(display: u32) -> String {
     format!("{MOVE_TO_DISPLAY}:{display}")
 }
 
+/// The id of the row moving the window to `screen` of another of the person's devices.
+pub fn move_to_screen_id(screen: &OtherScreen) -> String {
+    format!(
+        "{MOVE_TO_DISPLAY}:{}:{}",
+        screen.device,
+        hex::encode(&screen.output)
+    )
+}
+
 /// The menu rows that apply to the window at `route` , in the order to show them, as `facts`
 /// describes the window beyond its place in the tree.
 pub fn rows(tree: &Layout, route: &RouteIds, facts: &Facts) -> Vec<Row> {
@@ -403,7 +443,7 @@ pub fn rows(tree: &Layout, route: &RouteIds, facts: &Facts) -> Vec<Row> {
     // viewer's.
     add_group(
         &mut rows,
-        move_rows(tree, route)
+        move_rows(tree, route, &facts.screens)
             .into_iter()
             .map(|row| row.theirs(own, held()))
             .collect(),
@@ -613,7 +653,7 @@ pub fn step(id: &str, label: &str, steps: bool, reason: &str) -> Row {
 /// The rows moving the window one place along its strip, then those carrying it to another strip,
 /// workspace or display, each place by its name; a side or a place with nowhere to go offers no row
 /// at all.
-pub fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
+pub fn move_rows(tree: &Layout, route: &RouteIds, screens: &[OtherScreen]) -> Vec<Row> {
     let mut rows = Vec::new();
     for (id, label, icon) in [
         (MOVE_LEFT, "window-menu-move-left", Icon::ArrowLeft),
@@ -694,6 +734,7 @@ pub fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
                 ),
             )
         })
+        .chain(screens.iter().map(screen_row))
         .collect();
     if !displays.is_empty() {
         rows.push(
@@ -702,6 +743,26 @@ pub fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
         );
     }
     rows
+}
+
+/// The row moving the window onto `screen` of another of the person's devices: refused, and why,
+/// while that device is offline.
+fn screen_row(screen: &OtherScreen) -> Row {
+    let label = t_args(
+        "window-menu-device-screen",
+        &[
+            ("screen", screen.name.clone().into()),
+            ("device", screen.device_name.clone().into()),
+        ],
+    );
+    if screen.online {
+        return Row::offered(move_to_screen_id(screen), label);
+    }
+    let why = t_args(
+        "window-menu-device-offline",
+        &[("device", screen.device_name.clone().into())],
+    );
+    Row::refused(move_to_screen_id(screen), label, why)
 }
 
 /// Where the window at `route` goes moving one place along its strip, to the left or the right: before the window
@@ -836,9 +897,19 @@ pub fn destination(tree: &Layout, route: &RouteIds, id: &str) -> Option<Destinat
                     ..Destination::default()
                 }
             } else {
-                Destination {
-                    display: Some(place_number(id.strip_prefix(MOVE_TO_DISPLAY)?)?.to_string()),
-                    ..Destination::default()
+                let place = id.strip_prefix(MOVE_TO_DISPLAY)?;
+                match place.strip_prefix(':')?.split_once(':') {
+                    // Another device's screen: its key, and the screen's own name in hex.
+                    Some((device, output)) => Destination {
+                        device: Some(device.to_owned()),
+                        display: Some(String::from_utf8(hex::decode(output).ok()?).ok()?)
+                            .filter(|output| !output.is_empty()),
+                        ..Destination::default()
+                    },
+                    None => Destination {
+                        display: Some(place_number(place)?.to_string()),
+                        ..Destination::default()
+                    },
                 }
             }
         }
@@ -1177,6 +1248,7 @@ impl crate::desktop::state::DesktopHandle {
             opens,
             sharing,
             workspace_share: self.workspace_share(tab),
+            screens: self.shared.borrow().other_screens.clone(),
         }
     }
 

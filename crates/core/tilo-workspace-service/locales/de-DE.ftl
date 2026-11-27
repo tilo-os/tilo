@@ -86,6 +86,7 @@ tilo-devices-answer-notice = Eine Benachrichtigung von einem anderen Gerät bean
 tilo-devices-retire-notice = Eine Benachrichtigung von deinen anderen Geräten entfernen
 tilo-devices-offer-continuity = Die App anbieten, die dieses Gerät gerade zeigt
 tilo-devices-answer-continuity = Eine von einem anderen Gerät angebotene App übernehmen oder wegwischen
+tilo-devices-show-window-on-device = Ein Fenster auf einem anderen deiner Geräte zeigen
 tilo-devices-woke = Sagen, dass ein Gerät wieder wach ist
 tilo-devices-move-accessory = Ein Bluetooth-Zubehör auf ein anderes Gerät verschieben
 tilo-devices-accessory-ready = Sagen, ob ein Gerät die Kopplung eines Zubehörs hat

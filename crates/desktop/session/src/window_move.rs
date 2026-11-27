@@ -8,6 +8,12 @@
 //! asked about first; one that cannot be made puts the tab back where it was, with
 //! the record where it was, and says why. Nothing in a move waits on the workspaces'
 //! store on the session's own thread.
+//!
+//! A window moved to another of the person's devices goes as continuity's offer made to that
+//! device alone, at the screen the person chose ([`crate::continuity`]): its app saves what it
+//! shows, the offer goes into the record of the person's devices, that device opens the same app
+//! on the same record there, and the window here closes once it says it did. A device that is
+//! offline, or says it could not, leaves the window here, and the person is told why.
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -28,6 +34,9 @@ use crate::i18n::{t, t_args};
 use crate::platform::notice::{Notice, Notices};
 use crate::window_follow::WindowFollow;
 use crate::window_transfer::{self, Fault, Profile};
+use tilo_workspace_service::workspaces::person_workspace::devices::{
+    ContinuityOffer, Devices, MAX_CONTINUITY_SHOWN_MS,
+};
 
 /// The action a move's notice offers: carry the window into its destination.
 const CARRY: &str = "window-move-carry";
@@ -105,7 +114,20 @@ struct Crossing {
     window: u64,
     /// What the window showed there, when it showed a record of its own.
     record: Option<Travelling>,
+    /// What another device of the person's is to show, when the window moves there: `to_id` is
+    /// that device's key, and `to_name` what the person calls it.
+    handing: Option<Handing>,
     phase: Phase,
+}
+
+/// A window on its way to another device of the person's: what it shows, and where there.
+struct Handing {
+    /// The screen of that device it opens on, as the device names it; empty for wherever it
+    /// opens a window.
+    output: String,
+    /// The resource the window shows and the view it shows it through.
+    resource: String,
+    view: String,
 }
 
 /// What a move waits for.
@@ -117,6 +139,8 @@ enum Phase {
     Moving(Receiver<Result<DocumentId, Fault>>),
     /// The tab waits for the window of the app started in the destination.
     Opening { since: Instant },
+    /// The offer made at `at_ms` waits for the device it was made to, to say it opened it.
+    Handed { at_ms: i64, since: Instant },
     /// Nothing is waited for: the step that left it here is done.
     Finished,
 }
@@ -168,6 +192,9 @@ impl Moves {
         }
         for carried in shared.desktop.with_policy(|policy| policy.take_carried()) {
             self.consider(shared, handoff, carried.tab, carried.to);
+        }
+        for (tab, device, output) in shared.handle.take_device_moves() {
+            self.send(shared, handoff, tab, &device, output);
         }
         let moving = std::mem::take(&mut *self.crossing.borrow_mut());
         for one in moving {
@@ -293,7 +320,12 @@ impl Moves {
                 .read(|tree| workspace_at(tree, from, &shared.person, &shared.earlier))
         }) else {
             Self::put_back(shared, tab, from, &app);
-            self.failed(&app_name, &to_name, &from_name);
+            self.stayed(
+                &app_name,
+                &to_name,
+                &from_name,
+                &t("window-move-reason-storage"),
+            );
             return;
         };
         let from_id = from_id.id.to_string();
@@ -308,6 +340,7 @@ impl Moves {
             app_name,
             window,
             record: None,
+            handing: None,
             phase: Phase::Finished,
         };
         let Some(id) = Self::travelling(shared, crossing.tab) else {
@@ -350,6 +383,175 @@ impl Moves {
         }
     }
 
+    /// The person moved `tab` to the device `device`, onto its screen `output`: what its app holds
+    /// is saved first, and the device is offered the window, unless it is offline.
+    fn send(
+        &self,
+        shared: &Shared,
+        handoff: Option<&WindowFollow>,
+        tab: TabId,
+        device: &str,
+        output: String,
+    ) {
+        let Some((from, from_name)) = shared.desktop.with_policy(|policy| {
+            policy.handle().read(|tree| {
+                tab_workspace(tree, tab).map(|workspace| (workspace.id(), workspace.name.clone()))
+            })
+        }) else {
+            return;
+        };
+        let key = tab.to_string();
+        let Some(place) = shared
+            .layout
+            .borrow()
+            .reading()
+            .places
+            .into_iter()
+            .find(|place| place.key == key && !place.shows.is_empty())
+        else {
+            return;
+        };
+        let (to_name, online) = device_named(shared, device);
+        let crossing = Crossing {
+            tab,
+            from,
+            from_name,
+            from_id: from.to_string(),
+            to_name,
+            to_id: device.to_owned(),
+            app_name: app_name(&place.shows),
+            app: place.shows,
+            window: shared.handle.window_of_tab(tab).unwrap_or_default(),
+            record: None,
+            handing: Some(Handing {
+                output,
+                resource: place.resource,
+                view: place.shown_as,
+            }),
+            phase: Phase::Finished,
+        };
+        if !online {
+            let why = t_args(
+                "window-move-reason-offline",
+                &[("device", crossing.to_name.clone().into())],
+            );
+            self.give_up(shared, &crossing, &why);
+            return;
+        }
+        match handoff {
+            // A window of an app this device runs saves what it holds before the other device
+            // reads the record.
+            Some(handoff) if crossing.window != 0 => {
+                let (answered, answers) = std::sync::mpsc::channel();
+                let wake = Arc::clone(&self.wake);
+                handoff.save(
+                    &crossing.from_id,
+                    &crossing.app,
+                    tab,
+                    self.next_token(),
+                    move |report| {
+                        let _ = answered.send(report);
+                        wake();
+                    },
+                );
+                self.waiting(crossing, Phase::Checkpointing(answers));
+            }
+            _ => self.hand(shared, crossing),
+        }
+    }
+
+    /// Offer the window to the device it moves to, through the record of the person's devices.
+    fn hand(&self, shared: &Shared, crossing: Crossing) {
+        let (Some(devices), Some(handing)) =
+            (shared.owner_devices.as_ref(), crossing.handing.as_ref())
+        else {
+            self.give_up(shared, &crossing, &t("window-move-reason-storage"));
+            return;
+        };
+        let at_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
+        let offer = ContinuityOffer {
+            from: devices.who().1,
+            app_id: crossing.app.clone(),
+            app_name: crossing.app_name.clone(),
+            resource: handing.resource.clone(),
+            view: handing.view.clone(),
+            shown_ms: at_ms,
+            until_ms: at_ms.saturating_add(MAX_CONTINUITY_SHOWN_MS),
+            answers: Vec::new(),
+            to: crossing.to_id.clone(),
+            output: handing.output.clone(),
+            workspace: crossing.from_id.clone(),
+        };
+        devices
+            .record()
+            .0
+            .invoke_unwaited(&Devices::offering_continuity(&offer), |made| {
+                if let Err(error) = made {
+                    tracing::warn!(%error, "a window was not offered to the device it moves to");
+                }
+            });
+        let since = Instant::now();
+        self.waiting(crossing, Phase::Handed { at_ms, since });
+    }
+
+    /// What the device the window moves to said of the offer made at `at_ms`: once it opened the
+    /// window there, the one here closes; once it says it could not, or says nothing in time, the
+    /// window stays.
+    fn handed(
+        &self,
+        shared: &Shared,
+        compositor: &mut Compositor,
+        crossing: Crossing,
+        (at_ms, since): (i64, Instant),
+    ) {
+        let answer = shared.owner_devices.as_ref().and_then(|devices| {
+            let record = devices.devices();
+            let kept = record
+                .continuity
+                .get(&tilo_resource::Id::from_raw(devices.who().1))?;
+            (kept.shown_ms == at_ms).then(|| kept.answered_by(&crossing.to_id).cloned())
+        });
+        match answer {
+            Some(Some(answer)) if answer.taken => Self::close_here(shared, compositor, &crossing),
+            Some(Some(answer)) if !answer.reason.is_empty() => {
+                self.give_up(shared, &crossing, &answer.reason);
+            }
+            Some(None) if since.elapsed() < self.opening => {
+                self.waiting(crossing, Phase::Handed { at_ms, since });
+            }
+            _ => {
+                let why = t_args(
+                    "window-move-reason-no-answer",
+                    &[("device", crossing.to_name.clone().into())],
+                );
+                self.give_up(shared, &crossing, &why);
+            }
+        }
+    }
+
+    /// The window the person moved to another device closes here: its app's window, or the place
+    /// the shell draws.
+    fn close_here(shared: &Shared, compositor: &mut Compositor, crossing: &Crossing) {
+        if crossing.window != 0 {
+            compositor.close_window(crossing.window);
+            return;
+        }
+        let actor =
+            tilo_actions::Actor::from(tilo_actions::MemberId::person(shared.person.clone()));
+        let close = tilo_actions::ActionAddress::new(
+            tilo_session_core::layout::Item::Place.resource(&crossing.tab.to_string()),
+            "close",
+        );
+        if let Err(error) = shared.published.invoke_as(
+            &actor,
+            &close,
+            &serde_json::Map::new(),
+            &mut tilo_session_core::surfaces::Look::none(),
+        ) {
+            tracing::warn!(%error, "the window moved to another device stayed open here");
+        }
+    }
+
     /// The record the window at `tab` shows, when it is a record of its own that may leave the
     /// workspace: one the workspace keeps for the app goes with the workspace.
     fn travelling(shared: &Shared, tab: TabId) -> Option<DocumentId> {
@@ -383,6 +585,9 @@ impl Moves {
             Phase::Checkpointing(answers) => self.checkpointing(shared, crossing, answers),
             Phase::Moving(answers) => self.moving(shared, crossing, answers),
             Phase::Opening { since } => self.opening(shared, compositor, crossing, since),
+            Phase::Handed { at_ms, since } => {
+                self.handed(shared, compositor, crossing, (at_ms, since));
+            }
             Phase::Finished => {}
         }
     }
@@ -399,6 +604,9 @@ impl Moves {
     ) {
         match answers.try_recv() {
             Err(TryRecvError::Empty) => self.waiting(crossing, Phase::Checkpointing(answers)),
+            Ok(Some(HandoffReport::Done { .. })) if crossing.handing.is_some() => {
+                self.hand(shared, crossing);
+            }
             Ok(Some(HandoffReport::Done { .. })) => self.carry_record(shared, crossing),
             Ok(Some(HandoffReport::Failed { reason, .. })) => {
                 tracing::warn!(app = %crossing.app, %reason, "the window's app did not save what it shows");
@@ -554,18 +762,17 @@ impl Moves {
     /// The move cannot be made: the record goes back where it was, the tab goes back too, and the
     /// person is told why.
     fn give_up(&self, shared: &Shared, crossing: &Crossing, why: &str) {
-        Self::bring_back(crossing);
-        Self::put_back(shared, crossing.tab, crossing.from, &crossing.app);
-        if crossing.record.is_some() {
-            self.record_failed(
-                &crossing.app_name,
-                &crossing.to_name,
-                &crossing.from_name,
-                why,
-            );
-        } else {
-            self.failed(&crossing.app_name, &crossing.to_name, &crossing.from_name);
+        // A window offered to another device never left: nothing of it comes back.
+        if crossing.handing.is_none() {
+            Self::bring_back(crossing);
+            Self::put_back(shared, crossing.tab, crossing.from, &crossing.app);
         }
+        self.stayed(
+            &crossing.app_name,
+            &crossing.to_name,
+            &crossing.from_name,
+            why,
+        );
     }
 
     /// Nothing crossed: the tab goes back where it was, still showing the window it had.
@@ -576,34 +783,18 @@ impl Moves {
         let _ = shared.desktop.with_policy(|policy| policy.carry(tab, from));
     }
 
-    /// Say the window stayed where it was, and where.
-    fn failed(&self, app: &str, workspace: &str, source: &str) {
+    /// Say the window `app` shows did not move to `place` (a workspace or a device) and stayed in
+    /// the workspace `source`, and why.
+    fn stayed(&self, app: &str, place: &str, source: &str, why: &str) {
         let title = t_args(
-            "window-move-failed-title",
+            "window-move-stayed-title",
             &[
                 ("app", app.to_owned().into()),
-                ("workspace", workspace.to_owned().into()),
+                ("place", place.to_owned().into()),
             ],
         );
         let body = t_args(
-            "window-move-failed-body",
-            &[("workspace", source.to_owned().into())],
-        );
-        self.notices
-            .show(&Notice::new(t("window-move-app-name"), 1, title, body));
-    }
-
-    /// Say the record the window shows could not be moved, where it stayed and why.
-    fn record_failed(&self, app: &str, workspace: &str, source: &str, why: &str) {
-        let title = t_args(
-            "window-move-record-failed-title",
-            &[
-                ("app", app.to_owned().into()),
-                ("workspace", workspace.to_owned().into()),
-            ],
-        );
-        let body = t_args(
-            "window-move-record-failed-body",
+            "window-move-stayed-body",
             &[
                 ("workspace", source.to_owned().into()),
                 ("reason", why.to_owned().into()),
@@ -708,20 +899,50 @@ fn tab_tile(tree: &Layout, tab: TabId) -> Option<&TileContent> {
         .map(|held| &held.tile)
 }
 
-/// The window `tab` shows and the workspace the tab stands in; `None` when the tab is not on the
-/// shell or holds no window of an app this device started.
-fn tab_window(tree: &Layout, tab: TabId, person: &str, earlier: &[String]) -> Option<TabWindow> {
-    let TileContent::Foreign { app_id, surface_id } = tab_tile(tree, tab)? else {
-        return None;
-    };
-    let workspace = tree.workspaces.iter().find(|workspace| {
+/// The workspace the tab `tab` stands in.
+fn tab_workspace(tree: &Layout, tab: TabId) -> Option<&Workspace> {
+    tree.workspaces.iter().find(|workspace| {
         workspace.strips.iter().any(|strip| {
             strip
                 .window_groups
                 .iter()
                 .any(|group| group.tabs.iter().any(|held| held.id == tab))
         })
-    })?;
+    })
+}
+
+/// What the person calls the device `device` (a key in hex), and whether it is on a session with
+/// this one now.
+fn device_named(shared: &Shared, device: &str) -> (String, bool) {
+    let name = shared
+        .owner_devices
+        .as_ref()
+        .and_then(|devices| {
+            let (person, _) = devices.who();
+            devices
+                .devices()
+                .listed(&person)
+                .into_iter()
+                .find(|listed| listed.key == device)
+                .map(|listed| listed.device.called(&listed.cert))
+        })
+        .unwrap_or_else(|| device.chars().take(8).collect());
+    let online = shared.fabric.as_ref().is_some_and(|fabric| {
+        fabric
+            .online_device_ids()
+            .iter()
+            .any(|online| online.as_str() == device)
+    });
+    (name, online)
+}
+
+/// The window `tab` shows and the workspace the tab stands in; `None` when the tab is not on the
+/// shell or holds no window of an app this device started.
+fn tab_window(tree: &Layout, tab: TabId, person: &str, earlier: &[String]) -> Option<TabWindow> {
+    let TileContent::Foreign { app_id, surface_id } = tab_tile(tree, tab)? else {
+        return None;
+    };
+    let workspace = tab_workspace(tree, tab)?;
     Some(TabWindow {
         app: app_id.clone(),
         window: *surface_id,

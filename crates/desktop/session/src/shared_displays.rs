@@ -15,6 +15,7 @@ use settings_store::person_displays::{
 use tilo_workspace_service::workspaces::person_workspace::devices::{Devices, KeyKind};
 
 use crate::owner_session::OwnerDevices;
+use tilo_session_core::desktop::state::window_menu::OtherScreen;
 
 /// The fact under which a device keeps the outputs it shows in its entry of the record of the
 /// person's devices: [`DeviceOutput`]s, postcard in hex.
@@ -140,20 +141,20 @@ pub(crate) struct Publisher {
 impl Publisher {
     /// Keep this device's outputs in the record of the person's devices, and publish their devices
     /// as the record now has them, `online` (hex) those on a session with this one: once per
-    /// change, on the pass that saw it.
+    /// change, on the pass that saw it. Whether they changed.
     pub(crate) fn follow(
         &mut self,
         devices: &OwnerDevices,
         online: &BTreeSet<String>,
         snapshot: Option<&DisplayHardwareSnapshot>,
-    ) {
+    ) -> bool {
         let read = (
             devices.revision(),
             online.clone(),
             snapshot.map(|snapshot| snapshot.generated_unix_ms),
         );
         if self.read.as_ref() == Some(&read) {
-            return;
+            return false;
         }
         self.read = Some(read);
         if snapshot.is_some()
@@ -163,11 +164,34 @@ impl Publisher {
         }
         let (person, local) = devices.who();
         let listed = person_devices(&devices.devices(), &person, &local, online);
-        self.publish(&local, listed);
+        self.publish(&local, listed)
+    }
+
+    /// The screens of the person's other devices as last published: where a window's menu offers
+    /// to move it.
+    pub(crate) fn other_screens(&self) -> Vec<OtherScreen> {
+        self.seen
+            .iter()
+            .flatten()
+            .filter(|device| !device.local)
+            .flat_map(|device| {
+                device
+                    .outputs
+                    .iter()
+                    .filter(|output| output.enabled)
+                    .map(|output| OtherScreen {
+                        device: device.device.clone(),
+                        device_name: device.label.clone(),
+                        output: output.id.clone(),
+                        name: output.name.clone(),
+                        online: device.online,
+                    })
+            })
+            .collect()
     }
 
     /// Publish `devices`, `local` (hex) among them this one, unless it is what was published last.
-    /// Whether it published them.
+    /// Whether they changed: the window menu follows them even where Settings' copy is not written.
     fn publish(&mut self, local: &str, devices: Vec<PersonDevice>) -> bool {
         if self.seen.as_ref() == Some(&devices) {
             return false;
@@ -176,7 +200,7 @@ impl Publisher {
         let Ok((publisher_pid, publisher_start_ticks)) =
             settings_store::hardware::publisher_identity()
         else {
-            return false;
+            return true;
         };
         let view = PersonDisplays {
             schema_version: settings_store::person_displays::SCHEMA_VERSION,
@@ -187,7 +211,6 @@ impl Publisher {
         };
         if let Err(error) = view.save() {
             tracing::warn!(%error, "the person's displays are not published");
-            return false;
         }
         true
     }

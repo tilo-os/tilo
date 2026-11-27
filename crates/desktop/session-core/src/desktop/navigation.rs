@@ -118,9 +118,14 @@ pub struct Destination {
     /// The workspace to take the window to, as a window of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
-    /// The display to show the window on.
+    /// The display to show the window on: on this device its number, and with `device` that
+    /// device's screen, as its `displays` fact names it (wherever it opens a window when left out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
+    /// Another of the person's devices to move the window to, by key (lowercase hex): it opens the
+    /// same app on the same record there, and the window here closes once it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
     /// The window group of `strip` to stand before; the strip's end when absent, which in the
     /// window's own strip moves it to the last place. Any place in the strip it already stands on
     /// reorders it.
@@ -1189,6 +1194,9 @@ pub enum Admitted {
     MoveToWorkspace(RouteIds, WorkspaceId),
     /// Show the window on another display.
     MoveToDisplay(RouteIds, u32),
+    /// Move the window to another of the person's devices, by key, onto that device's screen
+    /// (empty for wherever it opens a window).
+    MoveToDevice(RouteIds, String, String),
     /// Give the window a preset share of its strip.
     WidthPreset(RouteIds, tilo_desktop_model::WindowWidth),
     /// Give every window of the strip the same share of it.
@@ -1672,6 +1680,15 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &Layout) -> Result<Admitted
         return (there && workspace != ids.workspace)
             .then_some(Admitted::MoveToWorkspace(ids, workspace))
             .ok_or_else(|| "Workspace unavailable".into());
+    }
+    if let Some(device) = &to.device {
+        let mut key = [0; 32];
+        hex::decode_to_slice(device, &mut key).map_err(|_| "Device unavailable".to_owned())?;
+        return Ok(Admitted::MoveToDevice(
+            ids,
+            device.clone(),
+            to.display.clone().unwrap_or_default(),
+        ));
     }
     if let Some(display) = &to.display {
         let display: u32 = display

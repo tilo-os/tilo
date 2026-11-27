@@ -2470,8 +2470,15 @@ impl Session {
                         .collect()
                 })
                 .unwrap_or_default();
-            self.published_displays
-                .follow(devices, &online, self.compositor.display_snapshot());
+            // A window's menu offers to move it onto the screens of the person's other devices.
+            if self
+                .published_displays
+                .follow(devices, &online, self.compositor.display_snapshot())
+            {
+                self.shared
+                    .handle
+                    .set_other_screens(self.published_displays.other_screens());
+            }
             // What this device holds of its workspaces, in the same record: the person's other
             // devices read it to see which of their devices holds what.
             self.published_storage

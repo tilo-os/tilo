@@ -738,6 +738,151 @@ async fn flow_every_device_manages_every_other() {
     );
 }
 
+/// The offer of a window the laptop has, made to the phone, as the record of the person's devices
+/// keeps it on the computer that holds it.
+async fn offered_to_the_phone(
+    f: &Rig,
+    laptop_key: &str,
+) -> tilo_workspace_service::workspaces::person_workspace::devices::ContinuityOffer {
+    use tilo_workspace_service::workspaces::person_workspace::{self, devices};
+    let workspaces = f.desk.server.workspaces().unwrap();
+    person_workspace::read::<devices::Devices>(workspaces, devices::DEVICES)
+        .await
+        .expect("the record of the person's devices reads")
+        .continuity
+        .iter()
+        .find(|(from, _)| from.as_str() == laptop_key)
+        .map(|(_, offer)| offer.clone())
+        .expect("the laptop's offer is in the record")
+}
+
+/// One device moves a window onto another device's monitor: the laptop's Files window, on the
+/// Work record it shows, is offered to the phone alone, at the phone's screen. The phone opens the
+/// same app on the same record there and says it did, which is what closes the laptop's window. A
+/// phone that cannot open it says why, and the window stays on the laptop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flow_window_moves_onto_another_devices_monitor() {
+    let f = Box::pin(rig()).await;
+    let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
+    let phone = f.client(&f.phone_session, &f.phone, "android-phone");
+    let workspaces = f.desk.server.workspaces().unwrap();
+    for device in [&f.laptop, &f.phone, &f.server_device] {
+        workspaces.keep_issued_device(&device.cert, "").await;
+    }
+    let (laptop_key, phone_key) = (flow::key_of(&f.laptop.cert), flow::key_of(&f.phone.cert));
+    let window = json!({"workspace": f.work, "app": "so.tilo.files", "record": "home/welcome.txt"});
+    let show = |output: &str| {
+        json!({
+            "from": laptop_key,
+            "device": phone_key,
+            "window": window,
+            "output": output,
+        })
+    };
+
+    // The laptop shows its window on the phone's screen.
+    flow::ask(
+        &laptop,
+        f.person_id(),
+        "so.tilo.devices",
+        "devices",
+        "show-window-on-device",
+        show("phone-screen"),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the laptop shows its window on the phone: {error:?}"));
+    let offer = offered_to_the_phone(&f, &laptop_key).await;
+    assert_eq!(
+        (
+            offer.to.as_str(),
+            offer.output.as_str(),
+            offer.workspace.as_str(),
+            offer.app_id.as_str(),
+            offer.resource.as_str(),
+        ),
+        (
+            phone_key.as_str(),
+            "phone-screen",
+            f.work.as_str(),
+            "so.tilo.files",
+            "home/welcome.txt",
+        ),
+        "the phone is asked to open the same app on the same record, at its screen"
+    );
+
+    // The phone opened it and says so: the laptop reads that, which closes its own window.
+    flow::ask(
+        &phone,
+        f.person_id(),
+        "so.tilo.devices",
+        "devices",
+        "answer-continuity",
+        json!({"from": laptop_key, "at_ms": offer.shown_ms, "device": phone_key, "taken": true}),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the phone says it opened the window: {error:?}"));
+    let opened = offered_to_the_phone(&f, &laptop_key).await;
+    assert_eq!(
+        opened.answer_of(&phone_key),
+        Some(true),
+        "the laptop reads that the phone shows the window"
+    );
+
+    // Shown again, the phone cannot open it, and says why: the window stays on the laptop.
+    flow::ask(
+        &laptop,
+        f.person_id(),
+        "so.tilo.devices",
+        "devices",
+        "show-window-on-device",
+        json!({
+            "from": laptop_key,
+            "device": phone_key,
+            "window": window,
+            "at_ms": offer.shown_ms + 1,
+        }),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the laptop shows its window on the phone again: {error:?}"));
+    flow::ask(
+        &phone,
+        f.person_id(),
+        "so.tilo.devices",
+        "devices",
+        "answer-continuity",
+        json!({
+            "from": laptop_key,
+            "at_ms": offer.shown_ms + 1,
+            "device": phone_key,
+            "taken": false,
+            "reason": "Files isn't installed on android-phone",
+        }),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the phone says why it could not open it: {error:?}"));
+    let refused = offered_to_the_phone(&f, &laptop_key).await;
+    let answer = refused
+        .answered_by(&phone_key)
+        .expect("the phone answered the newer offer");
+    assert!(!answer.taken, "the window stays on the laptop");
+    assert_eq!(answer.reason, "Files isn't installed on android-phone");
+
+    // A window is shown on another of the person's devices, never on the one it is on.
+    assert!(
+        flow::ask(
+            &laptop,
+            f.person_id(),
+            "so.tilo.devices",
+            "devices",
+            "show-window-on-device",
+            json!({"from": laptop_key, "device": laptop_key, "window": window}),
+        )
+        .await
+        .is_err(),
+        "a window shown on the device it is on is refused"
+    );
+}
+
 /// A newcomer's browser joins through the static web entry page while the server has no
 /// domain name: the browser reaches the server peer-to-peer over iroh through a relay that
 /// carries only sealed traffic, and the certificate, with no name set, comes from a local CA

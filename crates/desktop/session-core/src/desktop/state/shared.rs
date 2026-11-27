@@ -90,6 +90,8 @@ impl Shared {
             window_offers: Vec::new(),
             workspace_shares: None,
             workspace_share_asks: Vec::new(),
+            other_screens: Vec::new(),
+            device_moves: Vec::new(),
             rules: None,
             asks: None,
             asking: std::collections::BTreeSet::new(),

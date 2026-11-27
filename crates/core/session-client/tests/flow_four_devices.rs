@@ -921,16 +921,21 @@ async fn flow_input_device_on_one_device_is_forwarded_to_another() {
 
 /// A window open on one device is shown on another of the person's devices, the same app on
 /// the same record, not a copy.
-///
-/// The person's devices offer no action to show a window on another device.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_window_is_shown_on_another_of_the_persons_devices() {
     let f = Box::pin(four_devices()).await;
+    // The person's devices are a record of their own workspace, kept by the computer that
+    // certifies them.
+    let workspaces = f.desk_host.server.workspaces().unwrap();
+    for device in [&f.laptop, &f.pi] {
+        workspaces.keep_issued_device(&device.cert, "").await;
+    }
     let shown = device_action(
         &f,
         "snapdragon-laptop",
         "show-window-on-device",
         json!({
+            "from": flow::key_of(&f.laptop.cert),
             "device": flow::key_of(&f.pi.cert),
             "window": {"workspace": f.work, "app": "so.tilo.files", "record": "home/welcome.txt"},
         }),

@@ -86,6 +86,7 @@ tilo-devices-answer-notice = Answer a notification shown from another device
 tilo-devices-retire-notice = Take a notification off your other devices
 tilo-devices-offer-continuity = Offer the app this device has in front to your other devices
 tilo-devices-answer-continuity = Take an app offered from another device, or put it away
+tilo-devices-show-window-on-device = Show a window on another of your devices
 tilo-devices-woke = Say a device is awake again
 tilo-devices-move-accessory = Move a Bluetooth accessory to another device
 tilo-devices-accessory-ready = Say whether a device holds an accessory's pairing

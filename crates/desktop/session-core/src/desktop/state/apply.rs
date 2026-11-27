@@ -253,6 +253,15 @@ fn apply(
         {
             false
         }
+        // Another device opens the window's app on the same record: the session hands it over
+        // through the record of the person's devices, and closes this window once it did.
+        Admitted::MoveToDevice(ids, device, output) => {
+            if live(&shared.tree, ids) {
+                shared.device_moves.push((ids.tab, device, output));
+                shared.wake.wake();
+            }
+            false
+        }
         // Everything else is a window menu's row: the desktop's own moves, widths and closes of
         // one window.
         other => window_menu(shared, &other, ops),
