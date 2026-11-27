@@ -6286,21 +6286,32 @@ pub(crate) fn device_action(
     }
     // What only the calling person's root signs runs here when this computer keeps their root
     // and they are signed in; otherwise it waits in its record for a device of theirs that does.
-    let person = caller
+    // What its declaration says the person confirms (letting a computer in, taking a key back)
+    // is judged as whoever asks it in this run: the person's own run signs it here, and a run
+    // acting for them, their agent or a program on their connection, waits for their yes on the
+    // asking card, whatever caller its connection carries.
+    let confirmed =
+        Tickets::listed(&request).is_some_and(|action| action.contract.requires_confirmation());
+    let judged = if confirmed { asked_by } else { caller };
+    let person = judged
         .acting()
         .person_id()
         .and_then(|person| hex::decode(person).ok())
         .and_then(|person| <[u8; 32]>::try_from(person).ok());
-    if caller.is_system() || person.is_some_and(holds_root_for_person) {
+    if judged.is_system() || person.is_some_and(holds_root_for_person) {
         return run_device_action(invocations, tickets, caller, asked_by, request, workspace);
     }
     let (done, answer) = tilo_actions::remote::pending();
-    let (asked, caller, workspace) = (asked.cloned(), caller.clone(), workspace.to_owned());
+    let (asked, callers, workspace) = (
+        asked.cloned(),
+        (caller.clone(), judged.clone()),
+        workspace.to_owned(),
+    );
     let invocation = request.invocation;
     tickets.root_only_call(workspace.clone(), invocation, move |_marked, kept| {
         let answered = Pending::ready(hand_on_to_root(
             asked.as_deref(),
-            &caller,
+            (&callers.0, &callers.1),
             &request,
             (workspace, kept),
         ));
@@ -6334,9 +6345,10 @@ fn run_device_action(
 
 /// Keep `request`, which only the person's root signs, for a device of theirs that keeps it, as
 /// the cap of a device that keeps none answers: or follow `kept`, its record kept there already.
+/// `caller` is what the connection carries, and `judged` who asks in its run: the card names it.
 fn hand_on_to_root(
     asked: Option<&super::asked::DeviceAsked>,
-    caller: &Caller,
+    (caller, judged): (&Caller, &Caller),
     request: &InvokeRequest,
     (workspace, kept): (String, Option<tilo_actions::remote::asked::KeptAsk>),
 ) -> Result<InvocationReceipt, ActionCallError> {
@@ -6358,7 +6370,7 @@ fn hand_on_to_root(
     };
     // An agent asking for the person's root answers as the agent it is, so the card says who
     // wants it; the person's own call is theirs.
-    let run = match (caller.acting().agent_id(), caller.agent_called()) {
+    let run = match (judged.acting().agent_id(), judged.agent_called()) {
         (Some(agent), Some(name)) => super::asked::Run::Agent {
             workspace,
             agent: agent.to_owned(),

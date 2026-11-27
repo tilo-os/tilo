@@ -83,7 +83,7 @@ pub fn add(
                  Nothing is added until you do."
             );
         }
-        let mut issued = client
+        let issued = client
             .act(
                 Some(&workspace),
                 "devices",
@@ -92,34 +92,8 @@ pub fn add(
                 "Add a device",
             )
             .await?;
-        // Their yes may come after one wait of the call lasts: follow the ask until it ends, or
-        // until asking takes longer than a ticket would last.
-        let deadline = Instant::now().checked_add(ASKING_DEADLINE);
-        while issued.get("status").and_then(Value::as_str) == Some("pending")
-            && deadline.is_none_or(|deadline| Instant::now() < deadline)
-        {
-            issued = client.follow(Some(&workspace), issued).await?;
-        }
-        match issued.get("status").and_then(Value::as_str) {
-            // A no, or a withdrawal, ends the call with no ticket.
-            Some("failed" | "cancelled") => {
-                let why = issued
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let why = if why.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {why}")
-                };
-                bail!("Adding {what} was not confirmed, so nothing was added{why}");
-            }
-            Some("pending") => bail!(
-                "Adding {what} still waits for your yes on the asking card on any of your \
-                 devices: approve it there, then run `tilo device add` again."
-            ),
-            _ => {}
-        }
+        let issued = confirmed(&client, &workspace, issued, &format!("Adding {what}"), "add")
+            .await?;
         let ticket = issued
             .get("result")
             .and_then(|answer| answer.get("ticket"))
@@ -381,6 +355,45 @@ async fn devices(client: &Calls) -> Result<Vec<FleetDevice>> {
 }
 
 /// This computer's daemon, as `ls`, `rename` and `revoke` ask it.
+/// `asked`, a device action the person confirms on their asking card, followed until it ends:
+/// its answer once they said yes. Their yes may come after one wait of the call lasts, so the ask
+/// is followed until it ends, or until asking takes longer than a ticket would last. `doing` names
+/// the act in what the person reads, and `command` the `tilo device` command that asked.
+async fn confirmed(
+    client: &Calls,
+    workspace: &str,
+    mut asked: Value,
+    doing: &str,
+    command: &str,
+) -> Result<Value> {
+    let deadline = Instant::now().checked_add(ASKING_DEADLINE);
+    while asked.get("status").and_then(Value::as_str) == Some("pending")
+        && deadline.is_none_or(|deadline| Instant::now() < deadline)
+    {
+        asked = client.follow(Some(workspace), asked).await?;
+    }
+    match asked.get("status").and_then(Value::as_str) {
+        // A no, or a withdrawal, ends the call with nothing done.
+        Some("failed" | "cancelled") => {
+            let why = asked
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {why}")
+            };
+            bail!("{doing} was not confirmed, so nothing changed{why}");
+        }
+        Some("pending") => bail!(
+            "{doing} still waits for your yes on the asking card on any of your devices: \
+             approve it there, then run `tilo device {command}` again."
+        ),
+        _ => Ok(asked),
+    }
+}
+
 async fn daemon() -> Result<Calls> {
     Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await
 }
@@ -585,7 +598,12 @@ pub fn revoke(which: &str, why: Why, yes: bool) -> Result<ExitCode> {
             Some(workspace) => workspace,
             None => client.founded_workspace().await?,
         };
-        client
+        eprintln!(
+            "tilo: revoking {}: confirm on the asking card on any of your devices. Nothing is \
+             revoked until you do.",
+            target.label
+        );
+        let asked = client
             .act(
                 Some(&workspace),
                 "devices",
@@ -594,6 +612,8 @@ pub fn revoke(which: &str, why: Why, yes: bool) -> Result<ExitCode> {
                 "Revoke a device",
             )
             .await?;
+        let revoking = format!("Revoking {}", target.label);
+        confirmed(&client, &workspace, asked, &revoking, "revoke").await?;
         println!("Revoked {}.", target.label);
         Ok(ExitCode::SUCCESS)
     })

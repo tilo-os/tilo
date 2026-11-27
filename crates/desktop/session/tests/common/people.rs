@@ -1385,7 +1385,7 @@ impl Device {
             let answered = tilo_rt::app().handle().block_on(async {
                 let calls = tilo_api::calls::Calls::connect(Some(socket.as_path()), None).await?;
                 calls.founded_workspace().await?;
-                calls
+                let started = calls
                     .start(
                         None,
                         tilo_device_identity::login::RESOURCE,
@@ -1393,6 +1393,13 @@ impl Device {
                         args,
                         "A device action",
                     )
+                    .await?;
+                // What waits for the person's yes (a ticket does) they approve on this
+                // connection, as `tilo`'s own prompt answers it.
+                calls
+                    .follow_asked(None, started, async |record: &str| {
+                        calls.answer_asked(record, true).await
+                    })
                     .await
             });
             match answered {

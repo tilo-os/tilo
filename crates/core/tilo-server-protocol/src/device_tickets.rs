@@ -124,7 +124,8 @@ fn effect(result: ResultSpec) -> ActionContract {
     }
 }
 
-/// What changes an identity, or takes a key back for good, the person confirms.
+/// What changes an identity, lets a computer in or takes a key back for good, the person
+/// confirms.
 fn confirmed(result: ResultSpec) -> ActionContract {
     ActionContract {
         risk: RiskLevel::Privileged,
@@ -153,7 +154,9 @@ fn listed(action: &str) -> Option<Listed> {
             "Print a one-use ticket another computer logs in with as one of the person's \
              devices.",
             OperationKind::Effect,
-            effect(object(&["ticket"])),
+            // Letting a computer in is for good, as taking one back is: only the person says
+            // yes to it, on the system's own confirmation.
+            confirmed(object(&["ticket"])),
             vec![
                 ActionParam::optional(
                     "wait",
