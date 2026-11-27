@@ -529,13 +529,22 @@ fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_app_w
         "the window counts the {count} changes she has not seen: {window:?}"
     );
     the_catch_up_names_each_item_it_changed(&window);
-    // The list is the window's content, so its header is the window's: the mark stands among the
-    // header actions, first, in the row that carries the title it counts.
+    // The mark stands among the header's actions, first, in the row that carries the title it
+    // counts: the overview's header where the window lists its items beside the one it opens,
+    // else the content's.
     let parts = composed.of_kind("part");
+    let lists_beside = parts.iter().any(|part| {
+        part.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("overview"))
+    });
+    let actions = if lists_beside {
+        "overview_actions"
+    } else {
+        "actions"
+    };
     let header = parts
         .iter()
         .find(|part| {
-            part.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
+            part.props.get("name") == Some(&tilo_render_protocol::patch::Value::text(actions))
                 && part
                     .children
                     .iter()
@@ -1266,6 +1275,7 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
         staged
             .lay_out(size, tilo_ui_base::Theme::light(), input, 1.0)
             .expect("the app lays out");
+        back_to_the_list(&mut staged, size);
         let row = super::header_row_controls(&staged, size);
         let buttons = row.iter().filter(|control| !control.menu).count();
         assert!(
@@ -1614,6 +1624,33 @@ fn away_at(packages: &Rc<stage::Packages>, size: (u32, u32)) -> stage::Staged {
     staged
 }
 
+/// A window too narrow for its list and the item it opens beside it shows the item in front,
+/// with the shell's Back to the list behind, as a press on the item's row does. The window's
+/// header, its actions and its mark are the list's, so a check of them takes Back first. A window
+/// that lists nothing beside what it opens keeps its actions on the screen in front, and is left
+/// as it is.
+fn back_to_the_list(staged: &mut stage::Staged, size: (u32, u32)) {
+    let lists_beside = staged
+        .composed()
+        .expect("the window composed its view")
+        .of_kind("part")
+        .iter()
+        .any(|part| {
+            part.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("overview"))
+        });
+    if !lists_beside || !super::back_chip(staged, size) {
+        return;
+    }
+    staged
+        .press_shell(ui::widget::WINDOW_BACK)
+        .expect("the shell's back presses");
+    staged.freshen().expect("the list comes back to rest");
+    assert!(
+        !super::back_chip(staged, size),
+        "the shell's back shows the window's list at {size:?}"
+    );
+}
+
 /// What a person holds a window with at `size`: a pointer at a desktop's width, a finger on one.
 fn input_at(size: (u32, u32)) -> tilo_ui_base::interaction::InteractionEnvironment {
     if size.0 < 600 {
@@ -1667,45 +1704,42 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows(away: &mut st
             .any(|(_, _, said)| said.contains("assigned") && said.contains("you")),
         "the mail Bo gave her says it was given to her: {changed:?}"
     );
-    // The task that is still a row of the list says so
-    // under the row's title, where a person reads it.
+    // Each task stays a row of the list beside the page she opened, and each row says what
+    // changed under its title, where a person reads it: Bo's mail, and the survey her agent moved,
+    // which is the one open.
     let rows = row_changes(away);
     assert_eq!(
         rows.len(),
-        1,
-        "the row of the task Bo took says so under its title: {rows:?}"
+        2,
+        "the rows of the two tasks Bo and her agent changed say so under their titles: {rows:?}"
     );
     for (identity, name, said) in &rows {
-        assert_ne!(
-            identity.id(),
-            stage::ME,
-            "a marked row names who changed it, never the person's own step"
-        );
-        it_says_what_they_did(said);
+        a_change_names_its_maker(identity, said);
         assert!(!name.is_empty(), "a marked row names the changer: {name}");
-        assert!(
-            said.contains("assigned") && said.contains("you"),
-            "the mail Bo gave her says it was given to her: {said}"
-        );
     }
-    // The task she opened stands as its own page, its title written once, so what her agent
-    // changed is marked on the page the row became: the face of who changed it, on it.
+    assert!(
+        rows.iter()
+            .any(|(_, _, said)| said.contains("assigned") && said.contains("you")),
+        "the row of the mail Bo gave her says it was given to her: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|(_, _, said)| said.contains("Today")),
+        "the row of the survey she opened says her agent moved it: {rows:?}"
+    );
+    // The row of the task she opened carries the face of who changed it, where a press opens what
+    // they did; the page beside it is the window's, whose header mark counts it below.
     let opened = changed
         .iter()
         .find(|(_, _, said)| said.contains("Today"))
         .map(|(key, _, _)| key.clone())
         .expect("her agent moved the survey to today");
-    let face = {
-        let wanted = format!("{opened}~change");
-        let root = away.harness().root_widget();
-        named(root, "Chip")
-            .into_iter()
-            .find(|chip| chip.test_id().is_some_and(|id| id == wanted))
-            .map_or_else(
-                || panic!("the item she opened carries the face of who changed it: {wanted}"),
-                Widget::get_rect,
-            )
-    };
+    let face = list_rows(away)
+        .into_iter()
+        .find(|row| row.test_id().is_some_and(|id| id == opened))
+        .and_then(ui::widget::ListRow::change_face)
+        .unwrap_or_else(|| {
+            panic!("the row she opened carries the face of who changed it: {opened}")
+        });
     assert!(
         face.width() > 8.0 && face.height() > 8.0,
         "the face stands on the page it marks, at a size a person reads: {face:?}"
@@ -1715,8 +1749,11 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows(away: &mut st
     // A node in the tree is not a pixel: the mark stands in the window's own header row, over
     // the rows it counts, and the frame has its ink there.
     let mark = floating_rect(away, "ChangeMark").expect("the window's mark is laid out");
+    // The header of the list beside the page is narrow, so its controls stand compact: the mark
+    // is the faces of who changed things, a target a finger or a pointer presses, its sentence
+    // read out and on hover.
     assert!(
-        mark.width() > 40.0 && mark.height() > 20.0,
+        mark.width() >= 32.0 && mark.height() >= 32.0,
         "the mark has room to stand in the header: {mark:?}"
     );
     // The rows the window lays out stand under the mark that counts them, inside it.
@@ -1793,6 +1830,7 @@ fn a_catch_up_hangs_inside_the_window_it_belongs_to(
 
     // A window held in the hand is staged at its own size, as a capture stages it.
     let mut narrow = away_at(packages, (390, 844));
+    back_to_the_list(&mut narrow, (390, 844));
     let mark = shown_floating_rect(&narrow, "ChangeMark")
         .expect("the narrow window's header shows its mark");
     narrow
@@ -2092,6 +2130,7 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
         staged
             .lay_out(size, theme, input, 1.0)
             .expect("the app lays out");
+        back_to_the_list(&mut staged, size);
         let row = super::header_row_controls(&staged, size);
         let primary: Vec<&super::RowControl> =
             row.iter().filter(|control| control.primary).collect();

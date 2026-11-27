@@ -2438,6 +2438,13 @@ impl ListRow {
 
     fn change_hit(&self) -> Option<Rect> {
         self.change.as_ref()?.show.as_ref()?;
+        self.change_face()
+    }
+
+    /// Where the row draws the face of the unseen change it shows, once it is laid out.
+    #[must_use]
+    pub fn change_face(&self) -> Option<Rect> {
+        self.change.as_ref()?;
         let theme = self.theme.as_ref()?;
         let band = self.text_band();
         tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
