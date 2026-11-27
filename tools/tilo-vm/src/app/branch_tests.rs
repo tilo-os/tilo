@@ -1136,6 +1136,25 @@ tilo_test_env::scenario! {
         let private = dir.path().join("var/lib/tilo/device-private");
         std::fs::create_dir_all(&private).unwrap();
         std::fs::write(private.join("keypair.bin"), b"key").unwrap();
+        // The device's `tilo` the script asks for its key: it reads the keypair where the
+        // script runs, which is the record's own directory.
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("tilo"),
+            "#!/bin/sh\nid=$(od -An -tx1 -v keypair.bin | tr -d ' \\n')\n\
+             [ -n \"$id\" ] && echo \"{\\\"device\\\": \\\"$id\\\"}\"\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(bin.join("tilo")).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt as _;
+        perms.set_mode(0o755);
+        std::fs::set_permissions(bin.join("tilo"), perms).unwrap();
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
         let joined = branch_admit::MACHINE.replace(
             "/var/lib/tilo/device-private",
             &private.display().to_string(),
@@ -1143,6 +1162,7 @@ tilo_test_env::scenario! {
         let out = std::process::Command::new("sh")
             .args(["-c", &joined])
             .current_dir(dir.path())
+            .env("PATH", path)
             .output_locked()
             .unwrap();
         let said = String::from_utf8_lossy(&out.stdout);
