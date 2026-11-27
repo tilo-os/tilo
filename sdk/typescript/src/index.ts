@@ -79,7 +79,6 @@ export {
   type ChangeEvent,
   type Event,
   type EventWhat,
-  type Hit,
   type Invitation,
   type Key,
   Listing,

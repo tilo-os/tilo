@@ -159,7 +159,7 @@ pub mod row;
 pub mod schema;
 pub mod schema_check;
 pub mod search_default;
-pub use tilo_actions::search_index;
+pub mod search_index;
 pub mod shape;
 pub mod share;
 pub mod sort;

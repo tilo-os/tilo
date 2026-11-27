@@ -4,7 +4,7 @@
 //! A page holds the records of the apps it opened, and no others: a note in a notebook nobody
 //! opened on the page, or an issue in a tracker it never showed, is not in its store, so its
 //! records source cannot find it. The workspace's host holds every record and ranks the entries
-//! each record's app publishes to search ([`ResourceSearch`]). This source asks it, over the
+//! each record's app publishes to search ([`Answers`]). This source asks it, over the
 //! session the device already holds with the host, and shows what it answers.
 //!
 //! The answer comes over the wire, so a query asks and returns at once; the answer is kept for
@@ -14,7 +14,8 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tilo_actions::remote::{Caller, Found, ResourceSearch};
+use tilo_actions::remote::Caller;
+use tilo_workspace_records::search::{Answers, Found};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 use ui::time::{Duration, Instant};
 
@@ -38,7 +39,7 @@ struct Asked {
 
 /// The workspace host's own search, as one of a device's search sources.
 pub struct HostSearch {
-    search: Arc<dyn ResourceSearch>,
+    search: Arc<dyn Answers>,
     caller: Caller,
     workspace: String,
     /// What asks the device's shell for the pass that lists an answer.
@@ -51,7 +52,7 @@ impl HostSearch {
     /// lists its answer.
     #[must_use]
     pub fn new(
-        search: Arc<dyn ResourceSearch>,
+        search: Arc<dyn Answers>,
         caller: Caller,
         workspace: impl Into<String>,
         wake: Arc<dyn Fn() + Send + Sync>,
@@ -181,7 +182,7 @@ mod tests {
         asked: Mutex<Vec<(String, Answer)>>,
     }
 
-    impl ResourceSearch for Host {
+    impl Answers for Host {
         fn find(&self, _: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionCallError>> {
             let (done, answer) = pending();
             self.asked
@@ -226,7 +227,7 @@ mod tests {
         let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let wakes = Arc::clone(&woken);
         let source = HostSearch::new(
-            Arc::clone(&host) as Arc<dyn ResourceSearch>,
+            Arc::clone(&host) as Arc<dyn Answers>,
             Caller::local_person("ana"),
             "w",
             Arc::new(move || {

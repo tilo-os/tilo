@@ -24,7 +24,7 @@ use fs_protocol::tree::{
 use tilo_action_policy::{ActionKind, Answer, TreePath};
 use tilo_actions::remote::{
     APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, CataloguePage,
-    CatalogueQuery, CatalogueRow, FOUND_FILE, InvokeArgument, InvokeRequest, Pending, pending,
+    CatalogueQuery, CatalogueRow, InvokeArgument, InvokeRequest, Pending, pending,
     provider_workspace,
 };
 use tilo_actions::{
@@ -33,6 +33,7 @@ use tilo_actions::{
 };
 use tilo_desktop_model::Workspace;
 use tilo_server_protocol::WorkspaceId;
+use tilo_workspace_records::search::FOUND_FILE;
 
 use super::action_provider::refusal;
 use super::host_action_admission::HostActionAdmission;

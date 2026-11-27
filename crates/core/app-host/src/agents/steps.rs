@@ -96,7 +96,7 @@ pub(super) fn asking(message: &RemoteActionMessage) -> Option<Asking> {
     let kind = match message {
         RemoteActionMessage::CatalogueRequest { .. } => Kind::List,
         RemoteActionMessage::Invoke(request)
-            if tilo_actions::remote::search::is_find(&request.target) =>
+            if tilo_workspace_records::search::is_find(&request.target) =>
         {
             Kind::Search
         }

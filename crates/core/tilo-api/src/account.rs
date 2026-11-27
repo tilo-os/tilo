@@ -1946,10 +1946,6 @@ impl ActionProvider for Joined {
         self.actions.as_ref()?.resource_reads()
     }
 
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        self.actions.as_ref()?.resource_search()
-    }
-
     fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
         self.actions.as_ref()?.change_feed()
     }

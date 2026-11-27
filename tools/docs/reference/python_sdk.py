@@ -39,7 +39,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Transports", ("Transport", "DaemonTransport", "KeyTransport")),
     ("Calls", ("CallLane", "CallAsk", "CallFrame")),
     ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport")),
-    ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "Hit", "made")),
+    ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "made")),
     ("Invocations", (
         "Invocation", "InvocationGroup", "InvocationOpening", "InvocationList", "InvocationInfo",
         "ProgramAnswer", "Event", "ChangeEvent", "EventWhat",

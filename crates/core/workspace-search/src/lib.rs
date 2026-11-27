@@ -12,12 +12,11 @@ pub mod records;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tilo_actions::remote::search::{Description, IndexKind, IndexPerson, Picture};
-use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, ActionCallError, Caller, Found, Pending, ResourceSearch, Within,
-};
+use tilo_actions::remote::{APPLICATION_OPEN_ACTION, ActionCallError, Caller, Pending};
 use tilo_resource::search_index::{IndexDelta, IndexEntry, IndexWeight};
+use tilo_resource::search_index::{IndexKind, IndexPerson};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use tilo_workspace_records::search::{Answers, Description, Found, Picture, Within, Word};
 
 pub use index::{AppContentIndex, Contents, IndexKey, IndexedEntry, record_slot};
 
@@ -270,7 +269,7 @@ fn describe(
     let entry = match published {
         Some(indexed) => {
             let mut entry = indexed.entry;
-            for (text, weight) in words {
+            for Word { text, weight } in words {
                 if !entry.fields.iter().any(|(held, _)| held == &text) {
                     entry.fields.push((text, weight));
                 }
@@ -282,7 +281,10 @@ fn describe(
             key: picture.resource.clone(),
             resource: picture.resource,
             title,
-            fields: words,
+            fields: words
+                .into_iter()
+                .map(|Word { text, weight }| (text, weight))
+                .collect(),
             image: Some(picture.image),
             icon: Some("image".to_owned()),
             ..IndexEntry::default()
@@ -301,7 +303,7 @@ fn describe(
 /// The device's index answers the workspace's search for every caller, as that caller may read
 /// it: narrowed to a place, a stretch of time, an app or what entries are about, from what the
 /// entries say, never by reading anything through.
-impl ResourceSearch for IndexSearch {
+impl Answers for IndexSearch {
     fn find(&self, caller: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionCallError>> {
         self.finding(caller, needle, &Within::default()).map(Ok)
     }

@@ -2825,7 +2825,7 @@ impl Daemon {
             blob_socket: &sockets.blobs,
             search: search
                 .search()
-                .map(|search| search as Arc<dyn tilo_actions::remote::ResourceSearch>),
+                .map(|search| search as Arc<dyn tilo_workspace_records::search::Answers>),
             person: &actor,
         });
         workspaces.serve_invocations(Arc::clone(&invocations));
@@ -6764,12 +6764,6 @@ impl ActionProvider for RuntimeActionProvider {
         Some(Arc::new(DeviceChanges(self.clone())))
     }
 
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        self.workspaces
-            .search()
-            .map(|search| search as Arc<dyn tilo_actions::remote::ResourceSearch>)
-    }
-
     fn installed_surface(&self, app_id: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
         tilo_actions::remote::Pending::ready(
             self.apps
@@ -6958,6 +6952,15 @@ impl ActionProvider for RuntimeActionProvider {
         // nothing.
         if self.session_stopped(caller) {
             return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        // The device's one search, answered from its index as the caller may read it.
+        if tilo_workspace_records::search::is_search(&request.target) {
+            let Some(search) = self.workspaces.search() else {
+                return Pending::ready(Err(ActionCallError::Unavailable {
+                    reason: "this device holds no records to search".into(),
+                }));
+            };
+            return tilo_workspace_records::search::serve(&*search, caller, &request);
         }
         // The device's own actions: what it is, to the person and the agents acting for them;
         // what lets another device in, to the person alone.

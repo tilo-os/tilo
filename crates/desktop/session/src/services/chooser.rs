@@ -274,12 +274,12 @@ impl WorkspaceNode {
 
     /// The kind the workspace's folder listing offers the node as: a file or a folder of the
     /// tree ([`fs_protocol::tree::FOLDER_KIND`], beside a file's
-    /// [`tilo_actions::remote::FOUND_FILE`]).
+    /// [`tilo_workspace_records::search::FOUND_FILE`]).
     const fn kind(&self) -> &'static str {
         if self.directory {
             fs_protocol::tree::FOLDER_KIND
         } else {
-            tilo_actions::remote::FOUND_FILE
+            tilo_workspace_records::search::FOUND_FILE
         }
     }
 

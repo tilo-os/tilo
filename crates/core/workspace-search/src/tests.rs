@@ -2,9 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tilo_actions::remote::search::{Description, IndexKind, Picture};
-use tilo_actions::remote::{Caller, Within};
+use tilo_actions::remote::Caller;
+use tilo_resource::search_index::IndexKind;
 use tilo_resource::search_index::{IndexDelta, IndexEntry, IndexWeight};
+use tilo_workspace_records::search::{Description, Found, Picture, Within, Word};
 
 use super::{AppContentIndex, IndexKey, IndexSearch};
 
@@ -38,7 +39,7 @@ fn publish(
     );
 }
 
-fn titles(found: &[tilo_actions::remote::Found]) -> Vec<&str> {
+fn titles(found: &[Found]) -> Vec<&str> {
     found.iter().map(|found| found.label.as_str()).collect()
 }
 
@@ -232,8 +233,14 @@ fn a_described_picture_is_one_result_found_by_what_it_shows() {
                 picture: pictures[0].clone(),
                 title: "A dog on a beach".to_owned(),
                 words: vec![
-                    ("dog".to_owned(), IndexWeight::Metadata),
-                    ("42 North Street".to_owned(), IndexWeight::Body),
+                    Word {
+                        text: "dog".to_owned(),
+                        weight: IndexWeight::Metadata,
+                    },
+                    Word {
+                        text: "42 North Street".to_owned(),
+                        weight: IndexWeight::Body,
+                    },
                 ],
             },
         )
@@ -257,7 +264,10 @@ fn a_described_picture_is_one_result_found_by_what_it_shows() {
                 Description {
                     picture: apart,
                     title: String::new(),
-                    words: vec![("cat".to_owned(), IndexWeight::Metadata)],
+                    words: vec![Word {
+                        text: "cat".to_owned(),
+                        weight: IndexWeight::Metadata,
+                    }],
                 },
             )
             .is_err(),

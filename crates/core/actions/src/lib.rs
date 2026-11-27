@@ -81,8 +81,7 @@
 //! names ([`item_kind`]), the name a workspace emoji is written by
 //! ([`custom_emoji_name`]), the catalogue key a kind is named under
 //! ([`message_key`]), the id of a history entry ([`HistoryEntryId`]), the named
-//! scopes the app framework is profiled by ([`profiling`]), and the search
-//! entries an app publishes to the system index ([`search_index`]).
+//! scopes the app framework is profiled by ([`profiling`]).
 //! `tilo-resource` publishes them where they have always been; the toolkit reads
 //! them here, with or without that model.
 
@@ -355,7 +354,6 @@ pub mod row_status;
 pub mod run;
 pub mod schema;
 mod scope;
-pub mod search_index;
 pub mod selection;
 pub mod selectors;
 pub mod send_to;

@@ -307,9 +307,11 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
 
-    use tilo_actions::remote::{Caller, Within};
+    use tilo_actions::remote::Caller;
     use tilo_lock::MutexRecover as _;
     use tilo_resource::search_index::IndexEntry;
+
+    use tilo_workspace_records::search::Within;
 
     use super::{RecordIndex, RecordReader, StoreReader, Unread};
     use crate::{AppContentIndex, IndexSearch};

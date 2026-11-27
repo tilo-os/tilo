@@ -519,17 +519,21 @@ impl ActionProvider for Notes {
         }))
     }
 
-    fn resource_search(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        let search: Arc<dyn tilo_actions::remote::ResourceSearch> = Arc::new(self.clone());
-        self.searches.then_some(search)
-    }
-
     fn invoke(
         &self,
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
+        // The workspace's search: answered by the one this host keeps, and no action of it
+        // otherwise.
+        if tilo_workspace_records::search::is_search(&request.target) {
+            return if self.searches {
+                tilo_workspace_records::search::serve(self, caller, &request)
+            } else {
+                Pending::ready(Err(ActionCallError::UnknownAction))
+            };
+        }
         // The invocations record takes back what one of them changed.
         if request.target.provider == tilo_action_services::workspace_invocations::PROVIDER {
             self.invoked.lock().unwrap().push(request);
@@ -830,7 +834,7 @@ where
         .with_agent_session("mcp:test")
 }
 
-impl tilo_actions::remote::ResourceSearch for Notes {
+impl tilo_workspace_records::search::Answers for Notes {
     /// A stand-in for the desktop's one search: the rows the app publishes
     /// whose names hold the query's words, best first, each as the resource
     /// it is.
@@ -838,7 +842,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
         &self,
         _caller: &Caller,
         needle: &str,
-    ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>> {
+    ) -> Pending<Result<Vec<tilo_workspace_records::search::Found>, ActionCallError>> {
         let words = needle_words(needle);
         if words.is_empty() {
             return Pending::ready(Ok(Vec::new()));
@@ -877,7 +881,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
             }
             found.push((
                 score,
-                tilo_actions::remote::Found {
+                tilo_workspace_records::search::Found {
                     resource: row.resource.id.clone(),
                     kind: row.resource.kind.clone(),
                     label: row.resource.label.clone(),
@@ -891,7 +895,7 @@ impl tilo_actions::remote::ResourceSearch for Notes {
                     app: Some(APP.to_owned()),
                     provider: None,
                     when: None,
-                    ..tilo_actions::remote::Found::default()
+                    ..tilo_workspace_records::search::Found::default()
                 },
             ));
         }

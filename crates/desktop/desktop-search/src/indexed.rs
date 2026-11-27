@@ -1,5 +1,5 @@
 //! What apps hold, found whether or not they run: the device's search index, which its daemon
-//! keeps, asked through the device's search ([`ResourceSearch`]): a note, a message, a login, by
+//! keeps, asked through the device's search ([`Answers`]): a note, a message, a login, by
 //! its title, its secondary line and its short fields.
 //!
 //! A hit runs, by address, the entry's own published action, or the app's `open` at the entry's
@@ -13,8 +13,9 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tilo_actions::remote::search::{IndexKind, IndexPerson};
-use tilo_actions::remote::{Caller, Found, ResourceSearch, Within};
+use tilo_actions::remote::Caller;
+use tilo_workspace_records::search::{Answers, Found, Within};
+use tilo_workspace_records::search::{IndexKind, IndexPerson};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, provider_score};
 
 use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
@@ -61,7 +62,7 @@ pub fn unlock_app(id: &str) -> Option<&str> {
 
 /// What apps hold, from the device's search index.
 pub struct IndexedContent {
-    search: Arc<dyn ResourceSearch>,
+    search: Arc<dyn Answers>,
     /// Who asks: the person at this session.
     caller: Caller,
     /// What the search is narrowed to: one app, for a window's search.
@@ -84,7 +85,7 @@ impl IndexedContent {
     /// A source over `search`, asked as `caller` (the person `person`), naming apps by
     /// `app_name`; `wake` asks for the pass that lists an answer.
     pub fn new(
-        search: Arc<dyn ResourceSearch>,
+        search: Arc<dyn Answers>,
         caller: Caller,
         app_name: impl Fn(&str) -> String + Send + Sync + 'static,
         person: impl Into<String>,

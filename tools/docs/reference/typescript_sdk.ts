@@ -43,7 +43,7 @@ const GROUPS: [string, string[]][] = [
   ["Account", ["Usage", "WorkspaceUsage"]],
   ["Resources", [
     "Resource", "Step", "Surface", "Entry", "resourceProxy", "kebab", "segments", "made",
-    "Listing", "Row", "Action", "Param", "Hit",
+    "Listing", "Row", "Action", "Param",
   ]],
   ["Invocations", [
     "Invocation", "InvocationGroup", "withinInvocation", "ActionAnswer",

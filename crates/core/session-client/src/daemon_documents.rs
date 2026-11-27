@@ -843,21 +843,19 @@ fn answered_is(asked: Result<ShellReply, String>, resource: &str) -> bool {
 pub struct DaemonSearch(pub DaemonShell);
 
 impl DaemonSearch {
-    /// Ask the daemon's search `request`, and read what it answered as `T`.
-    fn asked<T: serde::de::DeserializeOwned + Send + 'static>(
+    /// Ask the daemon's search `request`, and read what it answered.
+    fn asked(
         &self,
         request: InvokeRequest,
-    ) -> tilo_actions::remote::Pending<Result<T, tilo_actions::remote::ActionCallError>> {
+    ) -> tilo_actions::remote::Pending<
+        Result<serde_json::Value, tilo_actions::remote::ActionCallError>,
+    > {
         let (answer, pending) = tilo_actions::remote::pending();
         let shell = self.0.clone();
         self.0.runtime().spawn(async move {
             let answered = shell
                 .dispatch(None, &RemoteActionMessage::Invoke(request))
                 .await
-                .and_then(|value| {
-                    serde_json::from_value(value)
-                        .map_err(|error| format!("the search's answer does not read: {error}"))
-                })
                 .map_err(|reason| tilo_actions::remote::ActionCallError::Unavailable { reason });
             answer.complete(answered);
         });
@@ -865,53 +863,70 @@ impl DaemonSearch {
     }
 }
 
-impl tilo_actions::remote::ResourceSearch for DaemonSearch {
+impl tilo_workspace_records::search::Answers for DaemonSearch {
     fn find(
         &self,
         caller: &tilo_actions::remote::Caller,
         needle: &str,
     ) -> tilo_actions::remote::Pending<
-        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
+        Result<Vec<tilo_workspace_records::search::Found>, tilo_actions::remote::ActionCallError>,
     > {
-        self.find_within(caller, needle, &tilo_actions::remote::Within::default())
+        self.find_within(
+            caller,
+            needle,
+            &tilo_workspace_records::search::Within::default(),
+        )
     }
 
     fn find_within(
         &self,
         _caller: &tilo_actions::remote::Caller,
         needle: &str,
-        within: &tilo_actions::remote::Within,
+        within: &tilo_workspace_records::search::Within,
     ) -> tilo_actions::remote::Pending<
-        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
+        Result<Vec<tilo_workspace_records::search::Found>, tilo_actions::remote::ActionCallError>,
     > {
-        self.asked(tilo_actions::remote::search::Query::request(
-            tilo_actions::InvocationId::new(),
-            needle,
+        use tilo_workspace_records::search::{Found, SearchAction, request};
+        let within = (!within.is_everything()).then(|| within.clone());
+        let request = request(&SearchAction::Find {
+            needle: needle.to_owned(),
             within,
-        ))
+        });
+        self.asked(request)
+            .map(|answer| answer.and_then(read::<Vec<Found>>))
     }
 
     fn pictures(
         &self,
         _caller: &tilo_actions::remote::Caller,
     ) -> tilo_actions::remote::Pending<
-        Result<Vec<tilo_actions::remote::search::Picture>, tilo_actions::remote::ActionCallError>,
+        Result<Vec<tilo_workspace_records::search::Picture>, tilo_actions::remote::ActionCallError>,
     > {
-        self.asked(tilo_actions::remote::search::pictures_request(
-            tilo_actions::InvocationId::new(),
-        ))
+        use tilo_workspace_records::search::{Picture, SearchAction, request};
+        self.asked(request(&SearchAction::Pictures))
+            .map(|answer| answer.and_then(read::<Vec<Picture>>))
     }
 
     fn describe(
         &self,
         _caller: &tilo_actions::remote::Caller,
-        description: tilo_actions::remote::search::Description,
+        description: tilo_workspace_records::search::Description,
     ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
-        self.asked(tilo_actions::remote::search::describe_request(
-            tilo_actions::InvocationId::new(),
-            &description,
-        ))
+        use tilo_workspace_records::search::{SearchAction, request};
+        self.asked(request(&SearchAction::Describe { description }))
+            .map(|answer| answer.map(|_| ()))
     }
+}
+
+/// What the search answered `value` as `T`.
+fn read<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+) -> Result<T, tilo_actions::remote::ActionCallError> {
+    serde_json::from_value(value).map_err(|error| {
+        tilo_actions::remote::ActionCallError::Unavailable {
+            reason: format!("the search's answer does not read: {error}"),
+        }
+    })
 }
 
 /// [`DeviceWrites`] the device's daemon signs and seals as the device.

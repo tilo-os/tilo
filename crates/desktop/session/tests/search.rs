@@ -110,7 +110,7 @@ fn session_over(asked: Rc<Asked>, content: Option<Arc<AppContentIndex>>) -> Sess
                 Arc::new(IndexSearch::new(
                     content,
                     tilo_workspace_search::deciding(|_, _| true),
-                )) as Arc<dyn tilo_actions::remote::ResourceSearch>
+                )) as Arc<dyn tilo_workspace_records::search::Answers>
             }),
             ..SearchOptions::default()
         },

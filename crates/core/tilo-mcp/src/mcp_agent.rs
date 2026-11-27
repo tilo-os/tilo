@@ -25,7 +25,6 @@ use super::{
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use tilo_actions::ActionDescriptor;
-use tilo_actions::remote::Found;
 use tilo_lock::MutexRecover as _;
 
 #[path = "mcp_answer.rs"]

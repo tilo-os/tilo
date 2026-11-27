@@ -554,25 +554,6 @@ class InvocationList:
 
 
 @dataclass(frozen=True)
-class Hit:
-    """One search hit: a path the other calls take, and what it offers."""
-
-    path: str
-    kind: str = ""
-    label: str = ""
-    action: str | None = None
-
-    @classmethod
-    def of(cls, raw: Mapping[str, Any]) -> Hit:
-        return cls(
-            path=str(raw.get("path") or ""),
-            kind=str(raw.get("kind") or ""),
-            label=str(raw.get("label") or ""),
-            action=_text(raw.get("action")),
-        )
-
-
-@dataclass(frozen=True)
 class Person:
     """Someone in the workspace: a person, or one of its agents."""
 

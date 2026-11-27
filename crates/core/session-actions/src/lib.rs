@@ -1163,11 +1163,6 @@ impl ActionProvider for SessionActions {
         }
     }
 
-    /// The device's own search of its workspace, asked over the session.
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        Some(Arc::new(workspace::SessionSearch(self.clone())))
-    }
-
     /// The device's feed of its workspace's changes, asked over the session.
     fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
         Some(Arc::new(workspace::SessionChanges(self.clone())))

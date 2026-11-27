@@ -860,9 +860,10 @@ mod tests {
     use automerge::transaction::{CommitOptions, Transactable as _};
     use collab_types::store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
-    use tilo_actions::remote::{Caller, Within};
+    use tilo_actions::remote::Caller;
     use tilo_actions::{Actor, MemberId};
     use tilo_resource_store::Stamp;
+    use tilo_workspace_records::search::Within;
     use tilo_workspace_search::records::{RecordIndex, RecordReader, StoreReader, Unread};
     use tilo_workspace_search::{AppContentIndex, IndexSearch, deciding};
 

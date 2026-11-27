@@ -84,8 +84,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // named by the path the next call takes.
         if path.trim().split_once('#')
             == Some((
-                tilo_actions::remote::search::RESOURCE,
-                tilo_actions::remote::search::FIND,
+                tilo_workspace_records::search::RESOURCE,
+                tilo_workspace_records::search::SearchAction::FIND.id(),
             ))
         {
             let args: super::FindArgs =

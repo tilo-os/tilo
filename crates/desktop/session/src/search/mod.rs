@@ -30,9 +30,7 @@ mod host;
 
 use tilo_action_services::downloaded_apps as downloaded_wire;
 use tilo_actions::ApiError;
-use tilo_actions::remote::{
-    ActionCallError, Caller, Found, RemoteActionTarget, ResourceSearch, application_open_target,
-};
+use tilo_actions::remote::{ActionCallError, Caller, RemoteActionTarget, application_open_target};
 use tilo_desktop_search::preferences;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::downloaded::Downloaded;
@@ -48,6 +46,7 @@ use tilo_desktop_search::{
     DESKTOP_APP, Held, InvokeTarget, LaunchPlace, SearchPreferences, Source, Target, Usage,
 };
 use tilo_session_core::desktop::state::{SearchHost, SearchHostFeed};
+use tilo_workspace_records::search::{Answers, Found};
 use ui::search::Scope;
 
 /// The action host as the session's search reaches it: what open apps publish and run, and running
@@ -201,7 +200,7 @@ pub struct SearchOptions {
     pub indexes: Option<Arc<dyn Indexes>>,
     /// The device's search index of what apps hold, as the device's daemon answers it; `None`
     /// where this host reaches none.
-    pub index: Option<Arc<dyn ResourceSearch>>,
+    pub index: Option<Arc<dyn Answers>>,
     /// The sources the person switched off.
     pub preferences: SearchPreferences,
     /// Where the person's windows were.
@@ -1751,11 +1750,11 @@ fn feed(search: &SessionSearch, workspace: &str, scope: &Scope) -> SearchHostFee
 }
 
 /// The desktop's one search as a host that holds it offers it
-/// ([`ResourceSearch`]): the same search the palette and text typed on the
+/// ([`Answers`]): the same search the palette and text typed on the
 /// canvas run ([`SessionSearch::find_soon`]), so an agent's `find` answers what
 /// those do, in their order — asked on the loop's pass and answered when its
 /// sources answer, never waited for there.
-impl ResourceSearch for SearchThrough {
+impl Answers for SearchThrough {
     fn find(
         &self,
         caller: &Caller,
@@ -1785,7 +1784,7 @@ impl ResourceSearch for SearchThrough {
     }
 }
 
-/// A host's [`ResourceSearch`] that asks the thread holding the desktop, as the session's own APIs
+/// A host's [`Answers`] that asks the thread holding the desktop, as the session's own APIs
 /// are asked: the session's search is not `Send` , and every call of it runs on the loop's pass.
 pub(crate) struct SearchThrough(
     std::sync::Arc<dyn Fn(String, Option<String>, FoundSearch) + Send + Sync>,
@@ -2242,7 +2241,7 @@ mod tests {
                         index,
                         tilo_workspace_search::deciding(|_, _| true),
                     ))
-                        as std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>
+                        as std::sync::Arc<dyn tilo_workspace_records::search::Answers>
                 }),
                 references: Some(crate::references::References::over(
                     daemon.reads(),

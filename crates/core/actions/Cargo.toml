@@ -7,7 +7,7 @@ license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "The Tilo action model: resources, the actions on them, and their registry, with the plain resource vocabulary that needs no store, search index entries included."
+description = "The Tilo action model: resources, the actions on them, and their registry, with the plain resource vocabulary that needs no store."
 
 [lib]
 name = "tilo_actions"

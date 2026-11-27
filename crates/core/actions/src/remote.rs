@@ -76,7 +76,6 @@ pub use vault::{
 pub mod press_points;
 mod providers;
 mod resource_read;
-pub mod search;
 pub mod secret_arguments;
 mod session_state;
 mod shared_provider;
@@ -111,7 +110,7 @@ pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, MAX_BY_RESOURCE_PAGE, MAX_CATALOGUE_PAGE,
     MAX_CATALOGUE_PAGE_BYTES, Offered, ProvidedPackage, ProvidedResource, ResourceViewLocator,
-    RowVisibility, ViewResourceQuery, compact, expand, rows_weight, truncate_bytes,
+    RowVisibility, ViewResourceQuery, compact, expand, rows_weight, stem_word, truncate_bytes,
     truncate_resources, truncate_rows,
 };
 pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, ResourceChanged, What};
@@ -138,7 +137,6 @@ pub use resource_read::{
     device_job_path, device_record_address, device_record_space, parse_device_record_space,
     parse_job_path, read_resources, readings_from, readings_of, reads_answer,
 };
-pub use search::{FOUND_FILE, Found, NOT_NARROWED, ResourceSearch, Within, stem_word};
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
 use crate::api::ActionAddress;
@@ -1590,14 +1588,6 @@ pub trait ActionProvider {
         None
     }
 
-    /// This provider's search of what its workspace holds ([`ResourceSearch`]),
-    /// which an agent's `find` asks: a desktop's one search, or the records
-    /// a provider with no desktop holds, ranked by what they say. `None` for a
-    /// provider that holds no records to search.
-    fn resource_search(&self) -> Option<std::sync::Arc<dyn ResourceSearch>> {
-        None
-    }
-
     /// Every change to the records of a caller's workspace, as this provider
     /// keeps them ([`ChangeFeed`]): what a watch of the whole workspace
     /// reads. `None` for a provider that keeps no records.
@@ -2367,12 +2357,6 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
                 correlation,
                 result,
             }),
-        // The workspace's search, asked as an action of its own, is answered by the provider's
-        // search at once, and is remembered as no invocation: a find or a listing of pictures
-        // runs nothing, and a picture's description only adds to the index.
-        RemoteActionMessage::Invoke(request) if search::is_search(&request.target) => {
-            search::searched(provider, caller, &request).map(RemoteActionMessage::Receipt)
-        }
         RemoteActionMessage::Invoke(request) => {
             invoked(provider, caller, request).map(RemoteActionMessage::Receipt)
         }
@@ -3809,8 +3793,8 @@ mod tests {
         RemoteActionMessage::Invoke(archive(id))
     }
 
-    /// A search and a change feed, asked across the API.
-    mod search_wire;
+    /// A change feed, asked across the API.
+    mod change_wire;
 
     tilo_test_env::scenario! {
         fn a_host_serves_each_invocation_once_as_its_caller;

@@ -4,8 +4,6 @@ import type { Tilo } from "./client.ts";
 import { type Endpoint, InvocationGroup, withinInvocation } from "./endpoint.ts";
 import {
   type Event,
-  type Hit,
-  hitOf,
   type Invitation,
   invitationOf,
   type Listing,
@@ -585,24 +583,6 @@ export class Workspace {
    */
   resource(path: string, surface: Surface = null): Resource {
     return resourceProxy(this, path, surface);
-  }
-
-  /** Search the workspace by words, best first: its `search#find` action. */
-  async find(words: string, app: string | null = null, limit: number | null = null): Promise<Hit[]> {
-    const args: Record<string, unknown> = { query: words };
-    if (app !== null) {
-      args.app = app;
-    }
-    if (limit !== null) {
-      args.limit = limit;
-    }
-    const found = recordOf((await this.endpoint()).action("search#find", args));
-    const hits = found.hits;
-    return Array.isArray(hits)
-      ? hits
-          .filter((hit): hit is Record<string, unknown> => hit !== null && typeof hit === "object")
-          .map(hitOf)
-      : [];
   }
 
   /**

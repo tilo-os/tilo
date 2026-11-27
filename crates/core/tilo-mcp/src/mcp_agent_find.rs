@@ -2,8 +2,9 @@
 //! shell's one search, then every hit's path built the way `tilo_ls` writes it.
 
 use super::*;
-use tilo_actions::remote::Within;
+use tilo_actions::remote::ActionCallError;
 use tilo_actions::tree::BOUND_PREFIX;
+use tilo_workspace_records::search::{FOUND_FILE, Found, SearchAction, Within, found, request};
 
 /// What one name asked of one level of one app's directory: the app's provider, the parent and
 /// the name.
@@ -82,18 +83,24 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// What the workspace's search finds for `needle`, asked as whoever calls it: said plainly
     /// when this device keeps no search, never answered with a ranking of its own.
     async fn searched(&self, needle: &str, within: &Within) -> Result<Vec<Found>, Failure> {
-        let Some(search) = self.host.resource_search() else {
-            return Err(
+        let request = request(&SearchAction::Find {
+            needle: needle.to_owned(),
+            within: (!within.is_everything()).then(|| within.clone()),
+        });
+        let found = match self.host.invoke(&self.caller, request).await {
+            Some(Ok(receipt)) => found(receipt),
+            Some(Err(error)) => Err(error),
+            None => return Err("the host's search stopped answering".into()),
+        };
+        match found {
+            Ok(hits) => Ok(hits),
+            Err(ActionCallError::UnknownAction) => Err(
                 "this host keeps no search of its workspace: list an app's directory instead \
                  (tilo_ls names the apps)"
                     .into(),
-            );
-        };
-        let found = search
-            .find_within(&self.caller, needle, within)
-            .await
-            .ok_or("the host's search stopped answering")??;
-        Ok(found)
+            ),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// `path` as the address the tools list the resource at, when it is
@@ -115,7 +122,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let (_, running) = self.tree.providers().await?;
         let mut reads = Reads::default();
         for hit in &found {
-            if hit.kind == tilo_actions::remote::FOUND_FILE {
+            if hit.kind == FOUND_FILE {
                 continue;
             }
             if let Some((path, _)) = self
@@ -195,7 +202,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // A file of the workspace's folder is no resource of an app: it is
             // named by its path there, which a computer that logged in has
             // below the workspace's folder and a page shows in Files.
-            if hit.kind == tilo_actions::remote::FOUND_FILE {
+            if hit.kind == FOUND_FILE {
                 let path = hit.resource.trim_matches('/');
                 let line = format!("{path}  file in the workspace's folder");
                 if !lines.contains(&line) {
@@ -243,7 +250,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             text = nothing_matches(&args.query);
         }
         // A file's name and its path are the words of whoever put it into the folder.
-        let file = tilo_actions::remote::FOUND_FILE;
+        let file = FOUND_FILE;
         let names_files = hits.iter().take(limit).any(|hit| hit["kind"] == file);
         let mut reply = Reply::ok(text);
         if structured {

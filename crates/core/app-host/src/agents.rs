@@ -401,49 +401,11 @@ impl ActionProvider for WorkspaceActionProvider {
         self.actions.resource_reads()
     }
 
-    /// The workspace's own search, asked as whoever calls it: what an agent's `find` answers
-    /// with on this server.
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        Some(Arc::new(self.clone()))
-    }
-
     /// The workspace's own feed of its resources' changes, asked as whoever calls it: what a
     /// watch of the whole workspace reads on this server, and only what that caller may read
     /// of them.
     fn change_feed(&self) -> Option<Arc<dyn ChangeFeed>> {
         Some(Arc::new(self.clone()))
-    }
-}
-
-/// What a search answers with, when it has.
-type Searched = Pending<Result<Vec<tilo_actions::remote::Found>, ActionCallError>>;
-
-/// What a turn on this server finds in what its workspace holds.
-///
-/// The workspace's action service searches what the workspace holds for every device that asks
-/// it ([`tilo_actions::remote::search::FIND`]): each resource by what its app tells search
-/// about it, and the files of the workspace's folder. A turn this server carries out asks the
-/// same service the same question, as the caller its tools act as: the person's session,
-/// handed to the agent on that turn with the rules the turn is decided by. So a turn finds what
-/// that caller may read and nothing else, decided where every other caller's search is decided,
-/// and nothing is searched a second way here. Narrowed to a
-/// conversation or to a stretch of time ([`tilo_actions::remote::Within`]) it is the same
-/// question still.
-impl tilo_actions::remote::ResourceSearch for WorkspaceActionProvider {
-    fn find(&self, caller: &Caller, needle: &str) -> Searched {
-        self.find_within(caller, needle, &tilo_actions::remote::Within::default())
-    }
-
-    fn find_within(
-        &self,
-        caller: &Caller,
-        needle: &str,
-        within: &tilo_actions::remote::Within,
-    ) -> Searched {
-        use tilo_actions::remote::search;
-        let request = search::Query::request(InvocationId::new(), needle, within);
-        self.invoke(caller, request)
-            .map(|answer| answer.and_then(search::found))
     }
 }
 

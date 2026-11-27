@@ -26,9 +26,9 @@ use std::time::Duration;
 
 use tilo_actions::remote::native_media::{Request, Snapshot};
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, CatalogueQuery, FOUND_FILE,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, CatalogueQuery,
     InvocationReceipt, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
-    Within, pending,
+    pending,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
@@ -37,6 +37,7 @@ use tilo_server_protocol::page::{
     CallAnswer, DESKTOP, OpenedPage, PageAction, PageAddress, PageNotice, PagePatch, PageRefusal,
     PointerEvent, encode_part,
 };
+use tilo_workspace_records::search::FOUND_FILE;
 use tilo_workspace_service::app_serving::{AppPages, FOLLOW_EVERY, LIVE_FOLLOW_EVERY, PageAct};
 use ui::composition::page::escape;
 
@@ -1152,13 +1153,14 @@ impl Search {
 
     /// The records the workspace's search finds for `typed`, each a row that opens its page.
     fn found(&mut self, typed: &str) -> Result<(), PageRefusal> {
-        let request = tilo_actions::remote::search::Query::request(
-            InvocationId::new(),
-            typed,
-            &Within::default(),
+        let request = tilo_workspace_records::search::request(
+            &tilo_workspace_records::search::SearchAction::Find {
+                needle: typed.to_owned(),
+                within: None,
+            },
         );
         let receipt = waited(self.dispatch.invoke(&self.caller, request))?.map_err(unavailable)?;
-        let found = tilo_actions::remote::search::found(receipt).map_err(unavailable)?;
+        let found = tilo_workspace_records::search::found(receipt).map_err(unavailable)?;
         for found in found.into_iter().filter(|found| found.kind != FOUND_FILE) {
             let Some(app) = found.app.as_deref() else {
                 continue;

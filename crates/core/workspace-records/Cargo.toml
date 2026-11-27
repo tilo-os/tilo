@@ -18,6 +18,8 @@ tilo-action-policy = { path = "../action-policy" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 serde.workspace = true
 serde_json.workspace = true
+# A search's moments: a day or an offset moment, read and written back.
+jiff.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 
 use super::{ActionProvider, Failure, McpServer, Reply, Value, app_names, json};
+use tilo_workspace_records::search::FOUND_FILE;
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The apps: running ones first, then the installed ones to open. An
@@ -135,8 +136,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     ) -> Result<super::Resolved, String> {
         let mut resolved = self.folder_resolved(parsed, forms, reaching).await?;
         resolved.children.retain(|node| {
-            node.resource_type == tilo_actions::remote::FOUND_FILE
-                || node.resource_type == fs_protocol::tree::FOLDER_KIND
+            node.resource_type == FOUND_FILE || node.resource_type == fs_protocol::tree::FOLDER_KIND
         });
         Ok(resolved)
     }

@@ -508,24 +508,6 @@ export interface View {
   picture?: string;
 }
 
-/** One search hit: a path the other calls take, and what it offers. */
-export interface Hit {
-  path: string;
-  kind: string;
-  label: string;
-  /** The action the hit runs; `open` when it opens the resource itself. */
-  action: string | null;
-}
-
-export function hitOf(raw: Record<string, unknown>): Hit {
-  return {
-    path: String(raw.path ?? ""),
-    kind: String(raw.kind ?? ""),
-    label: String(raw.label ?? ""),
-    action: textOf(raw.action),
-  };
-}
-
 /** Someone in the workspace: a person, or one of its agents. */
 export interface Person {
   who: string;

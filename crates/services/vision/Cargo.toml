@@ -8,6 +8,7 @@ description = "The device's image model: bounds and encodes a picture, calls the
 
 [dependencies]
 tilo-actions = { path = "../../core/actions" }
+tilo-workspace-records = { path = "../../core/workspace-records" }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-service = { path = "../../desktop/service" }
 tilo-lock = { path = "../../platform/tilo-lock" }

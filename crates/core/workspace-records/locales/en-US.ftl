@@ -87,3 +87,8 @@ tilo-connections-uses = What a connection was used for
 tilo-connections-begin-sign-in = Begin signing in to a connection
 tilo-connections-finish-sign-in = Finish signing in to a connection
 tilo-connections-propose = Propose a connection
+
+# The workspace's search, answered by the device that holds its records.
+tilo-search-find = Find by words
+tilo-search-pictures = List the pictures the search holds
+tilo-search-describe = Describe a picture

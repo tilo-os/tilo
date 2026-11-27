@@ -10,11 +10,11 @@ use std::time::Duration;
 use runtime_collab::ShellClient;
 use serde_json::json;
 use tilo_actions::ActionAddress;
-use tilo_actions::remote::search::{Query, found};
-use tilo_actions::remote::{
-    ActionProvider as _, CatalogueQuery, Found, InvocationReceipt, ResourceSearch as _, Within,
-};
+use tilo_actions::remote::{ActionProvider as _, CatalogueQuery};
 use tilo_session_client::daemon_documents::{DaemonSearch, DaemonShell};
+use tilo_workspace_records::search::{
+    Answers as _, Found, SearchAction, Within, found_in, request,
+};
 
 use crate::language::host;
 
@@ -101,11 +101,7 @@ fn what_an_app_publishes_is_found_through_the_daemon_by_whoever_may_read_it() {
         let palette = palette(&host);
         let hits = tilo_test_env::within("the note is found", async {
             loop {
-                let hits = palette
-                    .find_within(&caller, "zanzibar", &Within::default())
-                    .await
-                    .and_then(Result::ok)
-                    .unwrap_or_default();
+                let hits = looked(&palette, &caller, "zanzibar").await;
                 if titles(&hits).iter().any(|title| title == TITLE) {
                     return hits;
                 }
@@ -128,19 +124,14 @@ fn what_an_app_publishes_is_found_through_the_daemon_by_whoever_may_read_it() {
         // A key the workspace does not know asks the same search over the device link.
         let visitor = host.visitor(&workspace).await;
         let asked = visitor
-            .send(Query::request(
-                tilo_actions::InvocationId::new(),
-                "zanzibar",
-                &Within::default(),
-            ))
+            .send(request(&SearchAction::Find {
+                needle: "zanzibar".to_owned(),
+                within: None,
+            }))
             .await;
         let seen = match asked {
             Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-                found(InvocationReceipt {
-                    invocation: tilo_actions::InvocationId::new(),
-                    status: tilo_actions::remote::ReceiptStatus::Completed { output },
-                })
-                .unwrap_or_default()
+                found_in(&output).unwrap_or_default()
             }
             _ => Vec::new(),
         };
@@ -152,19 +143,26 @@ fn what_an_app_publishes_is_found_through_the_daemon_by_whoever_may_read_it() {
     });
 }
 
+/// What `search` finds of `word` as `caller`, now: none while the device does not answer.
+async fn looked(
+    search: &DaemonSearch,
+    caller: &tilo_actions::remote::Caller,
+    word: &str,
+) -> Vec<Found> {
+    search
+        .find_within(caller, word, &Within::default())
+        .await
+        .and_then(Result::ok)
+        .unwrap_or_default()
+}
+
 /// What the person's palette finds of `word` now, by title.
 async fn palette_finds(
     palette: &DaemonSearch,
     caller: &tilo_actions::remote::Caller,
     word: &str,
 ) -> Vec<String> {
-    titles(
-        &palette
-            .find_within(caller, word, &Within::default())
-            .await
-            .and_then(Result::ok)
-            .unwrap_or_default(),
-    )
+    titles(&looked(palette, caller, word).await)
 }
 
 /// A task written into the workspace's resource store with no window of Tasks open, as the
@@ -264,20 +262,15 @@ fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
 /// when it is refused.
 async fn asked_over_the_link(member: &host::Member, word: &str) -> Vec<String> {
     let asked = member
-        .send(Query::request(
-            tilo_actions::InvocationId::new(),
-            word,
-            &Within::default(),
-        ))
+        .send(request(&SearchAction::Find {
+            needle: word.to_owned(),
+            within: None,
+        }))
         .await;
     match asked {
-        Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => titles(
-            &found(InvocationReceipt {
-                invocation: tilo_actions::InvocationId::new(),
-                status: tilo_actions::remote::ReceiptStatus::Completed { output },
-            })
-            .unwrap_or_default(),
-        ),
+        Ok(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+            titles(&found_in(&output).unwrap_or_default())
+        }
         _ => Vec::new(),
     }
 }
@@ -288,11 +281,10 @@ async fn search_over_the_link(
     word: &str,
 ) -> Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionCallError> {
     member
-        .send(Query::request(
-            tilo_actions::InvocationId::new(),
-            word,
-            &Within::default(),
-        ))
+        .send(request(&SearchAction::Find {
+            needle: word.to_owned(),
+            within: None,
+        }))
         .await
 }
 

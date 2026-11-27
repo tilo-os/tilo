@@ -1,42 +1,19 @@
-//! What the device holds of its workspace as a whole, asked through this device's session: its
-//! search ([`search::FIND`]) and the feed of its records' changes
-//! ([`RemoteActionMessage::ChangesRequest`]). The device answers both from what it holds, as it
-//! answers its own callers.
+//! What the device holds of its workspace as a whole, asked through this device's session: the
+//! feed of its records' changes ([`RemoteActionMessage::ChangesRequest`]). The device answers it
+//! from what it holds, as it answers its own callers. Its search (`tilo.search#find`) is one of
+//! the actions a session answers itself, so it crosses the link as any other call does.
 
 use std::collections::HashMap;
 
-use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, Caller, ChangeFeed, ChangePage, Found, Pending, RemoteActionMessage,
-    ResourceSearch, Within, pending, search,
+    ActionCallError, Caller, ChangeFeed, ChangePage, Pending, RemoteActionMessage, pending,
 };
 use tilo_lock::MutexRecover as _;
 
 use super::{Asked, SessionActions, Waiting};
 
-/// The device's search, asked through the session.
-pub(super) struct SessionSearch(pub(super) SessionActions);
-
 /// The device's change feed, asked through the session.
 pub(super) struct SessionChanges(pub(super) SessionActions);
-
-impl ResourceSearch for SessionSearch {
-    fn find(&self, caller: &Caller, needle: &str) -> Pending<Result<Vec<Found>, ActionCallError>> {
-        self.find_within(caller, needle, &Within::default())
-    }
-
-    fn find_within(
-        &self,
-        caller: &Caller,
-        needle: &str,
-        within: &Within,
-    ) -> Pending<Result<Vec<Found>, ActionCallError>> {
-        let request = search::Query::request(InvocationId::new(), needle, within);
-        self.0
-            .invoke(caller, request)
-            .map(|receipt| receipt.and_then(search::found))
-    }
-}
 
 impl ChangeFeed for SessionChanges {
     fn since(

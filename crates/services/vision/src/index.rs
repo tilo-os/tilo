@@ -4,8 +4,8 @@
 //!
 //! Search's index is what every app publishes what it holds into, kept by the device's daemon. A
 //! picture's app publishes one entry that names the picture's bytes (`IndexEntry::image`); the
-//! image model reads it ([`tilo_actions::remote::search::PICTURES`]) and adds the words it found
-//! to that same entry ([`tilo_actions::remote::search::DESCRIBE`]), so one picture is one row,
+//! image model reads it ([`tilo_workspace_records::search::SearchAction::Pictures`]) and adds the words it found
+//! to that same entry ([`tilo_workspace_records::search::SearchAction::Describe`]), so one picture is one row,
 //! found by its name, the text in it and what it shows, whatever app it is in, with no app
 //! running.
 
@@ -13,15 +13,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::analysis::{AnalysisSink, Found, ImageRef, ImageSource};
-use tilo_actions::remote::search::{Description, Picture};
-use tilo_actions::remote::{ActionCallError, Caller, Pending, ResourceSearch};
+use tilo_actions::remote::{ActionCallError, Caller, Pending};
+use tilo_workspace_records::search::{Answers, Description, Picture, Word};
 
 /// How long the index has to answer one ask.
 const PATIENCE: Duration = Duration::from_secs(30);
 
 /// The device's search index, asked as `caller`.
 pub struct VisionIndex {
-    pub search: Arc<dyn ResourceSearch>,
+    pub search: Arc<dyn Answers>,
     pub caller: Caller,
 }
 
@@ -43,20 +43,26 @@ impl ImageSource for VisionIndex {
 impl AnalysisSink for VisionIndex {
     fn enriched(&self, image: &ImageRef, found: &Found) -> Result<(), String> {
         let finding = crate::finding(image, found);
-        answered(self.search.describe(
-            &self.caller,
-            Description {
-                picture: Picture {
-                    resource: image.resource.clone(),
-                    app: image.app.clone(),
-                    workspace: image.workspace.clone(),
-                    record: image.record.clone(),
-                    image: image.image.clone(),
+        answered(
+            self.search.describe(
+                &self.caller,
+                Description {
+                    picture: Picture {
+                        resource: image.resource.clone(),
+                        app: image.app.clone(),
+                        workspace: image.workspace.clone(),
+                        record: image.record.clone(),
+                        image: image.image.clone(),
+                    },
+                    title: finding.title,
+                    words: finding
+                        .fields
+                        .into_iter()
+                        .map(|(text, weight)| Word { text, weight })
+                        .collect(),
                 },
-                title: finding.title,
-                words: finding.fields,
-            },
-        ))
+            ),
+        )
     }
 }
 

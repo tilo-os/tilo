@@ -13,11 +13,12 @@ use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ResourceSearch,
+    InvocationState, InvokeArgument, InvokeRequest, Pending,
 };
 use tilo_actions::{ActionInvoker, ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Service, Started};
+use tilo_workspace_records::search::Answers;
 
 use crate::index::VisionIndex;
 use crate::{AnalysisSink, ImageSource, LocalVision, VisionService};
@@ -44,7 +45,7 @@ impl ImageModel {
     /// The blob service does not answer, or the device's search is not served yet.
     pub fn start(
         blob_socket: &Path,
-        search: Option<Arc<dyn ResourceSearch>>,
+        search: Option<Arc<dyn Answers>>,
         person: &str,
     ) -> Result<Self, String> {
         let search = search.ok_or_else(|| "the device's search is not served yet".to_owned())?;

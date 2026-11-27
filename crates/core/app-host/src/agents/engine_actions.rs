@@ -94,12 +94,6 @@ fn serve_device(
                 correlation,
                 result,
             }),
-        RemoteActionMessage::Invoke(request)
-            if tilo_actions::remote::search::is_search(&request.target) =>
-        {
-            tilo_actions::remote::search::searched(provider, caller, &request)
-                .map(RemoteActionMessage::Receipt)
-        }
         RemoteActionMessage::Invoke(request) => {
             let invocation = request.invocation;
             provider

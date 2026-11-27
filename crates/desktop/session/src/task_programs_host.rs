@@ -260,10 +260,6 @@ impl ActionProvider for Stopped {
         self.api.resource_reads()
     }
 
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        self.api.resource_search()
-    }
-
     fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
         self.api.change_feed()
     }
@@ -489,10 +485,6 @@ impl ActionProvider for Current {
 
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
         Some(Arc::new(self.records()))
-    }
-
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        self.provider().resource_search()
     }
 
     fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {

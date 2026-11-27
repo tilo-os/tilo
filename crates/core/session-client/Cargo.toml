@@ -16,6 +16,8 @@ path = "tests/it.rs"
 
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../action-services" }
+# The records a search finds and the actions a search answers.
+tilo-workspace-records = { version = "0.1.0", path = "../workspace-records" }
 # The answer to a command, which a page awaits and a program waits on.
 oneshot.workspace = true
 # The layout's model: the workspaces a member takes part in, and the windows presence places
@@ -107,7 +109,6 @@ tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }
 # The page holder a test reads a peer's workspace through: the workspace service's document
 # core over the replica the peer's session admits into, as a page reads it.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["device-keys", "session-pages", "test-support"] }
-tilo-workspace-records = { path = "../workspace-records" }
 tilo-app-host = { path = "../app-host", features = ["test-support"] }
 # An invitation read as a device that follows its link reads it: the server it names, from it alone.
 tilo-workspace-join = { path = "../workspace-join" }

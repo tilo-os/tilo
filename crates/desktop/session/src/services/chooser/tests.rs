@@ -746,7 +746,7 @@ fn a_chosen_workspace_file_is_a_grant_on_its_node_and_reopen_reads_it() {
         held.node,
         tilo_action_policy::TreePath::workspace(FILES_WORKSPACE)
             .app(fs_protocol::tree::FILES_APP)
-            .kind(tilo_actions::remote::FOUND_FILE)
+            .kind(tilo_workspace_records::search::FOUND_FILE)
             .resource(id.0.to_string())
     );
     assert_eq!(held.kinds, tilo_action_policy::KindSet::READ);

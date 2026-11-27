@@ -380,14 +380,6 @@ fn kept_here(request: &InvokeRequest) -> bool {
 }
 
 impl ActionProvider for Shell {
-    /// The device's one search index: the person's search spans every workspace they see.
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        self.kept
-            .workspaces
-            .search()
-            .map(|search| search as Arc<dyn tilo_actions::remote::ResourceSearch>)
-    }
-
     fn query(
         &self,
         caller: &Caller,
@@ -419,6 +411,16 @@ impl ActionProvider for Shell {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // The device's one search, answered from its index: the person's search spans every
+        // workspace they see.
+        if tilo_workspace_records::search::is_search(&request.target) {
+            let Some(search) = self.kept.workspaces.search() else {
+                return Pending::ready(Err(ActionCallError::Unavailable {
+                    reason: "this device holds no records to search".into(),
+                }));
+            };
+            return tilo_workspace_records::search::serve(&*search, caller, &request);
+        }
         if self.answers_itself(caller, &request) {
             return self.kept.invoke(self.caller, request);
         }

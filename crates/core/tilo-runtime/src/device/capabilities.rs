@@ -14,7 +14,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-use tilo_actions::remote::ResourceSearch;
+use tilo_workspace_records::search::Answers;
 use tilo_workspace_service::workspaces::providers::Providers;
 
 /// What the daemon's services are started with, as it starts them: where they register, and what
@@ -25,7 +25,7 @@ pub struct Mounting<'a> {
     /// The blob service this daemon serves, which a picture's bytes are read from.
     pub blob_socket: &'a Path,
     /// The device's index, once its search is served.
-    pub search: Option<Arc<dyn ResourceSearch>>,
+    pub search: Option<Arc<dyn Answers>>,
     /// The person the daemon acts for.
     pub person: &'a str,
 }

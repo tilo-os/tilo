@@ -71,7 +71,7 @@ impl Source for Failing {
 
 /// Where the host's answer to one query is completed.
 type Answer = tilo_actions::remote::Completer<
-    Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
+    Result<Vec<tilo_workspace_records::search::Found>, tilo_actions::remote::ActionCallError>,
 >;
 
 /// A workspace host whose answer the test hands over, as the session brings it.
@@ -80,13 +80,13 @@ struct Host {
     asked: Mutex<Vec<(String, Answer)>>,
 }
 
-impl tilo_actions::remote::ResourceSearch for Host {
+impl tilo_workspace_records::search::Answers for Host {
     fn find(
         &self,
         _: &tilo_actions::remote::Caller,
         needle: &str,
     ) -> tilo_actions::remote::Pending<
-        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionCallError>,
+        Result<Vec<tilo_workspace_records::search::Found>, tilo_actions::remote::ActionCallError>,
     > {
         let (done, answer) = tilo_actions::remote::pending();
         self.asked
@@ -111,14 +111,14 @@ impl Host {
                 .expect("the host was asked");
             asked.remove(at).1
         };
-        done.complete(Ok(vec![tilo_actions::remote::Found {
+        done.complete(Ok(vec![tilo_workspace_records::search::Found {
             resource: "notebook/pages/1".into(),
             kind: "notes.page".into(),
             label: "Supplier contract".into(),
             open: Some("open".into()),
             arguments: serde_json::Map::new(),
             app: Some("so.tilo.notes".into()),
-            ..tilo_actions::remote::Found::default()
+            ..tilo_workspace_records::search::Found::default()
         }]));
     }
 }
@@ -301,7 +301,7 @@ tilo_test_env::scenario! {
         let host = Arc::new(Host::default());
         let mut data = super::tests::data();
         data.sources.push(Held::new(crate::providers::hosted::HostSearch::new(
-            Arc::clone(&host) as Arc<dyn tilo_actions::remote::ResourceSearch>,
+            Arc::clone(&host) as Arc<dyn tilo_workspace_records::search::Answers>,
             tilo_actions::remote::Caller::local_person("ana"),
             "w",
             Arc::new(|| {}),
@@ -338,7 +338,7 @@ tilo_test_env::scenario! {
         let host = Arc::new(Host::default());
         let mut data = super::tests::data();
         data.sources.push(Held::new(crate::providers::hosted::HostSearch::new(
-            Arc::clone(&host) as Arc<dyn tilo_actions::remote::ResourceSearch>,
+            Arc::clone(&host) as Arc<dyn tilo_workspace_records::search::Answers>,
             tilo_actions::remote::Caller::local_person("ana"),
             "w",
             Arc::new(|| {}),

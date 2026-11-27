@@ -12,5 +12,8 @@ pub mod connections;
 pub mod effects;
 /// The workspace's model providers: their actions, declared once, and what they read as.
 pub mod models;
+/// The workspace's search: what it finds, what a search is narrowed to, and the search a
+/// provider offers.
+pub mod search;
 /// The workspace's vault: its actions, declared once, and what they read as.
 pub mod vault;

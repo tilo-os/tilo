@@ -2183,6 +2183,19 @@ impl ActionProvider for Host {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // The session's one search, answered on the loop's pass: the palette, text typed on the
+        // canvas and an agent's `find` are the same search.
+        if tilo_workspace_records::search::is_search(&request.target) {
+            let session = Arc::clone(&self.session);
+            let search = crate::search::SearchThrough::new(Arc::new(
+                move |needle: String,
+                      workspace: Option<String>,
+                      done: crate::search::FoundSearch| {
+                    session.find(needle, workspace, done);
+                },
+            ));
+            return tilo_workspace_records::search::serve(&search, caller, &request);
+        }
         // A person typing at a REPL is the person at this device: their own step is carried out on
         // the loop's pass, where the layout and the windows are, as their own input is. An agent's
         // step is the turn's, and the device's dispatch decides it exactly as it decides the
@@ -2237,17 +2250,6 @@ impl ActionProvider for Host {
         self.state
             .as_ref()
             .and_then(|dispatch| dispatch.content_puts_for(target))
-    }
-
-    /// The session's one search, the one the palette and text typed on the canvas run: what an
-    /// agent's `find` answers with, asked on the loop's pass as the session's own services are.
-    fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
-        let session = Arc::clone(&self.session);
-        Some(Arc::new(crate::search::SearchThrough::new(Arc::new(
-            move |needle: String, workspace: Option<String>, done: crate::search::FoundSearch| {
-                session.find(needle, workspace, done);
-            },
-        ))) as Arc<dyn tilo_actions::remote::ResourceSearch>)
     }
 
     /// What changed in the records of the workspace a connection works in, from this device's
