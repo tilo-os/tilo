@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from typing import Callable, Iterator
 
-from real_apps import BUILD, Failed, Session, address, build, prepare, until
+from real_apps import BUILD, Failed, Session, address, build, prepare, session_account, until
 
 # The session's own provider, and the resource it publishes the workspace's commands as. The
 # invitations into a workspace are the device's, published on the resource below: the desktop says
@@ -60,13 +60,15 @@ def front_workspace(session: Session) -> dict | None:
 def identity_record(state: Path) -> Path:
     """The person's active identity record, resolved the way the product resolves it
     (`tilo_identity::store::account_active_identity_path`): each account keeps its own store under
-    the profile's identity directory, and the `active` selector names the record, else the legacy
-    `primary.json`."""
-    identity = state / "config/tilo/identity"
-    account = identity / "accounts" / str(os.getuid())
-    selector = account / "active"
+    the profile's identity directory, the `active` selector names the record, else the legacy
+    `primary.json`. The account is the one the session runs as, which is the caller's own unless
+    it started the session as another (real_apps.session_account)."""
+    account = session_account()
+    uid = account.pw_uid if account is not None else os.getuid()
+    store = state / "config/tilo/identity/accounts" / str(uid)
+    selector = store / "active"
     named = selector.read_text().strip() if selector.is_file() else ""
-    return account / f"{named or 'primary'}.json"
+    return store / f"{named or 'primary'}.json"
 
 
 def name_person(state: Path, name: str) -> None:
