@@ -7,6 +7,15 @@
 //! bundles. On macOS the tilolang runtime is the signed runtime package Tilo.app carries,
 //! installed into the same store (`tilolang-process` and the `GStreamer` it loads, relocated beside
 //! it as `dist/macos` ships them), and the daemon starts its binary in a Seatbelt sandbox.
+//!
+//! The daemon tests' devices and the flows' server ([`super::ServerDaemon`]) install their apps
+//! here. The programs the bundles carry are the run's own builds: `tilo-launcher` (package
+//! `launcher`) and `tilolang-process`, which its setup builds ([`tilo_test_env::sibling_binary`]).
+
+#![allow(
+    clippy::unwrap_used,
+    reason = "test support: an app that does not install is the test's failure"
+)]
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -17,7 +26,7 @@ use tilolang_cli::package::{self, BuildOptions};
 
 /// The tree's `apps/tl`.
 fn packages() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/tl")
 }
 
 /// Install `apps` (directories under `apps/tl`) under `root`, the device's data directory being
@@ -28,6 +37,7 @@ fn packages() -> PathBuf {
 /// A package does not compile, a program the bundles carry was not built by the run, or a file
 /// cannot be written.
 pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, OsString)> {
+    std::fs::create_dir_all(root).unwrap();
     let store = root.join("apps");
     #[cfg(target_os = "linux")]
     let mut env = runtime_bundles(root, &store);

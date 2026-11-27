@@ -51,7 +51,7 @@
 //!   [`call`].
 //! - The test is a plain `#[test]`: the body is async, and runs on a runtime [`run`] makes.
 
-pub mod apps;
+pub use test_server::apps;
 
 mod app_actions;
 mod messages_for_agents;

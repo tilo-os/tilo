@@ -465,9 +465,11 @@ async fn flow_laptop_picks_the_canvas_shell_and_it_is_their_layout() {
 /// run, not on the laptop that wrote, and its answer is a message in that conversation, which the
 /// phone reads.
 ///
-/// The server writes the message, but runs no app (the flows' server daemon finds no
-/// `tilo-launcher`, so it reads no app's records), and the agent's turn never starts there; and
-/// no data path backs a view yet, so an answer would be words.
+/// No data path backs a view yet, so the answer is words.
+///
+/// The turn answers on the server, and the reading device is sent the conversation's documents,
+/// but they are sealed for the conversation's readers (the person and their agent), and its
+/// session never gets their keys: it waits on them, and reads none of the conversation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_chat_turn_writes_a_view_backed_by_a_dataset() {
     const QUESTION: &str = "Child mortality in Africa by country since 2000";
@@ -476,6 +478,7 @@ async fn flow_chat_turn_writes_a_view_backed_by_a_dataset() {
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
     flow::run_work_on(&laptop, f.work_id(), &fake.openai_api_url(), "custom-model").await;
     flow::make_agent(&laptop, &f.work, "Scout", "scout").await;
+    flow::start_app(&laptop, &f.work, "so.tilo.chat").await;
 
     let sent = flow::write_to(&laptop, f.work_id(), f.person, "scout", QUESTION)
         .await

@@ -41,6 +41,30 @@ iroh.workspace = true
 # The QUIC address discovery service, and its self-signed certificate, as iroh-relay serves them.
 iroh-relay = { version = "1.0.3", features = ["server", "test-utils"] }
 tilo-net = { path = "../../crates/platform/tilo-net" }
+# The tilolang apps a test's device installs, built from the tree's sources, and the signed
+# runtimes they run on ([`apps`]): what the daemon tests' devices and the flows' server run apps
+# with.
+tilolang-cli = { path = "../../crates/lang/tilolang-cli", optional = true }
+package-store = { package = "tilo-package-store", path = "../../crates/core/package-store", optional = true }
+runtime-bundle = { package = "tilo-runtime-bundle", path = "../../crates/core/runtime-bundle", optional = true }
+tilo-app-package = { path = "../../crates/core/tilo-app-package", optional = true }
+launcher = { path = "../../crates/core/launcher", optional = true }
+tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false, optional = true }
+tilo-paths = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+
+[features]
+# Install apps into a test's device ([`apps`]), and run them on the flows' server.
+apps = [
+    "dep:tilolang-cli",
+    "dep:package-store",
+    "dep:runtime-bundle",
+    "dep:tilo-app-package",
+    "dep:launcher",
+    "dep:tilo-ui-base",
+    "dep:tilo-paths",
+    "dep:hex",
+]
 
 [lints]
 workspace = true

@@ -383,7 +383,7 @@ pub fn start_server_daemon(
             &runtime, root, entry, workspaces,
         )
         .expect("the person's computer prints a ticket");
-        let daemon = test_server::ServerDaemon::start(&issuing.ticket(), label);
+        let daemon = test_server::ServerDaemon::start(&issuing.ticket(), label, &["chat"]);
         HOSTS
             .lock()
             .unwrap()

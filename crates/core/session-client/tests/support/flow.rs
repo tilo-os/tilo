@@ -696,6 +696,22 @@ pub async fn make_agent(device: &Device, workspace: &str, name: &str, id: &str) 
     .unwrap_or_else(|error| panic!("the person makes their agent {name}: {error:?}"));
 }
 
+/// Start `app` in `workspace` (its UUID) on the workspace's host, with no window, as `device`
+/// asks it: the instance its records and its agents' turns run in there.
+pub async fn start_app(device: &Device, workspace: &str, app: &str) {
+    use tilo_actions::remote::{APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION};
+    ask(
+        device,
+        WorkspaceId::parse(workspace).expect("a workspace's id"),
+        &tilo_actions::remote::workspace_provider(workspace),
+        &format!("{APPLICATION_RESOURCE_PREFIX}{app}"),
+        APPLICATION_START_ACTION,
+        Value::Null,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the workspace's host starts {app}: {error:?}"));
+}
+
 /// Write `body` to `person`'s agent `agent` in `workspace` as `device`, through Chat's
 /// `write_to` on the workspace's conversations: the message in the one direct conversation with
 /// the agent, which starts its turn where the agent runs. Answers the message it sent.
@@ -719,21 +735,52 @@ pub async fn write_to(
 }
 
 /// What `peer`'s replica of `workspace`'s Chat holds once it says `text`, as JSON: the phone or
-/// any other device reading the conversations it opened. Failing that, it says what the replica
-/// held and what the server `host`, where the workspace's agents run, logged last.
+/// any other device reading the conversations it opened. Chat's record is resources of the
+/// workspace's store, which places them in documents of its own (by who reads them), so the
+/// replica reads every document of Chat's it holds, opening each as it arrives. Failing that, it
+/// says what the replica held and what the server `host`, where the workspace's agents run,
+/// logged last.
 pub async fn chat_saying(peer: &Link, host: &DaemonHost, workspace: &str, text: &str) -> String {
-    let chat = DocumentRoute {
-        app_id: "so.tilo.chat".to_owned(),
+    const CHAT: &str = "so.tilo.chat";
+    let record = DocumentRoute {
+        app_id: CHAT.to_owned(),
         cluster_id: workspace.to_owned(),
         document: String::new(),
     };
-    open(peer, &chat);
+    open(peer, &record);
+    let mut opened = std::collections::BTreeSet::new();
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let held = record_of(peer, &chat)
-            .and_then(|bytes| AutoCommit::load(&bytes).ok())
-            .and_then(|doc| serde_json::to_string(&automerge::AutoSerde::from(&doc)).ok())
-            .unwrap_or_default();
+        let documents: Vec<String> = super::holder(peer, workspace)
+            .map(|holder| {
+                holder.replica().read(|state| {
+                    let mut routes = state.plaintext_routes();
+                    routes.extend(state.sealed_routes());
+                    routes
+                })
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(app, _)| app == CHAT)
+            .map(|(_, document)| document)
+            .collect();
+        let mut held = Vec::new();
+        for document in documents {
+            let route = DocumentRoute {
+                document,
+                ..record.clone()
+            };
+            if opened.insert(route.document.clone()) {
+                open(peer, &route);
+            }
+            if let Some(json) = record_of(peer, &route)
+                .and_then(|bytes| AutoCommit::load(&bytes).ok())
+                .and_then(|doc| serde_json::to_string(&automerge::AutoSerde::from(&doc)).ok())
+            {
+                held.push(json);
+            }
+        }
+        let held = held.join("\n");
         if held.contains(text) {
             return held;
         }
@@ -751,8 +798,9 @@ pub async fn chat_saying(peer: &Link, host: &DaemonHost, workspace: &str, text: 
                 })
                 .collect();
             panic!(
-                "Chat on this device never said {text:?}; it held {held}\nwhat the server \
-                 logged of its apps and agents:\n{}",
+                "Chat on this device never said {text:?}; of its documents {opened:?} it held \
+                 {held}\nits keys: {}\nwhat the server logged of its apps and agents:\n{}",
+                peer.status().key_state,
                 about.join("\n")
             );
         }

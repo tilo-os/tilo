@@ -169,8 +169,9 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # The device VPN's test build, with the in-memory stack its exit routes into.
 device-vpn = { package = "tilo-device-vpn", path = "../device-vpn", default-features = false, features = ["tunnel", "test-support"] }
-# A server on this machine's loopback, which a test's device relays through.
-test-server = { path = "../../../tools/test-server" }
+# A server on this machine's loopback, which a test's device relays through, and the tilolang
+# packages a test's device installs, built from the tree's sources, with the runtimes they run on.
+test-server = { path = "../../../tools/test-server", features = ["apps"] }
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }
 # The collaboration wire the refusal is read on, as a program that attaches by hand speaks it.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", default-features = false }
@@ -178,9 +179,6 @@ runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-c
 tilolang-calendar = { path = "../../integrations/tilolang-calendar", features = ["test-support"] }
 # The mail bridge the daemon runs, and the mail server a test keeps on loopback.
 tilolang-mail = { path = "../../integrations/tilolang-mail", features = ["test-support"] }
-# The tilolang packages a test's device installs, built from the tree's sources, and the
-# runtimes they run on.
-tilolang-cli = { path = "../../lang/tilolang-cli" }
 # Another of the person's devices, asking the daemon over the device link as their laptop does.
 tilo-peer-state = { path = "../../core/tilo-peer-state" }
 # The daemon's own log, handed the layers the harness writes.

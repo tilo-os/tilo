@@ -515,8 +515,9 @@ async fn flow_window_moved_by_its_move_action_shows_on_the_other_devices_monitor
 /// The laptop's message to the agent is what starts the turn (Chat's `write_to`), and the turn
 /// runs on the server, where the workspace's agents run: the laptop holds none of it.
 ///
-/// The server writes the message, but runs no app (the flows' server daemon finds no
-/// `tilo-launcher`, so it reads no app's records), and the turn never starts there.
+/// The turn answers on the server, and the reading device is sent the conversation's documents,
+/// but they are sealed for the conversation's readers (the person and their agent), and its
+/// session never gets their keys: it waits on them, and reads none of the conversation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_laptop_asleep_mid_turn_the_server_finishes_it() {
     let f = Box::pin(four_devices()).await;
@@ -524,6 +525,7 @@ async fn flow_laptop_asleep_mid_turn_the_server_finishes_it() {
     let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
     flow::run_work_on(&laptop, f.work_id(), &fake.openai_api_url(), "custom-model").await;
     flow::make_agent(&laptop, &f.work, "Scout", "scout").await;
+    flow::start_app(&laptop, &f.work, "so.tilo.chat").await;
     flow::write_to(
         &laptop,
         f.work_id(),
