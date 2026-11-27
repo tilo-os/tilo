@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::SigningKey;
-use iroh::endpoint::{Endpoint, presets};
+use iroh::endpoint::Endpoint;
 use iroh::protocol::Router;
 use tempfile::TempDir;
 use tilo_peer_state::StatePeer;
@@ -263,7 +263,6 @@ async fn spawn_server_with(
             .with_env_filter(
                 "tilo_workspace_service::peer=info,tilo_workspace_service::client=info,tilo_workspace_service::workspace_io=info",
             )
-            .with_writer(|| PhaseWriter)
             .try_init();
     }
     let mut cfg = ServerConfig::loopback(state_root.to_path_buf());
@@ -473,13 +472,6 @@ pub async fn redeem(device: &TestDevice, issued: &IssuedInvitation) -> Result<()
         .await
         .map(|_| ())
         .map_err(|error| error.to_string())
-}
-
-/// Bind a plain iroh endpoint the tests can use to dial a relay. It carries no relay and no
-/// directory of its own: every address it dials is one a test holds ([`test_server::loopback`] is
-/// what a device's own relays are in these tests).
-pub async fn client_endpoint() -> Endpoint {
-    Endpoint::builder(presets::Minimal).bind().await.unwrap()
 }
 
 /// An endpoint whose key is the device's own, as a device dials with: relays on, as a page and a
@@ -1219,39 +1211,6 @@ pub async fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
         }
     })
     .await;
-}
-
-fn phase_bytes() -> &'static std::sync::Mutex<std::collections::VecDeque<u8>> {
-    static BUFFER: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<u8>>> =
-        std::sync::OnceLock::new();
-    BUFFER.get_or_init(|| {
-        std::sync::Mutex::new(std::collections::VecDeque::with_capacity(128 * 1024))
-    })
-}
-struct PhaseWriter;
-impl std::io::Write for PhaseWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let mut buffer = phase_bytes().lock().unwrap();
-        for byte in bytes {
-            if buffer.len() == 128 * 1024 {
-                buffer.pop_front();
-            }
-            buffer.push_back(*byte);
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-pub fn print_phase_diagnostic() {
-    let bytes = phase_bytes()
-        .lock()
-        .unwrap()
-        .iter()
-        .copied()
-        .collect::<Vec<_>>();
-    eprintln!("{}", String::from_utf8_lossy(&bytes));
 }
 
 /// The app surfaces a process decides received changes against

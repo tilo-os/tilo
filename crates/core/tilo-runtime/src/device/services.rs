@@ -2549,36 +2549,33 @@ impl Daemon {
         }
         // What a server keeps beyond its copies, on the workspace service it runs.
         let serves_pages = keeping.is_some();
-        let kept = match (keeping, relay, itself) {
-            (Some(keeping), Some(relay), Some(itself)) => {
-                stage("keeping what this server keeps");
-                Some(keeping.keep(super::keep::On {
-                    dir: &identity.place.dir().join(OWN),
-                    joined,
-                    identity: itself,
-                    service: Arc::clone(workspaces.service()),
-                    keys: workspaces.keys(),
-                    endpoint: workspaces.endpoint(),
-                    relay,
-                    app_serving,
-                    #[cfg(feature = "agents")]
-                    browsers,
-                })?)
-            }
+        let kept = if let (Some(keeping), Some(relay), Some(itself)) = (keeping, relay, itself) {
+            stage("keeping what this server keeps");
+            Some(keeping.keep(super::keep::On {
+                dir: &identity.place.dir().join(OWN),
+                joined,
+                identity: itself,
+                service: Arc::clone(workspaces.service()),
+                keys: workspaces.keys(),
+                endpoint: workspaces.endpoint(),
+                relay,
+                app_serving,
+                #[cfg(feature = "agents")]
+                browsers,
+            })?)
+        } else {
             // A computer that hosts the workspaces its person made on it keeps for their members
             // what a server does.
-            _ => {
-                let content = crate::device::keep::content::of_device(
-                    &identity.place.dir().join(OWN),
-                    app_serving.as_ref(),
-                );
-                tilo_rt::app().spawn(crate::device::keep::content::keep_for_members(
-                    workspaces.copies(),
-                    &content,
-                    app_serving,
-                ));
-                None
-            }
+            let content = crate::device::keep::content::of_device(
+                &identity.place.dir().join(OWN),
+                app_serving.as_ref(),
+            );
+            tilo_rt::app().spawn(crate::device::keep::content::keep_for_members(
+                workspaces.copies(),
+                &content,
+                app_serving,
+            ));
+            None
         };
         let (kept, kept_protocols) = kept.map_or((None, Vec::new()), |(kept, protocols)| {
             (Some(kept), protocols)

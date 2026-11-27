@@ -1102,28 +1102,29 @@ async fn host_on_with(
     let endpoint = endpoint.bind().await.expect("a loopback endpoint binds");
     #[cfg(test)]
     reached_through(&endpoint, &home).await;
+    let config = ServiceConfig {
+        max_workspace_grants: grants,
+        member,
+        app_files,
+        registers,
+        #[cfg(not(target_arch = "wasm32"))]
+        tilolang,
+        // Each device knows only the app surfaces named to it: tests run side by side in one
+        // process, and a surface one of them names must not change what another's stores
+        // admit.
+        surfaces: Arc::default(),
+        // A server of other people's workspaces takes their work in them.
+        ..ServiceConfig::new(
+            state_root.to_owned(),
+            tilo_server_protocol::WorkSetting {
+                from: tilo_server_protocol::WorkFrom::Anyone,
+                ..tilo_server_protocol::WorkSetting::own_person()
+            },
+        )
+    };
     let host = Arc::new(
         WorkspaceService::open(
-            ServiceConfig {
-                max_workspace_grants: grants,
-                member,
-                app_files,
-                registers,
-                #[cfg(not(target_arch = "wasm32"))]
-                tilolang,
-                // Each device knows only the app surfaces named to it: tests run side by side in one
-                // process, and a surface one of them names must not change what another's stores
-                // admit.
-                surfaces: Arc::default(),
-                // A server of other people's workspaces takes their work in them.
-                ..ServiceConfig::new(
-                    state_root.to_owned(),
-                    tilo_server_protocol::WorkSetting {
-                        from: tilo_server_protocol::WorkFrom::Anyone,
-                        ..tilo_server_protocol::WorkSetting::own_person()
-                    },
-                )
-            },
+            config,
             ServiceIdentity {
                 user_public_key: cert.user_public_key,
                 device_signing_key: key.clone(),

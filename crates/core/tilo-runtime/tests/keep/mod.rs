@@ -7,7 +7,8 @@
     clippy::string_slice,
     clippy::panic,
     clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::large_futures,
+    reason = "in a test these are the assertion, not a hazard; a scenario's futures are the size its fixtures make them, and pinning each one only moves that size onto the heap"
 )]
 
 mod common;
@@ -35,14 +36,12 @@ mod member_copy;
 mod member_list_access;
 #[cfg(target_os = "linux")]
 mod offloadable_action;
-mod region_follows;
 mod remote_action_routing;
 mod server_daemon;
 mod server_member_copy;
 mod server_move;
 mod servers_document;
 mod servers_operations;
-mod surface_content;
 mod tenant_isolation;
 mod workspace_admission;
 mod workspace_service;

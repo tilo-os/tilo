@@ -184,6 +184,8 @@ pub mod membership;
 mod naming_tests;
 pub mod person_list;
 pub mod person_workspace;
+#[cfg(test)]
+mod surfaces_tests;
 // One record followed as it changes: what a part of the daemon reads without waiting.
 #[cfg(not(target_arch = "wasm32"))]
 mod followed_record;
@@ -195,6 +197,8 @@ mod readings;
 pub use readings::HeldCopy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod region;
+#[cfg(test)]
+mod region_tests;
 // What a request names and what its caller is answered.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod requests;

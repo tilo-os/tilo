@@ -18,6 +18,8 @@
 
 use neighbour_wire::NeighbourMsg;
 
+use super::fixtures::{hosting_device, test_host};
+
 const APP: &str = "so.tilo.chat";
 
 /// A surface of a version of the app this host does not run: nothing in it
@@ -102,10 +104,9 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     }
     let scratch = tempfile::tempdir().unwrap();
     let content_store = scratch.path().join("surfaces");
-    tilo_workspace_service::surfaces::decide_receipt(&content_store);
-    let (key, cert) = tilo_workspace_service::workspaces::fixtures::hosting_device();
-    let host =
-        tilo_workspace_service::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
+    crate::surfaces::decide_receipt(&content_store);
+    let (key, cert) = hosting_device();
+    let host = test_host(scratch.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     // The host's own device is a member of the workspace it founded: an app's code is read by
@@ -149,7 +150,7 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     // Kept beside the workspace's state: a start after this one has it without
     // asking anybody.
     assert_eq!(std::fs::read(content_store.join(&hash)).unwrap(), surface);
-    tilo_workspace_service::surfaces::decide_receipt(&content_store);
+    crate::surfaces::decide_receipt(&content_store);
     assert_eq!(
         gathered(
             &workspaces.content_answer(&workspace, &asker, &want(&workspace, &asker, &hash)),
