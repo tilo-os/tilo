@@ -281,7 +281,7 @@ tilo_test_env::scenario! {
         shell
             .load_foreign_package(&notes.wasm, &notes.meta)
             .unwrap();
-        let mut with_notes = platform.clone();
+        let mut with_notes = platform;
         with_notes.push(notes.meta.clone());
         let card = tilolang::compile_package(CARD, &IdsLock::new(), &with_notes)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
