@@ -124,9 +124,22 @@ pub(crate) struct Founding {
     /// The calls the device took while it had no person: its services answer them too, so a
     /// founding call followed after they start reads its state where it was kept.
     calls: Calls,
+    /// Whether a founding this device answered at once is making its person now: a call that
+    /// needs the person waits for their part meanwhile, as it does once they are made.
+    under_way: std::sync::atomic::AtomicBool,
 }
 
 impl Founding {
+    /// Whether a founding is making this device's person now ([`Self::under_way`]).
+    pub(crate) fn under_way(&self) -> bool {
+        self.under_way.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn set_under_way(&self, under_way: bool) {
+        self.under_way
+            .store(under_way, std::sync::atomic::Ordering::Release);
+    }
+
     /// The calls the device took, and where each is: the person's services answer them too, so a
     /// call followed after they start reads where it is.
     pub(crate) fn calls(&self) -> Calls {
@@ -540,6 +553,11 @@ impl DeviceOnly {
         claimed(&self.0.place, &self.0.key, &self.0.profile, self.0.own)
     }
 
+    /// Whether a founding this device answered at once is making its person now.
+    pub(crate) fn founding(&self) -> bool {
+        self.0.founding.under_way()
+    }
+
     /// The daemon's profile, where founding records the account that made its person and the
     /// seats whose shells are admitted here: empty for a device actions' value no daemon keeps.
     pub(crate) fn profile(&self) -> &std::path::Path {
@@ -673,6 +691,7 @@ impl DeviceOnly {
         // The call stands as under way before anything is made, so a caller that asks again
         // under its id reads that same call rather than founding the person a second time.
         let receipt = self.keep(invocation, InvocationUpdate::Accepted { invocation });
+        self.0.founding.set_under_way(true);
         let (runtime, answering) = (self.0.runtime.clone(), self.clone());
         runtime.spawn(async move {
             let mut sequence = 1;
@@ -695,6 +714,9 @@ impl DeviceOnly {
                     Err(_) => reporting(FOUNDING_STARTING),
                 }
             };
+            // Made or not, the person's part is the device's to say from here: started, or
+            // never to start.
+            answering.0.founding.set_under_way(false);
             let person = match made {
                 Ok(Ok(person)) => person,
                 Ok(Err(refusal)) => {

@@ -400,16 +400,18 @@ fn a_founding_call_follows_a_person_part_that_starts_past_one_answer() {
 const FOLLOW_ACROSS_START_TEST: &str =
     "device::founding_tests::a_foundings_follow_is_answered_across_its_persons_part_starting";
 
-/// The follow `tilo login --new-identity` keeps making is answered before its person's part
-/// starts and after: the stages are read where the device that took the call keeps them, so the
-/// part's own admission never holds the founder's deadline.
+/// A founding is answered as soon as the person exists, before their part of the daemon starts:
+/// a call made right after it that only the person's part answers (listing their workspace)
+/// waits for that part and is answered once it runs, never refused for having come early nor
+/// told the action is unknown. The founding's own call still ends with the tickets it asked for.
 #[test]
 fn a_foundings_follow_is_answered_across_its_persons_part_starting() {
     let Some(profile) = isolated_root(FOLLOW_ACROSS_START_TEST) else {
         return;
     };
     let mut environment = isolated_environment();
-    // The person's part starts a few seconds after founding: a follow is in flight as it does.
+    // The person's part starts a few seconds after founding: the next call is in flight as it
+    // does.
     environment.set("TILO_TEST_HOLD_BETWEEN_PARTS_MS", "4000");
     let keys = tilo_api::calls::device_keys();
     reset_identity(&keys);
@@ -417,53 +419,39 @@ fn a_foundings_follow_is_answered_across_its_persons_part_starting() {
     let running = crate::daemon::Running::start(&profile).unwrap();
     let socket = running.native_socket().to_owned();
     let actions = tilo_device_identity::login::daemon::DeviceActions::at(socket);
-    // The call `tilo login --new-identity --ticket server` makes, answered with it under way.
+    // The call `tilo login --new-identity --ticket server` makes.
     let mut call = json!({
         "path": "devices#found",
         "args": {"name": "Ada", "tickets": ["server"]},
         "wait_ms": 0,
     });
+    // Answered at once: done, or under way while the person's part starts.
     let (answered, _, _) = actions
         .tool("tilo_do", &call)
         .expect("the founding call is answered");
-    assert_eq!(answered["status"], "pending", "{answered}");
-    let invocation = answered["invocation_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("the founding call names nothing to follow: {answered}"))
-        .to_owned();
-
-    // A follow while the person's part has not started: the stages the daemon reports.
-    call["invocation_id"] = json!(invocation);
-    call["wait_ms"] = json!(5_000);
-    let (followed, _, _) = actions
-        .tool("tilo_do", &call)
-        .expect("a follow before the person's part starts is answered");
-    assert_eq!(followed["status"], "pending", "{followed}");
     assert!(
-        followed["waiting_for"].as_str().is_some(),
-        "the follow reports the stage the call is in: {followed}"
+        answered["error"].is_null()
+            && ["ok", "pending"].contains(&answered["status"].as_str().unwrap_or_default()),
+        "the founding was refused: {answered}"
     );
 
-    running
-        .wait_for_person(Duration::from_secs(120))
-        .expect("the person's part starts");
+    // Right after founding answers, a call only the person's part answers, listing their
+    // workspace: it waits for the part to start and is answered then.
+    let (listed, said, failed) = actions
+        .tool("tilo_ls", &json!({"path": ""}))
+        .expect("a call made right after founding is answered");
+    assert!(
+        !failed && said.contains("devices"),
+        "a call made right after founding is refused or unknown instead of waiting for the \
+         person's part: {said} {listed}"
+    );
 
-    // A follow after the person's part starts: answered at once, never held by the part's own
-    // admission of the session that would answer it.
+    // And the founding's call ends with the tickets it asked for, followed by its id.
+    let mut answer = answered;
+    if let Some(invocation) = answer["invocation_id"].as_str() {
+        call["invocation_id"] = json!(invocation);
+    }
     call["wait_ms"] = json!(60_000);
-    let began = std::time::Instant::now();
-    let (followed, _, failed) = actions
-        .tool("tilo_do", &call)
-        .expect("a follow after the person's part started is answered");
-    assert!(!failed, "the follow was refused: {followed}");
-    assert!(
-        began.elapsed() < Duration::from_secs(10),
-        "the follow waited on the person's part: {:?}, {followed}",
-        began.elapsed()
-    );
-
-    // And the call ends with the tickets the founding asked for.
-    let mut answer = followed;
     for _ in 0..20 {
         if answer["status"] != "pending" {
             break;

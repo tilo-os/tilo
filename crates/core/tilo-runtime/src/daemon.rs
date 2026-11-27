@@ -1670,7 +1670,11 @@ impl Native {
                     .spawn(move || native.open_with_person(&person, stream, slot, seated))
                     .map(drop)
             }
-            None if !self.answers.claimed() => self.device_only(stream, slot, seated),
+            // A founding answered at once makes the person after its answer: what comes
+            // meanwhile waits for their part as it would once they are made.
+            None if !self.answers.claimed() && !self.answers.founding() => {
+                self.device_only(stream, slot, seated)
+            }
             None => {
                 let native = Arc::clone(self);
                 std::thread::Builder::new()
