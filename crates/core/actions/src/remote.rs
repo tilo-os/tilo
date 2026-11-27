@@ -2332,12 +2332,10 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
             reason: "the provider dropped the request".into(),
         },
     )?;
+    if let Some(answer) = unprovided(&message) {
+        return Some(Pending::ready(answer));
+    }
     let answer = match message {
-        // What a stateless provider keeps none of, it refuses.
-        RemoteActionMessage::RetiredFeedbackRequest { .. }
-        | RemoteActionMessage::ContentPutRequest { .. }
-        | RemoteActionMessage::ContentGetRequest { .. }
-        | RemoteActionMessage::ContentLinkRequest { .. } => Pending::ready(not_kept(&message)?),
         RemoteActionMessage::CatalogueRequest { correlation, query } => provider
             .query(caller, query)
             .map(move |result| RemoteActionMessage::CatalogueResponse {
@@ -2371,10 +2369,6 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         RemoteActionMessage::ResourceRead {
             correlation, read, ..
         } => read_answered(provider, caller, correlation, read),
-        // A question is the person's to answer, on the device they are at.
-        RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
-            confirmation::unanswered(correlation, ActionCallError::confirmation_required()),
-        ),
         RemoteActionMessage::ChangesRequest { correlation, after } => {
             changed(provider, caller, correlation, after.as_deref())
         }
@@ -2384,62 +2378,68 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         RemoteActionMessage::SurfaceRequest { correlation, app } => {
             surfaces::surfaced(provider, correlation, &app)
         }
-        // A call lane is its own host's, never a provider's: one asked here says it carries
-        // none.
-        RemoteActionMessage::CallCarryRequest { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::CallCarryResponse {
-                correlation,
-                result: Err(no_call_lane()),
-            })
-        }
-        RemoteActionMessage::CallReport { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::CallReportResponse {
-                correlation,
-                result: Err(no_call_lane()),
-            })
-        }
-        // A sound output lane is its own host's, never a provider's: one asked here says it
-        // carries none.
-        RemoteActionMessage::AudioOutputRequest { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::AudioOutputResponse {
-                correlation,
-                result: Err(no_audio_output_lane()),
-            })
-        }
         RemoteActionMessage::StoreRequest {
             correlation,
             command,
             kind,
         } => store_answered(provider, caller, correlation, (command, kind)),
-        // A call media lane is its own host's, never a provider's: one asked here says it
-        // carries none.
-        RemoteActionMessage::CallMediaRequest { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::CallMediaResult {
-                correlation,
-                result: Err(no_call_media_lane()),
-            })
-        }
-        // A presence lane is its own host's, never a provider's: one asked here says it carries
-        // none.
-        RemoteActionMessage::PresenceSaid { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::PresenceSaidResult {
-                correlation,
-                result: Err(no_presence_lane()),
-            })
-        }
-        // A shell lane is the device's own, on an app's connection: one asked here says it
-        // carries none.
-        RemoteActionMessage::ShellOpenRequest { correlation, .. } => {
-            Pending::ready(no_shell(correlation))
-        }
         // An answer is never a request: `refuse` classified every message before this match and
-        // answered `None` for an answer, so none reaches here.
+        // answered `None` for an answer, and `unprovided` answered what no provider takes, so
+        // neither reaches here.
         _ => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
     answer.then(move |answer| completer.complete(answer.unwrap_or(abandoned)));
     Some(answered)
+}
+
+/// The answer to a request that no provider takes, or `None` for any other message. What a
+/// stateless provider keeps none of, it refuses; a question is the person's to answer, on the
+/// device they are at; and a lane (calls, sound output, call media, presence, shells) is its own
+/// host's, so one asked here says it carries none.
+fn unprovided(message: &RemoteActionMessage) -> Option<RemoteActionMessage> {
+    Some(match *message {
+        RemoteActionMessage::RetiredFeedbackRequest { .. }
+        | RemoteActionMessage::ContentPutRequest { .. }
+        | RemoteActionMessage::ContentGetRequest { .. }
+        | RemoteActionMessage::ContentLinkRequest { .. } => not_kept(message)?,
+        RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
+            confirmation::unanswered(correlation, ActionCallError::confirmation_required())
+        }
+        RemoteActionMessage::CallCarryRequest { correlation, .. } => {
+            RemoteActionMessage::CallCarryResponse {
+                correlation,
+                result: Err(no_call_lane()),
+            }
+        }
+        RemoteActionMessage::CallReport { correlation, .. } => {
+            RemoteActionMessage::CallReportResponse {
+                correlation,
+                result: Err(no_call_lane()),
+            }
+        }
+        RemoteActionMessage::AudioOutputRequest { correlation, .. } => {
+            RemoteActionMessage::AudioOutputResponse {
+                correlation,
+                result: Err(no_audio_output_lane()),
+            }
+        }
+        RemoteActionMessage::CallMediaRequest { correlation, .. } => {
+            RemoteActionMessage::CallMediaResult {
+                correlation,
+                result: Err(no_call_media_lane()),
+            }
+        }
+        RemoteActionMessage::PresenceSaid { correlation, .. } => {
+            RemoteActionMessage::PresenceSaidResult {
+                correlation,
+                result: Err(no_presence_lane()),
+            }
+        }
+        RemoteActionMessage::ShellOpenRequest { correlation, .. } => no_shell(correlation),
+        _ => return None,
+    })
 }
 
 /// Run `request` at `provider`, answering its receipt once it is ready, or once it moves when it
