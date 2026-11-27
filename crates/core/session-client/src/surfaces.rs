@@ -96,9 +96,42 @@ fn signed_surface(app: &str) -> Option<[u8; 32]> {
 }
 
 /// Decide every workspace's members' writes against the surfaces this page
-/// holds ([`surfaces`]): set once, before the page restores its workspaces.
+/// holds ([`surfaces`]): set once, before the page restores its workspaces. A
+/// session started inside a host that decided its process's changes already, as a
+/// device's daemon does, reads the host's surfaces after its own: the installed
+/// packages and the workspace's kept content stay where the host's changes are decided.
 #[cfg(feature = "toolkit")]
 pub(crate) fn decide_with_kept_surfaces() {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| tilo_peer_state::decide_with_surfaces(surfaces(), signed_surface));
+    ONCE.call_once(|| {
+        let page = surfaces();
+        let surfaces = match (page.source(), tilo_peer_state::default_surfaces().source()) {
+            (Some(page), Some(host)) => collab_types::Surfaces::from_source(std::sync::Arc::new(
+                ThenHost(std::sync::Arc::clone(page), std::sync::Arc::clone(host)),
+            )),
+            _ => page,
+        };
+        tilo_peer_state::decide_with_surfaces(surfaces, signed_surface);
+    });
+}
+
+/// The page's surfaces, then those of the host the page runs in.
+#[cfg(feature = "toolkit")]
+struct ThenHost(
+    std::sync::Arc<dyn collab_types::receipt::SurfaceSource>,
+    std::sync::Arc<dyn collab_types::receipt::SurfaceSource>,
+);
+
+#[cfg(feature = "toolkit")]
+impl collab_types::receipt::SurfaceSource for ThenHost {
+    fn surface(
+        &self,
+        document: &collab_types::WrittenDocument<'_>,
+        kind: Option<&str>,
+        named: Option<&[u8; 32]>,
+    ) -> Option<std::sync::Arc<dyn collab_types::receipt::ReceiptSurface>> {
+        self.0
+            .surface(document, kind, named)
+            .or_else(|| self.1.surface(document, kind, named))
+    }
 }
