@@ -1262,7 +1262,18 @@ impl ViewInstance {
                 ));
                 Ok(InvokeOutcome::Waits { run, call })
             }
-            other => Ok(other),
+            // The step waits for a person's yes to the call it is: what follows it runs when
+            // that call ends, as one that waits on an answer does.
+            InvokeOutcome::Asked(call) => {
+                self.core.await_call(&call);
+                self.then_waiting.borrow_mut().push((
+                    call.clone(),
+                    ActionRef::clone(next),
+                    gesture.map(str::to_owned),
+                ));
+                Ok(InvokeOutcome::Asked(call))
+            }
+            other @ InvokeOutcome::Denied => Ok(other),
         }
     }
 

@@ -3945,6 +3945,12 @@ impl Hosted {
             return false;
         }
         let call = receipt.invocation.0.to_string();
+        // A view that waited on this call to run what follows a pressed action hears it ended
+        // now: the person's yes ran it, or ended nothing.
+        if let Some(host) = self.instance.host() {
+            let done = matches!(receipt.status, ReceiptStatus::Completed { .. });
+            host.runtime().call_ended(&call, done);
+        }
         let invocation = self.waiting_calls.borrow_mut().remove(&call);
         // A call that asked a person waits on what it is about as an `Invocation` resource:
         // answered, it waits no more.

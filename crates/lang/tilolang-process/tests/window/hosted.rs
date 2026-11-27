@@ -551,11 +551,14 @@ struct Asked {
 }
 
 /// The call `call` delivered to the instance under `id`, admitted as `person`, as the dispatch
-/// delivers a call it runs.
+/// delivers a call it runs. `approval` is the person's yes on the system's confirm, which the
+/// dispatch sends the call again with when they allowed it ([`Session::allow_asked`]): the run
+/// is the one they answered.
 fn delivery(
     person: &str,
     id: u64,
     call: &ui::tilo_actions::remote::InvokeRequest,
+    approval: Option<ui::tilo_actions::remote::asked::Approval>,
 ) -> collaboration::CollabEvent {
     use ui::tilo_actions::remote::InvokeArgument;
     let invoker = ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::person(
@@ -579,10 +582,26 @@ fn delivery(
         action: call.target.address.action.clone(),
         argument,
         actor: invoker.acting.by.clone(),
-        context: Some(Box::new(
-            ui::tilo_actions::ActionContext::default().with_invoker(invoker),
-        )),
+        context: Some(Box::new(ui::tilo_actions::ActionContext {
+            approval,
+            ..ui::tilo_actions::ActionContext::default().with_invoker(invoker)
+        })),
     }
+}
+
+/// The person's yes on the system's confirm to `call`, as the dispatch sends it again: the
+/// approval of the asked record it was kept as.
+fn approval_of(
+    call: &ui::tilo_actions::remote::InvokeRequest,
+) -> ui::tilo_actions::remote::asked::Approval {
+    ui::tilo_actions::remote::asked::Approval::new(
+        ui::tilo_actions::remote::asked::RecordRef {
+            workspace: ui::permissions::LOCAL_WORKSPACE.to_owned(),
+            record: format!("tilo.invocations/{}", call.invocation.0),
+            device: None,
+        },
+        None,
+    )
 }
 
 /// `person`'s instance of the app of `route`, at a desktop that speaks English.
@@ -1015,7 +1034,7 @@ impl Session {
                 } if press.target.provider == OWN_PROVIDER => {
                     let id = self.invoked;
                     self.invoked += 1;
-                    handed.push(delivery(&self.person, id, press));
+                    handed.push(delivery(&self.person, id, press, None));
                 }
                 CollabRequest::RemoteAction {
                     message: RemoteActionMessage::Invoke(call),
@@ -1099,7 +1118,12 @@ impl Session {
             let id = self.invoked;
             self.invoked += 1;
             kept.delivered = Some(id);
-            delivered.push(delivery(&self.person, id, &kept.request));
+            delivered.push(delivery(
+                &self.person,
+                id,
+                &kept.request,
+                Some(approval_of(&kept.request)),
+            ));
         }
         let allowed = delivered.len();
         self.inbox().borrow_mut().extend(delivered);

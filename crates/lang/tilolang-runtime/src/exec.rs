@@ -1835,6 +1835,18 @@ impl Core {
         }
     }
 
+    /// [`Self::ended`] from the host that runs an invocation a view waits on to end, such as a
+    /// pressed action a person answered: the call it got its yes for.
+    pub(crate) fn call_ended(&self, invocation: &str, done: bool) {
+        self.ended(invocation, done);
+    }
+
+    /// Wait on the invocation `call` to end, which a view knows by its id ([`Self::awaited_end`]
+    /// says the end of once it ended).
+    pub(crate) fn await_call(&self, call: &str) {
+        self.awaited.borrow_mut().insert(call.to_owned(), None);
+    }
+
     /// Wait on the invocation the run `run` is part of to end: the run at the top of its calls,
     /// which [`Self::awaited_end`] says the end of once it ended.
     pub(crate) fn await_end(&self, run: &RunId) -> Result<RunId, RuntimeError> {

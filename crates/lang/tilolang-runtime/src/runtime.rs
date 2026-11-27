@@ -1206,6 +1206,12 @@ impl Runtime {
         self.core.answer_call(run, answer)
     }
 
+    /// Say that the call `call`, which a view waits on to run what follows it (a `then`),
+    /// ended, `done` or not: what a host that answered a person's ask says of the call it ran.
+    pub fn call_ended(&self, call: &str, done: bool) {
+        self.core.call_ended(call, done);
+    }
+
     /// Open a view for `actor`, in the window of its first resource argument.
     pub fn open_view(
         &self,

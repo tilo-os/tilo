@@ -5,6 +5,8 @@
 //! unless the action leaves the system, which always confirms first, the owner's press included
 //! and nothing leaving before the yes, or its app marks it destructive, which confirms unless
 //! Shift is held. A rule of theirs that asks them first still asks too, unless Shift is held.
+//! The yes they give for one app's action answers the calls that action makes of its own app,
+//! never one it makes into another app: that app's grants decide that call.
 
 #[cfg(test)]
 mod cases {
@@ -134,6 +136,26 @@ view letters(b: Box) {
 }
 
 default view letters for Box
+"#;
+
+    /// Another app, whose own action calls Post's: what the person pressed there is their act in
+    /// Other, and what it reaches in Post is Post's to grant.
+    const OTHER: &str = r#"app so.tilo.other "Other"
+
+use so.tilo.post as post
+
+/// Stamps the letter through Post's own send, and stamps it outside.
+action stamp(l: post.Letter) {
+    post.send(l)
+    outside("post", l.to)
+}
+
+/// The letter, stamped with one press.
+view stamping(l: post.Letter) {
+    ui.Button("Stamp") {
+        on press: stamp(l)
+    }
+}
 "#;
 
     struct Post {
@@ -379,6 +401,54 @@ default view letters for Box
             assert_eq!(p.rt.pending_effects().len(), 1);
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
         }
+
+        phase an_approved_press_does_not_answer_another_apps_call;
+        {
+            let p = post();
+            let other = App::compile(OTHER, &[p.app.meta().clone()]);
+            p.auth.trust(&other.load(&p.rt));
+            let view = p
+                .rt
+                .open_view(&me(), &other.view("stamping"), vec![p.letter.clone()])
+                .unwrap();
+            let InvokeOutcome::Asked(_) = press(&view, false) else {
+                panic!("a press of what leaves asks first");
+            };
+            assert_eq!(
+                p.dispatch.asked().0,
+                other.action("stamp"),
+                "the press asks about Other's own action"
+            );
+            // The person's yes runs Other's action; the send it makes into Post is Post's to
+            // grant, so it asks although the press was allowed.
+            let out = p
+                .rt
+                .invoke_approved_through(
+                    &me(),
+                    None,
+                    (other.action("stamp").as_str(), vec![p.letter.clone()]),
+                    None,
+                )
+                .unwrap();
+            let InvokeOutcome::Waits { run, .. } = out else {
+                panic!("Post's own send is judged by Post's grants: {out:?}");
+            };
+            assert_eq!(
+                p.dispatch.asked().0,
+                p.app.action("send"),
+                "the call into Post is asked: the yes was for Other"
+            );
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(false));
+            p.auth.grant_outside(&p.app.action("send"));
+            let out = p.dispatch.allow(&p.rt, &run);
+            assert!(matches!(out, RunOutcome::Done(_)), "{out:?}");
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
+            assert_eq!(
+                p.rt.pending_effects().len(),
+                2,
+                "Post's send and Other's own outside effect"
+            );
+        }
     }
 
     tilo_test_env::scenario! {
@@ -462,6 +532,27 @@ default view letters for Box
             assert_eq!(p.rt.pending_effects().len(), 1, "the letter goes once");
             assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(true));
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
+        }
+
+        phase what_follows_a_press_the_person_answered_runs_on_the_yes;
+        {
+            let p = post();
+            let mut view = letter_view(&p, &me());
+            let InvokeOutcome::Asked(call) = press_reply(&view) else {
+                panic!("a reply that sends asks for its yes");
+            };
+            assert_eq!(note(&mut view), "unanswered");
+            let out = approved(&p, "reply");
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.dispatch.len(), 1, "the yes covers the send the reply makes");
+            // The host answers the call the press waited on once it ended: what follows the
+            // reply runs then, as it would had the press waited on another app's answer.
+            p.rt.call_ended(&call, true);
+            assert_eq!(
+                note(&mut view),
+                "answered",
+                "what followed the reply ran on the yes"
+            );
         }
 
         phase shift_never_skips_the_confirm_of_what_leaves;

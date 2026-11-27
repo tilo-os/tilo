@@ -1430,10 +1430,11 @@ fn on_page(
     })
 }
 
-/// The reply bar under a conversation, pressed: the press is the person's own, so nobody is
-/// asked about it. The answer it makes goes once, and the bar empties for the next reply.
+/// The reply bar under a conversation, pressed: the answer it makes leaves the system, so it
+/// confirms first, once: the send the answer's own code makes runs on that yes. It goes once,
+/// and the bar empties for the next reply.
 #[test]
-fn a_reply_pressed_on_the_reply_bar_goes_without_asking_and_the_bar_clears() {
+fn a_reply_pressed_on_the_reply_bar_asks_once_and_the_bar_clears() {
     let servers = servers();
     let (_connector, mut session) = window_of(account(&servers));
     synced(&mut session);
@@ -1479,9 +1480,21 @@ fn a_reply_pressed_on_the_reply_bar_goes_without_asking_and_the_bar_clears() {
             None,
         ));
     session.settle();
+    // The answer leaves the system, so it asks once; nothing goes before the yes.
+    assert_eq!(
+        session.asked(),
+        vec!["answer".to_owned()],
+        "the answer waits for the person's yes"
+    );
+    assert!(
+        servers.smtp.sent().is_empty(),
+        "nothing leaves before the yes"
+    );
+    assert_eq!(session.allow_asked(), 1, "the person allows the answer");
+    session.settle();
     assert!(
         session.asked().is_empty(),
-        "nobody is asked about their own press: {:?}",
+        "the send the answer makes runs on that one yes: {:?}",
         session.asked()
     );
     session.until("the server to take the answer", |_| {
