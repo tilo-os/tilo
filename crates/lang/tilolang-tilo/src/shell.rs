@@ -28,9 +28,9 @@ pub const ORIGIN: &str = "session";
 /// Every file of the shell's package (`apps/tl/shell`) the session runs, by the name the
 /// package knows it by: a package is a directory of `.tl` files, in path order (the package's
 /// compiler reads them so), and each new one is listed here to ship. Its scenarios
-/// (`scenarios.tl`), which stage the shell over other apps' records for its shots and tests,
-/// are fixtures: the session never runs them, so it compiles the shell without them and needs
-/// no other app's package to do so.
+/// (`scenarios.tl`) and the presets they stage (`presets.tl`), which stand the shell over other
+/// apps' records for its shots and tests, are fixtures: the session never runs them, so it
+/// compiles the shell without them and needs no other app's package to do so.
 pub const SHELL_FILES: &[(&str, &str)] = &[
     ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
     (
@@ -98,10 +98,6 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
     (
         "phone.tl",
         include_str!("../../../../apps/tl/shell/phone.tl"),
-    ),
-    (
-        "presets.tl",
-        include_str!("../../../../apps/tl/shell/presets.tl"),
     ),
     (
         "quick.tl",
