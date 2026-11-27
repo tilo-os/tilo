@@ -66,6 +66,7 @@ async fn keep(host: &host::Host) -> String {
 #[test]
 fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_else() {
     host::run_with(&["terminal"], |host| async move {
+        let _machine = the_machines_claude();
         let reference = keep(host.as_ref()).await;
         let agent = host.agent();
         // Before anything is named, the machine's programs get nothing.
@@ -98,7 +99,7 @@ fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_else() {
         )
         .await;
         assert!(
-            !failed && ran.contains("ran claude --version"),
+            !failed && ran.contains("ran claude --version with the token"),
             "the next program runs with it: {ran}"
         );
         assert!(!ran.contains(TOKEN), "the answer never carries it: {ran}");
@@ -133,8 +134,31 @@ fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_else() {
             json!({"command": "claude --version"}),
         )
         .await;
-        assert!(!failed, "the command runs without it: {ran}");
+        assert!(
+            !failed && !ran.contains("with the token"),
+            "the command runs without it: {ran}"
+        );
     });
+}
+
+/// The machine's own `claude`, as this test's program: the command line it ran, and whether the
+/// variable the person named for the machine reached it — never the variable's value. The path
+/// it is found on is this test's until the returned scope ends.
+fn the_machines_claude() -> tilo_test_env::ScopedEnv {
+    let bin =
+        std::path::PathBuf::from(std::env::var_os("HOME").expect("the test's home")).join("bin");
+    std::fs::create_dir_all(&bin).expect("the machine's bin is made");
+    tilo_test_env::script(
+        bin.join("claude"),
+        "#!/bin/sh\necho \"ran claude $*${CLAUDE_CODE_OAUTH_TOKEN:+ with the token}\"\n",
+    )
+    .expect("the machine's claude is written");
+    let mut path = bin.into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("PATH", path);
+    env
 }
 
 /// A program in the workspace's machine works there as its own agent once the person allows it:
