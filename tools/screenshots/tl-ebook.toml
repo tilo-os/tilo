@@ -23,7 +23,7 @@ invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "watch_folder",
 invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "open-library_settings" }
 
 [[situation]]
-name = "sans-font"
+name = "serif-font"
 title = "A reading face chosen"
 
 [[situation.steps]]
@@ -33,4 +33,4 @@ invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "watch_folder",
 invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "open-library_settings" }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "set_face", args = { face = "sans" } }
+invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "set_face", args = { face = "serif" } }
