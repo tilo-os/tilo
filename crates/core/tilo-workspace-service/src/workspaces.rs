@@ -2543,7 +2543,18 @@ impl Workspaces {
         let Ok(reading) = self.reading_now(workspace).await else {
             return Vec::new();
         };
-        let may_read = resources::may_read_in(&reading, reader);
+        self.naming_content_in(&reading, reader, address)
+    }
+
+    /// [`Self::store_naming_content`] from `reading`, the copy a link's answer holds already: read
+    /// without the workspace's lock, on a thread of its own.
+    fn naming_content_in(
+        &self,
+        reading: &readings::Reading,
+        reader: &str,
+        address: &str,
+    ) -> Vec<NamingResource> {
+        let may_read = resources::may_read_in(reading, reader);
         let named = reading.store().naming_content(address, &may_read);
         let kinds = self.inner.host.surfaces.kinds();
         // A resource whose kind no app here declares is decided by no app's rules: it names

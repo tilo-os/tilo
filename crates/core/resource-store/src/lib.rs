@@ -24,6 +24,7 @@
 //! its filters skip, so both stay flat as a kind grows.
 
 pub mod admit;
+pub mod content;
 pub mod id;
 mod index;
 mod port;

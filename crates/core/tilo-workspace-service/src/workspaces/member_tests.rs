@@ -12,8 +12,9 @@ use std::sync::Arc;
 use super::super::PreAdmitRequest;
 use super::super::WorkspaceContent;
 use super::super::fixtures::{
-    TestHost, device_cert, group_keys, hosting_device, invited, laptop, member_service, shared,
-    signed_pre_admission, test_host, test_host_holding,
+    TestHost, declare_naming_kind, device_cert, group_keys, hosting_device, invited, laptop,
+    member_service, names_content, shared, signed_pre_admission, test_host, test_host_holding,
+    write_store,
 };
 use super::MemberDevice;
 use ed25519_dalek::SigningKey;
@@ -162,15 +163,42 @@ async fn a_member_copy_reads_the_governance_the_serving_device_publishes() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one member copy, the answer it gives its host and the push it keeps"
+)]
 async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as() {
     let serving_state = tempfile::tempdir().unwrap();
     let member_state = tempfile::tempdir().unwrap();
     let (serving, (key, cert), created, invitation) =
         shared(serving_state.path(), "Content", 21).await;
+    // The workspace's records name the picture, as an app's typed write leaves it: what decides
+    // who reads it by its address, on every copy of the workspace.
+    let picture = b"a picture the member keeps".to_vec();
+    let kind = declare_naming_kind(serving.workspaces(), "test.content");
+    let writer = hex::encode(serving.workspaces().device_cert().user_public_key);
+    write_store(
+        serving.workspaces(),
+        &created.workspace,
+        "test.content",
+        names_content(
+            &kind,
+            "picture",
+            "blob",
+            blake3::hash(&picture).to_hex().as_str(),
+            collab_types::EVERY_MEMBER,
+            &writer,
+        ),
+    )
+    .await
+    .expect("the record names the picture");
 
     // The member's own service as production opens a device's: it signs as the device, whose
     // key its endpoint is bound with and whose link its member copy answers on.
     let member = test_host_holding(member_state.path(), &key, &cert, group_keys()).await;
+    // The member's service declares the app its workspace's records name content in, as running
+    // the app does: a kind no app here declares names nothing anyone reads.
+    declare_naming_kind(member.workspaces(), "test.content");
     member
         .workspaces()
         .set_member_device(Arc::new(MemberDevice {
@@ -182,7 +210,7 @@ async fn a_device_holding_a_workspace_answers_content_as_the_device_it_joined_as
         cert.device_public_key,
         "the service signs as the one device it is"
     );
-    let member_keeps = Kept(b"a picture the member keeps".to_vec());
+    let member_keeps = Kept(picture);
     member
         .workspaces()
         .serve_content(Arc::new(member_keeps.clone()));

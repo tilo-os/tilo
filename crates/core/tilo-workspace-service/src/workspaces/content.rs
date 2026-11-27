@@ -7,9 +7,11 @@
 //!
 //! A member asks the workspace for content its record lacks with the workspace's
 //! presence ([`NeighbourMsg::DocumentContentWants`]), as it asks any member.
-//! The host answers from everything it keeps, to that member's device alone, in
-//! the same bounded pieces a member answers with; the member keeps the
-//! content once every piece arrived and the bytes hash to what it asked.
+//! The host answers what that member reads — a record's content through a resource of the
+//! workspace that names it and that they read, an app's own code through its releases as every
+//! member does — to that member's device alone, in the same bounded pieces a member answers
+//! with; the member keeps the content once every piece arrived and the bytes hash to what it
+//! asked.
 //!
 //! The host asks too: it keeps a copy of the files members post
 //! ([`ContentKeeper`]), so they stay in the workspace after the member who
@@ -29,8 +31,13 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::content::ContentWants;
 
+use super::readings::Reading;
 use super::{CollaborationError, Workspaces};
+use tilo_action_policy::ActionKind;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_peer_state::StatePeer;
+use tilo_resource_store::content::may_read_content;
+use tilo_resource_store::doc_of;
 use tilo_server_protocol::WorkspaceId;
 
 /// Where a host's content comes from.
@@ -230,6 +237,15 @@ impl ContentSlot {
             .filter_map(Weak::upgrade)
             .collect()
     }
+}
+
+/// Who asks for content on a workspace's link, as the workspace's governance has them now.
+struct Asking {
+    /// The person the device is, or one a certificate placed it for, as a reader set names them
+    /// (their key, hex).
+    person: String,
+    /// What the workspace is read through without its lock.
+    reading: Reading,
 }
 
 impl Workspaces {
@@ -800,17 +816,69 @@ impl Workspaces {
         frames
     }
 
+    /// Who `asker`, the device asking for content on `workspace`'s link, asks as now: the person
+    /// the workspace's governance names it, a member's own or the one a certificate placed it
+    /// for. `None` for a device it knows no member by, which reads nothing by any address.
+    fn asking(&self, workspace: &str, asker: &[u8; 32]) -> Option<Asking> {
+        let reading = self.inner.readings.held(workspace)?;
+        let now = tilo_clock::wall();
+        let peer = reading.replica.read(StatePeer::clone);
+        let person = match peer.placed_device(asker, now) {
+            // A device placed for some of the workspace's records asks as its certificate's
+            // person; the records it reaches are checked for each resource that names content.
+            Some(placed) => hex::encode(placed.ok()?.person),
+            // A member's device asks as its own person.
+            None => peer.permissions(*asker, now).ok()?.person_id()?.to_owned(),
+        };
+        Some(Asking { person, reading })
+    }
+
+    /// Whether `asking` reads the content at `address` in the workspace: a resource of the
+    /// workspace names it, their person is one of its readers, and the policy's read of that
+    /// resource allows them ([`may_read_content`]). A device placed for some records reads what
+    /// those reach alone.
+    fn reads_content(&self, asking: &Asking, asker: &[u8; 32], address: &str) -> bool {
+        let now = tilo_clock::wall();
+        let peer = asking.reading.replica.read(StatePeer::clone);
+        may_read_content(
+            address,
+            |address| {
+                self.naming_content_in(&asking.reading, &asking.person, address)
+                    .into_iter()
+                    .map(|named| (named.app, named.kind, named.id))
+                    .collect()
+            },
+            |app, kind, id| {
+                // The record the resource is in is one the asker reaches; the read of the
+                // resource itself is the policy's, as every read of one is.
+                let Ok(access) = peer.read_access(*asker, app, doc_of(id), now) else {
+                    return false;
+                };
+                let node = tilo_actions::resource_node(&access.policy.node(), app, kind, id);
+                access.allows(&node, ActionKind::Read, now)
+            },
+        )
+    }
+
     /// Answer `body`, a presence the member device `asker` of `workspace`
     /// published, when it asks for content: the pieces of what this host
     /// keeps, many to a frame, and word of each it keeps none of, as frames
     /// for the asker's device alone, each handed to `emit` once made
     /// ([`neighbour_wire::content::answer_each`]). Nothing for any other
-    /// presence, or a request naming another workspace. What it keeps of app
-    /// surfaces is the workspace's content store, never a registry.
+    /// presence, or a request naming another workspace, or a device the
+    /// workspace knows no member by.
+    ///
+    /// What it answers is what `asker` reads. An app's own code — the package a member
+    /// uploaded and the surface a change named — is the workspace's, read by every member that
+    /// runs the app. A record's content is read by whoever reads a resource of the workspace
+    /// that names its address ([`may_read_content`]); content no resource they read names is
+    /// answered as content this device keeps none of, exactly as a hash nothing names is, so
+    /// an answer says nothing of whether the workspace keeps it.
     ///
     /// Content asked for that this device keeps none of is owed: answered
     /// again, on the same link, once this device keeps it
     /// ([`Self::content_kept`]), so the asker need not ask again and again.
+    /// Content the asker does not read is owed none of.
     pub fn content_answer_each(
         &self,
         workspace: &str,
@@ -836,6 +904,7 @@ impl Workspaces {
         let NeighbourMsg::DocumentContentWants { wants, .. } = &request else {
             return;
         };
+        let asking = self.asking(workspace, asker);
         let mut ahead = ReadAhead::new(wants);
         let mut lacked = Vec::new();
         neighbour_wire::content::answer_each(
@@ -843,6 +912,16 @@ impl Workspaces {
             asker,
             &request,
             |app_id, _, hash| {
+                let asking = asking.as_ref()?;
+                // An app's own code is the workspace's, named by its releases rather than a
+                // resource's fields: every member that runs the app reads it.
+                if let Some(code) = self.app_code(workspace, app_id, hash) {
+                    return Some(code);
+                }
+                let address = tilo_actions::content_resource(hash)?;
+                if !self.reads_content(asking, asker, &address) {
+                    return None;
+                }
                 let kept = ahead.read(app_id, hash, |app_id, hash| {
                     self.read_kept(workspace, app_id, hash)
                 });
@@ -915,17 +994,23 @@ impl Workspaces {
 
     /// The bytes of content `hash` of `app_id` this device keeps for `workspace`.
     pub(super) fn read_kept(&self, workspace: &str, app_id: &str, hash: &str) -> Option<Vec<u8>> {
+        self.app_code(workspace, app_id, hash).or_else(|| {
+            self.inner
+                .content
+                .get()
+                .iter()
+                .find_map(|source| source.read(workspace, app_id, hash))
+        })
+    }
+
+    /// The bytes of an app's own code this device keeps for `workspace`: the package file a
+    /// member uploaded, and the surface of a version the workspace decided a change with
+    /// ([`crate::surfaces`]), which a record started by an older version of the app reads its
+    /// writes with. Both are the workspace's, named by its releases rather than by a resource's
+    /// fields: every member that runs the app reads them
+    /// ([`Self::content_answer_each`]).
+    fn app_code(&self, workspace: &str, app_id: &str, hash: &str) -> Option<Vec<u8>> {
         self.app_file(workspace, hash)
-            .or_else(|| {
-                self.inner
-                    .content
-                    .get()
-                    .iter()
-                    .find_map(|source| source.read(workspace, app_id, hash))
-            })
-            // A record started by an older version of an app reads its writes
-            // with that version's surface, which the workspace's content store
-            // keeps ([`crate::surfaces`]).
             .or_else(|| crate::surfaces::kept(app_id, hash))
     }
 }
@@ -1049,30 +1134,83 @@ impl WholeDocuments {
 mod tests {
 
     use super::*;
+    use crate::workspaces::fixtures::{
+        TestHost, admit_device, answer_grant, declare_naming_kind, hosting_device, names_content,
+        test_host, write_store,
+    };
+    use collab_types::EVERY_MEMBER;
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     use tilo_peer_state::peer_handle;
+    use tilo_user_identity::DeviceCert;
 
-    struct One(Vec<u8>);
+    /// The app whose records name content in these tests.
+    const APP: &str = "test.content";
+
+    /// A workspace hosted for the owner's device, holding the records `records` write and serving
+    /// every content it is given.
+    struct Fixture {
+        server: TestHost,
+        workspaces: Workspaces,
+        workspace: String,
+        /// The owner's device certificate: the host's own, which asks as the owner.
+        cert: DeviceCert,
+        /// The kind of the record that names content ([`declare_naming_kind`]).
+        kind: String,
+        /// The owner's person, as a reader set names them.
+        person: String,
+        _dir: tempfile::TempDir,
+    }
+
+    /// A content source that serves `bytes` in `workspace` for [`APP`], and none other.
+    struct One {
+        workspace: String,
+        bytes: Vec<u8>,
+    }
 
     impl WorkspaceContent for One {
         fn read(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
-            (workspace == WORKSPACE
-                && app == "so.tilo.chat"
-                && hash == blake3::hash(&self.0).to_hex().as_str())
-            .then(|| self.0.clone())
+            (workspace == self.workspace
+                && app == APP
+                && hash == blake3::hash(&self.bytes).to_hex().as_str())
+            .then(|| self.bytes.clone())
         }
     }
 
-    const WORKSPACE: &str = "2f10f463-8f4c-43a3-b9dd-18df422eb0bd";
+    /// A workspace hosted for the owner's device, holding the records `records` makes for the
+    /// owner's person.
+    async fn fixture(
+        records: impl FnOnce(&str, &str) -> Vec<collab_types::store::wire::Command>,
+    ) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = hosting_device();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let workspaces = server.workspaces().clone();
+        let kind = declare_naming_kind(&workspaces, APP);
+        let workspace = workspaces.create("Content").await.unwrap().workspace;
+        let person = hex::encode(cert.user_public_key);
+        for record in records(&person, &kind) {
+            write_store(&workspaces, &workspace, APP, record)
+                .await
+                .expect("the host keeps its record");
+        }
+        Fixture {
+            server,
+            workspaces,
+            workspace,
+            cert,
+            kind,
+            person,
+            _dir: dir,
+        }
+    }
 
-    /// The member device that asks.
-    const MEMBER: [u8; 32] = [9; 32];
-
-    fn want(workspace: &str, hash: &str) -> Vec<u8> {
+    /// `workspace`'s ask of `hash` as the device `asker` makes it.
+    fn want(workspace: &str, asker: &[u8; 32], hash: &str) -> Vec<u8> {
         postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
-            requester: peer_handle(&MEMBER),
+            requester: peer_handle(asker),
             cluster_id: workspace.into(),
             wants: vec![neighbour_wire::content::Wanted {
-                app_id: "so.tilo.chat".into(),
+                app_id: APP.into(),
                 hash: hash.into(),
                 have: Vec::new(),
             }],
@@ -1080,38 +1218,275 @@ mod tests {
         .unwrap()
     }
 
+    /// What `frames`, the answer to an ask, carried: every piece's bytes, in order, and how many
+    /// pieces they crossed in.
+    fn gathered(frames: &[Vec<u8>]) -> (Vec<u8>, usize) {
+        let mut bytes = Vec::new();
+        let mut pieces: usize = 0;
+        for frame in frames {
+            match postcard::from_bytes(frame).expect("an answer frame decodes") {
+                NeighbourMsg::DocumentContentPieces {
+                    pieces: carried, ..
+                } => {
+                    for piece in carried {
+                        assert_eq!(piece.offset, u64::try_from(bytes.len()).unwrap());
+                        bytes.extend(piece.bytes);
+                        pieces = pieces.saturating_add(1);
+                    }
+                }
+                other => panic!("an answer of pieces, not {other:?}"),
+            }
+        }
+        (bytes, pieces)
+    }
+
+    /// What `frames`, the answer to an ask for `hash`, says of it: who answered and who was
+    /// answered, of what app in what workspace, and the hash it answers about. `None` unless the
+    /// answer is exactly one frame of `hash` as content not kept.
+    fn lacks_of(frames: &[Vec<u8>]) -> Option<(u64, u64, String, String, String)> {
+        let [frame] = frames else {
+            return None;
+        };
+        match postcard::from_bytes(frame).ok()? {
+            NeighbourMsg::DocumentContentLacks {
+                responder,
+                requester,
+                app_id,
+                cluster_id,
+                hash,
+            } => Some((responder, requester, app_id, cluster_id, hash)),
+            _ => None,
+        }
+    }
+
+    /// Content is answered to the device that reads a resource of the workspace naming it, and to
+    /// nobody else: a member the resource's readers exclude and one the app's rules refuse are
+    /// answered exactly as for content nothing names, which says nothing of whether the host keeps
+    /// it.
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one host, a member of its own and the answers it serves and refuses"
+    )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the server stays live until its consuming shutdown"
+    )]
+    async fn content_is_answered_only_through_a_resource_its_asker_reads() {
+        let shared = vec![1_u8; neighbour_wire::content::PIECE_BYTES + 10];
+        let owners = vec![2_u8; 32];
+        let secret = vec![3_u8; 32];
+        let unnamed = vec![4_u8; 32];
+        let hash = |bytes: &[u8]| blake3::hash(bytes).to_hex().to_string();
+        let fixture = fixture(|person, kind| {
+            vec![
+                names_content(kind, "shared", "blob", &hash(&shared), EVERY_MEMBER, person),
+                // Sealed to the owner: the closest narrowing this tree has to a scoped device,
+                // since scoped roles are not here yet.
+                names_content(kind, "owners", "blob", &hash(&owners), person, person),
+                names_content(kind, "secret", "blob", &hash(&secret), EVERY_MEMBER, person),
+            ]
+        })
+        .await;
+        // Every content is kept and served, so what answers is the read and never what is kept.
+        for bytes in [&shared, &owners, &secret, &unnamed] {
+            fixture.workspaces.serve_content(Arc::new(One {
+                workspace: fixture.workspace.clone(),
+                bytes: bytes.clone(),
+            }));
+        }
+        let owner = fixture.cert.device_public_key;
+        let member = admit_device(&fixture.workspaces, &fixture.workspace, &fixture.cert, 7).await;
+        let editor = member.1.device_public_key;
+        let editor_person = hex::encode(member.1.user_public_key);
+        // The editor reads the workspace, and this one record of it by the workspace's rules
+        // not at all.
+        answer_grant(
+            &fixture.workspaces,
+            &fixture.workspace,
+            Grant::new(
+                "editor-reads-no-secret-content",
+                Grantee::person(editor_person),
+                TreePath::workspace(&fixture.workspace)
+                    .app(APP)
+                    .kind(fixture.kind.clone())
+                    .resource("secret"),
+                KindSet::READ,
+                Answer::Deny,
+                Grantee::person(fixture.person.clone()),
+            ),
+        )
+        .await
+        .expect("the owner refuses the editor the secret record");
+
+        // The owner reads what a resource of theirs names, the one sealed to them too, and gets
+        // it whole, however many pieces it crosses in.
+        let frames = fixture.workspaces.content_answer(
+            &fixture.workspace,
+            &owner,
+            &want(&fixture.workspace, &owner, &hash(&shared)),
+        );
+        assert_eq!(
+            gathered(&frames),
+            (shared.clone(), 2),
+            "the owner reads the shared file, in its two pieces"
+        );
+        assert_eq!(
+            gathered(&fixture.workspaces.content_answer(
+                &fixture.workspace,
+                &owner,
+                &want(&fixture.workspace, &owner, &hash(&owners))
+            ))
+            .0,
+            owners,
+            "the owner reads the file sealed to them"
+        );
+
+        // A member who reads the resource reads the content.
+        assert_eq!(
+            gathered(&fixture.workspaces.content_answer(
+                &fixture.workspace,
+                &editor,
+                &want(&fixture.workspace, &editor, &hash(&shared))
+            ))
+            .0,
+            shared,
+            "the editor reads the shared file"
+        );
+
+        // Content nothing names is answered as content not kept, whatever the device reads.
+        let unknown = fixture.workspaces.content_answer(
+            &fixture.workspace,
+            &editor,
+            &want(&fixture.workspace, &editor, &hash(&unnamed)),
+        );
+        let unknown_answer = lacks_of(&unknown).expect("content nothing names is not kept");
+        assert_eq!(unknown_answer.4, hash(&unnamed));
+        let unknown_shape = (
+            unknown_answer.0,
+            unknown_answer.1,
+            unknown_answer.2.clone(),
+            unknown_answer.3.clone(),
+        );
+
+        // What the editor may not read is answered exactly as content nothing names: the file
+        // sealed from them, and the one the workspace's rules refuse them.
+        for (address, why) in [
+            (hash(&owners), "outside the resource's readers"),
+            (hash(&secret), "refused by the workspace's rules"),
+        ] {
+            let refused = fixture.workspaces.content_answer(
+                &fixture.workspace,
+                &editor,
+                &want(&fixture.workspace, &editor, &address),
+            );
+            let answered = lacks_of(&refused)
+                .unwrap_or_else(|| panic!("the editor reads nothing of the file {why}"));
+            assert_eq!(
+                answered.4, address,
+                "{why}: the answer names what was asked"
+            );
+            assert_eq!(
+                (answered.0, answered.1, answered.2, answered.3),
+                unknown_shape,
+                "{why}: answered as content nothing names"
+            );
+        }
+
+        // A device the workspace knows no member by reads none of it.
+        let stranger = [9_u8; 32];
+        assert!(
+            lacks_of(&fixture.workspaces.content_answer(
+                &fixture.workspace,
+                &stranger,
+                &want(&fixture.workspace, &stranger, &hash(&shared))
+            ))
+            .is_some(),
+            "a stranger's device is answered as content not kept"
+        );
+        fixture.server.shutdown().await;
+    }
+
     /// An ask answered with word that the content is not kept here is answered again once it
     /// is, by the device that wrote it: the asker need not ask again and again meanwhile. One
-    /// that fetched the content from elsewhere leaves that to whoever it came from.
+    /// that fetched the content from elsewhere leaves that to whoever it came from. What the
+    /// asker does not read is owed none of it.
     #[tokio::test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the server stays live until its consuming shutdown"
     )]
     async fn content_a_device_said_it_lacks_follows_once_it_keeps_it() {
-        let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = crate::workspaces::tests::hosting_device();
-        let server = crate::workspaces::tests::test_host(scratch.path(), &key, &cert).await;
-        let workspaces = server.workspaces().clone();
-        let (written, fetched) = (vec![3_u8; 100], vec![4_u8; 100]);
+        let (written, fetched) = (vec![5_u8; 100], vec![6_u8; 100]);
+        let unnamed = vec![7_u8; 100];
         let hash = |bytes: &[u8]| blake3::hash(bytes).to_hex().to_string();
-        for bytes in [&written, &fetched] {
-            let ask = want(WORKSPACE, &hash(bytes));
-            assert!(lacks(&workspaces.content_answer(WORKSPACE, &MEMBER, &ask)).is_some());
+        let fixture = fixture(|person, kind| {
+            vec![
+                names_content(
+                    kind,
+                    "written",
+                    "blob",
+                    &hash(&written),
+                    EVERY_MEMBER,
+                    person,
+                ),
+                names_content(
+                    kind,
+                    "fetched",
+                    "blob",
+                    &hash(&fetched),
+                    EVERY_MEMBER,
+                    person,
+                ),
+            ]
+        })
+        .await;
+        let owner = fixture.cert.device_public_key;
+        for bytes in [&written, &fetched, &unnamed] {
+            let ask = want(&fixture.workspace, &owner, &hash(bytes));
+            assert!(
+                lacks_of(
+                    &fixture
+                        .workspaces
+                        .content_answer(&fixture.workspace, &owner, &ask)
+                )
+                .is_some()
+            );
         }
         assert!(
-            lacks(&workspaces.owed_answers(WORKSPACE, &hash(&written))).is_some(),
+            lacks_of(
+                &fixture
+                    .workspaces
+                    .owed_answers(&fixture.workspace, &hash(&written))
+            )
+            .is_some(),
             "still kept nowhere: still owed"
         );
-        workspaces.serve_content(Arc::new(One(written.clone())));
-        workspaces.serve_content(Arc::new(One(fetched.clone())));
-        workspaces.content_fetched(WORKSPACE, &hash(&fetched));
         assert!(
-            workspaces
-                .owed_answers(WORKSPACE, &hash(&fetched))
+            fixture
+                .workspaces
+                .owed_answers(&fixture.workspace, &hash(&unnamed))
+                .is_empty(),
+            "content nothing the asker reads names is owed none of"
+        );
+        for bytes in [&written, &fetched] {
+            fixture.workspaces.serve_content(Arc::new(One {
+                workspace: fixture.workspace.clone(),
+                bytes: bytes.clone(),
+            }));
+        }
+        fixture
+            .workspaces
+            .content_fetched(&fixture.workspace, &hash(&fetched));
+        assert!(
+            fixture
+                .workspaces
+                .owed_answers(&fixture.workspace, &hash(&fetched))
                 .is_empty()
         );
-        let answers = workspaces.owed_answers(WORKSPACE, &hash(&written));
+        let answers = fixture
+            .workspaces
+            .owed_answers(&fixture.workspace, &hash(&written));
         let [answer] = answers.as_slice() else {
             panic!("one answer: {} frames", answers.len());
         };
@@ -1121,107 +1496,20 @@ mod tests {
         else {
             panic!("an answer of pieces");
         };
-        assert_eq!(requester, peer_handle(&MEMBER));
+        assert_eq!(requester, peer_handle(&owner));
         let [piece] = pieces.as_slice() else {
             panic!("one piece: {} pieces", pieces.len());
         };
         assert_eq!(piece.hash, hash(&written));
         assert_eq!(piece.bytes, written);
         assert!(
-            workspaces
-                .owed_answers(WORKSPACE, &hash(&written))
+            fixture
+                .workspaces
+                .owed_answers(&fixture.workspace, &hash(&written))
                 .is_empty(),
             "answered once"
         );
-        server.shutdown().await;
-    }
-
-    #[tokio::test]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the server stays live until its consuming shutdown"
-    )]
-    async fn a_member_asking_for_content_gets_it_in_pieces_or_word_that_it_is_not_kept() {
-        let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = crate::workspaces::tests::hosting_device();
-        let server = crate::workspaces::tests::test_host(scratch.path(), &key, &cert).await;
-        let workspaces = server.workspaces().clone();
-        let avatar = vec![7_u8; neighbour_wire::content::PIECE_BYTES + 10];
-        let hash = blake3::hash(&avatar).to_hex().to_string();
-        assert_eq!(
-            lacks(&workspaces.content_answer(WORKSPACE, &MEMBER, &want(WORKSPACE, &hash))),
-            Some((peer_handle(&cert.device_public_key), peer_handle(&MEMBER))),
-            "a host that serves no content keeps none"
-        );
-        workspaces.serve_content(Arc::new(One(avatar.clone())));
-
-        let frames = workspaces.content_answer(WORKSPACE, &MEMBER, &want(WORKSPACE, &hash));
-        let mut gathered = Vec::new();
-        let mut counted = 0;
-        for frame in &frames {
-            let NeighbourMsg::DocumentContentPieces {
-                responder,
-                requester,
-                pieces,
-                ..
-            } = postcard::from_bytes(frame).unwrap()
-            else {
-                panic!("an answer of pieces");
-            };
-            assert_eq!(responder, peer_handle(&cert.device_public_key));
-            assert_eq!(
-                requester,
-                peer_handle(&MEMBER),
-                "addressed to whoever asked"
-            );
-            for piece in pieces {
-                assert_eq!(piece.hash, hash);
-                assert_eq!(piece.total, u64::try_from(avatar.len()).unwrap());
-                assert_eq!(piece.offset, u64::try_from(gathered.len()).unwrap());
-                gathered.extend(piece.bytes);
-                counted += 1;
-            }
-        }
-        assert_eq!(counted, 2, "the avatar crossed in its two pieces");
-        assert_eq!(gathered, avatar);
-
-        let other = "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a";
-        assert!(
-            workspaces
-                .content_answer(other, &MEMBER, &want(WORKSPACE, &hash))
-                .is_empty(),
-            "another workspace's request"
-        );
-        assert_eq!(
-            lacks(&workspaces.content_answer(
-                WORKSPACE,
-                &MEMBER,
-                &want(WORKSPACE, &"0".repeat(64))
-            )),
-            Some((peer_handle(&cert.device_public_key), peer_handle(&MEMBER))),
-            "not kept: the member is told so"
-        );
-        assert!(
-            workspaces
-                .content_answer(WORKSPACE, &MEMBER, b"not a request")
-                .is_empty()
-        );
-    }
-
-    /// Who said, to whom, that it keeps none of what was asked: the one
-    /// frame `frames` holds when it is such word.
-    fn lacks(frames: &[Vec<u8>]) -> Option<(u64, u64)> {
-        let [frame] = frames else {
-            return None;
-        };
-        match postcard::from_bytes(frame).ok()? {
-            NeighbourMsg::DocumentContentLacks {
-                responder,
-                requester,
-                ..
-            } => Some((responder, requester)),
-            _ => None,
-        }
+        fixture.server.shutdown().await;
     }
 
     /// An answer reads what an ask names a batch at a time, in the order it comes to them, each

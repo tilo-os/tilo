@@ -519,6 +519,95 @@ pub fn declare_record_kind(workspaces: &Workspaces, app: &str) -> String {
     kind
 }
 
+/// Declare `app`'s kind [`names_content`] writes, on `workspaces`: a record whose `blob` field
+/// names the content it keeps, as an app's typed write of a file leaves it. Answers the kind.
+pub fn declare_naming_kind(workspaces: &Workspaces, app: &str) -> String {
+    let kind = format!("tl.{app}.Kept");
+    let surface = collab_types::surface::canonical(&serde_json::json!({
+        "format": 2,
+        "resources": [{
+            "kind": kind,
+            "label": "Kept",
+            "version": 1,
+            "fields": [
+                {"path": "name", "type": "text"},
+                {"path": "blob", "type": "text"},
+            ],
+            "verbs": [{"id": "keep", "kind": "undoable"}],
+        }],
+    }))
+    .into_bytes();
+    workspaces.declare_package_surface(app, &surface);
+    kind
+}
+
+/// A store write of `app`'s resource `id` of `kind`, reading `field` as naming the content at
+/// `hash` under the reader set `readers` ([`collab_types::EVERY_MEMBER`], or the people it
+/// names): what an app's typed write of a file leaves in the workspace's store, and so in its
+/// index of what each resource names.
+pub fn names_content(
+    kind: &str,
+    id: &str,
+    field: &str,
+    hash: &str,
+    readers: &str,
+    invoker: &str,
+) -> collab_types::store::wire::Command {
+    use collab_types::store::{Cell, Resource, Value};
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        field.to_owned(),
+        Cell::One(Value::from(format!("{}{hash}", tilo_content::BLOB_SCHEME))),
+    );
+    collab_types::store::wire::Command::Put {
+        kind: kind.to_owned(),
+        id: id.to_owned(),
+        resource: Resource {
+            readers: readers.to_owned(),
+            parent: None,
+            order: None,
+            fields,
+        },
+        stamp: tilo_resource_store::Stamp {
+            verb: "keep".to_owned(),
+            invoker: invoker.to_owned(),
+            invocation: format!("keep-{id}"),
+            at: "2026-11-27T12:00:00Z".to_owned(),
+            ..tilo_resource_store::Stamp::default()
+        },
+    }
+}
+
+/// `command`, a store write of `app`, drafted and kept as this device's own: what an app's typed
+/// write leaves in the workspace's store.
+///
+/// # Errors
+/// The workspace is not held here, or its store refused the write.
+pub async fn write_store(
+    workspaces: &Workspaces,
+    workspace: &str,
+    app: &str,
+    command: collab_types::store::wire::Command,
+) -> Result<(), String> {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    super::wanted_keys::write_with_keys(&state, move |mut hosted| {
+        let command = command.clone();
+        async move {
+            let writes =
+                tilo_resource_store::wire::draft(&mut workspaces.store_of(&mut hosted), command)
+                    .map_err(|refused| refused.error.to_string())?;
+            workspaces
+                .keep_writes(hosted, workspaces.signing_device(), app, writes, None)
+                .await
+                .map(|_| ())
+        }
+    })
+    .await
+}
+
 /// Declare `kind`, a record of `app` whose fields the tests write, on `workspaces`.
 pub fn declare_record_kind_named(workspaces: &Workspaces, app: &str, kind: &str) {
     let surface = record_surface(kind);

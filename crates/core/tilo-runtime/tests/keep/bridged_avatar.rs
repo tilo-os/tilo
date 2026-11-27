@@ -13,6 +13,9 @@ use tilo_runtime::device::keep::server::Server;
 use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use tilo_workspace_service::workspaces::WorkspaceSummary;
+use tilo_workspace_service::workspaces::fixtures::{
+    declare_naming_kind, names_content, write_store,
+};
 
 use crate::keep::common::{Linked, TestDevice, TestUser, start_server};
 
@@ -66,6 +69,27 @@ async fn a_member_fetches_a_bridged_avatar_from_the_workspace_host() {
         .unwrap()
         .put(&avatar)
         .unwrap();
+
+    // The bridge's record names the picture, as the message it shows it in does: what decides
+    // who reads it by its address.
+    let workspaces = server.workspaces().unwrap();
+    let kind = declare_naming_kind(workspaces, "test.content");
+    let writer = hex::encode(workspaces.device_cert().user_public_key);
+    write_store(
+        workspaces,
+        &workspace.workspace,
+        "test.content",
+        names_content(
+            &kind,
+            "avatar",
+            "blob",
+            &hash,
+            collab_types::EVERY_MEMBER,
+            &writer,
+        ),
+    )
+    .await
+    .expect("the bridge's record names the picture");
 
     let requester = peer_handle(&laptop.device_pubkey());
     let want = |hash: &str| NeighbourMsg::DocumentContentWants {

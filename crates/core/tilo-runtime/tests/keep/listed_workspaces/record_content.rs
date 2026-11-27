@@ -11,6 +11,10 @@
 //! is no member any more.
 use super::*;
 
+use tilo_workspace_service::workspaces::fixtures::{
+    declare_naming_kind, names_content, write_store,
+};
+
 const PHOTOS: &str = "so.tilo.photos";
 
 /// Push `bytes`, kept at `address`, from `device` over `linked` to the host
@@ -233,6 +237,26 @@ async fn a_sealed_picture_a_page_pushes_reaches_the_host_and_outlives_its_writer
     )
     .await
     .expect("the record names the picture");
+    // The app's typed write of the picture names its reference in a resource of the workspace,
+    // as a field holding binary data does: what decides who reads it by its address.
+    let workspaces = server.workspaces().unwrap();
+    let kind = declare_naming_kind(workspaces, "test.content");
+    let writer = hex::encode(workspaces.device_cert().user_public_key);
+    write_store(
+        workspaces,
+        &workspace.workspace,
+        "test.content",
+        names_content(
+            &kind,
+            "picture",
+            "blob",
+            &reference,
+            collab_types::EVERY_MEMBER,
+            &writer,
+        ),
+    )
+    .await
+    .expect("the record's resource names the picture");
 
     // The page pushes the ciphertext beside the record, and the host says it
     // keeps it to Bob's device alone.

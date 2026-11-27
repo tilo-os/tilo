@@ -34,15 +34,30 @@ pub fn named_reference(value: &str) -> Option<&str> {
 }
 
 /// The content address (lowercase BLAKE3 hex) a record's value names: a `tilo.content:<reference>`
-/// address or a `tilo-blob://<reference>` link, its reference with or without the key that opens
-/// it. What a record names this way is what its readers read by the address; `None` for a value
-/// that names no content.
+/// address, a `tilo-blob://<reference>` link, or a kept value's stored form
+/// (`blake3:<hex>:<len>[:<reference>]`), its reference with or without the key that opens it.
+/// What a record names this way is what its readers read by the address; `None` for a value that
+/// names no content.
 pub fn named_content(value: &str) -> Option<String> {
     let value = value.trim();
     let reference = value
         .strip_prefix(tilo_content::BLOB_SCHEME)
-        .or_else(|| content_hash(value))?;
-    tilo_content::content_address(reference)
+        .or_else(|| content_hash(value))
+        .map(str::to_owned)
+        .or_else(|| stored_reference(value))?;
+    tilo_content::content_address(&reference)
+}
+
+/// The reference a kept value's stored form names (`blake3:<hex>:<len>[:<reference>]`), when
+/// `value` is one: what a field holding binary data says, and a rich text's picture paragraph.
+fn stored_reference(value: &str) -> Option<String> {
+    let (hash, rest) = value.strip_prefix("blake3:")?.split_once(':')?;
+    let (length, reference) = match rest.split_once(':') {
+        Some((length, reference)) => (length, reference),
+        None => (rest, hash),
+    };
+    length.parse::<u64>().ok()?;
+    tilo_content::valid_reference(reference).then(|| reference.to_owned())
 }
 
 /// Every content address `text` names anywhere in it ([`named_content`]): a `tilo-blob://` link
@@ -309,6 +324,34 @@ mod tests {
         assert_eq!(content_resource(""), None);
         assert_eq!(content_resource("two:parts"), None);
         assert_eq!(content_hash("files.entry:/tmp/a"), None);
+    }
+
+    #[test]
+    fn a_value_names_the_content_a_record_keeps_in_it() {
+        let (hash, sealed) = (
+            "a1".repeat(32),
+            format!("{}.{}", "b2".repeat(32), "c".repeat(43)),
+        );
+        for (value, address) in [
+            (format!("tilo.content:{hash}"), hash.clone()),
+            (format!("tilo.content:{sealed}"), "b2".repeat(32)),
+            (format!("tilo-blob://{hash}"), hash.clone()),
+            (format!("tilo-blob://{sealed}"), "b2".repeat(32)),
+            // A field holding binary data says what it keeps this way, `Bytes`' stored form.
+            (format!("blake3:{hash}:40"), hash.clone()),
+            (format!("blake3:{hash}:40:{sealed}"), "b2".repeat(32)),
+        ] {
+            assert_eq!(named_content(&value), Some(address), "{value}");
+        }
+        for value in [
+            hash.clone(),
+            format!("blake3:{hash}"),
+            format!("blake3:{hash}:not-a-length"),
+            "blake3:short:1".to_owned(),
+            "a note that mentions blake3:".to_owned(),
+        ] {
+            assert_eq!(named_content(&value), None, "{value} names no content");
+        }
     }
 
     fn effect_receipt_redacts_terminal_payloads() {

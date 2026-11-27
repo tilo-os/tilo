@@ -291,22 +291,17 @@ fn read_arguments(
 
 impl AppBrokerState {
     /// Whether `caller`, decided as `actor`, may read the content `arguments` names by its address
-    /// in `workspace` now: only where they may read a resource of this workspace that names it,
-    /// decided as their read of that resource is, its readers and then its app's rules. The
-    /// workspace's index of what its resources name answers which those are; nothing reads every
-    /// content. Content no resource they may read names and content nothing names are refused by
-    /// the same lookup, so a refusal says nothing of whether the workspace keeps it.
-    fn may_read_content(
+    /// in `workspace` now (its whole answer is [`tilo_resource_store::content::may_read_content`]):
+    /// only where they may read a resource of this workspace that names it, decided as their read
+    /// of that resource is, its readers and then its app's rules. The workspace's index of what
+    /// its resources name answers which those are; nothing reads every content.
+    fn reads_content(
         &self,
         caller: &Caller,
         (workspace, actor, now): (&Workspace, &BrokerActor, u64),
         arguments: &Map<String, Value>,
     ) -> bool {
-        let Some(address) = arguments
-            .get("content")
-            .and_then(Value::as_str)
-            .and_then(tilo_actions::named_content)
-        else {
+        let Some(address) = arguments.get("content").and_then(Value::as_str) else {
             return false;
         };
         let (Some(puts), Some(id)) = (
@@ -316,18 +311,19 @@ impl AppBrokerState {
             return false;
         };
         let reader = tilo_workspace_service::workspaces::person_reading(caller);
-        // The index is read on a thread of its own, as the folder's reads are: it waits for the
-        // workspace's records, which this device's runtime serves meanwhile.
-        let naming = std::thread::spawn(move || puts.naming_content(id, &reader, &address))
-            .join()
-            .unwrap_or_default();
-        naming.iter().any(|named| {
-            let node = tilo_actions::resource_node(
-                &workspace.policy.node(),
-                &named.app,
-                &named.kind,
-                &named.id,
-            );
+        let naming = |address: &str| {
+            // The index is read on a thread of its own, as the folder's reads are: it waits for
+            // the workspace's records, which this device's runtime serves meanwhile.
+            let (puts, reader, address) = (puts.clone(), reader.clone(), address.to_owned());
+            std::thread::spawn(move || puts.naming_content(id, &reader, &address))
+                .join()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|named| (named.app, named.kind, named.id))
+                .collect()
+        };
+        tilo_resource_store::content::may_read_content(address, naming, |app, kind, id| {
+            let node = tilo_actions::resource_node(&workspace.policy.node(), app, kind, id);
             actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
         })
     }
@@ -450,7 +446,7 @@ impl AppBrokerState {
         // Content is read by its address by whoever may read a resource of the workspace that
         // names it; a file or folder of the tree by whoever may read what Files keeps in it.
         let allowed = if action == READ_TEXT && arguments.contains_key("content") {
-            self.may_read_content(caller, (workspace, policy, now), &arguments)
+            self.reads_content(caller, (workspace, policy, now), &arguments)
                 || self.turn_carries(caller, workspace, &arguments, now)
         } else {
             may_read_tree(workspace, policy, now)

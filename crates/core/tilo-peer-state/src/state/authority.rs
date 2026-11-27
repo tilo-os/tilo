@@ -1082,15 +1082,35 @@ impl StatePeer {
         document: &str,
         now: SystemTime,
     ) -> Result<(), String> {
+        let member = self.read_access(device, app, document, now)?;
+        self.check_read_as(&member, (app, document), now)
+    }
+
+    /// The access the device `device` reads `document` of `app` under now: a member device's own,
+    /// or, for a device confined to some records, its certificate's, which reaches those records
+    /// alone and reads as its person does from a device that is not theirs.
+    ///
+    /// What the access then allows at a node below the record is its policy's to decide
+    /// ([`MemberAccess::allows`]): this answers who reads, and which records they reach.
+    ///
+    /// # Errors
+    /// Why the device reads nothing here: a certificate the workspace knows no member by, or a
+    /// record outside a confined device's.
+    pub fn read_access(
+        &self,
+        device: [u8; 32],
+        app: &str,
+        document: &str,
+        now: SystemTime,
+    ) -> Result<MemberAccess, String> {
         // A device confined to one record reads that record alone, as its person may: its
         // certificate decides, as it does what it writes.
-        let member = if self.core.placed_devices.contains_key(&device) {
+        if self.core.placed_devices.contains_key(&device) {
             self.placed_access(&device, app, document, now)
-                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())
         } else {
-            self.membership(device, now)?
-        };
-        self.check_read_as(&member, (app, document), now)
+            self.membership(device, now)
+        }
     }
 
     pub(super) fn check_read_as(

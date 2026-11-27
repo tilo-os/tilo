@@ -26,13 +26,10 @@ fn unserved_surface() -> Vec<u8> {
     b"kind = \"chat.workspace\"\nversion = 1\n# written by a version no registry serves\n".to_vec()
 }
 
-/// What a member's device asks the workspace for.
-/// The member device that asks.
-const MEMBER: [u8; 32] = [42; 32];
-
-fn want(workspace: &str, hash: &str) -> Vec<u8> {
+/// What the member device `asker` asks the workspace for.
+fn want(workspace: &str, asker: &[u8; 32], hash: &str) -> Vec<u8> {
     postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
-        requester: tilo_peer_state::peer_handle(&MEMBER),
+        requester: tilo_peer_state::peer_handle(asker),
         cluster_id: workspace.into(),
         wants: vec![neighbour_wire::content::Wanted {
             app_id: APP.into(),
@@ -60,8 +57,8 @@ fn answer(host: &[u8; 32], member: [u8; 32], workspace: &str, bytes: &[u8]) -> V
     .unwrap()
 }
 
-/// The content the host answers `frames` with, or `None` when it keeps none.
-fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
+/// The content the host answers `frames` with to `asker`, or `None` when it keeps none.
+fn gathered(frames: &[Vec<u8>], asker: &[u8; 32]) -> Option<Vec<u8>> {
     let mut whole = Vec::new();
     let mut total = None;
     for frame in frames {
@@ -71,7 +68,7 @@ fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
             } => {
                 assert_eq!(
                     requester,
-                    tilo_peer_state::peer_handle(&MEMBER),
+                    tilo_peer_state::peer_handle(asker),
                     "addressed to whoever asked"
                 );
                 for piece in pieces {
@@ -111,12 +108,18 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
         tilo_workspace_service::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+    // The host's own device is a member of the workspace it founded: an app's code is read by
+    // every member that runs the app.
+    let asker = cert.device_public_key;
     let surface = unserved_surface();
     let hash = blake3::hash(&surface).to_hex().to_string();
 
     // Nothing has it: a member asking is told so, not left waiting.
     assert_eq!(
-        gathered(&workspaces.content_answer(&workspace, &MEMBER, &want(&workspace, &hash))),
+        gathered(
+            &workspaces.content_answer(&workspace, &asker, &want(&workspace, &asker, &hash)),
+            &asker,
+        ),
         None
     );
 
@@ -135,7 +138,10 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     // ([`tilo_workspace_service::surfaces`]) and answers members reading the record it
     // was written with.
     assert_eq!(
-        gathered(&workspaces.content_answer(&workspace, &MEMBER, &want(&workspace, &hash))),
+        gathered(
+            &workspaces.content_answer(&workspace, &asker, &want(&workspace, &asker, &hash)),
+            &asker,
+        ),
         Some(surface.clone()),
         "the surface the member answered with, whole"
     );
@@ -145,16 +151,22 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     assert_eq!(std::fs::read(content_store.join(&hash)).unwrap(), surface);
     tilo_workspace_service::surfaces::decide_receipt(&content_store);
     assert_eq!(
-        gathered(&workspaces.content_answer(&workspace, &MEMBER, &want(&workspace, &hash))),
+        gathered(
+            &workspaces.content_answer(&workspace, &asker, &want(&workspace, &asker, &hash)),
+            &asker,
+        ),
         Some(surface),
         "answered after a start that asked nobody"
     );
     assert_eq!(
-        gathered(&workspaces.content_answer(
-            &workspace,
-            &MEMBER,
-            &want(&workspace, &"0".repeat(64))
-        )),
+        gathered(
+            &workspaces.content_answer(
+                &workspace,
+                &asker,
+                &want(&workspace, &asker, &"0".repeat(64))
+            ),
+            &asker,
+        ),
         None,
         "a surface nobody answered with is still not kept"
     );
@@ -176,7 +188,10 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
         ),
     );
     assert_eq!(
-        gathered(&workspaces.content_answer(&workspace, &MEMBER, &want(&workspace, &other))),
+        gathered(
+            &workspaces.content_answer(&workspace, &asker, &want(&workspace, &asker, &other)),
+            &asker,
+        ),
         None
     );
 

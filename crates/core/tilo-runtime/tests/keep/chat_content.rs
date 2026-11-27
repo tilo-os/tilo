@@ -12,7 +12,10 @@ use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable as _};
 use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_runtime::device::keep::kept_content::KeptContent;
-use tilo_workspace_service::workspaces::fixtures::{hosting_device, member_device, test_host};
+use tilo_workspace_service::workspaces::fixtures::{
+    admit_device, declare_naming_kind, hosting_device, member_device, names_content, test_host,
+    write_store,
+};
 
 /// The app a member's messages and their files are kept in.
 const CHAT: &str = "so.tilo.chat";
@@ -122,7 +125,11 @@ async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leav
         .await
         .1
         .device_public_key;
-    let reader = [4_u8; 32];
+    // Another member, a person of their own: what the host answers is what they read.
+    let reader = admit_device(&workspaces, &workspace, &host_cert, 4)
+        .await
+        .1
+        .device_public_key;
 
     // The files only the poster's device keeps: a file sent with a message, and
     // a picture in a feedback report.
@@ -161,6 +168,23 @@ async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leav
     )
     .await
     .expect("the message and the report reach the workspace");
+    // The app's typed writes name each file in a resource the workspace's index holds, which is
+    // what decides who reads the content by its address.
+    let kind = declare_naming_kind(&workspaces, "test.content");
+    let writer = hex::encode(host_cert.user_public_key);
+    for (id, field, hash) in [
+        ("notes", "blob", &notes_hash),
+        ("picture", "blob", &picture_hash),
+    ] {
+        write_store(
+            &workspaces,
+            &workspace,
+            "test.content",
+            names_content(&kind, id, field, hash, collab_types::EVERY_MEMBER, &writer),
+        )
+        .await
+        .expect("the record's resource names the file");
+    }
 
     // The poster's device pushes both files: the only copy from then on is the
     // host's.
