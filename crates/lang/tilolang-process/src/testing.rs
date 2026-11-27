@@ -43,13 +43,37 @@ pub struct Workspace {
 
 impl Default for Workspace {
     fn default() -> Self {
+        let mut store = Store::new(Self::ID);
+        // Who reads a record whose type names its readers by a field is the workspace's one
+        // decision, as a device's workspace makes it: the test's holds no grants that narrow it.
+        store.set_record_reader(std::sync::Arc::new(MembersReadAsThemselves));
         Self {
-            store: RefCell::new(Store::new(Self::ID)),
+            store: RefCell::new(store),
             done: RefCell::default(),
             written: RefCell::default(),
             documents: tilo_resource_store::LocalPort::default(),
             members: RefCell::default(),
             declared: std::cell::Cell::default(),
+        }
+    }
+}
+
+/// Who reads a record whose type names its readers by a field, in the test's workspace: a person
+/// as themselves, an agent as the person it acts for, and software the workspace made no member
+/// of as nobody, as a workspace with no grant that narrows it decides.
+struct MembersReadAsThemselves;
+
+impl tilo_resource_store::RecordReader for MembersReadAsThemselves {
+    fn reader_of(
+        &self,
+        actor: &tilo_actions::Actor,
+        _kind: &str,
+        _id: &str,
+    ) -> Option<tilo_actions::PersonId> {
+        match actor.member_id()? {
+            tilo_actions::MemberId::Person(person) => Some(person.clone()),
+            tilo_actions::MemberId::Agent { person, .. } => Some(person.clone()),
+            tilo_actions::MemberId::Bot(_) => None,
         }
     }
 }
