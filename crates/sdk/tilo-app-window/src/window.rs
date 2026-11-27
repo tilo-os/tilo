@@ -3259,11 +3259,13 @@ impl AppWindow {
                 // nodes for its own, the room they take together.
                 let placed =
                     |rect: &ui::vello::kurbo::Rect| rect.width() > 0.0 && rect.height() > 0.0;
+                let outermost = covered.get(in_tree).map_or_else(Vec::new, |nodes| {
+                    outermost_placed(nodes, |node| rects.get(node).is_some_and(placed))
+                });
                 let rect = rects.get(in_tree).copied().filter(placed).or_else(|| {
-                    covered
-                        .get(in_tree)?
+                    outermost
                         .iter()
-                        .filter_map(|node| rects.get(node).copied())
+                        .filter_map(|node| rects.get(*node).copied())
                         .filter(placed)
                         .reduce(|a, b| a.union(b))
                 });
@@ -3275,8 +3277,7 @@ impl AppWindow {
                 // part's, the most room any of them is offered. A node no build of this tree
                 // made (a list's row, laid out in a tree of its own) is offered what it was given.
                 let room = offered(in_tree).or_else(|| {
-                    covered
-                        .get(in_tree)?
+                    outermost
                         .iter()
                         .filter_map(|node| offered(node))
                         .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)))
@@ -3309,29 +3310,38 @@ impl AppWindow {
         );
     }
 
-    /// The nodes each declared view call drew, by the call's key in the window's tree: what to
-    /// measure where layout kept no box for the call itself. A row or a grid takes a call's nodes
-    /// as its items, and a component takes them as a part of its own, so the call's room there is
-    /// the room of what it drew.
-    fn call_nodes(&self, wanted: &[Vec<(String, String)>; 2]) -> HashMap<String, Vec<String>> {
+    /// The nodes each declared view call drew, by the call's key in the window's tree, each with
+    /// how deep under the call it stands (a nested call that draws no box of its own adds no
+    /// depth): what to measure where layout kept no box for the call itself. A row or a grid takes
+    /// a call's nodes as its items, and a component takes them as a part of its own, so the call's
+    /// room there is the room of what it drew.
+    fn call_nodes(
+        &self,
+        wanted: &[Vec<(String, String)>; 2],
+    ) -> HashMap<String, Vec<(usize, String)>> {
+        fn drawn(node: &UiNode, depth: usize, out: &mut Vec<(usize, String)>) {
+            for child in &node.children {
+                if child.kind == "fragment" {
+                    drawn(child, depth, out);
+                } else {
+                    out.push((depth, child.key.clone()));
+                    drawn(child, depth.saturating_add(1), out);
+                }
+            }
+        }
         fn walk(
             node: &UiNode,
-            current: Option<&str>,
             calls: &HashSet<String>,
-            out: &mut HashMap<String, Vec<String>>,
+            out: &mut HashMap<String, Vec<(usize, String)>>,
         ) {
-            let mut current = current;
             if node.kind == "fragment" && calls.contains(&node.key) {
-                out.entry(node.key.clone()).or_default();
-                current = Some(node.key.as_str());
-            }
-            if let Some(call) = current
-                && let Some(nodes) = out.get_mut(call)
-            {
-                nodes.push(node.key.clone());
+                // The call's own node first: a list places a row's call as the row it lays out.
+                let nodes = out.entry(node.key.clone()).or_default();
+                nodes.push((0, node.key.clone()));
+                drawn(node, 1, nodes);
             }
             for child in &node.children {
-                walk(child, current, calls, out);
+                walk(child, calls, out);
             }
         }
         let calls: HashSet<String> = wanted
@@ -3341,13 +3351,13 @@ impl AppWindow {
             .collect();
         let mut out = HashMap::new();
         for tree in self.built.as_slice() {
-            walk(tree, None, &calls, &mut out);
+            walk(tree, &calls, &mut out);
         }
         for rows in self.rows.borrow().values() {
             let rows = rows.borrow();
             for key in rows.rendered() {
                 if let Some(row) = rows.row(&key) {
-                    walk(row, None, &calls, &mut out);
+                    walk(row, &calls, &mut out);
                 }
             }
         }
@@ -4165,6 +4175,21 @@ pub struct PageFiles {
 /// over its chooser; the window never draws a picker of its own.
 pub trait PagePicker: Send + Sync {
     fn pick(&self, files: &PageFiles) -> Vec<String>;
+}
+
+/// Of the nodes a call drew, the outermost ones layout placed: a window on a canvas the call
+/// holds stands where the canvas puts it, and says nothing of the room the call was given.
+fn outermost_placed(nodes: &[(usize, String)], placed: impl Fn(&String) -> bool) -> Vec<&String> {
+    let top = nodes
+        .iter()
+        .filter(|(_, node)| placed(node))
+        .map(|(depth, _)| *depth)
+        .min();
+    nodes
+        .iter()
+        .filter(|(depth, _)| Some(*depth) == top)
+        .map(|(_, node)| node)
+        .collect()
 }
 
 #[cfg(test)]
