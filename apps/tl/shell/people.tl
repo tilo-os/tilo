@@ -975,6 +975,10 @@ view own_card(board: device.People, someone: device.Person) {
                 ui.Button("Change picture", faces: [me_face(board, invoker)], role: .plain) {
                     on press: device.host_action(device.people, id: board.photo_change)
                 }
+            } else if let face = face_of(board.me) {
+                // Their own card draws the face the bar and the roster draw of them, picture and
+                // all, not a second spelling of their initials.
+                ui.Avatar(face, colour: me.colour, status: presence_status(me))
             } else {
                 ui.Avatar(name: me.name, colour: me.colour, status: presence_status(me))
             }

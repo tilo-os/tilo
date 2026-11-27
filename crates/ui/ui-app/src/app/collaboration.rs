@@ -1210,7 +1210,7 @@ impl App {
     /// Take the workspace's members' resource as its governance answers it, a complete list each
     /// time: each with the name, role, join time and picture the workspace keeps.
     pub(crate) fn apply_members_answer(&mut self, content: &serde_json::Value) {
-        let members = ::collaboration::Member::roster_of(content, &self.local_author);
+        let members = ::collaboration::Member::members_of(content, &self.local_author);
         self.apply_collab_context(members);
     }
 

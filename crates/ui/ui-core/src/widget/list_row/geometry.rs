@@ -103,7 +103,13 @@ impl ListRowFace<'_> {
             Some(RowLeading::Icon(_) | RowLeading::Swatch(_) | RowLeading::Signal(_)) => {
                 (m.icon, m.icon)
             }
-            Some(RowLeading::Face(_)) => (avatar, avatar),
+            // A face holds one size down a column, whether its row runs to a second line or not:
+            // the names after the faces then start at one edge, and a person's face is the same
+            // whether the row beside it says one thing or three.
+            Some(RowLeading::Face(_)) => {
+                let face = RowMetrics::avatar(theme, true);
+                (face, face)
+            }
             Some(RowLeading::Checkbox { icon, .. }) => match icon {
                 Some(_) => (2.0 * m.icon + m.column_gap, m.icon),
                 None if self.glyph_column => (2.0 * m.icon + m.column_gap, m.icon),
@@ -815,5 +821,59 @@ pub(super) fn checkbox_box(
             slot.center().y + m.icon / 2.0,
         ),
         None => Rect::from_center_size(slot.center(), (m.icon, m.icon)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_ui_base::presence::Face;
+    use tilo_ui_base::tokens::PresenceHue;
+    use tilo_ui_base::widget::AvatarFace;
+
+    /// A face holds one size down a list's leading column, whether its row carries a second line
+    /// or not: the names after the faces start at one edge, and a person's face is one size
+    /// wherever their row stands.
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a face's side is the same measure whether its row carries a second line or not"
+    )]
+    fn a_face_holds_one_size_down_a_leading_column() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let m = RowMetrics::new(&theme);
+        let colour = theme
+            .tokens
+            .colors
+            .presence
+            .hue(PresenceHue::of_identity("bob"));
+        let face = || Face {
+            avatar: AvatarFace::new("Bob Builder", "bob").presence(colour),
+            colour,
+            dimmed: false,
+            active: None,
+            scale: 1.0,
+            follows_you: false,
+        };
+        let plain = ListRowFace::new("Bob Builder").leading(RowLeading::Face(face()));
+        let with_line = ListRowFace::new("Bob Builder")
+            .secondary("Following you")
+            .leading(RowLeading::Face(face()));
+        let (plain_width, plain_height) = plain.leading_extent(&m, &mut text, &theme);
+        let (line_width, line_height) = with_line.leading_extent(&m, &mut text, &theme);
+        assert_eq!(
+            plain_width, line_width,
+            "a face's column is as wide with a second line as without"
+        );
+        assert_eq!(
+            plain_height, line_height,
+            "a face is as tall with a second line as without"
+        );
+        assert_eq!(
+            plain_height,
+            RowMetrics::avatar(&theme, true),
+            "a face is the list's face size"
+        );
     }
 }

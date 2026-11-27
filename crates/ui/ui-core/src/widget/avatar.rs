@@ -52,6 +52,9 @@ pub struct Avatar {
     call_since: Option<crate::time::Instant>,
     /// Whether this theme's motion loops at all: a face whose sweep is still asks for no frame.
     sweeping: bool,
+    /// A face standing on its own wears the presence ring every face wears in a stack, so it
+    /// looks like the person's face on the bar and in the roster rather than a bare disc.
+    ring: bool,
 }
 
 impl Avatar {
@@ -76,6 +79,7 @@ impl Avatar {
             call: false,
             call_since: None,
             sweeping: false,
+            ring: false,
         }
     }
 
@@ -152,6 +156,14 @@ impl Avatar {
     #[must_use]
     pub fn with_presence(mut self, colour: Color) -> Self {
         self.presence = Some(colour);
+        self
+    }
+
+    /// Wear the presence ring round the face, in its colour: the ring every face in a stack
+    /// wears, for a face a surface draws alone.
+    #[must_use]
+    pub fn presence_ring(mut self) -> Self {
+        self.ring = true;
         self
     }
 
@@ -246,6 +258,9 @@ impl Avatar {
         }
         if let Some(status) = self.status {
             face = face.status(status);
+        }
+        if self.ring && self.presence.is_some() && !self.neutral && !self.square {
+            face = face.presence_ring();
         }
         face
     }
@@ -452,6 +467,42 @@ mod tests {
         );
         assert_ne!(early, later, "the arc moves as the sweep turns");
         assert_ne!(early, still, "with motion reduced the whole ring is lit");
+    }
+
+    /// A face a surface draws on its own wears the ring every face in a stack wears, so a person
+    /// looks the same on the bar, in a roster and on a card. An account or a glyph keeps its shape:
+    /// the ring is a person's.
+    #[test]
+    fn a_face_drawn_alone_wears_the_ring_of_a_face_in_a_stack() {
+        let theme = Theme::dark();
+        let colour = theme
+            .tokens
+            .colors
+            .presence
+            .hue(PresenceHue::of_identity("bob"));
+        let alone = |avatar: Avatar| drawn(&paint_face(avatar.face(), &theme));
+        let plain = alone(Avatar::person("Bob Builder", "bob").with_presence(colour));
+        let ringed = alone(
+            Avatar::person("Bob Builder", "bob")
+                .with_presence(colour)
+                .presence_ring(),
+        );
+        assert_ne!(
+            plain, ringed,
+            "the ring is a mark the face drawn alone does not have"
+        );
+        let square = alone(
+            Avatar::person("Studio", "studio")
+                .with_presence(colour)
+                .square()
+                .presence_ring(),
+        );
+        let bare_square = alone(
+            Avatar::person("Studio", "studio")
+                .with_presence(colour)
+                .square(),
+        );
+        assert_eq!(square, bare_square, "an account wears no presence ring");
     }
 
     #[test]

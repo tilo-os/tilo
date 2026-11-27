@@ -131,9 +131,10 @@ pub(crate) struct Shell {
     /// The services' revision the platform readings were last read at: they are read again only
     /// when it moved.
     services_seen: Option<u64>,
-    /// The workspace whose members the shell last read, and the view's revision it read them at:
-    /// its bar's faces and names are the workspace in front's people, read again when they move.
-    members_seen: Option<(String, u64)>,
+    /// The workspace whose members the shell last read, the view's revision it read them at, and
+    /// whether the workspace's own member list was there: its bar's faces and names are the
+    /// workspace in front's people, read again when they move or when the list arrives.
+    members_seen: Option<(String, u64, bool)>,
     /// The names the session's roster gave when the shell last read the workspace's members: a
     /// person who comes here names the row the workspace keeps no name for, so the members are
     /// read again when a name arrives.
@@ -200,6 +201,83 @@ pub(crate) fn reconcile_displays(
     // The partition gives every group without a display one in the same pass: the display in use,
     // else the primary, so a strip placed since the last pass learns the display it stands on.
     handle.set_displays(&displays);
+}
+
+/// Everyone here, as the session's roster names and paints them: the member they are (the root
+/// their device is certified as, else the device's key until the workspace pairs them), their name
+/// here and the colour they wear. `named` takes each name by their root, their device and `self`,
+/// so a member row the workspace keeps no name for is named by theirs. Software is left out: it is
+/// a member the workspace itself lists, by its own id.
+fn people_here(
+    people: Option<&Value>,
+    mine: &str,
+    this_device: &str,
+    named: &mut std::collections::HashMap<String, String>,
+) -> Vec<(
+    collab_types::MemberId,
+    String,
+    collab_types::presence::PresenceHue,
+)> {
+    let mut here = Vec::new();
+    let Some(people) = people else {
+        return here;
+    };
+    let rows = people
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(people.get("me"));
+    for row in rows {
+        let Some(key) = row.get("key").and_then(Value::as_str) else {
+            continue;
+        };
+        if key.is_empty() {
+            continue;
+        }
+        let name = row
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        let root = row
+            .get("user_key")
+            .and_then(Value::as_str)
+            .filter(|root| !root.is_empty());
+        // A row of the person at this device names them `self`, and every other row its person's
+        // root or, where their presence named none, the device it speaks from.
+        let id = if key == "self" {
+            collab_types::MemberId::person(mine)
+        } else if let Some(root) = root {
+            collab_types::MemberId::person(root)
+        } else {
+            collab_types::MemberId::person(key)
+        };
+        let colour = row
+            .get("colour")
+            .and_then(Value::as_str)
+            .and_then(collab_types::member::hue_of_word)
+            .unwrap_or_else(|| collab_types::presence::PresenceHue::of_member(&id));
+        if !name.is_empty() {
+            if key == "self" {
+                named.insert(mine.to_owned(), name.clone());
+                named.insert(this_device.to_owned(), name.clone());
+            } else {
+                named.insert(key.to_owned(), name.clone());
+            }
+            // Their root names the member row as soon as the roster knows the person, before the
+            // workspace's own devices list has taken their device.
+            if let Some(root) = root {
+                named.insert(root.to_owned(), name.clone());
+            }
+        }
+        let software = row.get("agent").and_then(Value::as_bool).unwrap_or(false);
+        if !software && !here.iter().any(|(held, ..)| *held == id) {
+            here.push((id, name, colour));
+        }
+    }
+    here
 }
 
 /// What the shell calls `member`, in the order a workspace knows a name: the member record's own
@@ -648,84 +726,91 @@ impl Shell {
         // are read again for it, though the workspace's own view has not moved.
         let named_by = people.cloned();
         let named_moved = named_by != self.members_named_by;
+        // The workspace's own member list, once this device has read it. Until it does, the
+        // people here are still published: the person at this device has a face from the first
+        // frame, named and coloured as the roster says them, rather than an icon until someone
+        // else arrives.
+        let members = view.members(workspace).ok();
+        let complete = members.is_some();
         let seen = self.members_seen.as_ref();
-        if !named_moved && seen.is_some_and(|(held, was)| held == workspace && *was == revision) {
+        if !named_moved
+            && seen.is_some_and(|(held, was, whole)| {
+                held == workspace && *was == revision && *whole == complete
+            })
+        {
             return;
         }
         self.members_named_by = named_by;
-        let Ok(members) = view.members(workspace) else {
-            return;
-        };
-        self.members_seen = Some((workspace.to_owned(), revision));
+        self.members_seen = Some((workspace.to_owned(), revision, complete));
         // The name each person here goes by, by their root and by the device their presence
         // speaks from: whom the workspace keeps no name for is named by theirs. The person at
         // this device is named both by their root and by the device their session speaks from.
         let mine = hex::encode(view.person());
         let this_device = hex::encode(view.device());
         let mut named: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        if let Some(people) = people {
-            let rows = people
-                .get("rows")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .chain(people.get("me"));
-            for row in rows {
-                let (Some(key), Some(name)) = (
-                    row.get("key").and_then(Value::as_str),
-                    row.get("name").and_then(Value::as_str),
-                ) else {
-                    continue;
-                };
-                if key.is_empty() || name.trim().is_empty() {
-                    continue;
-                }
-                // A row of the person at this device names them `self`, and every other row its
-                // person's root or, where their presence named none, the device it speaks from.
-                if key == "self" {
-                    named.insert(mine.clone(), name.to_owned());
-                    named.insert(this_device.clone(), name.to_owned());
-                } else {
-                    named.insert(key.to_owned(), name.to_owned());
-                }
-                // Their root names the member row as soon as the roster knows the person, before
-                // the workspace's own devices list has taken their device: a face is drawn by
-                // their name, never as a member the workspace keeps no name for.
-                if let Some(root) = row
-                    .get("user_key")
-                    .and_then(Value::as_str)
-                    .filter(|root| !root.is_empty())
-                {
-                    named.insert(root.to_owned(), name.to_owned());
-                }
-            }
-        }
+        let here = people_here(people, &mine, &this_device, &mut named);
+        tracing::debug!(
+            ?here,
+            "the people here, as the roster names and paints them"
+        );
         let owner = view.owner_of(workspace).ok();
         // The certificate name of each device here, by key: the last name a member with no
         // name of their own is shown by.
         let device_labels = view.device_labels(workspace);
-        let people: Vec<Value> = members
-            .members
-            .iter()
-            .filter(|member| !member.removed)
-            .map(|member| {
-                let mut row = member.clone();
-                row.name = shell_member_name(
-                    member,
-                    &named,
-                    members.devices.get(&member.id).map(Vec::as_slice),
-                    &device_labels,
-                    view,
-                    workspace,
-                );
+        let listed_members = members
+            .as_ref()
+            .map_or(&[][..], |members| members.members.as_slice());
+        let capacity = listed_members.len().saturating_add(here.len());
+        let mut people: Vec<Value> = Vec::with_capacity(capacity);
+        let mut listed: Vec<collab_types::MemberId> = Vec::with_capacity(listed_members.len());
+        for member in listed_members.iter().filter(|member| !member.removed) {
+            let mut row = member.clone();
+            row.name = shell_member_name(
+                member,
+                &named,
+                members
+                    .as_ref()
+                    .and_then(|members| members.devices.get(&member.id))
+                    .map(Vec::as_slice),
+                &device_labels,
+                view,
+                workspace,
+            );
+            // Someone here wears the colour the roster draws them in, wherever the member record
+            // came from: one place decides a member's hue for every surface.
+            if let Some((_, name, colour)) = here.iter().find(|(id, ..)| *id == member.id) {
+                if row.name.trim().is_empty() && !name.is_empty() {
+                    row.name.clone_from(name);
+                }
+                row.colour = *colour;
+            }
+            listed.push(member.id.clone());
+            people.push(
                 row.members_row(
                     member
                         .id
                         .person_id()
                         .is_some_and(|person| owner.as_deref() == Some(person)),
-                )
-            })
-            .collect();
+                ),
+            );
+        }
+        // Everyone here whom the workspace's member record has not listed yet is still someone
+        // here: their own actor, named and coloured as the roster draws them, so the bar and a
+        // view's faces find them by who they are rather than by a name another row keeps.
+        for (id, name, colour) in here {
+            if listed.contains(&id) {
+                continue;
+            }
+            let mut row = collab_types::Member::named(id, name);
+            row.colour = colour;
+            people.push(row.members_row(false));
+        }
+        self.publish_member_reading(&people);
+    }
+
+    /// Hand the shell the rows of the workspace's `workspace/members` resource, the one its views
+    /// name people and draw their faces by.
+    fn publish_member_reading(&self, people: &[Value]) {
         let roots = tilolang_tilo::platform::platform_roots();
         let Some((_, ty)) = roots
             .iter()

@@ -263,24 +263,29 @@ const BAR_HEIGHT: u32 = 56;
 /// a person's face wears their hue, and a glyph of the bar's ink has none.
 #[track_caller]
 fn coloured_in(name: &str, rect: [f64; 4], lower_right: bool) -> usize {
+    let [x, y, width, height] = rect;
+    let area = if lower_right {
+        [x + width / 2.0, y + height / 2.0, width / 2.0, height / 2.0]
+    } else {
+        rect
+    };
+    let mut coloured = 0;
+    coloured_pixels(name, area, 40, |_, _, _| coloured += 1);
+    coloured
+}
+
+/// Every opaque pixel of picture `name` inside `rect` whose channels differ enough to carry a
+/// hue (by `chroma`), passed to `take` as its red, green and blue. Nothing where this run keeps no
+/// pictures or `name` was never taken.
+fn coloured_pixels(name: &str, rect: [f64; 4], chroma: u8, mut take: impl FnMut(u8, u8, u8)) {
     let Some(path) = picture_at(name) else {
-        return 0;
+        return;
     };
     let Ok(picture) = image::open(&path) else {
-        return 0;
+        return;
     };
     let picture = picture.to_rgba8();
     let [x, y, width, height] = rect;
-    let (left, right) = if lower_right {
-        (x + width / 2.0, x + width)
-    } else {
-        (x, x + width)
-    };
-    let (top, bottom) = if lower_right {
-        (y + height / 2.0, y + height)
-    } else {
-        (y, y + height)
-    };
     let inside = |value: f64, limit: u32| {
         #[expect(
             clippy::cast_possible_truncation,
@@ -291,29 +296,79 @@ fn coloured_in(name: &str, rect: [f64; 4], lower_right: bool) -> usize {
         pixel.min(limit.saturating_sub(1))
     };
     let (x0, x1) = (
-        inside(left, picture.width()),
-        inside(right, picture.width()),
+        inside(x, picture.width()),
+        inside(x + width, picture.width()),
     );
     let (y0, y1) = (
-        inside(top, picture.height()),
-        inside(bottom, picture.height()),
+        inside(y, picture.height()),
+        inside(y + height, picture.height()),
     );
-    let mut coloured = 0;
     for at_y in y0..=y1 {
         for at_x in x0..=x1 {
-            let pixel = picture.get_pixel(at_x, at_y);
-            let [red, green, blue, alpha] = pixel.0;
+            let [red, green, blue, alpha] = picture.get_pixel(at_x, at_y).0;
             if alpha < 128 {
                 continue;
             }
             let high = red.max(green).max(blue);
             let low = red.min(green).min(blue);
-            if high.saturating_sub(low) >= 40 {
-                coloured += 1;
+            if high.saturating_sub(low) >= chroma {
+                take(red, green, blue);
             }
         }
     }
-    coloured
+}
+
+/// Where a colour stands on the wheel, in degrees: red at 0, round through green and blue.
+fn hue_of_colour(red: u8, green: u8, blue: u8) -> f64 {
+    let (red, green, blue) = (f64::from(red), f64::from(green), f64::from(blue));
+    let high = red.max(green).max(blue);
+    let low = red.min(green).min(blue);
+    let chroma = high - low;
+    let sector = if high == red {
+        ((green - blue) / chroma).rem_euclid(6.0)
+    } else if high == green {
+        (blue - red) / chroma + 2.0
+    } else {
+        (red - green) / chroma + 4.0
+    };
+    (sector * 60.0).rem_euclid(360.0)
+}
+
+/// The hue a face is drawn in inside `rect` of picture `name`: the mean direction of its coloured
+/// pixels, or none where the rectangle holds no colour.
+fn face_hue(name: &str, rect: [f64; 4]) -> Option<f64> {
+    let (mut east, mut north, mut count) = (0.0, 0.0, 0usize);
+    coloured_pixels(name, rect, 40, |red, green, blue| {
+        let radians = hue_of_colour(red, green, blue).to_radians();
+        east += radians.cos();
+        north += radians.sin();
+        count += 1;
+    });
+    (count > 0).then(|| north.atan2(east).to_degrees().rem_euclid(360.0))
+}
+
+/// The centre of a face's slot: the disc within its ring and ground gap, never the ring, so a
+/// bare ring with a neutral disc inside it is not mistaken for a drawn face.
+fn disc_in([x, y, width, height]: [f64; 4]) -> [f64; 4] {
+    [x + width / 4.0, y + height / 4.0, width / 2.0, height / 2.0]
+}
+
+/// How far apart two hues stand on the wheel, in degrees: 0 to 180.
+fn hue_apart(first: f64, second: f64) -> f64 {
+    let apart = (first - second).abs() % 360.0;
+    apart.min(360.0 - apart)
+}
+
+/// How many pixels inside `rect` of picture `name` are in a colour within `within` degrees of
+/// `hue`: one person's face drawn again on another surface.
+fn in_hue(name: &str, rect: [f64; 4], hue: f64, within: f64) -> usize {
+    let mut found = 0;
+    coloured_pixels(name, rect, 40, |red, green, blue| {
+        if hue_apart(hue_of_colour(red, green, blue), hue) <= within {
+            found += 1;
+        }
+    });
+    found
 }
 
 /// Take the picture `name` once the frame it holds differs from `previous`'s: a word reaches
@@ -480,17 +535,51 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
             .into_iter()
             .find(|control| control["name"].as_str() == Some("Bob is here"))
     });
-    let [_, y, _, height] = rect(&arrival);
+    let arrival_rect = rect(&arrival);
+    let [_, y, _, height] = arrival_rect;
     assert!(
         y + height <= BAR,
         "the arrival notice stands in the bar: {arrival}"
     );
     snapshot_changed(&ada_laptop, "arrival", "before-arrival");
     discard("before-arrival");
+    // The person at this device keeps their own face beside the news: no arrival turns their own
+    // slot into a bare person icon while everyone else is drawn as themselves.
+    let mine = rect(&waited(
+        &ada_laptop,
+        "the local person's face on the bar",
+        STEP,
+        || {
+            controls(&ada_laptop).into_iter().find(|control| {
+                control["name"]
+                    .as_str()
+                    .is_some_and(|name| name.ends_with(": open your card"))
+            })
+        },
+    ));
+    let disc = disc_in(mine);
+    let own_deadline = Instant::now()
+        .checked_add(STEP)
+        .expect("the bound fits in an Instant");
+    loop {
+        snapshot(&ada_laptop, "own-face");
+        let coloured = coloured_in("own-face", disc, false);
+        if coloured >= 30 {
+            break;
+        }
+        assert!(
+            Instant::now() < own_deadline,
+            "the local person is drawn as their face while an arrival is said: {coloured} coloured pixels in {disc:?}\n{}",
+            members_log(&ada_laptop),
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     // No press took it away: the bar says it for its four seconds and then gives it up.
     gone(&ada_laptop, "Bob is here", Duration::from_secs(10));
     // Her bar with the notice gone, and the time back where it stands: the wave's picture is taken
-    // apart from this one.
+    // apart from this one. His own session is up before her list is read, so her surfaces draw
+    // him by the person the workspace and his presence name, not by the device key they heard
+    // first.
     snapshot(&ada_laptop, "before-wave");
     bob_laptop.ready();
     bob_laptop.wait_holding(&site.workspace);
@@ -527,7 +616,78 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
         );
         std::thread::sleep(Duration::from_millis(250));
     }
+    // The person at this device is drawn as their face too, in their colour, where they stand
+    // first in their own roster: the local slot is not a glyph beside the others' faces.
+    let you = rect(&waited(&ada_laptop, "the local person's row", STEP, || {
+        // The row says how available they are under their name, and a reader hears both.
+        controls(&ada_laptop).into_iter().find(|control| {
+            control["name"]
+                .as_str()
+                .is_some_and(|name| name == "You" || name.starts_with("You, "))
+        })
+    }));
+    let you_leading = [you[0], you[1], 44.0, you[3]];
+    let coloured = coloured_in("roster", you_leading, false);
+    assert!(
+        coloured >= 60,
+        "the local person is drawn as their face, in their colour: {coloured} coloured pixels in {you_leading:?}\n{}",
+        members_log(&ada_laptop),
+    );
     ada_laptop.press("Close");
+    // One person, one colour: Bob's face on the bar, on the people card and in the notice that
+    // said he arrived is drawn in the hue of the face his row in the roster draws.
+    // The widget comes back once the members list is down, so its own face is drawn where the
+    // people card stands.
+    appear(&ada_laptop, "Open People here");
+    ada_laptop.press("Open People here");
+    let card_button = rect(&appear(&ada_laptop, "Show who is here"));
+    // The faces the card draws stand in its body above its way into the roster.
+    let card_faces = [
+        card_button[0] - 8.0,
+        card_button[1] - 112.0,
+        card_button[2] + 16.0,
+        104.0,
+    ];
+    let bar_face = rect(&waited(&ada_laptop, "Bob's face on the bar", STEP, || {
+        controls(&ada_laptop).into_iter().find(|control| {
+            let [_, y, width, _] = rect(control);
+            // The face on the bar, not a row of a panel: small, above the bar's line, and named
+            // for the person as the bar names a face.
+            y < BAR
+                && width < 80.0
+                && control["name"]
+                    .as_str()
+                    .is_some_and(|name| name == "Bob Builder" || name.starts_with("Bob Builder, "))
+        })
+    }));
+    // Both the bar's face and the card's, in one frame: what each surface draws of him now.
+    snapshot(&ada_laptop, "faces");
+    let member_hue = face_hue("roster", leading).unwrap_or_else(|| {
+        panic!(
+            "the roster draws Bob's face in a colour: {} coloured pixels in {leading:?}",
+            coloured_in("roster", leading, false),
+        )
+    });
+    let [arrival_x, arrival_y, _, arrival_h] = arrival_rect;
+    let pill = [
+        arrival_x + 4.0,
+        arrival_y + 4.0,
+        (arrival_h - 8.0).max(16.0),
+        (arrival_h - 8.0).max(16.0),
+    ];
+    for (surface, picture, area) in [
+        ("the bar", "faces", bar_face),
+        ("the people card", "faces", card_faces),
+        ("the arrival notice", "arrival", pill),
+    ] {
+        let pixels = in_hue(picture, area, member_hue, 20.0);
+        assert!(
+            pixels >= 40,
+            "{surface} draws Bob in the hue of his roster face ({member_hue:.0}°): {pixels} pixels of it in {area:?}\n{}",
+            members_log(&ada_laptop),
+        );
+    }
+    ada_laptop.press("Fold");
     // The newcomer's first looks write nothing of the shared layout until the workspace admits
     // him: nothing tells him his layout was refused.
     never_told_of_a_layout(&bob_laptop);
@@ -547,6 +707,40 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     assert!(
         width > 0.0 && height > 0.0,
         "the row's wave stands on the shell: {wave}"
+    );
+    // The local slot is one face in one colour: his own row in his own list wears the hue his
+    // own face on his bar wears, and his face, never a glyph.
+    let his_you = rect(&waited(&bob_laptop, "his own row", STEP, || {
+        controls(&bob_laptop).into_iter().find(|control| {
+            let [_, y, width, _] = rect(control);
+            y > BAR
+                && width > 200.0
+                && control["name"]
+                    .as_str()
+                    .is_some_and(|name| name == "You" || name.starts_with("You, "))
+        })
+    }));
+    let his_slot = rect(&waited(
+        &bob_laptop,
+        "his own face on his bar",
+        STEP,
+        || {
+            controls(&bob_laptop).into_iter().find(|control| {
+                control["name"]
+                    .as_str()
+                    .is_some_and(|name| name.ends_with(": open your card"))
+            })
+        },
+    ));
+    snapshot(&bob_laptop, "his-roster");
+    let his_hue = face_hue("his-roster", [his_you[0], his_you[1], 44.0, his_you[3]])
+        .expect("his own row draws his face in a colour");
+    let his_slot_hue =
+        face_hue("his-roster", his_slot).expect("his bar draws him in a colour, not a glyph");
+    assert!(
+        hue_apart(his_slot_hue, his_hue) <= 20.0,
+        "the local person is one colour on the bar and in the list: {his_slot_hue:.0}° on his bar, {his_hue:.0}° in his list\n{}",
+        members_log(&bob_laptop),
     );
     // His roster with the row's wave not yet pressed: the frame the sent wave's picture is told
     // apart from.
@@ -631,4 +825,35 @@ fn an_unnamed_person_arriving_is_said_on_the_bar() {
     );
     snapshot_changed(&ada_laptop, "arrival-unnamed", "before-unnamed");
     discard("before-unnamed");
+    // The bar's own slot draws her face once the pass that names who arrived has reached the
+    // shell: the frame the arrival is first said can be one pass before the members are read.
+    let mine = rect(&waited(
+        &ada_laptop,
+        "the local person's face on the bar",
+        STEP,
+        || {
+            controls(&ada_laptop).into_iter().find(|control| {
+                control["name"]
+                    .as_str()
+                    .is_some_and(|name| name.ends_with(": open your card"))
+            })
+        },
+    ));
+    let deadline = Instant::now()
+        .checked_add(STEP)
+        .expect("the bound fits in an Instant");
+    let disc = disc_in(mine);
+    loop {
+        snapshot(&ada_laptop, "arrival-unnamed");
+        let coloured = coloured_in("arrival-unnamed", disc, false);
+        if coloured >= 30 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the local person is drawn as their face while an arrival is said: {coloured} coloured pixels in {disc:?}\n{}",
+            members_log(&ada_laptop),
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

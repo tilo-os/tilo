@@ -233,6 +233,6 @@ mod host_names_tests {
         );
         // Nothing a host read is what a test stages: the rows are the replacement for the
         // roster's `tell`, tested where the host is opened over a store
-        // (`tests/workspace_members.rs`), and their parse in `collab_types::Member::roster_of`.
+        // (`tests/workspace_members.rs`), and their parse in `collab_types::Member::members_of`.
     }
 }

@@ -262,7 +262,7 @@ impl<'a> AvatarFace<'a> {
 
     fn paint_presence_rings(&self, ctx: &mut PaintCtx<'_>, shape: RoundedRect) -> RoundedRect {
         let theme = ctx.theme;
-        let colour = self.presence_colour(theme);
+        let colour = self.ring_colour(theme);
         let (ring, gap) = Self::presence_ring_px(theme, shape.rect().width());
         let rounded = |rect: Rect, inset: f64| {
             let radius = if self.square {
@@ -341,6 +341,24 @@ impl<'a> AvatarFace<'a> {
         match self.tint {
             Tint::Neutral => theme.text_dim,
             _ => self.colour(theme),
+        }
+    }
+
+    /// The strong colour of the face's presence — the palette colour itself, not the fill its
+    /// initials read on. Every ring a face wears (its presence ring, a call's sweeping arc, a
+    /// speaking halo) is painted in this, as a face in a stack paints it, so a face drawn alone
+    /// and one in a stack ring the same person the same.
+    fn ring_colour(&self, theme: &Theme) -> Color {
+        let presence = &theme.tokens.colors.presence;
+        let person = match self.tint {
+            Tint::Identity(id) => presence.hue(PresenceHue::of_identity(id)),
+            Tint::Presence(colour) => presence.of(colour),
+            Tint::Hue(hue) => presence.hue(hue),
+            Tint::Neutral => return theme.text_dim,
+        };
+        match self.idle_on {
+            Some(ground) => presence.idle_on(person, ground),
+            None => person,
         }
     }
 

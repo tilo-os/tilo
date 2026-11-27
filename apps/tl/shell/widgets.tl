@@ -408,33 +408,39 @@ view widget_music(unfolded: Bool) {
 /// The people-here widget: who else is in this workspace, each their face and name, and the way to
 /// the roster where their cards are.
 view widget_team(unfolded: Bool) {
-    let people = layout.people
-    let members = workspace.members.people
+    // Who is here besides this person, from the session's own reading, each with the face the bar
+    // draws of them: the count the quiet form says is the same list.
+    let here = device.people.rows.filter(p -> not p.agent)
     stack(gap: .related) {
-        row(gap: .tight, align: .center, wrap: true) {
-            for p in people {
-                if let m = members.find(m -> m.name() == p.name) {
-                    avatar(m)
-                } else {
-                    ui.Avatar(name: p.name)
-                }
-            }
-        }
+        // Folded, their faces alone; open, each once beside their name and the way to the list.
         if unfolded {
-            for p in people {
+            for p in here {
                 row(gap: .related, align: .center) {
-                    if let m = members.find(m -> m.name() == p.name) {
-                        avatar(m)
-                    } else {
-                        ui.Avatar(name: p.name)
-                    }
+                    member_face(p)
                     ui.Text(p.name, role: .label, lines: 1, truncate, fill)
                 }
             }
             ui.Button("Show who is here", icon: .users, role: .plain) {
                 on press: device.show(device.people)
             }
+        } else {
+            row(gap: .tight, align: .center, wrap: true) {
+                for p in here {
+                    member_face(p)
+                }
+            }
         }
+    }
+}
+
+/// One person as the shell draws them beside their name: their member's face, ring and all, in
+/// the colour their presence carries, so the same person looks the same here as on the bar and
+/// in the roster.
+view member_face(p: device.Person) {
+    if let face = face_of(p) {
+        ui.Avatar(face, colour: p.colour, ring: true)
+    } else {
+        ui.Avatar(name: p.name, colour: p.colour, ring: true)
     }
 }
 

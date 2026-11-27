@@ -164,6 +164,9 @@ impl Session {
         });
         let own = sync.own();
         let (label, identity) = crate::people::own_face(Some(&own), &self.shared.person);
+        // The colour this shell says the person wears is the hue of the root every device knows
+        // them by, so the face here is the face every other device draws of them.
+        let identity = crate::people::rooted(Some(sync), &identity);
         let (r, g, b) = crate::people::own_rgb(&identity);
         let carets = self.app_wire.as_ref().map(|app_wire| &app_wire.carets);
         let said = |app: &str| carets.and_then(|carets| carets.said_in(app));

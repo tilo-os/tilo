@@ -61,9 +61,26 @@ pub(crate) fn own_hue(identity: &str) -> tilo_ui_base::tokens::PresenceHue {
 /// them in (`HereState::own_rgb`, settled over the whole room and published on their pointer), so
 /// they see themselves in the colour everyone else sees; with no room settled yet, [`own_rgb`].
 pub(crate) fn own_live_rgb(sync: Option<&crate::sync::Client>, identity: &str) -> (u8, u8, u8) {
+    if ::collaboration::local_identity::own_colour().is_none() {
+        // Nobody here chose a colour: the root's hue is the one every device derives, so this
+        // person's own face is the face the others draw of them, never a hue keyed by this device.
+        return own_rgb(&rooted(sync, identity));
+    }
     sync.and_then(|sync| sync.here().borrow().own_rgb())
         .filter(|rgb| *rgb != tilo_ui_base::presence::UNSETTLED_RGB)
         .unwrap_or_else(|| own_rgb(identity))
+}
+
+/// `identity` as the root key the workspace knows this session's person by: the person the
+/// workspace's view holds this device as, else the identity the session goes by. Every surface
+/// derives a person's hue from this one root — their face on their own device and on every other —
+/// so a person is never painted in the colour of a device string while the workspace already knows
+/// their root.
+pub(crate) fn rooted(sync: Option<&crate::sync::Client>, identity: &str) -> String {
+    sync.and_then(crate::sync::Client::view)
+        .map(|view| view.person())
+        .filter(|person| *person != [0; 32])
+        .map_or_else(|| identity.to_owned(), hex::encode)
 }
 
 /// The name and identity of this person's face, shared by their own surfaces and their presence.

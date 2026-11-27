@@ -34,6 +34,9 @@ pub struct AvatarProps {
     /// They are in a call now: an arc sweeps round the ring their face wears, or, where motion is
     /// reduced, the ring is lit and still.
     pub call: bool,
+    /// Wear the presence ring round the face, in its colour: the ring every face in a stack
+    /// wears, for a face a surface draws on its own.
+    pub ring: bool,
 }
 
 /// The colour a `rrggbb` text names, `None` when it does not name one.
@@ -104,6 +107,7 @@ impl Described for Avatar {
             avatar = avatar.status(status);
         }
         avatar.call = props.call;
+        avatar.ring = props.ring;
         avatar
     }
 
@@ -140,6 +144,7 @@ impl Described for Avatar {
         self.presence = props.colour.as_deref().and_then(colour_of);
         self.status = props.status.as_deref().and_then(status_of);
         self.call = props.call;
+        self.ring = props.ring;
         if !props.call {
             self.call_since = None;
         }

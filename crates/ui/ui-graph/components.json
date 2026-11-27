@@ -342,6 +342,11 @@
           "name": "call",
           "doc": "They are in a call now: an arc sweeps round the ring their face wears, or, where motion is reduced, the ring is lit and still.",
           "type": "bool"
+        },
+        {
+          "name": "ring",
+          "doc": "Wear the presence ring round the face, in its colour: the ring every face in a stack wears, for a face a surface draws on its own.",
+          "type": "bool"
         }
       ],
       "semantics": {

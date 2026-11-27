@@ -847,6 +847,9 @@ impl HereState {
                         ))
                     })?
                 } else {
+                    // A person's device belongs here once its certificate pairs it with its root.
+                    // Until then their colour is not a device's: a surface draws them neutral,
+                    // never in a hue that changes when the pairing lands.
                     MemberId::person(self.user_of(&member.publisher)?)
                 };
                 let rgb = tilo_ui_base::presence::parse_hex_color(&member.colour)

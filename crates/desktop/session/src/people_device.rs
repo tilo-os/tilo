@@ -422,14 +422,75 @@ impl PeopleDevice {
         let Some(workspace) = tree.active_workspace() else {
             return rows;
         };
+        let workspace_id = workspace.id().to_string();
+        // Everyone here, as their presence names them: the person each device says it is.
+        let live_members = self
+            .sync
+            .as_ref()
+            .map_or_else(Vec::new, |sync| sync.members(&workspace_id));
+        let live_users: std::collections::HashMap<String, String> = live_members
+            .iter()
+            .filter_map(|member| Some((member.publisher.clone(), member.user.clone()?)))
+            .collect();
+        // The member each device here is, as the workspace's member record lists their devices:
+        // a person's face is their member's, found by the root the workspace kept for it, even
+        // before the presence's certificate pairs the device — else the root their presence says.
+        let listed = self
+            .sync
+            .as_ref()
+            .and_then(|sync| sync.view())
+            .and_then(|view| view.members(&workspace_id).ok());
+        {
+            for row in rows.iter_mut().filter(|row| !row.agent) {
+                let root = listed
+                    .as_ref()
+                    .and_then(|listed| {
+                        listed.members.iter().find_map(|member| {
+                            let person = member.id.person_id()?;
+                            listed
+                                .devices
+                                .get(&member.id)
+                                .is_some_and(|keys| {
+                                    keys.iter().any(|device| hex::encode(device) == row.key)
+                                })
+                                .then(|| person.to_owned())
+                        })
+                    })
+                    .or_else(|| live_users.get(&row.key).cloned());
+                let Some(root) = root else {
+                    continue;
+                };
+                if row.user_key.is_empty() {
+                    row.user_key.clone_from(&root);
+                }
+                // One person is one colour on every device: a colour this device derived before
+                // the pairing landed — from the device's own key, or from the unsettled grey —
+                // is replaced by the hue of the root the workspace knows them by. A colour they
+                // claimed stays theirs.
+                let worn = collab_types::member::hue_of_word(&row.colour);
+                // The hue an unsettled member lands on: the nearest palette hue to the neutral
+                // grey, or the first slot where the grey is no hue at all.
+                let (red, green, blue) = tilo_ui_base::presence::UNSETTLED_RGB;
+                let unsettled =
+                    collab_types::presence::PresenceHue::nearest_to_srgb(red, green, blue)
+                        .unwrap_or_else(|| collab_types::presence::PresenceHue::from_slot(0));
+                let derived = worn.is_none()
+                    || worn == Some(unsettled)
+                    || worn == Some(collab_types::presence::PresenceHue::of_identity(&row.key));
+                if derived {
+                    let (red, green, blue) = collab_types::presence::identity_rgb(
+                        collab_types::presence::PresenceHue::of_identity(&root),
+                    );
+                    row.colour = colour_of((red, green, blue));
+                }
+            }
+        }
         // Whom each person here follows, as their presence says: "Following Ada" on the row of
         // someone following Ada, "Following you" on the row of someone following this person.
         if let Some(sync) = &self.sync {
-            let workspace_id = workspace.id().to_string();
-            let mut pairs: Vec<(String, String)> = sync
-                .members(&workspace_id)
-                .into_iter()
-                .filter_map(|member| Some((member.publisher, member.following?)))
+            let mut pairs: Vec<(String, String)> = live_members
+                .iter()
+                .filter_map(|member| Some((member.publisher.clone(), member.following.clone()?)))
                 .collect();
             if let Some(following) = sync.own().following {
                 pairs.push((sync.publisher().to_string(), following));
@@ -575,6 +636,9 @@ impl PeopleDevice {
         // have not: an empty field says what to type and leaves nothing to type over.
         let given = Self::given();
         let (name, identity) = self.face();
+        // The root the workspace knows this device as, so the person's face is the one other
+        // devices draw of them rather than the hue of a device string.
+        let identity = crate::people::rooted(self.sync.as_deref(), &identity);
         let name = self.name_here(&name, &identity);
         let colour_id = settings_store::identity::COLOUR.get().unwrap_or_default();
         let Some(sync) = &self.sync else {

@@ -10,6 +10,19 @@ use crate::identity::AvatarBytes;
 use crate::presence::PresenceHue;
 use crate::role::Role;
 
+/// `word` as a roster carries a colour, `rrggbb` or `#rrggbb`, as the presence hue nearest it.
+#[must_use]
+pub fn hue_of_word(word: &str) -> Option<PresenceHue> {
+    let digits = word.trim().trim_start_matches('#');
+    let value = u32::from_str_radix(digits.get(..6)?, 16).ok()?;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "each channel is a byte of the six hex digits read"
+    )]
+    let (red, green, blue) = ((value >> 16) as u8, (value >> 8) as u8, value as u8);
+    PresenceHue::nearest_to_srgb(red, green, blue)
+}
+
 /// A person as a surface shows them, in the colour they wear there.
 ///
 /// Every field is written, absent ones too: the collaboration wire is postcard, which reads
@@ -104,22 +117,22 @@ impl Member {
     /// members' record names bare actors, with no such row around them, and each is a member the
     /// workspace names not.
     #[must_use]
-    pub fn roster_of(content: &serde_json::Value, me: &MemberId) -> Vec<Self> {
+    pub fn members_of(content: &serde_json::Value, me: &MemberId) -> Vec<Self> {
         content
             .get("people")
             .and_then(serde_json::Value::as_array)
             .map(|rows| {
                 rows.iter()
-                    .filter_map(|row| Self::from_roster_row(row, me))
+                    .filter_map(|row| Self::from_members_row(row, me))
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// One row of [`Self::roster_of`]: its `actor` with what the workspace says of them, or the
+    /// One row of [`Self::members_of`]: its `actor` with what the workspace says of them, or the
     /// actor alone where the store kept no row.
     #[must_use]
-    pub fn from_roster_row(row: &serde_json::Value, me: &MemberId) -> Option<Self> {
+    pub fn from_members_row(row: &serde_json::Value, me: &MemberId) -> Option<Self> {
         let who: tilo_member_types::Actor =
             serde_json::from_value(row.get("actor").cloned().unwrap_or_else(|| row.clone()))
                 .ok()?;
@@ -135,6 +148,15 @@ impl Member {
             Some(person) => Self::of_person(&Person::new(person.as_str(), name), role),
             None => Self::of_software(id.clone(), name),
         };
+        // The colour the row carries, where its writer gave one (a member's own), so a face
+        // wears the workspace's colour rather than one this device derives again.
+        if let Some(colour) = row
+            .get("colour")
+            .and_then(serde_json::Value::as_str)
+            .and_then(hue_of_word)
+        {
+            member.colour = colour;
+        }
         member.removed = row
             .get("removed")
             .and_then(serde_json::Value::as_bool)
@@ -149,7 +171,7 @@ impl Member {
     }
 
     /// This member's row of the workspace's `workspace/members` resource, the one shape every
-    /// surface reads them in ([`Self::from_roster_row`] reads it back): their actor, name and role,
+    /// surface reads them in ([`Self::from_members_row`] reads it back): their actor, name and role,
     /// whether the workspace removed them, whether they own it (`owner`) or administer it, when it
     /// admitted them and the picture they set.
     #[must_use]
@@ -163,6 +185,13 @@ impl Member {
             serde_json::json!(tilo_member_types::Actor::Member(self.id.clone())),
         );
         put("name", serde_json::json!(self.name));
+        // The colour they wear, as the roster's own row carries it: every surface draws their
+        // face in this one hue, the chosen colour it holds rather than one a device derives.
+        let (red, green, blue) = crate::presence::identity_rgb(self.colour);
+        put(
+            "colour",
+            serde_json::json!(format!("{red:02x}{green:02x}{blue:02x}")),
+        );
         put("removed", serde_json::json!(self.removed));
         put("owner", serde_json::json!(owner));
         put("administrator", serde_json::json!(self.administrator));
@@ -317,6 +346,31 @@ mod tests {
             assert_eq!(serde_json::from_str::<Member>(&json).unwrap(), row);
         }
 
+        phase a_row_carries_the_colour_its_reader_draws_the_member_in;
+        {
+            let row = Member::of_person(
+                &Person::new("ada", "Ada").wearing(PresenceHue::Violet),
+                Some(Role::Editor),
+            );
+            let json = row.members_row(false);
+            let colour = json
+                .get("colour")
+                .and_then(serde_json::Value::as_str)
+                .expect("a member's row names the colour they wear");
+            assert_eq!(
+                hue_of_word(colour),
+                Some(PresenceHue::Violet),
+                "the colour a row writes reads back as the hue it was written from"
+            );
+            let read = Member::from_members_row(&json, &MemberId::person("ada"))
+                .expect("a members resource's row reads as a member");
+            assert_eq!(
+                read.colour,
+                PresenceHue::Violet,
+                "the reader draws them in the workspace's colour, not one it derives again"
+            );
+        }
+
         phase a_members_resource_names_each_row_it_answers;
         {
             // The workspace's `workspace/members` resource: each row's actor with the name the
@@ -345,7 +399,7 @@ mod tests {
                     },
                 ],
             });
-            let rows = Member::roster_of(&content, &MemberId::person("ada"));
+            let rows = Member::members_of(&content, &MemberId::person("ada"));
             assert_eq!(rows.len(), 2);
             assert_eq!(rows[0].name, "Ada");
             assert_eq!(rows[0].role, Some(Role::Editor));
@@ -365,7 +419,7 @@ mod tests {
                 ))
                 .unwrap()],
             });
-            let rows = Member::roster_of(&bare, &MemberId::person("ada"));
+            let rows = Member::members_of(&bare, &MemberId::person("ada"));
             assert_eq!(rows.len(), 1);
             assert!(rows[0].name.is_empty(), "a bare actor names nobody");
             assert!(!rows[0].is_self);

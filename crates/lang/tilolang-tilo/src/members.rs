@@ -76,7 +76,7 @@ fn rows_of(content: &serde_json::Value, me: &MemberId) -> Vec<collab_types::Memb
             }
         })
         .collect();
-    collab_types::Member::roster_of(&serde_json::json!({ "people": rows }), me)
+    collab_types::Member::members_of(&serde_json::json!({ "people": rows }), me)
 }
 
 pub fn members_of(access: &MemberAccess, me: &PersonId) -> Vec<Member> {
