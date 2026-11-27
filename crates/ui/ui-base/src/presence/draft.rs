@@ -7,8 +7,8 @@
 //! draft stands still, and a stop (the draft sent or emptied) is said at once.
 
 use super::{COMPOSING_LINGER, PresenceKey};
-use crate::collaboration::PresencePayload;
 use crate::time::Instant;
+use collab_types::presence::PresencePayload;
 
 /// What was last said of the person's draft: where, as the draft stood on the last look, and when.
 #[derive(Debug, Default)]

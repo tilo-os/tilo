@@ -96,18 +96,18 @@ fn initial_history_app() -> (App, Rc<Cell<usize>>) {
 }
 
 struct NoCommittedReadPeer {
-    requests: Rc<RefCell<Vec<tilo_ui_base::collaboration::CollabRequest>>>,
+    requests: Rc<RefCell<Vec<::collaboration::CollabRequest>>>,
     directories: Rc<Cell<usize>>,
 }
-impl tilo_ui_base::collaboration::PeerTransport for NoCommittedReadPeer {
+impl ::collaboration::PeerTransport for NoCommittedReadPeer {
     fn is_connected(&self) -> bool {
         true
     }
-    fn send(&mut self, request: tilo_ui_base::collaboration::CollabRequest) -> Result<(), String> {
+    fn send(&mut self, request: ::collaboration::CollabRequest) -> Result<(), String> {
         self.requests.borrow_mut().push(request);
         Ok(())
     }
-    fn poll(&mut self) -> Vec<tilo_ui_base::collaboration::CollabEvent> {
+    fn poll(&mut self) -> Vec<::collaboration::CollabEvent> {
         vec![]
     }
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
@@ -169,7 +169,7 @@ fn a_shown_windows_published_surface_carries_its_zoom_and_the_broker_runs_it() {
     assert!(app.content_zoom() > 1.0, "the delivered Zoom in zoomed in");
     assert_eq!(calls.get(), 0, "no other handler ran");
     assert!(requests.borrow().iter().any(|request| matches!(request,
-        tilo_ui_base::collaboration::CollabRequest::UpdateInvocation {
+        ::collaboration::CollabRequest::UpdateInvocation {
             update: tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. }, ..
         } if *actual == invocation)));
 }
@@ -286,7 +286,7 @@ tilo_test_env::scenario! {
             .unwrap()
             .route
             .clone();
-        let unrelated = tilo_ui_base::collaboration::RouteSpec::document(
+        let unrelated = ::collaboration::RouteSpec::document(
             &route.app_id,
             route.cluster_id,
             "unrelated-record",
@@ -349,7 +349,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(calls.get(), 1);
         assert!(requests.borrow().iter().any(|request| matches!(request,
-            tilo_ui_base::collaboration::CollabRequest::UpdateInvocation {
+            ::collaboration::CollabRequest::UpdateInvocation {
                 update: tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. }, ..
             } if *actual == invocation)));
     }
@@ -787,7 +787,7 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
         if let Some(event) = events.into_iter().find(|event| {
             matches!(
                 event,
-                tilo_ui_base::collaboration::CollabEvent::Invocation { id: 21, .. }
+                ::collaboration::CollabEvent::Invocation { id: 21, .. }
             )
         }) {
             break event;

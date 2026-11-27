@@ -798,7 +798,7 @@ fn holder_kind(grantee: &tilo_action_policy::Grantee) -> &'static str {
 /// One device-record choice, as an entry of the same list: a file or folder an app was given
 /// outside any workspace, which the person who chose it may take back.
 fn chosen_entry(key: &AppKey, token: &str, held: &tilo_dialogs::chosen::Chosen) -> Value {
-    let name = tilo_ui_base::local_identity::load()
+    let name = ::collaboration::local_identity::load()
         .map(|identity| identity.display_name.trim().to_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| t("session-access-you"));

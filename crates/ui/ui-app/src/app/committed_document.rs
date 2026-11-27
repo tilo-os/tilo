@@ -4,8 +4,8 @@ use crate::state::StateHistory as _;
 impl App {
     pub(super) fn queue_committed_document(
         &mut self,
-        route: tilo_ui_base::collaboration::RouteSpec,
-        read: tilo_ui_base::collaboration::CommittedDocument,
+        route: ::collaboration::RouteSpec,
+        read: ::collaboration::CommittedDocument,
     ) {
         if self.committed_documents.len() >= 64 {
             return;

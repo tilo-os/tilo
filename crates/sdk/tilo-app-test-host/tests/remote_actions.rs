@@ -6,8 +6,8 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use tilo_app::widget::Collaborative as _;
 use tilo_ui_base::arriving::Arrival;
-use tilo_ui_base::widget::Collaborative as _;
 use ui_core::remote_actions::testing::{self, FOLLOW_INTERVAL, FOLLOW_WAIT_MS, OBSERVE_INTERVAL};
 use ui_core::remote_actions::{FollowedRead, InvocationProgress as _, RemoteActions};
 use ui_core::tilo_actions;

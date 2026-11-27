@@ -10,6 +10,7 @@ homepage.workspace = true
 description = "A tilolang app's window in the toolkit: the generic adapter, the shell composition and the toolkit's widgets, built from the component patches an app instance sends and reporting what the person did."
 
 [dependencies]
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
 tilo-permissions.workspace = true
 tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }

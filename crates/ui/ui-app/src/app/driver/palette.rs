@@ -64,7 +64,7 @@ impl Driver {
         &self,
     ) -> Option<(
         tilo_ui_base::presence::PresenceKey,
-        tilo_ui_base::collaboration::PresencePayload,
+        ::collaboration::PresencePayload,
     )> {
         self.app.focus_presence()
     }

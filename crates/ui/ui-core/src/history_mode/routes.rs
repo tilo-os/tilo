@@ -1,11 +1,13 @@
 //! Exact installed document routing. No transport, signing or action log lives here.
 use super::HistoryOwner;
+use ::collaboration::AcceptedRoute;
+use ::collaboration::Incoming;
+use ::collaboration::RouteSpec;
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 use collab_types::DocumentMutation;
 use std::collections::{HashSet, VecDeque};
 use tilo_automerge::ApplyIncoming;
-use tilo_ui_base::collaboration::Incoming;
-use tilo_ui_base::{collaboration::AcceptedRoute, collaboration::RouteSpec, widget::Widget};
+use tilo_ui_base::widget::Widget;
 
 const MAX_PENDING_ITEMS: usize = 64;
 /// A single remote change can be as large as the transport carries, so a deferred queue must hold at
@@ -248,11 +250,11 @@ pub struct OwnerDocumentRoutes {
     /// keeps its route while its store has it open.
     tree: Vec<TreeRecord>,
     #[cfg(any(test, feature = "test-support"))]
-    pub sent: Vec<(RouteSpec, tilo_ui_base::collaboration::CollabRequest)>,
+    pub sent: Vec<(RouteSpec, ::collaboration::CollabRequest)>,
     /// Transport outcome the recording test transport reports for owned routes; `None` accepts every
     /// change.
     #[cfg(any(test, feature = "test-support"))]
-    pub refuse_for_test: Option<tilo_ui_base::collaboration::CollabSendError>,
+    pub refuse_for_test: Option<::collaboration::CollabSendError>,
 }
 impl OwnerDocumentRoutes {
     /// Give every record of a live owner's tree its own owner: a chat's message parts, a container's
@@ -613,18 +615,16 @@ mod committed_changes_tests {
     reason = "three outcomes: replace with a message, clear it, or leave the current status"
 )]
 pub fn outbound_failure(
-    result: &Result<(), tilo_ui_base::collaboration::CollabSendError>,
+    result: &Result<(), ::collaboration::CollabSendError>,
 ) -> Option<Option<String>> {
     match result {
         Ok(()) => Some(None),
-        Err(tilo_ui_base::collaboration::CollabSendError::TooLarge { actual, max }) => {
-            Some(Some(format!(
-                "Changes are no longer shared: one change is {}, above the {} collaboration limit. \
+        Err(::collaboration::CollabSendError::TooLarge { actual, max }) => Some(Some(format!(
+            "Changes are no longer shared: one change is {}, above the {} collaboration limit. \
              They remain on this device.",
-                tilo_ui_base::format::size(u64::try_from(*actual).unwrap_or(u64::MAX)),
-                tilo_ui_base::format::size(u64::try_from(*max).unwrap_or(u64::MAX)),
-            )))
-        }
+            tilo_ui_base::format::size(u64::try_from(*actual).unwrap_or(u64::MAX)),
+            tilo_ui_base::format::size(u64::try_from(*max).unwrap_or(u64::MAX)),
+        ))),
         Err(_) => None,
     }
 }
@@ -634,12 +634,10 @@ pub fn outbound_failure(
 pub fn part_request(
     mutation: collab_types::DocumentMutation,
     commit: Option<collab_types::WorkspaceCommit>,
-) -> tilo_ui_base::collaboration::CollabRequest {
+) -> ::collaboration::CollabRequest {
     match commit {
-        Some(commit) => {
-            tilo_ui_base::collaboration::CollabRequest::document_action(mutation, commit)
-        }
-        None => tilo_ui_base::collaboration::CollabRequest::Document {
+        Some(commit) => ::collaboration::CollabRequest::document_action(mutation, commit),
+        None => ::collaboration::CollabRequest::Document {
             mutation,
             commit: None,
         },
@@ -653,7 +651,7 @@ impl OwnerDocumentRoutes {
     /// window's document, which an owner of the window's own record reads.
     pub fn publish_owned(
         &mut self,
-        manager: &mut tilo_ui_base::collaboration::CollaborationManager,
+        manager: &mut ::collaboration::CollaborationManager,
         outer: &automerge::AutoCommit,
     ) -> Published {
         let mut blocked = None;
@@ -865,7 +863,7 @@ impl OwnerDocumentRoutes {
     /// record's route carried it.
     pub fn admit_owned(
         &mut self,
-        route: &tilo_ui_base::collaboration::RouteSpec,
+        route: &::collaboration::RouteSpec,
         mutation: collab_types::DocumentMutation,
     ) -> Result<bool, collab_types::DocumentMutation> {
         let Some(entry) = self.owners.iter_mut().find(|entry| entry.route == *route) else {
@@ -892,7 +890,7 @@ pub struct Published {
 /// One unit's part of a publication pass: what changed in it, and the route
 /// it travels on.
 pub struct PublishedPart {
-    pub route: tilo_ui_base::collaboration::RouteSpec,
+    pub route: ::collaboration::RouteSpec,
     pub mutation: collab_types::DocumentMutation,
     pub heads: Vec<automerge::ChangeHash>,
     pub document: automerge::AutoCommit,

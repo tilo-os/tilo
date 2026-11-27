@@ -8,10 +8,11 @@
 //! These tests set the environment through `tilo_test_env`, which serialises
 //! them against every other test in the process that does.
 
-use tilo_ui_base::{collaboration::local_app_id, collaboration::local_user_id};
-use tilo_ui_base::{
-    local_identity::FixedIdentity, local_identity::LocalIdentity, local_identity::install_source,
-};
+use ::collaboration::local_app_id;
+use ::collaboration::local_identity::FixedIdentity;
+use ::collaboration::local_identity::LocalIdentity;
+use ::collaboration::local_identity::install_source;
+use ::collaboration::local_user_id;
 
 /// Set and remove `vars` until the returned scope drops, which restores each
 /// prior value, so one test's environment is not the next test's premise.

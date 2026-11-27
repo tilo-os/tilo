@@ -39,7 +39,7 @@ tilo_test_env::scenario! {
             identity_rgb(PresenceHue::Violet)
         );
         assert_eq!(
-            tilo_ui_base::local_identity::own_colour(),
+            ::collaboration::local_identity::own_colour(),
             Some(PresenceHue::Violet),
             "the windows' accent is the one colour as well"
         );
@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
             app.presence_ctx.hue_for(&me),
             PresenceHue::of_identity(me.id())
         );
-        assert_eq!(tilo_ui_base::local_identity::own_colour(), None);
+        assert_eq!(::collaboration::local_identity::own_colour(), None);
     }
 
     phase an_app_paints_a_person_in_the_colour_the_member_list_announces;

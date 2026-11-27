@@ -157,7 +157,7 @@ pub fn workspace() -> Result<String, String> {
     if let Some(workspace) = ui_core::window_toolbar::workspace() {
         return Ok(workspace);
     }
-    let workspace = tilo_ui_base::collaboration::local_cluster_id();
+    let workspace = ::collaboration::local_cluster_id();
     if workspace.is_nil() {
         Err("This window is in no workspace".into())
     } else {

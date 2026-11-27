@@ -14,6 +14,10 @@ pub use {test_controls::Unattached, test_controls::test_value_action_binding};
 #[cfg(feature = "model")]
 pub mod action_proposal;
 #[cfg(feature = "model")]
+pub mod collaborative;
+#[cfg(feature = "model")]
+pub use collaborative::{Collaborative, Continuable, handle_collab_event, take_collab_requests};
+#[cfg(feature = "model")]
 pub use {
     action_proposal::ActionProposal, action_proposal::ActionProposalView,
     action_proposal::DiffLine, action_proposal::DiffTag, action_proposal::ProposalDecision,

@@ -291,7 +291,7 @@ impl BoundActionTarget {
 #[cfg(feature = "model")]
 pub fn has_matching_broker_component(
     root: &dyn Widget,
-    route: Option<&tilo_ui_base::collaboration::AcceptedRoute>,
+    route: Option<&::collaboration::AcceptedRoute>,
 ) -> bool {
     if callback_binding(root)
         .is_some_and(|binding| binding.enter().is_ok() && binding.matches_broker_route(route))
@@ -2671,7 +2671,7 @@ pub fn runs_own_device(
 /// A resolved, encoded resource operation and the caller it runs for.
 #[cfg(feature = "model")]
 pub struct ResourceOperation<'a> {
-    pub target_route: Option<tilo_ui_base::collaboration::RouteSpec>,
+    pub target_route: Option<::collaboration::RouteSpec>,
     pub address: &'a tilo_actions::ActionAddress,
     pub resource: &'a ResourceSpec,
     pub spec: &'a tilo_actions::ActionSpec,
@@ -2945,12 +2945,8 @@ fn perform_resource_operation(
                 broker_admitted,
             )?
         } else {
-            let target = target_route.map(|route| {
-                tilo_ui_base::widget::resource_operation::OperationTarget::new(
-                    route,
-                    address.clone(),
-                )
-            });
+            let target = target_route
+                .map(|route| crate::operation_target::OperationTarget::new(route, address.clone()));
             let op = tilo_ui_base::widget::ResourceOperation::local(
                 invocation,
                 spec.kind,
@@ -2958,7 +2954,11 @@ fn perform_resource_operation(
                 &encoded.payload,
             );
             let op = op
-                .with_target(target.as_ref())
+                .with_target(
+                    target
+                        .as_ref()
+                        .map(|target| target as &(dyn std::any::Any + Send + Sync)),
+                )
                 .with_resource(resource.id.as_str());
             tilo_actions::with_invoking_context(ambient.cloned(), || {
                 tilo_ui_base::widget::start_operation_refused(
@@ -3481,10 +3481,10 @@ impl CallbackBinding {
 }
 
 #[cfg(feature = "model")]
-impl tilo_ui_base::collaboration::native_initial::ComponentBinding for CallbackBinding {
+impl ::collaboration::native_initial::ComponentBinding for CallbackBinding {
     type Entry = CallbackScopeGuard;
     type EnterError = BoundDispatchError;
-    fn admission_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
+    fn admission_route(&self) -> Option<::collaboration::RouteSpec> {
         CallbackBinding::admission_route(self)
     }
     fn app_id(&self) -> &str {
@@ -4569,7 +4569,7 @@ impl CallbackBinding {
         self.shown_save_status(parts)
     }
 
-    pub fn broker_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
+    pub fn broker_route(&self) -> Option<::collaboration::RouteSpec> {
         let (_, app, _) = self.records.canonical_namespace()?;
         if app != self.app_id {
             return None;
@@ -4577,7 +4577,7 @@ impl CallbackBinding {
         self.records.route(&self.checkout).ok()
     }
     /// [`Self::broker_route`], or a live New reservation's route before its factory writes the record.
-    pub(crate) fn admission_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
+    pub(crate) fn admission_route(&self) -> Option<::collaboration::RouteSpec> {
         let (_, app, _) = self.records.canonical_namespace()?;
         if app != self.app_id {
             return None;
@@ -4586,12 +4586,12 @@ impl CallbackBinding {
     }
     pub fn matches_broker_route(
         &self,
-        observation: Option<&tilo_ui_base::collaboration::AcceptedRoute>,
+        observation: Option<&::collaboration::AcceptedRoute>,
     ) -> bool {
         observation.is_some_and(|observation| self.matches_route(observation.route()))
     }
     /// Whether `route` is the broker route this binding names.
-    pub fn matches_route(&self, route: &tilo_ui_base::collaboration::RouteSpec) -> bool {
+    pub fn matches_route(&self, route: &::collaboration::RouteSpec) -> bool {
         self.broker_route().as_ref() == Some(route)
             || self.admission_route().as_ref() == Some(route)
     }
@@ -5286,7 +5286,7 @@ fn defers_remote_state(doc: &AutoCommit, state: &crate::resource::ResourceAction
 pub(crate) fn merge_remote_owned_document(
     store: &ResourceStore,
     checkout: &DocumentCheckout,
-    mut incoming: tilo_ui_base::collaboration::Incoming<'_>,
+    mut incoming: ::collaboration::Incoming<'_>,
 ) -> Result<crate::history_mode::routes::MergedRemote, crate::history_mode::routes::RemoteApplyError>
 {
     use crate::history_mode::routes::{MergedRemote, RemoteApplyError};
@@ -5321,7 +5321,7 @@ pub(crate) fn merge_remote_owned_document(
                 state.part().statuses.clear();
                 state.generation = Some(next);
             }
-            if let tilo_ui_base::collaboration::Incoming::Changes(bytes) = incoming {
+            if let ::collaboration::Incoming::Changes(bytes) = incoming {
                 // A change whose history this replica lacks waits for it, but
                 // this route delivered it, so it is never sent back.
                 observed.extend(crate::state::changes_beyond(doc, bytes));

@@ -158,9 +158,13 @@ fn an_over_limit_change_is_reported_and_kept_without_disconnecting() {
     let mut ordinary = automerge::AutoCommit::new();
     ordinary.put(automerge::ROOT, "ordinary", 1).unwrap();
     ordinary.commit();
-    assert!(app.collaboration.manager.send(
-        tilo_ui_base::collaboration::CollabRequest::document_incremental(ordinary.save_after(&[]))
-    ));
+    assert!(
+        app.collaboration
+            .manager
+            .send(::collaboration::CollabRequest::document_incremental(
+                ordinary.save_after(&[])
+            ))
+    );
     tilo_test_env::wait_until("the ordinary change reaches the broker", || {
         !probe().is_empty()
     });

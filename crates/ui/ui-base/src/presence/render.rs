@@ -2461,7 +2461,7 @@ mod tests {
                 crate::presence::PresenceKey::Workspace {
                     id: "workspace-1".to_string(),
                 },
-                crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 512.0 },
+                collab_types::presence::PresencePayload::Pointer { x: 900.0, y: 512.0 },
             );
             assert_eq!(
                 ctx.remote_cursors.len(),
@@ -2521,7 +2521,7 @@ mod tests {
                 crate::presence::PresenceKey::Widget {
                     path: vec![crate::presence::PathSegment::Index(0)],
                 },
-                crate::collaboration::PresencePayload::Pointer { x: 900.0, y: 120.0 },
+                collab_types::presence::PresencePayload::Pointer { x: 900.0, y: 120.0 },
             );
             assert!(
                 ctx.remote_cursors[0].painted_by_window(),

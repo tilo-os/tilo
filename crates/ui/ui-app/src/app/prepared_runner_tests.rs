@@ -1173,13 +1173,11 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
 /// once the window it replaced closed, and loads when the bytes arrive there.
 #[test]
 fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
+    use ::collaboration::document_content::ContentLink;
+    use ::collaboration::document_content::DocumentContent;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
-    use tilo_ui_base::{
-        collaboration::document_content::ContentLink,
-        collaboration::document_content::DocumentContent,
-    };
     use tilo_ui_base::{image_store::HostImageLoader, image_store::ServedWindow};
 
     let host = ProbeHarness::new();

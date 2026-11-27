@@ -14,8 +14,8 @@ mod native_quit_request;
 
 /// Why the workspace did not take what a window published, in words a person reads.
 #[cfg(feature = "model")]
-fn barrier_failure(error: &tilo_ui_base::collaboration::DocumentPublicationError) -> String {
-    use tilo_ui_base::collaboration::DocumentPublicationError;
+fn barrier_failure(error: &::collaboration::DocumentPublicationError) -> String {
+    use ::collaboration::DocumentPublicationError;
     match error {
         DocumentPublicationError::Refused(reason) | DocumentPublicationError::Failed(reason) => {
             reason.clone()
@@ -271,7 +271,7 @@ impl App {
     /// the barrier covered shows it failed.
     #[cfg(feature = "model")]
     pub(super) fn watch_barrier(&mut self) -> Result<(), String> {
-        use tilo_ui_base::collaboration::DocumentPublicationError;
+        use ::collaboration::DocumentPublicationError;
         let barrier = &mut self.close_admission.barrier;
         if let Some((receipt, _)) = &barrier.pending {
             let answer = match receipt.try_complete() {
@@ -299,7 +299,7 @@ impl App {
                 }
             }
         }
-        let live: Vec<&tilo_ui_base::collaboration::RouteSpec> = self
+        let live: Vec<&::collaboration::RouteSpec> = self
             .document_routes
             .owners
             .iter()
@@ -698,12 +698,12 @@ impl App {
                 self.actions
                     .broker_requests
                     .insert(BrokerReply::Update(id), request_id);
-                self.collaboration.manager.send(
-                    tilo_ui_base::collaboration::CollabRequest::RemoteAction {
+                self.collaboration
+                    .manager
+                    .send(::collaboration::CollabRequest::RemoteAction {
                         message: tilo_actions::remote::RemoteActionMessage::observe(id),
                         press: None,
-                    },
-                );
+                    });
             }
         }
     }
@@ -998,24 +998,24 @@ mod tests {
         resumed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
-    impl tilo_ui_base::collaboration::CollabTransport for Invocations {
-        fn status(&self) -> tilo_ui_base::collaboration::TransportStatus {
-            tilo_ui_base::collaboration::TransportStatus::Ready
+    impl ::collaboration::CollabTransport for Invocations {
+        fn status(&self) -> ::collaboration::TransportStatus {
+            ::collaboration::TransportStatus::Ready
         }
         fn submit(
             &mut self,
-            command: tilo_ui_base::collaboration::TransportCommand,
-        ) -> Result<(), tilo_ui_base::collaboration::TransportError> {
-            if let tilo_ui_base::collaboration::TransportCommand::Primary(
-                tilo_ui_base::collaboration::CollabRequest::UpdateInvocation { id, .. },
+            command: ::collaboration::TransportCommand,
+        ) -> Result<(), ::collaboration::TransportError> {
+            if let ::collaboration::TransportCommand::Primary(
+                ::collaboration::CollabRequest::UpdateInvocation { id, .. },
             ) = command
             {
                 self.answered.lock().unwrap().push(id);
             }
             Ok(())
         }
-        fn drain(&mut self, _: &mut Vec<tilo_ui_base::collaboration::CollabEvent>) {}
-        fn stop_invocations(&mut self) -> Result<(), tilo_ui_base::collaboration::TransportError> {
+        fn drain(&mut self, _: &mut Vec<::collaboration::CollabEvent>) {}
+        fn stop_invocations(&mut self) -> Result<(), ::collaboration::TransportError> {
             self.stopping
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
@@ -1024,9 +1024,7 @@ mod tests {
             self.stopping.load(std::sync::atomic::Ordering::SeqCst)
                 && self.handed_over.load(std::sync::atomic::Ordering::SeqCst)
         }
-        fn resume_invocations(
-            &mut self,
-        ) -> Result<(), tilo_ui_base::collaboration::TransportError> {
+        fn resume_invocations(&mut self) -> Result<(), ::collaboration::TransportError> {
             self.stopping
                 .store(false, std::sync::atomic::Ordering::SeqCst);
             self.resumed
@@ -1035,12 +1033,12 @@ mod tests {
         }
         fn take_primary_route_result(
             &mut self,
-        ) -> Option<Result<tilo_ui_base::collaboration::RouteSpec, String>> {
+        ) -> Option<Result<::collaboration::RouteSpec, String>> {
             None
         }
         fn take_action_directory_requests(
             &mut self,
-            _: &mut Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>,
+            _: &mut Vec<::collaboration::ActionDirectoryRequest>,
         ) {
         }
     }
@@ -1067,14 +1065,12 @@ mod tests {
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
         let ends: Ends = Default::default();
         app.collaboration.manager =
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
-                Invocations {
-                    stopping: ends.0.clone(),
-                    handed_over: ends.1.clone(),
-                    answered: ends.2.clone(),
-                    resumed: std::sync::Arc::default(),
-                },
-            ));
+            ::collaboration::CollaborationManager::with_transport(Box::new(Invocations {
+                stopping: ends.0.clone(),
+                handed_over: ends.1.clone(),
+                answered: ends.2.clone(),
+                resumed: std::sync::Arc::default(),
+            }));
         assert!(app.collaboration.manager.is_connected());
         (app, saves, ends)
     }
@@ -1315,14 +1311,12 @@ mod tests {
         let handed_over = std::sync::Arc::new(AtomicBool::new(false));
         let resumed = std::sync::Arc::new(AtomicBool::new(false));
         app.collaboration.manager =
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
-                Invocations {
-                    stopping: stopping.clone(),
-                    handed_over: handed_over.clone(),
-                    answered: std::sync::Arc::default(),
-                    resumed: resumed.clone(),
-                },
-            ));
+            ::collaboration::CollaborationManager::with_transport(Box::new(Invocations {
+                stopping: stopping.clone(),
+                handed_over: handed_over.clone(),
+                answered: std::sync::Arc::default(),
+                resumed: resumed.clone(),
+            }));
         // The broker holds nothing more for this window: stopping ends its invocations.
         handed_over.store(true, SeqCst);
 
@@ -1418,12 +1412,12 @@ mod tests {
     /// refused) what was sent before the barrier.
     #[derive(Clone, Default)]
     struct Workspace {
-        published: std::sync::Arc<std::sync::Mutex<Vec<tilo_ui_base::collaboration::RouteSpec>>>,
+        published: std::sync::Arc<std::sync::Mutex<Vec<::collaboration::RouteSpec>>>,
         barriers: std::sync::Arc<
             std::sync::Mutex<
                 Vec<
                     std::sync::mpsc::SyncSender<
-                        Result<(), tilo_ui_base::collaboration::DocumentPublicationError>,
+                        Result<(), ::collaboration::DocumentPublicationError>,
                     >,
                 >,
             >,
@@ -1432,10 +1426,7 @@ mod tests {
 
     impl Workspace {
         /// Answer every barrier asked for so far with `answer`; how many there were.
-        fn answer(
-            &self,
-            answer: &Result<(), tilo_ui_base::collaboration::DocumentPublicationError>,
-        ) -> usize {
+        fn answer(&self, answer: &Result<(), ::collaboration::DocumentPublicationError>) -> usize {
             let barriers = std::mem::take(&mut *self.barriers.lock().unwrap());
             for barrier in &barriers {
                 barrier.send(answer.clone()).unwrap();
@@ -1444,43 +1435,43 @@ mod tests {
         }
     }
 
-    impl tilo_ui_base::collaboration::CollabTransport for Workspace {
-        fn status(&self) -> tilo_ui_base::collaboration::TransportStatus {
-            tilo_ui_base::collaboration::TransportStatus::Ready
+    impl ::collaboration::CollabTransport for Workspace {
+        fn status(&self) -> ::collaboration::TransportStatus {
+            ::collaboration::TransportStatus::Ready
         }
         fn submit(
             &mut self,
-            command: tilo_ui_base::collaboration::TransportCommand,
-        ) -> Result<(), tilo_ui_base::collaboration::TransportError> {
-            if let tilo_ui_base::collaboration::TransportCommand::ToRoute(
+            command: ::collaboration::TransportCommand,
+        ) -> Result<(), ::collaboration::TransportError> {
+            if let ::collaboration::TransportCommand::ToRoute(
                 route,
-                tilo_ui_base::collaboration::CollabRequest::Document { .. },
+                ::collaboration::CollabRequest::Document { .. },
             ) = command
             {
                 self.published.lock().unwrap().push(route);
             }
             Ok(())
         }
-        fn drain(&mut self, _: &mut Vec<tilo_ui_base::collaboration::CollabEvent>) {}
+        fn drain(&mut self, _: &mut Vec<::collaboration::CollabEvent>) {}
         fn take_primary_route_result(
             &mut self,
-        ) -> Option<Result<tilo_ui_base::collaboration::RouteSpec, String>> {
+        ) -> Option<Result<::collaboration::RouteSpec, String>> {
             None
         }
         fn take_action_directory_requests(
             &mut self,
-            _: &mut Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>,
+            _: &mut Vec<::collaboration::ActionDirectoryRequest>,
         ) {
         }
         fn publication_barrier(
             &mut self,
         ) -> Result<
-            tilo_ui_base::collaboration::DocumentPublicationReceipt,
-            tilo_ui_base::collaboration::DocumentPublicationError,
+            ::collaboration::DocumentPublicationReceipt,
+            ::collaboration::DocumentPublicationError,
         > {
             let (answer, receipt) = std::sync::mpsc::sync_channel(1);
             self.barriers.lock().unwrap().push(answer);
-            Ok(tilo_ui_base::collaboration::DocumentPublicationReceipt::new(receipt))
+            Ok(::collaboration::DocumentPublicationReceipt::new(receipt))
         }
         fn document_publishable(&self, _: Option<&str>) -> bool {
             true
@@ -1490,7 +1481,7 @@ mod tests {
     /// A window showing a record the workspace holds, on `manager`: the record, its store and
     /// what keeps its owner alive.
     fn window_on_record(
-        manager: tilo_ui_base::collaboration::CollaborationManager,
+        manager: ::collaboration::CollaborationManager,
     ) -> (
         App,
         crate::resource::ResourceStore,
@@ -1529,13 +1520,10 @@ mod tests {
             }),
         );
         app.collaboration.manager = manager;
-        app.actions.bound_broker_route_for_test =
-            Some(tilo_ui_base::collaboration::AcceptedRoute {
-                route: tilo_ui_base::collaboration::RouteSpec::document(
-                    KEPT_APP, workspace, "shown",
-                ),
-                epoch: uuid::Uuid::new_v4(),
-            });
+        app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
+            route: ::collaboration::RouteSpec::document(KEPT_APP, workspace, "shown"),
+            epoch: uuid::Uuid::new_v4(),
+        });
         app.refresh_document_routes();
         (app, store, record, lifetime)
     }
@@ -1569,9 +1557,7 @@ mod tests {
         use crate::resource::ResourceSaveStatus::{Saved, Saving};
         let workspace = Workspace::default();
         let (mut app, store, record, _lifetime) = window_on_record(
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
-                workspace.clone(),
-            )),
+            ::collaboration::CollaborationManager::with_transport(Box::new(workspace.clone())),
         );
         assert_eq!(
             status(&store, &record),
@@ -1614,12 +1600,10 @@ mod tests {
     #[test]
     fn a_close_the_workspace_refused_keeps_the_window_and_its_edit() {
         use crate::resource::ResourceSaveStatus::{Failed, Saved};
-        use tilo_ui_base::collaboration::DocumentPublicationError::Refused;
+        use ::collaboration::DocumentPublicationError::Refused;
         let workspace = Workspace::default();
         let (mut app, store, record, _lifetime) = window_on_record(
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
-                workspace.clone(),
-            )),
+            ::collaboration::CollaborationManager::with_transport(Box::new(workspace.clone())),
         );
         type_into(&store, &record, "typed before closing");
         app.pump_document_routes();
@@ -1682,7 +1666,7 @@ mod tests {
     #[test]
     fn a_window_without_a_connection_closes_at_once_unless_it_holds_an_unsent_edit() {
         let (mut kept, _store, _record, _lifetime) =
-            window_on_record(tilo_ui_base::collaboration::CollaborationManager::disabled());
+            window_on_record(::collaboration::CollaborationManager::disabled());
         assert!(
             kept.request_close(),
             "nothing to lose: the window goes at once"
@@ -1690,7 +1674,7 @@ mod tests {
         assert!(kept.close_admission.dialog.is_none());
 
         let (mut app, store, record, _lifetime) =
-            window_on_record(tilo_ui_base::collaboration::CollaborationManager::disabled());
+            window_on_record(::collaboration::CollaborationManager::disabled());
         type_into(&store, &record, "typed while offline");
         app.pump_document_routes();
         assert!(!app.request_close(), "the edit never reached the workspace");
@@ -1712,9 +1696,7 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         let workspace = Workspace::default();
         let (mut app, store, record, _lifetime) = window_on_record(
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
-                workspace.clone(),
-            )),
+            ::collaboration::CollaborationManager::with_transport(Box::new(workspace.clone())),
         );
         type_into(&store, &record, "written with no window");
         let ended = std::sync::Arc::new(AtomicBool::new(false));
@@ -1745,7 +1727,7 @@ mod tests {
         );
 
         let (mut offline, store, record, _lifetime) =
-            window_on_record(tilo_ui_base::collaboration::CollaborationManager::disabled());
+            window_on_record(::collaboration::CollaborationManager::disabled());
         type_into(&store, &record, "written with no connection");
         let (_wake, wakes) = std::sync::mpsc::channel();
         offline.keep_last_writes(&wakes);

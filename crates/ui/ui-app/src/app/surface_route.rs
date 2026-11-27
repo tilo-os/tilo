@@ -3,7 +3,7 @@
 //! (`ensure_resource_cache`, bound components' contracts).
 
 use super::{App, ControlBindingStatus};
-use tilo_ui_base::collaboration::CollabRequest;
+use ::collaboration::CollabRequest;
 
 impl App {
     /// Whether the route now carries this app's current offer: its surface
@@ -85,8 +85,7 @@ impl App {
             .as_deref()
             .zip(self.actions.published_surface.as_ref())
             .map(|(descriptors, state)| (state, descriptors));
-        let (delta, state) =
-            tilo_ui_base::collaboration::SurfacePublication::next(prior, &descriptors);
+        let (delta, state) = ::collaboration::SurfacePublication::next(prior, &descriptors);
         // A surface the transport did not take is retried on the next frame.
         if delta.is_empty()
             || self

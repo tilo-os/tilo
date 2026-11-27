@@ -6,12 +6,13 @@
 
 use std::time::{Instant, SystemTime};
 
+use ::collaboration::CollabEvent;
+use ::collaboration::PresencePayload;
 use tilo_ui_app::app::App;
 use tilo_ui_app::state::State;
 use tilo_ui_app::widget::Container;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::presence::PresenceKey;
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::PresencePayload};
 use vello::kurbo::{Point, Rect};
 
 fn app() -> App {

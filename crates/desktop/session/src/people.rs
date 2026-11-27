@@ -53,7 +53,7 @@ pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
 
 /// The hue of [`own_rgb`].
 pub(crate) fn own_hue(identity: &str) -> tilo_ui_base::tokens::PresenceHue {
-    tilo_ui_base::local_identity::own_colour()
+    ::collaboration::local_identity::own_colour()
         .unwrap_or_else(|| tilo_ui_base::tokens::PresenceHue::of_identity(identity))
 }
 
@@ -79,7 +79,7 @@ pub(crate) fn own_face(
     let Some(own) = own else {
         return (
             crate::platform::person::person_name(
-                tilo_ui_base::local_identity::load().map(|identity| identity.display_name),
+                ::collaboration::local_identity::load().map(|identity| identity.display_name),
                 "",
             ),
             device_person.to_owned(),
@@ -93,7 +93,7 @@ pub(crate) fn own_face(
         .unwrap_or(device_person)
         .to_owned();
     let name = crate::platform::person::given_name(
-        tilo_ui_base::local_identity::load().map(|identity| identity.display_name),
+        ::collaboration::local_identity::load().map(|identity| identity.display_name),
     )
     .unwrap_or_else(|| own.label.clone());
     (name, identity)

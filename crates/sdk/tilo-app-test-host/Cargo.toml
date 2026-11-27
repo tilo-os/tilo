@@ -20,6 +20,7 @@ settings-store = { package = "tilo-settings-store", path = "../../desktop/settin
 tilo-action-calls = { version = "0.1.0", path = "../../core/action-calls", features = ["answer-reads"] }
 
 [dev-dependencies]
+collaboration = { package = "tilo-collaboration", path = "../../core/collaboration" }
 tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 tilo-app = { path = "../tilo-app", features = ["test-support"] }

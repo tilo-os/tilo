@@ -9,8 +9,8 @@ use std::sync::{
 };
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
+use collab_types::presence::PresencePayload;
 use tilo_resource::{Effect, NoEffect, Resource, SearchEntry};
-use tilo_ui_base::PresencePayload;
 use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::{widget::Decorator, widget::Widget};

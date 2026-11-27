@@ -58,15 +58,19 @@ pub use written::written_under;
 
 /// The scope this process should publish its presence under — the workspace
 /// it collaborates in, or `None` when it has no workspace. Read from
-/// [`local_cluster_id`](crate::collaboration::local_cluster_id), the
-/// same value the routing address is built from, so the two cannot drift apart.
+/// the workspace the launch names ([`tilo_process::environment::ProcessIdentity::workspace`]),
+/// the same value the routing address is built from, so the two cannot drift apart.
 ///
 /// `None` when the workspace is the nil uuid: that value addresses nobody
 /// (`CrdtRoute::is_addressable` rejects it — an unminted workspace would
 /// otherwise make every unconfigured machine share one workspace). Fail closed.
 #[cfg(feature = "model")]
 pub fn local_workspace_key() -> Option<PresenceKey> {
-    let cluster = crate::collaboration::local_cluster_id();
+    let cluster = tilo_process::environment::environment()
+        .identity
+        .workspace()
+        .ok()
+        .flatten()?;
     if cluster.is_nil() {
         return None;
     }
@@ -1663,7 +1667,7 @@ impl PresenceCtx {
         &mut self,
         member: MemberId,
         key: PresenceKey,
-        payload: crate::collaboration::PresencePayload,
+        payload: collab_types::presence::PresencePayload,
     ) -> RemotePresenceEffect {
         self.apply_remote_presence_at(member, key, payload, crate::time::now())
     }
@@ -1680,10 +1684,10 @@ impl PresenceCtx {
         &mut self,
         member: MemberId,
         key: PresenceKey,
-        payload: crate::collaboration::PresencePayload,
+        payload: collab_types::presence::PresencePayload,
         now: Instant,
     ) -> RemotePresenceEffect {
-        use crate::collaboration::PresencePayload::{
+        use collab_types::presence::PresencePayload::{
             Arrived, Availability, Caret, Composing, Interaction, Left, Pointer, Selection, Status,
             Typing,
         };
@@ -2100,16 +2104,16 @@ mod remote_cursor_tests {
             )
             .packed_colour();
             assert_eq!(
-                crate::collaboration::colour_from_packed(packed),
+                collab_types::member::colour_from_packed(packed),
                 Some(crate::tokens::PresenceHue::Violet),
                 "every presence colour survives the roster's wire"
             );
             for hue in crate::tokens::PresenceHue::ALL {
                 let (r, g, b) = identity_rgb(hue);
                 let packed = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
-                assert_eq!(crate::collaboration::colour_from_packed(packed), Some(hue));
+                assert_eq!(collab_types::member::colour_from_packed(packed), Some(hue));
             }
-            assert_eq!(crate::collaboration::colour_from_packed(0), None);
+            assert_eq!(collab_types::member::colour_from_packed(0), None);
         }
 
         phase remote_cursors_upsert_in_place_and_remove;
@@ -2173,7 +2177,7 @@ mod string_id_wrapper_tests {
             ctx.apply_remote_presence(
                 MemberId::person("peer@77"),
                 key.clone(),
-                crate::collaboration::PresencePayload::Pointer { x: 120.0, y: 90.0 },
+                collab_types::presence::PresencePayload::Pointer { x: 120.0, y: 90.0 },
             );
 
             // The compositor's store has them: this is not "the peer never
@@ -2211,7 +2215,7 @@ mod string_id_wrapper_tests {
             ctx.apply_remote_presence(
                 MemberId::person("peer@88"),
                 widget,
-                crate::collaboration::PresencePayload::Pointer { x: 5.0, y: 6.0 },
+                collab_types::presence::PresencePayload::Pointer { x: 5.0, y: 6.0 },
             );
             let scoped = ctx
                 .remote_cursors
@@ -2240,7 +2244,7 @@ mod string_id_wrapper_tests {
                 ctx.apply_remote_presence(
                     MemberId::person("peer@77"),
                     frame.clone(),
-                    crate::collaboration::PresencePayload::Pointer { x: 214.0, y: 34.0 },
+                    collab_types::presence::PresencePayload::Pointer { x: 214.0, y: 34.0 },
                 );
             }
 
@@ -2283,7 +2287,7 @@ mod string_id_wrapper_tests {
             ctx.apply_remote_presence(
                 MemberId::person("peer@77"),
                 key,
-                crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+                collab_types::presence::PresencePayload::Pointer { x: 1.0, y: 2.0 },
             );
             assert!(
                 ctx.remote_cursors.iter().all(|c| !c.painted_by_window()),
@@ -2301,7 +2305,7 @@ mod string_id_wrapper_tests {
             ctx.apply_remote_presence(
                 MemberId::person("peer@77"),
                 key,
-                crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+                collab_types::presence::PresencePayload::Pointer { x: 1.0, y: 2.0 },
             );
             assert!(!ctx.remote_cursors[0].painted_by_window());
 
@@ -2674,7 +2678,7 @@ mod string_id_wrapper_tests {
 #[cfg(feature = "model")]
 mod one_person_one_pointer_tests {
     use super::*;
-    use crate::collaboration::PresencePayload;
+    use collab_types::presence::PresencePayload;
 
     tilo_test_env::scenario! {
         fn one_person_has_one_pointer_that_moves_between_scopes;

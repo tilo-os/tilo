@@ -28,7 +28,7 @@ pub trait StateHistory {
     /// document has uncommitted or unrecorded edits, else whether the merge changed it.
     fn merge_remote_committed(
         &mut self,
-        incoming: tilo_ui_base::collaboration::Incoming<'_>,
+        incoming: ::collaboration::Incoming<'_>,
     ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError>;
     /// What the history can do for `author` right now.
     fn undo_status_snapshot(
@@ -46,7 +46,7 @@ impl StateHistory for State {
 
     fn merge_remote_committed(
         &mut self,
-        incoming: tilo_ui_base::collaboration::Incoming<'_>,
+        incoming: ::collaboration::Incoming<'_>,
     ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
         if self.defers_remote() {
             return Ok(None);

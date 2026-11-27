@@ -39,7 +39,7 @@ pub(crate) use window_join::{WindowBuild, dispatch_window, dispatch_window_arriv
 /// `Err` hands the window why no connection could be made: it does not open, rather than open on
 /// records of this device alone.
 #[cfg(all(feature = "native", feature = "model"))]
-pub fn hand_connection(connection: Result<tilo_ui_base::collaboration::HandedConnection, String>) {
+pub fn hand_connection(connection: Result<::collaboration::HandedConnection, String>) {
     install_handed(connection.as_ref().ok());
     window_join::hand(connection);
 }
@@ -51,7 +51,7 @@ pub fn hand_connection(connection: Result<tilo_ui_base::collaboration::HandedCon
 ///
 /// Called on the window's own thread, from its frame: the loop gives the place before it waits.
 #[cfg(all(feature = "native", feature = "model"))]
-pub fn rejoin(connection: Result<tilo_ui_base::collaboration::HandedConnection, String>) {
+pub fn rejoin(connection: Result<::collaboration::HandedConnection, String>) {
     install_handed(connection.as_ref().ok());
     window_join::rejoin(connection);
 }
@@ -59,7 +59,7 @@ pub fn rejoin(connection: Result<tilo_ui_base::collaboration::HandedConnection, 
 /// Install the workspace `handed` joins, and that the window takes part there as an author, as
 /// the launcher's.
 #[cfg(all(feature = "native", feature = "model"))]
-fn install_handed(handed: Option<&tilo_ui_base::collaboration::HandedConnection>) {
+fn install_handed(handed: Option<&::collaboration::HandedConnection>) {
     if let Some(handed) = handed {
         let mut launched = (*crate::process::environment()).clone();
         launched.identity.workspace_id = Some(handed.workspace.to_string());
@@ -579,7 +579,8 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::mark("app-launch-start");
     tilo_process::raise_open_file_limit();
     init_app_log();
-    tilo_ui_base::collaboration::install_channel_settings();
+    collaboration::install_channel_settings();
+    tilo_ui::own_photo::lend();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)
 }
@@ -896,7 +897,7 @@ fn dispatch_definition_with_manager(
         crate::application::ComponentRunnerInputs,
         bool,
     ) -> Result<App, LaunchError>,
-    manager: impl FnOnce() -> Result<tilo_ui_base::collaboration::CollaborationManager, LaunchError>,
+    manager: impl FnOnce() -> Result<::collaboration::CollaborationManager, LaunchError>,
 ) -> Result<DefinitionDispatch, LaunchError> {
     let scope = live_native(spec, args).then(crate::wake::WakeScope::new);
     dispatch_definition_with(spec, args, native, scope, manager).map_err(Unbuilt::into_error)
@@ -912,7 +913,7 @@ fn dispatch_definition_with(
         bool,
     ) -> Result<App, LaunchError>,
     scope: Option<crate::wake::WakeScope>,
-    manager: impl FnOnce() -> Result<tilo_ui_base::collaboration::CollaborationManager, LaunchError>,
+    manager: impl FnOnce() -> Result<::collaboration::CollaborationManager, LaunchError>,
 ) -> Result<DefinitionDispatch, Unbuilt> {
     validate_spec_args(args, spec)?;
     let _selected_local = (!opens_native_window(args))
@@ -921,11 +922,8 @@ fn dispatch_definition_with(
     let _wake_entry = scope.as_ref().map(crate::wake::WakeScope::enter);
     let construction = scope
         .map(|scope| {
-            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter_component(
-                manager()?,
-                scope,
-            )
-            .map_err(LaunchError::Operation)
+            ::collaboration::native_initial::NativeConstruction::enter_component(manager()?, scope)
+                .map_err(LaunchError::Operation)
         })
         .transpose()?;
     let prepare = spec
@@ -1016,7 +1014,7 @@ fn dispatch_definition_with(
             DefinitionDispatch::Rendered(driver)
         });
     }
-    let app = tilo_ui_base::collaboration::native_initial::transfer_to_app(|| {
+    let app = ::collaboration::native_initial::transfer_to_app(|| {
         native(
             component,
             prepared.runner_inputs,
@@ -1024,7 +1022,7 @@ fn dispatch_definition_with(
         )
     })
     .map_err(LaunchError::Operation)??;
-    tilo_ui_base::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
+    ::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
@@ -1049,9 +1047,9 @@ fn show_history_for_capture(driver: &mut Driver, args: &LaunchArgs) -> Result<()
 
 #[cfg(all(feature = "native", feature = "model"))]
 fn selected_local_construction()
--> Result<tilo_ui_base::collaboration::native_initial::NativeConstruction, LaunchError> {
-    tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(
-        tilo_ui_base::collaboration::CollaborationManager::disabled(),
+-> Result<::collaboration::native_initial::NativeConstruction, LaunchError> {
+    ::collaboration::native_initial::NativeConstruction::enter(
+        ::collaboration::CollaborationManager::disabled(),
     )
     .map_err(LaunchError::Operation)
 }
@@ -1069,19 +1067,20 @@ fn surface_peer() -> Option<crate::surface_peer::SurfacePeer> {
 fn native_launch_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
-) -> Result<tilo_ui_base::collaboration::CollaborationManager, LaunchError> {
+) -> Result<::collaboration::CollaborationManager, LaunchError> {
     // A surface app is handed the actions of the shell that places its
     // window, in place of a workspace it never joins: it needs no workspace of
     // its own, selected or not.
     if let Some(peer) = surface_peer() {
-        return Ok(tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(peer));
+        return Ok(::collaboration::CollaborationManager::with_peer_transport(
+            peer,
+        ));
     }
-    tilo_ui_base::collaboration::native_initial::ensure_unoccupied()
-        .map_err(LaunchError::Operation)?;
+    ::collaboration::native_initial::ensure_unoccupied().map_err(LaunchError::Operation)?;
     if !(spec.runtime_attachment)(args) {
-        return Ok(tilo_ui_base::collaboration::CollaborationManager::disabled());
+        return Ok(::collaboration::CollaborationManager::disabled());
     }
-    tilo_ui_base::collaboration::CollaborationManager::for_native_launch(
+    ::collaboration::CollaborationManager::for_native_launch(
         &spec.definition.resource_type,
         native_connection()?,
     )
@@ -2127,14 +2126,13 @@ mod tests {
         history.commit();
         let heads = history.get_heads();
         let (manager, joined) =
-            tilo_ui_base::collaboration::CollaborationManager::native_initial_fixture_for_test(
+            ::collaboration::CollaborationManager::native_initial_fixture_for_test(
                 "so.tilo.launch-fixture",
                 workspace,
                 history.save(),
             );
         let construction =
-            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager)
-                .unwrap();
+            ::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
         let documents = crate::launch::fixture_workspace::at(
             &environment._directory.path().join("native-canonical"),
         );
@@ -2206,15 +2204,13 @@ mod tests {
             .unwrap();
         history.commit();
         let heads = history.get_heads();
-        let (manager, _) =
-            tilo_ui_base::collaboration::CollaborationManager::native_initial_fixture_for_test(
-                "so.tilo.launch-fixture",
-                workspace,
-                history.save(),
-            );
+        let (manager, _) = ::collaboration::CollaborationManager::native_initial_fixture_for_test(
+            "so.tilo.launch-fixture",
+            workspace,
+            history.save(),
+        );
         let _construction =
-            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager)
-                .unwrap();
+            ::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
         let documents = crate::launch::fixture_workspace::at(
             &environment._directory.path().join("legacy-cache"),
         );
@@ -2272,14 +2268,13 @@ mod tests {
         history.put(automerge::ROOT, "retained", "primary").unwrap();
         history.commit();
         let (manager, joined) =
-            tilo_ui_base::collaboration::CollaborationManager::native_initial_fixture_for_test(
+            ::collaboration::CollaborationManager::native_initial_fixture_for_test(
                 "so.tilo.launch-fixture",
                 workspace,
                 history.save(),
             );
         let _construction =
-            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager)
-                .unwrap();
+            ::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
         let documents =
             crate::launch::fixture_workspace::at(&environment._directory.path().join("primary"));
         crate::launch::fixture_workspace::publish(
@@ -2357,7 +2352,7 @@ mod tests {
         let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
         let id = crate::resource::DocumentId::minted();
-        let manager = tilo_ui_base::collaboration::CollaborationManager::connected_fixture_for_test(
+        let manager = ::collaboration::CollaborationManager::connected_fixture_for_test(
             probe::APP,
             workspace,
         );
@@ -2459,9 +2454,9 @@ mod tests {
         let _environment = LaunchFixtureEnv::new();
         let mut env_override = tilo_test_env::ScopedEnv::new();
         env_override.set("TILO_SVC_COLLAB_FD", "-1");
-        let manager = tilo_ui_base::collaboration::CollaborationManager::for_native_launch(
+        let manager = ::collaboration::CollaborationManager::for_native_launch(
             &crate::resource::ResourceType::new("launch-fixture.document"),
-            tilo_ui_base::collaboration::NativeConnection::Launch,
+            ::collaboration::NativeConnection::Launch,
         );
         drop(env_override);
         assert!(

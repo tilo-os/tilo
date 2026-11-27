@@ -15,11 +15,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use ::collaboration::CollaborationManager;
 use collab_types::store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply as Store};
 use runtime_collab::wire::{
     Call, ContextUpdate, Event, FRAMING, HostFrame, Operation, Reply, Service, Topic,
 };
-use tilo_ui_base::collaboration::CollaborationManager;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -181,8 +181,7 @@ impl TypedBroker {
 
     /// Wait until `peer` holds its context subscription on the `app_id` workspace.
     fn wait_subscribed(&self, app_id: &str, peer: u64, user_id: &str) {
-        let channel =
-            tilo_ui_base::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
+        let channel = ::collaboration::channel_key::format(app_id, &Uuid::nil().to_string(), "");
         tilo_test_env::wait_until(
             format!("{user_id}'s context subscription on {channel}"),
             || {

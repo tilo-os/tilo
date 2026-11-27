@@ -3,7 +3,7 @@
 //! sync, never waited for, so the person's own frames go on meanwhile.
 
 use crate::app::document_routes::Handoff;
-use tilo_ui_base::collaboration::CollabRequest;
+use ::collaboration::CollabRequest;
 
 use super::App;
 

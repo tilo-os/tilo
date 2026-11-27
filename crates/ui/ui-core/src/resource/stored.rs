@@ -208,7 +208,7 @@ impl StoredResource {
     /// The route this record syncs on. `None` for a record kept on this
     /// device only.
     #[must_use]
-    pub fn route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
+    pub fn route(&self) -> Option<::collaboration::RouteSpec> {
         self.store.route(&self.checkout).ok()
     }
 
@@ -276,9 +276,9 @@ pub fn content_of(
 ) -> Option<tilo_content::ContentStore> {
     let workspace = uuid::Uuid::parse_str(home).ok()?;
     let route = if id.is_package_primary() {
-        tilo_ui_base::collaboration::RouteSpec::app(package, workspace)
+        ::collaboration::RouteSpec::app(package, workspace)
     } else {
-        tilo_ui_base::collaboration::RouteSpec::document(package, workspace, id.as_str())
+        ::collaboration::RouteSpec::document(package, workspace, id.as_str())
     };
-    Some(tilo_ui_base::collaboration::document_content::ContentLink::resource_store(&route))
+    Some(::collaboration::document_content::ContentLink::resource_store(&route))
 }

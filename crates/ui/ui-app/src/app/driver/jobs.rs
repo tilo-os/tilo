@@ -14,7 +14,7 @@ use tilo_actions::{ActionAddress, ActionOutput, ApiError, InvocationId, Invocati
 
 use super::Driver;
 #[cfg(feature = "model")]
-use tilo_ui_base::collaboration::CollabRequest;
+use ::collaboration::CollabRequest;
 use tilo_ui_base::{widget::ResourceOperationStart, widget::Widget};
 
 /// What the driver keeps of the calls it made and the requests it read.

@@ -2,7 +2,7 @@
 use std::rc::Rc;
 
 struct HostedModelTransport(Rc<RefCell<Vec<CollabRequest>>>);
-impl tilo_ui_base::collaboration::PeerTransport for HostedModelTransport {
+impl ::collaboration::PeerTransport for HostedModelTransport {
     fn is_connected(&self) -> bool {
         true
     }
@@ -16,14 +16,14 @@ impl tilo_ui_base::collaboration::PeerTransport for HostedModelTransport {
     // Legacy owner-route delivery is explicit; no native capture is synthesized.
     fn join_route(
         &mut self,
-        _: tilo_ui_base::collaboration::RouteSpec,
+        _: ::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }
     fn send_to_route(
         &mut self,
-        _: tilo_ui_base::collaboration::RouteSpec,
+        _: ::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
         self.send(request)
@@ -290,7 +290,7 @@ struct HostedDirectoryNotificationTransport {
     events: Rc<RefCell<Vec<CollabEvent>>>,
     before_poll: Option<Box<dyn FnOnce()>>,
 }
-impl tilo_ui_base::collaboration::PeerTransport for HostedDirectoryNotificationTransport {
+impl ::collaboration::PeerTransport for HostedDirectoryNotificationTransport {
     fn is_connected(&self) -> bool {
         true
     }
@@ -468,7 +468,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.collaboration.manager = admitted_delivery_manager();
-        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
+        app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });

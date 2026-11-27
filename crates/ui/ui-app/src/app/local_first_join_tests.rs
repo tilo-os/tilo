@@ -4,7 +4,8 @@
 // the test says. Nothing here waits on a clock: each step follows an event
 // the broker sends.
 use super::*;
-use tilo_ui_base::{collaboration::CollaborationState, collaboration::JoiningProbe};
+use ::collaboration::CollaborationState;
+use ::collaboration::JoiningProbe;
 
 struct Joining {
     app: App,
@@ -155,7 +156,7 @@ tilo_test_env::scenario! {
             if *sent_route != route {
                 continue;
             }
-            if let tilo_ui_base::collaboration::CollabRequest::Document {
+            if let ::collaboration::CollabRequest::Document {
                 mutation: collab_types::DocumentMutation::Incremental(bytes),
                 ..
             } = request
@@ -178,7 +179,7 @@ tilo_test_env::scenario! {
         });
         assert!(matches!(
             probe.app.collaboration.manager.join_hold(),
-            Some(tilo_ui_base::collaboration::JoinHold::WorkspaceWaiting { .. })
+            Some(::collaboration::JoinHold::WorkspaceWaiting { .. })
         ));
 
         // The workspace is ready: the join goes on, and the line says nothing.
@@ -205,7 +206,7 @@ tilo_test_env::scenario! {
         probe.pump_until("the broker unreachable", |app| {
             matches!(
                 app.collaboration.manager.join_hold(),
-                Some(tilo_ui_base::collaboration::JoinHold::Unreachable(_))
+                Some(::collaboration::JoinHold::Unreachable(_))
             )
         });
         assert_eq!(
@@ -257,7 +258,7 @@ tilo_test_env::scenario! {
     phase an_action_asked_while_the_app_joins_goes_out_once_it_joined;
     {
         let mut probe = joining(runtime_collab::WorkspaceStatus::Ready);
-        let invoke = tilo_ui_base::collaboration::CollabRequest::RemoteAction {
+        let invoke = ::collaboration::CollabRequest::RemoteAction {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(
                 tilo_actions::remote::InvokeRequest {
                     asks: false,

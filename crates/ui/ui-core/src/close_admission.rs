@@ -65,7 +65,7 @@ pub enum Leaving {
 pub struct Confirming {
     pub store: crate::resource::ResourceStore,
     pub id: crate::resource::DocumentId,
-    pub route: tilo_ui_base::collaboration::RouteSpec,
+    pub route: ::collaboration::RouteSpec,
     pub heads: Vec<automerge::ChangeHash>,
 }
 
@@ -77,10 +77,7 @@ pub struct Confirming {
 #[derive(Default)]
 pub struct Barrier {
     /// The barrier on its way, and what it confirms once answered.
-    pub pending: Option<(
-        tilo_ui_base::collaboration::DocumentPublicationReceipt,
-        Vec<Confirming>,
-    )>,
+    pub pending: Option<(::collaboration::DocumentPublicationReceipt, Vec<Confirming>)>,
     /// The heads of each route the workspace confirmed last.
     pub confirmed: RouteHeads,
     /// The heads of each route the workspace refused: not asked about again until the route
@@ -94,7 +91,7 @@ pub struct Barrier {
 /// Heads by route.
 #[cfg(feature = "model")]
 pub(crate) type RouteHeads =
-    std::collections::HashMap<tilo_ui_base::collaboration::RouteSpec, Vec<automerge::ChangeHash>>;
+    std::collections::HashMap<::collaboration::RouteSpec, Vec<automerge::ChangeHash>>;
 
 /// What a closing window's components still wait on: writes they sent as they checkpointed,
 /// not yet answered, and those the workspace refused.

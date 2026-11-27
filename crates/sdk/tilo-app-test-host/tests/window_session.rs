@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use tilo_ui_base::collaboration::CollabRequest;
+use ::collaboration::CollabRequest;
 use tilo_ui_base::taffy::{self, NodeId, TaffyTree};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::{ResourceOperationStart, TaffyTreeExt as _, Widget};

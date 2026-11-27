@@ -1639,7 +1639,7 @@ pub(crate) mod tests {
                     &update.resource.id,
                     &update.resource.kind,
                 );
-                let payload = crate::collaboration::PresencePayload::Interaction(Box::new(update));
+                let payload = collab_types::presence::PresencePayload::Interaction(Box::new(update));
 
                 let mut files = PresenceCtx::empty();
                 files.set_surface_id("org.tilo.Files");

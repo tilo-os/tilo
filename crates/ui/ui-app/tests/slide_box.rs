@@ -3,12 +3,17 @@
 //! drive it. The app adds only the box's place and its look; every key, drag and composition
 //! here is the shared editor's, so these tests say what a slide box does and not what it might.
 
+use ::collaboration;
 use tilo_rich_edit::BlockEditor;
 use tilo_ui_app::headless::Driver;
 use tilo_ui_app::{State, accesskit, time, winit};
 use tilo_ui_app::{widget::Stage, widget::StagePinProps, widget::StageProps};
+use tilo_ui_base::Intents;
+use tilo_ui_base::Theme;
+use tilo_ui_base::font_catalog;
+use tilo_ui_base::synthetic_input;
+use tilo_ui_base::text_selection;
 use tilo_ui_base::widget::Widget;
-use tilo_ui_base::{Intents, Theme, collaboration, font_catalog, synthetic_input, text_selection};
 use tilo_ui_base::{
     component::Described, component::Event, component::Fired, component::Intent, component::Value,
 };

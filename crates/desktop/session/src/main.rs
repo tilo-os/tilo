@@ -74,6 +74,8 @@ fn main() -> std::process::ExitCode {
     // Everything this process reports, and the panic that would end it, goes through the one log
     // from here on — including the render service, which is this binary in its own mode.
     tilo_session_logging::install();
+    // Every face that shows this session's person draws the picture their identity service holds.
+    ui::own_photo::lend();
     // Libraries that parallelise on their own (message groups, text layout,
     // rendering) build rayon's process-wide pool on first use: build it here,
     // bounded, before a session thread reaches one.

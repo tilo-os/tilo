@@ -123,10 +123,7 @@ fn a_focused_field_tells_peers_where_its_caret_is_and_an_unfocused_one_says_noth
     driver.type_text("Hi");
     assert_eq!(
         driver.focus_presence(),
-        Some((
-            key,
-            tilo_ui_base::collaboration::PresencePayload::Caret { pos: 2 }
-        )),
+        Some((key, ::collaboration::PresencePayload::Caret { pos: 2 })),
         "the caret after what the person typed"
     );
 }

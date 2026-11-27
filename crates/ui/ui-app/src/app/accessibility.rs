@@ -506,15 +506,13 @@ impl App {
         &mut self,
         member: tilo_ui_base::permissions::MemberId,
         key: tilo_ui_base::presence::PresenceKey,
-        payload: tilo_ui_base::collaboration::PresencePayload,
+        payload: ::collaboration::PresencePayload,
     ) {
         use tilo_ui_base::presence::RemotePresenceEffect;
         // Keep canonical anchors intact. Resolve against each presented layout,
         // never retain an arrival-time layout id across a rebuild.
         let interaction = match &payload {
-            tilo_ui_base::collaboration::PresencePayload::Interaction(update) => {
-                Some((**update).clone())
-            }
+            ::collaboration::PresencePayload::Interaction(update) => Some((**update).clone()),
             _ => None,
         };
         match self

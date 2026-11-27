@@ -68,7 +68,7 @@ impl NativeProcess {
         Self::open_with(
             definition,
             NativeProcessEnvironment::capture(),
-            tilo_ui_base::collaboration::local_user_id(),
+            ::collaboration::local_user_id(),
         )
     }
 
@@ -221,7 +221,7 @@ impl NativeProcess {
             // wrote as no one; the window that replaces it writes as the
             // person, on a host of theirs. A window its process joined to
             // another workspace is built on a host of that workspace.
-            let author = tilo_ui_base::collaboration::local_user_id();
+            let author = ::collaboration::local_user_id();
             let workspace = launched_workspace();
             if slot.as_ref().is_some_and(|host| {
                 host.host.author != author || host.launched_workspace != workspace
@@ -264,7 +264,7 @@ impl NativeProcess {
 
 fn refuse_copy_while_joining(target: &LaunchTarget) -> Result<(), LaunchError> {
     if matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew)
-        && tilo_ui_base::collaboration::native_initial::joining()
+        && ::collaboration::native_initial::joining()
     {
         return Err(LaunchError::ResourceNotHere);
     }
@@ -1897,7 +1897,7 @@ mod native_process_tests {
     #[cfg(all(unix, feature = "broker-transport"))]
     fn a_record_not_here_is_not_created_while_the_workspace_joins() {
         use crate::application_test_support as probe;
-        use tilo_ui_base::collaboration::native_initial::NativeConstruction;
+        use ::collaboration::native_initial::NativeConstruction;
         let temp = tempfile::tempdir().unwrap();
         let workspace = "3f2b1c00-0000-4000-8000-00000000000c";
         let launch = || {
@@ -1917,11 +1917,8 @@ mod native_process_tests {
             let scope = crate::wake::WakeScope::new();
             let (manager, broker) = {
                 let _entry = scope.enter();
-                tilo_ui_base::collaboration::CollaborationManager::native_joining_fixture_for_test(
-                    tilo_ui_base::collaboration::RouteSpec::app(
-                        probe::APP,
-                        workspace.parse().unwrap(),
-                    ),
+                ::collaboration::CollaborationManager::native_joining_fixture_for_test(
+                    ::collaboration::RouteSpec::app(probe::APP, workspace.parse().unwrap()),
                     "probe",
                     automerge::AutoCommit::new().save(),
                     runtime_collab::WorkspaceStatus::Ready,

@@ -134,7 +134,7 @@ pub fn requested_reveal() -> Option<String> {
 /// A launch whose record is not on this device yet: the workspace's join, waited for off the window's
 /// thread, and the wake scope the app built after it takes, which the join's manager wakes.
 pub struct Arriving {
-    pub join: tilo_ui_base::collaboration::NativeJoin,
+    pub join: ::collaboration::NativeJoin,
     pub scope: crate::wake::WakeScope,
 }
 

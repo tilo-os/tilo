@@ -14,7 +14,7 @@ const UNRECORDED: &str = "history-local-action-unrecorded";
 
 #[derive(Default)]
 pub(super) struct LocalInputCapture {
-    queues: HashMap<tilo_ui_base::collaboration::RouteSpec, Queue>,
+    queues: HashMap<::collaboration::RouteSpec, Queue>,
     pending: HashMap<u64, PendingCapture>,
     transport_connected: bool,
     // One bounded, inert copy of the last authenticated pre-input surface.
@@ -34,20 +34,20 @@ pub(super) struct LocalInputCapture {
     /// is another app's). Edits on them still land and are saved here, and
     /// the person is told their history does not record them, until the
     /// connection is replaced.
-    reports_nothing: std::collections::HashSet<tilo_ui_base::collaboration::RouteSpec>,
+    reports_nothing: std::collections::HashSet<::collaboration::RouteSpec>,
     /// Edits made under input whose every route reports nothing. Only a
     /// recorded edit sets it.
     unrecorded_edits: crate::local_document_action::UnsignedEdits,
     /// Changes the broker refused, kept for the person's Retry.
     refused: Vec<(
-        tilo_ui_base::collaboration::RouteSpec,
+        ::collaboration::RouteSpec,
         crate::local_document_action::CapturedAction,
     )>,
 }
 
 struct PendingCapture {
     capture: crate::local_document_action::CapturedAction,
-    route: tilo_ui_base::collaboration::RouteSpec,
+    route: ::collaboration::RouteSpec,
     _lease: crate::local_document_action::Lease,
     /// The published surface a capture made under a stale one is reported
     /// against, held until its outcome is known.
@@ -61,7 +61,7 @@ impl LocalInputCapture {
     /// id of its own, reported from `now`.
     fn hold(
         &mut self,
-        route: tilo_ui_base::collaboration::RouteSpec,
+        route: ::collaboration::RouteSpec,
         capture: crate::local_document_action::CapturedAction,
         lease: crate::local_document_action::Lease,
         now: crate::time::Instant,
@@ -241,10 +241,7 @@ impl App {
         if let Some(revision) = revision.as_ref() {
             let mut aliases: HashMap<
                 Option<uuid::Uuid>,
-                (
-                    tilo_ui_base::collaboration::RouteSpec,
-                    HashMap<String, String>,
-                ),
+                (::collaboration::RouteSpec, HashMap<String, String>),
             > = HashMap::new();
             for address in snapshot.actions.keys() {
                 match self.actions.bound_publication.target(address) {
@@ -759,11 +756,11 @@ fn is_connection_without_reports(error: &runtime_collab::LocalDocumentActionErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::collaboration::CollabEvent;
+    use ::collaboration::CollabRequest;
+    use ::collaboration::PeerTransport;
+    use ::collaboration::RouteSpec;
     use std::cell::RefCell;
-    use tilo_ui_base::{
-        collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PeerTransport,
-        collaboration::RouteSpec,
-    };
 
     struct Peer(Rc<RefCell<Vec<CollabRequest>>>);
     impl PeerTransport for Peer {
@@ -948,7 +945,7 @@ mod tests {
             let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
             let requests = Rc::new(RefCell::new(Vec::new()));
             app.collaboration.manager =
-                tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+                ::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
             let route = RouteSpec::app("notes", uuid::Uuid::new_v4());
             let queue = Queue::new();
             app.local_input_capture.queues.insert(route, queue.clone());
@@ -979,7 +976,7 @@ mod tests {
             let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
             let requests = Rc::new(RefCell::new(Vec::new()));
             app.collaboration.manager =
-                tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+                ::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
             let queue = Queue::new();
             let route = RouteSpec::app("retired", uuid::Uuid::new_v4());
             app.local_input_capture
@@ -1033,7 +1030,7 @@ mod tests {
             let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
             let requests = Rc::new(RefCell::new(Vec::new()));
             app.collaboration.manager =
-                tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+                ::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
             let route = RouteSpec::app("test", uuid::Uuid::new_v4());
             let queue = Queue::new();
             app.local_input_capture

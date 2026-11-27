@@ -10,7 +10,7 @@ use tilo_actions::{ActionResource, SelectionAnchor, SelectionPlace};
 
 use crate::floating_surface::Recipient;
 #[cfg(feature = "model")]
-use tilo_ui_base::collaboration::PresencePayload;
+use ::collaboration::PresencePayload;
 #[cfg(feature = "model")]
 use tilo_ui_base::presence::PresenceKey;
 #[cfg(feature = "model")]
@@ -237,7 +237,7 @@ pub fn deliver_send(
     #[cfg(any(test, feature = "test-support"))]
     DELIVERED.with(|delivered| delivered.borrow_mut().push(arguments.clone()));
     let spawned = crate::background::Background::current().spawn("send", move || {
-        if let Err(error) = tilo_ui_base::collaboration::SessionResource::invoke_without_watching(
+        if let Err(error) = ::collaboration::SessionResource::invoke_without_watching(
             SEND_TO_RESOURCE,
             SEND,
             &arguments,
@@ -336,7 +336,7 @@ struct SendToReading {
 /// The session's list of whom a message can go to, as this process last read it.
 struct Known {
     #[cfg(feature = "model")]
-    followed: Option<tilo_ui_base::collaboration::SessionResource>,
+    followed: Option<::collaboration::SessionResource>,
     #[cfg(feature = "model")]
     asked: bool,
     /// `None` until the first reading arrives.
@@ -374,7 +374,7 @@ fn known() -> std::sync::MutexGuard<'static, Known> {
     if !std::mem::replace(&mut lock().asked, true) {
         let wake = crate::WakeHandle::new();
         let spawned = crate::background::Background::current().spawn("recipients", move || {
-            match tilo_ui_base::collaboration::SessionResource::follow(SEND_TO_RESOURCE, wake) {
+            match ::collaboration::SessionResource::follow(SEND_TO_RESOURCE, wake) {
                 Ok(followed) => lock().followed = Some(followed),
                 Err(error) => tracing::debug!(%error, "no session lists whom a message can go to"),
             }

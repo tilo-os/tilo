@@ -1005,11 +1005,10 @@ impl ActionFixture {
         // it does not exercise authenticated native document history.
         fixture.app.collaboration.manager =
             super::semantic_tree_app_tests::admitted_delivery_manager();
-        fixture.app.actions.bound_broker_route_for_test =
-            Some(tilo_ui_base::collaboration::AcceptedRoute {
-                route: fixture.bindings[0].broker_route().unwrap(),
-                epoch: uuid::Uuid::new_v4(),
-            });
+        fixture.app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
+            route: fixture.bindings[0].broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
+        });
         fixture
     }
     fn target(&self, index: usize, action: &str) -> crate::bound_dispatch::BoundActionTarget {
@@ -2528,7 +2527,7 @@ fn assert_bound_broker_route_refused(
     target: &crate::bound_dispatch::BoundActionTarget,
     alias: &str,
     revision: &str,
-    observation: Option<tilo_ui_base::collaboration::AcceptedRoute>,
+    observation: Option<::collaboration::AcceptedRoute>,
 ) {
     fixture.app.actions.bound_broker_route_for_test = observation;
     let resources = fixture.app.publication_resources();
@@ -2619,7 +2618,7 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
     let (events, wake_handles) =
         COLLABORATION_OBSERVATIONS.with_borrow(|slot| slot.clone().unwrap());
 
-    tilo_ui_base::widget::handle_collab_event(
+    tilo_ui::widget::handle_collab_event(
         app.root_widget.as_mut(),
         &CollabEvent::FollowChanged { peer_id: None },
     );
@@ -2633,7 +2632,7 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
         "fixture retains its root"
     );
     binding.closing.set(true);
-    tilo_ui_base::widget::handle_collab_event(
+    tilo_ui::widget::handle_collab_event(
         app.root_widget.as_mut(),
         &CollabEvent::FollowChanged { peer_id: None },
     );

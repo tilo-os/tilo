@@ -1,6 +1,6 @@
 // Connected native input/publication fixture; no GPU or physical scanout.
 struct PublicationProbeTransport;
-impl tilo_ui_base::collaboration::PeerTransport for PublicationProbeTransport {
+impl ::collaboration::PeerTransport for PublicationProbeTransport {
     fn is_connected(&self) -> bool {
         true
     }

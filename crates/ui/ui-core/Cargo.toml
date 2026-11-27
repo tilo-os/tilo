@@ -397,6 +397,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 
 [dev-dependencies]
+# The external-moderation endpoint answers on the broker worker's runtime.
+tokio = { workspace = true, features = ["macros", "rt"] }
 # Its own tests drive a page without Chromium.
 tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", features = ["test-support"] }
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }

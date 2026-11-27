@@ -12,10 +12,10 @@ use super::{
 };
 #[cfg(feature = "model")]
 use crate::time::Instant;
+#[cfg(feature = "model")]
+use ::collaboration::CollaborationManager;
 use std::cell::{Cell, RefCell};
 use taffy::{NodeId, TaffyTree};
-#[cfg(feature = "model")]
-use tilo_ui_base::collaboration::CollaborationManager;
 #[cfg(feature = "model")]
 use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::theme::Theme;
@@ -304,7 +304,7 @@ pub(super) struct AvailabilityWalk {
 #[derive(PartialEq)]
 pub(super) struct RouteInputs {
     pub(super) tree: TreeGeneration,
-    pub(super) observation: Option<tilo_ui_base::collaboration::AcceptedRoute>,
+    pub(super) observation: Option<::collaboration::AcceptedRoute>,
     pub(super) autosave_generation: u64,
     pub(super) document: (Vec<automerge::ChangeHash>, usize),
 }
@@ -459,13 +459,13 @@ pub(super) struct ActionRuntime {
     #[cfg(feature = "model")]
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
     #[cfg(feature = "model")]
-    pub(super) last_published_bound_route: Option<tilo_ui_base::collaboration::AcceptedRoute>,
+    pub(super) last_published_bound_route: Option<::collaboration::AcceptedRoute>,
     /// Publication refusals already logged, so a surface refused on every
     /// frame logs each distinct reason once rather than at frame rate.
     pub(super) refusals_logged: RefusalLog,
     #[cfg(feature = "model")]
     #[cfg(test)]
-    pub(super) bound_broker_route_for_test: Option<tilo_ui_base::collaboration::AcceptedRoute>,
+    pub(super) bound_broker_route_for_test: Option<::collaboration::AcceptedRoute>,
     #[cfg(feature = "model")]
     pub(super) action_directory_stamp: Option<(
         std::rc::Rc<super::action_directory_snapshot::DirectoryObservation>,
@@ -508,7 +508,7 @@ pub(super) struct ActionRuntime {
     /// What the broker holds of the surface `last_published_actions` names,
     /// the base of the next delta.
     #[cfg(feature = "model")]
-    pub(super) published_surface: Option<tilo_ui_base::collaboration::SurfacePublication>,
+    pub(super) published_surface: Option<::collaboration::SurfacePublication>,
     /// A handled input left the surface to publish once the sync it asked
     /// for has run: the frame that runs it publishes.
     pub(super) action_surface_owed: bool,
@@ -810,28 +810,26 @@ impl AccessibilityRuntime {
 /// Continuation publication and deferred restore state.
 #[cfg(feature = "model")]
 pub(super) struct ContinuationRuntime {
-    pub(super) last_published: Option<tilo_ui_base::collaboration::ContinuationMetadata>,
+    pub(super) last_published: Option<::collaboration::ContinuationMetadata>,
     /// Distinguish a queued clear from an unknown prior projection.
     pub(super) publication_initialized: bool,
-    pub(super) pending_restore: Option<tilo_ui_base::collaboration::ContinuationMetadata>,
+    pub(super) pending_restore: Option<::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until layout has built the focus order.
     pub(super) pending_view: Option<crate::view::View>,
     /// Route epoch for private continuity. A new acknowledged route must
     /// republish unchanged metadata and playback through that route only.
-    pub(super) last_private_route: Option<tilo_ui_base::collaboration::AcceptedRoute>,
+    pub(super) last_private_route: Option<::collaboration::AcceptedRoute>,
     pub(super) private_instance: Option<u64>,
     /// What the primary route last published to the session's persistent
     /// search index, so only changes cross again.
     pub(super) search_index: crate::search::index_publication::Publisher,
     /// The primary route [`Self::search_index`] published on.
-    pub(super) search_index_route: Option<tilo_ui_base::collaboration::AcceptedRoute>,
+    pub(super) search_index_route: Option<::collaboration::AcceptedRoute>,
 }
 
 #[cfg(feature = "model")]
 impl ContinuationRuntime {
-    pub(super) fn new(
-        pending_restore: Option<tilo_ui_base::collaboration::ContinuationMetadata>,
-    ) -> Self {
+    pub(super) fn new(pending_restore: Option<::collaboration::ContinuationMetadata>) -> Self {
         Self {
             last_published: None,
             publication_initialized: false,
@@ -851,7 +849,7 @@ pub(super) struct CollaborationRuntime {
     pub(super) manager: CollaborationManager,
     /// What the primary route's end-to-end encrypted channel lets this
     /// device do, as last reported; `None` before the first report.
-    pub(super) key_access: Option<tilo_ui_base::collaboration::KeyAccessState>,
+    pub(super) key_access: Option<::collaboration::KeyAccessState>,
     /// What the window's status line last said about the connection: a
     /// join held up, refused or lost changes it without changing the
     /// window's model.
@@ -859,8 +857,7 @@ pub(super) struct CollaborationRuntime {
     /// Action requests the window's clients made while `manager` was still joining its primary
     /// route, which carries nothing else yet: sent, in order, once it is ready. Dropped, an
     /// invocation would wait for an answer that never comes.
-    pub(super) held_requests:
-        std::collections::VecDeque<tilo_ui_base::collaboration::CollabRequest>,
+    pub(super) held_requests: std::collections::VecDeque<::collaboration::CollabRequest>,
     /// How the window takes up what `manager`'s workspace sends it.
     pub(super) delivery: super::WorkspaceDelivery,
     /// The store read of the workspace's members the window is waiting for, by its request id:
@@ -902,8 +899,8 @@ pub(super) struct PresenceRuntime {
     pub(super) pointer_space: Option<tilo_ui_base::presence::PointerSpace>,
     pub(super) followed_peer: Option<tilo_ui_base::permissions::MemberId>,
     pub(super) last_pointer_broadcast: Option<Instant>,
-    pub(super) last_focus: Option<(PresenceKey, tilo_ui_base::collaboration::PresencePayload)>,
-    pub(super) last_location: Option<(PresenceKey, tilo_ui_base::collaboration::PresencePayload)>,
+    pub(super) last_focus: Option<(PresenceKey, ::collaboration::PresencePayload)>,
+    pub(super) last_location: Option<(PresenceKey, ::collaboration::PresencePayload)>,
     /// What the app last said of the draft its person writes.
     pub(super) composing: tilo_ui_base::presence::DraftSaid,
     pub(super) last_view: Option<crate::view::ViewSubset>,

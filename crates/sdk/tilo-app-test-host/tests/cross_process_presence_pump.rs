@@ -2,7 +2,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::support_collab::TypedBroker;
-use tilo_ui_base::collaboration::PresencePayload;
+use collab_types::presence::PresencePayload;
 use tilo_ui_base::presence::PresenceKey;
 use ui_core::app::App;
 use ui_core::state::State;

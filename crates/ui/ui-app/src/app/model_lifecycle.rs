@@ -41,7 +41,7 @@ pub(super) struct PublicationStamp {
     resource_generation: u64,
     permission_generation: u64,
     registry_generation: u64,
-    route: Option<tilo_ui_base::collaboration::AcceptedRoute>,
+    route: Option<::collaboration::AcceptedRoute>,
     revision: String,
 }
 

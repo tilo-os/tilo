@@ -89,7 +89,7 @@ impl App {
             event,
             CollabEvent::Document { .. } | CollabEvent::CommittedDocument { .. }
         ) {
-            tilo_ui_base::widget::handle_collab_event(self.root_widget.as_mut(), event);
+            tilo_ui::widget::handle_collab_event(self.root_widget.as_mut(), event);
         }
     }
     /// Local queue state, not an acknowledgement of remote delivery/durability.
@@ -492,7 +492,7 @@ impl App {
     /// The workspace's hosts have nothing of the on-demand record on `route`, or
     /// none is connected: every store a live owner reads from is told
     /// ([`crate::resource::ResourceStore::note_workspace_answered`]).
-    pub(super) fn resource_unavailable(&mut self, route: &tilo_ui_base::collaboration::RouteSpec) {
+    pub(super) fn resource_unavailable(&mut self, route: &::collaboration::RouteSpec) {
         let Some(id) = route
             .document
             .as_deref()
@@ -518,10 +518,7 @@ impl App {
     /// has no owner to take it, and would wait forever for the next reading of
     /// it without this: it is not here, so nothing it holds is published, and
     /// nothing that names it is offered.
-    pub(super) fn unheld_resource_arrived(
-        &mut self,
-        route: &tilo_ui_base::collaboration::RouteSpec,
-    ) {
+    pub(super) fn unheld_resource_arrived(&mut self, route: &::collaboration::RouteSpec) {
         let held = self
             .document_routes
             .owners
@@ -563,7 +560,7 @@ impl App {
     /// sent, into the record the route belongs to.
     pub(super) fn apply_routed_document(
         &mut self,
-        route: &tilo_ui_base::collaboration::RouteSpec,
+        route: &::collaboration::RouteSpec,
         mutation: collab_types::DocumentMutation,
     ) {
         self.refresh_document_routes();
@@ -658,7 +655,7 @@ mod tests {
     }
 
     fn part(
-        route: tilo_ui_base::collaboration::RouteSpec,
+        route: ::collaboration::RouteSpec,
         mutation: collab_types::DocumentMutation,
     ) -> PublishedPart {
         PublishedPart {
@@ -682,11 +679,11 @@ mod tests {
             let other = uuid::Uuid::new_v4();
             let mut parts = vec![
                 part(
-                    tilo_ui_base::collaboration::RouteSpec::app("so.tilo.test-tasks", workspace),
+                    ::collaboration::RouteSpec::app("so.tilo.test-tasks", workspace),
                     action_mutation("title", "a", invocation),
                 ),
                 part(
-                    tilo_ui_base::collaboration::RouteSpec::document(
+                    ::collaboration::RouteSpec::document(
                         "so.tilo.test-discussion",
                         workspace,
                         "thread",
@@ -694,11 +691,11 @@ mod tests {
                     action_mutation("body", "b", invocation),
                 ),
                 part(
-                    tilo_ui_base::collaboration::RouteSpec::app("so.tilo.test-notes", workspace),
+                    ::collaboration::RouteSpec::app("so.tilo.test-notes", workspace),
                     action_mutation("title", "c", other),
                 ),
                 part(
-                    tilo_ui_base::collaboration::RouteSpec::app("so.tilo.test-books", workspace),
+                    ::collaboration::RouteSpec::app("so.tilo.test-books", workspace),
                     collab_types::DocumentMutation::Snapshot(Vec::new()),
                 ),
             ];

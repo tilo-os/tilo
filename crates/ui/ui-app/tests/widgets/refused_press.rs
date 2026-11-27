@@ -520,7 +520,7 @@ fn an_agent_s_call_to_a_refused_action_never_asks_the_workspace() {
     let asked_the_workspace = driver.peer_requests().into_iter().any(|request| {
         matches!(
             request,
-            tilo_ui_base::collaboration::CollabRequest::RemoteAction {
+            ::collaboration::CollabRequest::RemoteAction {
                 message: tilo_actions::remote::RemoteActionMessage::Invoke(ref invoke),
                 ..
             } if invoke.target.provider == tilo_actions::remote::OWN_PROVIDER

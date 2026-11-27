@@ -1,10 +1,10 @@
 use super::*;
+use ::collaboration::CollabEvent;
+use ::collaboration::CollabRequest;
+use ::collaboration::PeerTransport;
+use ::collaboration::RouteSpec;
 use std::cell::RefCell;
 use std::rc::Rc;
-use tilo_ui_base::{
-    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PeerTransport,
-    collaboration::RouteSpec,
-};
 
 struct AcknowledgingPeer {
     connected: bool,

@@ -16,7 +16,7 @@ pub trait PublishesPresence: Widget {
     #[cfg(feature = "model")]
     fn presence_payload(
         &self,
-    ) -> Option<(super::PresenceKey, crate::collaboration::PresencePayload)> {
+    ) -> Option<(super::PresenceKey, collab_types::presence::PresencePayload)> {
         None
     }
 
@@ -117,7 +117,7 @@ pub fn composing_draft(widget: &(impl Widget + ?Sized)) -> Option<(super::Presen
 #[cfg(feature = "model")]
 pub fn presence_payload(
     widget: &(impl Widget + ?Sized),
-) -> Option<(super::PresenceKey, crate::collaboration::PresencePayload)> {
+) -> Option<(super::PresenceKey, collab_types::presence::PresencePayload)> {
     capability::<dyn PublishesPresence>(widget)?.presence_payload()
 }
 
@@ -224,11 +224,11 @@ pub fn agent_text_loci(
 #[cfg(feature = "model")]
 pub fn subtree_presence(
     root: &dyn Widget,
-) -> Vec<(super::PresenceKey, crate::collaboration::PresencePayload)> {
+) -> Vec<(super::PresenceKey, collab_types::presence::PresencePayload)> {
     fn walk(
         widget: &dyn Widget,
         visited: &mut usize,
-        found: &mut Vec<(super::PresenceKey, crate::collaboration::PresencePayload)>,
+        found: &mut Vec<(super::PresenceKey, collab_types::presence::PresencePayload)>,
     ) {
         if *visited >= SUBTREE_NODES || found.len() >= SUBTREE_PAYLOADS {
             return;

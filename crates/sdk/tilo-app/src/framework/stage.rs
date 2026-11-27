@@ -163,7 +163,7 @@ fn stage_root(driver: &mut Driver, scenario: Option<&str>) -> Option<Members> {
 type Members = Vec<(
     String,
     tilo_ui_base::presence::PresenceKey,
-    tilo_ui_base::PresencePayload,
+    collab_types::presence::PresencePayload,
 )>;
 
 /// A scenario action's id and arguments.

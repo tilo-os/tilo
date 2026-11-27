@@ -512,24 +512,25 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
-            tilo_ui_base::local_identity::install_source(None);
+            ::collaboration::local_identity::install_source(None);
         }
     }
     let _guard = tilo_test_env::lock();
     let _restore = Restore;
-    tilo_ui_base::local_identity::install_source(Some(Arc::new(
-        tilo_ui_base::local_identity::FixedIdentity(tilo_ui_base::local_identity::LocalIdentity {
-            group_public_key: [1; 32],
-            display_name: String::new(),
-            avatar_color: [0; 3],
-            device_public_key: None,
-        }),
+    ::collaboration::local_identity::install_source(Some(Arc::new(
+        ::collaboration::local_identity::FixedIdentity(
+            ::collaboration::local_identity::LocalIdentity {
+                group_public_key: [1; 32],
+                display_name: String::new(),
+                avatar_color: [0; 3],
+                device_public_key: None,
+            },
+        ),
     )));
     let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
         settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
     );
-    let mut settings =
-        tilo_ui_base::personal_dictionary::TestSettings::new(source, "so.tilo.notes");
+    let mut settings = crate::personal_dictionary::TestSettings::new(source, "so.tilo.notes");
     let field = |text: &str| {
         TextInput::local()
             .with_autocorrect(true)
@@ -539,10 +540,10 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     let mut input = field("teh");
     input.core.set_caret(input.text.len());
     assert!(input.autocorrection_candidate().is_some());
-    tilo_ui_base::personal_dictionary::edit(
+    crate::personal_dictionary::edit(
         0,
-        tilo_ui_base::personal_dictionary::Edit::Add(
-            tilo_ui_base::personal_dictionary::Word::new("teh", None).unwrap(),
+        crate::personal_dictionary::Edit::Add(
+            crate::personal_dictionary::Word::new("teh", None).unwrap(),
         ),
     )
     .unwrap();
@@ -551,14 +552,13 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     assert_eq!(input.value(), "teh ");
     // An edit is a request the session answers: it refuses an ordinary app's reset, and the
     // words stay as they were.
-    tilo_ui_base::personal_dictionary::edit(1, tilo_ui_base::personal_dictionary::Edit::Reset)
-        .unwrap();
+    crate::personal_dictionary::edit(1, crate::personal_dictionary::Edit::Reset).unwrap();
     assert!(
         settings.flush().is_err(),
         "ordinary apps may add explicit words but cannot reset the dictionary"
     );
     assert!(
-        tilo_ui_base::personal_dictionary::snapshot()
+        crate::personal_dictionary::snapshot()
             .unwrap()
             .contains("teh", "en"),
         "a refused reset leaves the words alone"
@@ -571,10 +571,10 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
         "address ",
         "personal words never force ordinary replacements"
     );
-    tilo_ui_base::personal_dictionary::edit(
+    crate::personal_dictionary::edit(
         1,
-        tilo_ui_base::personal_dictionary::Edit::Add(
-            tilo_ui_base::personal_dictionary::Word::new("Élodie", Some("fr")).unwrap(),
+        crate::personal_dictionary::Edit::Add(
+            crate::personal_dictionary::Word::new("Élodie", Some("fr")).unwrap(),
         ),
     )
     .unwrap();
@@ -587,8 +587,8 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     english.set_focus(true);
     english.refresh_personal_spelling();
     assert!(!english.personal_word("Élodie"));
-    tilo_ui_base::local_identity::install_source(Some(Arc::new(
-        tilo_ui_base::local_identity::NoLocalIdentity,
+    ::collaboration::local_identity::install_source(Some(Arc::new(
+        ::collaboration::local_identity::NoLocalIdentity,
     )));
     french.refresh_personal_spelling();
     assert!(!french.personal_word("Élodie"));

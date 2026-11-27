@@ -96,8 +96,8 @@ tilo_test_env::scenario! {
             let app_state = State::load(&base_bytes).unwrap();
             let root = Box::new(crate::widget::Text::new("t"));
             let mut app = App::new(app_state, root);
-            let route = tilo_ui_base::collaboration::RouteSpec::app("snapshot-fixture", uuid::Uuid::new_v4());
-            app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
+            let route = ::collaboration::RouteSpec::app("snapshot-fixture", uuid::Uuid::new_v4());
+            app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
                 route: route.clone(),
                 epoch: uuid::Uuid::new_v4(),
             });

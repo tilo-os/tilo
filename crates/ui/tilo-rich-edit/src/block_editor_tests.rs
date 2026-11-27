@@ -1262,7 +1262,7 @@ tilo_test_env::scenario! {
     phase presence_payload_reports_caret_selection_or_nothing;
     {
         fn presence_payload_reports_focused_block_caret() {
-            use tilo_ui_base::collaboration::PresencePayload;
+            use collab_types::presence::PresencePayload;
             let mut ed = BlockEditor::new();
             ed.set_blocks(vec![Block::paragraph("hello world")]);
             ed.focus_block(0, CursorPlacement::Byte(3));
@@ -1276,7 +1276,7 @@ tilo_test_env::scenario! {
         }
 
         fn presence_payload_carries_one_ordered_cross_block_selection() {
-            use tilo_ui_base::collaboration::PresencePayload;
+            use collab_types::presence::PresencePayload;
 
             let mut ed = BlockEditor::new();
             ed.set_blocks(vec![

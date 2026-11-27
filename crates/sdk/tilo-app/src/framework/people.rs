@@ -115,7 +115,7 @@ impl People {
         Self {
             revision: LocalState::new(0),
             local: me
-                .and_then(|_| tilo_ui_base::local_identity::own_name())
+                .and_then(|_| ::collaboration::local_identity::own_name())
                 .map(Rc::from),
             me: me.cloned(),
             devices: Rc::default(),

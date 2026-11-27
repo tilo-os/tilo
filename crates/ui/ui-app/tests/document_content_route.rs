@@ -5,6 +5,11 @@
 
 use std::sync::Arc;
 
+use ::collaboration::CollabEvent;
+use ::collaboration::RouteSpec;
+use ::collaboration::document_content::ContentLink;
+use ::collaboration::document_content::DocumentContent;
+use ::collaboration::document_content::keep_link;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
@@ -14,11 +19,6 @@ use tilo_actions::{
 use tilo_content::ContentStore;
 use tilo_ui_app::widget::{Column, Text};
 use tilo_ui_app::{App, State, WakeScope};
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::RouteSpec};
-use tilo_ui_base::{
-    collaboration::document_content::ContentLink, collaboration::document_content::DocumentContent,
-    collaboration::document_content::keep_link,
-};
 
 const APP: &str = "so.tilo.record-content-route-arrival-test";
 

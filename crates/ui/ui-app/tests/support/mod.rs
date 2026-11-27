@@ -19,10 +19,11 @@ pub mod render;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use ::collaboration::CollabEvent;
+use ::collaboration::CollabRequest;
 use tilo_ui_app::App;
 use tilo_ui_app::state::State;
 use tilo_ui_app::widget::{Column, Text};
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
 type PeerInboxes = HashMap<String, VecDeque<CollabEvent>>;
 
@@ -131,7 +132,7 @@ pub fn pump(relay: &mut MemoryRelay) {
         match req {
             CollabRequest::Document { mutation, .. } => {
                 let event = CollabEvent::Document {
-                    route: tilo_ui_base::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
+                    route: ::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
                     mutation,
                 };
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);

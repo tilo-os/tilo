@@ -58,6 +58,20 @@ pub struct ProcessIdentity {
     pub managed_agent_context: bool,
 }
 
+impl ProcessIdentity {
+    /// The workspace the launcher named: `None` when it named none, an error when what it named
+    /// is no workspace id. The nil id is returned as named; it addresses nobody.
+    ///
+    /// # Errors
+    /// The named workspace does not parse as a workspace id.
+    pub fn workspace(&self) -> Result<Option<uuid::Uuid>, uuid::Error> {
+        self.workspace_id
+            .as_deref()
+            .map(uuid::Uuid::parse_str)
+            .transpose()
+    }
+}
+
 /// The MPRIS bus name of the media player a launched package publishes:
 /// `org.mpris.MediaPlayer2.<package id>`.
 #[must_use]

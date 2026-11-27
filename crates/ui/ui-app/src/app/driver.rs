@@ -2934,7 +2934,7 @@ impl Driver {
             .into_iter()
             .skip(sent)
             .find_map(|request| match request {
-                tilo_ui_base::collaboration::CollabRequest::RemoteAction {
+                ::collaboration::CollabRequest::RemoteAction {
                     message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
                     ..
                 } if request.target.address.action == address.action => Some(request.invocation),

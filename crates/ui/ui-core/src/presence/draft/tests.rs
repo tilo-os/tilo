@@ -1,5 +1,5 @@
 use crate::time::Duration;
-use tilo_ui_base::collaboration::PresencePayload;
+use ::collaboration::PresencePayload;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::presence::COMPOSING_LINGER;
 use tilo_ui_base::presence::PresenceKey;

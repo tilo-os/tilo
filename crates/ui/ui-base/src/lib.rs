@@ -100,8 +100,6 @@ pub mod chart_palette;
 pub mod chrome;
 pub mod clock;
 #[cfg(feature = "model")]
-pub mod collaboration;
-#[cfg(feature = "model")]
 pub use tilo_actions::remote::native_media;
 pub mod collection_transition;
 pub use {tilo_ui_paint::color, tilo_ui_paint::color_compat};
@@ -143,7 +141,6 @@ pub mod jpeg;
 pub mod keycaps;
 pub mod keys;
 pub mod latin_chord;
-pub mod local_identity;
 pub mod local_state;
 #[cfg(feature = "native")]
 pub mod native;
@@ -179,7 +176,6 @@ pub use {
     query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryImeChange,
     query_text::QueryInk, query_text::QueryView,
 };
-pub mod personal_dictionary;
 pub mod text_break;
 pub mod text_detect;
 pub use {text_break::LineBreakKind, text_break::line_break_opportunities};
@@ -188,8 +184,6 @@ pub use {text_break::LineBreakKind, text_break::line_break_opportunities};
 /// framework, the shell, the browser runtime, the installer); an app answers operations as a typed
 /// effect vocabulary and never names these (`tools/policy/check_app_resource_action_contract.py`).
 pub mod host_operation {
-    #[cfg(feature = "model")]
-    pub use crate::widget::resource_operation::OperationTarget;
     pub use crate::widget::resource_operation::{
         LAY_OUT_FIRST, OperationRequest, ResourceOperation, ResourceOperationStart,
         ResourceOperations, asks_to_lay_out_first, host_lays_out_first, lay_out_first,
@@ -360,8 +354,6 @@ pub use {
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
 pub use animation::Lerp;
-#[cfg(feature = "model")]
-pub use collaboration::PresencePayload;
 #[cfg(feature = "model")]
 pub use widget::ViewPresence;
 pub use {gesture::DragSelect, gesture::Granularity};

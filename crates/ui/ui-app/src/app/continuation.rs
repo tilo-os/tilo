@@ -113,9 +113,9 @@ fn portable_resource(record: &str) -> bool {
 /// Unchanged when `record` may not travel.
 #[must_use]
 pub fn with_continuation_resource(
-    metadata: tilo_ui_base::collaboration::ContinuationMetadata,
+    metadata: ::collaboration::ContinuationMetadata,
     record: &crate::resource::DocumentId,
-) -> tilo_ui_base::collaboration::ContinuationMetadata {
+) -> ::collaboration::ContinuationMetadata {
     if metadata.schema_version != STRUCTURAL_CONTINUATION_SCHEMA
         || !portable_resource(record.as_str())
     {
@@ -127,12 +127,10 @@ pub fn with_continuation_resource(
     };
     envelope.record = Some(record.as_str().to_owned());
     match postcard::to_stdvec(&envelope) {
-        Ok(bytes) if bytes.len() <= 32 * 1024 => {
-            tilo_ui_base::collaboration::ContinuationMetadata {
-                schema_version: STRUCTURAL_CONTINUATION_SCHEMA,
-                bytes,
-            }
-        }
+        Ok(bytes) if bytes.len() <= 32 * 1024 => ::collaboration::ContinuationMetadata {
+            schema_version: STRUCTURAL_CONTINUATION_SCHEMA,
+            bytes,
+        },
         _ => metadata,
     }
 }
@@ -234,8 +232,8 @@ pub fn structural_continuation_facets(bytes: &[u8]) -> Option<StructuralContinua
 /// hosts may use this to produce the identical envelope in conformance tests.
 pub fn compose_structural_continuation_metadata(
     view: crate::view::View,
-    semantic: Option<tilo_ui_base::collaboration::ContinuationMetadata>,
-) -> Option<tilo_ui_base::collaboration::ContinuationMetadata> {
+    semantic: Option<::collaboration::ContinuationMetadata>,
+) -> Option<::collaboration::ContinuationMetadata> {
     // Invalid widget projections must never suppress the toolkit checkpoint.
     // Shell policy performs app-specific validation; these common bounds
     // prevent malformed implementations from poisoning publication.
@@ -269,7 +267,7 @@ pub fn compose_structural_continuation_metadata(
         bytes = postcard::to_stdvec(&envelope).ok()?;
     }
     (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(
-        tilo_ui_base::collaboration::ContinuationMetadata {
+        ::collaboration::ContinuationMetadata {
             schema_version: STRUCTURAL_CONTINUATION_SCHEMA,
             bytes,
         },
@@ -306,7 +304,7 @@ pub fn sanitize_structural_continuation_metadata(
 }
 
 fn continuation_publication(
-    metadata: Option<&tilo_ui_base::collaboration::ContinuationMetadata>,
+    metadata: Option<&::collaboration::ContinuationMetadata>,
     had_previous: bool,
 ) -> Option<CollabRequest> {
     match metadata {
@@ -337,7 +335,7 @@ impl App {
             None
         } else {
             let semantic = tilo_ui_base::widget::capability::capability::<
-                dyn tilo_ui_base::widget::Continuable,
+                dyn tilo_ui::widget::Continuable,
             >(&*self.root_widget)
             .and_then(|continuable| {
                 continuable.continuation_metadata(&self.state.doc, &self.state.root)
@@ -380,12 +378,12 @@ impl App {
                     self.continuation.pending_view = Some(envelope.presentation.into_view());
                     if let Some(semantic) = envelope.semantic {
                         let root = self.state.root.clone();
-                        let metadata = tilo_ui_base::collaboration::ContinuationMetadata {
+                        let metadata = ::collaboration::ContinuationMetadata {
                             schema_version: semantic.schema_version,
                             bytes: semantic.bytes,
                         };
                         if let Some(continuable) = tilo_ui_base::widget::capability::capability_mut::<
-                            dyn tilo_ui_base::widget::Continuable,
+                            dyn tilo_ui::widget::Continuable,
                         >(&mut *self.root_widget)
                         {
                             let _ = continuable.restore_continuation_metadata(
@@ -408,7 +406,7 @@ impl App {
             }
             let root = self.state.root.clone();
             if let Some(continuable) = tilo_ui_base::widget::capability::capability_mut::<
-                dyn tilo_ui_base::widget::Continuable,
+                dyn tilo_ui::widget::Continuable,
             >(&mut *self.root_widget)
             {
                 let _ = continuable.restore_continuation_metadata(

@@ -85,80 +85,14 @@ pub struct OperationRequest<'a> {
     pub payload: &'a [u8],
 }
 
-/// Inert routing facts captured from the actual resolved record owner.
-/// These are neither a certificate nor permission to execute a host job.
-/// A host moderation receipt, suitable for an existing action worker.
-pub type ExternalModerationFuture = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<registry_types::ModerationCase, String>> + Send>,
->;
-
-#[cfg(feature = "model")]
-#[derive(Clone, Debug)]
-pub struct OperationTarget {
-    route: ::collaboration::RouteSpec,
-    address: tilo_action_types::ActionAddress,
-}
-#[cfg(feature = "model")]
-impl OperationTarget {
-    pub fn new(
-        route: ::collaboration::RouteSpec,
-        address: tilo_action_types::ActionAddress,
-    ) -> Self {
-        Self { route, address }
-    }
-    pub fn route(&self) -> &::collaboration::RouteSpec {
-        &self.route
-    }
-    pub fn address(&self) -> &tilo_action_types::ActionAddress {
-        &self.address
-    }
-
-    /// Submit an operation on the exact dispatched record route. The broker
-    /// recovers original admission and compares the complete action parameters.
-    ///
-    /// # Errors
-    /// Refuses another action, missing record routing or unavailable transport.
-    pub fn external_moderation(
-        &self,
-        invocation: tilo_action_types::InvocationId,
-        operation: registry_types::ExternalModerationOperation,
-    ) -> Result<ExternalModerationFuture, String> {
-        runtime_collab::external_moderation::validate_action_operation(
-            &self.address.action,
-            &operation,
-        )?;
-        if self.address.resource.is_empty()
-            || self.route.document.as_deref().is_none_or(str::is_empty)
-        {
-            return Err("external moderation requires the exact dispatched resource".into());
-        }
-        #[cfg(feature = "broker-transport")]
-        {
-            let receive = ::collaboration::external_moderation::enqueue(
-                &self.route.channel_id(),
-                invocation,
-                operation,
-            )?;
-            Ok(Box::pin(async move {
-                receive
-                    .await
-                    .map_err(|_| "external moderation transport retired")?
-            }))
-        }
-        #[cfg(not(feature = "broker-transport"))]
-        {
-            let _ = invocation;
-            Err("external moderation requires the admitted native broker transport".into())
-        }
-    }
-}
-
 /// An exported effect/view operation offered to the retained tree.
 #[derive(Clone, Copy)]
 pub struct ResourceOperation<'a> {
     request: OperationRequest<'a>,
+    /// Where the host that dispatched the operation routed it: the host's own record target,
+    /// which the toolkit carries to the handler without reading it.
     #[cfg(feature = "model")]
-    target: Option<&'a OperationTarget>,
+    target: Option<&'a (dyn std::any::Any + Send + Sync)>,
     /// The resource the operation was resolved against: the app's own, a
     /// child, or a live row.
     resource: Option<&'a str>,
@@ -196,7 +130,7 @@ impl<'a> ResourceOperation<'a> {
 
     #[cfg(feature = "model")]
     #[must_use]
-    pub fn with_target(mut self, target: Option<&'a OperationTarget>) -> Self {
+    pub fn with_target(mut self, target: Option<&'a (dyn std::any::Any + Send + Sync)>) -> Self {
         self.target = target;
         self
     }
@@ -207,9 +141,10 @@ impl<'a> ResourceOperation<'a> {
         self
     }
 
+    /// The dispatching host's target, read as the `T` that host carries ([`Self::with_target`]).
     #[cfg(feature = "model")]
-    pub fn target(&self) -> Option<&OperationTarget> {
-        self.target
+    pub fn target<T: std::any::Any>(&self) -> Option<&'a T> {
+        self.target?.downcast_ref()
     }
 
     /// The resource the operation was resolved against: the app's own, a

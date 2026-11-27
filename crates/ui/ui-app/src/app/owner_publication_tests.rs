@@ -1,7 +1,7 @@
 // Checked component regressions for the pre-terminal document handoff.
 thread_local! { static PUBLICATION_NORMAL_POLL: Cell<bool> = const { Cell::new(false) }; }
 struct PublicationTransport(Rc<RefCell<Vec<CollabRequest>>>);
-impl tilo_ui_base::collaboration::PeerTransport for PublicationTransport {
+impl ::collaboration::PeerTransport for PublicationTransport {
     fn is_connected(&self) -> bool {
         true
     }
@@ -14,14 +14,14 @@ impl tilo_ui_base::collaboration::PeerTransport for PublicationTransport {
     }
     fn join_route(
         &mut self,
-        _: tilo_ui_base::collaboration::RouteSpec,
+        _: ::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }
     fn send_to_route(
         &mut self,
-        _: tilo_ui_base::collaboration::RouteSpec,
+        _: ::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
         self.send(request)

@@ -9,14 +9,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use ::collaboration::SurfaceDelta;
+use ::collaboration::SurfacePublication;
+use ::collaboration::SurfaceTable;
 use tilo_actions::{
     ActionAddress, ActionArgs, ActionDescriptor, ActionOutput, ActionParam, ActionSpec, ActionType,
     EncodedAction, ExecutionLocus, InputSpec, OperationKind, ParamType, ResourceSpec, Target,
 };
 use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
-use tilo_ui_base::{
-    collaboration::SurfaceDelta, collaboration::SurfacePublication, collaboration::SurfaceTable,
-};
 use ui::automerge::AutoCommit;
 use ui::widget::resources::PublishesResources;
 

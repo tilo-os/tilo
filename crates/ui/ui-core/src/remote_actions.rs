@@ -14,11 +14,12 @@ use tilo_actions::remote::{
     RemoteActionTarget, ResourceReadRequest, UpdateMark, WatchScope,
 };
 
+use crate::widget::Collaborative;
+use ::collaboration::CollabEvent;
+use ::collaboration::CollabRequest;
 use tilo_lock::MutexRecover as _;
 use tilo_ui_base::arriving::{Arrival, ArrivalWriter, Arriving, Source};
-use tilo_ui_base::collaboration::{CollabEvent, CollabRequest};
 use tilo_ui_base::wake::WakeHandle;
-use tilo_ui_base::widget::Collaborative;
 
 type Served = (Arc<dyn ActionProvider + Send + Sync>, Caller);
 

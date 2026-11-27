@@ -172,11 +172,11 @@ impl super::TextInput {
                 self.spell_cache_key = None;
             }
             CtxAction::AddToDictionary(word) => {
-                let result = tilo_ui_base::personal_dictionary::snapshot().and_then(|snapshot| {
-                    tilo_ui_base::personal_dictionary::edit(
+                let result = crate::personal_dictionary::snapshot().and_then(|snapshot| {
+                    crate::personal_dictionary::edit(
                         snapshot.revision,
-                        tilo_ui_base::personal_dictionary::Edit::Add(
-                            tilo_ui_base::personal_dictionary::Word::new(&word, None)?,
+                        crate::personal_dictionary::Edit::Add(
+                            crate::personal_dictionary::Word::new(&word, None)?,
                         ),
                     )
                 });

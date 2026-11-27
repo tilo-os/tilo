@@ -204,6 +204,10 @@ pub use tilo_reference;
 /// The role a member holds in a workspace, which an app's tests open it as.
 pub use tilo_permissions::Role;
 
+/// The collab client (its requests, events and the manager that carries them), re-exported so an
+/// app names it without a dependency of its own.
+pub use collaboration;
+
 /// The package registry's vocabulary (entries, artifacts, moderation cases)
 /// that the SDK's moderation and package APIs speak, re-exported so an app
 /// names those types without a dependency of its own.
@@ -249,20 +253,23 @@ pub mod prelude {
     };
     pub use tilo_ui_base::i18n::LabelKey;
 
+    pub use ::collaboration;
     pub use settings_model::{DeviceClass, Scope, SettingsSchema};
+    pub use tilo_ui_base::LatestRequest;
+    pub use tilo_ui_base::LatestTask;
+    pub use tilo_ui_base::LocalState;
+    pub use tilo_ui_base::PresenceCtx;
+    pub use tilo_ui_base::TextRenderer;
+    pub use tilo_ui_base::Theme;
     pub use tilo_ui_base::collection_transition::ListModelChange;
+    pub use tilo_ui_base::presence;
     pub use tilo_ui_base::tokens::TextRole;
-    pub use tilo_ui_base::{
-        LatestRequest, LatestTask, LocalState, PresenceCtx, TextRenderer, Theme, collaboration,
-        presence,
-    };
     pub use tilo_ui_base::{arriving::Arrival, arriving::Arriving};
     pub use tilo_ui_base::{
-        widget::ActionEmitter, widget::AudiencePresentationProvider, widget::Collaborative,
-        widget::CompleteContentProvider, widget::ContentKind, widget::Continuable,
-        widget::ControlBindingKind, widget::ControlBindingMetadata, widget::Element,
-        widget::EventCtx, widget::FullscreenProvider, widget::NativeViewLifecycle, widget::Spacer,
-        widget::Widget,
+        widget::ActionEmitter, widget::AudiencePresentationProvider,
+        widget::CompleteContentProvider, widget::ContentKind, widget::ControlBindingKind,
+        widget::ControlBindingMetadata, widget::Element, widget::EventCtx,
+        widget::FullscreenProvider, widget::NativeViewLifecycle, widget::Spacer, widget::Widget,
     };
     pub use ui_core::application::{
         ANY_MEDIA_TYPE, AppComponent, ApplicationCatalog, ApplicationDefinition,
@@ -285,6 +292,7 @@ pub mod prelude {
     pub use ui_core::widget::resource_actions;
     pub use ui_core::widget::resource_actions::{ActionForm, ActionValue};
     pub use ui_core::widget::virtual_list::{ListModel, VirtualList};
+    pub use ui_core::widget::{Collaborative, Continuable};
     pub use ui_core::{
         SearchRegistry, State, UndoAccess, UndoRequest, UndoStatus, column, history_source, row,
         search, stack,

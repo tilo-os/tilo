@@ -599,17 +599,6 @@ impl runtime_collab::event::EndpointOwnership for SdkAuthority {
 /// session's brokers share.
 pub type CollabEvent = runtime_collab::event::CollabEvent<SdkAuthority>;
 
-/// The colour a roster row's packed `0x00RRGGBB` names: the presence
-/// hue nearest it, `None` for `0` or a grey.
-#[must_use]
-pub fn colour_from_packed(packed: u32) -> Option<collab_types::presence::PresenceHue> {
-    if packed == 0 {
-        return None;
-    }
-    let [_, r, g, b] = packed.to_be_bytes();
-    collab_types::presence::PresenceHue::nearest_to_srgb(r, g, b)
-}
-
 /// Where a manager's connection stands, as the UI shows it.
 ///
 /// Construction never waits for the network: a manager that has a service
@@ -1775,9 +1764,8 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     // No workspace named is the nil workspace; one named that does not parse
     // is the same, and logged, since the app then reaches no workspace.
     let cluster_id = identity
-        .workspace_id
-        .as_deref()
-        .map_or(Ok(Uuid::nil()), Uuid::parse_str)
+        .workspace()
+        .map(Option::unwrap_or_default)
         .unwrap_or_else(|error| {
             tracing::warn!(workspace = ?identity.workspace_id, %error, "collab: launch workspace id does not parse");
             Uuid::nil()

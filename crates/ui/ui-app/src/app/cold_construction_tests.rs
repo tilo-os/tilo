@@ -23,7 +23,7 @@ tilo_test_env::scenario! {
 
     phase nested_construction_cannot_replace_the_original_worker;
     {
-        let original = tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(
+        let original = ::collaboration::native_initial::NativeConstruction::enter(
             CollaborationManager::disabled(),
         )
         .unwrap();

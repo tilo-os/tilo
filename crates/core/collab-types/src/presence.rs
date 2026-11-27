@@ -2,7 +2,7 @@
 //! draws it: the colour each person wears, the scope each presence update is
 //! keyed by, what it says, the call it carries, and who is in a workspace. The
 //! toolkit re-exports these (`ui::tokens`, `ui::presence`, `ui::permissions`, `ui::view`,
-//! `ui::collaboration`), so apps name them where they always have, and the
+//! `::collaboration`), so apps name them where they always have, and the
 //! session's services use them without linking a renderer.
 
 mod bridged;

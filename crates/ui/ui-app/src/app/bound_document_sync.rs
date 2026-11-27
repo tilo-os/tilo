@@ -5,7 +5,7 @@
 //! the document it shows.
 use super::{App, Widget};
 use crate::bound_dispatch::CallbackBinding;
-use tilo_ui_base::collaboration::AcceptedRoute;
+use ::collaboration::AcceptedRoute;
 
 pub(super) struct BoundDocumentSync {
     pub(super) binding: CallbackBinding,

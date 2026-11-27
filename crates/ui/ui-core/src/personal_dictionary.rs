@@ -14,8 +14,9 @@ struct Shared {
 impl Shared {
     fn current(&self) -> bool {
         self.owner.is_some()
-            && self.owner == crate::local_identity::load().map(|identity| identity.group_public_key)
-            && self.generation == crate::local_identity::generation()
+            && self.owner
+                == ::collaboration::local_identity::load().map(|identity| identity.group_public_key)
+            && self.generation == ::collaboration::local_identity::generation()
     }
 }
 #[cfg(feature = "model")]
@@ -42,14 +43,14 @@ impl Vocabulary for Shared {
 #[cfg(feature = "model")]
 pub fn reader() -> Arc<dyn Vocabulary> {
     Arc::new(Shared {
-        owner: crate::local_identity::load().map(|identity| identity.group_public_key),
-        generation: crate::local_identity::generation(),
+        owner: ::collaboration::local_identity::load().map(|identity| identity.group_public_key),
+        generation: ::collaboration::local_identity::generation(),
     })
 }
 
 #[cfg(all(feature = "broker-transport", feature = "model"))]
 pub fn snapshot() -> io::Result<Snapshot> {
-    crate::collaboration::channel_settings::installed()
+    ::collaboration::channel_settings::installed()
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -66,7 +67,7 @@ pub fn snapshot() -> io::Result<Snapshot> {
 pub fn revision() -> u64 {
     #[cfg(all(feature = "broker-transport", feature = "model"))]
     {
-        crate::collaboration::channel_settings::installed().map_or(0, |records| records.revision())
+        ::collaboration::channel_settings::installed().map_or(0, |records| records.revision())
     }
     #[cfg(not(all(feature = "broker-transport", feature = "model")))]
     {
@@ -77,7 +78,7 @@ pub fn revision() -> u64 {
 /// Submit an explicit user edit through the app's existing settings capability.
 #[cfg(all(feature = "broker-transport", feature = "model"))]
 pub fn edit(revision: u64, edit: Edit) -> io::Result<()> {
-    crate::collaboration::channel_settings::installed()
+    ::collaboration::channel_settings::installed()
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -114,13 +115,13 @@ mod tests {
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
-                crate::local_identity::install_source(None);
+                ::collaboration::local_identity::install_source(None);
             }
         }
         let _restore = Restore;
         let identity = |key| {
-            Arc::new(crate::local_identity::FixedIdentity(
-                crate::local_identity::LocalIdentity {
+            Arc::new(::collaboration::local_identity::FixedIdentity(
+                ::collaboration::local_identity::LocalIdentity {
                     group_public_key: [key; 32],
                     display_name: String::new(),
                     avatar_color: [0; 3],
@@ -128,16 +129,16 @@ mod tests {
                 },
             ))
         };
-        crate::local_identity::install_source(Some(identity(1)));
+        ::collaboration::local_identity::install_source(Some(identity(1)));
         let old = Shared {
             owner: Some([1; 32]),
-            generation: crate::local_identity::generation(),
+            generation: ::collaboration::local_identity::generation(),
         };
         assert!(old.current());
-        crate::local_identity::install_source(Some(identity(2)));
+        ::collaboration::local_identity::install_source(Some(identity(2)));
         assert!(!old.current());
         assert!(old.snapshot().is_err());
-        crate::local_identity::install_source(Some(identity(1)));
+        ::collaboration::local_identity::install_source(Some(identity(1)));
         assert!(
             !old.current(),
             "returning to the same account cannot revive an in-flight reader"
@@ -155,8 +156,8 @@ mod tests {
 ))]
 pub struct TestSettings {
     server: runtime_collab::settings::host::AppSettingsServer,
-    channel: Arc<crate::collaboration::channel_settings::ChannelSettings>,
-    previous: Option<Arc<crate::collaboration::channel_settings::ChannelSettings>>,
+    channel: Arc<::collaboration::channel_settings::ChannelSettings>,
+    previous: Option<Arc<::collaboration::channel_settings::ChannelSettings>>,
 }
 
 #[cfg(all(
@@ -166,11 +167,10 @@ pub struct TestSettings {
 ))]
 impl TestSettings {
     /// Serve the app's settings channel from `source`, as the session does.
-    pub fn new(source: Arc<dyn crate::settings_source::SettingsSource>, app: &str) -> Self {
-        let channel = Arc::new(crate::collaboration::channel_settings::ChannelSettings::new(app));
+    pub fn new(source: Arc<dyn tilo_ui_base::settings_source::SettingsSource>, app: &str) -> Self {
+        let channel = Arc::new(::collaboration::channel_settings::ChannelSettings::new(app));
         channel.linked();
-        let previous =
-            crate::collaboration::channel_settings::replace_for_test(Some(channel.clone()));
+        let previous = ::collaboration::channel_settings::replace_for_test(Some(channel.clone()));
         let server = runtime_collab::settings::host::AppSettingsServer::new(
             app,
             source,
@@ -208,6 +208,6 @@ impl TestSettings {
 impl Drop for TestSettings {
     fn drop(&mut self) {
         self.channel.disconnected();
-        crate::collaboration::channel_settings::replace_for_test(self.previous.take());
+        ::collaboration::channel_settings::replace_for_test(self.previous.take());
     }
 }

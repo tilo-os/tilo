@@ -70,5 +70,6 @@ fn account_name() -> String {
 /// The page has no login account: whoever is at it is named by the identity they signed in with.
 #[cfg(not(target_os = "linux"))]
 fn account_name() -> String {
-    tilo_ui_base::local_identity::load().map_or_else(String::new, |identity| identity.display_name)
+    ::collaboration::local_identity::load()
+        .map_or_else(String::new, |identity| identity.display_name)
 }

@@ -6,8 +6,6 @@ pub use ::collaboration::invocation_scope::{
     InvokerScope, current_invoker, current_presence, delivered_approval, delivered_invocation,
 };
 
-pub use tilo_ui_base::widget::resource_operation::ExternalModerationFuture;
-
 thread_local! {
     static VIEWERS: std::cell::RefCell<Vec<tilo_actions::PresenceId>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -182,9 +180,9 @@ pub fn check_shown_here(
 }
 
 use crate::resource::{DocumentCheckout, ResourceStore, resource_loan_matches};
+use ::collaboration::RouteSpec;
 use automerge::AutoCommit;
 use std::cell::RefCell;
-use tilo_ui_base::collaboration::RouteSpec;
 
 /// The record a disclosed read names: its workspace when it is shared in one.
 #[derive(Clone, Debug, PartialEq, Eq)]

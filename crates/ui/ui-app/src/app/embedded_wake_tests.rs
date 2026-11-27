@@ -2,12 +2,13 @@
 
 use super::theme_repaint_tests::{layout, paint};
 use super::*;
+use ::collaboration::CollabEvent;
+use ::collaboration::CollabRequest;
+use ::collaboration::CollaborationManager;
+use ::collaboration::PeerTransport;
+use ::collaboration::PresencePayload;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
-use tilo_ui_base::{
-    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::CollaborationManager,
-    collaboration::PeerTransport, collaboration::PresencePayload,
-};
 use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 
 struct QueuedTransport(Rc<RefCell<Vec<CollabEvent>>>);

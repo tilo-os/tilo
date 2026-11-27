@@ -9,11 +9,10 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
     {
         let mut fixture = ActionFixture::new();
         let binding = fixture.bindings[0].clone();
-        fixture.app.actions.bound_broker_route_for_test =
-            Some(tilo_ui_base::collaboration::AcceptedRoute {
-                route: binding.broker_route().unwrap(),
-                epoch: uuid::Uuid::new_v4(),
-            });
+        fixture.app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
+            route: binding.broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
+        });
         fixture
             .app
             .state

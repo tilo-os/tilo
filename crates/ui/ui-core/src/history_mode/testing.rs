@@ -370,8 +370,8 @@ pub struct LiveOwner {
     pub prompted: bool,
     pub mutable_identity: Option<Rc<MutableContinuationIdentity>>,
 }
-impl tilo_ui_base::widget::Collaborative for LiveOwner {
-    fn handle_collab_event(&mut self, _: &tilo_ui_base::collaboration::CollabEvent) {
+impl crate::widget::Collaborative for LiveOwner {
+    fn handle_collab_event(&mut self, _: &::collaboration::CollabEvent) {
         self.collab_events.set(self.collab_events.get() + 1);
         self.collab_wake_handles
             .borrow_mut()
@@ -381,7 +381,7 @@ impl tilo_ui_base::widget::Collaborative for LiveOwner {
 
 impl Widget for LiveOwner {
     tilo_ui_base::provides!(
-        dyn tilo_ui_base::widget::Collaborative,
+        dyn crate::widget::Collaborative,
         dyn tilo_ui_base::widget::undo_access::CommittedActions,
         dyn tilo_ui_base::widget::undo_access::UndoControl,
         dyn tilo_ui_base::widget::undo_access::LocalUndo,

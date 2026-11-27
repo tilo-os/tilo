@@ -5,8 +5,9 @@
 
 use crate::support_collab::TypedBroker;
 use crate::support_collab::{change_carrying, changes_of};
+use ::collaboration::CollabRequest;
+use ::collaboration::CollaborationManager;
 use collab_types::CommitNamed as _;
-use tilo_ui_base::{collaboration::CollabRequest, collaboration::CollaborationManager};
 
 const MIB: usize = 1024 * 1024;
 
@@ -104,7 +105,7 @@ fn an_over_limit_mutation_is_refused_explicitly_and_collaboration_continues() {
 
     assert_eq!(
         sender.try_send(CollabRequest::document_incremental(vec![0; limit + 1])),
-        Err(tilo_ui_base::collaboration::CollabSendError::TooLarge {
+        Err(::collaboration::CollabSendError::TooLarge {
             actual: limit + 1,
             max: limit,
         })

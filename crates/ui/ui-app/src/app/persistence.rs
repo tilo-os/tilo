@@ -99,7 +99,7 @@ impl App {
             self.collaboration.manager = manager.for_reopened(&checkout);
         }
         if let Some(scope) = self.presence.broadcast_scope.clone() {
-            self.broadcast_presence(scope, tilo_ui_base::collaboration::PresencePayload::Arrived);
+            self.broadcast_presence(scope, ::collaboration::PresencePayload::Arrived);
         }
         true
     }

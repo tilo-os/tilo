@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
                 })
             );
             assert_eq!(
-                tilo_ui_base::collaboration::local_cluster_id().to_string(),
+                ::collaboration::local_cluster_id().to_string(),
                 workspace,
                 "presence must be scoped from the same value the routing uses"
             );
@@ -78,7 +78,7 @@ tilo_test_env::scenario! {
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("TILO_WORKSPACE_ID");
-            assert!(tilo_ui_base::collaboration::local_cluster_id().is_nil());
+            assert!(::collaboration::local_cluster_id().is_nil());
             assert_eq!(local_workspace_key(), None);
         }
         // phase: empty_workspace_id_is_treated_as_unset

@@ -1,12 +1,13 @@
 use std::rc::Rc;
 
+use ::collaboration::CollabEvent;
+use ::collaboration::CollabRequest;
 use tilo_actions::remote::{
     InvocationReceipt, InvocationState, InvokeArgument, ReceiptStatus, RemoteActionMessage,
     RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
-use tilo_ui_base::widget::Collaborative as _;
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
+use ui_core::widget::Collaborative as _;
 
 use tilo_ui_base::arriving::Arrival;
 

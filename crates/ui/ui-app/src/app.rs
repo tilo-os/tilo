@@ -185,7 +185,7 @@ const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 /// workspace's identity of them with Tilo's model, else the operating system's account.
 pub(crate) fn local_person() -> tilo_actions::MemberId {
     #[cfg(feature = "model")]
-    let person = tilo_ui_base::collaboration::local_user_id();
+    let person = ::collaboration::local_user_id();
     #[cfg(not(feature = "model"))]
     let person = tilo_actions::MemberId::Person(tilo_actions::PersonId::from(
         crate::process::environment()
@@ -265,6 +265,12 @@ use crate::focus_navigation::Direction;
 use crate::state::State;
 use crate::time::Duration;
 use crate::time::Instant;
+#[cfg(feature = "model")]
+use ::collaboration::ActionDirectoryRequest;
+use ::collaboration::CollabEvent;
+use ::collaboration::CollabRequest;
+use ::collaboration::CollaborationManager;
+use ::collaboration::PresencePayload;
 use taffy::{NodeId, TaffyTree};
 #[cfg(feature = "model")]
 use tilo_permissions::PermissionContext;
@@ -275,12 +281,6 @@ use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
-#[cfg(feature = "model")]
-use tilo_ui_base::{
-    collaboration::ActionDirectoryRequest, collaboration::CollabEvent,
-    collaboration::CollabRequest, collaboration::CollaborationManager,
-    collaboration::PresencePayload,
-};
 use vello::kurbo::Rect as KurboRect;
 
 /// Cached [`crate::process::RunnerDiagnostics::perf_log`] check
@@ -310,7 +310,8 @@ fn scroll_opt_disabled() -> bool {
 #[cfg(feature = "model")]
 mod continuation_tests {
     use super::continuation_publication;
-    use tilo_ui_base::{collaboration::CollabRequest, collaboration::ContinuationMetadata};
+    use ::collaboration::CollabRequest;
+    use ::collaboration::ContinuationMetadata;
 
     #[test]
     fn vanished_continuations_clear_the_durable_projection() {
@@ -621,8 +622,8 @@ pub struct App {
     window: WindowRuntime,
     #[cfg(feature = "model")]
     committed_documents: Vec<(
-        tilo_ui_base::collaboration::RouteSpec,
-        tilo_ui_base::collaboration::CommittedDocument,
+        ::collaboration::RouteSpec,
+        ::collaboration::CommittedDocument,
     )>,
     #[cfg(feature = "model")]
     autosave_generation: u64,
@@ -701,7 +702,7 @@ struct AppConstructionInputs {
     text_scale: fn() -> f32,
     ui_scale: fn() -> f32,
     #[cfg(feature = "model")]
-    pending_continuation_restore: fn() -> Option<tilo_ui_base::collaboration::ContinuationMetadata>,
+    pending_continuation_restore: fn() -> Option<::collaboration::ContinuationMetadata>,
     profiler: fn() -> Option<crate::profiling::FrameProfiler>,
     floating_surface_client: fn() -> Option<crate::floating_surface::FloatingSurfaceServiceClient>,
     #[cfg(feature = "model")]
@@ -719,7 +720,7 @@ impl AppConstructionInputs {
             inputs,
             binding,
             Self::production().with_manager(
-                tilo_ui_base::collaboration::native_initial::take_manager()
+                ::collaboration::native_initial::take_manager()
                     .unwrap_or_else(|| CollaborationManager::for_resource(&binding.checkout)),
             ),
         )
@@ -837,7 +838,7 @@ impl AppConstructionInputs {
             },
             // The colour a person is known by is their workspace identity's: Tilo's model's.
             #[cfg(feature = "model")]
-            your_colour: tilo_ui_base::local_identity::own_colour,
+            your_colour: ::collaboration::local_identity::own_colour,
             #[cfg(not(feature = "model"))]
             your_colour: || None,
             high_contrast: || crate::process::environment().accessibility.high_contrast,
@@ -855,7 +856,7 @@ impl AppConstructionInputs {
                     .unwrap_or(1.0)
             },
             #[cfg(feature = "model")]
-            pending_continuation_restore: tilo_ui_base::collaboration::continuation_restore_env,
+            pending_continuation_restore: ::collaboration::continuation_restore_env,
             profiler: crate::profiling::FrameProfiler::from_env,
             floating_surface_client:
                 crate::floating_surface::FloatingSurfaceServiceClient::for_window,
@@ -970,8 +971,7 @@ impl App {
             &crate::bound_dispatch::CallbackBinding,
         ) -> AppConstructionInputs,
     ) -> Result<Box<Self>, crate::launch_error::LaunchError> {
-        let scope =
-            tilo_ui_base::collaboration::native_initial::take_component_scope().unwrap_or_default();
+        let scope = ::collaboration::native_initial::take_component_scope().unwrap_or_default();
         let retirement = component.take_root_retirement();
         let mut assembly = retirement_assembly::ComponentAssemblyOwnership {
             component: None,
@@ -1153,9 +1153,9 @@ impl App {
     #[cfg(feature = "model")]
     fn initial_presence_context() -> PresenceCtx {
         let mut context = PresenceCtx::empty();
-        let own = tilo_ui_base::collaboration::local_user_id();
+        let own = ::collaboration::local_user_id();
         context.set_own_identity(std::iter::once(own.clone()));
-        if let Some(hue) = tilo_ui_base::local_identity::own_colour() {
+        if let Some(hue) = ::collaboration::local_identity::own_colour() {
             context.set_presence_hue(own, hue);
         }
         context
@@ -1321,9 +1321,8 @@ impl App {
         let mut inputs = AppConstructionInputs::production();
         #[cfg(feature = "model")]
         {
-            inputs = inputs.with_manager(
-                tilo_ui_base::collaboration::native_initial::take_manager().unwrap_or_default(),
-            );
+            inputs = inputs
+                .with_manager(::collaboration::native_initial::take_manager().unwrap_or_default());
         }
         inputs.control_domain = Some(domain);
         *Self::with_parts(Some(scope), state, root, inputs)
@@ -1924,14 +1923,14 @@ impl App {
             let Some(delta_json) = delta.encode() else {
                 continue;
             };
-            self.collaboration.manager.send(
-                tilo_ui_base::collaboration::CollabRequest::PublishSearchIndex { delta_json },
-            );
+            self.collaboration
+                .manager
+                .send(::collaboration::CollabRequest::PublishSearchIndex { delta_json });
         }
     }
 
     #[cfg(feature = "model")]
-    fn private_continuity_route(&mut self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
+    fn private_continuity_route(&mut self) -> Option<::collaboration::RouteSpec> {
         let observation = self.collaboration.manager.primary_route()?.clone();
         let instance = self.collaboration.manager.private_window_instance()?;
         if self.continuation.last_private_route.as_ref() != Some(&observation)

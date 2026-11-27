@@ -293,7 +293,7 @@ impl PeopleDevice {
             colour_slot: u32::try_from(Self::worn_colour(&identity)).ok(),
             given,
             chat: (self.chat)(),
-            identity_generation: tilo_ui_base::local_identity::generation(),
+            identity_generation: ::collaboration::local_identity::generation(),
             record_generation: crate::identity::record_generation(),
         }
     }
@@ -308,7 +308,7 @@ impl PeopleDevice {
     /// rather than holding the words said in place of it.
     fn given() -> String {
         crate::platform::person::given_name(
-            tilo_ui_base::local_identity::load().map(|identity| identity.display_name),
+            ::collaboration::local_identity::load().map(|identity| identity.display_name),
         )
         .unwrap_or_default()
     }

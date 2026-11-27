@@ -14,7 +14,8 @@ use tilo_actions::{Acting, ActionOutput, ApiError};
 
 use super::Driver;
 use crate::shown_actions::{ActionDecision, ActionVerdict, ShownAction};
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
+use ::collaboration::CollabEvent;
+use ::collaboration::CollabRequest;
 
 /// One invocation of another provider's action ([`Driver::serve_provider`]).
 pub struct ProvidedInvocation<'a> {

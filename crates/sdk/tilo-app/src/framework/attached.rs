@@ -23,11 +23,11 @@
 use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
 
+use ::collaboration::DocumentMutation;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::{ActionEnvelope, ActionOutput, ActionTransport};
 use tilo_permissions::PermissionContext;
 use tilo_permissions::SharedPermissions;
-use tilo_ui_base::collaboration::DocumentMutation;
 use tilo_ui_base::permissions::MemberId;
 use ui_core::application::{
     ApplicationDefinition, ComponentRunnerInputs, LaunchTarget, ProcessContextInputs, RestoreInput,

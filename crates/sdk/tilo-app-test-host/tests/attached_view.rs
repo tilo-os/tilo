@@ -2,7 +2,7 @@
 //! record, never drawn, every operation through the API a click takes, and
 //! the change it made flowing back to the person's window.
 
-use tilo_app::collaboration::DocumentMutation;
+use ::collaboration::DocumentMutation;
 use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, definition};
 use tilo_app::prelude::*;

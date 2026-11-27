@@ -504,10 +504,10 @@ pub(crate) fn as_the_daemon<T>(step: impl FnOnce() -> T) -> T {
 }
 
 /// An SDK app's collaboration manager once it has joined the broker.
-fn connected_manager() -> ui::collaboration::CollaborationManager {
-    let mut manager = ui::collaboration::CollaborationManager::new();
+fn connected_manager() -> ::collaboration::CollaborationManager {
+    let mut manager = ::collaboration::CollaborationManager::new();
     let started = Instant::now();
-    while manager.state() == ui::collaboration::CollaborationState::Connecting
+    while manager.state() == ::collaboration::CollaborationState::Connecting
         && started.elapsed() < tilo_test_env::hang_bound()
     {
         let _ = manager.poll();
@@ -527,7 +527,7 @@ fn sdk_apps_join_the_daemon_and_publish_to_mcp() {
     // action directory and keeps its connection until it is killed.
     if std::env::var_os(APP_HELPER).is_some() {
         let mut manager = connected_manager();
-        manager.publish_action_directory(ui::collaboration::local_app_id());
+        manager.publish_action_directory(::collaboration::local_app_id());
         loop {
             let _ = manager.poll();
             std::thread::sleep(Duration::from_millis(10));
@@ -634,7 +634,7 @@ fn written(session: &Daemon) -> Result<Option<String>, String> {
 /// cannot be: a manager that went offline, or whose route the workspace
 /// refused, never connects, so its reason is the failure rather than the hang
 /// bound. One still joining says what holds it up.
-pub(crate) fn wait_until_joined(manager: &mut ui::collaboration::CollaborationManager) {
+pub(crate) fn wait_until_joined(manager: &mut ::collaboration::CollaborationManager) {
     let started = Instant::now();
     loop {
         let _ = manager.poll();
@@ -644,7 +644,7 @@ pub(crate) fn wait_until_joined(manager: &mut ui::collaboration::CollaborationMa
         if let Some(refusal) = manager.join_refusal() {
             panic!("the app's route was refused: {refusal}");
         }
-        if let ui::collaboration::CollaborationState::Offline(reason) = manager.state() {
+        if let ::collaboration::CollaborationState::Offline(reason) = manager.state() {
             panic!("the app never joined: {reason}");
         }
         assert!(
@@ -661,10 +661,10 @@ pub(crate) fn wait_until_joined(manager: &mut ui::collaboration::CollaborationMa
 /// moment the SDK stops publishing the write that was queued: a manager that
 /// went offline keeps nothing more, so its reason is the failure rather than
 /// the test waiting out its bound on a write that will never come.
-fn watch_for_stop(manager: &mut ui::collaboration::CollaborationManager) -> ! {
+fn watch_for_stop(manager: &mut ::collaboration::CollaborationManager) -> ! {
     loop {
         let _ = manager.poll();
-        if let Some(ui::collaboration::CollaborationState::Offline(reason)) =
+        if let Some(::collaboration::CollaborationState::Offline(reason)) =
             manager.take_state_change()
         {
             panic!("the app stopped publishing its write: {reason}");
@@ -708,7 +708,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
             ),
             ui::resource::ResourceType::new(WRITER_KIND),
         );
-        let mut manager = ui::collaboration::CollaborationManager::for_resource(&checkout);
+        let mut manager = ::collaboration::CollaborationManager::for_resource(&checkout);
         wait_until_joined(&mut manager);
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "text", WRITTEN).unwrap();
@@ -724,7 +724,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
             automerge::transaction::CommitOptions::default().with_message(stamp.message()),
         );
         assert!(
-            manager.send(ui::collaboration::CollabRequest::document_snapshot(
+            manager.send(::collaboration::CollabRequest::document_snapshot(
                 doc.save()
             ))
         );

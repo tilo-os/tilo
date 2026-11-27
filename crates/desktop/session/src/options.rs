@@ -286,7 +286,7 @@ pub(crate) fn start_collaboration(
     let own = sync::OwnPresence {
         // Publish a name only when the session has one; viewers supply the unnamed label.
         label: crate::platform::person::session_name(
-            tilo_ui_base::local_identity::load().map(|identity| identity.display_name),
+            ::collaboration::local_identity::load().map(|identity| identity.display_name),
             &options.person,
         )
         .unwrap_or_default(),

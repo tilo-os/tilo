@@ -287,13 +287,15 @@ fn a_device(
     .expect("this computer's certificate");
     env.set("TILO_IDENTITY_ROOT", root.path());
     // The name they go by, which the workspace learns of them: never their device's.
-    tilo_ui_base::local_identity::install_source(Some(Arc::new(
-        tilo_ui_base::local_identity::FixedIdentity(tilo_ui_base::local_identity::LocalIdentity {
-            group_public_key: cert.user_public_key,
-            display_name: "Ada".to_owned(),
-            avatar_color: [40, 80, 120],
-            device_public_key: None,
-        }),
+    ::collaboration::local_identity::install_source(Some(Arc::new(
+        ::collaboration::local_identity::FixedIdentity(
+            ::collaboration::local_identity::LocalIdentity {
+                group_public_key: cert.user_public_key,
+                display_name: "Ada".to_owned(),
+                avatar_color: [40, 80, 120],
+                device_public_key: None,
+            },
+        ),
     )));
     root
 }
@@ -646,13 +648,15 @@ fn expired_throwaway_identity(
         &aged,
     )
     .expect("the aged certificate where the identity keeps it");
-    tilo_ui_base::local_identity::install_source(Some(Arc::new(
-        tilo_ui_base::local_identity::FixedIdentity(tilo_ui_base::local_identity::LocalIdentity {
-            group_public_key: aged.user_public_key,
-            display_name: "Ada".to_owned(),
-            avatar_color: [40, 80, 120],
-            device_public_key: None,
-        }),
+    ::collaboration::local_identity::install_source(Some(Arc::new(
+        ::collaboration::local_identity::FixedIdentity(
+            ::collaboration::local_identity::LocalIdentity {
+                group_public_key: aged.user_public_key,
+                display_name: "Ada".to_owned(),
+                avatar_color: [40, 80, 120],
+                device_public_key: None,
+            },
+        ),
     )));
     crate::common::let_go_of_device_keys();
     (hex::encode(aged.user_public_key), paths)

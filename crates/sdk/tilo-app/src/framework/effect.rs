@@ -490,7 +490,7 @@ struct Answering {
     /// ([`EffectCx::call`]). `None` for the person at this device acting
     /// here, and for a view's own job.
     delivered: Option<InvocationId>,
-    target: Option<tilo_ui_base::host_operation::OperationTarget>,
+    target: Option<ui_core::operation_target::OperationTarget>,
     /// Where the invoker asked the effect to act (`#[param(place)]`).
     place: Option<tilo_resource::Place>,
     /// The caller's cancellation signal, which a job this effect leaves to
@@ -814,7 +814,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     pub fn external_moderation(
         &self,
         operation: registry_types::ExternalModerationOperation,
-    ) -> Result<ui_core::invocation_scope::ExternalModerationFuture, String> {
+    ) -> Result<ui_core::operation_target::ExternalModerationFuture, String> {
         let target = self
             .inv
             .target
@@ -1759,7 +1759,9 @@ fn invocation_parts(
         document,
         heads,
         delivered,
-        target: op.target().cloned(),
+        target: op
+            .target::<ui_core::operation_target::OperationTarget>()
+            .cloned(),
         place,
         cancel_by: None,
         member: false,

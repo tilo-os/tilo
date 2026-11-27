@@ -125,7 +125,7 @@ pub(crate) fn person() -> Result<Person, String> {
         user: identity.device_cert.user_public_key,
         // A workspace, a public one above all, learns nothing of this person's devices.
         name: crate::platform::person::person_name(
-            tilo_ui_base::local_identity::load().map(|identity| identity.display_name),
+            ::collaboration::local_identity::load().map(|identity| identity.display_name),
             "",
         ),
     })

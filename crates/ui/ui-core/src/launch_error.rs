@@ -347,12 +347,10 @@ impl fmt::Debug for LaunchRecovery {
 }
 
 #[cfg(all(feature = "native", feature = "model"))]
-impl From<tilo_ui_base::collaboration::NativeLaunchError> for LaunchError {
-    fn from(error: tilo_ui_base::collaboration::NativeLaunchError) -> Self {
+impl From<::collaboration::NativeLaunchError> for LaunchError {
+    fn from(error: ::collaboration::NativeLaunchError) -> Self {
         match error {
-            tilo_ui_base::collaboration::NativeLaunchError::Operation(message) => {
-                Self::Operation(message)
-            }
+            ::collaboration::NativeLaunchError::Operation(message) => Self::Operation(message),
         }
     }
 }

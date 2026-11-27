@@ -1078,7 +1078,7 @@ fn tabs() -> Vec<sheet::TabLabel> {
 
 /// What the person here is called on their own row.
 fn own_name() -> Option<String> {
-    tilo_ui_base::local_identity::load().map(|identity| identity.display_name)
+    ::collaboration::local_identity::load().map(|identity| identity.display_name)
 }
 
 /// The People tab: who shares the workspace, their roles, the holders of

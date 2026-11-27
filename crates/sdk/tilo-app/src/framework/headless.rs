@@ -341,7 +341,7 @@ pub(super) fn hold_workspace_keys(
     workspace: &str,
 ) -> Result<(), LaunchError> {
     let route = super::app::resource_route(context)?;
-    tilo_ui_base::collaboration::document_content::ContentLink::of(&route)
+    ::collaboration::document_content::ContentLink::of(&route)
         .hold_secret(workspace_secret(workspace));
     Ok(())
 }
@@ -2621,7 +2621,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         self.records
             .merge_replica(
                 &checkout,
-                tilo_ui_base::collaboration::DocumentMutation::Incremental(change),
+                ::collaboration::DocumentMutation::Incremental(change),
             )
             .map(|(changed, _)| changed)
     }

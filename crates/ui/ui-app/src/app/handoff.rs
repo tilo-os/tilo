@@ -1,5 +1,5 @@
 //! An instance's side of moving its window to another workspace
-//! ([`tilo_ui_base::collaboration::handoff`]): making what it shows durable when
+//! ([`::collaboration::handoff`]): making what it shows durable when
 //! asked, so the record the workspace's store moves holds what the person
 //! left in it.
 //!
@@ -7,8 +7,9 @@
 //! to, else the App's own document.
 
 use super::App;
-use tilo_ui_base::collaboration::CollabRequest;
-use tilo_ui_base::{collaboration::handoff::HandoffReport, collaboration::handoff::HandoffRequest};
+use ::collaboration::CollabRequest;
+use ::collaboration::handoff::HandoffReport;
+use ::collaboration::handoff::HandoffRequest;
 
 impl App {
     /// Make the document this window shows durable now, without closing
@@ -56,13 +57,13 @@ impl App {
 mod tests {
     use super::*;
     use crate::state::State;
+    use ::collaboration::CollabEvent;
+    use ::collaboration::CollaborationManager;
+    use ::collaboration::PeerTransport;
+    use ::collaboration::RouteSpec;
     use automerge::transaction::Transactable as _;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilo_ui_base::{
-        collaboration::CollabEvent, collaboration::CollaborationManager,
-        collaboration::PeerTransport, collaboration::RouteSpec,
-    };
 
     struct Instance {
         acknowledged: Option<RouteSpec>,

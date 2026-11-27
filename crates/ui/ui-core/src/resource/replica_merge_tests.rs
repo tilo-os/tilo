@@ -179,7 +179,7 @@ tilo_test_env::scenario! {
             crate::bound_dispatch::merge_remote_owned_document(
                 &store,
                 &want,
-                tilo_ui_base::collaboration::Incoming::Changes(&answer),
+                ::collaboration::Incoming::Changes(&answer),
             )
         };
         assert_eq!(merge().unwrap().changed, Some(true));

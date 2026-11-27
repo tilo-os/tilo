@@ -1,5 +1,5 @@
 use crate::time::Duration;
-use tilo_ui_base::collaboration::PresencePayload;
+use ::collaboration::PresencePayload;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::presence::*;
 
@@ -350,7 +350,7 @@ tilo_test_env::scenario! {
         ctx.apply_remote_presence_at(
             peer.clone(),
             workspace.clone(),
-            tilo_ui_base::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+            ::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
             t0,
         );
         assert_eq!(ctx.remote_cursors.len(), 1);

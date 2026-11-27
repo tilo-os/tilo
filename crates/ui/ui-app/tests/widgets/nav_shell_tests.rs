@@ -1329,12 +1329,12 @@ tilo_test_env::scenario! {
         settle(&mut h, 900, 600);
         let document = automerge::AutoCommit::new();
         let metadata =
-            tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::Continuable>(h.root_widget())
+            tilo_ui_base::widget::capability::capability::<dyn tilo_ui::widget::Continuable>(h.root_widget())
                 .and_then(|continuable| continuable.continuation_metadata(&document, &automerge::ROOT))
                 .expect("the content's continuation");
         assert_eq!(metadata.bytes, b"line 3");
         assert!(
-            tilo_ui_base::widget::capability::capability_mut::<dyn tilo_ui_base::widget::Continuable>(
+            tilo_ui_base::widget::capability::capability_mut::<dyn tilo_ui::widget::Continuable>(
                 &mut *h.root_mut::<NavShell>()
             )
             .is_some()
@@ -1659,8 +1659,8 @@ impl tilo_ui_base::widget::Decorator for ResumableContent {
     }
 
     fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn tilo_ui_base::widget::Continuable>() {
-            request.provide::<dyn tilo_ui_base::widget::Continuable>(self);
+        if request.wants::<dyn tilo_ui::widget::Continuable>() {
+            request.provide::<dyn tilo_ui::widget::Continuable>(self);
         }
     }
 
@@ -1668,8 +1668,8 @@ impl tilo_ui_base::widget::Decorator for ResumableContent {
         &'a mut self,
         request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
     ) {
-        if request.wants::<dyn tilo_ui_base::widget::Continuable>() {
-            request.provide::<dyn tilo_ui_base::widget::Continuable>(self);
+        if request.wants::<dyn tilo_ui::widget::Continuable>() {
+            request.provide::<dyn tilo_ui::widget::Continuable>(self);
         }
     }
 
@@ -1682,7 +1682,7 @@ impl tilo_ui_base::widget::Decorator for ResumableContent {
     }
 }
 
-impl tilo_ui_base::widget::Continuable for ResumableContent {
+impl tilo_ui::widget::Continuable for ResumableContent {
     fn continuation_metadata(
         &self,
         _state: &automerge::AutoCommit,

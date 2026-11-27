@@ -123,8 +123,8 @@ pub(super) struct AppAssemblyValues {
     #[cfg(feature = "model")]
     pub committed_documents: Option<
         Vec<(
-            tilo_ui_base::collaboration::RouteSpec,
-            tilo_ui_base::collaboration::CommittedDocument,
+            ::collaboration::RouteSpec,
+            ::collaboration::CommittedDocument,
         )>,
     >,
     #[cfg(feature = "model")]

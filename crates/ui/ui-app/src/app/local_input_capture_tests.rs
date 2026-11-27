@@ -3,10 +3,10 @@ struct OwnershipCapturePeer {
     inner: CapturePeer,
     ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
 }
-impl tilo_ui_base::collaboration::PeerTransport for OwnershipCapturePeer {
+impl ::collaboration::PeerTransport for OwnershipCapturePeer {
     fn connection_snapshot(
         &self,
-        _: &tilo_ui_base::collaboration::RouteSpec,
+        _: &::collaboration::RouteSpec,
     ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
         self.ownership.clone()
     }
@@ -14,22 +14,22 @@ impl tilo_ui_base::collaboration::PeerTransport for OwnershipCapturePeer {
         true
     }
     fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        tilo_ui_base::collaboration::PeerTransport::send(&mut self.inner, request)
+        ::collaboration::PeerTransport::send(&mut self.inner, request)
     }
     fn poll(&mut self) -> Vec<CollabEvent> {
         Vec::new()
     }
     fn send_to_route(
         &mut self,
-        route: tilo_ui_base::collaboration::RouteSpec,
+        route: ::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
-        tilo_ui_base::collaboration::PeerTransport::send_to_route(&mut self.inner, route, request)
+        ::collaboration::PeerTransport::send_to_route(&mut self.inner, route, request)
     }
 }
-struct CapturePeer(Rc<RefCell<Vec<(tilo_ui_base::collaboration::RouteSpec, CollabRequest)>>>);
+struct CapturePeer(Rc<RefCell<Vec<(::collaboration::RouteSpec, CollabRequest)>>>);
 fn capture_ownership(
-    route: &tilo_ui_base::collaboration::RouteSpec,
+    route: &::collaboration::RouteSpec,
 ) -> runtime_collab::committed_document::ConnectionSnapshot {
     runtime_collab::committed_document::ConnectionSnapshot {
         root: [1; 32],
@@ -40,10 +40,10 @@ fn capture_ownership(
         document: route.document.clone().unwrap_or_default(),
     }
 }
-impl tilo_ui_base::collaboration::PeerTransport for CapturePeer {
+impl ::collaboration::PeerTransport for CapturePeer {
     fn connection_snapshot(
         &self,
-        route: &tilo_ui_base::collaboration::RouteSpec,
+        route: &::collaboration::RouteSpec,
     ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
         Some(capture_ownership(route))
     }
@@ -58,7 +58,7 @@ impl tilo_ui_base::collaboration::PeerTransport for CapturePeer {
     }
     fn join_route(
         &mut self,
-        _: tilo_ui_base::collaboration::RouteSpec,
+        _: ::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
@@ -68,7 +68,7 @@ impl tilo_ui_base::collaboration::PeerTransport for CapturePeer {
     }
     fn send_to_route(
         &mut self,
-        route: tilo_ui_base::collaboration::RouteSpec,
+        route: ::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
         self.0.borrow_mut().push((route, request));
@@ -310,7 +310,7 @@ tilo_test_env::scenario! {
 /// person editing it.
 fn capturing_fixture() -> (
     ActionFixture,
-    Rc<RefCell<Vec<(tilo_ui_base::collaboration::RouteSpec, CollabRequest)>>>,
+    Rc<RefCell<Vec<(::collaboration::RouteSpec, CollabRequest)>>>,
 ) {
     let mut fixture = ActionFixture::broker();
     let sent = Rc::new(RefCell::new(Vec::new()));
@@ -333,7 +333,7 @@ fn capture_address(fixture: &mut ActionFixture) -> tilo_actions::ActionAddress {
 }
 
 fn capture_reports(
-    sent: &Rc<RefCell<Vec<(tilo_ui_base::collaboration::RouteSpec, CollabRequest)>>>,
+    sent: &Rc<RefCell<Vec<(::collaboration::RouteSpec, CollabRequest)>>>,
 ) -> Vec<(u64, runtime_collab::LocalDocumentActionReport)> {
     sent.borrow()
         .iter()
@@ -442,14 +442,14 @@ fn definitive_local_capture_failures_release_pins_and_editing_recovers() {
 }
 
 struct RecoveringCapturePeer {
-    sent: Rc<RefCell<Vec<(tilo_ui_base::collaboration::RouteSpec, CollabRequest)>>>,
+    sent: Rc<RefCell<Vec<(::collaboration::RouteSpec, CollabRequest)>>>,
     connected: Rc<std::cell::Cell<bool>>,
     reject_enqueue: Rc<std::cell::Cell<bool>>,
 }
-impl tilo_ui_base::collaboration::PeerTransport for RecoveringCapturePeer {
+impl ::collaboration::PeerTransport for RecoveringCapturePeer {
     fn connection_snapshot(
         &self,
-        route: &tilo_ui_base::collaboration::RouteSpec,
+        route: &::collaboration::RouteSpec,
     ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
         Some(capture_ownership(route))
     }
@@ -464,7 +464,7 @@ impl tilo_ui_base::collaboration::PeerTransport for RecoveringCapturePeer {
     }
     fn join_route(
         &mut self,
-        _: tilo_ui_base::collaboration::RouteSpec,
+        _: ::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
@@ -474,7 +474,7 @@ impl tilo_ui_base::collaboration::PeerTransport for RecoveringCapturePeer {
     }
     fn send_to_route(
         &mut self,
-        route: tilo_ui_base::collaboration::RouteSpec,
+        route: ::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
         self.sent.borrow_mut().push((route, request));
@@ -1091,11 +1091,10 @@ fn a_local_report_follows_the_executed_child_owner_and_never_another_connection(
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
     fixture.app.local_author = fixture.bindings[0].author.clone();
-    fixture.app.actions.bound_broker_route_for_test =
-        Some(tilo_ui_base::collaboration::AcceptedRoute {
-            route: fixture.bindings[0].broker_route().unwrap(),
-            epoch: uuid::Uuid::new_v4(),
-        });
+    fixture.app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
+        route: fixture.bindings[0].broker_route().unwrap(),
+        epoch: uuid::Uuid::new_v4(),
+    });
     for binding in &fixture.bindings {
         fixture
             .app

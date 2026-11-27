@@ -12,7 +12,8 @@
 //!
 
 use crate::support_collab::{TypedBroker, change_carrying, changes_of};
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
+use ::collaboration::CollabEvent;
+use ::collaboration::CollabRequest;
 
 #[test]
 fn n_peer_fanout_and_per_peer_attribution() {

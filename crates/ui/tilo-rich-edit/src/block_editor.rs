@@ -11719,10 +11719,8 @@ impl BlockEditor {
 }
 
 impl tilo_ui_base::presence::capability::PublishesPresence for BlockEditor {
-    fn presence_payload(
-        &self,
-    ) -> Option<(PresenceKey, tilo_ui_base::collaboration::PresencePayload)> {
-        use tilo_ui_base::collaboration::PresencePayload;
+    fn presence_payload(&self) -> Option<(PresenceKey, collab_types::presence::PresencePayload)> {
+        use collab_types::presence::PresencePayload;
         let idx = self.focused?;
         let block = self.blocks.get(idx)?;
         if !block.line.is_focused() {

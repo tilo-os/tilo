@@ -120,9 +120,8 @@ impl App {
         launched: bool,
     ) -> Result<Self, crate::launch_error::LaunchError> {
         use crate::launch::{LaunchError, LaunchRecovery};
-        use tilo_ui_base::{
-            collaboration::native_initial, collaboration::native_initial::NativeConstruction,
-        };
+        use ::collaboration::native_initial;
+        use ::collaboration::native_initial::NativeConstruction;
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
         let construction = NativeConstruction::enter_component(collaboration, scope)
@@ -213,7 +212,7 @@ impl App {
                 connected = self.collaboration.manager.is_connected(),
                 "publishing collaboration presence"
             );
-            self.broadcast_presence(k, tilo_ui_base::collaboration::PresencePayload::Arrived);
+            self.broadcast_presence(k, ::collaboration::PresencePayload::Arrived);
         }
     }
 
@@ -284,7 +283,7 @@ impl App {
     pub fn broadcast_presence(
         &mut self,
         key: tilo_ui_base::presence::PresenceKey,
-        payload: tilo_ui_base::collaboration::PresencePayload,
+        payload: ::collaboration::PresencePayload,
     ) {
         let _entry = self.enter_wake_scope();
         // Fan out to the optional out-of-band sink first (the shell's Iroh
@@ -303,7 +302,7 @@ impl App {
     fn publish_presence(
         &self,
         key: tilo_ui_base::presence::PresenceKey,
-        payload: tilo_ui_base::collaboration::PresencePayload,
+        payload: ::collaboration::PresencePayload,
     ) {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -398,7 +397,7 @@ impl App {
         );
         self.broadcast_presence(
             workspace,
-            tilo_ui_base::collaboration::PresencePayload::Status { text, automatic },
+            ::collaboration::PresencePayload::Status { text, automatic },
         );
         true
     }
@@ -408,7 +407,7 @@ impl App {
     /// the only condition under which a sender may advance its frontier.
     fn note_document_send(
         &mut self,
-        result: &Result<(), tilo_ui_base::collaboration::CollabSendError>,
+        result: &Result<(), ::collaboration::CollabSendError>,
     ) -> bool {
         if let Some(status) = document_routes::outbound_failure(result)
             && self.document_routes.outbound != status
@@ -466,7 +465,7 @@ impl App {
         &self,
     ) -> Option<(
         tilo_ui_base::presence::PresenceKey,
-        tilo_ui_base::collaboration::PresencePayload,
+        ::collaboration::PresencePayload,
     )> {
         self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| {
@@ -478,7 +477,7 @@ impl App {
     }
 
     fn broadcast_focus_presence(&mut self) {
-        use tilo_ui_base::collaboration::PresencePayload;
+        use ::collaboration::PresencePayload;
         let current = self.focus_presence();
         if current != self.presence.last_focus {
             // When the caret advances forward under the same scope, publish
@@ -559,7 +558,7 @@ impl App {
             // Inert: the receiver dispatches on the key before inspecting
             // the payload; `Arrived` because the SDK transport relays it
             // with the routing key intact.
-            tilo_ui_base::collaboration::PresencePayload::Arrived,
+            ::collaboration::PresencePayload::Arrived,
         );
         self.presence.last_view = Some(subset);
     }
@@ -622,19 +621,16 @@ impl App {
         let collaboration = &mut self.collaboration;
         collaboration
             .held_requests
-            .extend(tilo_ui_base::widget::take_collab_requests(
+            .extend(tilo_ui::widget::take_collab_requests(
                 self.root_widget.as_mut(),
             ));
         let connecting = matches!(
             collaboration.manager.state(),
-            tilo_ui_base::collaboration::CollaborationState::Connecting
+            ::collaboration::CollaborationState::Connecting
         );
         let mut held = std::collections::VecDeque::new();
         for request in collaboration.held_requests.drain(..) {
-            let action = matches!(
-                request,
-                tilo_ui_base::collaboration::CollabRequest::RemoteAction { .. }
-            );
+            let action = matches!(request, ::collaboration::CollabRequest::RemoteAction { .. });
             if action && connecting {
                 held.push_back(request);
             } else {
@@ -741,8 +737,8 @@ impl App {
     /// and later becomes ready or offline; a frame is scheduled at each
     /// change.
     ///
-    /// [`CollaborationState::Connecting`]: tilo_ui_base::collaboration::CollaborationState::Connecting
-    pub fn collaboration_state(&self) -> tilo_ui_base::collaboration::CollaborationState {
+    /// [`CollaborationState::Connecting`]: ::collaboration::CollaborationState::Connecting
+    pub fn collaboration_state(&self) -> ::collaboration::CollaborationState {
         self.collaboration.manager.state()
     }
 
@@ -759,7 +755,7 @@ impl App {
     /// welcome arrives) or was removed, nothing is read or written and the
     /// app says so instead of showing stale or undecryptable content. `None`
     /// until the route reports.
-    pub fn key_access(&self) -> Option<tilo_ui_base::collaboration::KeyAccessState> {
+    pub fn key_access(&self) -> Option<::collaboration::KeyAccessState> {
         self.collaboration.key_access
     }
 
@@ -791,7 +787,7 @@ impl App {
             // Announcements made while connecting were refused; repeat the
             // current one on the acknowledged route.
             if let Some(scope) = self.presence.broadcast_scope.clone() {
-                self.publish_presence(scope, tilo_ui_base::collaboration::PresencePayload::Arrived);
+                self.publish_presence(scope, ::collaboration::PresencePayload::Arrived);
             }
             self.publish_continuation_metadata();
             self.publish_search_index();
@@ -830,18 +826,18 @@ impl App {
 
     /// The content links `route`'s record has its content on in this process: the
     /// record's own, and each window's showing it
-    /// ([`ContentLink::on_route`](tilo_ui_base::collaboration::document_content::ContentLink::on_route)).
+    /// ([`ContentLink::on_route`](::collaboration::document_content::ContentLink::on_route)).
     fn links_on_route(
-        route: &tilo_ui_base::collaboration::RouteSpec,
-    ) -> Vec<std::sync::Arc<tilo_ui_base::collaboration::document_content::ContentLink>> {
-        tilo_ui_base::collaboration::document_content::ContentLink::on_route(route)
+        route: &::collaboration::RouteSpec,
+    ) -> Vec<std::sync::Arc<::collaboration::document_content::ContentLink>> {
+        ::collaboration::document_content::ContentLink::on_route(route)
     }
 
     /// Send what the window's record content store queued on the record's
     /// route: content it lacks, and content it stored for the record's
-    /// other readers. See [`tilo_ui_base::collaboration::document_content`].
+    /// other readers. See [`::collaboration::document_content`].
     fn pump_document_content(&mut self) {
-        use tilo_ui_base::collaboration::document_content::ContentLink;
+        use ::collaboration::document_content::ContentLink;
         if !self.collaboration.manager.is_connected() {
             return;
         }
@@ -878,8 +874,8 @@ impl App {
     /// for a record that is not the window's.
     fn send_link_requests(
         &mut self,
-        route: Option<&tilo_ui_base::collaboration::RouteSpec>,
-        link: &tilo_ui_base::collaboration::document_content::ContentLink,
+        route: Option<&::collaboration::RouteSpec>,
+        link: &::collaboration::document_content::ContentLink,
     ) {
         let mut send = |request: CollabRequest| match route {
             Some(route) => self
@@ -900,7 +896,7 @@ impl App {
                 hash: hash.clone(),
                 bytes: bytes.clone(),
             }) {
-                Ok(()) | Err(tilo_ui_base::collaboration::CollabSendError::TooLarge { .. }) => {}
+                Ok(()) | Err(::collaboration::CollabSendError::TooLarge { .. }) => {}
                 Err(_) => link.retry_offer(hash, bytes),
             }
         }
@@ -1013,7 +1009,7 @@ impl App {
 
     fn apply_document_collab_event(
         &mut self,
-        route: &tilo_ui_base::collaboration::RouteSpec,
+        route: &::collaboration::RouteSpec,
         mutation: collab_types::DocumentMutation,
     ) {
         tracing::debug!(
@@ -1179,12 +1175,10 @@ impl App {
         if self
             .collaboration
             .manager
-            .try_send(
-                tilo_ui_base::collaboration::CollabRequest::ResourceCommand {
-                    request_id,
-                    command,
-                },
-            )
+            .try_send(::collaboration::CollabRequest::ResourceCommand {
+                request_id,
+                command,
+            })
             .is_ok()
         {
             self.collaboration.members_request = Some(request_id);
@@ -1216,7 +1210,7 @@ impl App {
     /// Take the workspace's members' resource as its governance answers it, a complete list each
     /// time: each with the name, role, join time and picture the workspace keeps.
     pub(crate) fn apply_members_answer(&mut self, content: &serde_json::Value) {
-        let members = tilo_ui_base::collaboration::Member::roster_of(content, &self.local_author);
+        let members = ::collaboration::Member::roster_of(content, &self.local_author);
         self.apply_collab_context(members);
     }
 
@@ -1230,7 +1224,7 @@ impl App {
     /// a locally-derived id is recognised in a workspace-keyed roster) and the
     /// host-assigned name; it never enters the roster itself. The records this window runs read
     /// every member by the name the list gives them ([`tilo_resource::members`]).
-    fn apply_collab_context(&mut self, members: Vec<tilo_ui_base::collaboration::Member>) {
+    fn apply_collab_context(&mut self, members: Vec<::collaboration::Member>) {
         tilo_resource::members::know(
             members
                 .iter()

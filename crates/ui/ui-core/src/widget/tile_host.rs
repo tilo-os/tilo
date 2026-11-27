@@ -1108,7 +1108,7 @@ impl TileHost {
 }
 
 #[cfg(feature = "model")]
-impl tilo_ui_base::widget::Continuable for TileHost {
+impl crate::widget::Continuable for TileHost {
     fn continuation_metadata(
         &self,
         state: &AutoCommit,
@@ -1116,7 +1116,7 @@ impl tilo_ui_base::widget::Continuable for TileHost {
     ) -> Option<::collaboration::ContinuationMetadata> {
         match &self.content {
             TileContent::App(app) => tilo_ui_base::widget::capability::capability::<
-                dyn tilo_ui_base::widget::Continuable,
+                dyn crate::widget::Continuable,
             >(&**app)
             .and_then(|continuable| continuable.continuation_metadata(state, path)),
             _ => None,
@@ -1131,7 +1131,7 @@ impl tilo_ui_base::widget::Continuable for TileHost {
     ) -> bool {
         match &mut self.content {
             TileContent::App(app) => tilo_ui_base::widget::capability::capability_mut::<
-                dyn tilo_ui_base::widget::Continuable,
+                dyn crate::widget::Continuable,
             >(&mut **app)
             .is_some_and(|continuable| {
                 continuable.restore_continuation_metadata(metadata, state, path)
@@ -1385,7 +1385,7 @@ impl Widget for TileHost {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::FullscreenProvider,
         #[cfg(feature = "model")]
-        dyn tilo_ui_base::widget::Continuable,
+        dyn crate::widget::Continuable,
         dyn crate::floating_surface::FloatingSurfaceProvider,
         dyn tilo_ui_base::widget::AudiencePresentationProvider,
         #[cfg(feature = "model")]

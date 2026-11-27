@@ -1,5 +1,6 @@
 use crate::support_collab::{TypedBroker, change_carrying, changes_of};
-use tilo_ui_base::{collaboration::CollabRequest, collaboration::RouteSpec};
+use ::collaboration::CollabRequest;
+use ::collaboration::RouteSpec;
 use uuid::Uuid;
 
 #[test]

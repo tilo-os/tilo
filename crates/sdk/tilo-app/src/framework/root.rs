@@ -10,11 +10,11 @@ use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use crate::runner::{with_native_presentations, with_view_operations};
 use collab_types::app_actions::{AppOpen, OPEN_APP_OPERATION, OPEN_OPERATION};
+use collab_types::presence::PresencePayload;
 use tilo_permissions::LivePermissions;
 use tilo_permissions::PermissionScope;
 use tilo_resource::Effect as _;
 use tilo_resource::{Resource, SearchEntry};
-use tilo_ui_base::PresencePayload;
 use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
 use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::{LocalState, Theme};
@@ -1357,7 +1357,7 @@ impl SearchCache {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    tilo_ui_base::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn tilo_ui_base::widget::document_effects::DocumentEffects, dyn tilo_ui_base::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::widget::WindowHistory, dyn tilo_ui_base::widget::presence_topology::Presences; inner = content);
+    tilo_ui_base::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn tilo_ui_base::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::widget::WindowHistory, dyn tilo_ui_base::widget::presence_topology::Presences; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {
@@ -1947,40 +1947,39 @@ impl ResourceRoot {
 // The root's own clients for the action API (minting links, opening
 // references) share the app's collaboration connection with whatever the
 // view keeps there.
-impl tilo_ui_base::widget::Collaborative for ResourceRoot {
-    fn take_collab_requests(&mut self) -> Vec<tilo_ui_base::collaboration::CollabRequest> {
+impl ui_core::widget::Collaborative for ResourceRoot {
+    fn take_collab_requests(&mut self) -> Vec<::collaboration::CollabRequest> {
         let mut requests =
-            tilo_ui_base::widget::Collaborative::take_collab_requests(self.share.remote_mut());
+            ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
         if let Some(actions) = self.shown_to_ask() {
-            requests
-                .push(tilo_ui_base::collaboration::CollabRequest::DecideShownActions { actions });
+            requests.push(::collaboration::CollabRequest::DecideShownActions { actions });
         }
         if let Some(mut api) = self.dispatch.opener.api() {
-            requests.extend(tilo_ui_base::widget::Collaborative::take_collab_requests(
+            requests.extend(ui_core::widget::Collaborative::take_collab_requests(
                 &mut api,
             ));
         }
         with_app_view_mut(&mut self.content, |view| {
-            if let Some(content) = capability_mut::<dyn tilo_ui_base::widget::Collaborative>(view) {
+            if let Some(content) = capability_mut::<dyn ui_core::widget::Collaborative>(view) {
                 requests.extend(content.take_collab_requests());
             }
         });
         requests
     }
 
-    fn handle_collab_event(&mut self, event: &tilo_ui_base::collaboration::CollabEvent) {
-        if let tilo_ui_base::collaboration::CollabEvent::ActionVerdicts { verdicts } = event
+    fn handle_collab_event(&mut self, event: &::collaboration::CollabEvent) {
+        if let ::collaboration::CollabEvent::ActionVerdicts { verdicts } = event
             && let Some(permissions) = &self.permissions
         {
             permissions.decide_shown(verdicts);
             self.dispatch.refresh_permission_states();
         }
-        tilo_ui_base::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
+        ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
         if let Some(mut api) = self.dispatch.opener.api() {
-            tilo_ui_base::widget::Collaborative::handle_collab_event(&mut api, event);
+            ui_core::widget::Collaborative::handle_collab_event(&mut api, event);
         }
         with_app_view_mut(&mut self.content, |view| {
-            if let Some(content) = capability_mut::<dyn tilo_ui_base::widget::Collaborative>(view) {
+            if let Some(content) = capability_mut::<dyn ui_core::widget::Collaborative>(view) {
                 content.handle_collab_event(event);
             }
         });

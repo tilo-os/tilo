@@ -27,6 +27,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::Instant;
 
+use ::collaboration::ExportedAction;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
@@ -36,7 +37,6 @@ use tilo_actions::remote::{
 };
 use tilo_compositor::Compositor;
 use tilo_session_core::surfaces::{Look, Published};
-use tilo_ui_base::collaboration::ExportedAction;
 use tilo_ui_base::host_operation::ResourceOperationStart;
 use tilo_ui_base::{
     surface_services::ACTIONS_FD_ENV, surface_services::APP_ID_ENV, surface_services::SOCKET_ENV,

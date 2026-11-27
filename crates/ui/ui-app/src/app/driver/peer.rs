@@ -21,7 +21,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use super::Driver;
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
+use ::collaboration::CollabEvent;
+use ::collaboration::CollabRequest;
 
 /// What passed between the app and its peer.
 struct Exchange {
@@ -30,13 +31,13 @@ struct Exchange {
     /// What the app asked of its peer, oldest first.
     sent: Vec<CollabRequest>,
     /// The route the app last announced, until the peer acknowledges it.
-    announced: Option<tilo_ui_base::collaboration::RouteSpec>,
+    announced: Option<::collaboration::RouteSpec>,
 }
 
 /// The peer the driver connects the app to ([`Driver::connect_peer`]).
 struct RecordingPeer(Rc<RefCell<Exchange>>);
 
-impl tilo_ui_base::collaboration::PeerTransport for RecordingPeer {
+impl ::collaboration::PeerTransport for RecordingPeer {
     fn is_connected(&self) -> bool {
         true
     }
@@ -50,7 +51,7 @@ impl tilo_ui_base::collaboration::PeerTransport for RecordingPeer {
             ..
         } = &request
         {
-            exchange.announced = Some(tilo_ui_base::collaboration::RouteSpec {
+            exchange.announced = Some(::collaboration::RouteSpec {
                 app_id: app_id.clone(),
                 cluster_id: *cluster_id,
                 document: record.clone(),
@@ -60,9 +61,7 @@ impl tilo_ui_base::collaboration::PeerTransport for RecordingPeer {
         Ok(())
     }
 
-    fn take_primary_route_result(
-        &mut self,
-    ) -> Option<Result<tilo_ui_base::collaboration::RouteSpec, String>> {
+    fn take_primary_route_result(&mut self) -> Option<Result<::collaboration::RouteSpec, String>> {
         self.0.borrow_mut().announced.take().map(Ok)
     }
 
@@ -72,7 +71,7 @@ impl tilo_ui_base::collaboration::PeerTransport for RecordingPeer {
 
     fn join_route(
         &mut self,
-        _: tilo_ui_base::collaboration::RouteSpec,
+        _: ::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
@@ -80,7 +79,7 @@ impl tilo_ui_base::collaboration::PeerTransport for RecordingPeer {
 
     fn send_to_route(
         &mut self,
-        _: tilo_ui_base::collaboration::RouteSpec,
+        _: ::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
         self.send(request)
@@ -284,7 +283,7 @@ impl Peer {
                     };
                     crate::bound_dispatch::admit_local_action(
                         grants,
-                        (&tilo_ui_base::collaboration::local_app_id(), resource, spec),
+                        (&::collaboration::local_app_id(), resource, spec),
                         typed,
                         slot.as_deref(),
                     )
@@ -568,11 +567,10 @@ impl Driver {
             sent: Vec::new(),
             announced: None,
         }));
-        self.app.connect_workspace(
-            tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(RecordingPeer(
-                Rc::clone(&exchange),
-            )),
-        );
+        self.app
+            .connect_workspace(::collaboration::CollaborationManager::with_peer_transport(
+                RecordingPeer(Rc::clone(&exchange)),
+            ));
         // A hosted component's window says which record it carries, as its connection to the
         // workspace does when it opens, and the workspace admits it there: the calls of the
         // component's own actions the workspace delivers are then the window's to run.
@@ -818,7 +816,7 @@ impl Driver {
                 .and_then(|binding| binding.broker_route())
                 .filter(|route| route.cluster_id == cluster_id);
             let (app_id, record) = carried.map_or_else(
-                || (tilo_ui_base::collaboration::local_app_id(), None),
+                || (::collaboration::local_app_id(), None),
                 |route| (route.app_id, route.document),
             );
             assert!(
@@ -936,7 +934,7 @@ impl Driver {
             let Some(resource) = self
                 .app
                 .permission_ctx
-                .permitted_resource(&tilo_ui_base::collaboration::local_app_id(), resource)
+                .permitted_resource(&::collaboration::local_app_id(), resource)
             else {
                 continue;
             };

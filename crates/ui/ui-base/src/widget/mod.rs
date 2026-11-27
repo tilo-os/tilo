@@ -757,38 +757,6 @@ impl StructureChange {
     }
 }
 
-/// Optional cross-device continuation capability for an app root, deliberately separate
-/// from [`Widget`]: ordinary controls have no resumable app state, while roots that do expose it through
-/// [`Widget::provide`] without weakening their UI integration.
-#[cfg(feature = "model")]
-pub trait Continuable {
-    fn continuation_metadata(
-        &self,
-        state: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<::collaboration::ContinuationMetadata>;
-
-    /// Apply a continuation projection after launch. Implementations must not
-    /// change focus or start media; malformed or unknown metadata is ignored.
-    fn restore_continuation_metadata(
-        &mut self,
-        metadata: &::collaboration::ContinuationMetadata,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> bool;
-}
-
-/// Optional session collaboration capability for widgets that own live broker-backed
-/// activity.
-#[cfg(feature = "model")]
-pub trait Collaborative {
-    fn take_collab_requests(&mut self) -> Vec<::collaboration::CollabRequest> {
-        Vec::new()
-    }
-
-    fn handle_collab_event(&mut self, _event: &::collaboration::CollabEvent) {}
-}
-
 /// Optional lifecycle for widgets backed by a platform-native child view.
 pub trait NativeViewLifecycle {
     fn mount_native_view(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>);
@@ -1175,7 +1143,7 @@ pub struct ViewPresence {
     pub presence: tilo_action_types::PresenceId,
     pub label: Option<String>,
     pub key: PresenceKey,
-    pub payload: ::collaboration::PresencePayload,
+    pub payload: collab_types::presence::PresencePayload,
 }
 
 /// Identity of one live node-map widget for once-per-widget host sweeps.
@@ -1311,35 +1279,6 @@ impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
     fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut DrawCtx<'_>) -> bool {
         capability::capability_mut::<dyn CompleteContentProvider>(self)
             .is_some_and(|provider| provider.draw_complete_content(bounds, ctx))
-    }
-}
-
-/// Drain collaboration capabilities throughout a retained widget tree.
-#[cfg(feature = "model")]
-pub fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaboration::CollabRequest> {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
-        return Vec::new();
-    };
-    let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
-        .map_or_else(Vec::new, Collaborative::take_collab_requests);
-    for child in crate::widget::presence_topology::collaboration_children(widget) {
-        requests.extend(take_collab_requests(child));
-    }
-    requests
-}
-
-/// Deliver one session event to each explicit collaboration capability once.
-/// Bound callback context remains entered for the complete descendant walk.
-#[cfg(feature = "model")]
-pub fn handle_collab_event(widget: &mut dyn Widget, event: &::collaboration::CollabEvent) {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
-        return;
-    };
-    if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
-        collaborative.handle_collab_event(event);
-    }
-    for child in crate::widget::presence_topology::collaboration_children(widget) {
-        handle_collab_event(child, event);
     }
 }
 

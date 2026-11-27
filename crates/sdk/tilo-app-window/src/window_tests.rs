@@ -850,10 +850,10 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
     // The app's surface, as the broker and the window hold it, changed one step at a time.
     let mut held: Option<(
         Vec<tilo_actions::ActionDescriptor>,
-        tilo_ui_base::collaboration::SurfacePublication,
+        ::collaboration::SurfacePublication,
     )> = None;
     let mut publish = |app: &mut local::End, offers: Vec<tilo_actions::ActionDescriptor>| {
-        let (delta, state) = tilo_ui_base::collaboration::SurfacePublication::next(
+        let (delta, state) = ::collaboration::SurfacePublication::next(
             held.as_ref()
                 .map(|(descriptors, state)| (state, descriptors.as_slice())),
             &offers,

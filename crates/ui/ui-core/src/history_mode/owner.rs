@@ -355,7 +355,7 @@ impl HistoryOwner {
         self.store_checkout().1.kind.clone()
     }
 
-    pub fn broker_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
+    pub fn broker_route(&self) -> Option<::collaboration::RouteSpec> {
         self.validate().ok()?;
         match &self.0 {
             OwnerKind::Component(binding) => binding.broker_route(),
@@ -367,7 +367,7 @@ impl HistoryOwner {
     /// Merge a peer's `mutation` into the record.
     pub fn merge_remote(
         &self,
-        mut incoming: tilo_ui_base::collaboration::Incoming<'_>,
+        mut incoming: ::collaboration::Incoming<'_>,
         outer: &mut AutoCommit,
     ) -> Result<super::routes::MergedRemote, super::routes::RemoteApplyError> {
         self.validate()

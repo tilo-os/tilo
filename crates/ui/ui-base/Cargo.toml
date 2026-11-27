@@ -22,13 +22,13 @@ ignored = ["wgpu-hal", "getrandom02", "serde_bytes"]
 [features]
 default = ["native", "broker-transport"]
 # Tilo's model: its records and actions over them (tilo-resource), the synced
-# documents and their collaboration client (tilo-collaboration,
-# tilo-runtime-collab, tilo-collab-types, tilo-automerge), the workspace's
+# documents' types and the permission context over them (tilo-collab-types,
+# tilo-permissions), the workspace's
 # settings store, and the app layer built on them: the app runner's sync,
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:tilo-permissions", "dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "dep:tilo-reference", "settings-model/model", "tilo-actions/document-read"]
+model = ["dep:tilo-permissions", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-reference", "settings-model/model", "tilo-actions/document-read"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
@@ -36,7 +36,7 @@ model = ["dep:tilo-permissions", "dep:runtime-collab", "dep:collaboration", "dep
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own clipboard and speech (`tilo_clipboard::install_resolver`,
 # `tts::install_speaker_resolver`).
-native = ["local-daemons", "collaboration?/native", "tilo-process/native", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
+native = ["local-daemons", "tilo-process/native", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
 # X11 windows (winit's X11 backend), for development builds on an X11 host:
 # `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
 # Tilo app runs as a Wayland client in its sandbox, so the shared runtime
@@ -65,16 +65,14 @@ lazy-painter = []
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["collaboration?/local-daemons"]
-# The collaboration manager's built-in transport: the collaboration wire's
-# client on a worker thread (`collaboration::broker`). Without it the
-# manager is driven only through `CollaborationManager::with_transport`, and
-# `CollaborationManager::new` starts disabled.
-broker-transport = ["local-daemons", "collaboration?/broker-transport", "runtime-collab?/client", "tokio/full"]
+local-daemons = []
+# The collaboration manager's built-in transport, which the toolkit's host
+# (`tilo-ui`) runs; the toolkit base only keeps its runtime.
+broker-transport = ["local-daemons", "tokio/full"]
 # An integration test links the library once, without its `cfg(test)`: the
 # fixtures a test draws with ([`headless::Driver::mount`], the pinned font
 # catalogue) come with it.
-test-support = ["tilo-clock/test-support", "collaboration?/test-support", "runtime-collab?/settings-host"]
+test-support = ["tilo-clock/test-support"]
 presentation-feedback = ["dep:wgpu-hal"]
 # Persist DXC-compiled shaders between runs on Windows. It needs the patched
 # wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
@@ -102,7 +100,6 @@ tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 # Initials, as the login and boot sign-in screens draw them too.
 tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
-registry-types = { package = "tilo-registry-types", version = "0.1.0", path = "../../core/registry-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 # What this target's build offers, for portable code that offers less on the web.
@@ -165,16 +162,7 @@ percent-encoding.workspace = true
 form_urlencoded.workspace = true
 # First-frame marks are shared with the greeter's startup metrics capture.
 tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
-# runtime-collab is the collaboration wire and its client. Its vocabulary
-# types are part of `CollabRequest` / `CollabEvent`; the client behind
-# them is only needed by the `broker-transport` feature.
-runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../../core/runtime-collab", default-features = false, optional = true }
-# The collab client without the toolkit: record identities, the app surface,
-# the local identity boundary, local action reports and the history a document
-# keeps, under their toolkit paths.
-collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", optional = true }
 automerge.workspace = true
-tilo-automerge = { workspace = true, optional = true }
 tilo-spellcheck = { version = "0.1.0", path = "../spellcheck" }
 # Grammar-backed highlighting (`widget::code_editor::syntax`): the token
 # vocabulary, and the grammar set (syntect over two-face's extended syntax
@@ -357,13 +345,10 @@ tilo-wasm-aot = { path = "../../platform/tilo-wasm-aot", features = ["compile"] 
 tilo-ui-base = { path = ".", default-features = false, features = ["test-support"] }
 # The closure-built action host the driver's job tests answer calls with.
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
-# The manager's fixtures the App-driven collaboration tests drive.
-collaboration ={ package = "tilo-collaboration", path = "../../core/collaboration", features = ["test-support"] }
 # Deterministic swapchain lifecycle tests, without a display or GPU.
 wgpu = { workspace = true, features = ["custom", "noop"] }
 serial_test.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
-tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
 # the process's stderr at a pipe, and the child's exit signal to assert SIGABRT.
 # `widget::file_picker::tests` build a real on-disk tree to exercise the
@@ -376,8 +361,6 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # Paused-clock tests of the collaboration endpoints' deadlines.
 tokio = { workspace = true, features = ["test-util"] }
-# The settings capability the shell hands an app, served by the fake broker.
-runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", features = ["settings-host"] }
 
 [lints]
 workspace = true

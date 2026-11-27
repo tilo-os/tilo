@@ -16,7 +16,7 @@
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use tilo_ui_base::collaboration::SessionResource;
+use ::collaboration::SessionResource;
 
 /// Where the app reports what it read and changed. A probe started only to stand in for a view that
 /// draws a part of the shell reports nothing.

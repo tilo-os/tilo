@@ -44,7 +44,7 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
     };
     let permissions =
         LivePermissions::fixed(role_permissions("dev", "dev", Role::Owner).borrow().clone());
-    let me = tilo_ui_base::collaboration::local_user_id();
+    let me = ::collaboration::local_user_id();
     let root = build_root::<A>(
         reader,
         Editing::Live {

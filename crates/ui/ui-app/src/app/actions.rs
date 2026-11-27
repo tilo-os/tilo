@@ -459,7 +459,7 @@ impl App {
     }
 
     #[cfg(feature = "model")]
-    fn bound_broker_route(&self) -> Option<&tilo_ui_base::collaboration::AcceptedRoute> {
+    fn bound_broker_route(&self) -> Option<&::collaboration::AcceptedRoute> {
         #[cfg(test)]
         if let Some(route) = &self.actions.bound_broker_route_for_test {
             return Some(route);
@@ -475,7 +475,7 @@ impl App {
         {
             return observation.route().app_id.clone();
         }
-        tilo_ui_base::collaboration::local_app_id()
+        ::collaboration::local_app_id()
     }
     #[cfg(feature = "model")]
     fn require_bound_broker_route(
@@ -1032,7 +1032,7 @@ impl App {
 
     /// The canonical route the app's primary document currently syncs on.
     #[cfg(feature = "model")]
-    fn primary_document_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
+    fn primary_document_route(&self) -> Option<::collaboration::RouteSpec> {
         self.collaboration
             .manager
             .primary_route()
@@ -1886,11 +1886,7 @@ impl App {
         if actor.member_id() == Some(&self.local_author) && !decided_elsewhere {
             match crate::bound_dispatch::admit_local_action(
                 &self.permission_ctx,
-                (
-                    &tilo_ui_base::collaboration::local_app_id(),
-                    resource,
-                    resolved,
-                ),
+                (&::collaboration::local_app_id(), resource, resolved),
                 typed_arguments.as_ref(),
                 argument,
             ) {
@@ -2965,7 +2961,7 @@ impl App {
             return Some(resource);
         }
         self.permission_ctx
-            .permitted_resource(&tilo_ui_base::collaboration::local_app_id(), resource)
+            .permitted_resource(&::collaboration::local_app_id(), resource)
     }
 
     #[cfg(feature = "model")]
@@ -3267,7 +3263,7 @@ fn collect_named_actions(
 /// broker its collaboration connection reaches.
 #[cfg(feature = "model")]
 pub(super) struct BrokerApi<'a> {
-    manager: &'a mut tilo_ui_base::collaboration::CollaborationManager,
+    manager: &'a mut ::collaboration::CollaborationManager,
     broker_requests: &'a mut std::collections::HashMap<BrokerReply, u64>,
     next_broker_request_id: &'a mut Option<u64>,
     pending_application_launches:

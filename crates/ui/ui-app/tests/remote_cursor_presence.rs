@@ -3,11 +3,12 @@
 //! `PresenceCtx::remote_cursors` — the source the shell's
 //! `RemoteCursorOverlay` actually renders from.
 
+use ::collaboration::CollabEvent;
+use ::collaboration::MemberId;
 use tilo_ui_app::app::App;
 use tilo_ui_app::state::State;
 use tilo_ui_app::widget::Container;
 use tilo_ui_base::presence::user_color;
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::MemberId};
 
 fn new_headless_app() -> App {
     // A trivial leaf is enough — this test never runs a frame, it just

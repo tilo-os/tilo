@@ -128,8 +128,8 @@ fn app_holding(record: &StoredResource) -> App {
     app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
     // The app shows a record of a shared workspace; the record kept beside it
     // is not in it.
-    app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
-        route: tilo_ui_base::collaboration::RouteSpec::document(APP, uuid::Uuid::new_v4(), "shown"),
+    app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
+        route: ::collaboration::RouteSpec::document(APP, uuid::Uuid::new_v4(), "shown"),
         epoch: uuid::Uuid::new_v4(),
     });
     app.refresh_document_routes();
@@ -150,7 +150,7 @@ fn app_holding(record: &StoredResource) -> App {
     app
 }
 
-fn snapshots(app: &mut App) -> Vec<(tilo_ui_base::collaboration::RouteSpec, Vec<u8>)> {
+fn snapshots(app: &mut App) -> Vec<(::collaboration::RouteSpec, Vec<u8>)> {
     std::mem::take(&mut app.document_routes.sent)
         .into_iter()
         .filter_map(|(route, request)| match request {
@@ -165,7 +165,7 @@ fn snapshots(app: &mut App) -> Vec<(tilo_ui_base::collaboration::RouteSpec, Vec<
 
 /// `document` whole on `route`, as the device's store sends what it holds of
 /// the record.
-fn from_device(route: &tilo_ui_base::collaboration::RouteSpec, document: Vec<u8>) -> CollabEvent {
+fn from_device(route: &::collaboration::RouteSpec, document: Vec<u8>) -> CollabEvent {
     CollabEvent::Document {
         route: route.clone(),
         mutation: collab_types::DocumentMutation::Snapshot(document),
@@ -293,25 +293,25 @@ tilo_test_env::scenario! {
 /// writes (per route), and whether it was asked to join.
 #[derive(Default)]
 struct Recording {
-    route: Option<tilo_ui_base::collaboration::RouteSpec>,
+    route: Option<::collaboration::RouteSpec>,
     /// The announced primary route, until it is reported once: a broker
     /// acknowledges the route it was joined with.
     acknowledged: bool,
-    writes: Vec<tilo_ui_base::collaboration::RouteSpec>,
-    joins: Vec<tilo_ui_base::collaboration::RouteSpec>,
+    writes: Vec<::collaboration::RouteSpec>,
+    joins: Vec<::collaboration::RouteSpec>,
 }
 
 struct RecordingTransport(Arc<Mutex<Recording>>);
 
-impl tilo_ui_base::collaboration::CollabTransport for RecordingTransport {
-    fn status(&self) -> tilo_ui_base::collaboration::TransportStatus {
-        tilo_ui_base::collaboration::TransportStatus::Ready
+impl ::collaboration::CollabTransport for RecordingTransport {
+    fn status(&self) -> ::collaboration::TransportStatus {
+        ::collaboration::TransportStatus::Ready
     }
     fn submit(
         &mut self,
-        command: tilo_ui_base::collaboration::TransportCommand,
-    ) -> Result<(), tilo_ui_base::collaboration::TransportError> {
-        use tilo_ui_base::collaboration::TransportCommand as Command;
+        command: ::collaboration::TransportCommand,
+    ) -> Result<(), ::collaboration::TransportError> {
+        use ::collaboration::TransportCommand as Command;
         match command {
             Command::Primary(CollabRequest::Document { .. }) => {
                 let route = self
@@ -331,10 +331,8 @@ impl tilo_ui_base::collaboration::CollabTransport for RecordingTransport {
         }
         Ok(())
     }
-    fn drain(&mut self, _: &mut Vec<tilo_ui_base::collaboration::CollabEvent>) {}
-    fn take_primary_route_result(
-        &mut self,
-    ) -> Option<Result<tilo_ui_base::collaboration::RouteSpec, String>> {
+    fn drain(&mut self, _: &mut Vec<::collaboration::CollabEvent>) {}
+    fn take_primary_route_result(&mut self) -> Option<Result<::collaboration::RouteSpec, String>> {
         let mut recording = self.0.lock().unwrap();
         if recording.acknowledged {
             return None;
@@ -344,7 +342,7 @@ impl tilo_ui_base::collaboration::CollabTransport for RecordingTransport {
     }
     fn take_action_directory_requests(
         &mut self,
-        _: &mut Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>,
+        _: &mut Vec<::collaboration::ActionDirectoryRequest>,
     ) {
     }
     // A transport whose routes all take documents, as the broker's do once
@@ -358,13 +356,12 @@ impl tilo_ui_base::collaboration::CollabTransport for RecordingTransport {
 /// `Recording` transport that stands in for its broker.
 #[cfg(unix)]
 fn recording_window(app: &str, record: &StoredResource) -> (App, Arc<Mutex<Recording>>) {
-    let primary =
-        tilo_ui_base::collaboration::RouteSpec::document(app, uuid::Uuid::new_v4(), "shown");
+    let primary = ::collaboration::RouteSpec::document(app, uuid::Uuid::new_v4(), "shown");
     let recording = Arc::new(Mutex::new(Recording {
         route: Some(primary.clone()),
         ..Recording::default()
     }));
-    let transport: Box<dyn tilo_ui_base::collaboration::CollabTransport> =
+    let transport: Box<dyn ::collaboration::CollabTransport> =
         Box::new(RecordingTransport(Arc::clone(&recording)));
     let mut manager = CollaborationManager::with_transport(transport);
     assert!(manager.send(CollabRequest::Hello {

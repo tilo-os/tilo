@@ -18,7 +18,7 @@ pub(super) struct DirectoryObservation {
     pub provider_domains: Vec<tilo_ui_base::widget::ActionDirectoryInvocationDomain>,
     pub permissions: tilo_permissions::DirectoryPermissionObservation,
     pub permission_generation: u64,
-    pub route: Option<tilo_ui_base::collaboration::AcceptedRoute>,
+    pub route: Option<::collaboration::AcceptedRoute>,
     pub owners: Vec<crate::bound_dispatch::BoundDirectoryObservation>,
     pub root_revision: Option<String>,
     pub providers: Vec<String>,

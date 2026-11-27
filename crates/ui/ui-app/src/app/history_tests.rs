@@ -140,7 +140,7 @@ fn native_key(app: &mut App, key: &str) {
 
 /// `mutation` of `route`'s record, as the device's store sends it.
 fn routed_document(
-    route: &tilo_ui_base::collaboration::RouteSpec,
+    route: &::collaboration::RouteSpec,
     mutation: collab_types::DocumentMutation,
 ) -> CollabEvent {
     CollabEvent::Document {
@@ -156,13 +156,11 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
             State::new(),
             Box::new(crate::widget::Text::new("root")),
         );
-        let installed =
-            tilo_ui_base::collaboration::RouteSpec::app("installed-app", uuid::Uuid::new_v4());
-        app.actions.bound_broker_route_for_test =
-            Some(tilo_ui_base::collaboration::AcceptedRoute {
-                route: installed.clone(),
-                epoch: uuid::Uuid::new_v4(),
-            });
+        let installed = ::collaboration::RouteSpec::app("installed-app", uuid::Uuid::new_v4());
+        app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
+            route: installed.clone(),
+            epoch: uuid::Uuid::new_v4(),
+        });
         let mut foreign = installed;
         foreign.document = Some("foreign-record".into());
         let mut incoming = automerge::AutoCommit::new();
@@ -297,7 +295,7 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
 
     {
         let mut fixture = RoutedOwners::new();
-        let refusal = tilo_ui_base::collaboration::CollabSendError::TooLarge {
+        let refusal = ::collaboration::CollabSendError::TooLarge {
             actual: collab_types::MAX_DOCUMENT_TRANSFER_BYTES + 1,
             max: collab_types::MAX_DOCUMENT_TRANSFER_BYTES,
         };
@@ -316,8 +314,7 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
             "still refused, and still not marked as sent"
         );
 
-        fixture.app.document_routes.refuse_for_test =
-            Some(tilo_ui_base::collaboration::CollabSendError::Busy);
+        fixture.app.document_routes.refuse_for_test = Some(::collaboration::CollabSendError::Busy);
         fixture.app.publish_owned_documents();
         assert!(fixture.app.document_routes.sent.is_empty());
 
@@ -353,11 +350,8 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
         let probe =
             crate::history_mode::testing::native_effect_probe_parts("observer", "fixture.observer");
         let mut app = App::new_with_controlled_inputs(State::new(), probe.root);
-        let foreign = tilo_ui_base::collaboration::RouteSpec::document(
-            "foreign",
-            uuid::Uuid::new_v4(),
-            "other",
-        );
+        let foreign =
+            ::collaboration::RouteSpec::document("foreign", uuid::Uuid::new_v4(), "other");
         let mut doc = automerge::AutoCommit::new();
         doc.put(ROOT, "body", "foreign").unwrap();
         let envelope = routed_document(
@@ -550,14 +544,13 @@ impl RoutedOwners {
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
         let (manager, hold_join) = CollaborationManager::connected_holding_joins_for_test();
         app.collaboration.manager = manager;
-        app.actions.bound_broker_route_for_test =
-            Some(tilo_ui_base::collaboration::AcceptedRoute {
-                route: tilo_ui_base::collaboration::RouteSpec::app(
-                    "outer-shell",
-                    uuid::Uuid::parse_str(workspace).unwrap(),
-                ),
-                epoch: uuid::Uuid::new_v4(),
-            });
+        app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
+            route: ::collaboration::RouteSpec::app(
+                "outer-shell",
+                uuid::Uuid::parse_str(workspace).unwrap(),
+            ),
+            epoch: uuid::Uuid::new_v4(),
+        });
         app.refresh_document_routes();
         // The fake broker admits each route join asynchronously, and a route
         // refuses documents until its document mode is resolved.
@@ -854,11 +847,10 @@ impl RoutedPrimary {
             Box::new(crate::widget::BoundAppWidget::new(component)),
         );
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test =
-            Some(tilo_ui_base::collaboration::AcceptedRoute {
-                route: binding.broker_route().unwrap(),
-                epoch: uuid::Uuid::new_v4(),
-            });
+        app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
+            route: binding.broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
+        });
         app.refresh_document_routes();
         Self {
             app,

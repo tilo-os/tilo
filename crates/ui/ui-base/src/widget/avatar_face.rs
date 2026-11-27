@@ -468,21 +468,14 @@ impl<'a> AvatarFace<'a> {
             self.paint_status(ctx, rect);
             return;
         }
-        #[cfg(all(feature = "local-daemons", feature = "model"))]
-        let public_image = if self.image.is_none() {
-            if self.tint == Tint::Neutral {
-                None
-            } else {
-                crate::local_identity::photo_for(self.identity)
-                    .map(|photo| profile_image(photo.rgba(), photo.width(), photo.height()))
-            }
+        // The picture the host reads for itself (its own person's), unless the caller drew
+        // them neutral.
+        let public_image = if self.image.is_none() && self.tint != Tint::Neutral {
+            crate::people_photos::looked_up(self.identity)
         } else {
             None
         };
-        #[cfg(all(feature = "local-daemons", feature = "model"))]
         let image = self.image.or(public_image.as_ref());
-        #[cfg(not(all(feature = "local-daemons", feature = "model")))]
-        let image = self.image;
         // The picture the person chose for their profile, wherever they
         // show up, unless the caller drew them neutral.
         let chosen = if image.is_none() && self.tint != Tint::Neutral {

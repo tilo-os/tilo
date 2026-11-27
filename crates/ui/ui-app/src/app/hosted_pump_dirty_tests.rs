@@ -92,15 +92,15 @@ struct HostedPumpFixture {
     pending_label: std::rc::Rc<RefCell<Option<String>>>,
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
-    directory: std::rc::Rc<RefCell<Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>>>,
+    directory: std::rc::Rc<RefCell<Vec<::collaboration::ActionDirectoryRequest>>>,
 }
 
 struct HostedPumpTransport {
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
-    directory: std::rc::Rc<RefCell<Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>>>,
+    directory: std::rc::Rc<RefCell<Vec<::collaboration::ActionDirectoryRequest>>>,
 }
-impl tilo_ui_base::collaboration::PeerTransport for HostedPumpTransport {
+impl ::collaboration::PeerTransport for HostedPumpTransport {
     fn is_connected(&self) -> bool {
         true
     }
@@ -114,9 +114,7 @@ impl tilo_ui_base::collaboration::PeerTransport for HostedPumpTransport {
     fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
         Ok(())
     }
-    fn take_action_directory_requests(
-        &mut self,
-    ) -> Vec<tilo_ui_base::collaboration::ActionDirectoryRequest> {
+    fn take_action_directory_requests(&mut self) -> Vec<::collaboration::ActionDirectoryRequest> {
         std::mem::take(&mut *self.directory.borrow_mut())
     }
 }
@@ -196,7 +194,7 @@ impl HostedPumpFixture {
         let mut response = waits.then_some(response);
         self.directory
             .borrow_mut()
-            .push(tilo_ui_base::collaboration::ActionDirectoryRequest::Query { query, reply });
+            .push(::collaboration::ActionDirectoryRequest::Query { query, reply });
         self.wake.notify_events();
         let report = self.pump();
         let page = response
@@ -475,7 +473,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
+        app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -565,7 +563,7 @@ tilo_test_env::scenario! {
         })
         .unwrap();
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
+        app.actions.bound_broker_route_for_test = Some(::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });

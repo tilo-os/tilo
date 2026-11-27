@@ -318,6 +318,7 @@ tilo-capture = { path = "../../engines/tilo-capture", features = ["camera", "mic
 package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 
 [dev-dependencies]
+collaboration = { package = "tilo-collaboration", path = "../collaboration" }
 # What a server keeps, as its tests exercise it: a folder's zip read back, a page's fetch, the
 # surfaces its changes are decided against, the content an app reaches its store with, and
 # the offloadable action and machine plan its journeys run.

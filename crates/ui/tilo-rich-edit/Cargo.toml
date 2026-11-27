@@ -29,6 +29,8 @@ tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-reference = { version = "0.1.0", path = "../../core/reference" }
+# What a caret or selection tells the others in the document.
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 taffy = { workspace = true, features = ["content_size"] }
 winit.workspace = true
 vello.workspace = true
@@ -49,7 +51,6 @@ tilo-ui = { version = "0.1.0", path = "../ui-core", features = ["test-support", 
 # The note tests mount the editor in the app runner and its headless driver.
 tilo-ui-app = { version = "0.1.0", path = "../ui-app", features = ["test-support", "model"] }
 tilo-test-env = { path = "../../../tools/test-env" }
-collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 image.workspace = true
 vello_encoding.workspace = true
 serde_json.workspace = true

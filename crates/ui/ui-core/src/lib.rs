@@ -202,6 +202,8 @@ pub mod host_chrome;
 pub mod host_notifications;
 #[cfg(all(windows, feature = "native"))]
 pub use tilo_process_services::notify::windows_toasts as host_notifications;
+#[cfg(all(test, feature = "model", feature = "broker-transport"))]
+mod external_moderation_tests;
 pub mod hosted_window;
 /// What a frame shows an inspector, a screen reader and an automated check: the widget and
 /// semantic tree, the named targets a caller addresses, and the accessibility issues it reports.
@@ -212,8 +214,13 @@ pub mod live_activity;
 pub mod live_pictures;
 pub mod math;
 #[cfg(feature = "model")]
+pub mod operation_target;
+#[cfg(feature = "model")]
+#[cfg(all(feature = "local-daemons", feature = "model"))]
+pub mod own_photo;
 pub mod owner_wake;
 pub mod passcode_keyboard;
+pub mod personal_dictionary;
 pub mod pick;
 pub mod pick_wire;
 pub mod pictures;

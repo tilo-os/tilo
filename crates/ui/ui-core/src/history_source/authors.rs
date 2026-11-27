@@ -671,11 +671,11 @@ pub fn actor_label(actor: &tilo_actions::Actor) -> String {
 }
 
 /// Build a [`HistoryAuthor`] from the local identity
-/// ([`tilo_ui_base::local_identity`]), if there is one.
+/// ([`::collaboration::local_identity`]), if there is one.
 /// Public because the shell wants the same answer for its own chrome without
 /// having to own an [`AuthorDirectory`].
 pub fn local_identity_author() -> Option<HistoryAuthor> {
-    let id = tilo_ui_base::local_identity::load()?;
+    let id = ::collaboration::local_identity::load()?;
     let key_hex = hex::encode(id.group_public_key);
     let name = if id.display_name.is_empty() {
         // First boot writes an empty display name and the user names
@@ -954,7 +954,7 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("TILO_SVC_IDENTITY_FD");
             let _env = env;
-            tilo_ui_base::local_identity::install_source(None);
+            ::collaboration::local_identity::install_source(None);
             assert!(local_identity_author().is_none());
         }
     }

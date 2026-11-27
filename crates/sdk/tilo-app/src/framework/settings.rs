@@ -147,7 +147,7 @@ pub(crate) struct ViewStorage {
     emoji: Option<Rc<super::workspace_emoji::WindowEmoji>>,
     /// The window's own route to the session, where it runs in one: taken while the window is
     /// constructed, the only time it can be, and handed to views built any time after.
-    session: Option<tilo_ui_base::collaboration::browser_service_sessions::Client>,
+    session: Option<::collaboration::browser_service_sessions::Client>,
 }
 
 /// What the host gives a live window beside its record: where the person's own
@@ -234,7 +234,7 @@ impl ViewStorage {
         if let Some(records) = &mut hosted.records {
             records.device_queue = Some(storage.settings::<super::chain::QueuedWrites>());
         }
-        let session = tilo_ui_base::collaboration::browser_service_sessions::Client::capture_kept(
+        let session = ::collaboration::browser_service_sessions::Client::capture_kept(
             hosted
                 .records
                 .as_ref()
@@ -260,12 +260,10 @@ impl ViewStorage {
     }
 
     /// The window's own route to the session, where it runs in one.
-    pub(crate) fn session(
-        &self,
-    ) -> Option<tilo_ui_base::collaboration::browser_service_sessions::Client> {
+    pub(crate) fn session(&self) -> Option<::collaboration::browser_service_sessions::Client> {
         self.session
             .as_ref()
-            .map(tilo_ui_base::collaboration::browser_service_sessions::Client::another)
+            .map(::collaboration::browser_service_sessions::Client::another)
     }
 
     /// The chain of `P` the app keeps beside its record, opened on first

@@ -14,6 +14,23 @@ static PHOTOS: RwLock<BTreeMap<String, ImageData>> = RwLock::new(BTreeMap::new()
 /// Whose each other id (a device) is: the person's root key.
 static ALIASES: RwLock<BTreeMap<String, String>> = RwLock::new(BTreeMap::new());
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Where a picture the host can read itself is asked for: the process's own person's, from the
+/// identity it was launched with. Unset, only the pictures handed to [`set`] show.
+static LOOKUP: RwLock<Option<fn(&str) -> Option<ImageData>>> = RwLock::new(None);
+
+/// Ask `lookup` for the picture of whoever `identity` names before the handed ones ([`looked_up`]),
+/// as the process's starter does with the picture its identity service holds; `None` stops asking.
+pub fn install_lookup(lookup: Option<fn(&str) -> Option<ImageData>>) {
+    *LOOKUP.write_recover() = lookup;
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+}
+
+/// The picture the installed lookup ([`install_lookup`]) reads for `identity`, if any.
+#[must_use]
+pub fn looked_up(identity: &str) -> Option<ImageData> {
+    let lookup = (*LOOKUP.read_recover())?;
+    lookup(identity)
+}
 
 /// `person` (root key, hex) wears `image` from now on; `None` takes their picture away (they went back
 /// to their initials).

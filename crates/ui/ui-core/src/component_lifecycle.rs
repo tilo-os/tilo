@@ -251,7 +251,7 @@ pub enum Heard {
     /// What the workspace calls each member, from the app's own read of its
     /// `workspace/members` resource: a window with no connection of its own names the people in
     /// its presence marks by these.
-    Names(Vec<(tilo_ui_base::collaboration::MemberId, String)>),
+    Names(Vec<(::collaboration::MemberId, String)>),
 }
 
 /// A presentation whose app runs elsewhere hands over what its app's connection heard of the

@@ -2,10 +2,10 @@
 //! the exact record route, the exact invocation and operation, one bounded
 //! endpoint per route.
 
-use crate::collaboration::external_moderation::{admit_for_test, enqueue};
-use crate::collaboration::{CollabRequest, RouteSpec};
+use ::collaboration::external_moderation::{admit_for_test, enqueue};
+use ::collaboration::{CollabRequest, RouteSpec};
 
-use crate::host_operation::OperationTarget;
+use crate::operation_target::OperationTarget;
 use registry_types::{ExternalModerationOperation, ModerationDestination, ModerationMutation};
 
 fn operation() -> ExternalModerationOperation {

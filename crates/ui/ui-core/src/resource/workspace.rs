@@ -266,15 +266,14 @@ mod tests {
         std::thread::spawn(move || {
             let workspace = uuid::Uuid::new_v4();
             let manager =
-                tilo_ui_base::collaboration::CollaborationManager::native_initial_unanswered_fixture_for_test(
+                ::collaboration::CollaborationManager::native_initial_unanswered_fixture_for_test(
                     APP,
                     workspace,
                     AutoCommit::new().save(),
                     &[RECORD],
                 );
-            let construction =
-                tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager)
-                    .expect("the window's construction");
+            let construction = ::collaboration::native_initial::NativeConstruction::enter(manager)
+                .expect("the window's construction");
             // The app keeps the record itself: the window's own store opens it, the one that
             // reads its records through the window's broker, which has not replayed it yet.
             let store = ResourceOwners::reading(Rc::new(Unanswered))

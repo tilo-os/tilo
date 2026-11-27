@@ -260,6 +260,17 @@ impl Member {
     }
 }
 
+/// The colour a roster row's packed `0x00RRGGBB` ([`Member::packed_colour`]) names: the
+/// presence hue nearest it, `None` for `0` or a grey.
+#[must_use]
+pub fn colour_from_packed(packed: u32) -> Option<crate::presence::PresenceHue> {
+    if packed == 0 {
+        return None;
+    }
+    let [_, r, g, b] = packed.to_be_bytes();
+    crate::presence::PresenceHue::nearest_to_srgb(r, g, b)
+}
+
 /// The admission time a roster's packed value names: `None` for `u64::MAX`.
 #[must_use]
 pub const fn joined_at_from_packed(packed: u64) -> Option<u64> {

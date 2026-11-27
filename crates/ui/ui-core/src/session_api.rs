@@ -53,7 +53,7 @@ pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLau
 #[cfg(feature = "model")]
 pub fn start_application_launch(
     api: Option<&mut dyn SessionApi>,
-    route: Option<&tilo_ui_base::collaboration::RouteSpec>,
+    route: Option<&::collaboration::RouteSpec>,
     payload: &[u8],
     operation: InvocationId,
     admitted: bool,

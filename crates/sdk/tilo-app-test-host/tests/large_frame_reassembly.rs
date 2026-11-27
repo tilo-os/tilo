@@ -4,7 +4,7 @@
 
 use crate::support_collab::TypedBroker;
 use crate::support_collab::{change_carrying, changes_of};
-use tilo_ui_base::collaboration::CollabRequest;
+use ::collaboration::CollabRequest;
 
 #[test]
 fn large_frame_survives_split_reads() {

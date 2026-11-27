@@ -1637,20 +1637,17 @@ fn document_content(context: &mut ProcessContext) -> Result<(), LaunchError> {
         return Ok(());
     };
     let route = resource_route(context)?;
-    let link = tilo_ui_base::collaboration::document_content::ContentLink::of_window();
+    let link = ::collaboration::document_content::ContentLink::of_window();
     // The window keeps its content link: another window of the app on this thread
     // reads its own, never this one's queue of wants.
-    tilo_ui_base::collaboration::document_content::keep_link(
-        &context.wake_handle(),
-        Arc::clone(&link),
-    );
+    ::collaboration::document_content::keep_link(&context.wake_handle(), Arc::clone(&link));
     // Whatever carries the record's content for the process (a browser
     // page's replication) asks for and hands over this window's too, and
     // what it stores is sealed for the members of the record's workspace.
-    tilo_ui_base::collaboration::document_content::ContentLink::show_on_route(&route, &link);
-    context.provide_content(
-        tilo_ui_base::collaboration::document_content::DocumentContent::store(local, link),
-    );
+    ::collaboration::document_content::ContentLink::show_on_route(&route, &link);
+    context.provide_content(::collaboration::document_content::DocumentContent::store(
+        local, link,
+    ));
     Ok(())
 }
 
@@ -1664,7 +1661,7 @@ fn document_content(context: &mut ProcessContext) -> Result<(), LaunchError> {
 /// As [`route_in`].
 pub(super) fn resource_route(
     context: &ProcessContext,
-) -> Result<tilo_ui_base::collaboration::RouteSpec, LaunchError> {
+) -> Result<::collaboration::RouteSpec, LaunchError> {
     route_in(context.records(), context.app_id(), &context.record().id)
 }
 
@@ -1677,7 +1674,7 @@ fn route_in(
     records: &ui_core::resource::ResourceStore,
     app: &str,
     record: &DocumentId,
-) -> Result<tilo_ui_base::collaboration::RouteSpec, LaunchError> {
+) -> Result<::collaboration::RouteSpec, LaunchError> {
     records.wire_route(record).map_err(|error| {
         LaunchError::Operation(format!(
             "{app} has no workspace on this device to keep its records in ({error})"
@@ -2131,7 +2128,7 @@ fn prepare_named(
         .map(std::path::Path::new)
         .or(kept_here)
     {
-        let author = tilo_ui_base::collaboration::local_user_id();
+        let author = ::collaboration::local_user_id();
         let mut host = super::headless::data_dir_host(
             directory,
             definition.app_id(),

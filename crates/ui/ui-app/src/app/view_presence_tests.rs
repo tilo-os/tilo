@@ -199,7 +199,7 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
         });
         sender.layout.last_frame_size = Some(winit::dpi::PhysicalSize::new(900, 600));
         let view = <App as FreezeThaw>::capture_view(&sender);
-        let metadata = tilo_ui_base::collaboration::ContinuationMetadata {
+        let metadata = ::collaboration::ContinuationMetadata {
             schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
             bytes: postcard::to_stdvec(&PortableContinuationView::capture(view)).unwrap(),
         };
@@ -254,7 +254,7 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
         };
         let metadata = compose_structural_continuation_metadata(
             view,
-            Some(tilo_ui_base::collaboration::ContinuationMetadata {
+            Some(::collaboration::ContinuationMetadata {
                 schema_version: 7,
                 bytes: b"custom-safe-projection".to_vec(),
             }),
@@ -282,7 +282,7 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
                 viewport: crate::view::ViewRect::default(),
                 view_mode: Some("grid".into()),
             },
-            Some(tilo_ui_base::collaboration::ContinuationMetadata {
+            Some(::collaboration::ContinuationMetadata {
                 schema_version: 1,
                 bytes: b"opaque-unknown-payload".to_vec(),
             }),
@@ -308,7 +308,7 @@ fn continuation_restores_framework_view_fidelity_before_custom_semantics() {
                 viewport: crate::view::ViewRect::default(),
                 view_mode: Some("list".into()),
             },
-            Some(tilo_ui_base::collaboration::ContinuationMetadata {
+            Some(::collaboration::ContinuationMetadata {
                 schema_version: 1,
                 bytes: vec![b'x'; 32 * 1024],
             }),

@@ -7,6 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
 tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }

@@ -140,12 +140,12 @@ impl super::TextInput {
 
     /// Keep `word` as spelled right for this person, in every field and every document.
     pub fn add_word_to_dictionary(&mut self, word: &str) {
-        let result = tilo_ui_base::personal_dictionary::snapshot().and_then(|snapshot| {
-            tilo_ui_base::personal_dictionary::edit(
+        let result = crate::personal_dictionary::snapshot().and_then(|snapshot| {
+            crate::personal_dictionary::edit(
                 snapshot.revision,
-                tilo_ui_base::personal_dictionary::Edit::Add(
-                    tilo_ui_base::personal_dictionary::Word::new(word, None)?,
-                ),
+                crate::personal_dictionary::Edit::Add(crate::personal_dictionary::Word::new(
+                    word, None,
+                )?),
             )
         });
         if let Err(error) = result {
@@ -227,7 +227,7 @@ pub(super) struct PersonalSpelling {
     generation: u64,
     configured: String,
     pub(super) language: String,
-    pub(super) snapshot: Option<tilo_ui_base::personal_dictionary::Snapshot>,
+    pub(super) snapshot: Option<crate::personal_dictionary::Snapshot>,
 }
 
 impl super::TextInput {
@@ -384,8 +384,8 @@ impl super::TextInput {
         // hold, the words already read — and the dictionary built from them —
         // stand, and reading them again would copy and decode the whole
         // dictionary for every frame of every field that has been used.
-        let generation = tilo_ui_base::local_identity::generation();
-        let view = tilo_ui_base::personal_dictionary::revision();
+        let generation = ::collaboration::local_identity::generation();
+        let view = crate::personal_dictionary::revision();
         if self.last_personal_spelling_read == Some((generation, view))
             && self.personal_spelling.as_ref().is_some_and(|personal| {
                 personal.generation == generation && personal.configured == self.spell_language
@@ -395,11 +395,12 @@ impl super::TextInput {
         }
         self.last_personal_spelling_read = Some((generation, view));
         let current = PersonalSpelling {
-            owner: tilo_ui_base::local_identity::load().map(|identity| identity.group_public_key),
+            owner: ::collaboration::local_identity::load()
+                .map(|identity| identity.group_public_key),
             generation,
             configured: self.spell_language.clone(),
             language: self.spell_language.replace('_', "-").to_ascii_lowercase(),
-            snapshot: tilo_ui_base::personal_dictionary::snapshot().ok(),
+            snapshot: crate::personal_dictionary::snapshot().ok(),
         };
         if self.personal_spelling.as_ref() != Some(&current) {
             if self.personal_spelling.as_ref().is_some_and(|previous| {

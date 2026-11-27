@@ -597,7 +597,7 @@ pub(super) fn admitted_delivery_manager() -> CollaborationManager {
 // channel disconnects. It has no native history/read protocol, and cannot
 // publish a terminal result or admit a new outbound action.
 struct DisconnectedDeliveryPeer;
-impl tilo_ui_base::collaboration::PeerTransport for DisconnectedDeliveryPeer {
+impl ::collaboration::PeerTransport for DisconnectedDeliveryPeer {
     fn is_connected(&self) -> bool {
         false
     }
@@ -609,7 +609,7 @@ impl tilo_ui_base::collaboration::PeerTransport for DisconnectedDeliveryPeer {
     }
     fn join_route(
         &mut self,
-        _: tilo_ui_base::collaboration::RouteSpec,
+        _: ::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())

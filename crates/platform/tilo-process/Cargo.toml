@@ -30,6 +30,8 @@ tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+# The workspace a launch names is a workspace id.
+uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # The rendezvous socket is bound and reached by path, however deep its directory.

@@ -3,12 +3,12 @@
 //! remote presence may only change its own view.
 
 use super::*;
+use ::collaboration::CollabEvent;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_actions::{ActionSpec, ExecutionLocus, OperationKind, PresenceId, ResourceSpec};
-use tilo_ui_base::collaboration::CollabEvent;
 
 const MARK_TYPE: &str = "test.presence-mark";
 const VIEW_TYPE: &str = "test.presence-view";
@@ -165,7 +165,7 @@ impl tilo_ui_base::widget::presence_topology::Presences for TwoViews {
                 key: tilo_ui_base::PresenceKey::Widget {
                     path: vec![tilo_ui_base::PathSegment::Field("wp_block".into())],
                 },
-                payload: tilo_ui_base::PresencePayload::Caret {
+                payload: collab_types::presence::PresencePayload::Caret {
                     pos: probe.carets.get(presence).copied().unwrap_or(0),
                 },
             })

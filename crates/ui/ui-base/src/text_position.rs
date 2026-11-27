@@ -190,7 +190,6 @@ fn unit_to_character(text: &str, encoding: TextEncoding, position: usize) -> Opt
 mod tests {
     use super::*;
     use automerge::{ObjType, ROOT, transaction::Transactable};
-    use tilo_automerge::ApplyIncoming;
 
     tilo_test_env::scenario! {
         /// `TextPosition`: anchors that follow edits, and anchors that cannot be taken.
@@ -230,8 +229,8 @@ mod tests {
                 second
                     .splice_text(&text, second.length(&text), 0, "\npeer")
                     .unwrap();
-                first.merge_incoming(&mut second).unwrap();
-                second.merge_incoming(&mut first).unwrap();
+                first.merge(&mut second).unwrap();
+                second.merge(&mut first).unwrap();
                 assert_eq!(first.text(&text).unwrap(), second.text(&text).unwrap());
                 let resolved = position.resolve(&first, &text).unwrap();
                 assert_eq!(resolved.carets, vec![(11, Some(8)), (5, None)]);

@@ -735,7 +735,7 @@ mod component_adapter {
     }
 
     #[cfg(feature = "model")]
-    impl tilo_ui_base::widget::Continuable for BoundAppWidget {
+    impl crate::widget::Continuable for BoundAppWidget {
         fn continuation_metadata(
             &self,
             state: &AutoCommit,
@@ -745,9 +745,9 @@ mod component_adapter {
             binding
                 .read_document(state, |document, resource_root| {
                     let root = self.component.root.as_deref()?;
-                    tilo_ui_base::widget::capability::capability::<
-                        dyn tilo_ui_base::widget::Continuable,
-                    >(root)?
+                    tilo_ui_base::widget::capability::capability::<dyn crate::widget::Continuable>(
+                        root,
+                    )?
                     .continuation_metadata(document, resource_root)
                 })
                 .unwrap_or(None)
@@ -761,7 +761,7 @@ mod component_adapter {
         ) -> bool {
             self.with_root_edits(state, |root, edits, resource_root| {
                 let Some(continuable) = tilo_ui_base::widget::capability::capability_mut::<
-                    dyn tilo_ui_base::widget::Continuable,
+                    dyn crate::widget::Continuable,
                 >(&mut *root) else {
                     return false;
                 };
@@ -1072,7 +1072,7 @@ mod component_adapter {
             dyn tilo_ui_base::widget::FullscreenProvider,
             dyn tilo_ui_base::widget::CompleteContentProvider,
             #[cfg(feature = "model")]
-            dyn tilo_ui_base::widget::Continuable,
+            dyn crate::widget::Continuable,
             dyn crate::floating_surface::FloatingSurfaceProvider,
             dyn tilo_ui_base::widget::AudiencePresentationProvider,
             #[cfg(feature = "model")]

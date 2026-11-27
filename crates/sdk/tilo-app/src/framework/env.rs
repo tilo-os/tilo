@@ -520,7 +520,7 @@ impl<R: Resource> ResourceEnv<R> {
     /// asks the session for what is the session's to decide (Mail an account's password,
     /// Settings keeping one, Browser a website's session). `None` outside a session, in a past
     /// version and in a capture.
-    pub fn session(&self) -> Option<tilo_ui_base::collaboration::browser_service_sessions::Client> {
+    pub fn session(&self) -> Option<::collaboration::browser_service_sessions::Client> {
         if self.is_past() {
             return None;
         }

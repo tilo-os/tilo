@@ -198,7 +198,6 @@ ui = [
     "tilo-ui-base -> tilo-history",  # the one resource/action model: I/O-free types and pure evaluation over them
     "tilo-ui-base -> tilo-permissions",  # the one resource/action model: I/O-free types and pure evaluation over them
     "tilo-ui-base -> tilo-reference",  # the one resource/action model: I/O-free types and pure evaluation over them
-    "tilo-ui-base -> tilo-registry-types",  # the one resource/action model: I/O-free types and pure evaluation over them
     "tilo-ui-base -> tilo-resource",  # the one resource/action model: I/O-free types and pure evaluation over them
     "tilo-ui-base -> tilo-settings-model",  # the one resource/action model: I/O-free types and pure evaluation over them
     "tilo-ui-graph -> tilo-action-policy",
