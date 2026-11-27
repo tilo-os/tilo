@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_runtime::device::keep::server::{Server, ServerIdentity};
+use tilo_runtime::device::keep::server::{KeptServer, ServerIdentity};
 use tilo_runtime::device::keep::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -72,7 +72,7 @@ async fn main() {
         state_root: state.path().to_path_buf(),
         ..Default::default()
     };
-    let server = Server::start(
+    let server = KeptServer::start(
         cfg,
         ServerIdentity {
             user_public_key: user,

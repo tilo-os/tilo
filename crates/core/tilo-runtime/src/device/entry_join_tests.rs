@@ -42,7 +42,7 @@ async fn a_computer_joins_a_public_workspace_through_its_open_entry() {
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (laptop_key, laptop_cert) = enrol(&ada, "Ada's laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::Server::start_with_relay_mode(
+    let server = crate::device::keep::server::KeptServer::with_relay_mode(
         tilo_server_protocol::config::ServerConfig::loopback(state.path().join("host")),
         crate::device::keep::server::ServerIdentity {
             user_public_key: bob.verifying_key().to_bytes(),

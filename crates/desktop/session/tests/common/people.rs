@@ -131,7 +131,7 @@ const JOIN_OUTCOME_READ: Duration = Duration::from_secs(30);
 /// admits people to it at its entry.
 pub struct Site {
     runtime: tokio::runtime::Runtime,
-    server: Option<tilo_runtime::device::keep::server::Server>,
+    server: Option<tilo_runtime::device::keep::server::KeptServer>,
     /// The workspaces this site hosts.
     pub workspaces: tilo_workspace_service::workspaces::Workspaces,
     /// The person this site is: the workspace's owner.
@@ -190,7 +190,7 @@ impl Site {
         let host_key = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
         let (server, workspaces, workspace) = runtime.block_on(async {
-            let server = tilo_runtime::device::keep::server::Server::start_with_relay_mode(
+            let server = tilo_runtime::device::keep::server::KeptServer::with_relay_mode(
                 tilo_server_protocol::config::ServerConfig {
                     state_root: state.path().join("host"),
                     ..tilo_server_protocol::config::ServerConfig::default()

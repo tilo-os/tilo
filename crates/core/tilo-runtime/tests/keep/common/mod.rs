@@ -30,7 +30,7 @@ use tilo_user_identity::{
 
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
-use tilo_runtime::device::keep::server::{Server, ServerIdentity};
+use tilo_runtime::device::keep::server::{KeptServer, Server, ServerIdentity};
 use tilo_server_protocol::WorkSetting;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::config::ServerConfig;
@@ -169,7 +169,7 @@ impl TestDevice {
 /// workspace is created pinned + with `members` as the membership
 /// set.
 pub struct TestServer {
-    pub server: Server,
+    pub server: KeptServer,
     pub state_root: PathBuf,
     #[allow(
         dead_code,
@@ -215,7 +215,7 @@ pub async fn spawn_server_on(
     server_dev: TestDevice,
     workspaces: &[WorkspaceId],
     members: &[&TestDevice],
-) -> Server {
+) -> KeptServer {
     Box::pin(spawn_server_with(
         state_root, user, server_dev, workspaces, members, None,
     ))
@@ -256,7 +256,7 @@ async fn spawn_server_with(
     workspaces: &[WorkspaceId],
     members: &[&TestDevice],
     server: Option<std::sync::Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
-) -> Server {
+) -> KeptServer {
     if std::env::var_os("TILO_SERVER_CORRELATED_DIAGNOSTICS").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_ansi(false)
@@ -289,14 +289,14 @@ async fn spawn_server_with(
 ///
 /// # Errors
 ///
-/// As [`Server::start`].
+/// As [`KeptServer::start`].
 pub fn start_server(
     cfg: ServerConfig,
     identity: ServerIdentity,
 ) -> std::pin::Pin<
     Box<
         dyn std::future::Future<
-                Output = Result<Server, tilo_runtime::device::keep::server::ServerError>,
+                Output = Result<KeptServer, tilo_runtime::device::keep::server::ServerError>,
             > + Send,
     >,
 > {
@@ -307,7 +307,7 @@ pub fn start_server(
 ///
 /// # Errors
 ///
-/// As [`Server::start`].
+/// As [`KeptServer::start`].
 pub fn start_server_serving(
     cfg: ServerConfig,
     identity: ServerIdentity,
@@ -315,12 +315,12 @@ pub fn start_server_serving(
 ) -> std::pin::Pin<
     Box<
         dyn std::future::Future<
-                Output = Result<Server, tilo_runtime::device::keep::server::ServerError>,
+                Output = Result<KeptServer, tilo_runtime::device::keep::server::ServerError>,
             > + Send,
     >,
 > {
     Box::pin(async move {
-        Server::start_with_app_serving_and_relay_mode(
+        KeptServer::serving_apps(
             cfg.on_loopback(),
             identity,
             server,

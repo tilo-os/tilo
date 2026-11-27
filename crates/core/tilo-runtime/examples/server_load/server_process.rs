@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-use tilo_runtime::device::keep::server::{Server, ServerIdentity};
+use tilo_runtime::device::keep::server::{KeptServer, Server, ServerIdentity};
 use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -235,13 +235,7 @@ async fn serve_server() -> anyhow::Result<()> {
     };
     // Loopback only: no home-relay connection, whose keep-alives would be
     // counted as the server's egress.
-    let server = Server::start_with_app_serving_and_relay_mode(
-        cfg,
-        identity,
-        None,
-        iroh::RelayMode::Disabled,
-    )
-    .await?;
+    let server = KeptServer::serving_apps(cfg, identity, None, iroh::RelayMode::Disabled).await?;
     // The workspaces are the server owner's: their server makes each, and the
     // load's devices enter it.
     let workspaces = server

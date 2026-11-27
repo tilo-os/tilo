@@ -85,7 +85,7 @@ fn certificate(
 
 /// The server tilo.sh runs: a certified host of its operator, hosting the
 /// workspaces it creates.
-async fn server(state: &Path, operator: &SigningKey) -> crate::device::keep::server::Server {
+async fn server(state: &Path, operator: &SigningKey) -> crate::device::keep::server::KeptServer {
     let key = SigningKey::from_bytes(&tilo_test_env::node_key());
     // It owns the workspaces it hosts, so it takes part in their channels
     // and their records are sealed.
@@ -101,7 +101,7 @@ async fn server(state: &Path, operator: &SigningKey) -> crate::device::keep::ser
     // endpoint waits for it to name where it is reached, which an endpoint
     // naming nowhere holds for the whole wait.
     let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await;
-    crate::device::keep::server::Server::start_on_endpoint_with_protocols(
+    crate::device::keep::server::KeptServer::on_endpoint(
         tilo_server_protocol::config::ServerConfig {
             state_root: state.join("state"),
             identity_root: state.join("identity"),

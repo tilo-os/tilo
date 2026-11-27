@@ -11,7 +11,7 @@
 use crate::keep::common::{Linked, TestUser, hold_workspace};
 use automerge::{ROOT, transaction::Transactable as _};
 use std::net::Ipv4Addr;
-use tilo_runtime::device::keep::server::Server;
+use tilo_runtime::device::keep::server::KeptServer;
 use tilo_runtime::device::keep::server::ServerIdentity;
 use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -47,7 +47,7 @@ async fn certified_devices_use_only_the_injected_packet_relay() {
         device_cert: host.cert.clone(),
         revocations: RevocationList::new(),
     };
-    let server = Server::start(config, identity).await.unwrap();
+    let server = KeptServer::start(config, identity).await.unwrap();
     // The host answers through its own packet relay from the start: what
     // `Relay::start` waits for before it serves anything.
     let url = server

@@ -639,7 +639,7 @@ mod tests {
             "stopped serving"
         );
 
-        crate::device::keep::server::Server::start(
+        crate::device::keep::server::KeptServer::start(
             tilo_server_protocol::config::ServerConfig {
                 state_root: dir.path().join("state"),
                 identity_root: dir.path().join("identity"),

@@ -665,7 +665,7 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
     let server_cert = context.server.identity.cert.clone();
     // Where a page dials this host: its endpoint's key and addresses, and
     // the relay it is reached through — which the endpoint names from the
-    // moment this host serves anything ([`Server::start`] waits for it), as
+    // moment this host serves anything (a start waits for it), as
     // a page has no UDP socket and its own endpoint carries no packet
     // without one.
     // `/host` answers the endpoint's address as it is when asked

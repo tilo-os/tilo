@@ -29,7 +29,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::join::Role;
-use tilo_runtime::device::keep::server::Server;
+use tilo_runtime::device::keep::server::{KeptServer, Server};
 use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, RevocationList};
 use tilo_workspace_service::workspaces::{
@@ -231,7 +231,7 @@ struct TwoTenants {
     state: tempfile::TempDir,
     provider: TestUser,
     host: TestDevice,
-    server: Server,
+    server: KeptServer,
     acme: WorkspaceSummary,
     globex: WorkspaceSummary,
     ann: TestUser,

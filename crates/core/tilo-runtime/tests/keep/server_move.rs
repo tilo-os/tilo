@@ -21,7 +21,7 @@ use automerge::{ROOT, transaction::Transactable as _};
 use tilo_actions::remote::ActionCallError;
 use tilo_peer_state::members::MembershipOpCommand;
 use tilo_peer_state::workspace::GovernanceRow;
-use tilo_runtime::device::keep::server::{Server, ServerIdentity};
+use tilo_runtime::device::keep::server::{KeptServer, ServerIdentity};
 use tilo_server_protocol::WorkSetting;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::config::ServerConfig;
@@ -143,7 +143,7 @@ async fn site_server(site: &str) -> (Site, TestDevice) {
 /// A site's server, run as its daemon runs it (it keeps the files its workspaces' records name),
 /// over the state it keeps.
 struct Site {
-    server: Server,
+    server: KeptServer,
     _state: tempfile::TempDir,
 }
 

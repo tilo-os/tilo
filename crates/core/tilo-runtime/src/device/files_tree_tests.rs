@@ -55,7 +55,7 @@ fn fresh_id() -> [u8; 32] {
 
 /// The server keeping the workspace, and the certificate it serves under.
 struct Site {
-    server: crate::device::keep::server::Server,
+    server: crate::device::keep::server::KeptServer,
     cert: DeviceCert,
     workspace: String,
 }
@@ -307,7 +307,7 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
     let (ada_key, ada_cert) = enrol(&ada, "Ada's laptop", DeviceCapabilities::primary());
     let (bob_key, bob_cert) = enrol(&bob, "Bob's laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::Server::start_with_relay_mode(
+    let server = crate::device::keep::server::KeptServer::with_relay_mode(
         tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
         crate::device::keep::server::ServerIdentity {
             user_public_key: ada.verifying_key().to_bytes(),
@@ -680,7 +680,7 @@ async fn a_member_removed_while_their_link_is_down_finds_no_workspace_when_it_re
     let (ada_key, ada_cert) = enrol(&ada, "Ada's laptop", DeviceCapabilities::primary());
     let (bob_key, bob_cert) = enrol(&bob, "Bob's laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::Server::start_with_relay_mode(
+    let server = crate::device::keep::server::KeptServer::with_relay_mode(
         tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
         crate::device::keep::server::ServerIdentity {
             user_public_key: ada.verifying_key().to_bytes(),
@@ -817,7 +817,7 @@ async fn a_file_only_a_mount_keeps_reaches_the_workspaces_server() {
     let (server_key, server_cert) = enrol(&ada, "home-server", DeviceCapabilities::member());
     let (ada_key, ada_cert) = enrol(&ada, "Ada's laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::Server::start_with_relay_mode(
+    let server = crate::device::keep::server::KeptServer::with_relay_mode(
         tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
         crate::device::keep::server::ServerIdentity {
             user_public_key: ada.verifying_key().to_bytes(),

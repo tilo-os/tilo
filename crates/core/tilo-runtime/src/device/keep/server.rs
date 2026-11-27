@@ -1,8 +1,9 @@
 //! The long-running daemon: binds an iroh endpoint, and serves its workspaces'
 //! links there and over WebTransport.
 //!
-//! Also exposes the `Server` struct so integration tests can spin up
-//! two servers in the same process and let them merge.
+//! A device's daemon keeps more on its own endpoint and workspace service
+//! ([`Server::on_device`]); [`KeptServer`] starts that composition in a test, so
+//! tests run two servers in one process and let them merge.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,7 +21,7 @@ use tilo_server_protocol::policy::TrustPolicy;
 use tilo_workspace_service::Reaching;
 use tilo_workspace_service::service::ServerProtocol;
 
-/// Failure modes for `Server::start`.
+/// Failure modes for a server's start.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
     /// Iroh endpoint bind / accept.
@@ -64,7 +65,7 @@ pub use tilo_workspace_service::service::ServiceIdentity as ServerIdentity;
 /// applied, each verified: what a host reads when it starts, so a device its
 /// root revoked is refused as it connects instead of only after it is in.
 ///
-/// [`Server::start`] applies the log itself before it opens the service; a
+/// The daemon applies the log itself before it opens the service; a
 /// daemon that hands [`Server::on_device`] an identity it built reads it with
 /// this first, so what it validates and what the server keeps agree.
 ///
@@ -103,39 +104,11 @@ fn kept_revocations(
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
-/// What an embedder plugs into a server it starts.
-struct Servers {
-    /// Answers remote-action frames addressed to this host, see
-    /// [`Server::start_with_app_serving_and_relay_mode`].
-    app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
-    /// Classifies co-edit bodies.
-    shell_payloads: Arc<dyn tilo_workspace_service::payloads::ShellPayloads>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl Servers {
-    /// The desktop's payload adapter, with `app_serving` if any.
-    fn desktop(
-        app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
-    ) -> Self {
-        Self {
-            app_serving,
-            shell_payloads: tilo_workspace_service::payloads::neighbour(),
-        }
-    }
-}
-
 /// A running server. Prefer [`Server::shutdown`]; dropping the handle also
 /// stops the daemon and its background tasks, but leaves peers to
 /// notice by timeout.
 pub struct Server {
     pub endpoint: Endpoint,
-    /// The router over the endpoint, when this server bound the endpoint itself: a device's
-    /// daemon keeping more registers what it answers on the daemon's own router.
-    router: Option<Router>,
-    /// The device's workspace service this server keeps more on.
-    service: Arc<tilo_workspace_service::service::WorkspaceService>,
     /// The workspace host this server is: its workspaces, the handshake that
     /// admits their members and every member's session.
     sessions: tilo_workspace_service::service::ServiceSessions,
@@ -161,11 +134,6 @@ pub struct Server {
     /// This device's keys in the channels of the workspaces it holds, from the key service
     /// beside its workspace service.
     workspace_keys: tilo_workspace_keys::KeyProvider,
-    /// That key service, when this server opened its workspace service itself.
-    key_service: Option<tilo_workspace_service::own_device::KeyService>,
-    /// The packet relay this host runs for the pages it serves, when it runs
-    /// one ([`ServerConfig::packet_relay`]).
-    iroh_packet_relay: Option<iroh_relay::server::Server>,
 }
 
 /// ALPN handlers to register on a router, each with its ALPN.
@@ -246,219 +214,219 @@ impl Drop for AbortOnDrop {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        // Stop reconnect loops before closing the shared endpoint.  An
-        // explicit close also tells connected peers about a host shutdown
-        // immediately instead of making them wait for QUIC's idle timeout.
+        // Stop reconnect loops before the daemon's endpoint goes. A server composed on a
+        // device's daemon leaves the router, the endpoint and the key service to it.
         if let Ok(mut tasks) = self.background_tasks.lock() {
             tasks.clear();
-        }
-        // `Server` is normally dropped inside Tokio, but Drop must remain safe
-        // in synchronous teardown and after a runtime has already stopped. A server
-        // composed on a device's daemon leaves the daemon's endpoint to it.
-        if self.router.is_some()
-            && let Ok(runtime) = tokio::runtime::Handle::try_current()
-        {
-            let endpoint = self.endpoint.clone();
-            runtime.spawn(async move {
-                endpoint.close().await;
-            });
         }
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl Server {
-    /// Start on an explicitly selected packet relay without public address lookup.
-    ///
-    /// Device certificate validation, workspace membership and relay/1 framing
-    /// remain identical to [`Self::start`]. The default constructor retains N0.
+pub struct KeptServer {
+    /// The server the daemon's composition produced; its answers are this fixture's own.
+    pub server: Server,
+    /// Answers the workspace service's and the server's protocols while this lives.
+    router: Option<Router>,
+    /// The device's workspaces and the key service beside them, kept as a daemon keeps them:
+    /// the groups' keys arrive through it, and it is shut down before the endpoint closes.
+    workspaces: Arc<crate::device::workspaces::ServiceWorkspaces>,
+    /// The device's endpoint, closed when this shuts down or goes.
+    endpoint: Endpoint,
+    /// The packet relay it runs or is reached through, when the configuration names one.
+    relay: PacketRelay,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl std::ops::Deref for KeptServer {
+    type Target = Server;
+
+    fn deref(&self) -> &Server {
+        &self.server
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl std::ops::DerefMut for KeptServer {
+    fn deref_mut(&mut self) -> &mut Server {
+        &mut self.server
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl KeptServer {
+    /// The host `cfg` configures, started as a device's daemon starts one: the endpoint the
+    /// configuration places, the device's workspace service opened in `cfg.state_root`, and
+    /// [`Server::on_device`] on both.
     ///
     /// # Errors
-    /// Returns the same identity, storage and endpoint errors as [`Self::start`].
-    pub async fn start_with_relay_mode(
+    /// What [`Server::on_device`] refuses, and an identity or endpoint the daemon would refuse.
+    pub async fn start(cfg: ServerConfig, identity: ServerIdentity) -> Result<Self, ServerError> {
+        Box::pin(Self::compose(cfg, identity, None, None, Vec::new(), None)).await
+    }
+
+    /// [`Self::start`], on the relays `relay_mode` names instead of the configuration's: a relay
+    /// on this machine, or none where nothing dials the host through one.
+    ///
+    /// # Errors
+    /// As [`Self::start`].
+    pub async fn with_relay_mode(
         cfg: ServerConfig,
         identity: ServerIdentity,
         relay_mode: iroh::RelayMode,
     ) -> Result<Self, ServerError> {
-        Box::pin(Self::start_inner(
+        Box::pin(Self::compose(
             cfg,
             identity,
-            Some(relay_mode.clone()),
             None,
-            reaching_of(&relay_mode),
+            Some(relay_mode),
             Vec::new(),
-            Servers::desktop(None),
+            None,
         ))
         .await
     }
 
-    /// Start server services on an already-bound endpoint and compose any
-    /// number of caller-owned protocols into the same router: a test's device
-    /// that also keeps more keeps one node address and one shutdown lifecycle.
-    ///
-    /// Ownership of `endpoint` transfers to the returned server. Calling
-    /// [`Self::shutdown`] closes the router and invokes every additional
-    /// handler's shutdown hook.
-    ///
-    /// `reaching` says whether that endpoint names where it is reached: the
-    /// workspaces this server opens wait for that name, and an endpoint whose
-    /// relays are off ([`Reaching::OnItsOwn`]) names none.
+    /// [`Self::with_relay_mode`], with `app_serving` answering the workspaces' apps' calls.
     ///
     /// # Errors
-    ///
-    /// The same as [`Self::start`].
-    pub async fn start_on_endpoint_with_protocols(
-        cfg: ServerConfig,
-        identity: ServerIdentity,
-        endpoint: Endpoint,
-        reaching: Reaching,
-        protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
-    ) -> Result<Self, ServerError> {
-        Box::pin(Self::start_inner(
-            cfg,
-            identity,
-            None,
-            Some(endpoint),
-            reaching,
-            protocols,
-            Servers::desktop(None),
-        ))
-        .await
-    }
-
-    /// Start the daemon with the given config + identity.
-    ///
-    /// Binds an iroh endpoint (using the persistent secret at
-    /// `<state_root>/iroh-secret.bin`) and serves the workspaces' links on it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ServerError::Identity`] if `identity` fails validation
-    /// (bad signature, wrong chain, revoked, or not host-capable),
-    /// [`ServerError::Io`] if the state root can't be created,
-    /// [`ServerError::Files`] if the persistent iroh secret can't be
-    /// loaded, and [`ServerError::Iroh`] if
-    /// the listen address is invalid or the endpoint fails to bind.
-    pub async fn start(cfg: ServerConfig, identity: ServerIdentity) -> Result<Self, ServerError> {
-        Box::pin(Self::start_inner(
-            cfg,
-            identity,
-            None,
-            None,
-            Reaching::ByRelay,
-            Vec::new(),
-            Servers::desktop(None),
-        ))
-        .await
-    }
-
-    /// Start an app-serving host with an explicit transport relay policy.
-    ///
-    /// # Errors
-    /// The same as [`Server::start`].
-    pub async fn start_with_app_serving_and_relay_mode(
+    /// As [`Self::start`].
+    pub async fn serving_apps(
         cfg: ServerConfig,
         identity: ServerIdentity,
         app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
         relay_mode: iroh::RelayMode,
     ) -> Result<Self, ServerError> {
-        Box::pin(Self::start_inner(
+        Box::pin(Self::compose(
             cfg,
             identity,
-            Some(relay_mode.clone()),
             None,
-            reaching_of(&relay_mode),
+            Some(relay_mode),
             Vec::new(),
-            Servers::desktop(app_serving),
+            app_serving,
         ))
         .await
     }
 
-    /// The shared startup transaction: the endpoint, the device's workspace service opened in
-    /// the device's own layout ([`tilo_workspace_service::own_device::open_in`]), what a server
-    /// keeps on it ([`Self::on_device`]), and the router over all of it. Its future is large, so
-    /// every public constructor awaits it boxed rather than embedding it in the caller's future.
-    async fn start_inner(
+    /// [`Self::start`] on an `endpoint` the caller bound: `extra` answer beside the service's
+    /// own protocols, and `reaching` says whether the endpoint names where it is reached.
+    ///
+    /// # Errors
+    /// As [`Self::start`].
+    pub async fn on_endpoint(
         cfg: ServerConfig,
         identity: ServerIdentity,
-        relay_mode: Option<iroh::RelayMode>,
-        endpoint: Option<Endpoint>,
+        endpoint: Endpoint,
         reaching: Reaching,
-        additional_protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
-        servers: Servers,
+        extra: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
     ) -> Result<Self, ServerError> {
-        let Servers {
-            app_serving,
-            shell_payloads,
-        } = servers;
+        Box::pin(Self::compose(
+            cfg,
+            identity,
+            Some((endpoint, reaching)),
+            None,
+            extra,
+            None,
+        ))
+        .await
+    }
+
+    /// Stop the host: what answers for it, then what it keeps, then its endpoint, whose address
+    /// is free once this returns.
+    pub async fn shutdown(self) {
+        let Self {
+            server,
+            router,
+            workspaces,
+            endpoint,
+            relay,
+        } = self;
+        if let Some(router) = router
+            && let Err(error) = router.shutdown().await
+        {
+            tracing::debug!(%error, "server router shutdown task failed");
+        }
+        server.shutdown().await;
+        workspaces.service().shutdown().await;
+        endpoint.close().await;
+        relay.shutdown().await;
+    }
+
+    async fn compose(
+        cfg: ServerConfig,
+        identity: ServerIdentity,
+        endpoint: Option<(Endpoint, Reaching)>,
+        relay_mode: Option<iroh::RelayMode>,
+        extra: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
+        app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
+    ) -> Result<Self, ServerError> {
         validate_server_identity(&identity)?;
         std::fs::create_dir_all(&cfg.state_root)?;
-        // What this host refused before is refused again: its revocation log is read before the
-        // service opens, so a device its person's root revoked is turned away at the handshake
-        // once the server restarts, whichever embedder starts it.
         let identity = kept_revocations(identity, &cfg.state_root)?;
         let relay = PacketRelay::start(&cfg, endpoint.is_some() || relay_mode.is_some()).await?;
-        let relay_mode = relay_mode.or_else(|| relay.mode());
-        let endpoint = match endpoint {
-            Some(endpoint) => endpoint,
-            None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
+        let (endpoint, reaching) = if let Some((endpoint, reaching)) = endpoint {
+            (endpoint, reaching)
+        } else {
+            let mode = relay_mode.or_else(|| relay.mode());
+            let reaching = mode.as_ref().map_or(Reaching::ByRelay, reaching_of);
+            let endpoint = bind_endpoint(&cfg, &identity.device_signing_key, mode).await?;
+            (endpoint, reaching)
         };
-        // A server's endpoint is its device: the node its people's devices dial is the key its
-        // certificate names, so what it signs and what it is reached at answer as one device.
         endpoints_agree(&identity, &endpoint)?;
         reaching.awaited(&endpoint).await;
         relay.reached(&endpoint)?;
-        let signer: Arc<dyn collab_types::signer::DeviceSigner> =
-            Arc::new(identity.device_signing_key.clone());
-        let opened = tilo_workspace_service::own_device::open_in(
-            &cfg.state_root,
-            tilo_workspace_service::own_device::Device {
-                cert: &identity.device_cert,
-                signer: &signer,
-                // A server's people's devices address the workspaces it keeps to its device key.
+        let device = tilo_identity::identity_store::DeviceIdentity::kept(
+            identity.device_cert.clone(),
+            identity.device_signing_key.clone(),
+        );
+        let keep = cfg.clone();
+        let apps = app_serving.clone();
+        let workspaces = crate::device::workspaces::ServiceWorkspaces::open(
+            crate::device::workspaces::Opening {
+                dir: &cfg.state_root,
+                key: &identity.device_signing_key,
+                identity: device,
+                endpoint: endpoint.clone(),
+                seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
+                apps: app_serving.clone(),
+                configure: Some(Box::new(move |config| {
+                    tilo_workspace_service::service::ServiceConfig {
+                        reaching,
+                        ..Server::keeping(&keep, config, apps)
+                    }
+                })),
                 itself: Some(identity.clone()),
             },
-            tilo_workspace_service::own_device::vault_key(&identity.device_signing_key),
-            endpoint.clone(),
-            Arc::new(tilo_workspace_keys::NoSealChecks),
-            None,
-            |config| {
-                let config = Self::keeping(&cfg, config, app_serving.clone());
-                tilo_workspace_service::service::ServiceConfig {
-                    shell_payloads,
-                    reaching,
-                    // What the server keeps for the people whose workspaces it hosts: their
-                    // accounts, models, vault and what they were told.
-                    registers: vec![tilo_person_services::register],
-                    ..config
-                }
-            },
         )
-        .await?;
-        let tilo_workspace_service::own_device::Opened { service, keys } = opened;
-        let service = Arc::new(service);
+        .await
+        .map_err(|error| {
+            ServerError::Identity(format!("this device's workspace service: {error}"))
+        })?;
+        let service = Arc::clone(workspaces.service());
         let joined = crate::device::keep::servers::first_install::joined(&cfg.identity_root);
-        let (mut server, protocols) = Self::on_device(OnDevice {
+        let (server, protocols) = Server::on_device(OnDevice {
             cfg,
             identity,
             service: Arc::clone(&service),
-            keys: keys.keys(),
+            keys: workspaces.keys(),
             endpoint: endpoint.clone(),
             joined,
             app_serving,
         })
         .await?;
-        let mut router = Router::builder(endpoint);
+        let mut router = Router::builder(endpoint.clone());
         for (alpn, handler) in service.protocols() {
             router = router.accept(alpn, handler);
         }
-        for (alpn, handler) in protocols.into_iter().chain(additional_protocols) {
+        for (alpn, handler) in protocols.into_iter().chain(extra) {
             router = router.accept(alpn, handler);
         }
-        server.router = Some(router.spawn());
-        server.key_service = Some(keys);
-        server.iroh_packet_relay = relay.server;
-        Ok(server)
+        Ok(Self {
+            server,
+            router: Some(router.spawn()),
+            workspaces,
+            endpoint,
+            relay,
+        })
     }
 }
 
@@ -676,8 +644,6 @@ impl Server {
         Ok((
             Self {
                 endpoint,
-                router: None,
-                service,
                 sessions,
                 browser_origin: Arc::new(std::sync::RwLock::new(None)),
                 live: Some(live_session),
@@ -689,8 +655,6 @@ impl Server {
                 browsers: None,
                 content,
                 workspace_keys: keys,
-                key_service: None,
-                iroh_packet_relay: None,
             },
             protocols,
         ))
@@ -767,15 +731,16 @@ impl Server {
         self.sessions.is_subscribed(workspace_id, device).await
     }
 
-    /// Stop the server and tell every peer it has gone.
+    /// Stop what this server started and tell every peer it has gone.
     ///
     /// Dropping the handle also stops it, but abandons the QUIC
     /// connections rather than closing them: each peer keeps this server
     /// as a live subscriber until its own idle timeout, and for that
     /// whole window fans out to a connection nobody reads instead of
     /// queueing for store-and-forward. Deltas in that window are neither
-    /// delivered nor queued. Closing the endpoint sends `CONNECTION_CLOSE`
-    /// straight away, so peers drop the subscription and queue instead.
+    /// delivered nor queued. The daemon that composed this server closes its
+    /// endpoint right after, which sends `CONNECTION_CLOSE` straight away, so
+    /// peers drop the subscription and queue instead.
     ///
     /// What its workspaces took in of their members' writes is written
     /// through to their files first
@@ -783,35 +748,18 @@ impl Server {
     /// write-through is deferred, so a server stopped without it would start
     /// again on documents that lack what was written last, and owe a turn its
     /// agent had already answered.
-    pub async fn shutdown(mut self) {
+    pub async fn shutdown(self) {
         // What this server started reaches the endpoint: stopped and awaited here, it lets go
-        // of it before the address is reused. The dial loop is stopped first, so it opens no
-        // fresh connection while the endpoint is closing.
-        let background: Vec<JoinHandle<()>> =
-            std::mem::take(&mut *lock_background_tasks(&self.background_tasks))
-                .into_iter()
-                .filter_map(AbortOnDrop::stop)
-                .collect();
+        // of it before the daemon closes its endpoint. The dial loop is stopped first, so it
+        // opens no fresh connection while the endpoint is closing.
+        let stopped = std::mem::take(&mut *lock_background_tasks(&self.background_tasks));
         let serving = self.web_ui.stop_serving();
-        for task in background.into_iter().chain(serving) {
-            let _ = task.await;
-        }
-        // A server composed on a device's daemon leaves the service, the router and the
-        // endpoint to the daemon.
-        let router = self.router.take();
-        if let Some(router) = router {
-            self.service.shutdown().await;
-            if let Err(error) = router.shutdown().await {
-                tracing::debug!(%error, "server router shutdown task failed");
-            }
-            // Its endpoint is its own, and is closed and awaited here: the address it bound is
-            // free once this returns, for a server that starts again where it was.
-            self.endpoint.clone().close().await;
-        }
-        if let Some(packet_relay) = std::mem::take(&mut self.iroh_packet_relay)
-            && let Err(error) = packet_relay.shutdown().await
+        for task in stopped
+            .into_iter()
+            .filter_map(AbortOnDrop::stop)
+            .chain(serving)
         {
-            tracing::debug!(%error, "packet relay shutdown task failed");
+            let _ = task.await;
         }
     }
 
@@ -1320,7 +1268,7 @@ mod tests {
             .bind()
             .await
             .expect("a loopback endpoint binds");
-        let refused = Server::start_on_endpoint_with_protocols(
+        let refused = KeptServer::on_endpoint(
             ServerConfig {
                 identity_root: state.path().join("identity"),
                 ..ServerConfig::loopback(state.path().to_path_buf())
@@ -1442,7 +1390,7 @@ mod tests {
             sign_device_cert(&mut admin_cert, &root).unwrap();
             // The workspace this server holds, and the one it does not.
             let given = WorkspaceId::from_u128(7);
-            let server = Server::start(
+            let server = KeptServer::start(
                 ServerConfig {
                     state_root: temp.path().join("server"),
                     trust_policy: TrustPolicy::AllowMatchingUser,
@@ -1466,7 +1414,7 @@ mod tests {
             // this server among their servers there and hands it the workspace,
             // as it hands every server of theirs: no server founds it.
             let primary_state = tempfile::tempdir().unwrap();
-            let primary = Server::start(
+            let primary = KeptServer::start(
                 ServerConfig {
                     state_root: primary_state.path().to_path_buf(),
                     app_serving: true,
@@ -1622,7 +1570,7 @@ mod tests {
         sign_device_cert(&mut server_cert, &root).unwrap();
         sign_device_cert(&mut admin_cert, &root).unwrap();
         let primary_state = tempfile::tempdir().unwrap();
-        let primary = Server::start(
+        let primary = KeptServer::start(
             ServerConfig {
                 state_root: primary_state.path().to_path_buf(),
                 app_serving: true,
@@ -1657,7 +1605,7 @@ mod tests {
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         };
-        let server = Server::start(config.clone(), identity.clone())
+        let server = KeptServer::start(config.clone(), identity.clone())
             .await
             .unwrap();
         let relay = server
@@ -1710,7 +1658,7 @@ mod tests {
         // Started again, it keeps the workspace from its own state and writes its entry
         // from where it is reached: its address, and the relay beside it.
         server.shutdown().await;
-        let restarted = Server::start(config, identity).await.unwrap();
+        let restarted = KeptServer::start(config, identity).await.unwrap();
         let hosted = restarted.workspaces().expect("the server holds workspaces");
         let endpoint = serde_json::to_string(&restarted.node_addr()).unwrap();
         let named = tilo_test_env::within("the entry to name the relay", async {
@@ -1775,7 +1723,7 @@ mod tests {
         let desk_identity = certified("desk", 3, DeviceCapabilities::primary());
         let desk_device = desk_identity.device_cert.device_public_key;
         let server_state = tempfile::tempdir().unwrap();
-        let server = Server::start(
+        let server = KeptServer::start(
             ServerConfig {
                 state_root: server_state.path().to_path_buf(),
                 trust_policy: TrustPolicy::AllowMatchingUser,
@@ -1789,7 +1737,7 @@ mod tests {
         .await
         .unwrap();
         let desk_state = tempfile::tempdir().unwrap();
-        let desk = Server::start(
+        let desk = KeptServer::start(
             ServerConfig {
                 state_root: desk_state.path().to_path_buf(),
                 app_serving: true,

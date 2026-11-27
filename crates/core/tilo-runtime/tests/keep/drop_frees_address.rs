@@ -39,7 +39,7 @@ async fn a_server() -> (
     TestDevice,
     tempfile::TempDir,
     SocketAddr,
-    tilo_runtime::device::keep::server::Server,
+    tilo_runtime::device::keep::server::KeptServer,
 ) {
     let user = TestUser::fresh("Alice");
     let host: TestDevice = user.enrol("home-server", DeviceCapabilities::member());

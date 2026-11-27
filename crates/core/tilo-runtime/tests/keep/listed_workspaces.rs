@@ -16,7 +16,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::{StatePeer, TransportOrigin};
-use tilo_runtime::device::keep::server::Server;
+use tilo_runtime::device::keep::server::{KeptServer, Server};
 use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use tilo_workspace_service::workspaces::{
@@ -32,7 +32,7 @@ use tilo_server_protocol::WorkspaceId;
 
 const APP: &str = "so.tilo.chat";
 
-async fn start(state: &std::path::Path, alice: &TestUser, host: &TestDevice) -> Server {
+async fn start(state: &std::path::Path, alice: &TestUser, host: &TestDevice) -> KeptServer {
     start_at(state, alice, host, "127.0.0.1:0".parse().unwrap()).await
 }
 
@@ -45,7 +45,7 @@ async fn start_at(
     alice: &TestUser,
     host: &TestDevice,
     iroh_listen: std::net::SocketAddr,
-) -> Server {
+) -> KeptServer {
     if iroh_listen.port() != 0 {
         // The stopped server's connections let go of its socket shortly after
         // its shutdown returns.
@@ -181,7 +181,7 @@ struct Listed {
     bob: TestUser,
     phone: TestDevice,
     state: tempfile::TempDir,
-    server: Server,
+    server: KeptServer,
     workspace: WorkspaceListing,
     alice_link: Linked,
     bob_link: Linked,

@@ -4,6 +4,7 @@
 )]
 
 use super::*;
+use crate::device::keep::server::KeptServer;
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
 use tilo_peer_state::join::Role;
@@ -69,8 +70,8 @@ async fn server_at(
     state: &tempfile::TempDir,
     identity: crate::device::keep::server::ServerIdentity,
     config: ServerConfig,
-) -> Server {
-    Server::start_with_relay_mode(
+) -> KeptServer {
+    KeptServer::with_relay_mode(
         ServerConfig {
             state_root: state.path().into(),
             ..config
@@ -129,9 +130,9 @@ async fn serve_web(web: Arc<Web>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
 }
 
 /// Stop serving `serving` and shut `server` down.
-async fn stop(server: Server, serving: tokio::task::JoinHandle<()>) {
+async fn stop(server: KeptServer, serving: tokio::task::JoinHandle<()>) {
     serving.abort();
-    crate::device::keep::server::Server::shutdown(server).await;
+    server.shutdown().await;
 }
 
 async fn post(addr: SocketAddr, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
@@ -1082,7 +1083,7 @@ async fn mails_taken(
 async fn invitation_only_host(
     root: &SigningKey,
     seed: u8,
-) -> (Server, Host, String, tempfile::TempDir) {
+) -> (KeptServer, Host, String, tempfile::TempDir) {
     let host = host(root, seed, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = server_at(&state, host.identity(), ServerConfig::default()).await;

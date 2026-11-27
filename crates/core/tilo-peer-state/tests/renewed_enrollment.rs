@@ -24,7 +24,7 @@ use ed25519_dalek::SigningKey;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::join::{self, Role};
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
-use tilo_runtime::device::keep::server::Server;
+use tilo_runtime::device::keep::server::KeptServer;
 use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use tilo_workspace_service::workspaces::IssueInvitationRequest;
@@ -60,7 +60,7 @@ fn ownership(cert: &DeviceCert, key: &SigningKey) -> DeviceIdentity {
 /// with `held` and the host admitted, but whose answer it never took in:
 /// the proof stays retained, to be sent again.
 struct Admitted {
-    server: Server,
+    server: KeptServer,
     _state: tempfile::TempDir,
     _directory: tempfile::TempDir,
     workspace: String,
@@ -86,7 +86,7 @@ impl Admitted {
         // The host reaches no packet relay: the link it hands out then names the addresses it
         // has here, which the device dials directly. A host with a public relay names only that
         // relay, which this test's device would reach over the internet or not at all.
-        let server = Server::start_with_relay_mode(
+        let server = KeptServer::with_relay_mode(
             ServerConfig::loopback(state.path().to_path_buf()),
             tilo_runtime::device::keep::server::ServerIdentity {
                 user_public_key: alice.verifying_key().to_bytes(),

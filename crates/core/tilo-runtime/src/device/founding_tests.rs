@@ -847,7 +847,7 @@ fn a_person_gaining_a_server_is_served_through_it_at_once() {
 struct PersonServer {
     line: String,
     cert: tilo_user_identity::DeviceCert,
-    server: crate::device::keep::server::Server,
+    server: crate::device::keep::server::KeptServer,
     serving: tokio::runtime::Runtime,
     /// Where the server keeps what it is given, for as long as the test runs.
     _state: tempfile::TempDir,
@@ -879,7 +879,7 @@ fn person_server() -> PersonServer {
         .unwrap();
     let state = tempfile::tempdir().unwrap();
     let server = serving
-        .block_on(crate::device::keep::server::Server::start_with_relay_mode(
+        .block_on(crate::device::keep::server::KeptServer::with_relay_mode(
             tilo_server_protocol::config::ServerConfig {
                 state_root: state.path().join("server"),
                 ..Default::default()
@@ -1473,7 +1473,7 @@ fn the_persons_server(
 ) -> (
     tokio::runtime::Runtime,
     tempfile::TempDir,
-    crate::device::keep::server::Server,
+    crate::device::keep::server::KeptServer,
     String,
 ) {
     let dir = tilo_identity::store::account_identity_dir_from_env().unwrap();
@@ -1500,7 +1500,7 @@ fn the_persons_server(
         .unwrap();
     let state = tempfile::tempdir().unwrap();
     let server = serving
-        .block_on(crate::device::keep::server::Server::start_with_relay_mode(
+        .block_on(crate::device::keep::server::KeptServer::with_relay_mode(
             tilo_server_protocol::config::ServerConfig {
                 state_root: state.path().join("server"),
                 ..Default::default()

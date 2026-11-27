@@ -354,7 +354,7 @@ async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::Server::start_with_relay_mode(
+    let server = crate::device::keep::server::KeptServer::with_relay_mode(
         tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
@@ -549,7 +549,7 @@ async fn a_workspace_made_elsewhere_gets_a_folder_that_syncs() {
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::Server::start_with_relay_mode(
+    let server = crate::device::keep::server::KeptServer::with_relay_mode(
         tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),

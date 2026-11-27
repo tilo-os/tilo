@@ -9,7 +9,7 @@
 )]
 
 use tilo_peer_state::join::Role;
-use tilo_runtime::device::keep::server::Server;
+use tilo_runtime::device::keep::server::KeptServer;
 use tilo_server_protocol::config::ServerConfig;
 use tilo_server_protocol::policy::TrustPolicy;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -27,7 +27,7 @@ const OWNERS: WorkspaceId = WorkspaceId::from_u128(802);
 const UNBOUND: WorkspaceId = WorkspaceId::from_u128(803);
 
 struct HomeHost {
-    server: Server,
+    server: KeptServer,
     state: tempfile::TempDir,
     owner: TestUser,
     bob: TestUser,
@@ -132,7 +132,7 @@ async fn cross_user_device_is_not_admitted_into_a_workspace_it_does_not_hold() {
             .exists(),
         "a cross-user device bound a workspace on the owner's host"
     );
-    Server::shutdown(host.server).await;
+    host.server.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -158,5 +158,5 @@ async fn owner_device_still_enters_on_a_home_host() {
         kept.contains(&phone_key) && kept.contains(&tablet_key),
         "a home host keeps its own devices in the workspace's one record"
     );
-    Server::shutdown(host.server).await;
+    host.server.shutdown().await;
 }

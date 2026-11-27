@@ -39,7 +39,7 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tilo_device_identity::{IdentityPaths, persist};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_runtime::device::keep::server::{Server, ServerIdentity};
+use tilo_runtime::device::keep::server::{KeptServer, ServerIdentity};
 use tilo_runtime::device::keep::web::install::{InstallListener, SessionDevice};
 use tilo_runtime::device::keep::web::{TlsSource, WebConfig};
 use tilo_server_client::certification::{IssuedRole, certify_with_root, issue_device_cert};
@@ -254,7 +254,7 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
 
     // It starts as `tilo-server run` then does: the person's host, on the
     // identity it was installed with.
-    let server = Server::start(
+    let server = KeptServer::start(
         ServerConfig::loopback(state.clone()),
         ServerIdentity {
             user_public_key: persist::read_public_key(&paths.user_pubkey).unwrap(),

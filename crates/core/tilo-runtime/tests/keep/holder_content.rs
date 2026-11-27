@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use tilo_peer_state::{CopyRole, Missing, Shortfall};
-use tilo_runtime::device::keep::server::Server;
 use tilo_runtime::device::keep::server::ServerIdentity;
+use tilo_runtime::device::keep::server::{KeptServer, Server};
 use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -39,7 +39,7 @@ async fn server(
     device: &TestDevice,
     state: &std::path::Path,
     iroh_listen: std::net::SocketAddr,
-) -> Server {
+) -> KeptServer {
     if iroh_listen.port() != 0 {
         // A stopped server's connections let go of its socket shortly after
         // its shutdown returns.

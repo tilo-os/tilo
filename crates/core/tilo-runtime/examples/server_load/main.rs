@@ -2,7 +2,7 @@
 //!
 //! One server runs in its own process, so its CPU time and memory are its
 //! own: this binary re-executes itself with `--serve`, which starts the
-//! production [`tilo_runtime::device::keep::server::Server`] with authentication and the co-edit path
+//! production [`tilo_runtime::device::keep::server::KeptServer`] with authentication and the co-edit path
 //! as a daemon runs them. The parent then connects N members in workspaces
 //! of four, each its own device certificate, iroh endpoint and device link
 //! (`tilo_server_client::link` and `DirectSync`), and plays a fixed,

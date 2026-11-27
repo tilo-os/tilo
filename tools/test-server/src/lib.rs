@@ -160,7 +160,7 @@ impl Running {
                         .expect("the host's runtime");
                     let handle = runtime.handle().clone();
                     runtime.block_on(async move {
-                        let server = tilo_runtime::device::keep::server::Server::start(
+                        let server = tilo_runtime::device::keep::server::KeptServer::start(
                             tilo_server_protocol::config::ServerConfig {
                                 state_root: host_root.join("host"),
                                 identity_root: host_root.join("identity"),

@@ -24,7 +24,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use sha2::{Digest as _, Sha256};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
-use tilo_runtime::device::keep::server::{Server, ServerIdentity};
+use tilo_runtime::device::keep::server::{KeptServer, Server, ServerIdentity};
 use tilo_runtime::device::keep::web::{TlsSource, WebConfig, WebHandle};
 use tilo_server_client::Carrier;
 use tilo_server_client::ServerAddress;
@@ -162,7 +162,7 @@ pub fn enrol(root: &SigningKey, label: &str, capabilities: DeviceCapabilities) -
 }
 
 pub struct TestHost {
-    pub server: Server,
+    pub server: KeptServer,
     pub web: WebHandle,
     /// The root of the person whose server it is, whose devices trust its certificate.
     pub person: [u8; 32],
@@ -295,7 +295,7 @@ pub async fn start_host_serving(
     } else {
         iroh::RelayMode::Disabled
     };
-    let server = Server::start_with_relay_mode(cfg.on_loopback(), identity, mode)
+    let server = KeptServer::with_relay_mode(cfg.on_loopback(), identity, mode)
         .await
         .unwrap();
     let web = server
@@ -372,10 +372,9 @@ pub async fn start_workspace_host_relaying(
     // of its host, which would otherwise be a relay and an address out on
     // the internet, and the test would stand on whether those answer.
     let server = if packet_relay {
-        Server::start(config.on_loopback(), identity).await
+        KeptServer::start(config.on_loopback(), identity).await
     } else {
-        Server::start_with_relay_mode(config.on_loopback(), identity, iroh::RelayMode::Disabled)
-            .await
+        KeptServer::with_relay_mode(config.on_loopback(), identity, iroh::RelayMode::Disabled).await
     }
     .unwrap();
     let web = server

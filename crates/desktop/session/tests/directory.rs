@@ -686,7 +686,7 @@ fn chat_with(line: &str) -> automerge::AutoCommit {
 /// Dropping it takes the page down before the runtime it runs on, and shuts the host down.
 struct Lounge {
     page: Option<Link>,
-    server: Option<tilo_runtime::device::keep::server::Server>,
+    server: Option<tilo_runtime::device::keep::server::KeptServer>,
     _entry: Responder,
     /// The host's web listener, which serves the entry's host (`/host`) a device asks before its
     /// session enters through the entry.
@@ -814,7 +814,7 @@ fn lounge_key() -> [u8; 32] {
 /// The host behind the lounge's site: a server of this machine, certified under a key root of the
 /// test's own, which hosts the lounge's workspace and keeps what its page writes sealed.
 struct LoungeHost {
-    server: tilo_runtime::device::keep::server::Server,
+    server: tilo_runtime::device::keep::server::KeptServer,
     workspaces: tilo_workspace_service::workspaces::Workspaces,
     server_cert: tilo_user_identity::DeviceCert,
     /// The key and certificate of the site's page, the device that recorded in the workspace before
@@ -844,7 +844,7 @@ impl LoungeHost {
         );
         let (server, workspaces, workspace) =
             block_on_within(runtime, "the lounge's host to start", async {
-                let server = tilo_runtime::device::keep::server::Server::start_with_relay_mode(
+                let server = tilo_runtime::device::keep::server::KeptServer::with_relay_mode(
                     tilo_server_protocol::config::ServerConfig::loopback(state.join("host")),
                     tilo_runtime::device::keep::server::ServerIdentity {
                         user_public_key: owner_key.verifying_key().to_bytes(),
