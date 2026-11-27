@@ -185,19 +185,13 @@ fn reads_protected_route(
     route: &collaboration::RouteSpec,
     access: Option<&tilo_action_policy::MemberAccess>,
 ) -> bool {
-    use tilo_action_policy::{ActionKind, Answer, Context};
-    let document = route.document.as_deref().unwrap_or("");
-    if !collab_types::validator::requires_independent_document_keys(&route.app_id, document) {
-        return true;
-    }
-    let node = collab_types::document_node(&route.cluster_id.to_string(), &route.app_id, document);
-    access.is_some_and(|access| {
-        access.answer(
-            &node,
-            ActionKind::Read,
-            &Context::at_secs(tilo_clock::unix_now()),
-        ) == Answer::Allow
-    })
+    collab_types::validator::reads_protected_document(
+        &route.cluster_id.to_string(),
+        &route.app_id,
+        route.document.as_deref().unwrap_or(""),
+        access,
+        tilo_clock::wall(),
+    )
 }
 
 /// Whether an instance joining `route` opens the document `asked`, as a launch names it: a member's

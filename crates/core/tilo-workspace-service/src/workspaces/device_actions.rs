@@ -1188,6 +1188,32 @@ impl super::Workspaces {
         .await
     }
 
+    /// Whether `device` may read `app`'s document `document` in `workspace` now, which the app
+    /// keeps sealed: the workspace's role records decide it, as they decide whether the app opens
+    /// there.
+    pub(crate) async fn reads_app_document(
+        &self,
+        device: [u8; 32],
+        workspace: &str,
+        app: &str,
+        document: &str,
+    ) -> bool {
+        let now = tilo_clock::wall();
+        self.reads_peer(workspace, |peer| {
+            let access = peer.permissions(device, now)?;
+            Ok::<bool, tilo_peer_state::MembershipError>(
+                collab_types::validator::reads_protected_document(
+                    workspace,
+                    app,
+                    document,
+                    Some(&access),
+                    now,
+                ),
+            )
+        })
+        .await
+    }
+
     /// The apps whose connection this device runs ([`Self::run_connections`]).
     pub fn host_connections(&self) -> Option<Arc<dyn crate::work::HostConnections>> {
         self.inner.jobs.connections.read_recover().clone()

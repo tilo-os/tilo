@@ -58,7 +58,8 @@
 //! bridge's gateway, a mail account's fetching) runs on exactly one device of
 //! the workspace at a time ([`Turn::Connection`]). A device takes it when it
 //! has what the app needs ([`HostConnections`]): the app installed, every
-//! capability the app declares given to it, and power. An always-on server
+//! capability the app declares given to it, power, and the workspace letting
+//! the device read the sealed records the app keeps. An always-on server
 //! claims it at once; any other device once [`Order::server_grace`] passed
 //! since it saw the turn free. The device that holds the lease runs the app's
 //! process with no window and renews its claim while the connection runs; it
@@ -428,6 +429,8 @@ pub enum Ineligible {
     LacksCapability,
     /// This device runs on its battery.
     OnBattery,
+    /// The workspace does not let this device read the sealed records the app keeps.
+    CannotReadSealed,
 }
 
 impl fmt::Display for Ineligible {
@@ -447,6 +450,7 @@ impl fmt::Display for Ineligible {
             Self::NotInstalled => "the app is not installed on this device",
             Self::LacksCapability => "this device does not give the app a capability it needs",
             Self::OnBattery => "this device runs on its battery",
+            Self::CannotReadSealed => "this device cannot read the app's sealed records",
         })
     }
 }
@@ -836,6 +840,12 @@ async fn eligibility(
             }
             if !host.on_power() {
                 return Err(Ineligible::OnBattery);
+            }
+            if !workspaces
+                .reads_app_document(device, workspace, app, "")
+                .await
+            {
+                return Err(Ineligible::CannotReadSealed);
             }
             Ok(())
         }

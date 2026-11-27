@@ -544,6 +544,27 @@ pub fn requires_independent_document_keys(app: &str, document: &str) -> bool {
             .is_some_and(|root| crate::workspace_document::sealed_kind(app, root).is_some())
 }
 
+/// Whether a party whose access is `access` may read `document` of `app` in `workspace`, when the
+/// app keeps it sealed ([`requires_independent_document_keys`]): what decides whether the app
+/// opens there, and which device takes the app's long-lived connection.
+#[must_use]
+pub fn reads_protected_document(
+    workspace: &str,
+    app: &str,
+    document: &str,
+    access: Option<&tilo_action_policy::MemberAccess>,
+    now: std::time::SystemTime,
+) -> bool {
+    use tilo_action_policy::{ActionKind, Answer, Context};
+    if !requires_independent_document_keys(app, document) {
+        return true;
+    }
+    let node = document_node(workspace, app, document);
+    access.is_some_and(|access| {
+        access.answer(&node, ActionKind::Read, &Context::at_time(now)) == Answer::Allow
+    })
+}
+
 /// The access editor's route: an empty app selects workspace defaults or the default for the
 /// app named in `document`. A nonempty app selects one exact document.
 fn access_rule_node(workspace: &str, app: &str, document: &str) -> Option<TreePath> {
