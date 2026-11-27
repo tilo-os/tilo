@@ -497,6 +497,34 @@ pub(super) struct Peer {
         tilo_actions::InvocationId,
         tilo_actions::remote::ReceiptStatus,
     )>,
+    /// The approves the person gave a call of the caller's, which the app sends on to the
+    /// provider that runs it ([`Driver::hand_approval`]).
+    handed: Handed,
+}
+
+/// The approves the person gave, each for one call of an action, as the device hands one back
+/// when they answer what it asked: a frame carrying one of them is admitted once, and a frame
+/// carrying any other approve is refused, as the workspace's broker refuses it.
+#[derive(Default)]
+struct Handed(std::sync::Mutex<Vec<(String, tilo_actions::remote::asked::Approval)>>);
+
+impl tilo_actions::remote::asked::ApprovalsHanded for Handed {
+    fn admits_approval(&self, request: &tilo_actions::remote::InvokeRequest) -> bool {
+        let Some(approval) = request.approval() else {
+            return false;
+        };
+        let mut handed = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(at) = handed.iter().position(|(action, given)| {
+            *action == request.target.address.action && given == approval
+        }) else {
+            return false;
+        };
+        handed.swap_remove(at);
+        true
+    }
 }
 
 impl Driver {
@@ -548,6 +576,7 @@ impl Driver {
             receipts_owed: Vec::new(),
             refused: Vec::new(),
             provided: Vec::new(),
+            handed: Handed::default(),
         });
         self.run_frame();
     }
@@ -647,6 +676,22 @@ impl Driver {
         self.peer
             .as_ref()
             .is_some_and(|peer| !peer.exchange.borrow().inbound.is_empty())
+    }
+
+    /// The person gave `approval` for a call of `address` the app makes: the app may send it on
+    /// with that call, once, as it sends a call the device handed back with their answer.
+    pub(super) fn hand_approval(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        approval: &tilo_actions::remote::asked::Approval,
+    ) {
+        if let Some(peer) = self.peer.as_mut() {
+            peer.handed
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((address.action.clone(), approval.clone()));
+        }
     }
 
     /// Why the peer refused the app's own call `invocation`, as its caller hears it: none when
@@ -928,10 +973,12 @@ impl Driver {
             // own frame, where the app would answer by its own word what its person was asked.
             // Their yes reaches the call only through the device's re-admission
             // ([`Driver::confirm_asked`]).
-            if let Err(forged) = tilo_actions::remote::asked::admit_frame(None, &request) {
-                if request.target.provider == tilo_actions::remote::OWN_PROVIDER {
-                    peer.refused.push((request.invocation, forged.clone()));
-                }
+            if let Err(forged) =
+                tilo_actions::remote::asked::admit_frame(Some(&peer.handed), &request)
+            {
+                // Whichever provider it names, the app's caller hears why: a refused call never
+                // answers as one that ran.
+                peer.refused.push((request.invocation, forged.clone()));
                 peer.answer(tilo_actions::remote::refuse(
                     &RemoteActionMessage::Invoke(request),
                     forged,

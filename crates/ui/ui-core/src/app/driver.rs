@@ -2648,6 +2648,11 @@ impl Driver {
                 .map(|(_, started)| started);
         }
         let argument = crate::app_core::json_argument(arguments);
+        // The person's yes for a call the app sends on to the provider that runs it, as the device
+        // hands it back when they answer: the frame carrying it is admitted once.
+        if let Some(approval) = approval {
+            self.hand_approval(address, approval);
+        }
         // A view operation that shows an item first (the render of one, the lines of one) asks
         // for the view to be laid out before it reads it: a frame lays it out, and the
         // operation runs again, reading the item where the window shows it.
