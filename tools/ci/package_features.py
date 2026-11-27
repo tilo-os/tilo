@@ -27,11 +27,10 @@ NATIVE_TEST_FEATURES = {
     # and its destination side as the live installer medium ships it.
     "imager": ("installation", "destination"),
     "tilo-media": ("decode", "encode", "realtime", "voice", "test-support"),
-    # The detector and the document scanner are what its own tests test: a rendered code
-    # decodes only with `codes`, and the scanners' tests exist only with `scanner`. The
-    # Camera app that used to enable both is a tilolang package now, so the tests ask
-    # for them here.
-    "tilo-capture": ("codes", "scanner"),
+    # The detector is what its own tests test: a rendered code decodes only with
+    # `codes`. The Camera app that used to enable it is a tilolang package now, so
+    # the tests ask for it here.
+    "tilo-capture": ("codes",),
     # The fetch proxy a workspace host serves is a feature its server enables;
     # tilo-net's own tests of it (`proxy_host`) and the development program
     # build only with it. Its loopback tests of every backend (`desktop`) need
