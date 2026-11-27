@@ -143,7 +143,7 @@ fn every_app_opens_over_its_first_scenario_as_a_page() {
         ("apps/tl/migrate", None),
         ("apps/tl/settings", None),
         // Apps with no root, drawn over the session's resource as the session draws them.
-        ("apps/tl/osk", None),
+        ("apps/tl/osk", Some("Space")),
         ("apps/tl/onboarding", None),
         ("apps/tl/terminal", None),
     ];
@@ -167,6 +167,9 @@ fn every_app_opens_over_its_first_scenario_as_a_page() {
             failures.push(format!("{root}: the page does not show {shows:?}"));
         }
         eprintln!("{root} gaps: {}", answer["gaps"]);
+        if page_text(body).trim().is_empty() {
+            failures.push(format!("{root}: the page shows no words"));
+        }
         assert!(tilolang_web::app_close(handle(&answer)));
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

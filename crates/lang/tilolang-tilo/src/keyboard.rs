@@ -12,6 +12,10 @@ pub const KEYBOARD_APP: &str = "so.tilo.osk";
 /// The view that draws the keyboard over the session's `keyboard` reading.
 pub const KEYBOARD_VIEW: &str = "keyboard";
 
+/// What a host that shows the keyboard over a text field hands its view: shown, for text, and
+/// every other field as it starts. A page that draws the keyboard is such a host.
+pub const SHOWN_OVER_TEXT: &str = r#"{"visible":true,"purpose":"text"}"#;
+
 /// Every file of the keyboard's package, by the name the package knows it by.
 const FILES: &[(&str, &str)] = &[("app.tl", include_str!("../../../../apps/tl/osk/app.tl"))];
 

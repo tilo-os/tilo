@@ -102,23 +102,7 @@ impl Window {
     /// made, the workspace could not be seeded, a view state names nothing, the scenario failed,
     /// or the window refused what the app sent.
     pub fn open(app: &str, packages: &Rc<Packages>, opening: Opening<'_>) -> Result<Self, String> {
-        // A window opens on an app's root resource. A package with none publishes views a host
-        // draws over another app's state, as the session draws the on-screen keyboard over its
-        // `keyboard` resource: the page is that host, and draws the package's first such view
-        // over the same resource, which reads here as its type starts.
-        let part = match packages
-            .compiled
-            .iter()
-            .map(|package| &package.meta)
-            .find(|meta| meta.app == app)
-        {
-            Some(meta) if meta.roots.is_empty() => Some(part_of(meta).ok_or_else(|| {
-                format!(
-                    "{app} declares no root, and no view over another app's state a host could draw"
-                )
-            })?),
-            _ => None,
-        };
+        let part = part_to_open(app, packages)?;
         let Opening {
             root,
             scenario,
@@ -164,10 +148,7 @@ impl Window {
         // for, as a host without frames waits for them.
         instance.settle_pending();
         if let Some((view, target)) = &part {
-            instance.open_with(&tilolang_tilo::instance::wire::resource(target), view);
-            if instance.detail_target().is_none() {
-                return Err(format!("{app}'s view over `{}` did not run", target.doc));
-            }
+            open_part(&mut instance, app, view, target)?;
         }
         // A window opens on the app's root view: one that did not run leaves the window empty, so
         // the host that laid it out is told why rather than showing nothing.
@@ -211,7 +192,13 @@ impl Window {
             opened_link(&mut instance, app, me.0, link)?;
         }
         instance.update();
-        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        // A view drawn over another app's state stands as the session's part does: the view's tree
+        // over the whole area, with no window around it.
+        let mut window = if part.is_some() {
+            AppWindow::part(Box::new(window_end))
+        } else {
+            AppWindow::new(Box::new(window_end), Vec::new())
+        };
         window.receive();
         if let Some(why) = window.failed() {
             return Err(format!("the window refused what the app sent: {why}"));
@@ -395,6 +382,52 @@ impl tilolang_tilo::runtime::NameHost for Me {
         }
         tilolang_tilo::names::installed(who)
     }
+}
+
+/// What a window of `app` opens on when the package declares no root: a package with none
+/// publishes views a host draws over another app's state, as the session draws the on-screen
+/// keyboard over its `keyboard` resource. The page is that host, and draws the package's first
+/// such view over the same resource, which reads here as its type starts. `None` for an app with
+/// a root.
+fn part_to_open(
+    app: &str,
+    packages: &Packages,
+) -> Result<Option<(String, tilolang_tilo::runtime::ResourceRef)>, String> {
+    match packages
+        .compiled
+        .iter()
+        .map(|package| &package.meta)
+        .find(|meta| meta.app == app)
+    {
+        Some(meta) if meta.roots.is_empty() => part_of(meta).map(Some).ok_or_else(|| {
+            format!(
+                "{app} declares no root, and no view over another app's state a host could draw"
+            )
+        }),
+        _ => Ok(None),
+    }
+}
+
+/// Open `view` of `app` over `target`, as the session opens a part. The page shows the keyboard,
+/// so its view reads it shown over a text field, as the session hands it when a field asks.
+fn open_part(
+    instance: &mut Instance,
+    app: &str,
+    view: &str,
+    target: &tilolang_tilo::runtime::ResourceRef,
+) -> Result<(), String> {
+    if app == tilolang_tilo::keyboard::KEYBOARD_APP
+        && let Some(host) = instance.host()
+    {
+        host.runtime()
+            .set_reading(target, tilolang_tilo::keyboard::SHOWN_OVER_TEXT)
+            .map_err(|error| format!("the keyboard reads nothing: {error}"))?;
+    }
+    instance.open_with(&tilolang_tilo::instance::wire::resource(target), view);
+    if instance.detail_target().is_none() {
+        return Err(format!("{app}'s view over `{}` did not run", target.doc));
+    }
+    Ok(())
 }
 
 /// The view a host draws of a package with no root, and the resource it draws it over: the first
