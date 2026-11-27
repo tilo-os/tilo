@@ -7,13 +7,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -64,17 +64,17 @@ tilo_test_env::scenario! {
     {
         let zone = DropZone::new("picture", "Drop a picture")
             .with_action(Button::new("picture-choose", "Choose"));
-        let mut harness = tilo_ui::app::driver::Driver::new_with_theme(
-            tilo_ui::State::new(),
+        let mut harness = tilo_ui_app::app::driver::Driver::new_with_theme(
+            tilo_ui_app::State::new(),
             Box::new(zone),
             (320, 568),
             Theme::light(),
         );
         assert_eq!(harness.take_skip_report(), None, "the layout settles");
         fn find<'a>(
-            node: &'a tilo_ui::headless::InspectionNode,
+            node: &'a tilo_ui_app::headless::InspectionNode,
             name: &str,
-        ) -> Option<&'a tilo_ui::headless::InspectionNode> {
+        ) -> Option<&'a tilo_ui_app::headless::InspectionNode> {
             if node.widget == name {
                 return Some(node);
             }
@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
         let zone = DropZone::new("import", "Drop books here")
             .on_files(move |files| sink.borrow_mut().extend(files));
         let mut harness =
-            tilo_ui::app::driver::Driver::new(tilo_ui::State::new(), Box::new(zone), (400, 300));
+            tilo_ui_app::app::driver::Driver::new(tilo_ui_app::State::new(), Box::new(zone), (400, 300));
         let [x, y, w, h] = harness.inspection().root.rect;
         harness.click_at(x + w / 2.0, y + h / 2.0);
         harness.send(&WindowEvent::DroppedFile("/home/ada/notes.epub".into()));

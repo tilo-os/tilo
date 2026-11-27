@@ -14,10 +14,10 @@
 )]
 use std::path::PathBuf;
 
-use tilo_ui::app::driver::Driver;
-use tilo_ui::composition::Composed;
-use tilo_ui::composition::page::{Page, document};
-use tilo_ui::widget::{Button, Column, IconSize, IconWidget, MenuItem, Row, Text};
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::composition::Composed;
+use tilo_ui_app::composition::page::{Page, document};
+use tilo_ui_app::widget::{Button, Column, IconSize, IconWidget, MenuItem, Row, Text};
 use tilo_ui_base::icons::Icon;
 
 /// The menus, each on its own button: rows with glyphs and without, a long label, a separator, a
@@ -114,7 +114,7 @@ fn main() {
     let mut body = None;
     for (name, items) in menus() {
         // A window of its own for each menu, so each opens from the page as first shown.
-        let mut driver = Driver::new(tilo_ui::State::new(), Box::new(window()), (720, 480));
+        let mut driver = Driver::new(tilo_ui_app::State::new(), Box::new(window()), (720, 480));
         driver.relayout();
         let closed = driver.composition();
         let mut page = Page::new();
@@ -174,13 +174,14 @@ fn main() {
             ("dark", tilo_ui_base::Theme::dark()),
             ("contrast", tilo_ui_base::Theme::high_contrast()),
         ] {
-            let mut driver = Driver::new(tilo_ui::State::new(), Box::new(window()), (720, 480));
+            let mut driver = Driver::new(tilo_ui_app::State::new(), Box::new(window()), (720, 480));
             driver.set_theme(theme.clone());
             driver.relayout();
             driver.settle_for_capture(std::time::Duration::from_secs(2));
             driver.render_png(&out.join("native").join(format!("{scheme}-closed.png")));
             for (name, _) in menus() {
-                let mut driver = Driver::new(tilo_ui::State::new(), Box::new(window()), (720, 480));
+                let mut driver =
+                    Driver::new(tilo_ui_app::State::new(), Box::new(window()), (720, 480));
                 driver.set_theme(theme.clone());
                 driver.relayout();
                 let closed = driver.composition();

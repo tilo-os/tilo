@@ -4,8 +4,8 @@ use automerge::transaction::Transactable as _;
 use tilo_ui_base::widget::Widget;
 
 pub struct ManagedRoot {
-    pub(crate) widget: Box<dyn Widget>,
-    pub(crate) history: HistoryRegistration,
+    pub widget: Box<dyn Widget>,
+    pub history: HistoryRegistration,
 }
 impl ManagedRoot {
     pub fn new(widget: Box<dyn Widget>, history: HistoryRegistration) -> Self {
@@ -147,7 +147,7 @@ impl HistorySourceRegistration {
     }
 }
 pub struct HistoryRegistration {
-    pub(crate) definition: &'static HistoryDefinition,
+    pub definition: &'static HistoryDefinition,
     pub(crate) sources: Vec<HistorySourceRegistration>,
     pub(crate) assets:
         std::collections::HashMap<&'static str, std::rc::Rc<dyn super::HistoricalAssetSource>>,
@@ -310,7 +310,7 @@ impl HistoryRegistration {
         Ok(())
     }
 
-    pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
+    pub fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
         self.validate_root_with_owner(root, None)
     }
     pub(crate) fn validate_root_with_owner(

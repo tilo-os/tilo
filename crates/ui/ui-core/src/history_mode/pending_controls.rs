@@ -44,7 +44,7 @@ pub struct ContinuationToken {
     nonce: Uuid,
 }
 
-pub(crate) use tilo_ui_base::control_domain::PendingControlOrigin;
+pub use tilo_ui_base::control_domain::PendingControlOrigin;
 
 fn origin_lifetime_id(origin: &PendingControlOrigin) -> Uuid {
     match origin {
@@ -94,16 +94,16 @@ struct PendingControl {
 }
 
 #[derive(Clone)]
-pub(crate) enum ContinuationCommand {
+pub enum ContinuationCommand {
     Review(ContinuationToken),
     Cancel(ContinuationToken),
 }
 
-pub(crate) struct PreparedContinuation {
-    pub(crate) id: PendingControlId,
-    pub(crate) invocation: ControlInvocation,
-    pub(crate) target: LocalResourceTarget,
-    pub(crate) observation: Result<crate::bound_dispatch::ControlObservation, String>,
+pub struct PreparedContinuation {
+    pub id: PendingControlId,
+    pub invocation: ControlInvocation,
+    pub target: LocalResourceTarget,
+    pub observation: Result<crate::bound_dispatch::ControlObservation, String>,
 }
 
 pub(crate) struct SuspendedLocalControls {

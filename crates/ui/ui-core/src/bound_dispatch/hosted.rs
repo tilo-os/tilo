@@ -4,13 +4,13 @@
 /// An invocation of another provider's action a view bound its control to, resolved here, for the
 /// host to invoke at that provider: that provider asks the person where it waits for their yes.
 #[derive(Clone, Debug)]
-pub(crate) struct HostedInvocation {
-    pub(crate) provider: String,
+pub struct HostedInvocation {
+    pub provider: String,
     /// The action as the provider publishes it.
-    pub(crate) address: tilo_actions::ActionAddress,
-    pub(crate) argument: tilo_actions::remote::InvokeArgument,
+    pub address: tilo_actions::ActionAddress,
+    pub argument: tilo_actions::remote::InvokeArgument,
     /// The person's yes, when the provider asked them and this is the call sent again with it.
-    pub(crate) approval: Option<tilo_actions::remote::asked::Approval>,
+    pub approval: Option<tilo_actions::remote::asked::Approval>,
 }
 
 impl HostedInvocation {
@@ -58,7 +58,7 @@ impl HostedInvocation {
 
 /// `resource` as its component publishes it: without the actions another provider runs, which that
 /// provider publishes itself.
-pub(crate) fn published_here(
+pub fn published_here(
     mut resource: tilo_actions::ResourceSpec,
 ) -> Option<tilo_actions::ResourceSpec> {
     let hosted = resource

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, TaffyTree};
-use tilo_ui::headless::Driver;
-use tilo_ui::widget::Button;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::widget::Button;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::{EventCtx, TaffyTreeExt as _, Widget};
 use vello::Scene;
@@ -124,7 +124,7 @@ fn hovered() -> (Driver, Staged, Clicks) {
     let clicks = Clicks::default();
     let staged = Staged::default();
     let mut harness = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Rebuilds::new(&clicks, &staged).0),
         (400, 200),
     );
@@ -186,7 +186,7 @@ fn a_control_rebuilt_away_from_the_pointer_is_not_clicked() {
 #[test]
 fn an_app_surface_clicks_a_control_rebuilt_under_a_still_pointer() {
     struct Region;
-    impl tilo_ui::app::AppSurface for Region {
+    impl tilo_ui_app::app::AppSurface for Region {
         fn scale_factor(&self) -> f64 {
             1.0
         }
@@ -199,7 +199,8 @@ fn an_app_surface_clicks_a_control_rebuilt_under_a_still_pointer() {
     let clicks = Clicks::default();
     let staged = Staged::default();
     let (root, placed) = Rebuilds::new(&clicks, &staged);
-    let mut app = tilo_ui::App::new_with_controlled_inputs(tilo_ui::State::new(), Box::new(root));
+    let mut app =
+        tilo_ui_app::App::new_with_controlled_inputs(tilo_ui_app::State::new(), Box::new(root));
     let mut scene = Scene::new();
     let _ = app.surface_frame(&Region, &mut scene);
     let centre = placed.get().center();

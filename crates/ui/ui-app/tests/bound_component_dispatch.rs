@@ -1,8 +1,8 @@
 //! Controlled callback routing fixtures: in-memory widgets, explicit persistence only.
 use automerge::ROOT;
 use std::collections::HashMap;
-use tilo_ui::bound_dispatch::{BoundDispatchError, invoke_bound_node};
-use tilo_ui::widget::Button;
+use tilo_ui_app::bound_dispatch::{BoundDispatchError, invoke_bound_node};
+use tilo_ui_app::widget::Button;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
@@ -27,7 +27,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
             })
             .unwrap();
         let tile = TileHost::from_component(component);
-        let providers = tilo_ui::search::capability::search_providers(&tile);
+        let providers = tilo_ui_app::search::capability::search_providers(&tile);
         wakes.store(0, std::sync::atomic::Ordering::Relaxed);
         let provider = &providers[0];
         assert_eq!(provider.name(), "Probe");
@@ -38,7 +38,8 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         );
         assert_eq!(provider.action_directory_generation(), Some(4));
         assert!(
-            provider.action_directory_cursor_is_current(&tilo_ui::search::SearchCursor::default())
+            provider
+                .action_directory_cursor_is_current(&tilo_ui_app::search::SearchCursor::default())
         );
         assert_eq!(provider.search("").len(), 1);
         assert!(provider.search_limited("", 0).is_empty());
@@ -65,8 +66,8 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = component.record().clone();
         let mut tile = TileHost::from_component(component);
-        let providers = tilo_ui::search::capability::search_providers(&tile);
-        tilo_ui::component_lifecycle::close_components(&mut tile);
+        let providers = tilo_ui_app::search::capability::search_providers(&tile);
+        tilo_ui_app::component_lifecycle::close_components(&mut tile);
         assert_eq!(observed.borrow().drops, vec![(false, false)]);
         let mut replacement =
             instantiate_probe(&host, 11, existing(&checkout), RestoreInput::None).unwrap();
@@ -84,7 +85,8 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         assert_eq!(provider.name(), "Probe");
         assert_eq!(provider.action_directory_generation(), None);
         assert!(
-            !provider.action_directory_cursor_is_current(&tilo_ui::search::SearchCursor::default())
+            !provider
+                .action_directory_cursor_is_current(&tilo_ui_app::search::SearchCursor::default())
         );
         assert!(provider.search("").is_empty());
         assert!(provider.search_limited("", 1).is_empty());
@@ -111,11 +113,11 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         let component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let mut tile = TileHost::from_component(component);
-        let mut providers = tilo_ui::search::capability::search_providers(&tile);
-        providers.extend(tilo_ui::search::capability::search_providers(&tile));
+        let mut providers = tilo_ui_app::search::capability::search_providers(&tile);
+        providers.extend(tilo_ui_app::search::capability::search_providers(&tile));
         observed.borrow_mut().panic_on_drop = true;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tilo_ui::component_lifecycle::close_components(&mut tile)
+            tilo_ui_app::component_lifecycle::close_components(&mut tile)
         }));
         observed.borrow_mut().panic_on_drop = false;
         assert!(result.is_err());
@@ -285,7 +287,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                 sender.send(event).unwrap();
             })
             .unwrap();
-        let mut outer = tilo_ui::wake::WakeScope::new();
+        let mut outer = tilo_ui_app::wake::WakeScope::new();
         let (outer_sender, outer_receiver) = std::sync::mpsc::channel();
         outer
             .bind(move |event| {
@@ -293,12 +295,12 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
             })
             .unwrap();
         let _outer = outer.enter();
-        let mut state = tilo_ui::State::new();
+        let mut state = tilo_ui_app::State::new();
         state.doc.put(ROOT, "marker", "shell").unwrap();
         let renderer = tilo_ui_base::font_catalog::fixture_renderer();
         CAPTURES.with_borrow_mut(Vec::clear);
         TASKS.with_borrow_mut(Vec::clear);
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut driver = tilo_ui_app::headless::Driver::new_with_controlled_inputs(
             state,
             Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
             (400, 300),
@@ -480,10 +482,10 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
 use crate::support::application::{ProbeHarness, definition};
 use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
-use tilo_ui::application::{
+use tilo_ui_app::application::{
     AppComponent, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
-use tilo_ui::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
+use tilo_ui_app::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 use tilo_ui_base::host_operation::{poll_resource_operation, start_operation};
 use tilo_ui_base::local_state::LocalState;
 type RefusedNode = (
@@ -501,8 +503,8 @@ thread_local! {
     static QUEUED_CONTROL: RefCell<Option<tilo_actions::ControlInvocation>> = const { RefCell::new(None) };
     static QUEUED_ORIGIN: Cell<tilo_ui_base::widget::controls::Origin> = const { Cell::new(tilo_ui_base::widget::controls::Origin::Person) };
     static LEGACY_INVOKED: Cell<bool> = const { Cell::new(false) };
-    static LEGACY_INTENT: RefCell<Option<tilo_ui::resource::DocumentCheckout>> = const { RefCell::new(None) };
-    static LEGACY_SCOPES: RefCell<Vec<tilo_ui::resource::DocumentId>> = const { RefCell::new(vec![]) };
+    static LEGACY_INTENT: RefCell<Option<tilo_ui_app::resource::DocumentCheckout>> = const { RefCell::new(None) };
+    static LEGACY_SCOPES: RefCell<Vec<tilo_ui_app::resource::DocumentId>> = const { RefCell::new(vec![]) };
     static LEGACY_MUTABLE: Cell<bool> = const { Cell::new(false) };
     static LEGACY_DOCUMENTS: RefCell<Vec<(String, bool)>> = const { RefCell::new(vec![]) };
     static LEGACY_START: Cell<Option<bool>> = const { Cell::new(None) };
@@ -541,7 +543,7 @@ impl Leaf {
 }
 impl Widget for Leaf {
     tilo_ui_base::provides!(
-        dyn tilo_ui::widget::resources::PublishesResources,
+        dyn tilo_ui_app::widget::resources::PublishesResources,
         dyn tilo_ui_base::host_operation::ResourceOperations
     );
 
@@ -718,7 +720,7 @@ impl tilo_ui_base::host_operation::ResourceOperations for Leaf {
     }
 }
 
-impl tilo_ui::widget::resources::PublishesResources for Leaf {
+impl tilo_ui_app::widget::resources::PublishesResources for Leaf {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
@@ -762,9 +764,9 @@ impl Root {
 impl Widget for Root {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn tilo_ui::search::capability::SearchSource,
-        dyn tilo_ui::resource::capability::ResourceScoped,
-        dyn tilo_ui::view::capability::ViewState,
+        dyn tilo_ui_app::search::capability::SearchSource,
+        dyn tilo_ui_app::resource::capability::ResourceScoped,
+        dyn tilo_ui_app::view::capability::ViewState,
         dyn tilo_ui_base::host_operation::ResourceOperations
     );
 
@@ -893,37 +895,37 @@ impl tilo_ui_base::host_operation::ResourceOperations for Root {
     }
 }
 
-impl tilo_ui::view::capability::ViewState for Root {
-    fn view_state(&self) -> Option<tilo_ui::view::ViewContribution> {
+impl tilo_ui_app::view::capability::ViewState for Root {
+    fn view_state(&self) -> Option<tilo_ui_app::view::ViewContribution> {
         assert!(!PANIC_VIEW.replace(false), "controlled capture unwind");
         self.mark("capture-view");
         Some(if INVALID_VIEW.get() {
-            tilo_ui::view::ViewContribution {
+            tilo_ui_app::view::ViewContribution {
                 scroll: vec![f64::NAN],
                 ..Default::default()
             }
         } else {
-            tilo_ui::view::ViewContribution::default()
+            tilo_ui_app::view::ViewContribution::default()
         })
     }
-    fn restore_view_state(&mut self, _: &tilo_ui::view::ViewContribution) {
+    fn restore_view_state(&mut self, _: &tilo_ui_app::view::ViewContribution) {
         self.mark("restore-view");
     }
 }
 
-impl tilo_ui::resource::capability::ResourceScoped for Root {
-    fn record_intent(&self) -> Option<tilo_ui::resource::DocumentCheckout> {
+impl tilo_ui_app::resource::capability::ResourceScoped for Root {
+    fn record_intent(&self) -> Option<tilo_ui_app::resource::DocumentCheckout> {
         LEGACY_INTENT.with_borrow(Clone::clone)
     }
-    fn set_resource_scope(&mut self, record: &tilo_ui::resource::DocumentId) {
+    fn set_resource_scope(&mut self, record: &tilo_ui_app::resource::DocumentId) {
         if LEGACY_MUTABLE.get() {
             LEGACY_SCOPES.with_borrow_mut(|scopes| scopes.push(record.clone()));
         }
     }
 }
 
-impl tilo_ui::search::capability::SearchSource for Root {
-    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
+impl tilo_ui_app::search::capability::SearchSource for Root {
+    fn search_providers(&self) -> Vec<Box<dyn tilo_ui_app::search::SearchProvider>> {
         self.mark("provider-create");
         vec![]
     }
@@ -965,16 +967,16 @@ impl AppWidget for Root {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("P")
     }
-    fn commands(&self) -> Vec<tilo_ui::AppCommand> {
+    fn commands(&self) -> Vec<tilo_ui_app::AppCommand> {
         COMMAND_CALLS.set(COMMAND_CALLS.get().saturating_add(1));
-        vec![tilo_ui::AppCommand {
+        vec![tilo_ui_app::AppCommand {
             id: "legacy".into(),
             label: "Legacy".into(),
             shortcut: None,
             invoke: Box::new(|_, _| LEGACY_INVOKED.set(true)),
         }]
     }
-    fn take_process_intent(&mut self) -> Option<tilo_ui::widget::AppProcessIntent> {
+    fn take_process_intent(&mut self) -> Option<tilo_ui_app::widget::AppProcessIntent> {
         self.mark("host-intent");
         None
     }
@@ -984,7 +986,7 @@ fn factory(
     mut context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui_app::launch::LaunchError> {
     let record = context.record().id.as_str().to_string();
     if matches!(target, LaunchTarget::New) {
         context
@@ -992,7 +994,7 @@ fn factory(
                 doc.put(ROOT, "marker", record.clone())
                     .map_err(|e| e.to_string())
             })
-            .map_err(tilo_ui::launch::LaunchError::Record)?;
+            .map_err(tilo_ui_app::launch::LaunchError::Record)?;
     }
     let root = Root(
         Column::new().push(Box::new(Leaf {
@@ -1187,8 +1189,8 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         let component = component(&host, 1);
         let checkout = component.record().clone();
         let replace = std::rc::Rc::new(Cell::new(false));
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
-            tilo_ui::State::new(),
+        let mut driver = tilo_ui_app::headless::Driver::new_with_controlled_inputs(
+            tilo_ui_app::State::new(),
             Box::new(ReplacingHost(
                 TileHost::from_component(component),
                 replace.clone(),
@@ -1276,7 +1278,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 sender.send(event).unwrap();
             })
             .unwrap();
-        let mut outer = tilo_ui::wake::WakeScope::new();
+        let mut outer = tilo_ui_app::wake::WakeScope::new();
         let (tx, rx) = std::sync::mpsc::channel();
         outer
             .bind(move |event| {
@@ -1342,9 +1344,9 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     poll_resource_operation(&mut tile, invocation, false, &shell, &ROOT);
                 }
                 Callback::Providers => {
-                    tilo_ui::search::capability::search_providers(&tile);
+                    tilo_ui_app::search::capability::search_providers(&tile);
                 }
-                Callback::Search => tilo_ui::search::capability::activate_search_result(
+                Callback::Search => tilo_ui_app::search::capability::activate_search_result(
                     &mut tile,
                     "result",
                     &mut tilo_ui_base::widget::Edits::lend(&mut shell),
@@ -1366,12 +1368,12 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     continue;
                 }
                 Callback::Capture => {
-                    tilo_ui::view::capability::view_state(&tile);
+                    tilo_ui_app::view::capability::view_state(&tile);
                 }
                 Callback::Restore => {
-                    tilo_ui::view::capability::restore_view_state(
+                    tilo_ui_app::view::capability::restore_view_state(
                         &mut tile,
-                        &tilo_ui::view::ViewContribution::default(),
+                        &tilo_ui_app::view::ViewContribution::default(),
                     );
                 }
                 Callback::HostIntent => {
@@ -1390,7 +1392,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             }
         }
         COMMAND_CALLS.set(0);
-        let tilo_ui::widget::TileContent::App(root) = tile.content() else {
+        let tilo_ui_app::widget::TileContent::App(root) = tile.content() else {
             panic!("missing component")
         };
         assert!(root.commands().is_empty());
@@ -1400,12 +1402,12 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             "canonical path consulted legacy producer"
         );
         assert!(!LEGACY_INVOKED.get());
-        let legacy = TileHost::new(tilo_ui::widget::TileContent::App(Box::new(Root(
+        let legacy = TileHost::new(tilo_ui_app::widget::TileContent::App(Box::new(Root(
             Column::new(),
             "legacy".into(),
             false,
         ))));
-        let tilo_ui::widget::TileContent::App(root) = legacy.content() else {
+        let tilo_ui_app::widget::TileContent::App(root) = legacy.content() else {
             panic!("missing legacy root")
         };
         let commands = root.commands();
@@ -1475,7 +1477,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             EXPECTED_WRITE.set(true);
             let legacy = controlled_driver(
                 Box::new(Column::new().push(Box::new(TileHost::new(
-                    tilo_ui::widget::TileContent::App(Box::new(Root(
+                    tilo_ui_app::widget::TileContent::App(Box::new(Root(
                         Column::new().with_no_padding(),
                         String::new(),
                         false,
@@ -1596,14 +1598,14 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         );
         FINISH_OPERATION.set(false);
         CANCELLED.set(0);
-        tilo_ui::component_lifecycle::close_components(&mut tile);
+        tilo_ui_app::component_lifecycle::close_components(&mut tile);
         assert_eq!(CANCELLED.get(), 0, "terminal work was cancelled twice");
     }
 
     {
         let host = ProbeHarness::new();
         for create in [
-            factory_then_error as tilo_ui::application::ComponentFactory,
+            factory_then_error as tilo_ui_app::application::ComponentFactory,
             factory_then_unwind,
         ] {
             CLOSED_DROPS.set(0);
@@ -1650,7 +1652,7 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         PANIC_VIEW.set(true);
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                tilo_ui::component_lifecycle::close_components(&mut tile)
+                tilo_ui_app::component_lifecycle::close_components(&mut tile)
             }))
             .is_err()
         );
@@ -1677,14 +1679,14 @@ fn nested_factory(
     mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui_app::launch::LaunchError> {
     let record = context.record().id.as_str().to_owned();
     context
         .initialize_new_resource(|doc| {
             doc.put(ROOT, "marker", record.clone())
                 .map_err(|e| e.to_string())
         })
-        .map_err(tilo_ui::launch::LaunchError::Record)?;
+        .map_err(tilo_ui_app::launch::LaunchError::Record)?;
     let child = NESTED.with_borrow_mut(Option::take).unwrap();
     let tile = TileHost::from_component(child);
     let child: Box<dyn Widget> = if let Some(replace) = NESTED_REPLACE.with_borrow_mut(Option::take)
@@ -1719,10 +1721,12 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
             .unwrap();
         host.workspace.refuse.set(true);
         let mut tile = TileHost::from_component(parent);
-        let mut reports = tilo_ui::component_lifecycle::close_components(&mut tile);
+        let mut reports = tilo_ui_app::component_lifecycle::close_components(&mut tile);
         assert_eq!(reports.len(), 2);
-        assert!(tilo_ui::component_lifecycle::close_components(&mut tile).is_empty());
-        assert!(tilo_ui::component_lifecycle::take_component_close_reports(&mut tile).is_empty());
+        assert!(tilo_ui_app::component_lifecycle::close_components(&mut tile).is_empty());
+        assert!(
+            tilo_ui_app::component_lifecycle::take_component_close_reports(&mut tile).is_empty()
+        );
         drop(tile);
         let mut instances = reports
             .iter()
@@ -1757,11 +1761,14 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
             parent.mount(|_| {}).unwrap();
             host.workspace.refuse.set(true);
             let error = if native {
-                tilo_ui::App::from_component(parent, crate::support::application::runner_inputs())
-                    .err()
-                    .unwrap()
+                tilo_ui_app::App::from_component(
+                    parent,
+                    crate::support::application::runner_inputs(),
+                )
+                .err()
+                .unwrap()
             } else {
-                tilo_ui::headless::Driver::from_component(
+                tilo_ui_app::headless::Driver::from_component(
                     parent,
                     (320, 180),
                     crate::support::application::runner_inputs(),
@@ -1769,7 +1776,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
                 .err()
                 .unwrap()
             };
-            let tilo_ui::launch::LaunchError::ComponentSetup { recovery, .. } = error else {
+            let tilo_ui_app::launch::LaunchError::ComponentSetup { recovery, .. } = error else {
                 panic!("missing setup recovery");
             };
             let mut reports = recovery.into_close_reports().unwrap();
@@ -1873,9 +1880,10 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         report.retry_view().unwrap();
         report.retry_resource().unwrap();
         assert!(report.view_retry.is_none() && report.record_retry.is_none());
-        let mut owners =
-            tilo_ui::resource::ResourceOwners::writing(std::rc::Rc::clone(&child_host.workspace)
-                as std::rc::Rc<dyn tilo_ui::resource::DocumentPort>);
+        let mut owners = tilo_ui_app::resource::ResourceOwners::writing(std::rc::Rc::clone(
+            &child_host.workspace,
+        )
+            as std::rc::Rc<dyn tilo_ui_app::resource::DocumentPort>);
         let saved = owners
             .open(
                 crate::support::application::APP,
@@ -1904,9 +1912,9 @@ fn factory_then_error(
     context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
-) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui_app::launch::LaunchError> {
     let _owned = factory(context, target, restore)?;
-    Err(tilo_ui::launch::LaunchError::Operation(
+    Err(tilo_ui_app::launch::LaunchError::Operation(
         "controlled post-owner error".into(),
     ))
 }
@@ -1918,7 +1926,7 @@ fn factory_then_unwind(
     context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
-) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui_app::launch::LaunchError> {
     let _owned = factory(context, target, restore)?;
     panic!("controlled post-owner unwind")
 }
@@ -1930,7 +1938,7 @@ impl Widget for ReplacingHost {
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         if self.1.replace(false) {
             self.0
-                .replace_content(tilo_ui::widget::TileContent::Notice {
+                .replace_content(tilo_ui_app::widget::TileContent::Notice {
                     title: "Closed".into(),
                     detail: "Fixture replacement".into(),
                 });
@@ -2039,9 +2047,9 @@ impl Widget for SameNameUnregisteredWrapper {
     }
 }
 
-fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui::headless::Driver {
-    tilo_ui::headless::Driver::new_with_controlled_inputs(
-        tilo_ui::State::new(),
+fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui_app::headless::Driver {
+    tilo_ui_app::headless::Driver::new_with_controlled_inputs(
+        tilo_ui_app::State::new(),
         root,
         viewport,
         tilo_ui_base::Theme::dark(),
@@ -2054,10 +2062,10 @@ fn fill_factory(
     mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui_app::launch::LaunchError> {
     context
         .initialize_new_resource(|_| Ok(()))
-        .map_err(tilo_ui::launch::LaunchError::Record)?;
+        .map_err(tilo_ui_app::launch::LaunchError::Record)?;
     Ok(AppComponent::new(
         context,
         Box::new(Root(Column::new().with_no_padding(), String::new(), false)),
@@ -2085,10 +2093,10 @@ fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let Ok(driver) = tilo_ui::headless::Driver::from_component(
+        let Ok(driver) = tilo_ui_app::headless::Driver::from_component(
             component,
             (200, 100),
-            tilo_ui::application::ComponentRunnerInputs {
+            tilo_ui_app::application::ComponentRunnerInputs {
                 theme: tilo_ui_base::Theme::dark(),
                 text_renderer: tilo_ui_base::TextRenderer::new(),
             },
@@ -2169,12 +2177,12 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                 RestoreInput::None,
             )
             .unwrap();
-        let column = tilo_ui::widget::Column::new()
+        let column = tilo_ui_app::widget::Column::new()
             .push(Box::new(TileHost::from_component(first)))
             .push(Box::new(TileHost::from_component(second)));
         let mut driver = controlled_driver(Box::new(column), (200, 100));
         let outer = driver.state_mut().doc.get_heads();
-        let address = |instance_id, action| tilo_ui::bound_dispatch::BoundActionAddress {
+        let address = |instance_id, action| tilo_ui_app::bound_dispatch::BoundActionAddress {
             instance_id,
             address: tilo_actions::ActionAddress::new("probe:shared", action),
         };
@@ -2229,7 +2237,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         for authorized in [1, 2, 0] {
             let host = ProbeHarness::new();
             let definition = definition(action_probe_factory);
-            let mut column = tilo_ui::widget::Column::new();
+            let mut column = tilo_ui_app::widget::Column::new();
             let mut records = Vec::new();
             for instance in 11..13 {
                 let allowed = instance < 11_u64.saturating_add(authorized);
@@ -2352,7 +2360,7 @@ fn assert_same_name_inline_wrapper_refused() {
         );
         assert!(
             driver
-                .expect(&tilo_ui::headless::SemanticExpectation::named(id))
+                .expect(&tilo_ui_app::headless::SemanticExpectation::named(id))
                 .is_err()
         );
     }

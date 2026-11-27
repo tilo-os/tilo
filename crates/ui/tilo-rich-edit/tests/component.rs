@@ -2,7 +2,7 @@
 
 use tilo_rich_edit::{DeclaredLine, RichTextLineProps};
 use tilo_ui::component_testing::{Node, text};
-use tilo_ui::testing::component_harness::harness;
+use tilo_ui_app::headless::harness;
 use tilo_ui_base::widget::Widget as _;
 use tilo_ui_base::{component::Component as _, component::Described as _};
 use tilo_ui_graph::component::Value;

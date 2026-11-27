@@ -15,7 +15,7 @@ use tilo_ui_base::i18n::I18nManager;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::HistoryEntryId;
 
-pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";
+pub const HISTORY_OPERATION: &str = "tilo.host.history.view";
 pub const HISTORY_RESOURCE: &str = "tilo.host:history";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,7 +48,7 @@ pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button 
 /// The window's History control, bound to the History API: closed it opens History, open it closes it,
 /// exactly as the History shortcut and the palette do.
 #[must_use]
-pub(crate) fn history_control_button(id: &str, control: HistoryControl) -> Button {
+pub fn history_control_button(id: &str, control: HistoryControl) -> Button {
     history_control_face(id, control).on_action(history_control_binding(control))
 }
 
@@ -123,7 +123,7 @@ fn open_resource() -> ResourceSpec {
 
 /// The stable History API, whichever History serves it: Open while there is a document to show, and
 /// Hide while History is showing.
-pub(crate) fn history_resource(can_open: bool, open: bool) -> ResourceSpec {
+pub fn history_resource(can_open: bool, open: bool) -> ResourceSpec {
     let mut resource = open_resource();
     if !can_open {
         for action in &mut resource.actions {
@@ -173,7 +173,7 @@ fn open_at_operation() -> ActionSpec {
     .for_audience(tilo_actions::Audience::Agents)
 }
 /// The change `id` in 32 lowercase hex digits, as [`decode_entry`] reads it.
-pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
+pub fn encode_entry(id: HistoryEntryId) -> String {
     tilo_ui_base::HistoryEntryId::hex(&id)
 }
 /// The change `value` names in its 32 lowercase hex digits, if it is one.

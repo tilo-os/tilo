@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -44,7 +44,7 @@ fn an_empty_states_action_is_the_same_path_for_pointer_and_a_reader() {
         .with_action("Open")
         .with_action_id("empty.open")
         .on_open(move || counted.set(counted.get() + 1));
-    let mut harness = Driver::for_root(tilo_ui::State::new(), empty, (600, 400), Theme::dark());
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), empty, (600, 400), Theme::dark());
     let action = harness.root::<EmptyState>().action_rect();
     assert!(action.area() > 0.0, "the recovery action has a target");
     harness.click_at(action.center().x, action.center().y);
@@ -80,7 +80,7 @@ fn a_handler_publishes_the_action_as_a_certified_bound_button() {
         .with_action("Add a place")
         .with_action_id("weather.empty.add")
         .on_open(move || seen.set(seen.get() + 1));
-    let mut driver = Driver::new(tilo_ui::State::new(), Box::new(root), (480, 360));
+    let mut driver = Driver::new(tilo_ui_app::State::new(), Box::new(root), (480, 360));
     let audit = driver.native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
     driver

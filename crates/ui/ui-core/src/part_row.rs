@@ -38,7 +38,7 @@ const WINDOW: u64 = 0;
 
 /// The window's History part, the row's own: a press runs the History API and never
 /// reaches the app.
-pub(crate) const HISTORY: &str = "tilo.window.history";
+pub const HISTORY: &str = "tilo.window.history";
 
 /// The app's parts with the window's History added to the row's menu.
 pub(crate) fn with_history(
@@ -65,7 +65,7 @@ pub(crate) fn with_history(
 }
 
 /// The app a [`PartRow`] serves, as its host lends it.
-pub(crate) trait PartRowHost {
+pub trait PartRowHost {
     /// The app's widgets, where the window's search finds.
     fn search_root(&mut self) -> &mut dyn Widget;
     /// What the app offers the window's search in place.
@@ -91,25 +91,25 @@ pub(crate) trait PartRowHost {
 /// Where the row stands: across the top of a window `window` (logical) in size, inside
 /// the host's frame `left`, `top` and `right`, for the app `app_name` (the open search
 /// names it).
-pub(crate) struct RowPlace<'a> {
-    pub(crate) left: f64,
-    pub(crate) top: f64,
-    pub(crate) right: f64,
-    pub(crate) window: (f64, f64),
-    pub(crate) app_name: &'a str,
+pub struct RowPlace<'a> {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub window: (f64, f64),
+    pub app_name: &'a str,
 }
 
 /// What an event is read with: the window's scale, the keyboard's modifiers and the
 /// platform's conventions.
-pub(crate) struct RowInput<'a> {
-    pub(crate) scale: f64,
-    pub(crate) modifiers: &'a winit::event::Modifiers,
-    pub(crate) platform: tilo_ui_base::platform::PlatformConventions,
+pub struct RowInput<'a> {
+    pub scale: f64,
+    pub modifiers: &'a winit::event::Modifiers,
+    pub platform: tilo_ui_base::platform::PlatformConventions,
 }
 
 /// The toolbar and the search are boxed: each is tens of kilobytes, and a row held by value put
 /// both on the stack of every frame that built or moved it.
-pub(crate) struct PartRow {
+pub struct PartRow {
     row: Box<ToolbarRow>,
     shown: Option<(WindowToolbar, Rect)>,
     tree: TaffyTree<()>,
@@ -130,8 +130,14 @@ pub(crate) struct PartRow {
 /// not a band across a wide window.
 const NOTICE_STRIP_MAX_WIDTH: f64 = 480.0;
 
+impl Default for PartRow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartRow {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let mut tree = TaffyTree::new();
         let node = tree.new_leaf(taffy::Style::default()).ok();
         Self {
@@ -159,7 +165,7 @@ impl PartRow {
     /// The window's own controls stand in this row, at its trailing end, and its empty
     /// ground moves the window: a host whose window leaves its frame to the app turns
     /// this on.
-    pub(crate) fn set_window_controls(&mut self, on: bool) {
+    pub fn set_window_controls(&mut self, on: bool) {
         if self.window_controls == on {
             return;
         }
@@ -174,12 +180,12 @@ impl PartRow {
     }
 
     /// Whether the window's controls stand in this row.
-    pub(crate) fn shows_window_controls(&self) -> bool {
+    pub fn shows_window_controls(&self) -> bool {
         self.window_controls
     }
 
     /// The window is maximized: its maximize control shows restore.
-    pub(crate) fn set_maximized(&mut self, maximized: bool) {
+    pub fn set_maximized(&mut self, maximized: bool) {
         let resize = crate::widget::window_controls::Resize::of(maximized, false);
         if self.controls_state.resize != resize {
             self.controls_state.resize = resize;
@@ -189,22 +195,22 @@ impl PartRow {
 
     /// The window's self actions a press in this row asked for, oldest first: the host
     /// applies them to its window.
-    pub(crate) fn take_window_actions(&mut self) -> Vec<WindowAction> {
+    pub fn take_window_actions(&mut self) -> Vec<WindowAction> {
         std::mem::take(&mut self.window_actions)
     }
 
     /// The row must be painted again in full.
-    pub(crate) fn mark_repaint(&mut self) {
+    pub fn mark_repaint(&mut self) {
         self.repaint = true;
     }
 
-    pub(crate) fn is_shown(&self) -> bool {
+    pub fn is_shown(&self) -> bool {
         self.shown.is_some()
     }
 
     /// Keep the row current: shown at `place` (none: hidden), with the app's parts, its
     /// notice and the window's `history` control.
-    pub(crate) fn refresh(
+    pub fn refresh(
         &mut self,
         theme: &tilo_ui_base::theme::Theme,
         place: Option<RowPlace<'_>>,
@@ -293,7 +299,7 @@ impl PartRow {
 
     /// What the app asked of its bar: its Find (open the search), its Ctrl+L (edit the
     /// location).
-    pub(crate) fn serve_app_requests(&mut self, host: &mut dyn PartRowHost) {
+    pub fn serve_app_requests(&mut self, host: &mut dyn PartRowHost) {
         if let Some(opening) = crate::window_toolbar::take_search_request() {
             self.open_search(host, MotionSource::Keyboard, opening);
         }
@@ -304,7 +310,7 @@ impl PartRow {
 
     /// Open the search in place on what the app offers, or give the open one the keyboard
     /// (for the replace chord, the replacement).
-    pub(crate) fn open_search(
+    pub fn open_search(
         &mut self,
         host: &mut dyn PartRowHost,
         source: MotionSource,
@@ -350,7 +356,7 @@ impl PartRow {
 
     /// Carry the search to the app's widgets, once a frame: what it found shows in the
     /// frame being built.
-    pub(crate) fn drive_search(&mut self, host: &mut dyn PartRowHost) {
+    pub fn drive_search(&mut self, host: &mut dyn PartRowHost) {
         if self.search.wants_drive() && self.search.drive(host.search_root()) {
             host.search_drove();
             self.repaint = true;
@@ -359,7 +365,7 @@ impl PartRow {
 
     /// The input evidence of the window's search, beside the app's own: what the field
     /// holds and where the control stands, while the row shows.
-    pub(crate) fn with_search_evidence(
+    pub fn with_search_evidence(
         &self,
         snapshot: Option<serde_json::Value>,
     ) -> Option<serde_json::Value> {
@@ -384,12 +390,12 @@ impl PartRow {
 
     /// Whether the row changed since the last frame, which must then repaint the whole
     /// window rather than only the app's own damage.
-    pub(crate) fn take_repaint(&mut self) -> bool {
+    pub fn take_repaint(&mut self) -> bool {
         std::mem::take(&mut self.repaint)
     }
 
     /// Whether the row needs another frame: a menu arriving, the field's caret.
-    pub(crate) fn needs_frame(&self) -> bool {
+    pub fn needs_frame(&self) -> bool {
         let now = tilo_ui_base::motion::frame_now();
         self.shown.is_some()
             && (self.row.needs_animation_frame()
@@ -399,7 +405,7 @@ impl PartRow {
 
     /// The band the row paints, from the host's frame at `left` to the window's end
     /// (zero: hidden).
-    pub(crate) fn band(&self, left: f64, theme: &tilo_ui_base::theme::Theme) -> Rect {
+    pub fn band(&self, left: f64, theme: &tilo_ui_base::theme::Theme) -> Rect {
         let Some((_, rect)) = self.shown.as_ref() else {
             return Rect::ZERO;
         };
@@ -413,7 +419,7 @@ impl PartRow {
 
     /// Paint the row from the host's frame at `left`: its band, its parts and the search,
     /// then their menus and the search's options over the app.
-    pub(crate) fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>, left: f64) {
+    pub fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>, left: f64) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -496,7 +502,7 @@ impl PartRow {
     /// its menus, or anything while its location is edited. Returns whether the row took
     /// it, and whether the window must draw again; what the person did reaches the app as
     /// the shell's bar delivers it.
-    pub(crate) fn route(
+    pub fn route(
         &mut self,
         host: &mut dyn PartRowHost,
         event: &WindowEvent,
@@ -709,14 +715,14 @@ impl PartRow {
 
     /// The row's own toolbar row: where the notice it shows stands, as a driver reads its
     /// geometry.
-    pub(crate) fn toolbar_row(&self) -> &ToolbarRow {
+    pub fn toolbar_row(&self) -> &ToolbarRow {
         &self.row
     }
 
     /// The row as assistive technology and automation reach it: the app's parts, the
     /// window's History in the row's menu, the search, and the window's own controls in
     /// their pill.
-    pub(crate) fn accessibility(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
+    pub fn accessibility(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
         if self.shown.is_none() {
             return Vec::new();
         }
@@ -750,7 +756,7 @@ impl PartRow {
     /// a `window-search-*` part, or one of the window's own controls), as assistive
     /// technology and automation do; what it runs reaches the app as a press does, and a
     /// control's press reaches the host as the window's own.
-    pub(crate) fn perform(
+    pub fn perform(
         &mut self,
         host: &mut dyn PartRowHost,
         target: &str,
@@ -795,18 +801,18 @@ impl PartRow {
     }
 
     /// The row's search.
-    pub(crate) fn search(&self) -> &WindowSearch {
+    pub fn search(&self) -> &WindowSearch {
         &self.search
     }
 
     /// The row's search, for a host to drive as the person would.
-    pub(crate) fn search_mut(&mut self) -> &mut WindowSearch {
+    pub fn search_mut(&mut self) -> &mut WindowSearch {
         &mut self.search
     }
 
     /// Lay the row out across `rect` without a host's frame, for a test.
-    #[cfg(test)]
-    pub(crate) fn show_for_test(&mut self, rect: Rect) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn show_for_test(&mut self, rect: Rect) {
         let spare = self.place_controls(rect);
         self.row.lay_out(spare);
         self.place_search(rect, spare);
@@ -814,8 +820,12 @@ impl PartRow {
     }
 
     /// Type `text` into the open search, key by key, for a test.
-    #[cfg(test)]
-    pub(crate) fn type_into_search(&mut self, text: &str) {
+    #[cfg(any(test, feature = "test-support"))]
+    #[expect(
+        clippy::expect_used,
+        reason = "a test types only into a row that is laid out"
+    )]
+    pub fn type_into_search(&mut self, text: &str) {
         let node = self.node.expect("the row's event node");
         let modifiers = winit::event::Modifiers::default();
         let root = automerge::ROOT;

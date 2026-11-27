@@ -27,7 +27,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
-use tilo_ui::widget::file_picker::{FileFilter, FilePicker, FilePickerMode};
+use tilo_ui_app::widget::file_picker::{FileFilter, FilePicker, FilePickerMode};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
@@ -120,11 +120,11 @@ fn assert_panel_edge_registers(rgba: &[u8], w: u32, theme_name: &str) {
 /// can be looked at without any setup, even where the source tree is
 /// read-only; set `TILO_UI_SCREENSHOT_DIR` to put them somewhere else.
 fn dump(name: &str, rgba: &[u8], w: u32, h: u32) {
-    let dir = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR")
+    let dir = tilo_ui_app::env::var("TILO_UI_SCREENSHOT_DIR")
         .unwrap_or_else(|_| format!("{}/ui-review/file-picker", env!("CARGO_TARGET_TMPDIR")));
     std::fs::create_dir_all(&dir).unwrap();
     let path = format!("{dir}/{name}.png");
-    tilo_ui::png::write_rgba8(&path, w, h, rgba).unwrap();
+    tilo_ui_app::png::write_rgba8(&path, w, h, rgba).unwrap();
     eprintln!("wrote {path}");
 }
 

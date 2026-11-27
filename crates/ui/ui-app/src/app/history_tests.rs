@@ -1926,7 +1926,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let (_host, component) = crate::history_mode::testing::component_with_history();
+            let (_host, component) = component_with_history();
             let mut app = App::from_component(
                 component,
                 crate::application::ComponentRunnerInputs {
@@ -5691,4 +5691,41 @@ fn a_pointer_press_on_restore_opens_the_review() {
             .any(|(_, node)| node.label() == Some("Restore version")),
         "the press on Restore… opens the review"
     );
+}
+
+static BOUND: HistoryDefinition = HistoryDefinition {
+    app_id: crate::application_test_support::APP,
+    scopes: &[HistoryScopeDefinition {
+        key: "document",
+        title: "Bound notebook",
+        presentation: HistoryPresentation::Domain {
+            create: crate::history_mode::testing::preview,
+        },
+    }],
+};
+
+/// A component of the runner's probe app with the bound notebook's History registered.
+fn component_with_history() -> (
+    crate::application_test_support::ProbeHarness,
+    crate::application::AppComponent,
+) {
+    let host = crate::application_test_support::ProbeHarness::new();
+    let definition = crate::application_test_support::runner_probe_definition();
+    let context = host
+        .prepare_with_permissions(
+            definition,
+            950,
+            &crate::application::LaunchTarget::New,
+            crate::application_test_support::runner_permissions(),
+        )
+        .unwrap();
+    let mut component = definition
+        .instantiate(
+            context,
+            crate::application::LaunchTarget::New,
+            crate::application::RestoreInput::None,
+        )
+        .unwrap();
+    component.register_document_history(&BOUND).unwrap();
+    (host, component)
 }

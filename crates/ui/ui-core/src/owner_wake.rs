@@ -346,19 +346,19 @@ impl OwnerWakeQueue {
 }
 
 /// A snapshot owns retry ownership until each admitted callback completes.
-pub(crate) struct OwnerWakeBatch {
+pub struct OwnerWakeBatch {
     queue: OwnerWakeQueue,
     requests: std::collections::VecDeque<OwnerWakeRequest>,
 }
 impl OwnerWakeBatch {
-    pub(crate) fn front(&self) -> Option<&OwnerWakeRequest> {
+    pub fn front(&self) -> Option<&OwnerWakeRequest> {
         self.requests.front()
     }
-    pub(crate) fn complete_front(&mut self) {
+    pub fn complete_front(&mut self) {
         self.requests.pop_front();
     }
     /// Every owner in the batch was woken only because its save moved on.
-    pub(crate) fn all_save_progress_only(&self) -> bool {
+    pub fn all_save_progress_only(&self) -> bool {
         self.requests
             .iter()
             .all(OwnerWakeRequest::save_progress_only)
@@ -422,7 +422,7 @@ impl OwnerWakeQueue {
         );
         pending.order = prefix;
     }
-    pub(crate) fn take_batch(&self) -> OwnerWakeBatch {
+    pub fn take_batch(&self) -> OwnerWakeBatch {
         OwnerWakeBatch {
             queue: self.clone(),
             requests: self.take_pending().into(),

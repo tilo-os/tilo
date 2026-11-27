@@ -37,8 +37,8 @@ impl LocalDispatch {
     }
 
     /// [`Self::try_dispatch_with_context`] without an activity context.
-    #[cfg(test)]
-    pub(crate) fn try_dispatch<A>(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn try_dispatch<A>(
         &mut self,
         doc: &mut AutoCommit,
         type_id: &str,

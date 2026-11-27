@@ -9,7 +9,7 @@ use crate::time::Instant;
 #[cfg(feature = "native")]
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 #[derive(Default)]
-pub(crate) struct RenderRetryState {
+pub struct RenderRetryState {
     #[cfg(feature = "native")]
     deadline: Option<Instant>,
     #[cfg(feature = "native")]
@@ -19,7 +19,7 @@ pub(crate) struct RenderRetryState {
 }
 impl RenderRetryState {
     #[cfg(feature = "native")]
-    pub(crate) fn observe(&mut self, outcome: FrameOutcome, now: Instant) {
+    pub fn observe(&mut self, outcome: FrameOutcome, now: Instant) {
         self.occlusions = if outcome == FrameOutcome::Occluded {
             self.occlusions.saturating_add(1)
         } else {
@@ -40,19 +40,19 @@ impl RenderRetryState {
         };
     }
     #[cfg(feature = "native")]
-    pub(crate) fn known_occluded(&self) -> bool {
+    pub fn known_occluded(&self) -> bool {
         self.occlusions > 0 && !self.probe
     }
     /// A visible auxiliary surface draws this primary's retained root.
     #[cfg(feature = "native")]
-    pub(crate) fn keep_shared_cadence(&mut self, now: Instant) {
+    pub fn keep_shared_cadence(&mut self, now: Instant) {
         if self.known_occluded() {
             let soon = now.checked_add(FRAME_INTERVAL).unwrap_or(now);
             self.deadline = self.deadline.map(|deadline| deadline.min(soon));
         }
     }
     #[cfg(feature = "native")]
-    pub(crate) fn observe_for_shared_root(
+    pub fn observe_for_shared_root(
         &mut self,
         outcome: FrameOutcome,
         now: Instant,
@@ -64,17 +64,17 @@ impl RenderRetryState {
         }
     }
     #[cfg(feature = "native")]
-    pub(crate) fn request_probe(&mut self) -> bool {
+    pub fn request_probe(&mut self) -> bool {
         let recovering = self.deadline.is_some() || self.occlusions > 0;
         self.probe = true;
         recovering
     }
     #[cfg(feature = "native")]
-    pub(crate) fn allows(&self, now: Instant) -> bool {
+    pub fn allows(&self, now: Instant) -> bool {
         self.probe || self.deadline.is_none_or(|deadline| deadline <= now)
     }
     #[cfg(feature = "native")]
-    pub(crate) fn admitted(&mut self) {
+    pub fn admitted(&mut self) {
         if self.probe {
             self.occlusions = 0;
         }
@@ -82,18 +82,18 @@ impl RenderRetryState {
         self.deadline = None;
     }
     #[cfg(feature = "native")]
-    pub(crate) fn deadline(&self) -> Option<Instant> {
+    pub fn deadline(&self) -> Option<Instant> {
         if self.probe { None } else { self.deadline }
     }
     #[cfg(feature = "native")]
-    pub(crate) fn occlusion_blocked(&self, now: Instant) -> bool {
+    pub fn occlusion_blocked(&self, now: Instant) -> bool {
         self.occlusions > 0 && !self.allows(now)
     }
 }
 /// How often a window that takes no frame runs the passes a frame would: idle enough to cost
 /// nothing, prompt enough to answer work queued while no frame comes.
 #[cfg(feature = "native")]
-pub(crate) const UNDRAWN_TICK_INTERVAL: Duration = Duration::from_millis(50);
+pub const UNDRAWN_TICK_INTERVAL: Duration = Duration::from_millis(50);
 
 /// When a window that takes no frame runs its state passes ([`crate::App::run_state_tick`]): one
 /// that is occluded, or one whose last frame's callback has not come, as a hidden surface hears
@@ -101,7 +101,7 @@ pub(crate) const UNDRAWN_TICK_INTERVAL: Duration = Duration::from_millis(50);
 /// answered whether or not anyone sees the window.
 #[derive(Default)]
 #[cfg(feature = "native")]
-pub(crate) struct UndrawnTicks {
+pub struct UndrawnTicks {
     frame_owed: bool,
     at: Option<Instant>,
 }
@@ -109,19 +109,19 @@ pub(crate) struct UndrawnTicks {
 #[cfg(feature = "native")]
 impl UndrawnTicks {
     /// A frame went out, and the windowing system holds the next one back until its callback.
-    pub(crate) fn presented(&mut self) {
+    pub fn presented(&mut self) {
         self.frame_owed = true;
     }
 
     /// The window took a frame.
-    pub(crate) fn drew(&mut self) {
+    pub fn drew(&mut self) {
         self.frame_owed = false;
     }
 
     /// Whether the passes run now, for a window that is `occluded` or owed a frame with state
     /// `pending`. The first runs an interval after the window stopped taking frames, so a frame
     /// that comes in time runs them as it always does.
-    pub(crate) fn due(&mut self, occluded: bool, pending: bool, now: Instant) -> bool {
+    pub fn due(&mut self, occluded: bool, pending: bool, now: Instant) -> bool {
         if !(pending && (occluded || self.frame_owed)) {
             self.at = None;
             return false;
@@ -137,19 +137,19 @@ impl UndrawnTicks {
     /// tick: it is not pacing this window, and what a person typed need not
     /// wait for its callback. Occluded windows are left to their state
     /// passes, as they have no callback to wait for.
-    pub(crate) fn owed_past_tick(&mut self, occluded: bool, now: Instant) -> bool {
+    pub fn owed_past_tick(&mut self, occluded: bool, now: Instant) -> bool {
         self.frame_owed && !occluded && self.due(occluded, true, now)
     }
 
     /// When the loop wakes for the next pass.
-    pub(crate) fn deadline(&self) -> Option<Instant> {
+    pub fn deadline(&self) -> Option<Instant> {
         self.at
     }
 }
 
 /// An idle redraw whose tree, layout, and damage did not change must not present.
 #[cfg(feature = "native")]
-pub(crate) fn submit_redraw_frame(full_redraw: bool, has_damage: bool) -> bool {
+pub fn submit_redraw_frame(full_redraw: bool, has_damage: bool) -> bool {
     full_redraw || has_damage
 }
 
@@ -174,7 +174,7 @@ pub(crate) fn widget_deadline(
     reason = "independent concurrent wake sources may be active together; an exclusive enum would lose demand"
 )]
 #[cfg(feature = "native")]
-pub(crate) struct WakeDemand {
+pub struct WakeDemand {
     pub tooltip: bool,
     pub typing: bool,
     pub widget_due: bool,
@@ -187,7 +187,7 @@ pub(crate) struct WakeDemand {
 
 /// Select the actual event-loop deadline.
 #[cfg(feature = "native")]
-pub(crate) fn next_wake(
+pub fn next_wake(
     now: Instant,
     blocked_until: Option<Instant>,
     any_render_available: bool,

@@ -5,16 +5,16 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::toggle_group::Press;
-use tilo_ui::widget::internals::toggle_group::test_support::*;
-use tilo_ui::widget::internals::toggle_group::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::toggle_group::Press;
+use tilo_ui_app::widget::internals::toggle_group::test_support::*;
+use tilo_ui_app::widget::internals::toggle_group::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
             vec![true, false, false],
         )
         .with_id("days")
-        .on_chosen_action(tilo_ui::widget::test_value_action_binding(
+        .on_chosen_action(tilo_ui_app::widget::test_value_action_binding(
             tilo_actions::ParamType::Array,
         ));
         assert_eq!(
@@ -379,19 +379,19 @@ tilo_test_env::scenario! {
     // A strip whose choices each run their own action — a setting's cases — runs the choice pressed
     // and chooses nothing itself: what it fills is the case the setting holds, which the app sets.
     {
-        fn binding(edge: &str) -> tilo_ui::tilo_actions::ActionBinding<()> {
-            let spec = tilo_ui::tilo_actions::ActionSpec::typed_operation(
+        fn binding(edge: &str) -> tilo_ui_app::tilo_actions::ActionBinding<()> {
+            let spec = tilo_ui_app::tilo_actions::ActionSpec::typed_operation(
                 format!("dock_{edge}"),
                 "Dock edge",
                 "Move the dock",
-                tilo_ui::tilo_actions::OperationKind::Effect,
+                tilo_ui_app::tilo_actions::OperationKind::Effect,
                 "fixture.edge",
                 vec![],
-                |_| tilo_ui::tilo_actions::EncodedAction::encode_operation("fixture.edge", &()).unwrap(),
+                |_| tilo_ui_app::tilo_actions::EncodedAction::encode_operation("fixture.edge", &()).unwrap(),
             );
-            let resource = tilo_ui::tilo_actions::ResourceSpec::new("fixture", "fixture", "Fixture")
+            let resource = tilo_ui_app::tilo_actions::ResourceSpec::new("fixture", "fixture", "Fixture")
                 .with_action(spec.clone());
-            tilo_ui::tilo_actions::ActionBinding::new(&resource, &spec, |()| serde_json::Map::new())
+            tilo_ui_app::tilo_actions::ActionBinding::new(&resource, &spec, |()| serde_json::Map::new())
                 .unwrap()
         }
         let edges = ["top", "bottom", "left", "right"];
@@ -423,7 +423,7 @@ tilo_test_env::scenario! {
             .expect("the choice pressed queues its own action");
         assert_eq!(
             invocation.address,
-            tilo_ui::tilo_actions::ActionAddress::new("fixture", "dock_left")
+            tilo_ui_app::tilo_actions::ActionAddress::new("fixture", "dock_left")
         );
         assert!(
             tilo_ui_base::widget::controls::take_control_invocation(&mut group).is_none(),
@@ -434,7 +434,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
-    use tilo_ui::State;
+    use tilo_ui_app::State;
     use tilo_ui_base::LocalState;
     use winit::event::TouchPhase::{Cancelled, Ended, Moved, Started};
     let _settled = tilo_ui_base::motion::testing::settled();

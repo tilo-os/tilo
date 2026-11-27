@@ -9,15 +9,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::NamedRange;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::activity_timeline::ChipKind;
-use tilo_ui::widget::*;
+use tilo_ui_app::NamedRange;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::activity_timeline::ChipKind;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -100,8 +100,8 @@ fn provenance_and_author_pill_presentation() {
                     clippy::cast_sign_loss,
                     reason = "a small test viewport"
                 )]
-                let harness = tilo_ui::app::driver::Driver::new_with_theme(
-                    tilo_ui::State::new(),
+                let harness = tilo_ui_app::app::driver::Driver::new_with_theme(
+                    tilo_ui_app::State::new(),
                     Box::new(ux1x_fixture()),
                     (pw as u32, ph as u32),
                     theme.clone(),
@@ -180,7 +180,7 @@ fn provenance_and_author_pill_presentation() {
             let inner = Rect::new(band.x0, band.y0 + 2.0, band.x1, band.y1 - 2.0);
             let bfill = lum(inner.x1 - 3.0, inner.center().y);
             let pane_fill = lum(
-                pane.x1 - tilo_ui::widget::ActivityTimeline::pane_padding_for_tests() / 2.0,
+                pane.x1 - tilo_ui_app::widget::ActivityTimeline::pane_padding_for_tests() / 2.0,
                 inner.center().y,
             );
             assert!(

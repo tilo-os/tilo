@@ -150,15 +150,15 @@ macro_rules! test_app_widget {
     };
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(all(any(test, feature = "test-support"), feature = "model"))]
 /// Two editor windows side by side, as the shell's strip lays them out: 400x300 each in
 /// a surface that fills its parent.
-pub(crate) struct TwoWindows {
+pub struct TwoWindows {
     tiles: [crate::widget::TileHost; 2],
     rect: ::vello::kurbo::Rect,
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(all(any(test, feature = "test-support"), feature = "model"))]
 impl TwoWindows {
     /// Two stub windows labelled `labels`.
     pub fn new(labels: [&str; 2]) -> Self {
@@ -174,7 +174,7 @@ impl TwoWindows {
     }
 }
 
-#[cfg(all(test, feature = "model"))]
+#[cfg(all(any(test, feature = "test-support"), feature = "model"))]
 impl tilo_ui_base::widget::Widget for TwoWindows {
     fn build_layout(
         &mut self,

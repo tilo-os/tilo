@@ -5,15 +5,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::TreeMove;
-use tilo_ui::widget::internals::tree_component::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::TreeMove;
+use tilo_ui_app::widget::internals::tree_component::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::BoundValue;
 use tilo_ui_base::component::Component;
@@ -277,10 +277,10 @@ fn a_move_names_the_row_that_moved_and_the_row_it_lands_at() {
 /// row's do: the toolkit's buttons, built again as the row shows.
 #[test]
 fn a_nodes_quick_actions_ride_over_its_row() {
-    use tilo_ui::app::driver::Driver;
+    use tilo_ui_app::app::driver::Driver;
     use tilo_ui_base::theme::Theme;
 
-    fn names(node: &tilo_ui::headless::InspectionNode, out: &mut Vec<String>) {
+    fn names(node: &tilo_ui_app::headless::InspectionNode, out: &mut Vec<String>) {
         out.push(node.widget.clone());
         for child in &node.children {
             names(child, out);
@@ -296,7 +296,7 @@ fn a_nodes_quick_actions_ride_over_its_row() {
         ..ButtonProps::default()
     }];
     let tree = tree_of(vec![quick], true, Moves::default());
-    let harness = Driver::for_root(tilo_ui::State::new(), tree, (400, 240), Theme::dark());
+    let harness = Driver::for_root(tilo_ui_app::State::new(), tree, (400, 240), Theme::dark());
     let mut laid = Vec::new();
     names(&harness.inspection().root, &mut laid);
     assert!(
@@ -324,7 +324,7 @@ fn a_node_says_how_far_its_branch_got() {
         ..TreeViewRowProps::default()
     });
     let tree = tree_of(vec![said, child], true, Moves::default());
-    let harness = Driver::for_root(tilo_ui::State::new(), tree, (400, 240), Theme::dark());
+    let harness = Driver::for_root(tilo_ui_app::State::new(), tree, (400, 240), Theme::dark());
     fn read(node: &InspectionNode, out: &mut Vec<(String, Option<String>)>) {
         if let Some(access) = &node.semantics
             && let Some(name) = &access.name
@@ -378,7 +378,7 @@ fn a_folder_with_nothing_in_it_still_shows_its_disclosure() {
 /// tree keeps the row under the keyboard and the pointer alike, as every list does.
 #[test]
 fn a_press_chooses_a_trees_row_whatever_the_view_reports() {
-    use tilo_ui::app::driver::Driver;
+    use tilo_ui_app::app::driver::Driver;
     use tilo_ui_base::theme::Theme;
 
     let queue = tilo_ui_base::Intents::default();
@@ -401,7 +401,8 @@ fn a_press_chooses_a_trees_row_whatever_the_view_reports() {
                 ..Moves::default()
             },
         );
-        let mut harness = Driver::for_root(tilo_ui::State::new(), tree, (400, 240), Theme::dark());
+        let mut harness =
+            Driver::for_root(tilo_ui_app::State::new(), tree, (400, 240), Theme::dark());
         let row = harness
             .root::<DescribedTreeView>()
             .test_list()
@@ -421,7 +422,7 @@ fn a_press_chooses_a_trees_row_whatever_the_view_reports() {
 #[test]
 fn a_trees_row_holds_the_controls_it_shows() {
     use accesskit::Role as AkRole;
-    use tilo_ui::app::driver::Driver;
+    use tilo_ui_app::app::driver::Driver;
     use tilo_ui_base::a11y::Action;
     use tilo_ui_base::theme::Theme;
 
@@ -437,7 +438,7 @@ fn a_trees_row_holds_the_controls_it_shows() {
         ..ButtonProps::default()
     }];
     let mut harness = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         tree_of(vec![props], true, Moves::default()),
         (400, 400),
         Theme::dark(),
@@ -812,7 +813,7 @@ fn shown_tree(
     let props = TreeViewProps::from_source(&mut source).expect("the tree reads");
     let tree = DescribedTreeView::from_props("tree", props);
     let harness = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         tree,
         (600, 400),
         tilo_ui_base::theme::Theme::light(),

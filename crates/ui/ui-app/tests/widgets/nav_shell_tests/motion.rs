@@ -21,7 +21,7 @@ fn slides_after_push(push: impl FnOnce(&mut NavShell)) -> bool {
     h.relayout_at((560, 800)).expect("the push lays out");
     let shell = h.root::<NavShell>();
     assert_eq!(shell.front_pane(), NavPane::Content);
-    let moving = shell.test_push_moving(tilo_ui::time::now());
+    let moving = shell.test_push_moving(tilo_ui_app::time::now());
     if moving {
         assert!(shell.needs_animation_frame(), "a slide asks for its frames");
     } else {
@@ -119,5 +119,8 @@ fn reduced_motion_lands_the_sidebar_and_a_switched_layout_at_once() {
         !shell.test_switch_columns().contains(&true),
         "and no column it has to fade in"
     );
-    assert_eq!(shell.test_switch_fade_progress(tilo_ui::time::now()), 1.0);
+    assert_eq!(
+        shell.test_switch_fade_progress(tilo_ui_app::time::now()),
+        1.0
+    );
 }

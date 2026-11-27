@@ -17,7 +17,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
 use crate::support::render::{pixel_hash, write_png};
-use tilo_ui::{
+use tilo_ui_app::{
     widget::AppKind, widget::TabDescriptor, widget::TileContent, widget::WindowGroup,
     widget::WindowWidth,
 };

@@ -262,7 +262,7 @@ Every widget in the tree exposes a name through either:
 - `Widget::test_id()` (opt-in): a stable name, e.g. `command_palette_input`, `strip_switcher`;
 - a path fallback: `Parent/Child[index]`, e.g. `OverlayHost/TopBarChrome/Button[0]`.
 
-`list_targets` returns every widget with a non-zero rect. The bare path is registered when there is exactly one sibling of that name; the indexed form always works. To make a widget addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")` — see `command_palette_input` in `crates/ui/ui-core/src/action_palette.rs`.
+`list_targets` returns every widget with a non-zero rect. The bare path is registered when there is exactly one sibling of that name; the indexed form always works. To make a widget addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")` — see `command_palette_input` in `crates/ui/ui-app/src/action_palette.rs`.
 
 `says` answers whether the shell shows a text now, as a screen reader reads it (`{"op":"says","text":"Live now"}` → `{"answer": {"says": true}}`): a label, description or value of any part on screen. A tilolang shell's controls are named by their paths, which never carry the words it shows.
 
@@ -398,7 +398,7 @@ Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, 
 {"invoke": {"resource": "installer", "action": "next", "expect_error": "action_unavailable"}}
 ```
 
-`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/ui/ui-core/src/app/driver/jobs.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
+`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/ui/ui-app/src/app/driver/jobs.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
 
 The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`tilo_app::framework::testing`) mounts a component in one `Driver`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the driver, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
 
@@ -585,6 +585,6 @@ Every build, release included, also runs the main-loop watchdog (`crates/desktop
 | Headless backend | `crates/desktop/compositor/src/backend/headless.rs` |
 | Frame-loop metrics | `crates/desktop/frame-metrics/src/lib.rs` |
 | Memory report | `crates/desktop/compositor/src/memory_report.rs` |
-| App headless drive | `crates/ui/ui-core/src/app/driver/` |
+| App headless drive | `crates/ui/ui-app/src/app/driver/` |
 | Offscreen renderer | `crates/ui/ui-base/src/offscreen.rs` |
 | Example harnesses | `scripts/headless-examples/` |

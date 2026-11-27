@@ -1,9 +1,9 @@
 //! Where History, Search and Undo appear when an app runs outside the Tilo shell: in the host
 //! operating system's own chrome. Apps never describe menus or draw chrome.
 
-pub(crate) mod edit;
+pub mod edit;
 #[cfg(any(feature = "native", test))]
-pub(crate) mod frame;
+pub mod frame;
 #[cfg(any(
     all(target_os = "linux", feature = "native"),
     any(test, feature = "test-support")
@@ -23,7 +23,7 @@ mod owner;
 pub(crate) mod windows;
 #[cfg(any(all(windows, feature = "native"), any(test, feature = "test-support")))]
 pub mod windows_items;
-pub(crate) mod zoom;
+pub mod zoom;
 
 #[cfg(any(feature = "native", test))]
-pub(crate) use owner::HostChrome;
+pub use owner::HostChrome;

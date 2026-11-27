@@ -30,6 +30,6 @@ pub fn install(line: Arc<dyn PresenceLine>) {
 }
 
 /// The presence line the runner installed, if this process has one.
-pub(crate) fn installed() -> Option<&'static Arc<dyn PresenceLine>> {
+pub fn installed() -> Option<&'static Arc<dyn PresenceLine>> {
     LINE.get()
 }

@@ -39,24 +39,24 @@ pub fn current_viewer() -> Option<tilo_actions::PresenceId> {
 /// Who an effect invocation runs for, kept while it runs: what its handler and completion submit is
 /// applied for the same invoker, in the same context, and only as far as the invoker was admitted.
 #[derive(Clone, Debug)]
-pub(crate) struct Continuation {
-    pub(crate) invoker: tilo_actions::ActionInvoker,
-    pub(crate) context: Option<tilo_actions::ActionContext>,
+pub struct Continuation {
+    pub invoker: tilo_actions::ActionInvoker,
+    pub context: Option<tilo_actions::ActionContext>,
     /// What the invoker was admitted for: the effect's own kind, which the admitting host checked the
     /// invoker may perform.
-    pub(crate) admitted: tilo_actions::ActionKind,
+    pub admitted: tilo_actions::ActionKind,
     /// Why an edit the effect submitted was refused: the effect then fails.
-    pub(crate) refused: Option<tilo_actions::ActionFailure>,
+    pub refused: Option<tilo_actions::ActionFailure>,
     /// The edits it submitted that the host is still admitting, by request.
-    pub(crate) outstanding: std::collections::HashSet<u64>,
+    pub outstanding: std::collections::HashSet<u64>,
     /// The effect's answer, held until those edits are admitted or refused: the wire id to send it
     /// under, and the answer.
-    pub(crate) deferred: Option<(u64, tilo_actions::InvocationUpdate)>,
+    pub deferred: Option<(u64, tilo_actions::InvocationUpdate)>,
 }
 
 impl Continuation {
     /// Enter the invoker's scope for one edit the effect submitted.
-    pub(crate) fn enter(&self) -> (InvokerScope, ContinuationScope) {
+    pub fn enter(&self) -> (InvokerScope, ContinuationScope) {
         (
             InvokerScope::enter(self.invoker.clone()),
             ContinuationScope::enter(self.admitted),
@@ -65,7 +65,7 @@ impl Continuation {
 
     /// Why the effect fails when the edit it submitted was refused with `error`: a refusal keeps its
     /// own code.
-    pub(crate) fn failure(error: &tilo_actions::ApiError) -> tilo_actions::ActionFailure {
+    pub fn failure(error: &tilo_actions::ApiError) -> tilo_actions::ActionFailure {
         let (code, message) = match error {
             tilo_actions::ApiError::Unavailable { code, reason } => (code.clone(), reason.clone()),
             error => (
@@ -82,10 +82,7 @@ impl Continuation {
     }
 
     /// The effect's terminal `update`, failed when an edit it submitted was refused.
-    pub(crate) fn settle(
-        &self,
-        update: tilo_actions::InvocationUpdate,
-    ) -> tilo_actions::InvocationUpdate {
+    pub fn settle(&self, update: tilo_actions::InvocationUpdate) -> tilo_actions::InvocationUpdate {
         match (update, &self.refused) {
             (tilo_actions::InvocationUpdate::Succeeded { invocation, .. }, Some(error)) => {
                 tilo_actions::InvocationUpdate::Failed {
@@ -106,7 +103,7 @@ thread_local! {
 /// An edit an effect submitted on its invoker's behalf is being applied on this thread: it may need no
 /// more than the invoker was admitted for.
 #[must_use = "the bound applies only while the guard is alive"]
-pub(crate) struct ContinuationScope(());
+pub struct ContinuationScope(());
 impl ContinuationScope {
     pub(crate) fn enter(admitted: tilo_actions::ActionKind) -> Self {
         CONTINUATION_BOUNDS.with_borrow_mut(|bounds| bounds.push(admitted));
@@ -124,7 +121,7 @@ impl Drop for ContinuationScope {
 /// Refuse an edit of kind `needed` while applying an effect's edit for an invoker admitted for less (a
 /// read never lends a change, a change never an outside effect): an effect never lends its invoker more
 /// than they hold.
-pub(crate) fn check_continuation(
+pub fn check_continuation(
     spec: &tilo_actions::ActionSpec,
     needed: tilo_actions::ActionKind,
 ) -> Result<(), tilo_actions::ApiError> {
@@ -160,7 +157,7 @@ pub fn view_operation_permitted(
 /// An agent or another member never moves this person's screen. An effect
 /// that shows a row is answered against the caller's own view
 /// ([`tilo_actions::SCREEN_PLACE_TAG`]).
-pub(crate) fn check_shown_here(
+pub fn check_shown_here(
     actor: &tilo_actions::Actor,
     local_author: &tilo_actions::MemberId,
     resource: &tilo_actions::ResourceSpec,
@@ -241,7 +238,7 @@ fn with_identified_document<R>(
 
 /// Lend the app's mounted primary document to `callback`, identified as the canonical record on
 /// `route`.
-pub(crate) fn with_mounted_document<R>(
+pub fn with_mounted_document<R>(
     route: Option<RouteSpec>,
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,

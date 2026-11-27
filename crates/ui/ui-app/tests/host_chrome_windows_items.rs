@@ -1,10 +1,10 @@
 //! Windows jump tasks and menu text: what each command relaunches with, how it is quoted and
 //! decoded, and which commands a jump task can carry at all.
-use tilo_ui::host_chrome_testing::{CommandGroup, decode, jump_tasks, menu_text, quote};
+use tilo_ui_app::host_chrome_testing::{CommandGroup, decode, jump_tasks, menu_text, quote};
 use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 
-fn commands() -> Vec<tilo_ui::host_chrome_testing::HostCommand> {
-    let mut app = tilo_ui::app::testing::native_chrome_app();
+fn commands() -> Vec<tilo_ui_app::host_chrome_testing::HostCommand> {
+    let mut app = tilo_ui_app::app::testing::native_chrome_app();
     app.set_platform_conventions(PlatformConventions::new(Platform::Windows));
     app.host_commands_for_test(true)
 }
@@ -43,7 +43,7 @@ fn jump_tasks_relaunch_with_the_exact_invocation_their_command_makes() {
                 CommandGroup::Search | CommandGroup::History | CommandGroup::RecentChanges
             ) && command.binding.address().action != "compare"
         })
-        .filter_map(tilo_ui::host_chrome_testing::HostCommand::invocation)
+        .filter_map(tilo_ui_app::host_chrome_testing::HostCommand::invocation)
         .collect();
     for (task, invocation) in tasks.iter().zip(&expected) {
         let value = task.arguments.strip_prefix("--host-command ").unwrap();
@@ -58,7 +58,7 @@ fn jump_tasks_relaunch_with_the_exact_invocation_their_command_makes() {
 
 #[test]
 fn framework_history_apps_get_search_history_and_recent_changes_as_jump_tasks() {
-    let mut app = tilo_ui::app::testing::native_chrome_app();
+    let mut app = tilo_ui_app::app::testing::native_chrome_app();
     app.set_platform_conventions(PlatformConventions::new(Platform::Windows));
     let commands = app.host_commands_for_test(true);
     let titles: Vec<_> = jump_tasks(&commands)
@@ -94,7 +94,7 @@ fn a_launch_argument_reaches_only_what_a_jump_task_can() {
             continue;
         };
         let from_task = jump_tasks(std::slice::from_ref(&command)).len() == 1;
-        let decoded = decode(&tilo_ui::host_chrome_testing::encode(&invocation));
+        let decoded = decode(&tilo_ui_app::host_chrome_testing::encode(&invocation));
         assert_eq!(
             decoded.as_ref(),
             from_task.then_some(&invocation),

@@ -7,13 +7,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -41,8 +41,8 @@ fn labeled_controls_share_one_key_for_visible_and_spoken_labels() {
             TextInput::local().with_id("profile-name"),
         );
         let app = Driver::new(
-            tilo_ui::State::new(),
-            Box::new(tilo_ui::column![field]),
+            tilo_ui_app::State::new(),
+            Box::new(tilo_ui_app::column![field]),
             (400, 600),
         );
         let targets = app.targets();
@@ -142,8 +142,8 @@ fn labeled_controls_share_one_key_for_visible_and_spoken_labels() {
                     "advanced-label",
                     ToggleGroup::new(
                         vec![
-                            tilo_ui::widget::Segment::new("Day"),
-                            tilo_ui::widget::Segment::new("Week"),
+                            tilo_ui_app::widget::Segment::new("Day"),
+                            tilo_ui_app::widget::Segment::new("Week"),
                         ],
                         0,
                     ),
@@ -179,7 +179,7 @@ fn labeled_controls_share_one_key_for_visible_and_spoken_labels() {
                 "Display name",
                 Box::new(TextInput::local().with_id("display-name")),
             )));
-        let app = Driver::new(tilo_ui::State::new(), Box::new(field), (400, 200));
+        let app = Driver::new(tilo_ui_app::State::new(), Box::new(field), (400, 200));
         let named = app.a11y_nodes_named("Display name");
         assert_eq!(named.len(), 1, "the label names the field once: {named:?}");
         let node = app.a11y_node(named[0]).expect("the exported node");
@@ -205,7 +205,7 @@ fn labeled_controls_share_one_key_for_visible_and_spoken_labels() {
     fn a_label_names_a_waiting_block() {
         let block = Labelled::new(
             "Turn left onto Main Street in Tasks",
-            Box::new(tilo_ui::widget::Skeleton::new(
+            Box::new(tilo_ui_app::widget::Skeleton::new(
                 tilo_ui_base::widget::SkeletonShape::Block { height: 160.0 },
             )),
         );

@@ -3,7 +3,7 @@
 use tilo_actions::{ActionInput, ActionSpec, ApiError, ContinuationEvidence, ContinuationQuery};
 
 #[derive(Clone, PartialEq)]
-pub(crate) struct DeferredIntent {
+pub struct DeferredIntent {
     id: String,
     label: String,
     description: Option<String>,
@@ -16,7 +16,7 @@ pub(crate) struct DeferredIntent {
 }
 
 impl DeferredIntent {
-    pub(crate) fn capture(spec: &ActionSpec) -> Result<Self, ApiError> {
+    pub fn capture(spec: &ActionSpec) -> Result<Self, ApiError> {
         let ActionInput::Deferred { type_id } = spec.input() else {
             return Err(Self::stale());
         };
@@ -45,7 +45,7 @@ impl DeferredIntent {
             draft,
         })
     }
-    pub(crate) fn validate(&self, spec: &ActionSpec) -> Result<(), ApiError> {
+    pub fn validate(&self, spec: &ActionSpec) -> Result<(), ApiError> {
         (Self::capture(spec)? == *self)
             .then_some(())
             .ok_or_else(Self::stale)
@@ -62,12 +62,12 @@ impl DeferredIntent {
 }
 
 #[derive(Clone, PartialEq)]
-pub(crate) enum PreparedActionIntent {
+pub enum PreparedActionIntent {
     Encoded(tilo_actions::EncodedAction),
     Deferred(DeferredIntent),
 }
 impl PreparedActionIntent {
-    pub(crate) fn encoded(&self) -> Option<&tilo_actions::EncodedAction> {
+    pub fn encoded(&self) -> Option<&tilo_actions::EncodedAction> {
         match self {
             Self::Encoded(value) => Some(value),
             Self::Deferred(_) => None,

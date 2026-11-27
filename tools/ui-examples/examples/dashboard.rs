@@ -5,7 +5,8 @@
 //! cargo run -p ui-examples --release --example ui-lab -- dashboard
 //! ```
 
-use tilo_ui::{App, State};
+use tilo_ui::State;
+use tilo_ui_app::App;
 use tilo_ui_base::i18n::I18nManager;
 
 use super::dashboard_scene;

@@ -8,13 +8,13 @@ pub(crate) fn write_json(prefix: &str, row: serde_json::Value) -> io::Result<()>
     write_json_with(prefix, row, || io::stderr().lock())
 }
 
-pub(crate) fn emit_json(prefix: &str, row: serde_json::Value) {
+pub fn emit_json(prefix: &str, row: serde_json::Value) {
     panic_on_error(write_json(prefix, row));
 }
 
 #[cfg(feature = "native")]
 /// Join render phases to physical input despite namespace-local PID collisions.
-pub(crate) fn emit_timing_json(prefix: &str, row: serde_json::Value) {
+pub fn emit_timing_json(prefix: &str, row: serde_json::Value) {
     panic_on_error(timing_row(row).and_then(|row| write_json(prefix, row)));
 }
 

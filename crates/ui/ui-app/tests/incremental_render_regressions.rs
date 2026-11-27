@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use tilo_ui::widget::toggle_group::Segment;
-use tilo_ui::{
+use tilo_ui_app::widget::toggle_group::Segment;
+use tilo_ui_app::{
     widget::Avatar, widget::Badge, widget::Button, widget::Column, widget::ProgressBar,
     widget::Row, widget::Scrollable, widget::Spinner, widget::Text, widget::ToggleGroup,
 };
@@ -443,7 +443,7 @@ fn scrolling_to_the_end_of_dashboard_still_renders_content() {
 
     eprintln!("min non-bg pixels across scroll: {min_pixels} at offset_y={min_offset}");
     if min_pixels <= 30_000 {
-        tilo_ui::png::write_rgba8("/tmp/dash_scroll_min.png", CANVAS_W, CANVAS_H, &min_frame)
+        tilo_ui_app::png::write_rgba8("/tmp/dash_scroll_min.png", CANVAS_W, CANVAS_H, &min_frame)
             .unwrap();
     }
     assert!(

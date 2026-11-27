@@ -2,8 +2,12 @@
 // exercises, and each builds its widget through the driver, which lives in a crate above the
 // toolkit. The tests that only paint, measure or lay a widget out stay beside it. One module per
 // file it came from; what they read of a widget's own state is behind tilo-ui's test-support
-// build (`tilo_ui::widget::internals`).
+// build (`tilo_ui_app::widget::internals`).
 
+#[path = "widgets/find_controls_tests.rs"]
+mod find_controls_tests;
+#[path = "widgets/floating_panel_dock_tests.rs"]
+mod floating_panel_dock_tests;
 #[path = "widgets/floating_panel_resize.rs"]
 mod floating_panel_resize;
 #[path = "widgets/manual.rs"]

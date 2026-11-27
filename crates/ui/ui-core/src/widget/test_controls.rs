@@ -7,6 +7,10 @@
 
 use tilo_ui_base::{widget::Decorator, widget::Widget, widget::capability, widget::controls};
 
+#[tilo_ui_base::component::not_a_component(
+    framework,
+    "a test's mount of a control outside a host's ownership"
+)]
 pub struct Unattached<W>(pub W);
 
 impl<W: Widget + controls::ActionControls + 'static> Decorator for Unattached<W> {

@@ -3,8 +3,8 @@
 //! hide.
 use tilo_ui_base::widget::Widget;
 
-use tilo_ui::widget::popover::Popover;
-use tilo_ui::widget::{Column, ContextMenu, ModalDialog, Tooltip};
+use tilo_ui_app::widget::popover::Popover;
+use tilo_ui_app::widget::{Column, ContextMenu, ModalDialog, Tooltip};
 
 fn agreed(widget: &dyn Widget) -> bool {
     let hidden = widget.accessibility_hidden();
@@ -31,7 +31,7 @@ fn widgets_that_hide_answer_accessibility_hidden_as_their_node() {
     dialog.set_open(true);
     assert!(!agreed(&dialog), "an open dialog");
 
-    let mut palette = tilo_ui::ActionPalette::rows(Vec::new());
+    let mut palette = tilo_ui_app::ActionPalette::rows(Vec::new());
     assert!(agreed(&palette), "a closed palette");
     palette.open();
     assert!(!agreed(&palette), "an open palette");

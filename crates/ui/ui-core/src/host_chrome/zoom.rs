@@ -7,15 +7,15 @@ use tilo_actions::{ActionSpec, EncodedAction, OperationKind, ResourceSpec};
 use crate::content_zoom::ZoomStep;
 use tilo_ui_base::i18n::I18nManager;
 
-pub(crate) const ZOOM_RESOURCE: &str = "tilo.host:zoom";
-pub(crate) const ZOOM_OPERATION: &str = "tilo.host.zoom";
+pub const ZOOM_RESOURCE: &str = "tilo.host:zoom";
+pub const ZOOM_OPERATION: &str = "tilo.host.zoom";
 
 /// The window's zoom actions. Each runs one step, as its key does.
 #[expect(
     clippy::expect_used,
     reason = "fixed unit zoom payloads serialize infallibly"
 )]
-pub(crate) fn zoom_resource() -> ResourceSpec {
+pub fn zoom_resource() -> ResourceSpec {
     let action = |step: ZoomStep, id: &str, key: &str| {
         ActionSpec::operation(
             id,
@@ -37,7 +37,7 @@ pub(crate) fn zoom_resource() -> ResourceSpec {
 }
 
 /// The step a zoom operation carries.
-pub(crate) fn decode(encoded: &EncodedAction) -> Result<ZoomStep, String> {
+pub fn decode(encoded: &EncodedAction) -> Result<ZoomStep, String> {
     debug_assert_eq!(encoded.type_id, ZOOM_OPERATION);
     serde_json::from_slice(&encoded.payload).map_err(|_| "Invalid zoom operation".to_owned())
 }

@@ -1,6 +1,6 @@
 use super::*;
-use tilo_ui::widget::{NavFeed, NavItem, NavList, NavSection};
-use tilo_ui::window_toolbar::ToolbarEvent;
+use tilo_ui_app::widget::{NavFeed, NavItem, NavList, NavSection};
+use tilo_ui_app::window_toolbar::ToolbarEvent;
 
 fn places() -> Vec<NavSection> {
     let item = |id: &str, label: &str, icon: Icon| NavItem::new(id, label).icon(icon);
@@ -366,7 +366,7 @@ fn a_notice_asked_through_the_bar_leaves_the_sidebar_as_it_is() {
         "a wide window opens with its sidebar docked and open"
     );
 
-    link.toast("Saved", tilo_ui::widget::toast::ToastKind::Success);
+    link.toast("Saved", tilo_ui_app::widget::toast::ToastKind::Success);
     settle(&mut h, 1100, 760);
     assert!(
         h.root::<NavShell>().is_sidebar_open(),
@@ -471,7 +471,7 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
         h.relayout();
     }
     assert_eq!(
-        tilo_ui::window_toolbar::declared(),
+        tilo_ui_app::window_toolbar::declared(),
         None,
         "the bar declares none of them"
     );
@@ -522,7 +522,7 @@ fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
         .sidebar(TestLeaf::fill("sidebar").boxed().0)
         .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, 360, 520, Theme::dark());
-    tilo_ui::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
+    tilo_ui_app::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
     link.stage_sidebar(true);
     link.put_drawer_away();
     settle(&mut h, 360, 520);
@@ -538,7 +538,7 @@ fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
         "no list over the card"
     );
 
-    tilo_ui::window_toolbar::deliver(ToolbarEvent::Floating { floating: false });
+    tilo_ui_app::window_toolbar::deliver(ToolbarEvent::Floating { floating: false });
     settle(&mut h, 376, 520);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);

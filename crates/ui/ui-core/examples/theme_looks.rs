@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (id, theme) in themes {
         let view = out.join(format!("{id}-view.png"));
         let mut widget = view_of();
-        tilo_ui::launch::render_widget_png(widget.as_mut(), (420, 220), theme.clone(), &view)?;
+        tilo_ui::shot_frame::render_widget_png(widget.as_mut(), (420, 220), theme.clone(), &view)?;
         println!("{}", view.display());
         for (name, below) in [
             ("bright", Below::Bright),

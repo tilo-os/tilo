@@ -6,15 +6,15 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 use taffy::Size;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::scrollable::test_support::*;
-use tilo_ui::widget::internals::scrollable::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::scrollable::test_support::*;
+use tilo_ui_app::widget::internals::scrollable::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -32,8 +32,8 @@ use winit::event::*;
 use winit::keyboard::*;
 #[test]
 fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
-    use tilo_ui::State;
-    use tilo_ui::widget::{Field, TextInput, TextInputKind};
+    use tilo_ui_app::State;
+    use tilo_ui_app::widget::{Field, TextInput, TextInputKind};
     use tilo_ui_base::LocalState;
 
     fn named<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {

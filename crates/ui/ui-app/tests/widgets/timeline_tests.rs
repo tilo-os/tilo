@@ -6,15 +6,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::timeline::test_support::*;
-use tilo_ui::widget::internals::timeline::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::timeline::test_support::*;
+use tilo_ui_app::widget::internals::timeline::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -43,8 +43,8 @@ tilo_test_env::scenario! {
         let days = timeline.test_days();
         timeline.set_items_for_test(fifty_items(&days));
         timeline.layout_for(area(), &Theme::dark());
-        let mut host = tilo_ui::app::driver::Driver::for_root(
-            tilo_ui::State::new(),
+        let mut host = tilo_ui_app::app::driver::Driver::for_root(
+            tilo_ui_app::State::new(),
             timeline,
             (1280, 820),
             Theme::dark(),
@@ -88,16 +88,16 @@ tilo_test_env::scenario! {
 
         // The page itself: sections a person's browser lays out, each headed by its day, the
         // long titles intact and each event's element acting as its own press.
-        let html = tilo_ui::composition::page::Page::new().render(&composition);
+        let html = tilo_ui_app::composition::page::Page::new().render(&composition);
         assert_eq!(html.matches("<section").count(), 7, "a day is a section: {html}");
-        assert!(html.contains(&tilo_ui::composition::page::escape(
+        assert!(html.contains(&tilo_ui_app::composition::page::escape(
             &tilo_ui_base::format::day_heading(days[0], false)
         )));
         assert!(html.contains("a title long enough to run past the width of one day"));
         assert!(html.contains("data-a=\"activate\" data-t=\"tilo.key-action:timeline:"));
         // Each day and each event tells the browser the time it stands for.
         for day in &days {
-            let heading = tilo_ui::composition::page::escape(&tilo_ui_base::format::day_heading(*day, false));
+            let heading = tilo_ui_app::composition::page::escape(&tilo_ui_base::format::day_heading(*day, false));
             assert!(
                 html.contains(&format!("<time datetime=\"{day}\">{heading}</time>")),
                 "{day} is a time on the page: {html}"
@@ -109,7 +109,7 @@ tilo_test_env::scenario! {
             assert!(
                 html.contains(&format!(
                     "<time datetime=\"{value}\">{}</time>",
-                    tilo_ui::composition::page::escape(hours)
+                    tilo_ui_app::composition::page::escape(hours)
                 )),
                 "the event at {value} is a time on the page: {html}"
             );
@@ -126,8 +126,8 @@ tilo_test_env::scenario! {
         let day = timeline.test_days()[2];
         timeline.set_items_for_test(vec![item(0, day, 9 * 60, 10 * 60)]);
         timeline.set_item_events_for_test(vec![item_events(&queue)]);
-        let mut host = tilo_ui::app::driver::Driver::for_root(
-            tilo_ui::State::new(),
+        let mut host = tilo_ui_app::app::driver::Driver::for_root(
+            tilo_ui_app::State::new(),
             timeline,
             (1280, 820),
             Theme::dark(),

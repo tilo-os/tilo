@@ -202,7 +202,7 @@ that android-activity publishes in `ndk_context` (`tilo-process-services`'s
   `FindClass` on a thread Rust attached sees only system classes, and their
   natives are bound with `RegisterNatives` when first loaded
   (`tilo-process-services/src/native/android/bridge.rs`,
-  `ui-core/src/app/android_text_input/bridge.rs`).
+  `ui-app/src/app/android_text_input/bridge.rs`).
 
 A native method runs on the UI thread and can run before `android_main` has
 started, so the Rust side records what it is given and wakes the event loop

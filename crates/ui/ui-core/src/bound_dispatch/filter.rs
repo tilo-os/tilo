@@ -3,10 +3,7 @@
 
 use super::{CallbackBinding, ResourceSpec, SharedResource, same_offer};
 
-pub(crate) fn filter_resource(
-    binding: &CallbackBinding,
-    resource: ResourceSpec,
-) -> Option<ResourceSpec> {
+pub fn filter_resource(binding: &CallbackBinding, resource: ResourceSpec) -> Option<ResourceSpec> {
     binding
         .permissions
         .borrow()
@@ -16,7 +13,7 @@ pub(crate) fn filter_resource(
 /// [`filter_resource`] of a shared tree, for the permission context `token` names: a subtree whose
 /// result under `token` is kept on it is not filtered again, and the result shares every subtree
 /// filtering left unchanged.
-pub(crate) fn filter_shared(
+pub fn filter_shared(
     binding: &CallbackBinding,
     token: u64,
     resource: &SharedResource,
@@ -37,7 +34,7 @@ pub(crate) fn filter_shared(
 /// Let `next` take `last`'s filtering under `token` when every action of `last` was permitted and
 /// `next` offers the same (a root head rebuilt as it was for a new publication): only its children are
 /// filtered, each from what it kept, and nobody is asked about its actions again.
-pub(super) fn inherit_filtered(
+pub fn inherit_filtered(
     binding: &CallbackBinding,
     token: u64,
     last: &SharedResource,
@@ -133,7 +130,7 @@ fn filter_shared_children(
 /// Add to `allowed` the address of every available action in `resources` that `binding` permits: what
 /// [`tilo_actions::api::survey`] lists as available in the trees [`filter_resource`] keeps, read in
 /// place rather than through a filtered copy and a descriptor per action.
-pub(super) fn insert_available_permitted(
+pub fn insert_available_permitted(
     binding: &CallbackBinding,
     resources: &[ResourceSpec],
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,

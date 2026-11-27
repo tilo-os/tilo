@@ -2,13 +2,13 @@
 
 use tilo_rich_edit::BlockContent;
 use tilo_ui::State;
-use tilo_ui::app::driver::FollowedView;
-use tilo_ui::headless::Driver;
+use tilo_ui_app::app::driver::FollowedView;
+use tilo_ui_app::headless::Driver;
 use vello::kurbo::Rect;
 
 /// An agent's edit of `resource`, a second ago.
 fn agent_acting(frame: &mut Driver, resource: &str) -> tilo_actions::SemanticInteraction {
-    let mut event = tilo_ui::headless::agent_acting(resource, "edit");
+    let mut event = tilo_ui_app::headless::agent_acting(resource, "edit");
     event.actor = tilo_actions::Acting::agent("scribe", "someone-else");
     event.action.label = "Edit".into();
     event.resource.kind = "example".into();

@@ -3351,6 +3351,7 @@ pub mod test_support {
             self.pending.get()
         }
     }
+    #[tilo_ui_base::component::not_a_component(framework, "a test's row that counts its presses")]
     pub struct ProbeRow {
         pub label: String,
         pub height: f32,

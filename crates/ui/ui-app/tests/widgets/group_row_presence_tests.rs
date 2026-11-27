@@ -7,13 +7,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -34,14 +34,14 @@ use winit::event::*;
 use winit::keyboard::*;
 
 struct Field {
-    input: tilo_ui::widget::TextInput,
+    input: tilo_ui_app::widget::TextInput,
     drawn: Rc<Cell<Rect>>,
 }
 
 impl Field {
     fn new(field: &str, drawn: Rc<Cell<Rect>>) -> Self {
         let mut input =
-            tilo_ui::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
+            tilo_ui_app::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
                 field.into(),
             )]);
         input.set_text("the words a note holds");
@@ -56,13 +56,13 @@ impl Field {
 }
 
 impl tilo_ui_base::widget::Decorator for Field {
-    type Inner = tilo_ui::widget::TextInput;
+    type Inner = tilo_ui_app::widget::TextInput;
 
-    fn inner(&self) -> &tilo_ui::widget::TextInput {
+    fn inner(&self) -> &tilo_ui_app::widget::TextInput {
         &self.input
     }
 
-    fn inner_mut(&mut self) -> &mut tilo_ui::widget::TextInput {
+    fn inner_mut(&mut self) -> &mut tilo_ui_app::widget::TextInput {
         &mut self.input
     }
 
@@ -81,17 +81,17 @@ impl tilo_ui_base::widget::Decorator for Field {
     }
 }
 
-impl tilo_ui::widget::AppWidget for Field {
-    fn app_kind(&self) -> tilo_ui::widget::AppKind {
-        tilo_ui::widget::AppKind::Editor
+impl tilo_ui_app::widget::AppWidget for Field {
+    fn app_kind(&self) -> tilo_ui_app::widget::AppKind {
+        tilo_ui_app::widget::AppKind::Editor
     }
 
     fn app_title(&self) -> &str {
         "Field"
     }
 
-    fn app_icon(&self) -> tilo_ui::widget::IconDescriptor {
-        tilo_ui::widget::IconDescriptor::Glyph("F")
+    fn app_icon(&self) -> tilo_ui_app::widget::IconDescriptor {
+        tilo_ui_app::widget::IconDescriptor::Glyph("F")
     }
 }
 
@@ -101,7 +101,7 @@ fn window(id: u64, field: &str, drawn: Rc<Cell<Rect>>) -> WindowGroup {
         vec![(
             TabDescriptor::new(id, format!("T{id}")),
             TileContent::Stub {
-                kind: tilo_ui::widget::AppKind::Editor,
+                kind: tilo_ui_app::widget::AppKind::Editor,
                 label: field.into(),
             },
         )],
@@ -139,7 +139,7 @@ fn a_peers_caret_in_a_panned_window_is_a_node_where_the_window_drew_it() {
         window(100, "first", Rc::clone(&first)),
         window(200, "second", Rc::clone(&second)),
     ]);
-    let mut frame = Driver::for_root(tilo_ui::State::new(), row, (390, 844), Theme::default());
+    let mut frame = Driver::for_root(tilo_ui_app::State::new(), row, (390, 844), Theme::default());
     let peer = tilo_member_types::MemberId::person("claude");
     frame
         .presence_mut()

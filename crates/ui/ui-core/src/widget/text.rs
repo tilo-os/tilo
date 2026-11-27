@@ -812,7 +812,8 @@ impl Text {
         self.naming_its_control()
     }
 
-    pub(crate) fn naming_its_control(mut self) -> Self {
+    #[must_use]
+    pub fn naming_its_control(mut self) -> Self {
         self.access = TextAccess::Presentational;
         self
     }

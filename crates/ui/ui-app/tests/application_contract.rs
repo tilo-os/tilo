@@ -2,13 +2,13 @@
 use crate::support::application::*;
 use automerge::{ROOT, transaction::Transactable};
 use std::rc::Rc;
-use tilo_ui::application::{
+use tilo_ui_app::application::{
     ApplicationCatalog, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
-use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
-use tilo_ui::launch::LaunchError;
-use tilo_ui::resource::DocumentId;
-use tilo_ui::view::{FocusView, ThawError, View};
+use tilo_ui_app::application_view::{InstanceViewStore, SavedInstanceView};
+use tilo_ui_app::launch::LaunchError;
+use tilo_ui_app::resource::DocumentId;
+use tilo_ui_app::view::{FocusView, ThawError, View};
 
 #[test]
 fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
@@ -258,11 +258,11 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
 #[test]
 fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
     {
-        let workspace = Rc::new(tilo_ui::resource::MemoryWorkspace::default());
+        let workspace = Rc::new(tilo_ui_app::resource::MemoryWorkspace::default());
         for (device, workspace_id, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)]
         {
             let store = InstanceViewStore::new(
-                Some(Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>),
+                Some(Rc::clone(&workspace) as Rc<dyn tilo_ui_app::resource::DocumentPort>),
                 APP,
                 device,
                 workspace_id,
@@ -273,7 +273,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
         for (device, workspace_id, scroll) in [("D", "A", 10.0), ("D", "B", 20.0), ("E", "A", 30.0)]
         {
             let store = InstanceViewStore::new(
-                Some(Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>),
+                Some(Rc::clone(&workspace) as Rc<dyn tilo_ui_app::resource::DocumentPort>),
                 APP,
                 device,
                 workspace_id,
@@ -284,7 +284,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
         // A view of another app, device, workspace, instance, version, geometry, record or kind is
         // never saved over the one the window has, and the one it has is left as it was.
         let store = InstanceViewStore::new(
-            Some(Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>),
+            Some(Rc::clone(&workspace) as Rc<dyn tilo_ui_app::resource::DocumentPort>),
             APP,
             "D",
             "A",
@@ -330,7 +330,7 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
     }
 
     {
-        use tilo_ui::application_view::ApplicationLocalView;
+        use tilo_ui_app::application_view::ApplicationLocalView;
         let host = ProbeHarness::new();
         let mut first =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -560,7 +560,7 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
             .err()
             .unwrap();
         assert!(
-            matches!(error, LaunchError::Record(tilo_ui::resource::ResourceOpenError::Initialization(reason)) if reason == "schema initialization refused")
+            matches!(error, LaunchError::Record(tilo_ui_app::resource::ResourceOpenError::Initialization(reason)) if reason == "schema initialization refused")
         );
         assert!(!host.records.is_ready(&record.id));
         assert!(host.records.reserve_resource(&record).is_ok());
@@ -729,7 +729,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
         let checkout = component.record().clone();
         host.records.try_flush().unwrap();
         host.workspace.refuse.set(true);
-        let mut app = tilo_ui::App::from_component(component, runner_inputs()).unwrap();
+        let mut app = tilo_ui_app::App::from_component(component, runner_inputs()).unwrap();
         host.records
             .with(&checkout.id, |doc| {
                 doc.put(ROOT, "body", "before refused close").unwrap();
@@ -739,7 +739,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
         assert!(
             captured_handles()
                 .iter()
-                .all(tilo_ui::WakeHandle::is_active)
+                .all(tilo_ui_app::WakeHandle::is_active)
         );
         assert!(local_state().try_set("editing after close refusal".into()));
         host.records
@@ -774,7 +774,7 @@ fn save_and_close_failures_retain_owners_and_retry_persistence() {
         assert!(
             captured_handles()
                 .iter()
-                .all(tilo_ui::WakeHandle::is_active)
+                .all(tilo_ui_app::WakeHandle::is_active)
         );
         app.close_components();
         assert!(captured_handles().iter().all(|handle| !handle.is_active()));
@@ -851,7 +851,8 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
                 doc.put(ROOT, "body", "pending edit").unwrap();
             })
             .unwrap();
-        let snapshot = |doc: &mut automerge::AutoCommit, history: &mut tilo_ui::state::UndoLog| {
+        let snapshot = |doc: &mut automerge::AutoCommit,
+                        history: &mut tilo_ui_app::state::UndoLog| {
             let last = history.peek_last_undo(doc).unwrap();
             (
                 doc.pending_ops(),
@@ -1035,14 +1036,14 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
         let dump = output.path().join("document.json");
         let inspect = output.path().join("inspect.json");
         let targets = output.path().join("targets.json");
-        let spec = tilo_ui::headless::Spec {
+        let spec = tilo_ui_app::headless::Spec {
             dump: Some(dump.to_str().unwrap().to_owned()),
             inspect: Some(inspect.to_str().unwrap().to_owned()),
             targets: Some(targets.to_str().unwrap().to_owned()),
             ..Default::default()
         };
         assert_eq!(
-            tilo_ui::headless::Driver::run_component(&spec, component, runner_inputs()),
+            tilo_ui_app::headless::Driver::run_component(&spec, component, runner_inputs()),
             0
         );
         let document: serde_json::Value =
@@ -1072,13 +1073,17 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             let workspace = Rc::clone(&host.workspace);
             drop(host.views);
             let error = if native {
-                tilo_ui::App::from_component(component, runner_inputs())
+                tilo_ui_app::App::from_component(component, runner_inputs())
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::Driver::from_component(component, (320, 180), runner_inputs())
-                    .err()
-                    .unwrap()
+                tilo_ui_app::headless::Driver::from_component(
+                    component,
+                    (320, 180),
+                    runner_inputs(),
+                )
+                .err()
+                .unwrap()
             };
             let LaunchError::ComponentSetup {
                 record, recovery, ..
@@ -1117,18 +1122,18 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             let output = output_temp.path().join("output-is-directory");
             std::fs::create_dir_all(&output).unwrap();
             let spec = if output_failure {
-                tilo_ui::headless::Spec {
+                tilo_ui_app::headless::Spec {
                     dump: Some(output.to_str().unwrap().to_owned()),
                     ..Default::default()
                 }
             } else {
-                tilo_ui::headless::Spec {
-                    actions: vec![tilo_ui::headless::Action::ClickNamed("absent".into())],
+                tilo_ui_app::headless::Spec {
+                    actions: vec![tilo_ui_app::headless::Action::ClickNamed("absent".into())],
                     ..Default::default()
                 }
             };
             assert_eq!(
-                tilo_ui::headless::Driver::run_component(&spec, component, runner_inputs()),
+                tilo_ui_app::headless::Driver::run_component(&spec, component, runner_inputs()),
                 1
             );
             assert!(!writer.try_set("after runner close".into()));
@@ -1156,8 +1161,8 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             })
             .unwrap();
         assert_eq!(
-            tilo_ui::headless::Driver::run_component(
-                &tilo_ui::headless::Spec::default(),
+            tilo_ui_app::headless::Driver::run_component(
+                &tilo_ui_app::headless::Spec::default(),
                 component,
                 runner_inputs()
             ),
@@ -1169,7 +1174,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
         host.records.try_flush().unwrap();
         assert_eq!(
             host.records.save_status(&checkout.id).unwrap(),
-            tilo_ui::resource::ResourceSaveStatus::Saved
+            tilo_ui_app::resource::ResourceSaveStatus::Saved
         );
     }
 }
@@ -1177,7 +1182,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
 mod save_status_fixture {
     use super::*;
     use std::cell::RefCell;
-    use tilo_ui::{
+    use tilo_ui_app::{
         resource::DocumentCheckout, resource::ResourceSaveStatus, resource::ResourceStore,
         widget::AppKind, widget::AppWidget, widget::IconDescriptor, widget::TileHost,
     };
@@ -1230,7 +1235,7 @@ mod save_status_fixture {
         mut context: ProcessContext,
         target: &LaunchTarget,
         _: RestoreInput,
-    ) -> Result<tilo_ui::application::AppComponent, LaunchError> {
+    ) -> Result<tilo_ui_app::application::AppComponent, LaunchError> {
         if matches!(target, LaunchTarget::New) {
             context
                 .initialize_new_resource(|_| Ok(()))
@@ -1240,7 +1245,7 @@ mod save_status_fixture {
             records: STORE.with(|store| store.borrow().as_ref().unwrap().clone()),
             checkout: context.record().clone(),
         };
-        Ok(tilo_ui::application::AppComponent::new(
+        Ok(tilo_ui_app::application::AppComponent::new(
             context,
             Box::new(root),
             tilo_actions::ActionRegistry::new(),
@@ -1422,7 +1427,7 @@ mod save_status_fixture {
             );
         }
         pub(super) fn close(&mut self) {
-            let reports = tilo_ui::component_lifecycle::close_components(&mut self.tile);
+            let reports = tilo_ui_app::component_lifecycle::close_components(&mut self.tile);
             assert!(!reports.is_empty());
             assert!(reports.iter().all(|report| report.resource_error.is_none()
                 && report.view_error.is_none()
@@ -1439,10 +1444,10 @@ mod paired_local {
     use super::*;
     use automerge::{AutoCommit, ReadDoc};
     use std::cell::RefCell;
-    use tilo_ui::application::{AppComponent, ApplicationDefinition};
-    use tilo_ui::application_view::{ApplicationFocusRestore, ApplicationLocalView};
-    use tilo_ui::view::ViewContribution;
-    use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
+    use tilo_ui_app::application::{AppComponent, ApplicationDefinition};
+    use tilo_ui_app::application_view::{ApplicationFocusRestore, ApplicationLocalView};
+    use tilo_ui_app::view::ViewContribution;
+    use tilo_ui_app::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
     use tilo_ui_base::widget::Widget;
 
     #[derive(Default)]
@@ -1463,7 +1468,7 @@ mod paired_local {
     struct LocalRoot(Rc<RefCell<Presentation>>);
     impl Widget for LocalRoot {
         tilo_ui_base::provides!(
-            dyn tilo_ui::view::capability::ViewState,
+            dyn tilo_ui_app::view::capability::ViewState,
             dyn tilo_ui_base::widget::undo_points::UndoPoints
         );
 
@@ -1501,7 +1506,7 @@ mod paired_local {
         }
     }
 
-    impl tilo_ui::view::capability::ViewState for LocalRoot {
+    impl tilo_ui_app::view::capability::ViewState for LocalRoot {
         fn view_state(&self) -> Option<ViewContribution> {
             Some(ViewContribution {
                 scroll: vec![self.0.borrow().scroll],

@@ -668,7 +668,7 @@ impl SearchResult {
     }
 
     /// Whether this result opted into canonical action activation.
-    pub(crate) fn has_action_address(&self) -> bool {
+    pub fn has_action_address(&self) -> bool {
         self.action_id.starts_with(ACTION_ADDRESS_PREFIX)
     }
 

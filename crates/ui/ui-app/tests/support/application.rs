@@ -7,7 +7,7 @@ use tilo_ui::application::{
     RestoreInput,
 };
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
-use tilo_ui::launch::LaunchError;
+use tilo_ui::launch_error::LaunchError;
 use tilo_ui::resource::{
     DocumentAsk, DocumentCheckout, DocumentPort, DocumentRead, MemoryWorkspace, ResourceOwners,
     ResourceStore, ResourceType, Written,
@@ -292,7 +292,7 @@ pub fn runner_probe_definition() -> &'static ApplicationDefinition {
     static DEFINITION: std::sync::OnceLock<ApplicationDefinition> = std::sync::OnceLock::new();
     DEFINITION.get_or_init(|| definition(action_probe_factory))
 }
-pub use tilo_ui::headless::fixture_runner_inputs as runner_inputs;
+pub use tilo_ui::application::fixture_runner_inputs as runner_inputs;
 pub fn runner_permissions() -> SharedPermissions {
     SharedPermissions::new(
         PermissionContext::member(

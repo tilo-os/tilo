@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_ui::component_catalogue::TOOLKIT;
-use tilo_ui::component_testing::given;
-use tilo_ui::component_testing::{given_with_views, sample};
-use tilo_ui::headless::Driver;
+use tilo_ui_app::component_catalogue::TOOLKIT;
+use tilo_ui_app::component_testing::given;
+use tilo_ui_app::component_testing::{given_with_views, sample};
+use tilo_ui_app::headless::Driver;
 use tilo_ui_base::component::Registry;
 use tilo_ui_base::component::Value;
 use tilo_ui_base::theme::Theme;
@@ -100,7 +100,7 @@ fn every_described_component_settles_its_layout() {
             }
         };
         let mut host = Driver::for_root(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Mounted(element),
             (900, 600),
             Theme::dark(),

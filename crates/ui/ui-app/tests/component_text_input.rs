@@ -2,12 +2,12 @@
 //! and keyboard platform events through `send_host_event`, text through IME
 //! commits.
 
-use tilo_ui::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
-use tilo_ui::headless::Driver;
-use tilo_ui::launch::LaunchError;
-use tilo_ui::ui_graph::{UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource};
-use tilo_ui::winit::event::{ElementState, Ime, MouseButton, WindowEvent};
-use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
+use tilo_ui_app::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::launch::LaunchError;
+use tilo_ui_app::ui_graph::{UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource};
+use tilo_ui_app::winit::event::{ElementState, Ime, MouseButton, WindowEvent};
+use tilo_ui_app::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 use tilo_ui_base::widget::Widget;
 
 use crate::support::application::{ProbeHarness, definition, editor_permissions, runner_inputs};
@@ -52,7 +52,7 @@ impl Widget for Page {
     }
     fn handle_event(
         &mut self,
-        event: &tilo_ui::winit::event::WindowEvent,
+        event: &tilo_ui_app::winit::event::WindowEvent,
         ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         let Some(&child) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first() else {
@@ -66,19 +66,19 @@ impl Widget for Page {
     }
     fn build_layout(
         &mut self,
-        tree: &mut tilo_ui::taffy::TaffyTree<()>,
+        tree: &mut tilo_ui_app::taffy::TaffyTree<()>,
         theme: &tilo_ui_base::Theme,
-        nodes: &mut std::collections::HashMap<tilo_ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> tilo_ui::taffy::NodeId {
+        nodes: &mut std::collections::HashMap<tilo_ui_app::taffy::NodeId, *mut dyn Widget>,
+    ) -> tilo_ui_app::taffy::NodeId {
         use tilo_ui_base::widget::TaffyTreeExt as _;
         let child = self.0.build_layout(tree, theme, nodes);
         let node = tree.parent_node(
-            tilo_ui::taffy::Style {
-                display: tilo_ui::taffy::Display::Flex,
-                flex_direction: tilo_ui::taffy::FlexDirection::Column,
-                size: tilo_ui::taffy::Size {
-                    width: tilo_ui::taffy::Dimension::percent(1.0),
-                    height: tilo_ui::taffy::Dimension::percent(1.0),
+            tilo_ui_app::taffy::Style {
+                display: tilo_ui_app::taffy::Display::Flex,
+                flex_direction: tilo_ui_app::taffy::FlexDirection::Column,
+                size: tilo_ui_app::taffy::Size {
+                    width: tilo_ui_app::taffy::Dimension::percent(1.0),
+                    height: tilo_ui_app::taffy::Dimension::percent(1.0),
                 },
                 ..Default::default()
             },
@@ -89,16 +89,16 @@ impl Widget for Page {
     }
     fn apply_layout(
         &mut self,
-        tree: &tilo_ui::taffy::TaffyTree<()>,
-        node: tilo_ui::taffy::NodeId,
-        origin: tilo_ui::kurbo::Point,
+        tree: &tilo_ui_app::taffy::TaffyTree<()>,
+        node: tilo_ui_app::taffy::NodeId,
+        origin: tilo_ui_app::kurbo::Point,
     ) {
         let inner = tilo_ui_base::widget::layout_rect(tree, node, origin).origin();
         if let Some(&child) = tree.children(node).unwrap_or_default().first() {
             self.0.apply_layout(tree, child, inner);
         }
     }
-    fn get_rect(&self) -> tilo_ui::kurbo::Rect {
+    fn get_rect(&self) -> tilo_ui_app::kurbo::Rect {
         self.0.get_rect()
     }
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
@@ -168,7 +168,7 @@ fn create(
 }
 
 fn harness(host: &ProbeHarness) -> Driver {
-    static DEFINITION: std::sync::OnceLock<tilo_ui::application::ApplicationDefinition> =
+    static DEFINITION: std::sync::OnceLock<tilo_ui_app::application::ApplicationDefinition> =
         std::sync::OnceLock::new();
     let definition = DEFINITION.get_or_init(|| definition(create));
     let context = host.prepare(definition, 1, &LaunchTarget::New).unwrap();
@@ -180,7 +180,7 @@ fn harness(host: &ProbeHarness) -> Driver {
     frame
 }
 
-fn input_rect(frame: &Driver) -> tilo_ui::kurbo::Rect {
+fn input_rect(frame: &Driver) -> tilo_ui_app::kurbo::Rect {
     *frame
         .targets()
         .get("title-input")
@@ -188,10 +188,10 @@ fn input_rect(frame: &Driver) -> tilo_ui::kurbo::Rect {
 }
 
 fn press(frame: &mut Driver, x: f64, y: f64) {
-    let device_id = tilo_ui::winit::event::DeviceId::dummy();
+    let device_id = tilo_ui_app::winit::event::DeviceId::dummy();
     frame.send_host_event(&WindowEvent::CursorMoved {
         device_id,
-        position: tilo_ui::winit::dpi::PhysicalPosition::new(x, y),
+        position: tilo_ui_app::winit::dpi::PhysicalPosition::new(x, y),
     });
     for state in [ElementState::Pressed, ElementState::Released] {
         frame.send_host_event(&WindowEvent::MouseInput {
@@ -237,10 +237,10 @@ fn tab_reaches_a_components_text_input() {
     );
 }
 
-const CREATE_LOCUS: tilo_ui::application::ComponentFactory =
+const CREATE_LOCUS: tilo_ui_app::application::ComponentFactory =
     |context, target, _| locus_component(context, &target, 1);
 
-const CREATE_AMBIGUOUS_LOCUS: tilo_ui::application::ComponentFactory =
+const CREATE_AMBIGUOUS_LOCUS: tilo_ui_app::application::ComponentFactory =
     |context, target, _| locus_component(context, &target, 2);
 
 fn locus_component(
@@ -251,10 +251,10 @@ fn locus_component(
     locus_component_with_scroll(context, target, count, None)
 }
 
-const CREATE_PARTIAL_SCROLL_LOCUS: tilo_ui::application::ComponentFactory =
+const CREATE_PARTIAL_SCROLL_LOCUS: tilo_ui_app::application::ComponentFactory =
     |context, target, _| locus_component_with_scroll(context, &target, 1, Some(80.0));
 
-const CREATE_HIDDEN_SCROLL_LOCUS: tilo_ui::application::ComponentFactory =
+const CREATE_HIDDEN_SCROLL_LOCUS: tilo_ui_app::application::ComponentFactory =
     |context, target, _| locus_component_with_scroll(context, &target, 1, Some(140.0));
 
 fn locus_component_with_scroll(
@@ -263,7 +263,7 @@ fn locus_component_with_scroll(
     count: usize,
     scroll_gap: Option<f32>,
 ) -> Result<AppComponent, LaunchError> {
-    use tilo_ui::widget::{Button, Column, resource_actions};
+    use tilo_ui_app::widget::{Button, Column, resource_actions};
     if matches!(target, LaunchTarget::New) {
         context
             .initialize_new_resource(|_| Ok(()))
@@ -286,7 +286,7 @@ fn locus_component_with_scroll(
     }
     let scroll_root: tilo_ui_base::widget::Element = if scroll_gap.is_some() {
         Box::new(
-            tilo_ui::widget::Scrollable::new_vertical()
+            tilo_ui_app::widget::Scrollable::new_vertical()
                 .with_height(100.0)
                 .with_scrollbar(false)
                 .with_child(Box::new(column)),
@@ -308,17 +308,17 @@ fn locus_component_with_scroll(
 fn component_publication_locus_respects_scrollable_clipping() {
     for (factory, visible_edge, outer_clip) in [
         (
-            CREATE_PARTIAL_SCROLL_LOCUS as tilo_ui::application::ComponentFactory,
+            CREATE_PARTIAL_SCROLL_LOCUS as tilo_ui_app::application::ComponentFactory,
             Some(100.0),
             None,
         ),
         (
-            CREATE_PARTIAL_SCROLL_LOCUS as tilo_ui::application::ComponentFactory,
+            CREATE_PARTIAL_SCROLL_LOCUS as tilo_ui_app::application::ComponentFactory,
             Some(90.0),
             Some(90.0),
         ),
         (
-            CREATE_HIDDEN_SCROLL_LOCUS as tilo_ui::application::ComponentFactory,
+            CREATE_HIDDEN_SCROLL_LOCUS as tilo_ui_app::application::ComponentFactory,
             None,
             None,
         ),
@@ -334,12 +334,12 @@ fn component_publication_locus_respects_scrollable_clipping() {
         let record = component.record().id.as_str().to_owned();
         let mut frame = if let Some(height) = outer_clip {
             Driver::new(
-                tilo_ui::State::new(),
+                tilo_ui_app::State::new(),
                 Box::new(
-                    tilo_ui::widget::Scrollable::new_vertical()
+                    tilo_ui_app::widget::Scrollable::new_vertical()
                         .with_height(height)
                         .with_scrollbar(false)
-                        .with_child(Box::new(tilo_ui::widget::TileHost::from_component(
+                        .with_child(Box::new(tilo_ui_app::widget::TileHost::from_component(
                             component,
                         ))),
                 ),
@@ -451,7 +451,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
     }
     let invoked = frame
         .invoke_bound_action(
-            &tilo_ui::bound_dispatch::BoundActionAddress {
+            &tilo_ui_app::bound_dispatch::BoundActionAddress {
                 instance_id: 12,
                 address: address.clone(),
             },
@@ -468,9 +468,9 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
         Some(frame.targets()["locus-button-0"])
     );
     frame
-        .open_search(&tilo_ui::widget::search_request::SearchRequest {
+        .open_search(&tilo_ui_app::widget::search_request::SearchRequest {
             query: Some(String::new()),
-            ..tilo_ui::widget::search_request::SearchRequest::this_app()
+            ..tilo_ui_app::widget::search_request::SearchRequest::this_app()
         })
         .unwrap();
     assert!(
@@ -489,7 +489,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
 #[test]
 fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() {
     for factory in [
-        CREATE_LOCUS as tilo_ui::application::ComponentFactory,
+        CREATE_LOCUS as tilo_ui_app::application::ComponentFactory,
         CREATE_AMBIGUOUS_LOCUS,
     ] {
         let host = ProbeHarness::new();
@@ -513,7 +513,7 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
             rect.is_some(),
             std::ptr::fn_addr_eq(
                 factory,
-                CREATE_LOCUS as tilo_ui::application::ComponentFactory
+                CREATE_LOCUS as tilo_ui_app::application::ComponentFactory
             )
         );
         frame.close_components();
@@ -556,7 +556,7 @@ impl AppWidget for WithdrawableResource {
 
 impl Widget for WithdrawableResource {
     tilo_ui_base::provides!(
-        dyn tilo_ui::widget::resources::PublishesResources,
+        dyn tilo_ui_app::widget::resources::PublishesResources,
         dyn tilo_ui_base::host_operation::ResourceOperations
     );
     fn name(&self) -> &'static str {
@@ -564,11 +564,11 @@ impl Widget for WithdrawableResource {
     }
     fn build_layout(
         &mut self,
-        tree: &mut tilo_ui::taffy::TaffyTree<()>,
+        tree: &mut tilo_ui_app::taffy::TaffyTree<()>,
         _: &tilo_ui_base::Theme,
-        nodes: &mut std::collections::HashMap<tilo_ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> tilo_ui::taffy::NodeId {
-        let node = tree.new_leaf(tilo_ui::taffy::Style::default()).unwrap();
+        nodes: &mut std::collections::HashMap<tilo_ui_app::taffy::NodeId, *mut dyn Widget>,
+    ) -> tilo_ui_app::taffy::NodeId {
+        let node = tree.new_leaf(tilo_ui_app::taffy::Style::default()).unwrap();
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -576,7 +576,7 @@ impl Widget for WithdrawableResource {
 
 impl tilo_ui_base::host_operation::ResourceOperations for WithdrawableResource {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[tilo_ui::widget::resource_actions::OPERATION_TYPE]
+        &[tilo_ui_app::widget::resource_actions::OPERATION_TYPE]
     }
 
     fn start_operation(
@@ -594,7 +594,7 @@ impl tilo_ui_base::host_operation::ResourceOperations for WithdrawableResource {
     }
 }
 
-impl tilo_ui::widget::resources::PublishesResources for WithdrawableResource {
+impl tilo_ui_app::widget::resources::PublishesResources for WithdrawableResource {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if self.published.load(std::sync::atomic::Ordering::SeqCst) {
             vec![self.resource.clone()]
@@ -610,7 +610,7 @@ fn component_publication_invocation_cannot_cross_same_instance_owners() {
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
-    use tilo_ui::widget::{Column, TileHost, resource_actions};
+    use tilo_ui_app::widget::{Column, TileHost, resource_actions};
     let host = ProbeHarness::new();
     let definition = definition(CREATE_LOCUS);
     let mut column = Column::new();
@@ -635,14 +635,14 @@ fn component_publication_invocation_cannot_cross_same_instance_owners() {
         column = column.push(Box::new(TileHost::from_component(component)));
         owners.push((published, calls));
     }
-    let mut frame = Driver::new(tilo_ui::State::new(), Box::new(column), (800, 600));
+    let mut frame = Driver::new(tilo_ui_app::State::new(), Box::new(column), (800, 600));
     let addresses =
         tilo_actions::api::survey(&frame.published_bound_resources_of(Some(12)).unwrap());
     assert_eq!(addresses.len(), 2);
     assert_ne!(addresses[0].address.resource, addresses[1].address.resource);
     let invoke = |frame: &mut Driver, address: &tilo_actions::ActionAddress| {
         frame.invoke_bound_action(
-            &tilo_ui::bound_dispatch::BoundActionAddress {
+            &tilo_ui_app::bound_dispatch::BoundActionAddress {
                 instance_id: 12,
                 address: address.clone(),
             },

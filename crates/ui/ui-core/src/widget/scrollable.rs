@@ -2321,6 +2321,10 @@ pub mod test_support {
     }
     /// A field that holds the keyboard focus and handles no key: a note's
     /// paragraph has no page of its own to move through.
+    #[tilo_ui_base::component::not_a_component(
+        framework,
+        "a test's field that holds the keyboard focus"
+    )]
     pub struct FocusedField {
         pub rect: Rect,
     }
@@ -2355,6 +2359,10 @@ pub mod test_support {
         }
     }
     /// A 100 px block that asks a scroll view around it to keep it in view, by `name`.
+    #[tilo_ui_base::component::not_a_component(
+        framework,
+        "a test's block that asks to be kept in view"
+    )]
     pub struct Kept {
         pub rect: Rect,
         pub name: &'static str,

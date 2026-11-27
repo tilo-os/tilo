@@ -28,7 +28,7 @@ pub fn has_surfaces(root: &dyn Widget) -> bool {
     crate::history_mode::capability::visit_framework_history(root, &mut |_, _| found = true);
     found
 }
-pub(crate) fn owns_node(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bool {
+pub fn owns_node(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bool {
     let mut owned = false;
     crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
         owned |= history.owns_node(node, tree)
@@ -50,7 +50,7 @@ pub fn allows_focus(root: &dyn Widget, node: NodeId, tree: &TaffyTree<()>) -> bo
     });
     allowed
 }
-pub(crate) fn observe_event(
+pub fn observe_event(
     root: &mut dyn Widget,
     event: &WindowEvent,
     scale: f64,
@@ -85,15 +85,15 @@ pub(crate) fn observe_event(
 
 /// What one walk for the History surfaces in a tree found.
 #[derive(Default)]
-pub(crate) struct SurfacesWalk {
+pub struct SurfacesWalk {
     /// A surface needs a refresh ([`needs_refresh`]).
-    pub(crate) needed: bool,
+    pub needed: bool,
     /// The tree holds any History surface.
-    pub(crate) found: bool,
+    pub found: bool,
 }
 
 /// [`needs_refresh`], and what else the walk found ([`SurfacesWalk`]).
-pub(crate) fn surfaces_need_refresh(
+pub fn surfaces_need_refresh(
     root: &dyn Widget,
     doc: &automerge::AutoCommit,
     fallback_width: f64,
@@ -113,26 +113,26 @@ pub(crate) fn surfaces_need_refresh(
     });
     walk
 }
-pub(crate) fn capture_entries(root: &mut dyn Widget, doc: &automerge::AutoCommit) {
+pub fn capture_entries(root: &mut dyn Widget, doc: &automerge::AutoCommit) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.captures_input() {
             history.capture_embedded_pending_controls(live, doc);
         }
     });
 }
-#[cfg(test)]
-pub(crate) fn discard_active_output(root: &mut dyn Widget) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn discard_active_output(root: &mut dyn Widget) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.captures_input() {
             history.discard_pending_output(live);
         }
     });
 }
-pub(crate) struct PendingCommand {
-    pub(crate) surface: uuid::Uuid,
-    pub(crate) command: super::pending_controls::ContinuationCommand,
+pub struct PendingCommand {
+    pub surface: uuid::Uuid,
+    pub command: super::pending_controls::ContinuationCommand,
 }
-pub(crate) fn drain_pending_commands(root: &mut dyn Widget) -> Vec<PendingCommand> {
+pub fn drain_pending_commands(root: &mut dyn Widget) -> Vec<PendingCommand> {
     let mut commands = Vec::new();
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         let surface = history.pending_control_surface_lifetime();
@@ -145,7 +145,7 @@ pub(crate) fn drain_pending_commands(root: &mut dyn Widget) -> Vec<PendingComman
     });
     commands
 }
-pub(crate) fn prepare_pending_command(
+pub fn prepare_pending_command(
     root: &mut dyn Widget,
     surface: uuid::Uuid,
     token: &super::pending_controls::ContinuationToken,
@@ -158,7 +158,7 @@ pub(crate) fn prepare_pending_command(
     });
     prepared
 }
-pub(crate) fn cancel_pending_command(
+pub fn cancel_pending_command(
     root: &mut dyn Widget,
     surface: uuid::Uuid,
     token: &super::pending_controls::ContinuationToken,
@@ -169,11 +169,11 @@ pub(crate) fn cancel_pending_command(
         }
     });
 }
-pub(crate) enum PendingCommandOutcome {
+pub enum PendingCommandOutcome {
     Consumed,
     Refused(String),
 }
-pub(crate) fn finish_pending_command(
+pub fn finish_pending_command(
     root: &mut dyn Widget,
     surface: uuid::Uuid,
     id: super::pending_controls::PendingControlId,
@@ -194,7 +194,7 @@ pub(crate) fn finish_pending_command(
 /// Hand `status` to every History surface under `root` that can take it where it already shows
 /// ([`super::host::HistoryHost::set_sync_status_in_place`]), so a status-only change repaints that text
 /// instead of rebuilding.
-pub(crate) fn set_sync_status_in_place(
+pub fn set_sync_status_in_place(
     root: &mut dyn Widget,
     status: Option<&crate::widget::WindowStatus>,
 ) {
@@ -205,7 +205,7 @@ pub(crate) fn set_sync_status_in_place(
     });
 }
 /// Called only after the runner has discarded all raw widget maps.
-pub(crate) fn refresh(
+pub fn refresh(
     root: &mut dyn Widget,
     doc: &automerge::AutoCommit,
     fallback_width: f64,
@@ -242,7 +242,7 @@ pub(crate) fn refresh(
 }
 /// Run a History API control (the History control in an app's header row) on the History of the tile
 /// that hosts the app `owner` names, as the window's own History runs it for a window's app.
-pub(crate) fn invoke_api(
+pub fn invoke_api(
     root: &mut dyn Widget,
     owner: &HistoryOwner,
     intent: &tilo_actions::ControlInvocation,
@@ -273,7 +273,7 @@ pub(crate) fn run_api_control(
         .invoke_api(&encoded)
         .map_err(tilo_actions::ApiError::Failed)
 }
-pub(crate) fn has_review(root: &dyn Widget) -> bool {
+pub fn has_review(root: &dyn Widget) -> bool {
     let mut pending = false;
     crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
         pending |= history.has_review_request()
@@ -281,7 +281,7 @@ pub(crate) fn has_review(root: &dyn Widget) -> bool {
     pending
 }
 /// Settled matching owners are checked again immediately at the shared API.
-pub(crate) fn service_reviews(
+pub fn service_reviews(
     root: &mut dyn Widget,
     state: &mut crate::State,
     authority: &tilo_ui_base::permissions::PermissionContext,
@@ -297,7 +297,12 @@ pub(crate) fn service_reviews(
     restored
 }
 /// The maps are borrowed only for this call, before any refresh/rebuild.
-pub(crate) unsafe fn move_focus(
+///
+/// # Safety
+///
+/// Every widget pointer in `nodes` points at a live widget of the window's
+/// current tree that nothing else borrows for this call.
+pub unsafe fn move_focus(
     root: &mut dyn Widget,
     target: Option<NodeId>,
     current: Option<NodeId>,
@@ -359,7 +364,12 @@ pub(crate) unsafe fn move_focus(
     suspended
 }
 
-pub(crate) unsafe fn restore_focus(
+///
+/// # Safety
+///
+/// Every widget pointer in `nodes` points at a live widget of the window's
+/// current tree that nothing else borrows for this call.
+pub unsafe fn restore_focus(
     root: &mut dyn Widget,
     nodes: &HashMap<NodeId, *mut dyn Widget>,
     bindings: &BoundNodeMap,
@@ -381,7 +391,7 @@ pub(crate) unsafe fn restore_focus(
 /// focus must not end its ownership halfway through the same return frame, or release any other surface's
 /// independent lease. A surface whose return has settled then opens the change a person chose in it;
 /// whether any did, so the runner syncs what that asked for.
-pub(crate) fn finish_returns(root: &mut dyn Widget) -> bool {
+pub fn finish_returns(root: &mut dyn Widget) -> bool {
     let mut opened = false;
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.has_settled_control_return() {

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};
-use tilo_ui::{WakeEvent, WakeScope};
+use tilo_ui_app::{WakeEvent, WakeScope};
 use tilo_ui_base::{LatestRequest, LatestTask, LocalState};
 
 type Message = (u64, WakeEvent);

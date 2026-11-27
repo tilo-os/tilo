@@ -11,9 +11,9 @@
     reason = "frame fixtures: failures are the assertion"
 )]
 
+use tilo_ui_app::app::{App, AppSurface, SurfaceDamage};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
-use ui::app::{App, AppSurface, SurfaceDamage};
 use ui::widget::Scrollable;
 use vello::Scene;
 use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};

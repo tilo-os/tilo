@@ -5,7 +5,7 @@
 )]
 
 //! Headless performance-scenario runner — the CLI face of
-//! [`tilo_ui::profiling`].
+//! [`tilo_ui_app::profiling`].
 //! Run:
 //! ```text
 //! cargo run -p ui-examples --release --example ui-perf -- perf_scenario
@@ -15,10 +15,12 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use tilo_ui::headless::Driver;
-use tilo_ui::profiling::{FRAME_BUDGET_US, PerfReport, PerfScenario, PerfStep, run_scenario_on};
 use tilo_ui::state::State;
 use tilo_ui::{widget::Column, widget::Scrollable, widget::Text};
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::profiling::{
+    FRAME_BUDGET_US, PerfReport, PerfScenario, PerfStep, run_scenario_on,
+};
 use tilo_ui_base::widget::Widget;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, WindowEvent};
@@ -136,7 +138,7 @@ pub fn run(args: &[String]) {
             "method": "persisted_scroll_offset_direction_per_step",
             "verified_steps": count,
             "rows": 200,
-            "viewport": tilo_ui::headless::DEFAULT_VIEWPORT,
+            "viewport": tilo_ui_app::headless::DEFAULT_VIEWPORT,
             "display_validated": false,
         });
         println!(
@@ -192,7 +194,7 @@ mod tests {
             tilo_ui_base::i18n::I18nManager::init("en-US");
             let offset = Rc::new(Cell::new((0.0, 256.0)));
             let (state, root) = list_app(200, Rc::clone(&offset));
-            let mut driver = Driver::new(state, root, tilo_ui::headless::DEFAULT_VIEWPORT);
+            let mut driver = Driver::new(state, root, tilo_ui_app::headless::DEFAULT_VIEWPORT);
             driver.send(&WindowEvent::CursorMoved {
                 device_id: DeviceId::dummy(),
                 position: PhysicalPosition::new(-100.0, -100.0),

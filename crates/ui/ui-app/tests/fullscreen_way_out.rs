@@ -3,9 +3,9 @@
 //! the widget's own test says the control is there and reports a press, and this says it is
 //! painted, and painted nothing while the view is not presented.
 
-use tilo_ui::State;
-use tilo_ui::headless::Driver;
-use tilo_ui::{widget::Fullscreen, widget::FullscreenProps};
+use tilo_ui_app::State;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::{widget::Fullscreen, widget::FullscreenProps};
 use tilo_ui_base::component::Described;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::Spacer, widget::Widget};

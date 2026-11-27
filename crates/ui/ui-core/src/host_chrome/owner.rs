@@ -4,7 +4,7 @@ use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 
 /// Who presents the entry points to History and Search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HostChrome {
+pub enum HostChrome {
     /// The Tilo shell owns History (Super+H) and Search; the app shows none.
     TiloShell,
     /// The host's own chrome: the macOS menu bar and title bar, the Windows menu bar and Jump List, or
@@ -31,14 +31,14 @@ impl HostChrome {
         }
     }
 
-    pub(crate) fn current(conventions: PlatformConventions) -> Self {
+    pub fn current(conventions: PlatformConventions) -> Self {
         Self::detect(
             conventions,
             crate::process::environment().desktop.as_deref(),
         )
     }
 
-    pub(crate) fn draws_in_window(self) -> bool {
+    pub fn draws_in_window(self) -> bool {
         self == Self::InWindow
     }
 }

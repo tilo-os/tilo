@@ -6,15 +6,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::virtual_list::test_support::*;
-use tilo_ui::widget::internals::virtual_list::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::virtual_list::test_support::*;
+use tilo_ui_app::widget::internals::virtual_list::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::Action;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
@@ -36,8 +36,8 @@ use winit::keyboard::*;
 #[test]
 fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
     use accesskit::Role as AkRole;
-    use tilo_ui::widget::ListRow;
-    use tilo_ui::widget::conversation::Jump;
+    use tilo_ui_app::widget::ListRow;
+    use tilo_ui_app::widget::conversation::Jump;
     use tilo_ui_base::a11y::Action;
 
     fn transcript(unread: &str) -> VirtualList<VecListModel<u32, u32>> {
@@ -56,7 +56,7 @@ fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
 
     // A screen reader reads the way back where the pill stands, and takes it.
     let mut reading = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         transcript("250"),
         (320, 568),
         Theme::dark(),
@@ -95,7 +95,7 @@ fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
 
     // The keyboard reaches it the same way: focus, then Space.
     let mut typing = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         transcript("250"),
         (320, 568),
         Theme::dark(),
@@ -115,7 +115,7 @@ fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
 
     // The node stands exactly where the pointer's press takes the way back.
     let mut pointing = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         transcript("250"),
         (320, 568),
         Theme::dark(),
@@ -149,7 +149,7 @@ fn a_closed_rows_checkbox_is_one_control_under_one_row() {
         ) as Element
     })
     .with_viewport_height(200.0);
-    let mut harness = Driver::for_root(tilo_ui::State::new(), list, (300, 400), Theme::dark());
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), list, (300, 400), Theme::dark());
 
     let nodes = harness.a11y_nodes();
     let (row_id, row) = named(&nodes, AkRole::ListItem, "Buy oat milk");
@@ -176,7 +176,7 @@ fn a_closed_rows_checkbox_is_one_control_under_one_row() {
 
 #[test]
 fn a_closed_rows_own_controls_are_where_the_row_is() {
-    use tilo_ui::widget::{Checkbox, Column, Text};
+    use tilo_ui_app::widget::{Checkbox, Column, Text};
 
     let done = tilo_ui_base::LocalState::new(false);
     let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
@@ -191,7 +191,7 @@ fn a_closed_rows_own_controls_are_where_the_row_is() {
         ) as Element
     })
     .with_viewport_height(200.0);
-    let mut harness = Driver::for_root(tilo_ui::State::new(), list, (300, 400), Theme::dark());
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), list, (300, 400), Theme::dark());
 
     let nodes = harness.a11y_nodes();
     let (row_id, row) = named(&nodes, AkRole::ListItem, "Buy oat milk");
@@ -218,7 +218,7 @@ fn a_closed_rows_own_controls_are_where_the_row_is() {
 #[test]
 fn a_wrapped_row_and_the_line_under_it_are_each_read_once() {
     use accesskit::Role as AkRole;
-    use tilo_ui::widget::{Button, Column, ListRow, Text};
+    use tilo_ui_app::widget::{Button, Column, ListRow, Text};
 
     for with_control in [true, false] {
         let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
@@ -236,7 +236,7 @@ fn a_wrapped_row_and_the_line_under_it_are_each_read_once() {
             ) as Element
         })
         .with_viewport_height(200.0);
-        let harness = Driver::for_root(tilo_ui::State::new(), list, (300, 400), Theme::dark());
+        let harness = Driver::for_root(tilo_ui_app::State::new(), list, (300, 400), Theme::dark());
 
         let nodes = harness.a11y_nodes();
         let (row_id, _) = named(&nodes, AkRole::ListItem, "Grace");
@@ -289,7 +289,7 @@ fn a_wrapped_row_and_the_line_under_it_are_each_read_once() {
 #[test]
 fn a_rows_part_below_is_read_once_within_it() {
     use accesskit::Role as AkRole;
-    use tilo_ui::widget::{Button, ListRow, Text};
+    use tilo_ui_app::widget::{Button, ListRow, Text};
 
     for with_control in [true, false] {
         let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
@@ -304,7 +304,7 @@ fn a_rows_part_below_is_read_once_within_it() {
             }) as Element
         })
         .with_viewport_height(200.0);
-        let harness = Driver::for_root(tilo_ui::State::new(), list, (300, 400), Theme::dark());
+        let harness = Driver::for_root(tilo_ui_app::State::new(), list, (300, 400), Theme::dark());
 
         let nodes = harness.a11y_nodes();
         let (row_id, _) = named(&nodes, AkRole::ListItem, "Grace");

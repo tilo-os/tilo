@@ -122,7 +122,7 @@ def audit(root: Path = ROOT) -> list[str]:
                 "use ui::launch::run or App::run so it reaches AT-SPI"
             )
 
-    cargo = (root / "crates/ui/ui-core/Cargo.toml").read_text(encoding="utf-8")
+    cargo = (root / "crates/ui/ui-app/Cargo.toml").read_text(encoding="utf-8")
     adapter = re.search(
         # Upstream 0.34.0, or the vendored fork of it built on tilo-winit.
         r'^accesskit_winit\s*=\s*(?:"0\.34\.0"|\{\s*version\s*=\s*"0\.34\.0"[^}\n]*\}'
@@ -132,7 +132,7 @@ def audit(root: Path = ROOT) -> list[str]:
         re.MULTILINE,
     )
     if adapter is None:
-        errors.append("crates/ui/ui-core/Cargo.toml: AccessKit winit adapter/version is not the reviewed AT-SPI provider")
+        errors.append("crates/ui/ui-app/Cargo.toml: AccessKit winit adapter/version is not the reviewed AT-SPI provider")
     elif re.search(r"\boptional\s*=\s*true\b", adapter.group(0)):
         # The adapter may sit behind the native-runner feature, but every
         # default build of `ui` must still carry it.
@@ -141,26 +141,26 @@ def audit(root: Path = ROOT) -> list[str]:
             "dep:accesskit_winit" in features.get(feature, [])
             for feature in features.get("default", [])
         ):
-            errors.append("crates/ui/ui-core/Cargo.toml: AccessKit winit adapter is not enabled by default")
+            errors.append("crates/ui/ui-app/Cargo.toml: AccessKit winit adapter is not enabled by default")
 
     app_paths = [
-        root / "crates/ui/ui-core/src/app.rs",
-        root / "crates/ui/ui-core/src/app/host.rs",
-        root / "crates/ui/ui-core/src/app/native_runner.rs",
-        root / "crates/ui/ui-core/src/app/part_bar.rs",
+        root / "crates/ui/ui-app/src/app.rs",
+        root / "crates/ui/ui-app/src/app/host.rs",
+        root / "crates/ui/ui-app/src/app/native_runner.rs",
+        root / "crates/ui/ui-app/src/app/part_bar.rs",
     ]
     app = "\n".join(
         path.read_text(encoding="utf-8") for path in app_paths if path.is_file()
     )
     errors.extend(
-        f"crates/ui/ui-core/src/app.rs: {error}" for error in adapter_registration_errors(app)
+        f"crates/ui/ui-app/src/app.rs: {error}" for error in adapter_registration_errors(app)
     )
     for needle, purpose in (
         ("self.app.dispatch_a11y_action(req.target_node, &action)", "AT action routing"),
         ("self.a11y_adapter = None;", "provider teardown before window teardown"),
     ):
         if needle not in app:
-            errors.append(f"crates/ui/ui-core/src/app.rs: missing shared AT-SPI {purpose}")
+            errors.append(f"crates/ui/ui-app/src/app.rs: missing shared AT-SPI {purpose}")
 
     # The native conversion preserves the Linux tree and applies the Windows
     # protected-value boundary. Require its returned shared tree to reach the
@@ -171,25 +171,25 @@ def audit(root: Path = ROOT) -> list[str]:
         r"app_ref\.build_a11y_tree_update\(scale\),?\s*\)\s*\}\)"
     )
     if not re.search(tree_update, app) and not window_tree_reaches_adapter(app):
-        errors.append("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates")
+        errors.append("crates/ui/ui-app/src/app.rs: missing shared AT-SPI tree updates")
 
     # Linux: one publisher, the session's. A window sends its tree over the
     # shell-ui protocol it already speaks for its frames and controls, and the
     # session exports it; no app process may hold a bus again.
     if re.search(r"accesskit_unix", adapter.group(0)):
         errors.append(
-            "crates/ui/ui-core/Cargo.toml: the toolkit enables accesskit_unix, "
+            "crates/ui/ui-app/Cargo.toml: the toolkit enables accesskit_unix, "
             "which gives every app process its own AT-SPI publisher; the session is the one exporter"
         )
     if not re.search(
         r'^accesskit\s*=\s*\{[^}]*"serde"', cargo, re.MULTILINE
     ):
         errors.append(
-            "crates/ui/ui-core/Cargo.toml: accesskit lacks the serde feature, "
+            "crates/ui/ui-app/Cargo.toml: accesskit lacks the serde feature, "
             "so a window's tree cannot travel to the session"
         )
     window_targets = (
-        root / "crates/ui/ui-core/src/app/window_targets.rs"
+        root / "crates/ui/ui-app/src/app/window_targets.rs"
     ).read_text(encoding="utf-8")
     send_tree = function_body(window_targets, "send_accessibility_tree") or ""
     if not (
@@ -197,21 +197,21 @@ def audit(root: Path = ROOT) -> list[str]:
         and "AccessibilityTree" in send_tree
     ):
         errors.append(
-            "crates/ui/ui-core/src/app/window_targets.rs: the window does not send "
+            "crates/ui/ui-app/src/app/window_targets.rs: the window does not send "
             "its accessibility tree to the session over its shell-ui connection"
         )
-    floating = (root / "crates/ui/ui-core/src/app/floating.rs").read_text(
+    floating = (root / "crates/ui/ui-app/src/app/floating.rs").read_text(
         encoding="utf-8"
     )
     if not re.search(r"self\.send_accessibility_tree\(client, instance\)", floating):
         errors.append(
-            "crates/ui/ui-core/src/app/floating.rs: the window never sends its "
+            "crates/ui/ui-app/src/app/floating.rs: the window never sends its "
             "accessibility tree on its shell-ui connection"
         )
     request = function_body(floating, "perform_accessibility_request") or ""
     if "dispatch_a11y_action" not in request:
         errors.append(
-            "crates/ui/ui-core/src/app/floating.rs: an action a client of the "
+            "crates/ui/ui-app/src/app/floating.rs: an action a client of the "
             "export asks does not reach the window's assistive action path"
         )
     wire = (root / "crates/ui/ui-core/src/floating_surface/wire.rs").read_text(

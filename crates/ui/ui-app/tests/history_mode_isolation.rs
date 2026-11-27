@@ -5,9 +5,10 @@ use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
-use tilo_ui::history_mode::testing::*;
-use tilo_ui::history_mode::*;
-use tilo_ui::{State, headless::Driver, widget::Text};
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::history_mode::testing::*;
+use tilo_ui_app::history_mode::*;
+use tilo_ui_app::{State, widget::Text};
 use tilo_ui_base::widget::ActionEmitter;
 
 #[test]
@@ -66,7 +67,7 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
     assert_eq!(retained[0].invocation.address.action, "export");
     assert_eq!(
         retained[0].status,
-        tilo_ui::history_mode::pending_controls::PendingControlStatus::Suspended
+        tilo_ui_app::history_mode::pending_controls::PendingControlStatus::Suspended
     );
     driver
         .perform_named("activity_timeline", &tilo_ui_base::a11y::Action::Focus)
@@ -98,7 +99,7 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
     assert_eq!(retained.len(), 1);
     assert_eq!(
         retained[0].status,
-        tilo_ui::history_mode::pending_controls::PendingControlStatus::Ready
+        tilo_ui_app::history_mode::pending_controls::PendingControlStatus::Ready
     );
     assert_eq!(
         starts.get(),
@@ -119,7 +120,7 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
         .expect("fresh continuation after re-entry");
     assert_eq!(
         driver.continue_pending_history_control(&token),
-        Some(tilo_ui::history_mode::pending_controls::PendingControlStatus::Consumed)
+        Some(tilo_ui_app::history_mode::pending_controls::PendingControlStatus::Consumed)
     );
     assert!(
         driver.pending_history_controls().is_empty(),
@@ -190,7 +191,7 @@ fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_argum
     assert_eq!(starts.get(), 0, "Back to live remains inert");
     assert_eq!(
         driver.pending_history_controls()[0].status,
-        tilo_ui::history_mode::pending_controls::PendingControlStatus::Ready
+        tilo_ui_app::history_mode::pending_controls::PendingControlStatus::Ready
     );
     let held = &driver.pending_history_controls()[0].invocation;
     assert_eq!(
@@ -311,7 +312,7 @@ fn retained_control_refuses_changed_target_handler_missing_or_ambiguous_identity
         assert!(
             matches!(
                 status,
-                tilo_ui::history_mode::pending_controls::PendingControlStatus::Refused(_)
+                tilo_ui_app::history_mode::pending_controls::PendingControlStatus::Refused(_)
             ),
             "changed or unsupported exact identity must remain visibly refused: {status:?}"
         );
@@ -367,4 +368,15 @@ fn actual_cancel_callback_removes_retained_item_and_future_live_control_runs() {
         1,
         "ordinary future live control keeps its semantics"
     );
+}
+
+fn retained_identity_fixture(
+    identity: Rc<MutableContinuationIdentity>,
+) -> (Driver, Rc<Cell<usize>>, Rc<RefCell<ActionEmitter<()>>>) {
+    let (root, starts, emitter) = retained_identity_root(identity);
+    (
+        Driver::from_managed_root(State::new(), root, (900, 650)).unwrap(),
+        starts,
+        emitter,
+    )
 }

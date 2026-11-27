@@ -8,12 +8,12 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tilo_ui::time::Duration;
+use tilo_ui_app::time::Duration;
 
 use serde_json::Value;
-use tilo_ui::app::driver::Framed;
-use tilo_ui::state::State;
-use tilo_ui::widget::WebView;
+use tilo_ui_app::app::driver::Framed;
+use tilo_ui_app::state::State;
+use tilo_ui_app::widget::WebView;
 use tilo_ui_base::Widget;
 use tilo_ui_base::theme::Theme;
 use tilo_webview::chromium::ChromiumEngine;
@@ -48,7 +48,7 @@ fn evaluate(engine: &SharedEngine, expression: &str) -> Value {
     engine.send(WebViewCommand::SetUserScripts(Arc::new(vec![format!(
         "document.title={prefix:?}+JSON.stringify(({expression}));"
     )])));
-    let deadline = tilo_ui::time::now()
+    let deadline = tilo_ui_app::time::now()
         .checked_add(Duration::from_secs(10))
         .expect("bounded fixture deadline");
     loop {
@@ -65,7 +65,7 @@ fn evaluate(engine: &SharedEngine, expression: &str) -> Value {
             }
         }
         assert!(
-            tilo_ui::time::now() < deadline,
+            tilo_ui_app::time::now() < deadline,
             "actual page did not answer"
         );
         pause();
@@ -73,7 +73,7 @@ fn evaluate(engine: &SharedEngine, expression: &str) -> Value {
 }
 
 fn wait_ready<W: Widget + 'static>(view: &mut Framed<W>) {
-    let deadline = tilo_ui::time::now()
+    let deadline = tilo_ui_app::time::now()
         .checked_add(Duration::from_secs(10))
         .expect("bounded fixture deadline");
     loop {
@@ -89,7 +89,7 @@ fn wait_ready<W: Widget + 'static>(view: &mut Framed<W>) {
             return;
         }
         assert!(
-            tilo_ui::time::now() < deadline,
+            tilo_ui_app::time::now() < deadline,
             "mounted DOM field did not acquire a guarded lease"
         );
         pause();
@@ -114,7 +114,7 @@ fn selected<W: Widget + 'static>(view: &mut Framed<W>, engine: &SharedEngine, ta
 }
 
 fn finish<W: Widget + 'static>(view: &mut Framed<W>, receipt: &Receipt) -> Result<(), Failure> {
-    let deadline = tilo_ui::time::now()
+    let deadline = tilo_ui_app::time::now()
         .checked_add(Duration::from_secs(12))
         .expect("bounded fixture deadline");
     loop {
@@ -128,7 +128,7 @@ fn finish<W: Widget + 'static>(view: &mut Framed<W>, receipt: &Receipt) -> Resul
                 }
             });
         }
-        if tilo_ui::time::now() >= deadline {
+        if tilo_ui_app::time::now() >= deadline {
             return Err(Failure::Unknown);
         }
         pause();
@@ -137,7 +137,7 @@ fn finish<W: Widget + 'static>(view: &mut Framed<W>, receipt: &Receipt) -> Resul
 
 fn load(engine: &SharedEngine, url: &str) {
     engine.send(WebViewCommand::Navigate(url.into()));
-    let deadline = tilo_ui::time::now()
+    let deadline = tilo_ui_app::time::now()
         .checked_add(Duration::from_secs(10))
         .expect("bounded fixture deadline");
     loop {
@@ -150,7 +150,7 @@ fn load(engine: &SharedEngine, url: &str) {
             return;
         }
         assert!(
-            tilo_ui::time::now() < deadline,
+            tilo_ui_app::time::now() < deadline,
             "synthetic fixture did not load"
         );
         pause();
@@ -174,7 +174,7 @@ fn native_rich_baseline<W: Widget + 'static>(
             });
         }
     }
-    let deadline = tilo_ui::time::now()
+    let deadline = tilo_ui_app::time::now()
         .checked_add(Duration::from_secs(10))
         .expect("bounded fixture deadline");
     let snapshot = loop {
@@ -183,7 +183,7 @@ fn native_rich_baseline<W: Widget + 'static>(
             break snapshot;
         }
         assert!(
-            tilo_ui::time::now() < deadline,
+            tilo_ui_app::time::now() < deadline,
             "native keys were not delivered: {snapshot}"
         );
         pause();
@@ -371,10 +371,10 @@ fn qualify_queued_finals<W: Widget + 'static>(
 ) {
     load(engine, url);
     selected(view, engine, "first");
-    let deadline = tilo_ui::time::now()
+    let deadline = tilo_ui_app::time::now()
         .checked_add(Duration::from_millis(600))
         .expect("bounded fixture check cadence");
-    while tilo_ui::time::now() < deadline {
+    while tilo_ui_app::time::now() < deadline {
         pause();
     }
     // Queue a real heartbeat check, then a final before consuming its reply.
@@ -483,7 +483,7 @@ fn frame_selected<W: Widget + 'static>(
         ),
         true
     );
-    let deadline = tilo_ui::time::now()
+    let deadline = tilo_ui_app::time::now()
         .checked_add(Duration::from_secs(10))
         .unwrap();
     while evaluate(
@@ -491,7 +491,7 @@ fn frame_selected<W: Widget + 'static>(
         "!!editorFrame.contentDocument?.getElementById('first')",
     ) != true
     {
-        assert!(tilo_ui::time::now() < deadline, "owned frame must load");
+        assert!(tilo_ui_app::time::now() < deadline, "owned frame must load");
         pause();
     }
     let selection = if target == "rich" {
@@ -704,7 +704,7 @@ fn main() {
             std::env::var_os("TILO_TEST_CONTROL").is_some(),
             "owned control socket required"
         );
-        tilo_ui::App::from_factory(State::new(), || {
+        tilo_ui_app::App::from_factory(State::new(), || {
             let engine: SharedEngine =
                 ChromiumEngine::with_host(Path::new(&args[1]), Path::new(&args[2]))
                     .expect("actual sandboxed Chromium host");

@@ -9,8 +9,8 @@
 //! frame itself: the shell's arrow in the person's colour with their name
 //! tag, laid out so the whole name stays on screen at the surface's edge.
 
-use tilo_ui::State;
-use tilo_ui::headless::Driver;
+use tilo_ui_app::State;
+use tilo_ui_app::headless::Driver;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Spacer;

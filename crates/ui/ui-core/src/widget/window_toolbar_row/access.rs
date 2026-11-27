@@ -9,7 +9,7 @@ use super::{
 };
 
 impl ToolbarRow {
-    pub(crate) fn accessibility(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
+    pub fn accessibility(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
         use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let Some(toolbar) = self.toolbar() else {
             return Vec::new();

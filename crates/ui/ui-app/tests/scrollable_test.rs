@@ -1,4 +1,4 @@
-use tilo_ui::widget::Scrollable;
+use tilo_ui_app::widget::Scrollable;
 
 tilo_test_env::scenario! {
     fn a_bare_scrollable_clamps_reveals_and_glides_to_rest;
@@ -48,9 +48,9 @@ tilo_test_env::scenario! {
         let mut s = Scrollable::new_vertical();
         s.set_content_size(200.0, 10_000.0);
         s.set_viewport_size(200.0, 500.0);
-        let start = tilo_ui::time::now();
-        tilo_ui::time::testing::with_monotonic_time(start, || s.fling(50.0, 1500.0));
-        let at = |micros: u64| start + tilo_ui::time::Duration::from_micros(micros);
+        let start = tilo_ui_app::time::now();
+        tilo_ui_app::time::testing::with_monotonic_time(start, || s.fling(50.0, 1500.0));
+        let at = |micros: u64| start + tilo_ui_app::time::Duration::from_micros(micros);
         // A frame, then one a tenth of a millisecond after it.
         s.advance_momentum(at(10_400));
         s.advance_momentum(at(10_500));
@@ -68,9 +68,9 @@ tilo_test_env::scenario! {
     }
 }
 
-use tilo_ui::State;
-use tilo_ui::headless::Driver;
-use tilo_ui::widget::{Button, Column, Container, Text, TextInput};
+use tilo_ui_app::State;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::widget::{Button, Column, Container, Text, TextInput};
 use tilo_ui_base::local_state::LocalState;
 use tilo_ui_base::theme::Theme;
 
@@ -379,10 +379,10 @@ fn touchpad_flick_keeps_gliding_after_release_then_settles() {
         "pixel deltas move the content at least as far as the fingers: {start} -> {released}"
     );
     // The glide is time-based: frames 1/60 s apart on the clock it reads.
-    let mut clock = tilo_ui::time::now();
+    let mut clock = tilo_ui_app::time::now();
     let mut frame = |driver: &mut Driver| {
-        clock += tilo_ui::time::Duration::from_nanos(16_666_667);
-        tilo_ui::time::testing::with_monotonic_time(clock, || driver.relayout());
+        clock += tilo_ui_app::time::Duration::from_nanos(16_666_667);
+        tilo_ui_app::time::testing::with_monotonic_time(clock, || driver.relayout());
     };
     frame(&mut driver);
     frame(&mut driver);
@@ -434,7 +434,7 @@ fn reduced_motion_touchpad_flick_stops_on_release() {
 /// stayed that tall once the document was gone.
 #[test]
 fn a_surface_sized_by_its_content_does_not_keep_the_height_it_filled() {
-    use tilo_ui::widget::Row;
+    use tilo_ui_app::widget::Row;
     let text = LocalState::new("A line of the document.\n".repeat(80));
     let surface = Scrollable::new_vertical()
         .fill_parent_height()

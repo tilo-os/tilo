@@ -3,8 +3,8 @@
 //! shows what fits and its API holds the rest.
 
 use super::*;
-use tilo_ui::headless::InspectionNode;
-use tilo_ui::widget::Button;
+use tilo_ui_app::headless::InspectionNode;
+use tilo_ui_app::widget::Button;
 
 fn actions() -> Vec<Element> {
     (0..6)
@@ -26,8 +26,8 @@ fn shows(node: &InspectionNode, id: &str) -> bool {
     node.children.iter().any(|child| shows(child, id))
 }
 
-fn bar(lists_actions: bool) -> Option<tilo_ui::widget::WindowBar> {
-    Some(tilo_ui::widget::WindowBar {
+fn bar(lists_actions: bool) -> Option<tilo_ui_app::widget::WindowBar> {
+    Some(tilo_ui_app::widget::WindowBar {
         controls_width: 32.0,
         lists_actions,
     })

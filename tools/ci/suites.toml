@@ -717,7 +717,7 @@ inputs = [
 readers = [
   "crates/ui/ui-core/src/lib.rs",
   "crates/ui/ui-core/src/activity_wire.rs",
-  "crates/ui/ui-core/src/app/close_admission.rs",
+  "crates/ui/ui-app/src/app/close_admission.rs",
   "crates/ui/ui-core/src/webview/paint.rs",
   "crates/ui/ui-core/src/theme_bundle/tests.rs",
   "crates/ui/ui-core/src/component/coverage_tests.rs",

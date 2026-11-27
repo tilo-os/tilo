@@ -11,13 +11,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -33,8 +33,10 @@ use tilo_ui_base::widget::*;
 use winit::event::*;
 use winit::keyboard::*;
 
-use tilo_ui::State;
-use tilo_ui::{widget::Badge, widget::Checkbox, widget::Column, widget::Slider, widget::Toggle};
+use tilo_ui_app::State;
+use tilo_ui_app::{
+    widget::Badge, widget::Checkbox, widget::Column, widget::Slider, widget::Toggle,
+};
 use tilo_ui_base::a11y::Action;
 use tilo_ui_base::tokens::MotionSource;
 use tilo_ui_base::widget::Widget;

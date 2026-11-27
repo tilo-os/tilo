@@ -31,9 +31,9 @@ use tilo_actions::{
 use tilo_ui_base::i18n::I18nManager;
 
 /// The operation type the host search resource's `open` action runs.
-pub(crate) const SEARCH_OPERATION: &str = "tilo.host.search.view";
+pub const SEARCH_OPERATION: &str = "tilo.host.search.view";
 /// The host search resource every framework host presents.
-pub(crate) const SEARCH_RESOURCE: &str = "tilo.host:search";
+pub const SEARCH_RESOURCE: &str = "tilo.host:search";
 pub(crate) const SEARCH_ACTION: &str = "open";
 
 const QUERY_PARAM: &str = "query";
@@ -266,7 +266,7 @@ impl SearchRequest {
     }
 
     /// Decode the `open` operation's payload.
-    pub(crate) fn decode(payload: &[u8]) -> Result<Self, serde_json::Error> {
+    pub fn decode(payload: &[u8]) -> Result<Self, serde_json::Error> {
         match serde_json::from_slice::<Option<Self>>(payload) {
             Ok(request) => Ok(request.unwrap_or_default()),
             Err(_) if payload.is_empty() => Ok(Self::default()),
@@ -283,7 +283,7 @@ impl SearchRequest {
 
     /// The request a control invocation carries, when it is addressed to the host search
     /// resource.
-    pub(crate) fn from_invocation(invocation: &ControlInvocation) -> Option<Self> {
+    pub fn from_invocation(invocation: &ControlInvocation) -> Option<Self> {
         is_search_address(&invocation.address).then(|| Self::from_arguments(&invocation.arguments))
     }
 }
@@ -295,7 +295,7 @@ pub fn is_search_address(address: &tilo_actions::ActionAddress) -> bool {
 }
 
 /// The host search API's address.
-pub(crate) fn search_address() -> tilo_actions::ActionAddress {
+pub fn search_address() -> tilo_actions::ActionAddress {
     tilo_actions::ActionAddress::new(SEARCH_RESOURCE, SEARCH_ACTION)
 }
 

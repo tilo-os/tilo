@@ -37,7 +37,11 @@ ROOT = Path(__file__).resolve().parents[2]
 # The toolkit's sources, and the code below it that reads host inputs as the
 # toolkit does: each root with the files of it that are checked (all, or one
 # module and its children).
-SRCS = (Path("crates/ui/ui-base/src"), Path("crates/ui/ui-core/src"))
+SRCS = (
+    Path("crates/ui/ui-base/src"),
+    Path("crates/ui/ui-app/src"),
+    Path("crates/ui/ui-core/src"),
+)
 BELOW_TOOLKIT = (
     (Path("crates/sdk/tilo-process-services/src"), None),
     (Path("crates/core/collaboration/src"), None),

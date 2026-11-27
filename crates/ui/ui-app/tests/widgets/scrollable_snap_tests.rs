@@ -7,12 +7,12 @@
 )]
 
 use automerge::AutoCommit;
-use tilo_ui::app::driver::Framed;
-use tilo_ui::testing::dispatch;
-use tilo_ui::time::testing::with_monotonic_time;
-use tilo_ui::time::{Duration, Instant};
-use tilo_ui::widget::Scrollable;
-use tilo_ui::widget::{Board, Container, Text};
+use tilo_ui_app::app::driver::Framed;
+use tilo_ui_app::testing::dispatch;
+use tilo_ui_app::time::testing::with_monotonic_time;
+use tilo_ui_app::time::{Duration, Instant};
+use tilo_ui_app::widget::Scrollable;
+use tilo_ui_app::widget::{Board, Container, Text};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::Motion, tokens::Rhythm};
 use tilo_ui_base::{widget::Element, widget::Widget};
@@ -46,7 +46,7 @@ fn board_in_a_scroller(board: Board) -> Scrollable {
 /// `board` laid out in a `pane` wide view, as a page shows it.
 fn board_on_a_pane(board: Board, pane: u32) -> Framed<Scrollable> {
     Framed::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         board_in_a_scroller(board),
         (pane, 844),
         Theme::dark(),
@@ -131,7 +131,7 @@ tilo_test_env::scenario! {
     // the view carries the gesture's speed into the settle.
     {
         let mut view = board_on_a_pane(lists(3), 390);
-        let at = tilo_ui::time::now();
+        let at = tilo_ui_app::time::now();
         let released = drag(&mut view, at, 90.0, 4);
         let_go(&mut view, released);
         let rest = run_out(&mut view, released);
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
     // thrown from: it never left that list far enough to cross into the next.
     {
         let mut view = board_on_a_pane(lists(3), 390);
-        let at = tilo_ui::time::now();
+        let at = tilo_ui_app::time::now();
         let list = view.test_snap_x()[1];
         with_monotonic_time(at, || {
             view.test_move_by(list, 0.0);
@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
     // detents behind the way the hand went are never where it comes to rest.
     {
         let mut view = board_on_a_pane(lists(3), 390);
-        let at = tilo_ui::time::now();
+        let at = tilo_ui_app::time::now();
         let list = view.test_snap_x()[1];
         with_monotonic_time(at, || {
             view.test_move_by(list, 0.0);
@@ -191,7 +191,7 @@ tilo_test_env::scenario! {
     // view lands on the next list rather than a line further on.
     {
         let mut view = board_on_a_pane(lists(3), 390);
-        let at = tilo_ui::time::now();
+        let at = tilo_ui_app::time::now();
         view.set_focus(true);
         let next = view.test_snap_x()[1];
         with_monotonic_time(at, || {
@@ -216,7 +216,7 @@ tilo_test_env::scenario! {
     {
         let mut view = board_on_a_pane(lists(3), 390);
         view.test_set_motion(EffectiveMotion::new(Motion::default(), true));
-        let at = tilo_ui::time::now();
+        let at = tilo_ui_app::time::now();
         let released = drag(&mut view, at, 90.0, 4);
         let_go(&mut view, released);
         let next = view.test_snap_x()[1];
@@ -242,7 +242,7 @@ tilo_test_env::scenario! {
             view.test_snap_x()
         );
         assert!(!view.test_snaps(), "and so it does not snap");
-        let at = tilo_ui::time::now();
+        let at = tilo_ui_app::time::now();
         let released = drag(&mut view, at, 90.0, 4);
         let paused = released + Duration::from_millis(300);
         let_go(&mut view, paused);

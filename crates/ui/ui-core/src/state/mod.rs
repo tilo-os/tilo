@@ -20,7 +20,7 @@ pub use collab_types::history::{write_patches, write_revert_patches, write_rever
 #[cfg(feature = "model")]
 /// What the toolkit does with an app's [`State`] beyond keeping it: merge committed history it was
 /// served, and report its undo status in words.
-pub(crate) trait StateHistory {
+pub trait StateHistory {
     /// Whether the window's document cannot take a peer's document yet: an unfinished edit, or
     /// undo history over a different frontier.
     fn defers_remote(&self) -> bool;

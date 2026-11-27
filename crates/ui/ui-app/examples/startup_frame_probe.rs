@@ -1,8 +1,9 @@
 //! Synthetic native SDK application for the sandboxed startup timeline.
 //! This is a test payload, not an installed system app or an enrollment path.
 
-use tilo_ui::{App, State, wake::WakeScope, widget::Text};
+use tilo_ui_app::{App, State, wake::WakeScope, widget::Text};
 
+#[path = "../../ui-core/examples/startup_cache_fixture.rs"]
 pub mod startup_cache_fixture;
 
 struct MesaFixture {
@@ -13,7 +14,11 @@ struct MesaFixture {
 fn fixture_seed() -> Result<Option<(std::path::PathBuf, &'static str)>, Box<dyn std::error::Error>>
 {
     let mut roots = Vec::new();
-    if let Some(dir) = tilo_ui::process::environment().paths.pipeline_seed.clone() {
+    if let Some(dir) = tilo_ui_app::process::environment()
+        .paths
+        .pipeline_seed
+        .clone()
+    {
         roots.push((dir, "probe-mesa-source-session"));
     }
     let executable = std::env::current_exe()?;

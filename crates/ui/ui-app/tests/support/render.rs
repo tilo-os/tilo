@@ -14,11 +14,11 @@ pub fn pixel_hash(buf: &[u8]) -> u64 {
 
 /// Write the frame as `$TILO_UI_SCREENSHOT_DIR/<name>.png`, when the run asked for the pictures.
 pub fn write_png(name: &str, w: u32, h: u32, rgba: &[u8]) {
-    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
+    let Ok(dir) = tilo_ui_app::env::var("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };
     let path = std::path::Path::new(&dir).join(format!("{name}.png"));
     std::fs::create_dir_all(&dir).ok();
-    tilo_ui::png::write_rgba8(&path, w, h, rgba).expect("write screenshot png");
+    tilo_ui_app::png::write_rgba8(&path, w, h, rgba).expect("write screenshot png");
     eprintln!("wrote {} to {}", name, path.display());
 }

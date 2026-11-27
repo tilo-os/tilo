@@ -9,15 +9,15 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 use taffy::prelude::TaffyMaxContent;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::date_picker::WEEKDAY_LABELS;
-use tilo_ui::widget::date_picker::{HEADER_HEIGHT, WEEKDAY_HEIGHT};
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::date_picker::WEEKDAY_LABELS;
+use tilo_ui_app::widget::date_picker::{HEADER_HEIGHT, WEEKDAY_HEIGHT};
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -49,8 +49,8 @@ tilo_test_env::scenario! {
             today: day,
             marked: Vec::new(),
         });
-        let host = tilo_ui::app::driver::Driver::for_root(
-            tilo_ui::State::new(),
+        let host = tilo_ui_app::app::driver::Driver::for_root(
+            tilo_ui_app::State::new(),
             DatePicker::new(day)
                 .navigator()
                 .with_accessible_name("Month")
@@ -73,8 +73,8 @@ tilo_test_env::scenario! {
     {
         let initial = Date::new(2024, 6, 1).unwrap();
         let state = tilo_ui_base::LocalState::new(initial);
-        let mut host = tilo_ui::app::driver::Driver::for_root(
-            tilo_ui::State::new(),
+        let mut host = tilo_ui_app::app::driver::Driver::for_root(
+            tilo_ui_app::State::new(),
             DatePicker::from_state(&state),
             (400, 400),
             Theme::dark(),
@@ -159,7 +159,7 @@ tilo_test_env::scenario! {
                 )))
                 .collect();
             for (index, (text, (band_y0, band_h))) in expectations.into_iter().enumerate() {
-                tilo_ui::widget::internals::text::assert_glyph_run_centred_in_band(
+                tilo_ui_app::widget::internals::text::assert_glyph_run_centred_in_band(
                     &scene,
                     index,
                     text,
@@ -260,9 +260,9 @@ tilo_test_env::scenario! {
         let narrow = picker.intrinsic_height(168.0);
         let wide = picker.intrinsic_height(224.0);
         assert!(narrow < wide, "cells follow the column's width");
-        let app = tilo_ui::app::driver::Driver::new(
-            tilo_ui::State::new(),
-            Box::new(tilo_ui::column![picker.with_accessible_name("Month")]),
+        let app = tilo_ui_app::app::driver::Driver::new(
+            tilo_ui_app::State::new(),
+            Box::new(tilo_ui_app::column![picker.with_accessible_name("Month")]),
             (200, 600),
         );
         let _ = app.targets();
@@ -294,7 +294,7 @@ tilo_test_env::scenario! {
         assert!(
             <DatePicker as tilo_ui_base::component::Described>::set_props(
                 &mut picker,
-                tilo_ui::widget::DatePickerProps::default()
+                tilo_ui_app::widget::DatePickerProps::default()
             ),
             "a day set elsewhere is taken where it stands"
         );

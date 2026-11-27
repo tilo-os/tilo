@@ -13,8 +13,8 @@
 //! asserting only that the label clears its floor against the fill the
 //! widget resolved for itself.
 
-use tilo_ui::color_compat::ColorCompat;
-use tilo_ui::widget::{
+use tilo_ui_app::color_compat::ColorCompat;
+use tilo_ui_app::widget::{
     ButtonRole, Interaction, SegmentedStyle, face_colors, segment_colors, toggle_face_colors,
 };
 use tilo_ui_base::a11y::contrast_ratio;

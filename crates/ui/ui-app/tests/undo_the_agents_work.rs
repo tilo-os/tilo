@@ -3,7 +3,7 @@
 //! Everything here drives the production path: real `automerge` documents with
 //! the real `tilo-doc` schema the word processor stores, real replication by
 //! fork/merge and by `State::load_incremental` (the code path a peer's CRDT
-//! delta actually arrives through), the real `tilo_ui::history_source` producer, and
+//! delta actually arrives through), the real `tilo_ui_app::history_source` producer, and
 //! the real revert. Nothing is stubbed, and every assertion that matters is on
 //! **document content** rather than on a return value — a revert that reported
 //! success while leaving the text alone fails these tests.
@@ -11,14 +11,14 @@
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use tilo_ui::history_source::invocations::{
+use tilo_ui_app::history_source::invocations::{
     AgentSession, InvocationStep, read_invocations, record_invocation,
 };
-use tilo_ui::history_source::revert::{
+use tilo_ui_app::history_source::revert::{
     RevertError, Slot, latest_invocation_by, plan_revert, revert_invocation,
 };
-use tilo_ui::history_source::{AuthorDirectory, HistorySource, entry_id_from_hash};
-use tilo_ui::state::State;
+use tilo_ui_app::history_source::{AuthorDirectory, HistorySource, entry_id_from_hash};
+use tilo_ui_app::state::State;
 use tilo_ui_base::permissions::MemberId;
 
 /// The agent commits under a stable actor derived from its name — see
@@ -127,7 +127,7 @@ fn agent_writes_two_paragraphs(report: &mut Report) -> (String, String) {
 /// The run covering everything the agent authored, found the way a caller with
 /// no recorded run finds it: the maximal contiguous band under the agent's
 /// actor.
-fn agents_run(doc: &mut AutoCommit) -> tilo_ui::history_source::revert::ChangeRange {
+fn agents_run(doc: &mut AutoCommit) -> tilo_ui_app::history_source::revert::ChangeRange {
     latest_invocation_by(doc, &actor_hex(AGENT)).expect("the agent authored something")
 }
 
@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
     phase agent_work_is_undone_through_the_document_not_the_peer_stack;
     {
         {
-            // Alice's session, holding the document as `tilo_ui::State` — the real thing an
+            // Alice's session, holding the document as `tilo_ui_app::State` — the real thing an
             // app runs on.
             let (mut report, _intro) = Report::started_by_a_person();
             let mut alice = State::from_doc(report.doc.fork());
@@ -303,7 +303,7 @@ tilo_test_env::scenario! {
             let mut dir = directory();
             dir.register(
                 &actor_hex(PERSON),
-                tilo_ui::widget::history::HistoryAuthor::new("Alice", 200.0, "a11ce000"),
+                tilo_ui_app::widget::history::HistoryAuthor::new("Alice", 200.0, "a11ce000"),
             );
 
             // The dry run says what will happen before anything is written.

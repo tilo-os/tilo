@@ -15,22 +15,22 @@ pub struct UnsavedDocument {
     pub revision: Vec<u8>,
 }
 
-pub(crate) const OPERATION: &str = "tilo.host.close";
+pub const OPERATION: &str = "tilo.host.close";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct Command {
+pub struct Command {
     pub session: uuid::Uuid,
     pub choice: Choice,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Choice {
+pub enum Choice {
     Save,
     Discard,
     Retry,
     KeepEditing,
 }
 impl Choice {
-    pub(crate) fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Self::Save => "save",
             Self::Discard => "discard",
@@ -49,7 +49,7 @@ impl Choice {
 }
 
 /// How far a closing window has let go of the invocations the broker hands it.
-pub(crate) enum Leaving {
+pub enum Leaving {
     /// It takes invocations.
     Staying,
     /// It asked for no more; the ones already addressed to it are still coming.
@@ -62,7 +62,7 @@ pub(crate) enum Leaving {
 /// One record a barrier confirms once the workspace answers it: the heads its route
 /// had sent when the barrier was asked for.
 #[cfg(feature = "model")]
-pub(crate) struct Confirming {
+pub struct Confirming {
     pub store: crate::resource::ResourceStore,
     pub id: crate::resource::DocumentId,
     pub route: tilo_ui_base::collaboration::RouteSpec,
@@ -75,7 +75,7 @@ pub(crate) struct Confirming {
 /// and a closing window goes only once one asked after its last change was answered.
 #[cfg(feature = "model")]
 #[derive(Default)]
-pub(crate) struct Barrier {
+pub struct Barrier {
     /// The barrier on its way, and what it confirms once answered.
     pub pending: Option<(
         tilo_ui_base::collaboration::DocumentPublicationReceipt,
@@ -123,7 +123,7 @@ impl Settling {
 }
 
 /// Whether a closing window may go as far as its records are concerned.
-pub(crate) enum Keeping {
+pub enum Keeping {
     /// The workspace has not answered yet.
     Waiting,
     /// The workspace keeps every change, or the window holds none it needs to keep.
@@ -132,7 +132,7 @@ pub(crate) enum Keeping {
     NotKept(String),
 }
 
-pub(crate) struct Admission {
+pub struct Admission {
     pub dialog: Option<Box<ModalDialog<Column>>>,
     pub reviewed: Vec<UnsavedDocument>,
     pub discarded: Vec<UnsavedDocument>,
@@ -286,7 +286,7 @@ impl Admission {
     }
 
     /// Retire the current decision before an explicit choice re-evaluates the close request.
-    pub(crate) fn retire_presentation(&mut self) {
+    pub fn retire_presentation(&mut self) {
         self.dialog = None;
         self.choices.clear();
     }
@@ -316,9 +316,7 @@ fn resource_for(session: uuid::Uuid, choices: &[Choice]) -> ResourceSpec {
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn retry_reports(
-    reports: &mut [crate::application::ComponentCloseReport],
-) -> Vec<String> {
+pub fn retry_reports(reports: &mut [crate::application::ComponentCloseReport]) -> Vec<String> {
     let mut errors = Vec::new();
     for report in reports {
         let _ = report.retry_resource();
@@ -331,7 +329,7 @@ pub(crate) fn retry_reports(
 }
 
 #[cfg(feature = "native")]
-pub(crate) fn wake_deadline(
+pub fn wake_deadline(
     scheduled: Option<crate::time::Instant>,
     waiting: bool,
     now: crate::time::Instant,

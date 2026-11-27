@@ -1,4 +1,4 @@
-use tilo_ui::widget::{
+use tilo_ui_app::widget::{
     AppKind, TabDescriptor, TileContent, WIDTH_MAX_PERMILLE, WindowEdge, WindowGroup, WindowWidth,
     max_group_px, min_group_px,
 };

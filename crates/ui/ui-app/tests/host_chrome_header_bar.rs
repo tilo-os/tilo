@@ -1,19 +1,19 @@
 //! The header bar a window outside the Tilo shell carries: its History menu and the commands it
 //! hands back, its controls' sizes, and what refreshes it.
-use tilo_ui::App;
-use tilo_ui::headless::Driver;
-use tilo_ui::host_chrome_testing::{
+use tilo_ui_app::App;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::host_chrome_testing::{
     CommandGroup, HeaderBar, HeaderRequest, HostCommand, resize_edge,
 };
 use tilo_ui_base::widget::Widget;
 
 fn app_with_history() -> App {
-    tilo_ui::app::testing::native_chrome_app()
+    tilo_ui_app::app::testing::native_chrome_app()
 }
 
 fn driver(commands: &[HostCommand], theme: tilo_ui_base::Theme) -> Driver {
     let mut driver = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         HeaderBar::new("Notes", commands),
         (900, 120),
         theme,
@@ -64,7 +64,7 @@ fn history_menu_lists_the_command_model_and_hands_back_the_chosen_command() {
         app.invoke_host_command_for_test(invocation),
         "the palette's API opens it"
     );
-    tilo_ui::app::testing::layout(&mut app);
+    tilo_ui_app::app::testing::layout(&mut app);
     assert!(
         app.host_commands_for_test(false)
             .iter()
@@ -125,7 +125,7 @@ fn a_bar_is_kept_until_what_it_presents_changes() {
 
 #[test]
 fn framework_history_apps_search_from_the_header_bar() {
-    let mut app = tilo_ui::app::testing::native_chrome_app();
+    let mut app = tilo_ui_app::app::testing::native_chrome_app();
     let commands = app.host_commands_for_test(false);
     let mut driver = driver(&commands, tilo_ui_base::Theme::light());
     driver.click_named("host-header-search").unwrap();
@@ -147,7 +147,7 @@ fn framework_history_apps_search_from_the_header_bar() {
 
 #[test]
 fn framework_history_menu_opens_at_a_recent_change() {
-    let mut app = tilo_ui::app::testing::native_chrome_app();
+    let mut app = tilo_ui_app::app::testing::native_chrome_app();
     let commands = app.host_commands_for_test(true);
     let mut driver = driver(&commands, tilo_ui_base::Theme::light());
     driver.click_named("host-header-history").unwrap();
@@ -168,7 +168,7 @@ fn framework_history_menu_opens_at_a_recent_change() {
         panic!("choosing a change hands back one command: {requests:?}");
     };
     assert!(app.invoke_host_command_for_test(invocation));
-    tilo_ui::app::testing::layout(&mut app);
+    tilo_ui_app::app::testing::layout(&mut app);
     let show = app
         .host_commands_for_test(false)
         .into_iter()
@@ -242,7 +242,7 @@ fn header_bar_shots_in_every_theme() {
         ("high-contrast", tilo_ui_base::Theme::high_contrast()),
     ] {
         let mut driver = Driver::for_root(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             HeaderBar::new("Notes", &commands),
             (900, 260),
             theme,

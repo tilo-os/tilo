@@ -75,7 +75,7 @@ pub(crate) fn decode<'a>(bytes: &'a [u8], identity: &[u8; 32]) -> Option<&'a [u8
 static UNSAVED: std::sync::Mutex<Vec<AppPipelineCache>> = std::sync::Mutex::new(Vec::new());
 
 /// Keep every cache held by [`AppPipelineCache::keep_until_built`]: a renderer has built all it will.
-pub(crate) fn persist_unsaved() {
+pub fn persist_unsaved() {
     let unsaved = std::mem::take(&mut *UNSAVED.lock_recover());
     for cache in unsaved {
         cache.persist();
@@ -83,7 +83,7 @@ pub(crate) fn persist_unsaved() {
 }
 
 /// The pipeline cache a window's renderer builds with, and where to keep it.
-pub(crate) struct AppPipelineCache {
+pub struct AppPipelineCache {
     cache: wgpu::PipelineCache,
     file: PathBuf,
     identity: [u8; 32],
@@ -96,7 +96,7 @@ pub(crate) struct AppPipelineCache {
 impl AppPipelineCache {
     /// This app's cache file if it is valid for the device, else the session's seed, else an empty
     /// cache.
-    pub(crate) fn open(device: &tilo_ui_base::gpu::DeviceHandle) -> Option<Self> {
+    pub fn open(device: &tilo_ui_base::gpu::DeviceHandle) -> Option<Self> {
         if !crate::pipeline_seed::supported(device) {
             return None;
         }
@@ -143,7 +143,7 @@ impl AppPipelineCache {
     }
 
     /// The cache to hand vello.
-    pub(crate) fn cache(&self) -> &wgpu::PipelineCache {
+    pub fn cache(&self) -> &wgpu::PipelineCache {
         &self.cache
     }
 
@@ -154,7 +154,7 @@ impl AppPipelineCache {
 
     /// Hold this cache until the renderer it feeds has built the pipelines it deferred past the first
     /// frame; [`persist_unsaved`] then keeps it.
-    pub(crate) fn keep_until_built(self) {
+    pub fn keep_until_built(self) {
         UNSAVED.lock_recover().push(self);
     }
 
@@ -191,7 +191,7 @@ impl AppPipelineCache {
 /// pipeline cache under the same rules (its own cache directory, written only by this app, mode 0600).
 /// A wrong or missing hint costs time, never a pipeline: a frame that needs one still builds or waits
 /// for it.
-pub(crate) mod first_frame_backdrop {
+pub mod first_frame_backdrop {
     use std::path::{Path, PathBuf};
 
     const FILE: &str = "first-frame-backdrop";
@@ -207,7 +207,7 @@ pub(crate) mod first_frame_backdrop {
     }
 
     /// What the last launch recorded; `false` when it recorded nothing.
-    pub(crate) fn expected() -> bool {
+    pub fn expected() -> bool {
         dir().is_some_and(|dir| expected_in(&dir))
     }
 

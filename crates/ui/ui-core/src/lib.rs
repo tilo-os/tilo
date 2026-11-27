@@ -9,6 +9,7 @@
     clippy::empty_line_after_doc_comments,
     clippy::format_collect,
     clippy::format_push_string,
+    clippy::implicit_hasher,
     clippy::indexing_slicing,
     clippy::items_after_statements,
     clippy::items_after_test_module,
@@ -118,7 +119,7 @@ pub mod surface_services;
 pub mod a11y_tree;
 mod bind;
 pub use bind::Bind;
-mod action_locus;
+pub mod action_locus;
 /// The document action host behind the framework's dispatcher. Apps submit edits through the framework,
 /// never through this host.
 #[doc(hidden)]
@@ -126,8 +127,6 @@ pub mod local_dispatch;
 #[cfg(feature = "model")]
 pub mod local_document_action;
 pub use {action_locus::ActionUiRoute, action_locus::PaintedActionMarker};
-#[cfg(feature = "model")]
-pub mod action_palette;
 pub mod author;
 pub mod content_zoom;
 pub mod control_hints;
@@ -156,7 +155,6 @@ pub use tilo_ui_base::*;
 #[path = "../../ui-app/tests/support/application.rs"]
 pub(crate) mod application_test_support;
 
-pub mod app;
 /// The app surface an app's changes are decided against, kept with the collab client that names it on
 /// every signed op.
 #[cfg(feature = "model")]
@@ -176,7 +174,7 @@ pub mod component_catalogue;
 pub mod component_lifecycle;
 pub mod composition;
 pub mod content;
-mod cpu_raster;
+pub mod cpu_raster;
 pub mod device_local_api;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 #[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
@@ -195,11 +193,10 @@ pub mod frame_probe;
 /// Painting decoded video on the GPU: uploading a hardware decoder's planar output and converting YUV
 /// to RGB in a shader.
 pub mod gpu_video;
-pub mod headless;
 pub mod history_mode;
 #[cfg(feature = "model")]
 pub mod history_source;
-mod host_chrome;
+pub mod host_chrome;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
 pub mod host_notifications;
@@ -209,7 +206,6 @@ pub mod hosted_window;
 /// What a frame shows an inspector, a screen reader and an automated check: the widget and
 /// semantic tree, the named targets a caller addresses, and the accessibility issues it reports.
 pub mod inspection;
-pub mod launch;
 pub mod launch_error;
 pub mod lift;
 pub mod live_activity;
@@ -223,11 +219,10 @@ pub mod pick_wire;
 pub mod pictures;
 /// The app's own vello pipelines, kept across launches in its cache directory.
 #[cfg(feature = "native")]
-pub(crate) mod pipeline_cache;
+pub mod pipeline_cache;
 /// The session's read-only vello pipeline cache every app starts from.
 pub mod pipeline_seed;
 pub mod pointer_replay;
-pub mod profiling;
 pub mod published;
 pub mod shot_frame;
 pub use tilo_ui_paint::raster;
@@ -259,7 +254,6 @@ pub mod widgets {
     };
 }
 pub use tilo_lock::deferred;
-mod app_core;
 pub mod close_admission;
 pub mod reader_hud;
 pub mod render_bump_recovery;
@@ -273,7 +267,7 @@ pub mod text_assistance;
 /// Rich text as a component shows it: paragraphs with their marks, and how each reference in them reads
 /// (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
 pub use tilo_ui_graph::rich;
-mod part_row;
+pub mod part_row;
 pub mod save_status;
 pub mod search;
 pub mod session_api;
@@ -321,7 +315,7 @@ pub use {
     tilo_process_services::wake,
 };
 
-/// The AccessKit types the bridge and [`headless::Driver`] hand back, re-exported so an app crate
+/// The AccessKit types the bridge and the headless driver hand back, re-exported so an app crate
 /// can name them (`tilo_ui::accesskit::Role`) without taking its own dependency on a version that must
 /// match this one exactly.
 pub use accesskit;
@@ -337,7 +331,6 @@ pub use vello_encoding;
 pub use winit;
 pub use {vello::kurbo, vello::peniko};
 
-pub use app::App;
 pub use color_compat::ColorCompat;
 // Paragraph composition is the document engine's, so the reader, the word processor and PDF
 // export lay text out by one policy.
@@ -348,11 +341,6 @@ pub use tilo_image_codec as image_codec;
 pub use {pictures::BLOB_SCHEME, pictures::Pictures, pictures::Shown as ShownPicture};
 pub use {pictures::lend_content, pictures::set_remote_fetcher};
 pub use {portal::FileFilter, portal::PickRequest, portal::PortalChannel, portal::PortalOutcome};
-pub use {
-    profiling::FRAME_BUDGET_US, profiling::FrameProfiler, profiling::FrameTiming, profiling::Pass,
-    profiling::PerfReport, profiling::PerfScenario, profiling::PerfStep, profiling::StatSummary,
-    profiling::run_scenario, profiling::run_scenario_on,
-};
 pub use {
     reader_hud::HudAction, reader_hud::HudControls, reader_hud::HudPlacement, reader_hud::HudSide,
     reader_hud::HudSwatch, reader_hud::MarkerDrag, reader_hud::SelectionHud,
@@ -392,8 +380,6 @@ pub use {
     a11y_tree::SemanticTree, a11y_tree::TreeDelta,
 };
 
-#[cfg(feature = "model")]
-pub use action_palette::ActionPalette;
 pub use tilo_actions;
 
 /// The word-boundary corrections every text field applies, for an input method that commits whole words
@@ -511,7 +497,7 @@ pub mod application_view;
 pub mod invocation_scope;
 pub mod native_scenario;
 #[cfg(feature = "native")]
-mod physical_input_trace;
+pub mod physical_input_trace;
 #[cfg(all(feature = "native", feature = "test-support"))]
 #[doc(hidden)]
 pub use physical_input_trace::Trace as NativePhysicalInputTrace;
@@ -520,12 +506,12 @@ pub mod semantic_document_read;
 pub mod semantic_outline;
 
 pub mod bound_dispatch;
-pub(crate) mod retained_widgets;
+pub mod retained_widgets;
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod presentation_feedback;
 
-mod focus_navigation;
+pub mod focus_navigation;
 
 pub use {
     widget::KeyboardMap, widget::KeyboardMapInput, widget::KeyboardMapKey,
@@ -597,14 +583,8 @@ pub mod host_chrome_macos_testing {
 #[path = "accesskit_bridge/tests.rs"]
 mod accesskit_bridge_tests;
 #[cfg(test)]
-#[path = "component/controls_tests.rs"]
-mod component_controls_tests;
-#[cfg(test)]
 #[path = "component/coverage_tests.rs"]
 mod component_coverage_tests;
-#[cfg(test)]
-#[path = "component/feedback_tests.rs"]
-mod component_feedback_tests;
 #[cfg(test)]
 #[path = "control_domain/lifecycle_tests.rs"]
 mod control_domain_lifecycle_tests;

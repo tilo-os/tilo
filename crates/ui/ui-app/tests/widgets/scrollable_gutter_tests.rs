@@ -6,15 +6,15 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 use taffy::Size;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::scrollable::test_support::*;
-use tilo_ui::widget::internals::scrollable::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::scrollable::test_support::*;
+use tilo_ui_app::widget::internals::scrollable::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -71,8 +71,8 @@ fn a_view_measured_at_its_natural_height_and_placed_at_a_cap_settles_with_its_gu
     .child(Box::new(
         Scrollable::new_vertical().with_child(Box::new(words)),
     ));
-    let mut harness = tilo_ui::app::driver::Driver::new_with_theme(
-        tilo_ui::State::new(),
+    let mut harness = tilo_ui_app::app::driver::Driver::new_with_theme(
+        tilo_ui_app::State::new(),
         Box::new(region),
         (1280, 800),
         Theme::dark(),
@@ -108,15 +108,15 @@ fn content_that_overflowed_before_the_view_had_its_place_keeps_no_gutter() {
         }
         Box::new(column)
     };
-    let shell = tilo_ui::widget::NavShell::new()
+    let shell = tilo_ui_app::widget::NavShell::new()
         .content_kind(tilo_ui_base::widget::ContentKind::Page)
-        .mode(tilo_ui::widget::NavMode::Push)
-        .sidebar(Box::new(tilo_ui::widget::NavList::new(vec![
-            tilo_ui::widget::NavSection::untitled(
+        .mode(tilo_ui_app::widget::NavMode::Push)
+        .sidebar(Box::new(tilo_ui_app::widget::NavList::new(vec![
+            tilo_ui_app::widget::NavSection::untitled(
                 "sections",
                 ["One", "Two", "Three"]
                     .into_iter()
-                    .map(|label| tilo_ui::widget::NavItem::new(label.to_owned(), label))
+                    .map(|label| tilo_ui_app::widget::NavItem::new(label.to_owned(), label))
                     .collect(),
             ),
         ])))
@@ -126,7 +126,7 @@ fn content_that_overflowed_before_the_view_had_its_place_keeps_no_gutter() {
                 .with_child(page()),
         ));
     let mut harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(shell),
         (900, 760),
         Theme::dark(),

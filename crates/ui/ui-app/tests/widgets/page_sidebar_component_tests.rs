@@ -5,14 +5,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::page_sidebar::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::page_sidebar::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::Event;
 use tilo_ui_base::component::*;
@@ -45,8 +45,8 @@ fn a_page_pressed_on_a_declared_rail_is_chosen() {
             ..PageSidebarProps::default()
         },
     );
-    let mut harness = tilo_ui::app::driver::Driver::new_with_theme(
-        tilo_ui::State::new(),
+    let mut harness = tilo_ui_app::app::driver::Driver::new_with_theme(
+        tilo_ui_app::State::new(),
         Box::new(rail),
         (240, 900),
         tilo_ui_base::theme::Theme::light(),

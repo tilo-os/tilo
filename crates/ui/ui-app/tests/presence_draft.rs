@@ -1,10 +1,10 @@
 //! A reader's window wakes by itself to clear a typing state that went quiet, and only at the
 //! moment the linger ends.
-use tilo_ui::State;
-use tilo_ui::headless::Driver;
-use tilo_ui::time::Duration;
-use tilo_ui::time::testing::with_monotonic_time as at;
-use tilo_ui::widget::TextInput;
+use tilo_ui_app::State;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::time::Duration;
+use tilo_ui_app::time::testing::with_monotonic_time as at;
+use tilo_ui_app::widget::TextInput;
 use tilo_ui_base::collaboration::PresencePayload;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::presence::COMPOSING_LINGER;
@@ -19,7 +19,7 @@ fn channel() -> PresenceKey {
 /// as she starts, sleeps, and wakes by itself once the linger ends to repaint without her.
 #[test]
 fn a_readers_window_wakes_to_clear_typing_gone_quiet() {
-    let (start, ada) = (tilo_ui::time::now(), MemberId::person("ada"));
+    let (start, ada) = (tilo_ui_app::time::now(), MemberId::person("ada"));
     let ends = start + COMPOSING_LINGER;
     let mut bo = Driver::for_root(
         State::new(),

@@ -135,7 +135,7 @@ pub fn checkpoint_components(widget: &mut dyn Widget) -> Vec<String> {
 
 /// What the checkpoint of every component under `widget` sent that the workspace has not answered
 /// yet.
-pub(crate) fn close_settling(widget: &mut dyn Widget) -> crate::close_admission::Settling {
+pub fn close_settling(widget: &mut dyn Widget) -> crate::close_admission::Settling {
     if let Some(lifecycle) = capability_mut::<dyn ComponentLifecycle>(&mut *widget) {
         return lifecycle.close_settling();
     }

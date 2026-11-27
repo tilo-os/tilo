@@ -164,7 +164,7 @@ thread_local! {
 /// Record where the person's last press or key landed: a context-menu press's point and the
 /// item under it ([`item_at`]), else `None`. The window sets it before
 /// the press reaches its widgets, so a menu the press opens names that item ([`menu_subject`]).
-pub(crate) fn set_pointed(pointed: Option<(vello::kurbo::Point, Option<SharedSelection>)>) {
+pub fn set_pointed(pointed: Option<(vello::kurbo::Point, Option<SharedSelection>)>) {
     POINTED.with(|slot| *slot.borrow_mut() = pointed);
 }
 
@@ -184,7 +184,7 @@ pub(crate) fn menu_subject(about: Option<SharedSelection>) -> Option<SharedSelec
 /// The item under the pointer, from what lies there (`pick::targets_at`, outermost first): the
 /// deepest part that shows an item of its app's collection, else the deepest row, list item,
 /// paragraph or heading — named as the window reads it, drawn where it stands.
-pub(crate) fn item_at(chain: &[crate::pick::PickTarget]) -> Option<SharedSelection> {
+pub fn item_at(chain: &[crate::pick::PickTarget]) -> Option<SharedSelection> {
     use tilo_ui_base::a11y::Role;
     let words = |role: Role| matches!(role, Role::Paragraph | Role::Heading { .. });
     let row = |role| matches!(role, Role::ListItem | Role::Row | Role::TreeItem) || words(role);
@@ -234,7 +234,7 @@ pub fn deliver_send(
     workspace: Option<String>,
 ) {
     let arguments = send_arguments(&request, &attached, workspace);
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     DELIVERED.with(|delivered| delivered.borrow_mut().push(arguments.clone()));
     let spawned = crate::background::Background::current().spawn("send", move || {
         if let Err(error) = tilo_ui_base::collaboration::SessionResource::invoke_without_watching(
@@ -276,15 +276,15 @@ fn send_arguments(
     arguments
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static DELIVERED: RefCell<Vec<serde_json::Map<String, serde_json::Value>>> =
         const { RefCell::new(Vec::new()) };
 }
 
 /// The sends this process handed the session since the last call, oldest first.
-#[cfg(test)]
-pub(crate) fn take_delivered() -> Vec<serde_json::Map<String, serde_json::Value>> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_delivered() -> Vec<serde_json::Map<String, serde_json::Value>> {
     DELIVERED.with(|delivered| delivered.borrow_mut().drain(..).collect())
 }
 

@@ -85,7 +85,7 @@ impl PointerReplay {
 /// the children near its view ([`tilo_ui_base::widget::Widget::for_each_child_in_clip`]), so the snapshot
 /// costs what is shown, not what is held. Two snapshots of one unchanged tree are equal exactly when no
 /// widget the pointer can reach moved or resized.
-pub(crate) fn widget_geometry(root: &dyn tilo_ui_base::widget::Widget) -> Vec<Rect> {
+pub fn widget_geometry(root: &dyn tilo_ui_base::widget::Widget) -> Vec<Rect> {
     fn walk(widget: &dyn tilo_ui_base::widget::Widget, out: &mut Vec<Rect>) {
         out.push(widget.get_rect());
         widget.for_each_child_in_clip(&mut |child| walk(child, out));

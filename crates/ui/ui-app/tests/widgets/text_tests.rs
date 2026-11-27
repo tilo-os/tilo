@@ -5,13 +5,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -499,8 +499,8 @@ fn fluent_text_interpolates_degrades_and_follows_locale() {
                 node.children.iter().find_map(|child| named(child, id))
             }
 
-            use tilo_ui::headless::InspectionNode;
-            use tilo_ui::widget::{Button, Column};
+            use tilo_ui_app::headless::InspectionNode;
+            use tilo_ui_app::widget::{Button, Column};
 
             const EN: &str = "title = Apps\naction = Open";
             const DE: &str = "title = Anwendungen\naction = Einstellungen öffnen";
@@ -508,8 +508,8 @@ fn fluent_text_interpolates_degrades_and_follows_locale() {
             let root = Column::new()
                 .push(Box::new(Text::new("title")))
                 .push(Box::new(Button::new("localized-action", "action")));
-            let mut driver = tilo_ui::app::driver::Driver::new_with_controlled_inputs(
-                tilo_ui::State::new(),
+            let mut driver = tilo_ui_app::app::driver::Driver::new_with_controlled_inputs(
+                tilo_ui_app::State::new(),
                 Box::new(root),
                 (700, 300),
                 Theme::dark(),

@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -66,7 +66,7 @@ fn board(drops: &Rc<RefCell<Vec<BoardDrop>>>) -> Board {
 }
 
 fn harness(board: Board) -> Driver {
-    Driver::for_root(tilo_ui::State::new(), board, (900, 600), Theme::dark())
+    Driver::for_root(tilo_ui_app::State::new(), board, (900, 600), Theme::dark())
 }
 
 tilo_test_env::scenario! {
@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
             lists = lists.list(key, header, vec![(format!("{key}-card"), card())], None);
         }
         let host =
-            Driver::for_root(tilo_ui::State::new(), lists, (pane, 600), theme);
+            Driver::for_root(tilo_ui_app::State::new(), lists, (pane, 600), theme);
         let root = host.root::<Board>();
         let rects = root.list_rects_for_tests();
         assert_eq!(rects.len(), 3, "three lists");
@@ -178,7 +178,7 @@ fn a_list_of_ten_thousand_cards_builds_the_few_it_shows_and_more_as_it_scrolls()
     // Before its first layout a list holds the cards of a tall screen; then the nine or so
     // 60 tall cards its 600 tall pane shows, with a margin either side. However long it is.
     let tall_screen = (tilo_ui_base::virtual_viewport::UNPLACED_VIEWPORT
-        / f64::from(tilo_ui::widget::card_estimate_for_tests()))
+        / f64::from(tilo_ui_app::widget::card_estimate_for_tests()))
     .ceil() as usize;
     let opened = built.get();
     assert!(

@@ -8,14 +8,14 @@ use std::sync::Arc;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::app::driver::Framed;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::app::driver::Framed;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -257,17 +257,17 @@ tilo_test_env::scenario! {
     phase a_menu_button_opens_its_menu_at_its_own_rect;
     {
         use std::sync::Arc;
-use tilo_ui::app::driver::Framed;
+use tilo_ui_app::app::driver::Framed;
         // Motion reads at its end: this test checks the resting frame.
         let _settled = tilo_ui_base::motion::testing::settled();
         let fired = Arc::new(AtomicU32::new(0));
         let f = Arc::clone(&fired);
         let button =
-            tilo_ui::widget::Button::icon_only("more", tilo_ui_base::icons::Icon::MoreHorizontal, "More")
+            tilo_ui_app::widget::Button::icon_only("more", tilo_ui_base::icons::Icon::MoreHorizontal, "More")
                 .with_menu(vec![MenuItem::action("Print", move || {
                     f.fetch_add(1, Ordering::SeqCst);
                 })]);
-        let mut framed = Framed::new(tilo_ui::State::new(), button, (800, 600), Theme::dark());
+        let mut framed = Framed::new(tilo_ui_app::State::new(), button, (800, 600), Theme::dark());
         let _ = Framed::harness_mut(&mut framed).poll_frame();
         let audit = Framed::harness(&framed).native_app_audit();
         assert!(

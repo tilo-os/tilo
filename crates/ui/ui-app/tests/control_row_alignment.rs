@@ -14,10 +14,10 @@
 
 use std::collections::HashMap;
 
-use tilo_ui::State;
-use tilo_ui::headless::Driver;
-use tilo_ui::widget::toggle_group::Segment;
-use tilo_ui::{
+use tilo_ui_app::State;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::widget::toggle_group::Segment;
+use tilo_ui_app::{
     widget::Button, widget::Checkbox, widget::Chip, widget::Container, widget::Dropdown,
     widget::NumberInput, widget::Row, widget::SearchField, widget::TextInput, widget::Toggle,
     widget::ToggleGroup,
@@ -321,7 +321,7 @@ fn dense_row() -> Box<dyn Widget> {
             .no_wrap()
             .push(Box::new(Button::new("save", "Save")))
             .push(Box::new(
-                Button::new("delete", "Delete").role(tilo_ui::widget::ButtonRole::Destructive),
+                Button::new("delete", "Delete").role(tilo_ui_app::widget::ButtonRole::Destructive),
             ))
             .push(Box::new(Chip::new("Filter").selectable()))
             .push(Box::new(NumberInput::new(3.0).with_id("count")))

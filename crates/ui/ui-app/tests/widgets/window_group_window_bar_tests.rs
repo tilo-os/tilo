@@ -7,14 +7,14 @@ use std::sync::*;
 use std::time::*;
 use taffy::Dimension;
 use taffy::Size;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::window_group::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::window_group::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -133,15 +133,15 @@ impl Widget for PageApp {
     }
 }
 
-impl tilo_ui::widget::AppWidget for PageApp {
+impl tilo_ui_app::widget::AppWidget for PageApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Terminal
     }
     fn app_title(&self) -> &'static str {
         "Terminal"
     }
-    fn app_icon(&self) -> tilo_ui::widget::IconDescriptor {
-        tilo_ui::widget::IconDescriptor::Glyph("T")
+    fn app_icon(&self) -> tilo_ui_app::widget::IconDescriptor {
+        tilo_ui_app::widget::IconDescriptor::Glyph("T")
     }
 }
 
@@ -178,8 +178,8 @@ fn lay_out(g: &mut WindowGroup, theme: &Theme) {
     }
 }
 
-fn parts() -> tilo_ui::window_toolbar::WindowToolbar {
-    use tilo_ui::window_toolbar::{ToolbarLocation, ToolbarNavigation, WindowToolbar};
+fn parts() -> tilo_ui_app::window_toolbar::WindowToolbar {
+    use tilo_ui_app::window_toolbar::{ToolbarLocation, ToolbarNavigation, WindowToolbar};
     WindowToolbar {
         sidebar: None,
         navigation: Some(ToolbarNavigation {
@@ -219,9 +219,10 @@ fn an_apps_parts_live_in_the_bar_and_the_content_starts_under_it() {
         lay_out(&mut g, &theme);
         let bar = g.bar_rect();
         let expected = if count == 1 {
-            tilo_ui::widget::tabs::TAB_BAR_HEIGHT
+            tilo_ui_app::widget::tabs::TAB_BAR_HEIGHT
         } else {
-            tilo_ui::widget::tabs::TAB_BAR_HEIGHT + tilo_ui::widget::tabs::TOOLBAR_ROW_HEIGHT
+            tilo_ui_app::widget::tabs::TAB_BAR_HEIGHT
+                + tilo_ui_app::widget::tabs::TOOLBAR_ROW_HEIGHT
         };
         assert!(
             (bar.height() - expected).abs() < 0.5,
@@ -338,11 +339,11 @@ fn a_pointer_on_a_tabs_pill_names_the_whole_title() {
 /// row holds as the window's bar's parts, unless the row holds something the bar cannot draw (a
 /// catch-up, a popover), when the shell keeps the row.
 struct ShellApp {
-    shell: tilo_ui::widget::NavShell,
+    shell: tilo_ui_app::widget::NavShell,
 }
 
 impl Widget for ShellApp {
-    tilo_ui::delegate_widget_methods!(
+    tilo_ui_app::delegate_widget_methods!(
         shell: sync, build_layout, apply_layout, get_rect
     );
 
@@ -367,23 +368,23 @@ impl Widget for ShellApp {
     }
 }
 
-impl tilo_ui::widget::AppWidget for ShellApp {
+impl tilo_ui_app::widget::AppWidget for ShellApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
     fn app_title(&self) -> &'static str {
         "Shell"
     }
-    fn app_icon(&self) -> tilo_ui::widget::IconDescriptor {
-        tilo_ui::widget::IconDescriptor::Glyph("S")
+    fn app_icon(&self) -> tilo_ui_app::widget::IconDescriptor {
+        tilo_ui_app::widget::IconDescriptor::Glyph("S")
     }
 }
 
 fn shell_window(
-    shell: tilo_ui::widget::NavShell,
+    shell: tilo_ui_app::widget::NavShell,
 ) -> (
-    tilo_ui::app::driver::Driver,
-    tilo_ui::hosted_window::HostedWindow,
+    tilo_ui_app::app::driver::Driver,
+    tilo_ui_app::hosted_window::HostedWindow,
 ) {
     let mut g = WindowGroup::new(
         10,
@@ -394,12 +395,12 @@ fn shell_window(
         1,
         WindowWidth::Normal,
     );
-    let window = tilo_ui::hosted_window::HostedWindow::new();
+    let window = tilo_ui_app::hosted_window::HostedWindow::new();
     if let Some(host) = g.host_for_tab_mut(1) {
         host.set_hosted_window(window.clone());
     }
-    let mut frame = tilo_ui::app::driver::Driver::for_root(
-        tilo_ui::State::new(),
+    let mut frame = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
         g,
         (u32_of(W), u32_of(H)),
         Theme::dark().with_reduce_motion(true),
@@ -411,9 +412,9 @@ fn shell_window(
 }
 
 fn frame_of(
-    frame: &mut tilo_ui::app::driver::Driver,
-    parts: &mut tilo_ui::window_parts::WindowParts,
-    window: &tilo_ui::hosted_window::HostedWindow,
+    frame: &mut tilo_ui_app::app::driver::Driver,
+    parts: &mut tilo_ui_app::window_parts::WindowParts,
+    window: &tilo_ui_app::hosted_window::HostedWindow,
 ) {
     frame.relayout();
     {
@@ -423,13 +424,15 @@ fn frame_of(
     frame.relayout();
 }
 
-fn row_of(frame: &mut tilo_ui::app::driver::Driver) -> f64 {
+fn row_of(frame: &mut tilo_ui_app::app::driver::Driver) -> f64 {
     let mut root = frame.root_mut::<WindowGroup>();
     let g: &mut WindowGroup = &mut root;
     g.active_host_mut()
         .and_then(TileHost::app_mut)
-        .and_then(|app| tilo_ui::widget::window_header::test_root_header_row(app as &dyn Widget))
-        .map_or(0.0, tilo_ui::widget::WindowHeader::header_row_height)
+        .and_then(|app| {
+            tilo_ui_app::widget::window_header::test_root_header_row(app as &dyn Widget)
+        })
+        .map_or(0.0, tilo_ui_app::widget::WindowHeader::header_row_height)
 }
 
 /// A header row that cannot stand as the window's bar's parts (it holds a popover) is the window's
@@ -440,13 +443,13 @@ fn row_of(frame: &mut tilo_ui::app::driver::Driver) -> f64 {
 fn a_header_row_that_holds_a_popover_is_the_window_bar() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, _window) = shell_window(
-        tilo_ui::widget::NavShell::new()
-            .content(Box::new(tilo_ui::widget::Text::new("Body")))
+        tilo_ui_app::widget::NavShell::new()
+            .content(Box::new(tilo_ui_app::widget::Text::new("Body")))
             .content_header(
                 "Design",
                 vec![Box::new(
-                    tilo_ui::widget::Button::new("catch-up", "Mia changed 3 messages")
-                        .with_popover(tilo_ui::widget::Text::new("What changed")),
+                    tilo_ui_app::widget::Button::new("catch-up", "Mia changed 3 messages")
+                        .with_popover(tilo_ui_app::widget::Text::new("What changed")),
                 )],
             ),
     );
@@ -484,13 +487,13 @@ fn a_header_row_that_holds_a_popover_is_the_window_bar() {
     // An app that declares its toolbar in the window's bar draws no row of its own: the window
     // keeps its bar, and its content stands under it.
     let (mut plain, _window) = shell_window(
-        tilo_ui::widget::NavShell::new()
+        tilo_ui_app::widget::NavShell::new()
             .with_window_toolbar()
-            .content(Box::new(tilo_ui::widget::Text::new("Body")))
+            .content(Box::new(tilo_ui_app::widget::Text::new("Body")))
             .content_header(
                 "Design",
                 vec![Box::new(
-                    tilo_ui::widget::Button::icon_only("new", icons::Icon::Plus, "New")
+                    tilo_ui_app::widget::Button::icon_only("new", icons::Icon::Plus, "New")
                         .on_click(|| {}),
                 )],
             ),
@@ -517,13 +520,13 @@ fn a_header_row_that_holds_a_popover_is_the_window_bar() {
 fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, _window) = shell_window(
-        tilo_ui::widget::NavShell::new()
-            .content(Box::new(tilo_ui::widget::Text::new("Body")))
+        tilo_ui_app::widget::NavShell::new()
+            .content(Box::new(tilo_ui_app::widget::Text::new("Body")))
             .content_header(
                 "Design",
                 vec![Box::new(
-                    tilo_ui::widget::Button::new("catch-up", "Mia changed 3 messages")
-                        .with_popover(tilo_ui::widget::Text::new("What changed")),
+                    tilo_ui_app::widget::Button::new("catch-up", "Mia changed 3 messages")
+                        .with_popover(tilo_ui_app::widget::Text::new("What changed")),
                 )],
             ),
     );
@@ -537,7 +540,7 @@ fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
         (
             part.row,
             part.controls,
-            tilo_ui::widget::window_controls::WindowControls::lay_out(part.controls),
+            tilo_ui_app::widget::window_controls::WindowControls::lay_out(part.controls),
             search,
             g.new_tab_rect(),
             g.get_rect(),
@@ -586,14 +589,14 @@ fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
     );
 }
 
-fn holding_row_shell() -> tilo_ui::widget::NavShell {
-    tilo_ui::widget::NavShell::new()
-        .content(Box::new(tilo_ui::widget::Text::new("Body")))
+fn holding_row_shell() -> tilo_ui_app::widget::NavShell {
+    tilo_ui_app::widget::NavShell::new()
+        .content(Box::new(tilo_ui_app::widget::Text::new("Body")))
         .content_header(
             "Design",
             vec![Box::new(
-                tilo_ui::widget::Button::new("catch-up", "Mia changed 3 messages")
-                    .with_popover(tilo_ui::widget::Text::new("What changed")),
+                tilo_ui_app::widget::Button::new("catch-up", "Mia changed 3 messages")
+                    .with_popover(tilo_ui_app::widget::Text::new("What changed")),
             )],
         )
 }
@@ -603,39 +606,39 @@ fn window_control_name(key: &str) -> String {
 }
 
 struct MenuApp {
-    content: tilo_ui::widget::Column,
-    toolbar: std::rc::Rc<std::cell::RefCell<tilo_ui::window_toolbar::WindowToolbar>>,
-    heard: std::rc::Rc<std::cell::RefCell<Vec<tilo_ui::window_toolbar::ToolbarEvent>>>,
+    content: tilo_ui_app::widget::Column,
+    toolbar: std::rc::Rc<std::cell::RefCell<tilo_ui_app::window_toolbar::WindowToolbar>>,
+    heard: std::rc::Rc<std::cell::RefCell<Vec<tilo_ui_app::window_toolbar::ToolbarEvent>>>,
 }
 
-fn menu_parts() -> tilo_ui::window_toolbar::WindowToolbar {
-    tilo_ui::window_toolbar::WindowToolbar {
+fn menu_parts() -> tilo_ui_app::window_toolbar::WindowToolbar {
+    tilo_ui_app::window_toolbar::WindowToolbar {
         actions: vec![
-            tilo_ui::window_toolbar::ToolbarAction::new("sort", "arrow-up-down", "Sort")
+            tilo_ui_app::window_toolbar::ToolbarAction::new("sort", "arrow-up-down", "Sort")
                 .labelled()
                 .with_items(vec![
-                    tilo_ui::window_toolbar::ToolbarAction::new("sort~row-0", "", "Everything"),
-                    tilo_ui::window_toolbar::ToolbarAction::new("sort~row-1", "", "Title"),
+                    tilo_ui_app::window_toolbar::ToolbarAction::new("sort~row-0", "", "Everything"),
+                    tilo_ui_app::window_toolbar::ToolbarAction::new("sort~row-1", "", "Title"),
                 ]),
         ],
-        ..tilo_ui::window_toolbar::WindowToolbar::default()
+        ..tilo_ui_app::window_toolbar::WindowToolbar::default()
     }
 }
 
-impl tilo_ui::widget::AppWidget for MenuApp {
+impl tilo_ui_app::widget::AppWidget for MenuApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
     fn app_title(&self) -> &'static str {
         "Notes"
     }
-    fn app_icon(&self) -> tilo_ui::widget::IconDescriptor {
-        tilo_ui::widget::IconDescriptor::Glyph("N")
+    fn app_icon(&self) -> tilo_ui_app::widget::IconDescriptor {
+        tilo_ui_app::widget::IconDescriptor::Glyph("N")
     }
 }
 
 impl tilo_ui_base::widget::Decorator for MenuApp {
-    type Inner = tilo_ui::widget::Column;
+    type Inner = tilo_ui_app::widget::Column;
 
     fn inner(&self) -> &Self::Inner {
         &self.content
@@ -652,35 +655,36 @@ impl tilo_ui_base::widget::Decorator for MenuApp {
     ) {
         self.heard
             .borrow_mut()
-            .extend(tilo_ui::window_toolbar::take_events());
-        tilo_ui::window_toolbar::declare(Some(self.toolbar.borrow().clone()));
+            .extend(tilo_ui_app::window_toolbar::take_events());
+        tilo_ui_app::window_toolbar::declare(Some(self.toolbar.borrow().clone()));
         self.content.sync(state, path);
     }
 }
 
 fn menu_window() -> (
-    tilo_ui::app::driver::Driver,
-    tilo_ui::hosted_window::HostedWindow,
-    std::rc::Rc<std::cell::RefCell<tilo_ui::window_toolbar::WindowToolbar>>,
-    std::rc::Rc<std::cell::RefCell<Vec<tilo_ui::window_toolbar::ToolbarEvent>>>,
+    tilo_ui_app::app::driver::Driver,
+    tilo_ui_app::hosted_window::HostedWindow,
+    std::rc::Rc<std::cell::RefCell<tilo_ui_app::window_toolbar::WindowToolbar>>,
+    std::rc::Rc<std::cell::RefCell<Vec<tilo_ui_app::window_toolbar::ToolbarEvent>>>,
 ) {
     menu_window_with(menu_parts(), W)
 }
 
 fn menu_window_with(
-    parts: tilo_ui::window_toolbar::WindowToolbar,
+    parts: tilo_ui_app::window_toolbar::WindowToolbar,
     width: f64,
 ) -> (
-    tilo_ui::app::driver::Driver,
-    tilo_ui::hosted_window::HostedWindow,
-    std::rc::Rc<std::cell::RefCell<tilo_ui::window_toolbar::WindowToolbar>>,
-    std::rc::Rc<std::cell::RefCell<Vec<tilo_ui::window_toolbar::ToolbarEvent>>>,
+    tilo_ui_app::app::driver::Driver,
+    tilo_ui_app::hosted_window::HostedWindow,
+    std::rc::Rc<std::cell::RefCell<tilo_ui_app::window_toolbar::WindowToolbar>>,
+    std::rc::Rc<std::cell::RefCell<Vec<tilo_ui_app::window_toolbar::ToolbarEvent>>>,
 ) {
-    tilo_ui::window_toolbar::set_hosted(true);
+    tilo_ui_app::window_toolbar::set_hosted(true);
     let toolbar = std::rc::Rc::new(std::cell::RefCell::new(parts));
     let heard = std::rc::Rc::default();
     let app = MenuApp {
-        content: tilo_ui::widget::Column::new().push(Box::new(tilo_ui::widget::Text::new("Body"))),
+        content: tilo_ui_app::widget::Column::new()
+            .push(Box::new(tilo_ui_app::widget::Text::new("Body"))),
         toolbar: std::rc::Rc::clone(&toolbar),
         heard: std::rc::Rc::clone(&heard),
     };
@@ -693,12 +697,12 @@ fn menu_window_with(
         1,
         WindowWidth::Normal,
     );
-    let window = tilo_ui::hosted_window::HostedWindow::new();
+    let window = tilo_ui_app::hosted_window::HostedWindow::new();
     if let Some(host) = g.host_for_tab_mut(1) {
         host.set_hosted_window(window.clone());
     }
-    let mut frame = tilo_ui::app::driver::Driver::for_root(
-        tilo_ui::State::new(),
+    let mut frame = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
         g,
         (u32_of(width), u32_of(H)),
         Theme::dark().with_reduce_motion(true),
@@ -709,7 +713,7 @@ fn menu_window_with(
     (frame, window, toolbar, heard)
 }
 
-fn sort_button(frame: &mut tilo_ui::app::driver::Driver) -> Point {
+fn sort_button(frame: &mut tilo_ui_app::app::driver::Driver) -> Point {
     let g = frame.root_mut::<WindowGroup>();
     g.bar_for_tests()
         .test_toolbar_row()
@@ -732,13 +736,13 @@ fn sort_button(frame: &mut tilo_ui::app::driver::Driver) -> Point {
         .center()
 }
 
-fn menu(frame: &mut tilo_ui::app::driver::Driver) -> (bool, Vec<String>) {
+fn menu(frame: &mut tilo_ui_app::app::driver::Driver) -> (bool, Vec<String>) {
     let g = frame.root_mut::<WindowGroup>();
     let row = g.bar_for_tests().test_toolbar_row();
     (row.popup_open(), row.menu_labels())
 }
 
-fn menu_row(frame: &mut tilo_ui::app::driver::Driver, label: &str) -> Rect {
+fn menu_row(frame: &mut tilo_ui_app::app::driver::Driver, label: &str) -> Rect {
     let g = frame.root_mut::<WindowGroup>();
     g.bar_for_tests()
         .test_toolbar_row()
@@ -750,7 +754,7 @@ fn menu_row(frame: &mut tilo_ui::app::driver::Driver, label: &str) -> Rect {
 fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, window, toolbar, heard) = menu_window();
-    let mut parts = tilo_ui::window_parts::WindowParts::default();
+    let mut parts = tilo_ui_app::window_parts::WindowParts::default();
     frame_of(&mut frame, &mut parts, &window);
     let sort = sort_button(&mut frame);
 
@@ -769,7 +773,7 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
     }
     toolbar.borrow_mut().actions.insert(
         0,
-        tilo_ui::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
+        tilo_ui_app::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
     );
     frame_of(&mut frame, &mut parts, &window);
     let (open, _) = menu(&mut frame);
@@ -783,7 +787,7 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
     frame_of(&mut frame, &mut parts, &window);
     assert_eq!(
         heard.borrow().as_slice(),
-        [tilo_ui::window_toolbar::ToolbarEvent::Action {
+        [tilo_ui_app::window_toolbar::ToolbarEvent::Action {
             id: "sort~row-1".into()
         }],
         "the row chosen runs for the button the menu belongs to"
@@ -807,7 +811,7 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
 fn a_press_on_a_menu_survives_the_app_declaring_its_parts_again() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, window, toolbar, _heard) = menu_window();
-    let mut parts = tilo_ui::window_parts::WindowParts::default();
+    let mut parts = tilo_ui_app::window_parts::WindowParts::default();
     frame_of(&mut frame, &mut parts, &window);
     let sort = sort_button(&mut frame);
 
@@ -818,7 +822,7 @@ fn a_press_on_a_menu_survives_the_app_declaring_its_parts_again() {
     // first of the row's actions.
     toolbar.borrow_mut().actions.insert(
         0,
-        tilo_ui::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
+        tilo_ui_app::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
     );
     frame_of(&mut frame, &mut parts, &window);
     frame.send(&tilo_ui_base::synthetic_input::mouse_release());
@@ -828,21 +832,21 @@ fn a_press_on_a_menu_survives_the_app_declaring_its_parts_again() {
     assert_eq!(labels, ["Everything", "Title"], "the sort menu opened");
 }
 
-fn leading_menu_parts() -> tilo_ui::window_toolbar::WindowToolbar {
-    tilo_ui::window_toolbar::WindowToolbar {
+fn leading_menu_parts() -> tilo_ui_app::window_toolbar::WindowToolbar {
+    tilo_ui_app::window_toolbar::WindowToolbar {
         leading: vec![
-            tilo_ui::window_toolbar::ToolbarAction::new("ownership", "bot", "Visitor window")
-                .with_items(vec![tilo_ui::window_toolbar::ToolbarAction::new(
+            tilo_ui_app::window_toolbar::ToolbarAction::new("ownership", "bot", "Visitor window")
+                .with_items(vec![tilo_ui_app::window_toolbar::ToolbarAction::new(
                     "ownership~open",
                     "",
                     "Open in your window",
                 )]),
         ],
-        ..tilo_ui::window_toolbar::WindowToolbar::default()
+        ..tilo_ui_app::window_toolbar::WindowToolbar::default()
     }
 }
 
-fn overflow_button(frame: &mut tilo_ui::app::driver::Driver) -> Point {
+fn overflow_button(frame: &mut tilo_ui_app::app::driver::Driver) -> Point {
     let g = frame.root_mut::<WindowGroup>();
     let rect = g.bar_for_tests().test_toolbar_row().parts().overflow;
     assert!(rect.area() > 0.0, "the bar has an overflow button");
@@ -855,14 +859,14 @@ fn overflow_button(frame: &mut tilo_ui::app::driver::Driver) -> Point {
 fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut declared = leading_menu_parts();
-    declared.location = Some(tilo_ui::window_toolbar::ToolbarLocation {
+    declared.location = Some(tilo_ui_app::window_toolbar::ToolbarLocation {
         label: "tilo.coffee".into(),
         value: "https://tilo.coffee/".into(),
         editable: true,
-        ..tilo_ui::window_toolbar::ToolbarLocation::default()
+        ..tilo_ui_app::window_toolbar::ToolbarLocation::default()
     });
     let (mut frame, window, _toolbar, heard) = menu_window_with(declared, 160.0);
-    let mut parts = tilo_ui::window_parts::WindowParts::default();
+    let mut parts = tilo_ui_app::window_parts::WindowParts::default();
     frame_of(&mut frame, &mut parts, &window);
     {
         let g = frame.root_mut::<WindowGroup>();
@@ -890,14 +894,14 @@ fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
     frame_of(&mut frame, &mut parts, &window);
     assert_eq!(
         heard.borrow().as_slice(),
-        [tilo_ui::window_toolbar::ToolbarEvent::Action {
+        [tilo_ui_app::window_toolbar::ToolbarEvent::Action {
             id: "ownership~open".into()
         }],
         "the row chosen runs for the folded menu"
     );
 }
 
-fn focused_stop(frame: &tilo_ui::app::driver::Driver) -> Option<String> {
+fn focused_stop(frame: &tilo_ui_app::app::driver::Driver) -> Option<String> {
     frame.focused_access_node().and_then(|node| node.name)
 }
 
@@ -905,7 +909,7 @@ fn focused_stop(frame: &tilo_ui::app::driver::Driver) -> Option<String> {
 /// the frame the layout encoded. The ring stands just outside what it rings, so a face painted
 /// inside `rect` in a colour near the ring's (an agent's mark) is not taken for it.
 #[cfg(not(target_arch = "wasm32"))]
-fn ring_pixels(frame: &tilo_ui::app::driver::Driver, rect: Rect) -> usize {
+fn ring_pixels(frame: &tilo_ui_app::app::driver::Driver, rect: Rect) -> usize {
     let ring = Theme::dark().border_focus;
     let wanted = [0, 1, 2]
         .map(|channel| tilo_ui_base::num::i32_of_f64(f64::from(ring.components[channel]) * 255.0));
@@ -939,7 +943,7 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, _window) = shell_window(holding_row_shell());
     let names = [
-        tilo_ui::widget::tabs::new_tab_name(),
+        tilo_ui_app::widget::tabs::new_tab_name(),
         window_control_name("host-window-maximize"),
         window_control_name("host-window-close"),
     ];
@@ -987,7 +991,7 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
             Widget::scopes_keyboard_focus(&*g),
             "the focused window carries the keyboard"
         );
-        tilo_ui::widget::window_controls::WindowControls::lay_out(part.controls).close
+        tilo_ui_app::widget::window_controls::WindowControls::lay_out(part.controls).close
     };
 
     let mut reached = false;

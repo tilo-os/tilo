@@ -35,7 +35,7 @@ collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../..
 tilo-live = { path = "../../core/tilo-live", features = ["live_session"] }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The undo log and the clock are the toolkit's shared, portable parts.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
+ui = { package = "tilo-ui-app", path = "../../ui/ui-app", default-features = false, features = ["model"] }
 # The layout's actions and the items it publishes are declared with the resource macros.
 tilo-resource = { path = "../../core/tilo-resource" }
 # A request another device answers, and the lock that holds what waits for it.

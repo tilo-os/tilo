@@ -65,7 +65,7 @@ pub struct Picture {
     /// What it was drawn from: the picture is drawn again when this changes.
     pub version: u64,
     /// The picture, as a `data:` address of a PNG
-    /// ([`crate::headless::Driver::paint_pictures`]); none until a host draws it.
+    /// (the headless driver's `paint_pictures`); none until a host draws it.
     #[serde(skip)]
     pub data: Option<std::sync::Arc<str>>,
 }

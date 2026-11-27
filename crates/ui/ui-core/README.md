@@ -14,81 +14,18 @@ re-exports this toolkit and adds what an app is made of: resources, actions and
 views bound to both, with sync, history, undo, permissions and the action
 palette.
 
-Depend on `tilo-ui` directly for a program that only draws: a custom surface,
-or a tool whose state lives in the program rather than in a shared document.
-
-## A window
-
-<!-- file: Cargo.toml -->
-```toml
-[package]
-name = "counter"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-tilo-ui = "0.5"
-```
-
-`App::from_factory` opens a window whose root widget the closure builds. A
-`LocalState` is a value the program owns; `Text::from_state` shows it and
-redraws when `set` changes it. With `--headless` the program drives the same
-widgets through `Driver`, the toolkit's host with no window or GPU: it presses
-the button by its id and prints what a screen reader would read.
-
-<!-- file: src/main.rs -->
-```rust
-use tilo_ui::headless::Driver;
-use tilo_ui::widget::{Button, Column, Text};
-use tilo_ui::{App, LocalState, State, TextRole};
-
-fn window(presses: &LocalState<u32>) -> Box<dyn tilo_ui::Widget> {
-    let press = {
-        let presses = presses.clone();
-        Button::new("press", "Press").on_click(move || presses.set(presses.with(|n| n + 1)))
-    };
-    Box::new(
-        Column::new()
-            .push(Box::new(Text::new("Counter").with_role(TextRole::Heading).with_heading_level(1)))
-            .push(Box::new(Text::from_state(presses, |n| format!("Presses: {n}"))))
-            .push(Box::new(press)),
-    )
-}
-
-fn main() {
-    let presses = LocalState::new(0);
-    if std::env::args().any(|argument| argument == "--headless") {
-        let mut driver = Driver::new(State::new(), window(&presses), (480, 320));
-        driver.relayout();
-        driver.click_named("press").expect("the button is on screen");
-        driver.relayout();
-        for node in driver.inspection().root.nodes() {
-            if let Some(semantics) = &node.semantics
-                && let Some(name) = &semantics.name
-            {
-                println!("{:?}: {name}", semantics.role);
-            }
-        }
-        return;
-    }
-    App::from_factory(State::new(), move || window(&presses))
-        .with_window_title("Counter")
-        .run();
-}
-```
-
-<!-- output -->
-```text
-Heading { level: 1 }: Counter
-StaticText: Presses: 1
-Button: Press
-```
+Depend on [`tilo-ui-app`](https://crates.io/crates/tilo-ui-app) for a program
+that only draws: a custom surface, or a tool whose state lives in the program
+rather than in a shared document. It re-exports this toolkit and adds the
+runner that opens its window (`App`) and the headless host that drives it
+(`headless::Driver`). Depend on `tilo-ui` alone for widgets a host of your own
+lays out and draws.
 
 The default `native` feature brings the window (winit), the AccessKit adapter
 and the process services for the clipboard, file choosers and notifications.
 With `default-features = false` the toolkit builds without them, for a headless
 host or `wasm32-unknown-unknown`, where a page delivers the input and draws the
-frame `Driver` lays out.
+frame `tilo-ui-app`'s `Driver` lays out.
 
 The [Tilo UI guide](https://tilolang.dev/docs/tilo-ui) builds a larger window
 and covers theming, accessibility and the web.

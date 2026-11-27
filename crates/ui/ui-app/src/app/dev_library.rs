@@ -11,8 +11,6 @@ use std::cell::RefCell;
 #[cfg(all(unix, any(feature = "native", test)))]
 use std::ffi::CStr;
 
-use crate::widget::AppWidget;
-
 /// One window the process already has open.
 #[cfg(any(feature = "native", test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,13 +21,7 @@ pub(crate) struct DevWindowEntry {
     pub state: Vec<u8>,
 }
 
-/// A view built by the new code, with the decoders of the actions it
-/// publishes. They travel together: the view encodes its actions with the new
-/// code, so only the new code's decoders can read them back.
-pub struct DevRoot {
-    pub view: Box<dyn AppWidget>,
-    pub registry: crate::tilo_actions::ActionRegistry,
-}
+pub use crate::widget::DevRoot;
 
 /// What a successful load produced. The caller installs `root` into the
 /// windows it already has; a `None` root leaves those widgets alone.

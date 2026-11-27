@@ -14,7 +14,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use tilo_ui::{widget::Column, widget::Scrollable, widget::Text};
+use tilo_ui_app::{widget::Column, widget::Scrollable, widget::Text};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
@@ -129,14 +129,14 @@ fn scrollbar_paints_along_right_edge() {
          (with={with_px}, without={without_px})",
     );
 
-    if let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") {
+    if let Ok(dir) = tilo_ui_app::env::var("TILO_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
         for (name, buf) in [
             ("scrollbar_on", &rgba_with),
             ("scrollbar_off", &rgba_without),
         ] {
             let path = format!("{dir}/{name}.png");
-            tilo_ui::png::write_rgba8(&path, W, H, buf).unwrap();
+            tilo_ui_app::png::write_rgba8(&path, W, H, buf).unwrap();
             eprintln!("wrote {path}");
         }
     }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::launch::ShotFrame;
+use crate::shot_frame::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
 use tilo_ui_base::widget::Spacer;
 use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN, arriving::frame_budget};

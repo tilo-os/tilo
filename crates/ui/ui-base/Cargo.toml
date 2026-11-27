@@ -315,7 +315,7 @@ rand_core.workspace = true
 # back over the shell-ui protocol. `accesskit_winit` 0.34 targets winit
 # 0.30.x — the same pin as the `winit` dep above. See
 # `crates/ui/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
-# adapter wiring in `crates/ui/ui-core/src/app.rs`.
+# adapter wiring in `crates/ui/ui-app/src/app.rs`.
 accesskit = { version = "0.25.0", features = ["serde"] }
 # Built on tilo-winit, so it shares the toolkit's winit types when published.
 accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path = "../../../vendor/accesskit_winit", optional = true, default-features = false, features = ["rwh_06"] }

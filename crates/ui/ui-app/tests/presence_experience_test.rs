@@ -6,9 +6,9 @@
 
 use std::time::{Instant, SystemTime};
 
-use tilo_ui::app::App;
-use tilo_ui::state::State;
-use tilo_ui::widget::Container;
+use tilo_ui_app::app::App;
+use tilo_ui_app::state::State;
+use tilo_ui_app::widget::Container;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::{collaboration::CollabEvent, collaboration::PresencePayload};
@@ -119,7 +119,7 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
         assert_eq!(status.text, "Reconciling forecast against actuals");
         assert!(matches!(
             status.origin,
-            tilo_ui::StatusOrigin::Inferred { .. }
+            tilo_ui_app::StatusOrigin::Inferred { .. }
         ));
 
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {

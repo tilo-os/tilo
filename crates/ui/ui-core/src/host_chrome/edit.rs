@@ -7,8 +7,8 @@ use tilo_actions::{ActionSpec, Availability, OperationKind, ResourceSpec};
 use tilo_ui_base::i18n::I18nManager;
 use tilo_ui_base::{widget::undo_access::UndoRequest, widget::undo_access::UndoStatus};
 
-pub(crate) const EDIT_RESOURCE: &str = "tilo.host:edit";
-pub(crate) use tilo_ui_base::widget::undo_access::EDIT_OPERATION;
+pub const EDIT_RESOURCE: &str = "tilo.host:edit";
+pub use tilo_ui_base::widget::undo_access::EDIT_OPERATION;
 
 /// Undo and Redo for the local author, titled with the change each would revert and unavailable when
 /// there is none.
@@ -16,7 +16,7 @@ pub(crate) use tilo_ui_base::widget::undo_access::EDIT_OPERATION;
     clippy::expect_used,
     reason = "fixed unit Edit payloads serialize infallibly"
 )]
-pub(crate) fn edit_resource(status: &UndoStatus) -> ResourceSpec {
+pub fn edit_resource(status: &UndoStatus) -> ResourceSpec {
     let action = |request: UndoRequest, key: &str| {
         let label = match status.summary(request) {
             Some(change) => {

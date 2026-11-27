@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
                 scope: PermissionScope::app_kind(AppKind::Terminal, ActionKind::Undoable),
             };
             let mut fired = false;
-            let allowed = tilo_ui::app::dispatch_guarded_event(&ctx, &w, || {
+            let allowed = tilo_ui_app::app::dispatch_guarded_event(&ctx, &w, || {
                 fired = true;
             });
             assert_eq!(allowed, want, "case {case}: allowed");

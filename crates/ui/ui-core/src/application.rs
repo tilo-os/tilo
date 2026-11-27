@@ -28,8 +28,8 @@ mod runner;
 mod surface;
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 pub use runner::{ApplicationOwner, NativeProcess, NativeProfile, PERSONAL_WORKSPACE};
-#[cfg(test)]
-pub(crate) use runner::{follow_process_authority, manual_authority_watch};
+#[cfg(any(test, feature = "test-support"))]
+pub use runner::{follow_process_authority, manual_authority_watch};
 pub use surface::prepare_private_surface;
 
 pub use collab_types::history::InstanceId;
@@ -230,6 +230,17 @@ pub struct ComponentRunnerInputs {
     pub theme: tilo_ui_base::Theme,
     /// The single owned renderer supplies the requested text factor and font locale.
     pub text_renderer: tilo_ui_base::TextRenderer,
+}
+
+/// The runner inputs every application test draws with: the pinned font catalogue and the dark
+/// theme a capture is usually taken in.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn fixture_runner_inputs() -> ComponentRunnerInputs {
+    ComponentRunnerInputs {
+        theme: tilo_ui_base::theme::Theme::dark(),
+        text_renderer: tilo_ui_base::font_catalog::fixture_renderer(),
+    }
 }
 
 impl ComponentRunnerInputs {
@@ -519,8 +530,8 @@ impl ProcessContext {
             retirement.retire();
         }
     }
-    #[cfg(test)]
-    pub(crate) fn bind_retirement(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bind_retirement(
         &mut self,
         retirement: crate::semantic_document_read::retirement::MountRetirement,
     ) -> Result<(), LaunchError> {
@@ -1234,10 +1245,10 @@ impl Default for ComponentBehaviour {
 /// Real app content and its lifetime; hosts cannot extract an unbound root.
 pub struct AppComponent {
     host_owner_wakes: Option<crate::owner_wake::OwnerWakeRegistration>,
-    pub(crate) behaviour: ComponentBehaviour,
-    pub(crate) history: Option<crate::history_mode::HistoryRegistration>,
+    pub behaviour: ComponentBehaviour,
+    pub history: Option<crate::history_mode::HistoryRegistration>,
     context: ProcessContext,
-    pub(crate) root: Option<Box<dyn AppWidget>>,
+    pub root: Option<Box<dyn AppWidget>>,
     registry: Option<tilo_actions::ActionRegistry>,
     local_view: View,
     application_view: Option<ApplicationLocalView>,
@@ -1275,8 +1286,8 @@ impl AppComponent {
         self.root.as_deref_mut()?.take_component_replacement()
     }
     /// What this component's app would open another record with.
-    #[cfg(test)]
-    pub(crate) fn reopener(&self) -> Reopener {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn reopener(&self) -> Reopener {
         self.context.reopener()
     }
     /// Set how the hosting window treats this component's tree.
@@ -1297,7 +1308,7 @@ impl AppComponent {
     pub fn is_private(&self) -> bool {
         self.context.is_private()
     }
-    pub(crate) fn take_root_retirement(
+    pub fn take_root_retirement(
         &mut self,
     ) -> Option<crate::semantic_document_read::retirement::RootRetirementPrelude> {
         self.context
@@ -1393,7 +1404,7 @@ impl AppComponent {
     }
 
     /// Preserve every recovery owner while a runner still owns this component.
-    pub(crate) fn setup_error(&mut self, source: LaunchError) -> LaunchError {
+    pub fn setup_error(&mut self, source: LaunchError) -> LaunchError {
         let binding = self.callback_binding();
         self.close();
         LaunchError::ComponentSetup {
@@ -1425,7 +1436,7 @@ impl AppComponent {
         self.root.as_deref()
     }
 
-    pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
+    pub fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
         self.context.callback_binding()
     }
 
@@ -1601,7 +1612,7 @@ impl AppComponent {
 
     /// Take the view and action decoders of newly loaded code in place of the running ones.
     #[cfg(feature = "native")]
-    pub(crate) fn install_reloaded(&mut self, root: crate::app::DevRoot) {
+    pub fn install_reloaded(&mut self, root: crate::widget::DevRoot) {
         self.root = Some(root.view);
         let mut registry = root.registry;
         if let Some(content) = self.context.content() {
@@ -1834,7 +1845,7 @@ impl AppComponent {
     /// Persist the current document and view through their original owners.
     /// Unlike `close()`, refusal leaves callbacks, publication and the live tree
     /// intact. Retry captures the latest view and document, not a stale snapshot.
-    pub(crate) fn checkpoint_for_close(&mut self) -> Vec<String> {
+    pub fn checkpoint_for_close(&mut self) -> Vec<String> {
         let mut errors = crate::close_admission::retry_reports(&mut self.pending_reports);
         if self.context.closing.get() {
             return errors;
@@ -1894,7 +1905,7 @@ impl AppComponent {
     }
 
     /// Finalization after a successful host checkpoint.
-    pub(crate) fn finish_admitted_close(&mut self) {
+    pub fn finish_admitted_close(&mut self) {
         drop(self.host_owner_wakes.take());
         self.context.retire_semantic_mount();
         if self.close_report.is_some() {

@@ -8,14 +8,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::modal_dialog::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::modal_dialog::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -33,7 +33,7 @@ use winit::keyboard::*;
 
 use std::cell::Cell;
 use std::rc::Rc;
-use tilo_ui::widget::Text;
+use tilo_ui_app::widget::Text;
 use tilo_ui_base::a11y::contrast_ratio;
 use vello_encoding::DrawTag;
 
@@ -64,8 +64,8 @@ use tilo_ui_base::synthetic_input::mouse_press;
 use tilo_ui_base::synthetic_input::named_key;
 
 use taffy::{Size, Style};
-use tilo_ui::testing::dispatch;
-use tilo_ui::testing::{Seen, TestLeaf};
+use tilo_ui_app::testing::dispatch;
+use tilo_ui_app::testing::{Seen, TestLeaf};
 use tilo_ui_base::platform::{Platform, PlatformConventions};
 use tilo_ui_base::time::testing::with_monotonic_time;
 
@@ -272,7 +272,7 @@ tilo_test_env::scenario! {
     {
         let _settled = tilo_ui_base::motion::testing::settled();
         {
-            let mut d = ModalDialog::new("Title", tilo_ui::testing::TestLeaf::auto()).open(true);
+            let mut d = ModalDialog::new("Title", tilo_ui_app::testing::TestLeaf::auto()).open(true);
             lay_out(
                 &mut d,
                 Rect::new(300.0, 100.0, 700.0, 500.0),
@@ -296,7 +296,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut d = ModalDialog::new("Title", tilo_ui::testing::TestLeaf::auto()).open(false);
+            let mut d = ModalDialog::new("Title", tilo_ui_app::testing::TestLeaf::auto()).open(false);
             lay_out(&mut d, WINDOW, &Theme::dark());
             let scene = present(&mut d, WINDOW, &Theme::dark());
             assert!(
@@ -520,7 +520,7 @@ tilo_test_env::scenario! {
         {
             let fired = Rc::new(Cell::new(0));
             let callback = fired.clone();
-            let mut dialog = ModalDialog::new("Review", tilo_ui::testing::TestLeaf::auto())
+            let mut dialog = ModalDialog::new("Review", tilo_ui_app::testing::TestLeaf::auto())
                 .open(true)
                 .primary_action("Restore", move || callback.set(callback.get() + 1));
             let target = dialog.accessibility().unwrap().children[0]
@@ -565,7 +565,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let d = ModalDialog::new("Confirm delete", tilo_ui::testing::TestLeaf::auto())
+            let d = ModalDialog::new("Confirm delete", tilo_ui_app::testing::TestLeaf::auto())
                 .open(true)
                 .on_dismiss(|| {});
             let node = Widget::accessibility(&d).unwrap();
@@ -578,14 +578,14 @@ tilo_test_env::scenario! {
                     .any(|c| c.name.as_deref() == Some("Close")),
                 "a dialog with no Cancel exposes its close control"
             );
-            let closed = ModalDialog::new("Confirm delete", tilo_ui::testing::TestLeaf::auto()).open(false);
+            let closed = ModalDialog::new("Confirm delete", tilo_ui_app::testing::TestLeaf::auto()).open(false);
             assert!(Widget::accessibility(&closed).unwrap().state.hidden);
             assert_eq!(Widget::children(&d).len(), 1);
         }
 
         {
             use tilo_ui_base::accesskit_bridge::build_tree_update;
-            use tilo_ui::widget::Button;
+            use tilo_ui_app::widget::Button;
             use accesskit::Role as AccessKitRole;
 
             let mut d =
@@ -617,7 +617,7 @@ tilo_test_env::scenario! {
         {
             let dismissed = Rc::new(Cell::new(0));
             let flag = Rc::clone(&dismissed);
-            let mut d = ModalDialog::new("Title", tilo_ui::testing::TestLeaf::auto())
+            let mut d = ModalDialog::new("Title", tilo_ui_app::testing::TestLeaf::auto())
                 .open(true)
                 .on_dismiss(move || flag.set(flag.get() + 1));
             lay_out(&mut d, WINDOW, &Theme::dark());
@@ -643,7 +643,7 @@ tilo_test_env::scenario! {
         {
             let dismissed = Rc::new(Cell::new(0));
             let flag = Rc::clone(&dismissed);
-            let mut d = ModalDialog::new("Title", tilo_ui::testing::TestLeaf::auto())
+            let mut d = ModalDialog::new("Title", tilo_ui_app::testing::TestLeaf::auto())
                 .open(true)
                 .dismiss_on_scrim(false)
                 .on_dismiss(move || flag.set(flag.get() + 1));
@@ -680,7 +680,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut d = ModalDialog::new("Title", tilo_ui::testing::TestLeaf::auto())
+            let mut d = ModalDialog::new("Title", tilo_ui_app::testing::TestLeaf::auto())
                 .primary_action("Save", || {})
                 .secondary_action("Cancel", || {})
                 .open(true);
@@ -730,7 +730,7 @@ tilo_test_env::scenario! {
         let (saved, save) = counter();
         let (discarded, discard) = counter();
         let (cancelled, cancel) = counter();
-        let mut d = ModalDialog::new("Save changes to notes.md?", tilo_ui::testing::TestLeaf::auto())
+        let mut d = ModalDialog::new("Save changes to notes.md?", tilo_ui_app::testing::TestLeaf::auto())
             .primary_action("Save", save)
             .tertiary_action("Don't save", discard)
             .with_destructive_tertiary(true)
@@ -775,7 +775,7 @@ tilo_test_env::scenario! {
         let _settled = tilo_ui_base::motion::testing::settled();
         let (erased, erase) = counter();
         let (cancelled, cancel) = counter();
-        let mut d = ModalDialog::new("Erase disk?", tilo_ui::testing::TestLeaf::auto())
+        let mut d = ModalDialog::new("Erase disk?", tilo_ui_app::testing::TestLeaf::auto())
             .primary_action("Erase", erase)
             .secondary_action("Cancel", cancel)
             .with_destructive(true)
@@ -819,14 +819,14 @@ tilo_test_env::scenario! {
         let valid = Rc::new(Cell::new(false));
         let (saved, save) = counter();
         let check = Rc::clone(&valid);
-        let mut d = ModalDialog::new("Back up vault", tilo_ui::testing::TestLeaf::auto())
+        let mut d = ModalDialog::new("Back up vault", tilo_ui_app::testing::TestLeaf::auto())
             .primary_action("Choose file…", save)
             .secondary_action("Cancel", || {})
             .primary_enabled_if(move |_| check.get())
             .open(true);
         lay_out(&mut d, WINDOW, &Theme::dark());
         present(&mut d, WINDOW, &Theme::dark());
-        let primary = |d: &ModalDialog<tilo_ui::testing::TestLeaf>| {
+        let primary = |d: &ModalDialog<tilo_ui_app::testing::TestLeaf>| {
             footer_buttons(d)
                 .into_iter()
                 .find(|node| node.name.as_deref() == Some("Choose file…"))
@@ -847,7 +847,7 @@ tilo_test_env::scenario! {
     {
         let _settled = tilo_ui_base::motion::testing::settled();
         let (fired, fire) = counter();
-        let mut d = ModalDialog::new("Erase disk", tilo_ui::testing::TestLeaf::auto())
+        let mut d = ModalDialog::new("Erase disk", tilo_ui_app::testing::TestLeaf::auto())
             .primary_action("Erase", fire)
             .open(true);
         d.set_primary_enabled(false);
@@ -971,7 +971,7 @@ tilo_test_env::scenario! {
     phase footer_actions_are_addressable_by_name;
     {
         let _settled = tilo_ui_base::motion::testing::settled();
-        let mut d = ModalDialog::new("Delete note?", tilo_ui::testing::TestLeaf::auto())
+        let mut d = ModalDialog::new("Delete note?", tilo_ui_app::testing::TestLeaf::auto())
             .with_test_id("notes.delete")
             .primary_action("Delete", || {})
             .secondary_action("Cancel", || {})
@@ -1016,8 +1016,8 @@ fn counter() -> (Rc<Cell<usize>>, impl FnMut() + 'static) {
 
 #[test]
 fn a_hosted_dialog_focuses_its_fields_by_pointer_and_its_footer_by_tab() {
-    use tilo_ui::app::driver::Framed;
-    use tilo_ui::widget::{Column, TextInput};
+    use tilo_ui_app::app::driver::Framed;
+    use tilo_ui_app::widget::{Column, TextInput};
     let _settled = tilo_ui_base::motion::testing::settled();
     let (cancelled, cancel) = counter();
     let (connected, connect) = counter();
@@ -1028,7 +1028,7 @@ fn a_hosted_dialog_focuses_its_fields_by_pointer_and_its_footer_by_tab() {
         .primary_action("Connect", connect)
         .secondary_action("Cancel", cancel)
         .open(true);
-    let mut framed = Framed::new(tilo_ui::State::new(), dialog, (800, 600), Theme::dark());
+    let mut framed = Framed::new(tilo_ui_app::State::new(), dialog, (800, 600), Theme::dark());
     let _ = Framed::harness_mut(&mut framed).poll_frame();
     let focused = |framed: &Framed<ModalDialog<Column>>| -> Vec<bool> {
         framed
@@ -1242,7 +1242,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn space_flips_a_focused_switch_and_enter_is_the_sheets_default() {
-    use tilo_ui::widget::{Column, TextInput, Toggle};
+    use tilo_ui_app::widget::{Column, TextInput, Toggle};
     let _settled = tilo_ui_base::motion::testing::settled();
     let (saved, save) = counter();
     let on = tilo_ui_base::LocalState::new(false);
@@ -1255,7 +1255,7 @@ fn space_flips_a_focused_switch_and_enter_is_the_sheets_default() {
         .primary_action("Save", save)
         .secondary_action("Cancel", || {})
         .open(true);
-    let mut framed = Framed::new(tilo_ui::State::new(), dialog, (800, 600), Theme::dark());
+    let mut framed = Framed::new(tilo_ui_app::State::new(), dialog, (800, 600), Theme::dark());
     let _ = Framed::harness_mut(&mut framed).poll_frame();
     let switch_focused =
         |framed: &Framed<ModalDialog<Column>>| framed.content().children()[1].is_focused();
@@ -1291,7 +1291,7 @@ fn every_footer_action_is_one_focusable_button() {
         .primary_action("Connect", connect)
         .secondary_action("Cancel", || {})
         .open(true);
-    let mut framed = Framed::new(tilo_ui::State::new(), dialog, (800, 600), Theme::dark());
+    let mut framed = Framed::new(tilo_ui_app::State::new(), dialog, (800, 600), Theme::dark());
     let _ = Framed::harness_mut(&mut framed).poll_frame();
     let issues = Framed::harness(&framed).accessibility_audit().issues;
     assert!(issues.is_empty(), "the open sheet audits clean: {issues:?}");
@@ -1346,18 +1346,18 @@ fn what_stands_behind_an_open_sheet_never_takes_its_input() {
     let _settled = tilo_ui_base::motion::testing::settled();
     // A page lists its content before its dialog. A greedy sibling (a table
     // that takes every press) must not see the press meant for the sheet.
-    use tilo_ui::widget::Column;
+    use tilo_ui_app::widget::Column;
     let behind = TestLeaf::sized(200.0, 500.0).consumes();
     let seen = behind.seen();
     let (confirmed, confirm) = counter();
     let page = Column::new().push(Box::new(behind)).push(Box::new(
-        ModalDialog::new("Delete this rule?", tilo_ui::testing::TestLeaf::auto())
+        ModalDialog::new("Delete this rule?", tilo_ui_app::testing::TestLeaf::auto())
             .with_test_id("confirm")
             .primary_action("Delete rule", confirm)
             .secondary_action("Cancel", || {})
             .open(true),
     ));
-    let mut framed = Framed::new(tilo_ui::State::new(), page, (800, 600), Theme::dark());
+    let mut framed = Framed::new(tilo_ui_app::State::new(), page, (800, 600), Theme::dark());
     let _ = Framed::harness_mut(&mut framed).poll_frame();
     let before = seen.events();
     Framed::harness_mut(&mut framed)
@@ -1377,12 +1377,12 @@ fn what_stands_behind_an_open_sheet_never_takes_its_input() {
 /// the entrance; a key opens it at once.
 #[test]
 fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
-    use tilo_ui::time::testing::with_monotonic_time;
+    use tilo_ui_app::time::testing::with_monotonic_time;
     use tilo_ui_base::motion::note_source;
     use tilo_ui_base::tokens::MotionSource;
     let theme = Theme::dark();
-    let t0 = tilo_ui::time::now();
-    let at = |ms: u64| t0 + tilo_ui::time::Duration::from_millis(ms);
+    let t0 = tilo_ui_app::time::now();
+    let at = |ms: u64| t0 + tilo_ui_app::time::Duration::from_millis(ms);
 
     let (mut built, _) = with_monotonic_time(t0, || laid_out_counting(true));
     with_monotonic_time(t0, || {
@@ -1450,11 +1450,11 @@ fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
 fn a_shared_appearance_arrives_once_and_leaves_until_it_is_gone() {
     use tilo_ui_base::{motion::Appearance, motion::note_source};
     let theme = Theme::dark();
-    let t0 = tilo_ui::time::now();
-    let at = |ms: u64| t0 + tilo_ui::time::Duration::from_millis(ms);
+    let t0 = tilo_ui_app::time::now();
+    let at = |ms: u64| t0 + tilo_ui_app::time::Duration::from_millis(ms);
     let appearance = Appearance::shared();
     let build = |open: bool| {
-        ModalDialog::new("Settings", tilo_ui::testing::TestLeaf::auto())
+        ModalDialog::new("Settings", tilo_ui_app::testing::TestLeaf::auto())
             .appearing(appearance.clone())
             .open(open)
     };
@@ -1509,9 +1509,9 @@ fn a_shared_appearance_arrives_once_and_leaves_until_it_is_gone() {
 #[test]
 fn a_dialog_moves_on_the_motion_the_person_allows() {
     let theme = Theme::dark().with_reduce_motion(true);
-    let t0 = tilo_ui::time::now();
-    let at = |ms: u64| t0 + tilo_ui::time::Duration::from_millis(ms);
-    let mut d = ModalDialog::new("Settings", tilo_ui::testing::TestLeaf::auto());
+    let t0 = tilo_ui_app::time::now();
+    let at = |ms: u64| t0 + tilo_ui_app::time::Duration::from_millis(ms);
+    let mut d = ModalDialog::new("Settings", tilo_ui_app::testing::TestLeaf::auto());
     with_monotonic_time(t0, || {
         d.set_open(true);
         lay_out(&mut d, WINDOW, &theme);
@@ -1544,7 +1544,7 @@ fn a_dialog_moves_on_the_motion_the_person_allows() {
 
 /// The published controls of a frame, by the words a person reads on them.
 fn published_controls(
-    h: &tilo_ui::headless::Driver,
+    h: &tilo_ui_app::headless::Driver,
 ) -> std::collections::HashMap<String, tilo_actions::ResourceSpec> {
     h.resources()
         .into_iter()
@@ -1552,7 +1552,7 @@ fn published_controls(
             resource
                 .id
                 .as_str()
-                .starts_with(tilo_ui::headless::CONTROL_RESOURCE_PREFIX)
+                .starts_with(tilo_ui_app::headless::CONTROL_RESOURCE_PREFIX)
                 && resource
                     .actions
                     .iter()
@@ -1566,14 +1566,14 @@ fn published_controls(
 fn an_agent_closes_a_hosted_dialog_through_its_published_close_control() {
     let (dismissed, dismiss) = counter();
     let (deleted, delete) = counter();
-    let dialog = ModalDialog::new("Delete rule?", tilo_ui::testing::TestLeaf::auto())
+    let dialog = ModalDialog::new("Delete rule?", tilo_ui_app::testing::TestLeaf::auto())
         .with_test_id("firewall-delete")
         .primary_action("Delete rule", delete)
         .on_dismiss(dismiss)
         .open(true);
-    let mut h = tilo_ui::app::driver::Driver::for_root(
-        tilo_ui::State::new(),
-        tilo_ui::widget::Column::new().push(Box::new(dialog)),
+    let mut h = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
+        tilo_ui_app::widget::Column::new().push(Box::new(dialog)),
         (800, 600),
         Theme::dark(),
     );
@@ -1598,14 +1598,14 @@ fn an_agent_closes_a_hosted_dialog_through_its_published_close_control() {
 fn an_agent_presses_a_dialog_footer_through_its_published_controls() {
     let (saved, save) = counter();
     let (cancelled, cancel) = counter();
-    let dialog = ModalDialog::new("Rename", tilo_ui::testing::TestLeaf::auto())
+    let dialog = ModalDialog::new("Rename", tilo_ui_app::testing::TestLeaf::auto())
         .with_test_id("rename")
         .primary_action("Save", save)
         .secondary_action("Cancel", cancel)
         .open(true);
-    let mut h = tilo_ui::app::driver::Driver::for_root(
-        tilo_ui::State::new(),
-        tilo_ui::widget::Column::new().push(Box::new(dialog)),
+    let mut h = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
+        tilo_ui_app::widget::Column::new().push(Box::new(dialog)),
         (800, 600),
         Theme::dark(),
     );
@@ -1636,8 +1636,8 @@ fn a_closed_sheet_names_no_target_and_an_open_one_is_where_it_shows() {
         let mut dialog = ModalDialog::new("About", Column::new().push(Box::new(Text::new("Tilo"))))
             .with_test_id("about-sheet");
         dialog.set_open(open);
-        tilo_ui::app::driver::Driver::for_root(
-            tilo_ui::State::new(),
+        tilo_ui_app::app::driver::Driver::for_root(
+            tilo_ui_app::State::new(),
             Column::new().push(Box::new(dialog)),
             (800, 600),
             Theme::dark(),

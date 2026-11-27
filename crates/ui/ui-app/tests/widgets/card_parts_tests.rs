@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -102,7 +102,7 @@ fn a_selected_card_replaces_its_edge_with_one_accent_outline() {
             Box::new(Card::new(Box::new(Text::new("Other")))),
         ]);
         let harness = Driver::new_with_theme(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Box::new(Container::new().with_child(Box::new(grid))),
             (600, 300),
             theme.clone(),
@@ -152,7 +152,7 @@ fn a_selected_card_replaces_its_edge_with_one_accent_outline() {
 fn scrolling_reaches_the_last_scaled_action() {
     let root = Scrollable::new_vertical().with_child(long_fixture());
     let mut harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(root),
         (240, 400),
         Theme::dark().with_text_scale(2.0),
@@ -183,7 +183,7 @@ tilo_test_env::scenario! {
             .with_intrinsic_height()
             .push(Box::new(Actions::new(Button::new("save", "Save changes"))));
         let harness = Driver::new_with_theme(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Box::new(root),
             (600, 300),
             Theme::dark(),
@@ -195,7 +195,7 @@ tilo_test_env::scenario! {
         let actions = Actions::new(Button::new("primary", "Primary"))
             .secondary(Button::new("secondary", "Secondary"));
         let harness = Driver::new_with_theme(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Box::new(actions),
             (600, 80),
             Theme::dark().with_text_scale(2.0),
@@ -214,10 +214,10 @@ tilo_test_env::scenario! {
     phase a_card_headed_by_a_section_header_shows_its_title_above_the_body;
     {
         let harness = Driver::new_with_theme(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Box::new(
                 Card::new(Box::new(Text::new("body")))
-                    .with_section_header(tilo_ui::widget::SectionHeader::group("Saturday").count(10)),
+                    .with_section_header(tilo_ui_app::widget::SectionHeader::group("Saturday").count(10)),
             ),
             (400, 300),
             Theme::dark(),
@@ -258,11 +258,11 @@ fn a_pressable_card_activates_but_its_own_actions_do_not_open_it() {
     let card = Card::new(Box::new(Text::new("Quarterly report")))
         .with_title("Report.pdf")
         .with_footer(Actions::new(
-            Button::new("share", "Share").on_click(tilo_ui::testing::record_click("shared")),
+            Button::new("share", "Share").on_click(tilo_ui_app::testing::record_click("shared")),
         ))
         .on_activate("open-report", move || counter.set(counter.get() + 1));
     let mut harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Column::new().with_no_padding().push(Box::new(card))),
         (400, 300),
         Theme::dark(),

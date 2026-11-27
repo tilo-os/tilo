@@ -7,14 +7,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::text_input::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::text_input::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -31,8 +31,8 @@ use winit::event::*;
 use winit::keyboard::*;
 
 /// A form taller than its window: a field 100 px down, then the rest.
-fn touch_form(field: TextInput) -> tilo_ui::app::driver::Driver {
-    use tilo_ui::widget::{Column, Container, Scrollable, Text};
+fn touch_form(field: TextInput) -> tilo_ui_app::app::driver::Driver {
+    use tilo_ui_app::widget::{Column, Container, Scrollable, Text};
     let form = Scrollable::new_vertical()
         .with_height(300.0)
         .with_child(Box::new(
@@ -51,8 +51,8 @@ fn touch_form(field: TextInput) -> tilo_ui::app::driver::Driver {
                         .with_child(Box::new(Text::new("Rest of the form").with_id("rest"))),
                 )),
         ));
-    let mut frame = tilo_ui::app::driver::Driver::new_with_theme(
-        tilo_ui::State::new(),
+    let mut frame = tilo_ui_app::app::driver::Driver::new_with_theme(
+        tilo_ui_app::State::new(),
         Box::new(form),
         (400, 300),
         Theme::dark().with_reduce_motion(true),
@@ -109,7 +109,7 @@ fn a_finger_scrolls_a_form_up_or_down_and_selects_across_a_field() {
 }
 
 /// Where byte `at` of the field's text sits, in the window.
-fn x_of(frame: &mut tilo_ui::app::driver::Driver, at: usize) -> f64 {
+fn x_of(frame: &mut tilo_ui_app::app::driver::Driver, at: usize) -> f64 {
     frame
         .with_widget_mut::<TextInput, _>(|field| {
             field.test_rect().x0 + 10.0 + field.char_x_positions()[at]

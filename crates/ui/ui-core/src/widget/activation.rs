@@ -61,7 +61,7 @@ thread_local! {
 }
 
 /// The presses asked for since the last call, in order.
-pub(crate) fn take_presses() -> Vec<Point> {
+pub fn take_presses() -> Vec<Point> {
     PRESSES.with(|presses| std::mem::take(&mut *presses.borrow_mut()))
 }
 

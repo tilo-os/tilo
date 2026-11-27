@@ -22,7 +22,7 @@ fn refusal(code: &str, reason: String) -> ApiError {
     }
 }
 #[derive(Clone)]
-pub(crate) enum LocalResourceTarget {
+pub enum LocalResourceTarget {
     Outer,
     Component(BoundActionTarget),
 }
@@ -31,7 +31,7 @@ struct OwnerResources {
     resources: Vec<ResourceSpec>,
     interactive: bool,
 }
-pub(crate) struct ResourceReadRequest<'a> {
+pub struct ResourceReadRequest<'a> {
     address: Option<&'a ActionAddress>,
     owners: Vec<OwnerResources>,
     hidden: bool,
@@ -95,7 +95,7 @@ fn owned_resources_at<W: Widget + ?Sized>(
 /// The one resource `address` names, resolved inside the hosted component `root` holds on demand:
 /// the same lookup [`select_local_target`] makes for an address a frame's publication does not
 /// list, for a host that must answer for one address alone.
-pub(crate) fn resolve_on_demand(
+pub fn resolve_on_demand(
     root: &dyn Widget,
     doc: &AutoCommit,
     address: &ActionAddress,
@@ -255,7 +255,7 @@ fn claims(resources: &[ResourceSpec], address: &ActionAddress) -> usize {
         })
         .sum()
 }
-pub(crate) fn select_local_target(
+pub fn select_local_target(
     root: &dyn Widget,
     doc: &AutoCommit,
     address: &ActionAddress,

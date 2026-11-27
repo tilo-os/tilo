@@ -3,7 +3,7 @@
 //! the platform mutex before any handle is shared, so retirement and drop never allocate.
 mod lifecycle;
 pub use lifecycle::MountRetirement;
-pub(crate) use lifecycle::{MountConstructionRetirement, RootRetirementPrelude};
+pub use lifecycle::{MountConstructionRetirement, RootRetirementPrelude};
 
 use std::sync::{
     Arc, Mutex, TryLockError,
@@ -178,5 +178,39 @@ pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) use tests::allocations::allocations_only as measure_test_allocations;
 
-#[cfg(test)]
-pub(crate) use tests::probe as retirement_test_probe;
+/// Hold `handle`'s domain check as a retirement would, refusing a handle that is retired or
+/// retiring: what a test takes to stand where a retirement stands.
+#[cfg(any(test, feature = "test-support"))]
+pub fn retirement_test_probe(
+    handle: &RetirementHandle,
+) -> Result<std::sync::MutexGuard<'_, ()>, RetirementError> {
+    let guard = match handle.value.domain.check.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => return Err(RetirementError::Busy),
+        Err(std::sync::TryLockError::Poisoned(_)) => return Err(RetirementError::Poisoned),
+    };
+    if handle
+        .value
+        .domain
+        .requested
+        .load(std::sync::atomic::Ordering::Acquire)
+        || handle
+            .value
+            .domain
+            .retired
+            .load(std::sync::atomic::Ordering::Acquire)
+        || handle
+            .value
+            .marker
+            .requested
+            .load(std::sync::atomic::Ordering::Acquire)
+        || handle
+            .value
+            .marker
+            .retired
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(RetirementError::Retired);
+    }
+    Ok(guard)
+}

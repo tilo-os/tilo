@@ -446,7 +446,7 @@ impl SearchResultsView {
 
     /// Whether the owner of the list holds the keyboard, so assistive
     /// technology reads the selected row as focused.
-    pub(crate) fn set_focused(&mut self, focused: bool) {
+    pub fn set_focused(&mut self, focused: bool) {
         self.dirty = true;
         self.focused = focused;
     }
@@ -475,12 +475,12 @@ impl SearchResultsView {
 
     /// The row and header bands from `theme`'s type, as layout resolves
     /// them, for an owner that lays the view out itself.
-    pub(crate) fn resolve_metrics(&mut self, theme: &Theme) {
+    pub fn resolve_metrics(&mut self, theme: &Theme) {
         self.bands = RowBands::resolve(theme);
         self.rebuild();
     }
 
-    pub(crate) fn row_band(&self, two_line: bool) -> f64 {
+    pub fn row_band(&self, two_line: bool) -> f64 {
         if two_line {
             self.bands.two_line
         } else {
@@ -500,7 +500,7 @@ impl SearchResultsView {
 
     /// The height `two_lines` rows take in the list under `groups` headers, as the plan lays
     /// them out: padding, headers and the gaps between groups included.
-    pub(crate) fn height_for(&self, two_lines: &[bool], groups: usize) -> f64 {
+    pub fn height_for(&self, two_lines: &[bool], groups: usize) -> f64 {
         let rows: f64 = two_lines
             .iter()
             .map(|&two_line| self.row_band(two_line))
@@ -511,7 +511,7 @@ impl SearchResultsView {
     /// How many rows of one band the list takes in `cap` under `groups`
     /// headers, never less than one: the height left once the padding,
     /// headers and gaps are paid for.
-    pub(crate) fn row_capacity(&self, cap: f64, groups: usize, two_line: bool) -> usize {
+    pub fn row_capacity(&self, cap: f64, groups: usize, two_line: bool) -> usize {
         let band = self.row_band(two_line).max(1.0);
         let spare = (cap - self.rows_overhead(groups)).max(band);
         tilo_ui_base::num::usize_of_f64((spare / band).floor()).max(1)
@@ -544,7 +544,7 @@ impl SearchResultsView {
     }
 
     /// Update the empty-state copy without rebuilding the shared result view.
-    pub(crate) fn set_empty_hint(&mut self, hint: Option<String>) {
+    pub fn set_empty_hint(&mut self, hint: Option<String>) {
         self.dirty = true;
         self.empty_hint = hint;
     }
@@ -554,11 +554,11 @@ impl SearchResultsView {
         self.empty_text = text.into();
     }
 
-    pub(crate) fn empty_text(&self) -> &str {
+    pub fn empty_text(&self) -> &str {
         &self.empty_text
     }
 
-    pub(crate) fn empty_hint(&self) -> Option<&str> {
+    pub fn empty_hint(&self) -> Option<&str> {
         self.empty_hint.as_deref()
     }
 
@@ -576,7 +576,7 @@ impl SearchResultsView {
         self.list.reset_scroll();
     }
 
-    pub(crate) fn replace_groups(&mut self, groups: Vec<SearchGroup>) {
+    pub fn replace_groups(&mut self, groups: Vec<SearchGroup>) {
         self.flat.clear();
         for (gi, g) in groups.iter().enumerate() {
             for ri in 0..g.results.len() {
@@ -635,7 +635,7 @@ impl SearchResultsView {
 
     /// Select row `index` (clamped) where it stands, without scrolling it
     /// into view: the pointer picks the row it is over.
-    pub(crate) fn set_cursor_in_place(&mut self, index: usize) {
+    pub fn set_cursor_in_place(&mut self, index: usize) {
         self.dirty = true;
         if !self.flat.is_empty() {
             self.cursor = index.min(self.flat.len().saturating_sub(1));
@@ -726,7 +726,7 @@ impl SearchResultsView {
     /// Preserve one exact control across an asynchronous result replacement.
     /// A missing identity leaves no actionable selection; it never falls back
     /// to the row that inherited the old index.
-    pub(crate) fn restore_action_selection(&mut self, id: &str) -> bool {
+    pub fn restore_action_selection(&mut self, id: &str) -> bool {
         let index = self
             .flat
             .iter()
@@ -737,7 +737,7 @@ impl SearchResultsView {
         index.is_some()
     }
 
-    pub(crate) fn select_action(&mut self, id: &str) -> bool {
+    pub fn select_action(&mut self, id: &str) -> bool {
         let Some(index) = self
             .flat
             .iter()
@@ -1038,7 +1038,7 @@ impl SearchResultsView {
 
     /// Scroll the rows by `dy` logical px (positive moves down the list);
     /// returns whether they moved.
-    pub(crate) fn scroll_by(&mut self, dy: f64) -> bool {
+    pub fn scroll_by(&mut self, dy: f64) -> bool {
         let before = self.list.scroll_offset();
         self.list.scroll_px(dy);
         (self.list.scroll_offset() - before).abs() > f64::EPSILON
@@ -1069,7 +1069,7 @@ impl SearchResultsView {
 
     /// The headers, rows and loading line, cut off at the list's edges: the
     /// list without its card, for an owner that paints the card itself.
-    pub(crate) fn draw_list(
+    pub fn draw_list(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -1094,7 +1094,7 @@ impl SearchResultsView {
         (self.rect.x0 + PAD, width, style)
     }
 
-    pub(crate) fn draw_empty(
+    pub fn draw_empty(
         &self,
         scene: &mut Scene,
         transform: Affine,

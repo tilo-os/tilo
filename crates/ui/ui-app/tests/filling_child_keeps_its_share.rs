@@ -5,10 +5,10 @@
 
 #![cfg(test)]
 
-use tilo_ui::State;
-use tilo_ui::headless::Driver;
-use tilo_ui::widget::arrange::{Fit, Part, Stack};
-use tilo_ui::widget::{Column, Container, Fitted, Row, Scrollable, Text};
+use tilo_ui_app::State;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::widget::arrange::{Fit, Part, Stack};
+use tilo_ui_app::widget::{Column, Container, Fitted, Row, Scrollable, Text};
 
 /// A stack of a strip above `content`, `content` filled (`fill` in the language), inside a
 /// container of exactly `height` in a column that fills the window.

@@ -12,8 +12,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
-use tilo_ui::widget::Button;
-use tilo_ui::widget::tooltip;
+use tilo_ui_app::widget::Button;
+use tilo_ui_app::widget::tooltip;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
@@ -40,15 +40,15 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
     let mut buttons = [
         Button::new("search", "")
             .with_icon(Icon::Search)
-            .role(tilo_ui::widget::ButtonRole::Plain)
+            .role(tilo_ui_app::widget::ButtonRole::Plain)
             .tooltip("Search"),
         Button::new("add", "")
             .with_icon(Icon::Plus)
-            .role(tilo_ui::widget::ButtonRole::Plain)
+            .role(tilo_ui_app::widget::ButtonRole::Plain)
             .tooltip("New folder"),
         Button::new("more", "")
             .with_icon(Icon::MoreHorizontal)
-            .role(tilo_ui::widget::ButtonRole::Plain)
+            .role(tilo_ui_app::widget::ButtonRole::Plain)
             .tooltip("View options"),
     ];
     for (b, r) in buttons.iter_mut().zip(rects.iter()) {
@@ -97,10 +97,10 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
         "expected painted content ({name}), got {non_bg} px"
     );
 
-    if let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") {
+    if let Ok(dir) = tilo_ui_app::env::var("TILO_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
         let path = format!("{dir}/tooltip_over_icon_button_{name}.png");
-        tilo_ui::png::write_rgba8(&path, canvas_w, canvas_h, &rgba).unwrap();
+        tilo_ui_app::png::write_rgba8(&path, canvas_w, canvas_h, &rgba).unwrap();
         eprintln!("wrote {path}");
     }
 }

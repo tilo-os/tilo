@@ -30,7 +30,7 @@ fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface
 }
 
 #[derive(Clone)]
-pub(crate) struct ControlObservation {
+pub struct ControlObservation {
     identity: ControlIdentity,
     intent: PreparedActionIntent,
     confirmation: tilo_actions::ConfirmationPolicy,
@@ -61,7 +61,7 @@ enum ControlInputSurface {
 }
 
 #[derive(Clone, PartialEq)]
-pub(crate) struct ControlIdentity {
+pub struct ControlIdentity {
     continuation: tilo_actions::ContinuationEvidence,
     locus: tilo_actions::ExecutionLocus,
     kind: tilo_actions::OperationKind,
@@ -76,7 +76,7 @@ pub(crate) struct ControlIdentity {
 }
 
 impl ControlObservation {
-    pub(crate) fn identity(&self) -> &ControlIdentity {
+    pub fn identity(&self) -> &ControlIdentity {
         &self.identity
     }
     pub(crate) fn label(&self) -> &str {
@@ -85,14 +85,14 @@ impl ControlObservation {
 }
 
 #[derive(Clone)]
-pub(crate) enum ControlContinuationArguments {
+pub enum ControlContinuationArguments {
     Immediate,
     Text(String),
     Json(serde_json::Map<String, serde_json::Value>),
 }
 
 impl ControlContinuationArguments {
-    pub(crate) fn as_api_arguments(
+    pub fn as_api_arguments(
         &self,
     ) -> (
         Option<&str>,
@@ -115,7 +115,7 @@ impl ControlContinuationArguments {
 
 /// Re-resolve one exact ownership target and derive inert comparison data.
 /// The returned encoding is never executed.
-pub(crate) fn control_observation(
+pub fn control_observation(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
@@ -130,7 +130,7 @@ pub(crate) fn control_observation(
     )
 }
 
-pub(crate) fn control_observation_with_arguments(
+pub fn control_observation_with_arguments(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
@@ -175,13 +175,13 @@ pub(crate) fn control_observation_with_arguments(
 
 /// What a control's action is declared as, for people: its name ("Mark as read") and whether it is
 /// housekeeping.
-pub(crate) struct ControlDeclaration {
+pub struct ControlDeclaration {
     pub(crate) label: Option<String>,
     pub(crate) housekeeping: bool,
 }
 
 /// [`ControlDeclaration`] of the action a control invokes, when `address` still resolves to one.
-pub(crate) fn control_declaration(
+pub fn control_declaration(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
@@ -308,7 +308,7 @@ fn control_identity_from_spec(
 
 /// The identity a draft accrues over the resources its control target resolves to: read by the
 /// window's History.
-pub(crate) fn control_draft_identity(
+pub fn control_draft_identity(
     root: &dyn Widget,
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,

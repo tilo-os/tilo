@@ -8,13 +8,13 @@ use crate::{
 use automerge::{AutoCommit, transaction::Transactable};
 use std::rc::{Rc, Weak};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    pub(crate) static OWNED_DOCUMENT_CLONES: std::cell::Cell<usize> =
+    pub static OWNED_DOCUMENT_CLONES: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
-pub(crate) enum OwnedDocumentPublication {
+pub enum OwnedDocumentPublication {
     Unchanged,
     Unfinished,
     Blocked,
@@ -27,7 +27,7 @@ pub(crate) enum OwnedDocumentPublication {
     },
 }
 
-pub(crate) use tilo_ui_base::control_domain::ResourceOwnerLifetime;
+pub use tilo_ui_base::control_domain::ResourceOwnerLifetime;
 
 /// Captured by the actual mounted owner; callers cannot manufacture ownership.
 #[derive(Clone)]
@@ -51,7 +51,7 @@ pub(crate) enum OwnerKind {
     },
 }
 impl HistoryOwner {
-    pub(crate) fn component(binding: CallbackBinding) -> Self {
+    pub fn component(binding: CallbackBinding) -> Self {
         Self(OwnerKind::Component(binding))
     }
     /// The mounted component this owner is, if it is one.
@@ -64,7 +64,7 @@ impl HistoryOwner {
     /// `record`, held by this app, which `publishes` its changes when it is the app that may
     /// ([`Self::publishes_resource`]): a record it only reads is joined and merged from its route, never
     /// published on it.
-    pub(crate) fn record(
+    pub fn record(
         store: ResourceStore,
         checkout: DocumentCheckout,
         lifetime: &Rc<ResourceOwnerLifetime>,
@@ -94,7 +94,7 @@ impl HistoryOwner {
                 .map(|life| life.id),
         }
     }
-    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+    pub fn same_owner(&self, other: &Self) -> bool {
         match (&self.0, &other.0) {
             (OwnerKind::Component(a), OwnerKind::Component(b)) => a.same_component(b),
             (
@@ -207,7 +207,7 @@ impl HistoryOwner {
         match &self.0 {
             OwnerKind::Component(binding) => binding
                 .read_document(outer, |doc, _| {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
                     doc.clone()
                 })
@@ -216,7 +216,7 @@ impl HistoryOwner {
                 store, checkout, ..
             } => store
                 .read_checked(&checkout.id, |doc| {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
                     doc.clone()
                 })
@@ -248,7 +248,7 @@ impl HistoryOwner {
             if blocked {
                 return OwnedDocumentPublication::Blocked;
             }
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
             let mut document = document.clone();
             let mutation = if needs_snapshot {
@@ -335,12 +335,12 @@ mod publication_tests {
 }
 
 impl HistoryOwner {
-    pub(crate) fn same_document(&self, other: &Self) -> bool {
+    pub fn same_document(&self, other: &Self) -> bool {
         let (a, ac) = self.store_checkout();
         let (b, bc) = other.store_checkout();
         a.same_owner(b) && ac == bc
     }
-    pub(crate) fn store_checkout(&self) -> (&ResourceStore, &DocumentCheckout) {
+    pub fn store_checkout(&self) -> (&ResourceStore, &DocumentCheckout) {
         match &self.0 {
             OwnerKind::Component(binding) => (&binding.records, &binding.checkout),
             OwnerKind::Record {
@@ -355,7 +355,7 @@ impl HistoryOwner {
         self.store_checkout().1.kind.clone()
     }
 
-    pub(crate) fn broker_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
+    pub fn broker_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
         self.validate().ok()?;
         match &self.0 {
             OwnerKind::Component(binding) => binding.broker_route(),
@@ -365,7 +365,7 @@ impl HistoryOwner {
         }
     }
     /// Merge a peer's `mutation` into the record.
-    pub(crate) fn merge_remote(
+    pub fn merge_remote(
         &self,
         mut incoming: tilo_ui_base::collaboration::Incoming<'_>,
         outer: &mut AutoCommit,

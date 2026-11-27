@@ -392,7 +392,7 @@ mod component_adapter {
         "the widget a window's managed root holds, made by the runner above the toolkit"
     )]
     pub struct BoundAppWidget {
-        pub(crate) component: AppComponent,
+        pub component: AppComponent,
         /// A complete-content capture laid the root out in a tree of its own: the host rebuilds its layout
         /// before the next frame.
         relayout: bool,
@@ -570,7 +570,7 @@ mod component_adapter {
             let shown = |widget: &Self| {
                 (
                     widget
-                        .in_root(|root| crate::headless::widget_inspection_json(root))
+                        .in_root(|root| crate::inspection::widget_inspection_json(root))
                         .unwrap_or_default(),
                     widget
                         .component
@@ -2482,4 +2482,12 @@ mod native_lifecycle_tests {
             assert!(teardown.iter().all(|(_, lifetime)| !lifetime.is_active()));
         }
     }
+}
+
+/// A view built by newly loaded app code, with the decoders of the actions it
+/// publishes. They travel together: the view encodes its actions with the new
+/// code, so only the new code's decoders can read them back.
+pub struct DevRoot {
+    pub view: Box<dyn AppWidget>,
+    pub registry: crate::tilo_actions::ActionRegistry,
 }

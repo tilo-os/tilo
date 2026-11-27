@@ -11,7 +11,7 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use tilo_ui::headless::Driver;
+use tilo_ui_app::headless::Driver;
 use tilo_ui_base::icons::Icon;
 
 use tilo_ui_base::theme::Theme;
@@ -134,7 +134,7 @@ impl Stage {
             replaced: false,
             rect: Rect::ZERO,
         };
-        let harness = Driver::new(tilo_ui::State::new(), Box::new(root), VIEWPORT);
+        let harness = Driver::new(tilo_ui_app::State::new(), Box::new(root), VIEWPORT);
         Self {
             harness,
             staged,
@@ -231,7 +231,9 @@ fn assert_press_carries(build: Build, locate: impl Fn(&mut Driver) -> Point) {
 fn a_button_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
-            Box::new(tilo_ui::widget::Button::new("save", "Save").on_click(log(clicks, generation)))
+            Box::new(
+                tilo_ui_app::widget::Button::new("save", "Save").on_click(log(clicks, generation)),
+            )
         },
         |h| centre_of(h, "save"),
     );
@@ -242,7 +244,8 @@ fn a_list_row_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             Box::new(
-                tilo_ui::widget::ListRow::new("inbox", "Inbox").on_open(log(clicks, generation)),
+                tilo_ui_app::widget::ListRow::new("inbox", "Inbox")
+                    .on_open(log(clicks, generation)),
             )
         },
         |h| centre_of(h, "inbox"),
@@ -253,7 +256,7 @@ fn a_list_row_carries_its_press_across_a_rebuild() {
 fn a_list_row_action_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
-            Box::new(tilo_ui::widget::ListRow::new("inbox", "Inbox").action(
+            Box::new(tilo_ui_app::widget::ListRow::new("inbox", "Inbox").action(
                 Icon::Trash,
                 "Delete",
                 log(clicks, generation),
@@ -274,7 +277,7 @@ fn a_list_row_checkbox_carries_its_press_across_a_rebuild() {
         |clicks, generation| {
             let mut ran = log(clicks, generation);
             Box::new(
-                tilo_ui::widget::ListRow::new("inbox", "Inbox").checkbox(false, move |_| ran()),
+                tilo_ui_app::widget::ListRow::new("inbox", "Inbox").checkbox(false, move |_| ran()),
             )
         },
         |h| pressable_centre(h),
@@ -286,7 +289,7 @@ fn a_chip_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             Box::new(
-                tilo_ui::widget::Chip::new("Urgent")
+                tilo_ui_app::widget::Chip::new("Urgent")
                     .with_id("urgent")
                     .on_open(log(clicks, generation)),
             )
@@ -300,7 +303,7 @@ fn a_card_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             Box::new(
-                tilo_ui::widget::Card::new(Box::new(tilo_ui::widget::Text::new("Trip")))
+                tilo_ui_app::widget::Card::new(Box::new(tilo_ui_app::widget::Text::new("Trip")))
                     .on_activate("trip", log(clicks, generation)),
             )
         },
@@ -313,7 +316,7 @@ fn an_interactive_container_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             Box::new(
-                tilo_ui::widget::Container::new()
+                tilo_ui_app::widget::Container::new()
                     .with_size(200.0, 60.0)
                     .interactive("channel", log(clicks, generation)),
             )
@@ -327,7 +330,7 @@ fn a_stat_tile_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             Box::new(
-                tilo_ui::widget::StatTile::new("Revenue", "1,204")
+                tilo_ui_app::widget::StatTile::new("Revenue", "1,204")
                     .on_open("revenue", log(clicks, generation)),
             )
         },
@@ -337,7 +340,7 @@ fn a_stat_tile_carries_its_press_across_a_rebuild() {
 
 #[test]
 fn a_media_card_and_its_hover_action_carry_their_press_across_a_rebuild() {
-    use tilo_ui::widget::{MediaCard, MediaSource};
+    use tilo_ui_app::widget::{MediaCard, MediaSource};
     assert_press_carries(
         |clicks, generation| {
             Box::new(
@@ -370,9 +373,9 @@ fn a_collapsible_section_header_carries_its_press_across_a_rebuild() {
         |clicks, generation| {
             let mut ran = log(clicks, generation);
             Box::new(
-                tilo_ui::widget::Section::titled(
+                tilo_ui_app::widget::Section::titled(
                     "Details",
-                    vec![Box::new(tilo_ui::widget::Text::new("Body"))],
+                    vec![Box::new(tilo_ui_app::widget::Text::new("Body"))],
                 )
                 .on_expand(move |_| ran()),
             )
@@ -383,7 +386,7 @@ fn a_collapsible_section_header_carries_its_press_across_a_rebuild() {
 
 #[test]
 fn a_property_list_action_carries_its_press_across_a_rebuild() {
-    use tilo_ui::widget::{Property, PropertyList};
+    use tilo_ui_app::widget::{Property, PropertyList};
     assert_press_carries(
         |clicks, generation| {
             Box::new(PropertyList::new(vec![
@@ -400,9 +403,9 @@ fn a_property_list_action_carries_its_press_across_a_rebuild() {
 
 #[test]
 fn a_property_value_copy_carries_its_press_across_a_rebuild() {
-    use tilo_ui::widget::PropertyValue;
-    let services = tilo_ui::process::ProcessServices::null();
-    let _host = tilo_ui::process::enter(&services);
+    use tilo_ui_app::widget::PropertyValue;
+    let services = tilo_ui_app::process::ProcessServices::null();
+    let _host = tilo_ui_app::process::enter(&services);
     // Each generation shows its own value; the copied one says which ran.
     let build: Build = |_, generation| {
         Box::new(
@@ -430,7 +433,7 @@ fn a_property_value_copy_carries_its_press_across_a_rebuild() {
 fn a_secret_fields_reveal_toggle_carries_its_press_across_a_rebuild() {
     let build: Build = |_, _| {
         Box::new(
-            tilo_ui::widget::TextInput::local()
+            tilo_ui_app::widget::TextInput::local()
                 .with_secret(true)
                 .with_id("passphrase"),
         )
@@ -455,7 +458,7 @@ fn a_secret_fields_reveal_toggle_carries_its_press_across_a_rebuild() {
 #[test]
 fn a_control_a_relayout_slides_under_a_still_pointer_takes_the_click() {
     let mut scene = Stage::new(|clicks, generation| {
-        Box::new(tilo_ui::widget::Button::new("save", "Save").on_click(log(clicks, generation)))
+        Box::new(tilo_ui_app::widget::Button::new("save", "Save").on_click(log(clicks, generation)))
     });
     let button_at = scene.harness.targets()["save"];
     let below = button_at.center() + Vec2::new(0.0, 120.0);
@@ -503,11 +506,11 @@ fn a_navigation_place_carries_its_press_across_a_rebuild() {
         |clicks, generation| {
             let mut ran = log(clicks, generation);
             let places = vec![
-                tilo_ui::widget::NavItem::new("inbox", "Inbox"),
-                tilo_ui::widget::NavItem::new("drafts", "Drafts"),
+                tilo_ui_app::widget::NavItem::new("inbox", "Inbox"),
+                tilo_ui_app::widget::NavItem::new("drafts", "Drafts"),
             ];
             Box::new(
-                tilo_ui::widget::NavList::new(vec![tilo_ui::widget::NavSection::untitled(
+                tilo_ui_app::widget::NavList::new(vec![tilo_ui_app::widget::NavSection::untitled(
                     "places", places,
                 )])
                 .selected("drafts")

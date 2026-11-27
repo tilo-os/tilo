@@ -12,7 +12,7 @@ use tilo_ui_base::permissions::MemberId;
 /// action open on the resource, the undo status each window was answered, and the invocation
 /// evidence its writes carry.
 #[derive(Default)]
-pub(crate) struct ResourceActionState {
+pub struct ResourceActionState {
     pub(super) pending: Option<PendingResourceAction>,
     pub(super) statuses: HashMap<
         (MemberId, crate::application::InstanceId),
@@ -31,8 +31,8 @@ pub(crate) struct ResourceActionState {
     >,
 }
 impl ResourceActionState {
-    #[cfg(test)]
-    pub(crate) fn statuses_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn statuses_for_test(
         &self,
     ) -> Vec<(
         tilo_actions::MemberId,
@@ -49,7 +49,7 @@ impl ResourceActionState {
     }
 }
 /// The toolkit's part of a resource's action state, reached from the whole.
-pub(crate) trait ToolkitPart {
+pub trait ToolkitPart {
     fn part(&mut self) -> &mut ResourceActionState;
     /// The action the toolkit has open on the resource, if it made its part.
     fn pending(&self) -> Option<&PendingResourceAction>;

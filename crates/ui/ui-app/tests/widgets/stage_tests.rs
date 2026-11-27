@@ -7,14 +7,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::stage::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::stage::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -47,7 +47,7 @@ fn stage() -> Stage {
 
 /// The stage in a window of 800 × 600, as the editor shows it.
 fn harness() -> Driver {
-    Driver::new(tilo_ui::State::new(), Box::new(stage()), (800, 600))
+    Driver::new(tilo_ui_app::State::new(), Box::new(stage()), (800, 600))
 }
 
 fn shown(host: &mut Driver) -> &mut Stage {
@@ -173,7 +173,7 @@ fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
     let mut props = boxes_props(&queue, 1);
     props.still = true;
     let mut host = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Stage::from_props("stage", props)),
         (800, 600),
     );
@@ -196,7 +196,7 @@ fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
         "the window zooms what the still stage left it"
     );
     host.app_mut()
-        .zoom_window_content(tilo_ui::content_zoom::ZoomStep::Reset);
+        .zoom_window_content(tilo_ui_app::content_zoom::ZoomStep::Reset);
     host.relayout();
 
     // The first place stands at page (96, 90), 160 by 90: its middle is at (110, 159) on a
@@ -243,7 +243,7 @@ fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
 fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(boxes_stage(&queue, 2)),
         (800, 600),
     );
@@ -320,7 +320,7 @@ fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
 
 /// A stage whose first place, "box-0", offers two commands, and whose second offers none.
 fn menu_stage(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>) -> Stage {
-    use tilo_ui::widget::{MenuItemProps, MenuPart};
+    use tilo_ui_app::widget::{MenuItemProps, MenuPart};
 
     let command = |label: &str, event: &str, destructive: bool| {
         MenuPart::Item(MenuItemProps {
@@ -376,7 +376,7 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
     // at window (60, 131), and the place's middle at about (110, 159).
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(menu_stage(&queue)),
         (800, 600),
     );
@@ -466,7 +466,7 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
     // carried along. A test of this widget's half dispatches those events by hand.
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(boxes_stage(&queue, 2)),
         (800, 600),
     );
@@ -537,7 +537,7 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
 fn a_finger_held_on_a_place_opens_its_menu() {
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(menu_stage(&queue)),
         (800, 600),
     );
@@ -565,7 +565,7 @@ fn a_box_grows_to_hold_the_words_that_wrap_past_it() {
                 width: Some(200),
                 height: Some(40),
                 moves: true,
-                body: vec![Box::new(tilo_ui::widget::Text::new(
+                body: vec![Box::new(tilo_ui_app::widget::Text::new(
                     "A sentence long enough to wrap onto several lines inside a box two \
                      hundred points wide, which its stored height never made room for.",
                 ))],
@@ -574,7 +574,7 @@ fn a_box_grows_to_hold_the_words_that_wrap_past_it() {
             ..StageProps::default()
         },
     );
-    let mut host = Driver::new(tilo_ui::State::new(), Box::new(stage), (800, 600));
+    let mut host = Driver::new(tilo_ui_app::State::new(), Box::new(stage), (800, 600));
     let laid = shown(&mut host).test_laid();
     let laid = laid.borrow();
     let height = laid.first().expect("the place is laid out").height();
@@ -627,7 +627,7 @@ fn dragged(
 fn a_dragged_place_snaps_to_the_page_and_the_places_beside_it() {
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(boxes_stage(&queue, 2)),
         (800, 600),
     );

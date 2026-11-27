@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use tilo_ui_base::a11y_child_route::*;
 
-use tilo_ui::{widget::Button, widget::Embedded};
+use tilo_ui_app::{widget::Button, widget::Embedded};
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect;
@@ -93,8 +93,8 @@ tilo_test_env::scenario! {
             button: Embedded::new(button),
             rect: Rect::ZERO,
         };
-        let mut harness = tilo_ui::headless::Driver::for_root(
-            tilo_ui::State::new(),
+        let mut harness = tilo_ui_app::headless::Driver::for_root(
+            tilo_ui_app::State::new(),
             painter,
             (400, 300),
             tilo_ui_base::theme::Theme::dark(),

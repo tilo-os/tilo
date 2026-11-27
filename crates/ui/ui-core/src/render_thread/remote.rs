@@ -318,7 +318,7 @@ fn prepared() -> &'static Mutex<Option<Receiver<Result<Session, String>>>> {
 
 /// Connect to the service on a thread of its own from process start, so the first window's first frame
 /// finds the channel open.
-pub(crate) fn prepare() {
+pub fn prepare() {
     let (sender, receiver) = mpsc::channel();
     if tilo_rt::spawn_thread("remote-render-connect", move || {
         let _ = sender.send(Session::connect());
@@ -397,7 +397,7 @@ struct Buffers {
     clippy::disallowed_methods,
     reason = "native host runner: the remote render worker is a dedicated thread"
 )]
-pub(crate) fn spawn(
+pub fn spawn(
     window: Arc<Window>,
     transparent: bool,
     wake: Arc<dyn Fn() + Send + Sync>,

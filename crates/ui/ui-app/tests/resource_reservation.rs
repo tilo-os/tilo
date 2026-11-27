@@ -2,7 +2,7 @@
 //! nothing reserved, and canceling a reservation gives the record its absence back.
 
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
-use tilo_ui::resource::{
+use tilo_ui_app::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners, ResourceSaveStatus,
     ResourceStore, ResourceType,
 };

@@ -23,9 +23,9 @@ impl MountRetirement {
 }
 
 /// Direct App/assembly field.
-pub(crate) struct RootRetirementPrelude(RetirementHandle);
+pub struct RootRetirementPrelude(RetirementHandle);
 impl RootRetirementPrelude {
-    pub(crate) fn retire(&self) {
+    pub fn retire(&self) {
         self.0.retire();
     }
 }
@@ -36,7 +36,7 @@ impl Drop for RootRetirementPrelude {
 }
 
 /// Borrowed construction guard; private, negative-only, with no check/callback API.
-pub(crate) struct MountConstructionRetirement<'a> {
+pub struct MountConstructionRetirement<'a> {
     retirement: Option<&'a MountRetirement>,
 }
 impl<'a> MountConstructionRetirement<'a> {

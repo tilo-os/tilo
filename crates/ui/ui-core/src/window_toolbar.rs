@@ -1412,7 +1412,7 @@ pub fn take_search_request() -> Option<SearchOpening> {
 /// Hand the app what the person did in the bar, answering whether it is a press on the
 /// app's own parts: the host hands the app the keyboard then, if nothing in its window
 /// holds it.
-pub(crate) fn deliver_to_app(event: ToolbarEvent) -> bool {
+pub fn deliver_to_app(event: ToolbarEvent) -> bool {
     let hands_keyboard = matches!(
         event,
         ToolbarEvent::Action { .. } | ToolbarEvent::ToggleSidebar

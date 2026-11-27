@@ -5,14 +5,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::stat_tile::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::stat_tile::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -185,7 +185,7 @@ fn groups_reflow_four_two_one_and_never_leave_an_orphan() {
             .collect(),
     );
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(group),
         (520, 400),
         Theme::dark(),
@@ -204,7 +204,7 @@ fn a_detail_tile_is_admitted_for_pointer_and_assistive_activation() {
     let tile = StatTile::new("CPU", "42").on_open("cpu.detail", move || {
         count.set(count.get() + 1);
     });
-    let mut harness = Driver::for_root(tilo_ui::State::new(), tile, (280, 140), Theme::dark());
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), tile, (280, 140), Theme::dark());
     let audit = harness.native_app_audit();
     assert!(audit.is_certified(), "{audit:?}");
     let target = harness.targets()["cpu.detail"];

@@ -37,7 +37,7 @@ tilo_test_env::scenario! {
         for (what, content, shown) in [
             (
                 "the page shows the same words as its large title",
-                Box::new(tilo_ui::widget::Column::new().push(heading(
+                Box::new(tilo_ui_app::widget::Column::new().push(heading(
                     "Call the landlord about the boiler",
                     tilo_ui_base::TextRole::LargeTitle,
                 ))) as Element,
@@ -46,14 +46,14 @@ tilo_test_env::scenario! {
             (
                 "the page shows other words",
                 Box::new(
-                    tilo_ui::widget::Column::new()
+                    tilo_ui_app::widget::Column::new()
                         .push(heading("Call the plumber", tilo_ui_base::TextRole::LargeTitle)),
                 ),
                 true,
             ),
             (
                 "the page says the words as a paragraph",
-                Box::new(tilo_ui::widget::Column::new().push(heading(
+                Box::new(tilo_ui_app::widget::Column::new().push(heading(
                     "Call the landlord about the boiler",
                     tilo_ui_base::TextRole::Body,
                 ))),
@@ -84,14 +84,14 @@ tilo_test_env::scenario! {
     phase the_bar_takes_the_title_back_once_the_heading_scrolls_away;
     {
         let tall = Box::new(
-            tilo_ui::widget::Column::new()
+            tilo_ui_app::widget::Column::new()
                 .push(heading(
                     "Call the landlord about the boiler",
                     tilo_ui_base::TextRole::LargeTitle,
                 ))
                 .push(Box::new(tilo_ui_base::widget::Spacer::fixed(1200.0))),
         ) as Element;
-        let scrolled = tilo_ui::widget::Scrollable::new(tilo_ui_base::widget::ScrollAxis::Vertical)
+        let scrolled = tilo_ui_app::widget::Scrollable::new(tilo_ui_base::widget::ScrollAxis::Vertical)
             .fill_parent_height()
             .with_child(tall);
         let mut h = harness(
@@ -108,7 +108,7 @@ tilo_test_env::scenario! {
         );
         let body = geometry(&h).test_body(Column::Content);
         h.root_mut::<NavShell>()
-            .content_mut::<tilo_ui::widget::Scrollable>()
+            .content_mut::<tilo_ui_app::widget::Scrollable>()
             .expect("the page scrolls")
             .set_offset_y(400.0);
         settle(&mut h, 390, 844);
@@ -130,8 +130,8 @@ tilo_test_env::scenario! {
     {
         let words = "Call the landlord about the boiler";
         let field = Box::new(
-            tilo_ui::widget::Column::new().push(Box::new(
-                tilo_ui::widget::TextInput::local()
+            tilo_ui_app::widget::Column::new().push(Box::new(
+                tilo_ui_app::widget::TextInput::local()
                     .with_initial_value(words)
                     .with_text_role(tilo_ui_base::TextRole::LargeTitle),
             )),
@@ -165,11 +165,11 @@ tilo_test_env::scenario! {
     phase an_item_opened_among_a_lists_rows_leaves_the_column_its_title;
     {
         let row =
-            ListRow(tilo_ui::widget::Column::new().push(heading("Today", tilo_ui_base::TextRole::LargeTitle)));
+            ListRow(tilo_ui_app::widget::Column::new().push(heading("Today", tilo_ui_base::TextRole::LargeTitle)));
         let mut h = harness(
             page(
                 "Today",
-                Box::new(tilo_ui::widget::Column::new().push(Box::new(row))),
+                Box::new(tilo_ui_app::widget::Column::new().push(Box::new(row))),
             ),
             390,
             844,
@@ -183,16 +183,16 @@ tilo_test_env::scenario! {
     }
 }
 
-struct ListRow(tilo_ui::widget::Column);
+struct ListRow(tilo_ui_app::widget::Column);
 
 impl tilo_ui_base::widget::Decorator for ListRow {
-    type Inner = tilo_ui::widget::Column;
+    type Inner = tilo_ui_app::widget::Column;
 
-    fn inner(&self) -> &tilo_ui::widget::Column {
+    fn inner(&self) -> &tilo_ui_app::widget::Column {
         &self.0
     }
 
-    fn inner_mut(&mut self) -> &mut tilo_ui::widget::Column {
+    fn inner_mut(&mut self) -> &mut tilo_ui_app::widget::Column {
         &mut self.0
     }
 

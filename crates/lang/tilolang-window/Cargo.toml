@@ -26,7 +26,7 @@ tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The frame pipeline that lays the window out.
-ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
+ui = { version = "0.1.0", package = "tilo-ui-app", path = "../../ui/ui-app", default-features = false, features = ["model"] }
 
 [dev-dependencies]
 tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }

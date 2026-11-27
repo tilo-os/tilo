@@ -26,7 +26,7 @@ thread_local! {
 /// Remember the sidebar widths of the shells this thread builds in `app_id`'s settings on this
 /// device.
 #[cfg(feature = "native")]
-pub(crate) fn remember_for_app(app_id: &str) {
+pub fn remember_for_app(app_id: &str) {
     install(Some(Settings::for_app(app_id)));
 }
 

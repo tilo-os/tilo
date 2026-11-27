@@ -313,7 +313,7 @@ impl NativeProcessEnvironment {
         // The workspace a window is in, and how it takes part there, are the launcher's: one in
         // another process writes them to the environment, and a process that is its own launcher
         // installs them with the connection it hands its window
-        // ([`crate::launch::hand_connection`]).
+        // (the launcher's `hand_connection`).
         let launched = crate::process::environment();
         Self {
             package_id: string("TILO_PACKAGE_ID"),
@@ -456,7 +456,7 @@ fn launcher_workspace(workspace: Option<&str>) -> Result<(String, bool), LaunchE
 
 impl ProcessContext {
     /// The binding a component's controls, History and effects act under.
-    pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
+    pub fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
         crate::bound_dispatch::CallbackBinding {
             lifetime: self.wake_scope.handle(),
             closing: self.closing.clone(),
@@ -684,8 +684,8 @@ impl FollowedAuthority {
 
 /// `context` deciding `app`'s actions by the host's view `read` gives of its person's authority in
 /// `workspace`, read again whenever `watch` reports a change.
-#[cfg(test)]
-pub(crate) fn follow_process_authority(
+#[cfg(any(test, feature = "test-support"))]
+pub fn follow_process_authority(
     context: PermissionContext,
     read: tilo_process_services::action_authority::AuthoritySource,
     watch: AuthorityWatcher,
@@ -702,9 +702,8 @@ pub(crate) fn follow_process_authority(
 }
 
 /// A watch a test reports the host's changes through, as the kernel would.
-#[cfg(test)]
-pub(crate) fn manual_authority_watch() -> (AuthorityWatcher, std::sync::Arc<dyn Fn() + Send + Sync>)
-{
+#[cfg(any(test, feature = "test-support"))]
+pub fn manual_authority_watch() -> (AuthorityWatcher, std::sync::Arc<dyn Fn() + Send + Sync>) {
     type Listener = Box<dyn Fn() + Send>;
     let listener: std::sync::Arc<std::sync::Mutex<Option<Listener>>> = std::sync::Arc::default();
     let installed = listener.clone();

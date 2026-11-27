@@ -6,15 +6,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::state::State;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::nav_list::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::state::State;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::nav_list::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -222,7 +222,7 @@ fn spec_face<'a>(
     spec: &'a model::NavItemSpec,
     row: Rect,
     label: &'a str,
-) -> tilo_ui::widget::internals::nav_list::nav_row::NavRowFace<'a> {
+) -> tilo_ui_app::widget::internals::nav_list::nav_row::NavRowFace<'a> {
     NavPaint::default().item_face(spec, row, label)
 }
 
@@ -244,13 +244,13 @@ tilo_test_env::scenario! {
             "untitled items stand at the top level; a titled section heads its items"
         );
         let theme = Theme::dark();
-        let row = tilo_ui::widget::internals::nav_list::nav_row::nav_row_height(&theme);
+        let row = tilo_ui_app::widget::internals::nav_list::nav_row::nav_row_height(&theme);
         let inbox = list.row_rect("inbox").expect("inbox shown");
         assert!((inbox.height() - row).abs() < 0.5);
         let work = list.row_rect("work").expect("work shown");
         let section = work.y0 - list.row_rect("sent").expect("sent").y1;
         assert!(
-            (section - tilo_ui::widget::internals::nav_list::nav_row::nav_section_height(&theme, false)).abs() < 0.5,
+            (section - tilo_ui_app::widget::internals::nav_list::nav_row::nav_section_height(&theme, false)).abs() < 0.5,
             "a section after the first leads with s3 of space ({section})"
         );
     }
@@ -625,7 +625,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             list.test_sections()[0].items[0].count,
-            Some(tilo_ui::widget::internals::nav_list::nav_row::NavCount::Neutral(3)),
+            Some(tilo_ui_app::widget::internals::nav_list::nav_row::NavCount::Neutral(3)),
             "a place shows what it holds"
         );
         let trailing = list.test_sections()[1]
@@ -934,7 +934,7 @@ fn places(
     select: tilo_ui_base::component::Event,
     add: Option<tilo_ui_base::component::OfferedAction>,
 ) -> NavList {
-    use tilo_ui::widget::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
+    use tilo_ui_app::widget::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
     use tilo_ui_base::component::Described;
     let inbox = NavItemProps {
         key: "inbox".into(),
@@ -986,7 +986,7 @@ fn a_checked_row_toggles_as_a_whole_and_is_never_chosen() {
     assert_eq!(list_of(&h).selected_id(), None);
     tilo_ui_base::widget::Widget::set_focus(
         &mut *h
-            .root_mut::<tilo_ui::widget::Unattached<NavList>>()
+            .root_mut::<tilo_ui_app::widget::Unattached<NavList>>()
             .0
             .test_list_mut(),
         true,
@@ -1230,7 +1230,7 @@ fn rows_of(list: &NavList) -> Vec<std::sync::Arc<tilo_ui_base::a11y::AccessNode>
 
 struct Region;
 
-impl tilo_ui::app::AppSurface for Region {
+impl tilo_ui_app::app::AppSurface for Region {
     fn scale_factor(&self) -> f64 {
         1.0
     }
@@ -1242,7 +1242,7 @@ impl tilo_ui::app::AppSurface for Region {
 }
 
 /// One host frame: app frames until the app is at rest, then the walk.
-fn host_frame(app: &mut tilo_ui::app::App, damage: &mut tilo_ui::app::SurfaceDamage) {
+fn host_frame(app: &mut tilo_ui_app::app::App, damage: &mut tilo_ui_app::app::SurfaceDamage) {
     let mut scene = vello::Scene::new();
     for _ in 0..3 {
         scene.reset();
@@ -1258,13 +1258,13 @@ fn host_frame(app: &mut tilo_ui::app::App, damage: &mut tilo_ui::app::SurfaceDam
 /// or built. Also the rows the list publishes.
 fn keystroke_walk_beside(count: usize) -> (usize, usize, usize) {
     use tilo_ui_base::a11y::Role;
-    let shell = tilo_ui::widget::NavShell::new()
+    let shell = tilo_ui_app::widget::NavShell::new()
         .sidebar(Box::new(NavList::new(destinations(count))))
         .content(Box::new(
-            tilo_ui::widget::TextInput::local().with_accessible_name("Note"),
+            tilo_ui_app::widget::TextInput::local().with_accessible_name("Note"),
         ));
-    let mut app = tilo_ui::app::App::new_with_controlled_inputs(State::new(), Box::new(shell));
-    let mut damage = tilo_ui::app::SurfaceDamage::default();
+    let mut app = tilo_ui_app::app::App::new_with_controlled_inputs(State::new(), Box::new(shell));
+    let mut damage = tilo_ui_app::app::SurfaceDamage::default();
     app.init_layout();
     for _ in 0..4 {
         host_frame(&mut app, &mut damage);
@@ -1354,7 +1354,7 @@ fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
 
 /// A test action taking the gesture's input as its one `value`.
 fn bound<I: serde::Serialize + 'static>() -> tilo_actions::ActionBinding<I> {
-    tilo_ui::widget::test_value_action_binding(tilo_actions::ParamType::Array)
+    tilo_ui_app::widget::test_value_action_binding(tilo_actions::ParamType::Array)
 }
 
 /// `list` laid out in a harness that leaves its control intents to the
@@ -1362,7 +1362,7 @@ fn bound<I: serde::Serialize + 'static>() -> tilo_actions::ActionBinding<I> {
 fn unowned(list: NavList) -> Driver {
     let mut h = Driver::for_root(
         State::new(),
-        tilo_ui::widget::Unattached(list),
+        tilo_ui_app::widget::Unattached(list),
         (280, 360),
         Theme::dark(),
     );
@@ -1371,12 +1371,12 @@ fn unowned(list: NavList) -> Driver {
 }
 
 fn list_of(h: &Driver) -> &NavList {
-    &h.root::<tilo_ui::widget::Unattached<NavList>>().0
+    &h.root::<tilo_ui_app::widget::Unattached<NavList>>().0
 }
 
 fn take(h: &mut Driver) -> Option<serde_json::Value> {
     use tilo_ui_base::widget::controls::ActionControls;
-    h.root_mut::<tilo_ui::widget::Unattached<NavList>>()
+    h.root_mut::<tilo_ui_app::widget::Unattached<NavList>>()
         .0
         .take_control_invocation()
         .and_then(|invocation| invocation.arguments.get("value").cloned())
@@ -1421,13 +1421,13 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
         list_of(&h)
     ));
     let header_y = work.y0
-        - tilo_ui::widget::internals::nav_list::nav_row::nav_row_height(&Theme::dark()) / 2.0;
+        - tilo_ui_app::widget::internals::nav_list::nav_row::nav_row_height(&Theme::dark()) / 2.0;
     click_at(&mut h, work.x1 - s2 - 10.0, header_y);
     assert_eq!(take(&mut h), Some(serde_json::json!("folders")));
     assert_eq!(take(&mut h), None);
 
     tilo_ui_base::widget::controls::refresh_control_action_availability(
-        &mut h.root_mut::<tilo_ui::widget::Unattached<NavList>>().0,
+        &mut h.root_mut::<tilo_ui_app::widget::Unattached<NavList>>().0,
         &HashSet::new(),
     );
     let node = Widget::accessibility(list_of(&h)).expect("semantics");
@@ -1490,7 +1490,7 @@ fn bound_check_rename_and_delete_run_their_actions() {
     assert_eq!(take(&mut h), Some(serde_json::json!(["work", true])));
     tilo_ui_base::widget::Widget::set_focus(
         &mut *h
-            .root_mut::<tilo_ui::widget::Unattached<NavList>>()
+            .root_mut::<tilo_ui_app::widget::Unattached<NavList>>()
             .0
             .test_list_mut(),
         true,
@@ -1523,7 +1523,7 @@ fn a_zero_count_is_no_count() {
     };
     assert_eq!(
         chosen(NavItem::new("inbox", "Inbox").count(6)).selected_count(),
-        Some(tilo_ui::widget::internals::nav_list::nav_row::NavCount::Neutral(6))
+        Some(tilo_ui_app::widget::internals::nav_list::nav_row::NavCount::Neutral(6))
     );
     assert_eq!(
         chosen(NavItem::new("inbox", "Inbox").count(0)).selected_count(),
@@ -1546,8 +1546,8 @@ fn a_zero_count_is_no_count() {
 // choosing one runs what the view bound, without the host's menu.
 #[test]
 fn a_rows_own_menu_opens_where_it_stands_and_runs_its_command() {
-    use tilo_ui::widget::MenuItemProps;
-    use tilo_ui::widget::attached::MenuPart;
+    use tilo_ui_app::widget::MenuItemProps;
+    use tilo_ui_app::widget::attached::MenuPart;
     use tilo_ui_base::{component::Event, component::Fired, component::Intent};
     use winit::event::MouseButton;
 
@@ -1651,9 +1651,9 @@ fn a_section_action_is_pressed_at_the_input_s_target() {
         (
             nav.test_section_action_rect("section:folders", header)
                 .expect("the header's action"),
-            tilo_ui::widget::internals::nav_list::nav_row::nav_section_layout(
+            tilo_ui_app::widget::internals::nav_list::nav_row::nav_section_layout(
                 &Theme::dark(),
-                &tilo_ui::widget::internals::nav_list::nav_row::NavSectionFace::new(header, "")
+                &tilo_ui_app::widget::internals::nav_list::nav_row::NavSectionFace::new(header, "")
                     .action(Icon::Plus),
             )
             .action
@@ -1701,7 +1701,7 @@ fn a_section_action_is_pressed_at_the_input_s_target() {
 /// A pointer's hover tints the row over the theme's motion, then rests.
 #[test]
 fn a_hover_comes_in_over_the_theme_motion_and_then_rests() {
-    use tilo_ui::time::testing::with_monotonic_time;
+    use tilo_ui_app::time::testing::with_monotonic_time;
     let items = (0..6)
         .map(|row| NavItem::new(format!("row-{row}"), format!("Row {row}")))
         .collect();
@@ -1712,7 +1712,7 @@ fn a_hover_comes_in_over_the_theme_motion_and_then_rests() {
         .row_rect("row-2")
         .expect("row 2 shown")
         .center();
-    let t0 = tilo_ui::time::now();
+    let t0 = tilo_ui_app::time::now();
     with_monotonic_time(t0, || {
         tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
@@ -1722,7 +1722,7 @@ fn a_hover_comes_in_over_the_theme_motion_and_then_rests() {
             "the tint is part way in: the row asks the host for the next frame"
         );
     });
-    let settled = t0 + tilo_ui::time::Duration::from_millis(1_000);
+    let settled = t0 + tilo_ui_app::time::Duration::from_millis(1_000);
     with_monotonic_time(settled, || {
         h.poll_frame().expect("the frame paints");
         assert!(

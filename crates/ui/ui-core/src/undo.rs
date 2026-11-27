@@ -1,6 +1,6 @@
 //! Seeing and driving undo from inside a widget. Undo itself lives on
 //! [`State`](crate::state::State) / [`UndoLog`](collab_types::history::UndoLog), and the host
-//! ([`App`](crate::app::App)) drives it from Ctrl+Z.
+//! (the runner's `App`) drives it from Ctrl+Z.
 
 pub use tilo_ui_base::{
     widget::undo_access::CommittedActions, widget::undo_access::LocalUndo,
@@ -14,7 +14,7 @@ pub use tilo_ui_base::{
 
 /// Turn the actions a widget dispatched during the last event into exactly one undo
 /// boundary. `root` and the `node_map` pointers must point at widgets that are alive for
-/// the call — the invariant every `node_map` sweep in [`App`](crate::app::App) already relies
+/// the call — the invariant every `node_map` sweep in the runner's `App` already relies
 /// on.
 #[cfg(feature = "model")]
 pub fn record_dispatched_action<S: std::hash::BuildHasher>(
@@ -48,7 +48,12 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
 }
 
 #[cfg(feature = "model")]
-pub(crate) unsafe fn record_dispatched_action_bound(
+///
+/// # Safety
+///
+/// Every widget pointer in `nodes` (and `root`) points at a live widget of the window's
+/// current tree that nothing else borrows for this call.
+pub unsafe fn record_dispatched_action_bound(
     state: &mut crate::state::State,
     root: *mut dyn tilo_ui_base::widget::Widget,
     nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,

@@ -7,9 +7,9 @@
     reason = "in a test these are the assertion"
 )]
 
-use crate::component_testing::*;
-use crate::testing::harness;
-use crate::{
+use tilo_ui_app::component_testing::*;
+use tilo_ui_app::headless::harness;
+use tilo_ui_app::{
     widget::Checkbox, widget::CheckboxProps, widget::Dropdown, widget::DropdownProps,
     widget::NumberInput, widget::NumberInputProps, widget::Slider, widget::SliderProps,
     widget::Stepper, widget::StepperProps, widget::Toggle, widget::ToggleGroup,
@@ -166,7 +166,7 @@ tilo_test_env::scenario! {
             Node::new("Badge", "n", &queue).prop("count", Value::Int(1)),
         );
         assert_eq!(
-            <Vec<crate::widget::SegmentProps> as PartType>::accepts(),
+            <Vec<tilo_ui_app::widget::SegmentProps> as PartType>::accepts(),
             Accepts::Component("Segment".into())
         );
         assert!(ToggleGroupProps::from_source(&mut node).is_err());

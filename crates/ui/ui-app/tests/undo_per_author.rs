@@ -1,6 +1,6 @@
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
-use tilo_ui::state::State;
+use tilo_ui_app::state::State;
 use tilo_ui_base::permissions::MemberId;
 
 tilo_test_env::scenario! {

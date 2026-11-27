@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use tilo_theme_sdk::wire;
-use tilo_ui::widget::Button;
+use tilo_ui_app::widget::Button;
 use tilo_ui_base::part_paint::PartScene;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;

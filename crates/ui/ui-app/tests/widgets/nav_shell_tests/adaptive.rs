@@ -3,7 +3,7 @@
 //! arrow keys) one to one and is remembered per app.
 
 use super::*;
-use tilo_ui::widget::{NavItem, NavList, NavSection};
+use tilo_ui_app::widget::{NavItem, NavList, NavSection};
 
 fn places() -> NavList {
     NavList::new(place_sections()).with_id("places")

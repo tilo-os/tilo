@@ -5,14 +5,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::profiling::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::profiling::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -93,7 +93,7 @@ fn profiler_records_passes_commits_and_over_budget_frames() {
 
     {
         let mut profiler = FrameProfiler::for_capture();
-        let started = tilo_ui::time::now();
+        let started = tilo_ui_app::time::now();
         let phases = |dispatch, commit| InputPhases {
             dispatch: Duration::from_micros(dispatch),
             hit_test: Duration::from_micros(3),
@@ -103,7 +103,7 @@ fn profiler_records_passes_commits_and_over_budget_frames() {
         };
         profiler.record_input(started, Duration::from_micros(120), phases(100, 4));
         profiler.record_input(
-            tilo_ui::time::now(),
+            tilo_ui_app::time::now(),
             Duration::from_micros(40),
             phases(20, 9),
         );
@@ -173,10 +173,13 @@ fn profiler_records_passes_commits_and_over_budget_frames() {
     {
         let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
         let observed = clicks.clone();
-        let root = tilo_ui::widget::Button::new("activate", "Activate")
+        let root = tilo_ui_app::widget::Button::new("activate", "Activate")
             .on_click(move || observed.set(observed.get() + 1));
-        let mut driver =
-            tilo_ui::headless::Driver::new(tilo_ui::State::new(), Box::new(root), (400, 300));
+        let mut driver = tilo_ui_app::headless::Driver::new(
+            tilo_ui_app::State::new(),
+            Box::new(root),
+            (400, 300),
+        );
         let scenario = PerfScenario {
             name: "real-click".into(),
             viewport: (400, 300),
@@ -190,9 +193,9 @@ fn profiler_records_passes_commits_and_over_budget_frames() {
 
     {
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut driver = tilo_ui::headless::Driver::new(
-                tilo_ui::State::new(),
-                Box::new(tilo_ui::widget::Text::new("Root")),
+            let mut driver = tilo_ui_app::headless::Driver::new(
+                tilo_ui_app::State::new(),
+                Box::new(tilo_ui_app::widget::Text::new("Root")),
                 (400, 300),
             );
             let scenario = PerfScenario {

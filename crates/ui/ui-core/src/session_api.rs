@@ -51,7 +51,7 @@ pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLau
 /// this app is behind it. An invalid launch, no API or workspace to open it in, or the
 /// API's refusal.
 #[cfg(feature = "model")]
-pub(crate) fn start_application_launch(
+pub fn start_application_launch(
     api: Option<&mut dyn SessionApi>,
     route: Option<&tilo_ui_base::collaboration::RouteSpec>,
     payload: &[u8],

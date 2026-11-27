@@ -60,7 +60,7 @@ impl PendingControlCallback {
     fn invoke(&self) {
         (self.invoke.borrow_mut())();
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn invoke_for_test(&self) {
         self.invoke();
     }
@@ -75,11 +75,11 @@ pub(super) struct Composition {
     preview: Option<super::PreviewSide>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// Walks of a History's owned layout subtrees on this thread, so tests can hold a focus-order
     /// recomputation to one walk, not one per node.
-    pub(crate) static OWNERSHIP_WALKS: Cell<usize> = const { Cell::new(0) };
+    pub static OWNERSHIP_WALKS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[allow(
@@ -171,7 +171,7 @@ pub struct HistoryHost {
     pending_control_capture_failures: Vec<String>,
     pending_control_recovery: Vec<super::pending_controls::SealedComponentControl>,
     suspended_control_queues: Vec<crate::bound_dispatch::CallbackBinding>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pending_control_callbacks: HashMap<String, PendingControlCallback>,
     toolbar_dirty: bool,
     toolbar_generation: u64,
@@ -450,7 +450,7 @@ impl HistoryHost {
             pending_control_capture_failures: Vec::new(),
             pending_control_recovery: Vec::new(),
             suspended_control_queues: Vec::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             pending_control_callbacks: HashMap::new(),
             toolbar_dirty: false,
             toolbar_generation: 0,
@@ -966,7 +966,7 @@ impl HistoryHost {
     ) -> Option<super::pending_controls::ContinuationToken> {
         self.pending_controls.token(id)
     }
-    pub(crate) fn prepare_pending_control(
+    pub fn prepare_pending_control(
         &mut self,
         token: &super::pending_controls::ContinuationToken,
     ) -> Option<super::pending_controls::PreparedContinuation> {
@@ -994,7 +994,7 @@ impl HistoryHost {
         }
         cancelled
     }
-    pub(crate) fn drain_pending_control_commands(
+    pub fn drain_pending_control_commands(
         &self,
     ) -> Vec<super::pending_controls::ContinuationCommand> {
         self.pending_controls.drain_commands()
@@ -1016,8 +1016,8 @@ impl HistoryHost {
             .map(|entries| entries.iter().map(|entry| entry.id).collect())
             .unwrap_or_default()
     }
-    #[cfg(test)]
-    pub(crate) fn queue_pending_control_command_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn queue_pending_control_command_for_test(
         &self,
         command: super::pending_controls::ContinuationCommand,
     ) {
@@ -1027,11 +1027,8 @@ impl HistoryHost {
             .push_back(command);
         super::note_news();
     }
-    #[cfg(test)]
-    pub(crate) fn pending_control_callback_for_test(
-        &self,
-        id: &str,
-    ) -> Option<PendingControlCallback> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_control_callback_for_test(&self, id: &str) -> Option<PendingControlCallback> {
         self.pending_control_callbacks.get(id).cloned()
     }
     pub fn has_saved_focus(&self) -> bool {
@@ -1085,7 +1082,12 @@ impl HistoryHost {
             _ => false,
         }
     }
-    pub(crate) unsafe fn preserve_focus(
+    ///
+    /// # Safety
+    ///
+    /// Every widget pointer in `nodes` points at a live widget of the window's
+    /// current tree that nothing else borrows for this call.
+    pub unsafe fn preserve_focus(
         &mut self,
         focus: Option<NodeId>,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
@@ -1098,7 +1100,12 @@ impl HistoryHost {
             };
         }
     }
-    pub(crate) unsafe fn restore_focus(
+    ///
+    /// # Safety
+    ///
+    /// Every widget pointer in `nodes` points at a live widget of the window's
+    /// current tree that nothing else borrows for this call.
+    pub unsafe fn restore_focus(
         &mut self,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
         bindings: &tilo_ui_base::widget::bound_nodes::BoundNodeMap,
@@ -1214,7 +1221,7 @@ impl HistoryHost {
     /// Every layout node this History owns, collected in one walk: the set [`Self::owns_node`] answers
     /// for one node, for callers that ask it of every node in a composition.
     pub fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
         let mut owned = HashSet::new();
         let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
@@ -1226,7 +1233,7 @@ impl HistoryHost {
         owned
     }
     pub fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
         let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
         while let Some(candidate) = pending.pop() {
@@ -1695,7 +1702,7 @@ impl HistoryHost {
         reason = "one retained History toolbar keeps navigation, pending continuation and refusal controls together"
     )]
     fn rebuild_toolbar(&mut self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.pending_control_callbacks.clear();
         let mut toolbar = Column::new()
             .with_no_padding()
@@ -1787,7 +1794,7 @@ impl HistoryHost {
                         commands.borrow_mut().push_back(command.clone());
                         super::note_news();
                     });
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     self.pending_control_callbacks
                         .insert(id.clone(), callback.clone());
                     row = row.push(Box::new(
@@ -1801,7 +1808,7 @@ impl HistoryHost {
                         );
                         super::note_news();
                     });
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     self.pending_control_callbacks
                         .insert(cancel_id.clone(), callback.clone());
                     row = row.push(Box::new(
@@ -2175,7 +2182,7 @@ impl HistoryHost {
 }
 
 /// A window's History, as its window holds it.
-pub(crate) type HistoryChrome = Box<HistoryHost>;
+pub type HistoryChrome = Box<HistoryHost>;
 
 /// The window's History control `history` offers its window's bar: none while there is no History to
 /// open.

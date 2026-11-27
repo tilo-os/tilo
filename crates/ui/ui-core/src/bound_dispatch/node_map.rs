@@ -32,7 +32,7 @@ impl From<WalkError> for BoundDispatchError {
     clippy::expect_used,
     reason = "the app layer implements component scopes for callback bindings alone"
 )]
-pub(crate) fn callback_binding_of(scope: &dyn ComponentScope) -> &CallbackBinding {
+pub fn callback_binding_of(scope: &dyn ComponentScope) -> &CallbackBinding {
     (scope as &dyn std::any::Any)
         .downcast_ref()
         .expect("every component scope a widget answers is a callback binding")
@@ -187,7 +187,7 @@ pub unsafe fn invoke_bound_node<R>(
 
 /// The bound target of `control`, a control one of the window's components registered.
 #[cfg(feature = "model")]
-pub(crate) fn bound_target(
+pub fn bound_target(
     control: &tilo_ui_base::control_domain::ComponentControl,
 ) -> super::BoundActionTarget {
     let binding = callback_binding_of(&*control.binding).clone();
@@ -203,7 +203,7 @@ pub(crate) fn bound_target(
 
 /// The control `target` names, as the window's control domain holds a component's.
 #[cfg(feature = "model")]
-pub(crate) fn component_control(
+pub fn component_control(
     target: super::BoundActionTarget,
 ) -> tilo_ui_base::control_domain::ComponentControl {
     tilo_ui_base::control_domain::ComponentControl {

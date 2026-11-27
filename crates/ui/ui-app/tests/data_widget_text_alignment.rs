@@ -27,11 +27,11 @@
 
 use std::collections::HashMap;
 
-use tilo_ui::State;
-use tilo_ui::headless::{Driver, InspectionNode};
-use tilo_ui::search::{SearchGroup, SearchResult};
-use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use tilo_ui::{
+use tilo_ui_app::State;
+use tilo_ui_app::headless::{Driver, InspectionNode};
+use tilo_ui_app::search::{SearchGroup, SearchResult};
+use tilo_ui_app::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui_app::{
     widget::Banner, widget::Button, widget::Chart, widget::Column, widget::DescribedTreeView,
     widget::ListRowFace, widget::SearchResultsView, widget::Section, widget::SectionHeader,
     widget::Series, widget::StatGroup, widget::StatTile, widget::Text, widget::TreeViewNodeProps,
@@ -57,7 +57,7 @@ const SEARCH_TEXT_X: f64 = 8.0 + 12.0 + 30.0;
 // The production formulas the widgets size their bands from — one line of
 // type as the renderer lays it out, and a pinned floor grown by content plus
 // padding — so the expectations below cannot drift from the widgets.
-use tilo_ui::widget::data_table::{text_band as band, type_line_height as line};
+use tilo_ui_app::widget::data_table::{text_band as band, type_line_height as line};
 
 struct Capture {
     harness: Driver,
@@ -595,7 +595,7 @@ fn card_headers_centre_on_their_icon_line_and_scale_once() {
                 chart.x0 + 16.0,
                 legend_top,
                 chart.x0 + 80.0,
-                legend_top + tilo_ui::widget::chart_legend::ROW_HEIGHT,
+                legend_top + tilo_ui_app::widget::chart_legend::ROW_HEIGHT,
             );
             let label = ink(&cap.image, name);
             // The rasterized ink of a small line can sit a little above the

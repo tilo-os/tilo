@@ -1,23 +1,23 @@
 //! A composition rendered as a page, driven through a real widget frame: the elements its
 //! roles name, a call's tile as a canvas, a picked date and a link as what they are, a field's
 //! words and caret, a screenshot's tools over it, and a menu as its own layer.
-use tilo_ui::composition::page::Page;
-use tilo_ui::composition::page::testing::{element_with, number_of, numbers};
-use tilo_ui::composition::page::{PageAction, Patch};
-use tilo_ui::composition::{Composed, Composition};
+use tilo_ui_app::composition::page::Page;
+use tilo_ui_app::composition::page::testing::{element_with, number_of, numbers};
+use tilo_ui_app::composition::page::{PageAction, Patch};
+use tilo_ui_app::composition::{Composed, Composition};
 
 /// A real widget's frame, laid out at `size`, as a page reads it: its composition with the
 /// pictures of what only paints.
 fn framed(
     root: Box<dyn tilo_ui_base::widget::Widget>,
     size: (u32, u32),
-) -> tilo_ui::headless::Driver {
-    let mut frame = tilo_ui::headless::Driver::new(tilo_ui::State::new(), root, size);
+) -> tilo_ui_app::headless::Driver {
+    let mut frame = tilo_ui_app::headless::Driver::new(tilo_ui_app::State::new(), root, size);
     frame.relayout();
     frame
 }
 
-fn shown(frame: &mut tilo_ui::headless::Driver) -> Composition {
+fn shown(frame: &mut tilo_ui_app::headless::Driver) -> Composition {
     let mut composition = frame.composition();
     frame.paint_pictures(&mut composition);
     composition
@@ -27,7 +27,7 @@ fn shown(frame: &mut tilo_ui::headless::Driver) -> Composition {
 /// the page decodes the call's stream into, never a still of the tile's paint.
 #[test]
 fn a_call_tile_is_a_canvas_the_page_decodes_and_never_a_picture() {
-    use tilo_ui::widget::{CallSource, CallTile};
+    use tilo_ui_app::widget::{CallSource, CallTile};
     let person = "ab".repeat(32);
     let tile = CallTile::of(
         tilo_ui_base::component::Person::new(tilo_actions::MemberId::person(&person), "Ada"),
@@ -65,8 +65,11 @@ fn a_call_tile_is_a_canvas_the_page_decodes_and_never_a_picture() {
 /// A picked day says on the page the date it stands for, which a browser and a reader read.
 #[test]
 fn a_picked_date_is_a_time_on_the_page() {
-    let day = tilo_ui::jiff::civil::date(2026, 11, 23);
-    let mut frame = framed(Box::new(tilo_ui::widget::DatePicker::new(day)), (360, 420));
+    let day = tilo_ui_app::jiff::civil::date(2026, 11, 23);
+    let mut frame = framed(
+        Box::new(tilo_ui_app::widget::DatePicker::new(day)),
+        (360, 420),
+    );
     let html = Page::new().render(&shown(&mut frame));
     assert!(
         html.contains("<time datetime=\"2026-11-23\">"),
@@ -78,7 +81,9 @@ fn a_picked_date_is_a_time_on_the_page() {
 #[test]
 fn a_link_is_a_link_to_its_address() {
     let mut frame = framed(
-        Box::new(tilo_ui::widget::Link::new("https://tilo.so/docs").with_label("Read the docs")),
+        Box::new(
+            tilo_ui_app::widget::Link::new("https://tilo.so/docs").with_label("Read the docs"),
+        ),
         (320, 60),
     );
     let html = Page::new().render(&shown(&mut frame));
@@ -99,7 +104,7 @@ fn a_link_is_a_link_to_its_address() {
 /// follows each.
 #[test]
 fn a_fields_focus_words_and_caret_come_from_the_page() {
-    let mut frame = framed(Box::new(tilo_ui::widget::TextInput::local()), (400, 80));
+    let mut frame = framed(Box::new(tilo_ui_app::widget::TextInput::local()), (400, 80));
     let mut page = Page::new();
     let html = page.render(&shown(&mut frame));
     assert!(
@@ -146,7 +151,7 @@ fn a_fields_focus_words_and_caret_come_from_the_page() {
         .expect("the caret is moved");
     assert_eq!(
         frame
-            .widget_mut::<tilo_ui::widget::TextInput>()
+            .widget_mut::<tilo_ui_app::widget::TextInput>()
             .expect("the field")
             .selection_anchor_focus_public(),
         Some((4, 7)),
@@ -158,7 +163,7 @@ fn a_fields_focus_words_and_caret_come_from_the_page() {
 #[test]
 fn a_window_well_holds_what_its_host_shows_for_the_window() {
     let mut frame = framed(
-        Box::new(tilo_ui::widget::WindowWell::new("tab-7")),
+        Box::new(tilo_ui_app::widget::WindowWell::new("tab-7")),
         (640, 400),
     );
     let mut page = Page::new();
@@ -185,9 +190,9 @@ fn a_window_well_holds_what_its_host_shows_for_the_window() {
 #[test]
 fn a_screenshot_being_marked_up_is_its_picture_with_its_tools_over_it() {
     let rgba: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![20_u8; 64 * 64 * 4]);
-    let mut frame = tilo_ui::headless::Driver::for_root(
-        tilo_ui::State::new(),
-        tilo_ui::widget::ScreenshotMarkup::new(rgba, 64, 64),
+    let mut frame = tilo_ui_app::headless::Driver::for_root(
+        tilo_ui_app::State::new(),
+        tilo_ui_app::widget::ScreenshotMarkup::new(rgba, 64, 64),
         (900, 700),
         tilo_ui_base::Theme::dark().with_reduce_motion(true),
     );
@@ -214,7 +219,7 @@ fn a_screenshot_being_marked_up_is_its_picture_with_its_tools_over_it() {
 /// button. A press on one of its rows, on the page, runs the row's action.
 #[test]
 fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
-    use tilo_ui::widget::{Button, Column, MenuItem, Text};
+    use tilo_ui_app::widget::{Button, Column, MenuItem, Text};
     use tilo_ui_base::icons::Icon;
     let pinned = std::rc::Rc::new(std::cell::Cell::new(false));
     let pin = std::rc::Rc::clone(&pinned);
@@ -225,8 +230,11 @@ fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
             MenuItem::icon_action(Icon::Pin, "Pin to the top", move || pin.set(true)),
         ])))
         .push(Box::new(Text::new("The boiler man comes at ten")));
-    let mut driver =
-        tilo_ui::app::driver::Driver::new(tilo_ui::State::new(), Box::new(tree), (480, 320));
+    let mut driver = tilo_ui_app::app::driver::Driver::new(
+        tilo_ui_app::State::new(),
+        Box::new(tree),
+        (480, 320),
+    );
     driver.relayout();
     let mut page = Page::new();
     let closed = driver.composition();

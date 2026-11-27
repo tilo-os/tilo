@@ -5,14 +5,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::toolbar::Orientation;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::toolbar::Orientation;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::Action;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
@@ -32,7 +32,7 @@ use winit::keyboard::*;
 fn held_activation_keys_do_not_repeat_admitted_toolbar_commands() {
     use std::cell::Cell;
     use std::rc::Rc;
-    use tilo_ui::app::driver::Framed;
+    use tilo_ui_app::app::driver::Framed;
     let _settled = tilo_ui_base::motion::testing::settled();
     let press = || WindowEvent::KeyboardInput {
         device_id: winit::event::DeviceId::dummy(),
@@ -50,7 +50,12 @@ fn held_activation_keys_do_not_repeat_admitted_toolbar_commands() {
             .push_button("Open workspace settings", move || {
                 count.set(count.get() + 1)
             });
-        let mut frame = Framed::new(tilo_ui::State::new(), toolbar, (width, 480), Theme::dark());
+        let mut frame = Framed::new(
+            tilo_ui_app::State::new(),
+            toolbar,
+            (width, 480),
+            Theme::dark(),
+        );
         assert!(Framed::harness(&frame).native_app_audit().is_certified());
         if width == 100 {
             Framed::harness_mut(&mut frame)

@@ -5,14 +5,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
-use tilo_ui::widget::{CanvasPlace, PlaceProps};
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
+use tilo_ui_app::widget::{CanvasPlace, PlaceProps};
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -62,7 +62,7 @@ fn a_right_click_on_a_place_opens_its_actions() {
     )
     .expect("the place lays out");
     let mut host = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         place,
         (400, 300),
         tilo_ui_base::Theme::dark(),

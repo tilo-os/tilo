@@ -1,6 +1,9 @@
-use crate::app::driver::Driver;
-use crate::component_testing::fired;
-use crate::widget::find_controls::{FindControls, FindControlsProps};
+//! The find bar's controls over a window's find: what the person sees and what each act asks
+//! the app for.
+
+use tilo_ui_app::component_testing::fired;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::widget::find_controls::{FindControls, FindControlsProps};
 use tilo_ui_base::Intents;
 use tilo_ui_base::component::{Described, Event, Fired, Intent, Value};
 use tilo_ui_base::theme::Theme;
@@ -24,7 +27,8 @@ fn controls(width: u32, set: impl FnOnce(&mut FindControlsProps)) -> (Driver, In
     props.close = Event::View(Intent::new(&queue, "find", "close"));
     set(&mut props);
     let find = FindControls::from_props("find", props);
-    let mut harness = Driver::for_root(crate::State::new(), find, (width, 48), Theme::light());
+    let mut harness =
+        Driver::for_root(tilo_ui_app::State::new(), find, (width, 48), Theme::light());
     harness.relayout();
     (harness, queue)
 }

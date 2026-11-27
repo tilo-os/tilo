@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 use tilo_actions::ActionBinding;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::state::State;
-use tilo_ui::widget::internals::media_transport::{Metrics, layout_for_test};
-use tilo_ui::widget::media_transport::*;
-use tilo_ui::{widget::NavShell, widget::Text};
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::state::State;
+use tilo_ui_app::widget::internals::media_transport::{Metrics, layout_for_test};
+use tilo_ui_app::widget::media_transport::*;
+use tilo_ui_app::{widget::NavShell, widget::Text};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::ContentKind;
 use tilo_ui_base::widget::Widget;
@@ -341,7 +341,7 @@ fn the_volume_is_reachable_at_every_width() {
 fn the_knob_at_either_end_clears_the_times() {
     let mut m = Metrics::of(&Theme::dark());
     m.time = 32.0;
-    let reach = tilo_ui::widget::SliderFace::overhang();
+    let reach = tilo_ui_app::widget::SliderFace::overhang();
     for width in [360.0, 900.0, 1400.0, 3440.0] {
         let (form, rects, _) = layout_for_test(&playing(), &handed_for_test(&actions()), &m, width);
         let scrub = rects[SCRUBBER];
@@ -523,7 +523,7 @@ fn a_band_reached_by_a_finger_grows_its_scrubber() {
 /// manual region: its controls are placed by the band's own policy, never by a plain flow.
 #[test]
 fn a_declared_transport_hands_the_window_its_bands_layout() {
-    use tilo_ui::widget::{DeclaredTransport, TransportTriggers};
+    use tilo_ui_app::widget::{DeclaredTransport, TransportTriggers};
     let triggers = TransportTriggers {
         play_pause: None,
         previous: None,
@@ -584,7 +584,7 @@ fn a_declared_transport_hands_the_window_its_bands_layout() {
 /// length — never a clock the view has to keep in step with.
 #[test]
 fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
-    use tilo_ui::widget::{DeclaredTransport, MediaTransportProps};
+    use tilo_ui_app::widget::{DeclaredTransport, MediaTransportProps};
     use tilo_ui_base::component::Described;
 
     let engine = media::MediaEngine::new_synthesized();
@@ -639,7 +639,7 @@ fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
 /// stopped playhead asks for neither.
 #[test]
 fn a_playing_song_ticks_its_playhead_rather_than_animating() {
-    use tilo_ui::widget::{DeclaredTransport, MediaTransportProps};
+    use tilo_ui_app::widget::{DeclaredTransport, MediaTransportProps};
     use tilo_ui_base::component::Described;
 
     let declared = |playing| MediaTransportProps {
@@ -659,12 +659,12 @@ fn a_playing_song_ticks_its_playhead_rather_than_animating() {
         !transport.needs_animation_frame(),
         "a playing playhead is no animation: a window showing it settles"
     );
-    let now = tilo_ui::time::now();
+    let now = tilo_ui_app::time::now();
     let tick = transport
         .next_wake_deadline()
         .expect("a playing playhead ticks");
     assert!(
-        tick > now && tick <= now + tilo_ui::time::Duration::from_secs(1),
+        tick > now && tick <= now + tilo_ui_app::time::Duration::from_secs(1),
         "the playhead comes back within a tick, not before or long after: {tick:?} at {now:?}"
     );
 

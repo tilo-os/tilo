@@ -15,13 +15,7 @@
 
 use super::capability::FrameworkHistoryTopology;
 use super::*;
-#[cfg(test)]
-use crate::application::{LaunchTarget, RestoreInput};
-#[cfg(test)]
-use crate::application_test_support::{
-    APP, ProbeHarness, runner_permissions, runner_probe_definition,
-};
-use crate::{State, headless::Driver, widget::Button, widget::Column, widget::Text};
+use crate::{widget::Button, widget::Column, widget::Text};
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -592,9 +586,11 @@ impl crate::widget::AppWidget for LiveOwner {
     }
 }
 
-pub fn retained_identity_fixture(
+/// A live owner whose continuation identity the caller mutates, as the managed root a driver
+/// mounts, with its start count and its emitter.
+pub fn retained_identity_root(
     identity: Rc<MutableContinuationIdentity>,
-) -> (Driver, Rc<Cell<usize>>, Rc<RefCell<ActionEmitter<()>>>) {
+) -> (ManagedRoot, Rc<Cell<usize>>, Rc<RefCell<ActionEmitter<()>>>) {
     let starts = Rc::new(Cell::new(0));
     let resource =
         mutable_identity_resources("mutable-owner", "fixture.mutable-export", &identity).remove(0);
@@ -624,26 +620,11 @@ pub fn retained_identity_fixture(
         mutable_identity: Some(identity),
     };
     (
-        Driver::from_managed_root(
-            State::new(),
-            ManagedRoot::new(Box::new(owner), registration()),
-            (900, 650),
-        )
-        .unwrap(),
+        ManagedRoot::new(Box::new(owner), registration()),
         starts,
         emitter,
     )
 }
-
-#[cfg(test)]
-static BOUND: HistoryDefinition = HistoryDefinition {
-    app_id: APP,
-    scopes: &[HistoryScopeDefinition {
-        key: "document",
-        title: "Bound notebook",
-        presentation: HistoryPresentation::Domain { create: preview },
-    }],
-};
 
 /// The text a restore fixture's record holds at `body`.
 pub fn body(doc: &automerge::AutoCommit) -> String {
@@ -665,17 +646,3 @@ pub static RESTORABLE: HistoryDefinition = HistoryDefinition {
         presentation: HistoryPresentation::Domain { create: preview },
     }],
 };
-
-#[cfg(test)]
-pub fn component_with_history() -> (ProbeHarness, crate::application::AppComponent) {
-    let host = ProbeHarness::new();
-    let definition = runner_probe_definition();
-    let context = host
-        .prepare_with_permissions(definition, 950, &LaunchTarget::New, runner_permissions())
-        .unwrap();
-    let mut component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    component.register_document_history(&BOUND).unwrap();
-    (host, component)
-}

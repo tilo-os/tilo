@@ -14,8 +14,8 @@ use tilo_actions::{
     PROMPTED_PARAM, ParamType, ResourceSpec,
 };
 
-use tilo_ui::action_palette::ActionPalette;
-use tilo_ui::state::State;
+use tilo_ui_app::action_palette::ActionPalette;
+use tilo_ui_app::state::State;
 
 const PEER_A: &[u8] = b"action-contract-peer-a";
 const PEER_B: &[u8] = b"action-contract-peer-b";
@@ -49,7 +49,7 @@ pub fn hydrated(doc: &mut AutoCommit) -> automerge::hydrate::Value {
     let mut content = doc.fork();
     let bookkeeping: Vec<String> = content
         .keys(automerge::ROOT)
-        .filter(|key| key.starts_with(tilo_ui::history_source::steps::BOOKKEEPING_PREFIX))
+        .filter(|key| key.starts_with(tilo_ui_app::history_source::steps::BOOKKEEPING_PREFIX))
         .collect();
     for key in bookkeeping {
         let _ = content.delete(automerge::ROOT, key);

@@ -31,20 +31,20 @@ static TAKING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::
 
 /// The process's loop starts, with one window taking invocations.
 #[cfg(feature = "native")]
-pub(crate) fn process_starts() {
+pub fn process_starts() {
     TAKING.store(1, std::sync::atomic::Ordering::Release);
 }
 
 /// The shell asked the process for one more window: it takes invocations too.
 #[cfg(feature = "native")]
-pub(crate) fn window_takes_invocations() {
+pub fn window_takes_invocations() {
     TAKING.fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
 /// This window takes no more invocations: it answers the ones it was handed and goes. One
 /// that was the process's last to take them lets go of its link, so what is asked of the app
 /// from now on reaches a process that takes it, rather than one that is on its way out.
-pub(crate) fn window_stops_taking_invocations() {
+pub fn window_stops_taking_invocations() {
     #[cfg(feature = "local-daemons")]
     {
         use std::sync::atomic::Ordering;
@@ -110,8 +110,8 @@ pub fn requested_reveal() -> Option<String> {
 /// A launch whose record is not on this device yet: the workspace's join, waited for off the window's
 /// thread, and the wake scope the app built after it takes, which the join's manager wakes.
 pub struct Arriving {
-    pub(crate) join: tilo_ui_base::collaboration::NativeJoin,
-    pub(crate) scope: crate::wake::WakeScope,
+    pub join: tilo_ui_base::collaboration::NativeJoin,
+    pub scope: crate::wake::WakeScope,
 }
 
 #[cfg(all(feature = "native", feature = "model"))]
@@ -137,7 +137,7 @@ mod transport {
         /// The window's record arrives with its workspace's join, waited for off the
         /// window's thread; the window is built once it is over.
         #[cfg(all(feature = "native", feature = "model"))]
-        pub(crate) arriving: Option<super::Arriving>,
+        pub arriving: Option<super::Arriving>,
     }
 
     /// Hand a [`PendingWindow`] to the loop that builds windows; `false` once that loop
@@ -148,8 +148,8 @@ mod transport {
     /// that builds its window.
     #[derive(Clone)]
     pub struct PendingWindow {
-        pub(crate) slot: Arc<Mutex<Option<WindowOpening>>>,
-        pub(crate) reopen: Option<Reopen>,
+        pub slot: Arc<Mutex<Option<WindowOpening>>>,
+        pub reopen: Option<Reopen>,
     }
 
     impl std::fmt::Debug for PendingWindow {
@@ -179,7 +179,7 @@ mod transport {
         }
 
         /// Carry `opening` again.
-        pub(crate) fn put(&self, opening: WindowOpening) {
+        pub fn put(&self, opening: WindowOpening) {
             match self.slot.lock() {
                 Ok(mut slot) => *slot = Some(opening),
                 Err(poisoned) => *poisoned.into_inner() = Some(opening),
@@ -420,7 +420,7 @@ mod transport {
     /// Take back the opening of the window being built, with what it has not given yet
     /// (its shell-ui connection), to build it later: its record arrives with its join.
     #[cfg(all(feature = "native", feature = "model"))]
-    pub(crate) fn keep_building() -> Option<WindowOpening> {
+    pub fn keep_building() -> Option<WindowOpening> {
         BUILDING.with(|slot| slot.borrow_mut().take())
     }
 

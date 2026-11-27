@@ -2,11 +2,11 @@
 //! the next frame lays it out.
 use std::sync::Arc;
 
-use tilo_ui::State;
-use tilo_ui::headless::Driver;
-use tilo_ui::live_pictures::{address, forget, publish};
-use tilo_ui::pictures::Pictures;
-use tilo_ui::widget::{Image, PictureSource, Row};
+use tilo_ui_app::State;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::live_pictures::{address, forget, publish};
+use tilo_ui_app::pictures::Pictures;
+use tilo_ui_app::widget::{Image, PictureSource, Row};
 
 #[test]
 fn a_window_shows_the_newest_frame_at_the_size_it_arrived() {

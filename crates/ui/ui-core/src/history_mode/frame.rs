@@ -1,15 +1,15 @@
 //! Complete input-frame suppression, restored across nesting and unwind.
 thread_local! { static FRAME_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-pub(crate) struct FrameworkInputFrame {
+pub struct FrameworkInputFrame {
     previous_thread: bool,
     flag: std::rc::Rc<std::cell::Cell<bool>>,
     previous: bool,
 }
 impl FrameworkInputFrame {
-    pub(crate) fn active() -> bool {
+    pub fn active() -> bool {
         FRAME_ACTIVE.get()
     }
-    pub(crate) fn new(flag: &std::rc::Rc<std::cell::Cell<bool>>, framework: bool) -> Self {
+    pub fn new(flag: &std::rc::Rc<std::cell::Cell<bool>>, framework: bool) -> Self {
         let previous = flag.replace(flag.get() || framework);
         let previous_thread = FRAME_ACTIVE.with(|active| active.replace(active.get() || framework));
         Self {

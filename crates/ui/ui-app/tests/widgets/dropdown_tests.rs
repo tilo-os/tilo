@@ -9,13 +9,13 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 use taffy::Size;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -128,7 +128,7 @@ tilo_test_env::scenario! {
         }
 
         fn dropdown_in_a_row_yields_width_to_fixed_siblings() {
-            use tilo_ui::widget::{Button, Row};
+            use tilo_ui_app::widget::{Button, Row};
             let mut row = Row::new()
                 .no_wrap()
                 .push(Box::new(Button::new("left", "Left")))
@@ -156,7 +156,7 @@ tilo_test_env::scenario! {
                 "the fixed buttons keep their size: {left:?} / {right:?}"
             );
             assert!(
-                dd.width() >= tilo_ui::widget::pad_x_for_tests() + tilo_ui::widget::chevron_width_for_tests() - 0.5,
+                dd.width() >= tilo_ui_app::widget::pad_x_for_tests() + tilo_ui_app::widget::chevron_width_for_tests() - 0.5,
                 "the dropdown keeps at least its chevron slot: {dd:?}"
             );
             assert!(
@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
                 "row order without overlap: {left:?} {dd:?} {right:?}"
             );
             assert!(
-                (dd.height() - tilo_ui::widget::ControlSize::Regular.height(&theme)).abs() < 0.5,
+                (dd.height() - tilo_ui_app::widget::ControlSize::Regular.height(&theme)).abs() < 0.5,
                 "the control is a Regular control: {dd:?}"
             );
         }
@@ -189,7 +189,7 @@ tilo_test_env::scenario! {
                 )
                 .unwrap();
             dd.apply_layout(&taffy, node, Point::ZERO);
-            let field = tilo_ui::widget::ControlSize::Regular.height(&theme);
+            let field = tilo_ui_app::widget::ControlSize::Regular.height(&theme);
             assert!((dd.rect_for_tests().height() - field).abs() < 0.5, "{:?}", dd.rect_for_tests());
             assert!(dd.rect_for_tests().y0 > dd.outer_for_tests().y0, "the caption sits above the field");
             assert_eq!(Widget::get_rect(&dd), dd.outer_for_tests());
@@ -239,7 +239,7 @@ tilo_test_env::scenario! {
             for scale in [1.0, 1.5] {
                 let selected = tilo_ui_base::LocalState::new(String::new());
                 let mut frame = Driver::new_with_theme(
-                    tilo_ui::State::new(),
+                    tilo_ui_app::State::new(),
                     Box::new(Dropdown::from_state(zones(), &selected).with_id("language-picker")),
                     (420, 320),
                     theme.clone().with_ui_scale(scale),
@@ -691,7 +691,7 @@ tilo_test_env::scenario! {
 
         let list = list_of(&mut menu);
         assert!((list.x1 - menu.rect_for_tests().x1).abs() < 1e-6, "{list:?}");
-        assert!(list.width() >= tilo_ui::widget::menu_min_width_for_tests());
+        assert!(list.width() >= tilo_ui_app::widget::menu_min_width_for_tests());
         menu.set_viewport(Rect::new(0.0, 0.0, 400.0, 800.0));
         let kept = list_of(&mut menu);
         assert!(
@@ -889,7 +889,7 @@ tilo_test_env::scenario! {
 fn dropdown_language_popup_stays_visible_in_a_short_scaled_window() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut frame = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(
             Dropdown::from_state(zones(), &tilo_ui_base::LocalState::new(String::new()))
                 .with_id("language-picker"),
@@ -938,7 +938,7 @@ fn an_open_languages_options_are_controls_by_name_that_choose() {
     )
     .with_accessible_name("Language")
     .with_id("language-picker");
-    let mut frame = Driver::new(tilo_ui::State::new(), Box::new(picker), (480, 260));
+    let mut frame = Driver::new(tilo_ui_app::State::new(), Box::new(picker), (480, 260));
 
     let opener = frame
         .a11y_node_named("Language")
@@ -962,7 +962,7 @@ fn an_open_languages_options_are_controls_by_name_that_choose() {
     assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
 
     frame
-        .operate_control(&option.id, &tilo_ui::headless::ControlInput::Press)
+        .operate_control(&option.id, &tilo_ui_app::headless::ControlInput::Press)
         .expect("the option is pressed by the name it shows");
     assert_eq!(chosen.get(), "Deutsch");
 }
@@ -976,7 +976,7 @@ tilo_test_env::scenario! {
     {
         let _settled = tilo_ui_base::motion::testing::settled();
         let mut frame = Driver::new_with_theme(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Box::new(
                 Dropdown::from_state(zones(), &tilo_ui_base::LocalState::new(String::new()))
                     .with_id("language-picker"),
@@ -1076,7 +1076,7 @@ tilo_test_env::scenario! {
             ("de_DE".into(), "German".into()),
         ]);
         let mut frame =
-            Driver::new(tilo_ui::State::new(), Box::new(dropdown), (420, 180));
+            Driver::new(tilo_ui_app::State::new(), Box::new(dropdown), (420, 180));
         frame
             .with_widget_mut::<Dropdown, _>(|dropdown| {
                 assert!(dropdown.has_selected_value_for_tests());

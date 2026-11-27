@@ -1,7 +1,7 @@
 //! A sidebar's list scrolls by the wheel when its rows run past the window.
 
 use super::*;
-use tilo_ui::widget::{NavItem, NavList, NavSection};
+use tilo_ui_app::widget::{NavItem, NavList, NavSection};
 
 fn tall_list(rows: usize) -> NavList {
     NavList::new(vec![NavSection::untitled(

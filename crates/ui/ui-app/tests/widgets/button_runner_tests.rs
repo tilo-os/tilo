@@ -10,13 +10,13 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 use taffy::{Dimension, Size};
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -38,8 +38,8 @@ use winit::keyboard::*;
 
 fn measured_button_rect(button: Button, scale: f32) -> Rect {
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
-        Box::new(tilo_ui::widget::Row::new().push(Box::new(button))),
+        tilo_ui_app::State::new(),
+        Box::new(tilo_ui_app::widget::Row::new().push(Box::new(button))),
         (1000, 200),
         Theme::dark().with_text_scale(scale),
     );
@@ -50,18 +50,18 @@ fn measured_button_rect(button: Button, scale: f32) -> Rect {
 fn fit_host(kind: usize, button: Button) -> tilo_ui_base::widget::Element {
     match kind {
         0 => Box::new(
-            tilo_ui::widget::Column::new()
+            tilo_ui_app::widget::Column::new()
                 .with_no_padding()
                 .push(Box::new(button)),
         ),
         1 => Box::new(
-            tilo_ui::widget::Column::new()
+            tilo_ui_app::widget::Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(button)),
         ),
         _ => Box::new(
-            tilo_ui::widget::Container::new()
+            tilo_ui_app::widget::Container::new()
                 .with_no_padding()
                 .with_child(Box::new(button)),
         ),
@@ -83,7 +83,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
     use ::collaboration::permissions::{PermissionContext, Role};
     let click = |root: tilo_ui_base::widget::Element, role: Role| {
         let mut harness =
-            Driver::new_with_theme(tilo_ui::State::new(), root, (600, 200), Theme::dark());
+            Driver::new_with_theme(tilo_ui_app::State::new(), root, (600, 200), Theme::dark());
         // The window stands in its workspace, whose grants ask about what reaches outside.
         harness.connect_peer();
         harness.set_permission_ctx(PermissionContext::member(
@@ -132,7 +132,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
     );
 
     let harness = click(
-        tilo_ui::widget::effect_fixture::sends(counter()),
+        tilo_ui_app::widget::effect_fixture::sends(counter()),
         Role::Editor,
     );
     assert_eq!(
@@ -148,7 +148,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
     );
 
     let harness = click(
-        tilo_ui::widget::effect_fixture::sends(counter()),
+        tilo_ui_app::widget::effect_fixture::sends(counter()),
         Role::Viewer,
     );
     assert_eq!(
@@ -265,7 +265,7 @@ fn compact_fit_width_is_the_prepaint_click_and_focus_geometry() {
         clicks.fetch_add(1, Ordering::SeqCst);
     });
     let mut harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         fit_host(1, button),
         (600, 200),
         Theme::dark(),
@@ -304,8 +304,8 @@ fn an_icon_only_effects_spoken_name_is_the_press_an_agent_finds() {
     // What a screen reader says, and what an agent shown the window finds the press by.
     for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
         let harness = Driver::new(
-            tilo_ui::State::new(),
-            Box::new(tilo_ui::widget::Row::new().push(Box::new(button))),
+            tilo_ui_app::State::new(),
+            Box::new(tilo_ui_app::widget::Row::new().push(Box::new(button))),
             (400, 100),
         );
         let pressable: Vec<_> = harness
@@ -350,12 +350,12 @@ fn a_plain_label_sits_on_its_layout_edge() {
 fn a_shared_button_answers_through_an_ordinary_container() {
     let clicks = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&clicks);
-    let column = tilo_ui::widget::Column::new().push(Box::new(
+    let column = tilo_ui_app::widget::Column::new().push(Box::new(
         Button::new("files.retry", "Retry").on_open(move || {
             counted.fetch_add(1, Ordering::SeqCst);
         }),
     ));
-    let mut harness = Driver::new(tilo_ui::State::new(), Box::new(column), (400, 120));
+    let mut harness = Driver::new(tilo_ui_app::State::new(), Box::new(column), (400, 120));
     harness
         .perform_named("files.retry", &tilo_ui_base::a11y::Action::Activate)
         .expect("the press reaches the button through its container");

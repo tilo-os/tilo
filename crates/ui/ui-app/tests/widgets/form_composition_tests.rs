@@ -9,13 +9,13 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 use taffy::{AvailableSpace, Size};
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -126,7 +126,7 @@ fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
         let page = FormPage::new("Long form", Form::new().section(section))
             .with_persisted_offset(Rc::clone(&offset));
         let mut harness = Driver::new_with_theme(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Box::new(page),
             (360, 420),
             Theme::dark().with_text_scale(scale),
@@ -178,8 +178,12 @@ fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
 #[test]
 fn form_labels_adapt_by_measurement_width_and_type_size() {
     fn wide_fields_align_controls_beside_measured_labels() {
-        let harness =
-            Driver::new_with_theme(tilo_ui::State::new(), fixture(), (1000, 700), Theme::dark());
+        let harness = Driver::new_with_theme(
+            tilo_ui_app::State::new(),
+            fixture(),
+            (1000, 700),
+            Theme::dark(),
+        );
         let snapshot = harness.inspection();
         let mut labels = Vec::new();
         let mut controls = Vec::new();
@@ -198,7 +202,7 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
     fn narrow_and_large_type_stack_long_labels_and_scroll_to_actions() {
         for scale in [1.0, 2.0] {
             let mut harness = Driver::new_with_theme(
-                tilo_ui::State::new(),
+                tilo_ui_app::State::new(),
                 Box::new(FormPage::new("Account", long_form()).with_description(
                     "Manage your personal details and notification preferences.",
                 )),
@@ -283,8 +287,12 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
 
 #[test]
 fn a_labelled_text_input_is_named_by_its_label() {
-    let harness =
-        Driver::new_with_theme(tilo_ui::State::new(), fixture(), (900, 700), Theme::dark());
+    let harness = Driver::new_with_theme(
+        tilo_ui_app::State::new(),
+        fixture(),
+        (900, 700),
+        Theme::dark(),
+    );
     let root = harness.inspection().root;
     let name = |id: &str| {
         named(&root, id)
@@ -299,7 +307,7 @@ fn a_labelled_text_input_is_named_by_its_label() {
 #[test]
 fn a_validation_error_marks_its_control_invalid() {
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(long_form()),
         (900, 700),
         Theme::dark(),
@@ -317,7 +325,7 @@ fn a_validation_error_marks_its_control_invalid() {
 
 #[test]
 fn grouped_sections_are_settings_rows_with_separators() {
-    use tilo_ui::widget::{Dropdown, Toggle};
+    use tilo_ui_app::widget::{Dropdown, Toggle};
     let theme = Theme::dark();
     let section = FormSection::new("Camera")
         .grouped()
@@ -327,7 +335,7 @@ fn grouped_sections_are_settings_rows_with_separators() {
             Dropdown::new(vec!["HEIF".into(), "JPEG".into()], "format"),
         ));
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Form::new().section(section)),
         (720, 400),
         theme.clone(),
@@ -360,7 +368,7 @@ fn read_only_values_reserve_readable_phrase_width_in_both_themes() {
     for theme in [Theme::light(), Theme::dark()] {
         for german in [false, true] {
             let harness = Driver::new_with_theme(
-                tilo_ui::State::new(),
+                tilo_ui_app::State::new(),
                 value_fixture(german),
                 (500, 768),
                 theme.clone(),
@@ -391,7 +399,7 @@ fn read_only_values_stack_without_overlap_at_narrow_width_and_large_type() {
         for german in [false, true] {
             for scale in [1.0, 2.0] {
                 let harness = Driver::new_with_theme(
-                    tilo_ui::State::new(),
+                    tilo_ui_app::State::new(),
                     value_fixture(german),
                     (320, 1600),
                     theme.clone().with_text_scale(scale),
@@ -420,7 +428,7 @@ fn read_only_values_stack_without_overlap_at_narrow_width_and_large_type() {
 
 #[test]
 fn untitled_sections_custom_fields_and_control_rows() {
-    use tilo_ui::widget::{Button, Row};
+    use tilo_ui_app::widget::{Button, Row};
     let form = Form::new()
         .section(
             FormSection::untitled()
@@ -440,7 +448,7 @@ fn untitled_sections_custom_fields_and_control_rows() {
                 .field(Field::new("Email", TextInput::local().with_id("email"))),
         );
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(form),
         (1000, 700),
         Theme::dark(),
@@ -480,7 +488,7 @@ fn help_reads_under_the_label_beside_and_under_the_control_stacked() {
     let field =
         || Field::new("Name", TextInput::local().with_id("name")).with_help("Shown to members.");
     let wide = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Form::new().section(FormSection::untitled().field(field()))),
         (900, 400),
         Theme::dark(),
@@ -496,7 +504,7 @@ fn help_reads_under_the_label_beside_and_under_the_control_stacked() {
     assert!(help[0] + help[2] <= control[0] + 0.5, "beside the control");
 
     let narrow = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Form::new().section(FormSection::untitled().field(field()))),
         (220, 400),
         Theme::dark().with_text_scale(2.0),
@@ -514,7 +522,7 @@ fn help_reads_under_the_label_beside_and_under_the_control_stacked() {
 
 #[test]
 fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
-    use tilo_ui::widget::{Dropdown, Toggle};
+    use tilo_ui_app::widget::{Dropdown, Toggle};
     let section = || {
         FormSection::new("Camera")
             .grouped()
@@ -528,7 +536,7 @@ fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
             ))
     };
     let wide = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Form::new().section(section())),
         (800, 400),
         Theme::dark(),
@@ -546,7 +554,7 @@ fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
     assert!((format[0] + format[2] - edge).abs() < 0.5, "{format:?}");
 
     let narrow = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Form::new().section(section())),
         (200, 500),
         Theme::dark().with_text_scale(2.0),
@@ -572,7 +580,7 @@ fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
 
 #[test]
 fn a_page_keeps_sections_on_the_leading_readable_column_with_pinned_actions() {
-    use tilo_ui::widget::{Button, Section};
+    use tilo_ui_app::widget::{Button, Section};
     let theme = Theme::dark();
     let page = Page::new()
         .head(Box::new(Text::new("Summary").with_id("head")))
@@ -588,7 +596,7 @@ fn a_page_keeps_sections_on_the_leading_readable_column_with_pinned_actions() {
             Button::new("save", "Save").role(ButtonRole::Primary),
         ));
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(page),
         (1600, 600),
         theme.clone(),
@@ -618,10 +626,10 @@ fn a_page_keeps_sections_on_the_leading_readable_column_with_pinned_actions() {
 
 #[test]
 fn a_form_page_titles_in_large_title_or_not_at_all() {
-    use tilo_ui::widget::Button;
+    use tilo_ui_app::widget::Button;
     let theme = Theme::dark();
     let titled = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(
             FormPage::new("Account", long_form()).with_header_action(Button::new("reset", "Reset")),
         ),
@@ -639,7 +647,7 @@ fn a_form_page_titles_in_large_title_or_not_at_all() {
     );
 
     let untitled = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(FormPage::untitled(long_form())),
         (1000, 800),
         theme,
@@ -656,7 +664,7 @@ fn a_form_page_titles_in_large_title_or_not_at_all() {
 
 #[test]
 fn the_forms_of_a_pages_sections_share_one_label_column_and_name_their_controls() {
-    use tilo_ui::widget::{ColorSwatch, ColorSwatchPicker, Row, Section, Toggle};
+    use tilo_ui_app::widget::{ColorSwatch, ColorSwatchPicker, Row, Section, Toggle};
     let form = |label: &str, id: &str| -> Element {
         Box::new(FormSection::untitled().field(Field::custom(
             label,
@@ -687,7 +695,7 @@ fn the_forms_of_a_pages_sections_share_one_label_column_and_name_their_controls(
             ],
         )));
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(page),
         (1280, 800),
         Theme::light(),
@@ -715,8 +723,8 @@ fn the_forms_of_a_pages_sections_share_one_label_column_and_name_their_controls(
 
 #[test]
 fn a_language_pages_forms_share_one_label_column_through_the_panes_they_are_shown_in() {
-    use tilo_ui::widget::Section;
-    use tilo_ui::widget::arrange::{Page as Arranged, Stack};
+    use tilo_ui_app::widget::Section;
+    use tilo_ui_app::widget::arrange::{Page as Arranged, Stack};
     let form = |label: &str, id: &str| -> Element {
         Box::new(Shown(Box::new(FormSection::untitled().field(
             Field::custom(label, Box::new(TextInput::local().with_id(id))),
@@ -734,7 +742,7 @@ fn a_language_pages_forms_share_one_label_column_through_the_panes_they_are_show
             ))),
     ));
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(page),
         (1280, 800),
         Theme::light(),

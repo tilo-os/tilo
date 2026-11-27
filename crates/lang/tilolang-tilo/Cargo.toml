@@ -69,7 +69,7 @@ tilo-workspace-emoji = { version = "0.1.0", path = "../../core/tilo-workspace-em
 [dev-dependencies]
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The system's mention notices, read from a workspace holding tilolang rich text.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
+ui = { package = "tilo-ui-app", path = "../../ui/ui-app", default-features = false, features = ["model"] }
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 # The archives an app exports, read back as a person who unzips them finds them.
 bounded-zip = { package = "tilo-bounded-zip", path = "../../engines/bounded-zip" }

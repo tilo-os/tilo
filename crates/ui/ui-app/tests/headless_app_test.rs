@@ -12,8 +12,8 @@ use automerge::ReadDoc as _;
 use serde_json::json;
 use tilo_actions::ActionAddress;
 use tilo_test_env::TestEnv;
-use tilo_ui::application::{LaunchTarget, RestoreInput};
-use tilo_ui::headless::{Action, Driver, Invocation, Outcome, Step};
+use tilo_ui_app::application::{LaunchTarget, RestoreInput};
+use tilo_ui_app::headless::{Action, Driver, Invocation, Outcome, Step};
 
 use crate::support::application::{
     ProbeHarness, body, operation_observations, owner_permissions, runner_probe_definition,

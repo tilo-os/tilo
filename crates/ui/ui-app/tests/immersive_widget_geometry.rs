@@ -31,10 +31,10 @@ use accesskit::Role;
 use vello::Scene;
 use vello::kurbo::Affine;
 
-use tilo_ui::State;
-use tilo_ui::headless::Driver;
-use tilo_ui::widget::video_player::PlayerSetting;
-use tilo_ui::{
+use tilo_ui_app::State;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::widget::video_player::PlayerSetting;
+use tilo_ui_app::{
     widget::CaptureMode, widget::CaptureStudio, widget::ScreenshotMarkup, widget::VideoPlayer,
 };
 use tilo_ui_base::icons::Icon;

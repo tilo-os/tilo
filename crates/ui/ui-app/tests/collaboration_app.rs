@@ -19,8 +19,8 @@ struct MonitorPrefs {
     interval_ms: u64,
 }
 
-impl tilo_ui::settings_model::SettingsSchema for MonitorPrefs {
-    const SCOPE: tilo_ui::settings_model::Scope = tilo_ui::settings_model::Scope::Personal;
+impl tilo_ui_app::settings_model::SettingsSchema for MonitorPrefs {
+    const SCOPE: tilo_ui_app::settings_model::Scope = tilo_ui_app::settings_model::Scope::Personal;
 }
 
 /// Whether the calling test `name` (in this module) runs its body here.
@@ -28,7 +28,7 @@ impl tilo_ui::settings_model::SettingsSchema for MonitorPrefs {
 /// flush through the transport that connected last, so another test's
 /// manager connecting in the same process would take over the route.
 fn in_own_process(name: &str) -> bool {
-    tilo_ui::testing::in_own_process(&tilo_ui::testing::test_path(module_path!(), name))
+    tilo_ui_app::testing::in_own_process(&tilo_ui_app::testing::test_path(module_path!(), name))
 }
 
 // A setting written before the app's settings channel connects is never
@@ -37,12 +37,12 @@ fn in_own_process(name: &str) -> bool {
 #[cfg(unix)]
 #[test]
 fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
-    use tilo_ui::settings_store::SettingsSource;
+    use tilo_ui_app::settings_store::SettingsSource;
     const APP: &str = "so.tilo.monitor";
     if !in_own_process("a_write_before_the_channel_connects_lands_after_it_connects_in_order") {
         return;
     }
-    let records = Arc::new(tilo_ui::settings_store::HostDocument::new(
+    let records = Arc::new(tilo_ui_app::settings_store::HostDocument::new(
         serde_json::Map::new(),
         |_| Ok(()),
     ));
@@ -55,7 +55,7 @@ fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
     // As at launch: the channel is the app's settings before anything
     // reaches the shell.
     tilo_ui_base::collaboration::channel_settings::install(APP);
-    let prefs = tilo_ui::storage::Settings::<MonitorPrefs>::for_app(APP);
+    let prefs = tilo_ui_app::storage::Settings::<MonitorPrefs>::for_app(APP);
     prefs.update(|prefs| prefs.interval_ms = 1500).unwrap();
     prefs.update(|prefs| prefs.confirm_kill = true).unwrap();
     prefs.update(|prefs| prefs.interval_ms = 2000).unwrap();
@@ -104,12 +104,12 @@ fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
 #[cfg(unix)]
 #[test]
 fn an_apps_settings_reach_the_shells_records_and_follow_them() {
-    use tilo_ui::settings_store::SettingsSource;
+    use tilo_ui_app::settings_store::SettingsSource;
     const APP: &str = "so.tilo.monitor";
     if !in_own_process("an_apps_settings_reach_the_shells_records_and_follow_them") {
         return;
     }
-    let records = Arc::new(tilo_ui::settings_store::HostDocument::new(
+    let records = Arc::new(tilo_ui_app::settings_store::HostDocument::new(
         serde_json::Map::new(),
         |_| Ok(()),
     ));
@@ -133,7 +133,7 @@ fn an_apps_settings_reach_the_shells_records_and_follow_them() {
     let (fd, _, _thread) = stand_up_fake_broker(broker);
     tilo_ui_base::collaboration::channel_settings::install(APP);
     let _manager = manager_on(fd, APP, Uuid::new_v4());
-    let prefs = tilo_ui::storage::Settings::<MonitorPrefs>::for_app(APP);
+    let prefs = tilo_ui_app::storage::Settings::<MonitorPrefs>::for_app(APP);
 
     eventually("the shell's view reaches the app", || {
         prefs.get().interval_ms == 1000
@@ -165,7 +165,7 @@ fn an_apps_settings_reach_the_shells_records_and_follow_them() {
 
     // Another app's settings are out of reach: a write that changes
     // them is refused (one that changes nothing writes nothing).
-    let error = tilo_ui::storage::Settings::<MonitorPrefs>::for_app("so.tilo.notes")
+    let error = tilo_ui_app::storage::Settings::<MonitorPrefs>::for_app("so.tilo.notes")
         .set(&MonitorPrefs {
             confirm_kill: true,
             interval_ms: 5000,
@@ -191,15 +191,15 @@ fn manager_publishes_the_first_frame_without_input() {
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
         let app_id = tilo_ui_base::collaboration::local_app_id();
         let manager = manager_on(fd, &app_id, Uuid::new_v4());
-        let mut app = tilo_ui::App::with_collaboration_manager(
-            tilo_ui::State::new(),
-            Box::new(tilo_ui::widget::Button::new("complete", "Complete").on_open(|| {})),
+        let mut app = tilo_ui_app::App::with_collaboration_manager(
+            tilo_ui_app::State::new(),
+            Box::new(tilo_ui_app::widget::Button::new("complete", "Complete").on_open(|| {})),
             manager,
         );
         assert!(captures.lock().unwrap().action_publications.is_empty());
         // This calls the production layout/draw passes. No input, palette,
         // explicit publication, or app-owned action invocation primes the app.
-        tilo_ui::app::testing::draw_prepared_component_test_frame(&mut app);
+        tilo_ui_app::app::testing::draw_prepared_component_test_frame(&mut app);
         tilo_test_env::wait_until(
             "the first rendered frame must publish its semantic actions to the broker without input",
             || {
@@ -222,12 +222,12 @@ fn manager_publishes_the_first_frame_without_input() {
         captures.lock().unwrap().refuse_action_publications = 1;
         let app_id = tilo_ui_base::collaboration::local_app_id();
         let manager = manager_on(fd, &app_id, Uuid::new_v4());
-        let mut app = tilo_ui::App::with_collaboration_manager(
-            tilo_ui::State::new(),
-            Box::new(tilo_ui::widget::Button::new("complete", "Complete").on_open(|| {})),
+        let mut app = tilo_ui_app::App::with_collaboration_manager(
+            tilo_ui_app::State::new(),
+            Box::new(tilo_ui_app::widget::Button::new("complete", "Complete").on_open(|| {})),
             manager,
         );
-        tilo_ui::app::testing::draw_prepared_component_test_frame(&mut app);
+        tilo_ui_app::app::testing::draw_prepared_component_test_frame(&mut app);
         tilo_test_env::wait_until("the broker must see the first surface", || {
             captures.lock().unwrap().refused_action_publications == 1
         });
@@ -277,12 +277,12 @@ fn held_directory_observation(refused: bool) {
         &tilo_ui_base::collaboration::local_app_id(),
         Uuid::new_v4(),
     );
-    let mut app = tilo_ui::App::with_collaboration_manager(
-        tilo_ui::State::new(),
-        Box::new(tilo_ui::widget::Button::new("complete", "Complete").on_open(|| {})),
+    let mut app = tilo_ui_app::App::with_collaboration_manager(
+        tilo_ui_app::State::new(),
+        Box::new(tilo_ui_app::widget::Button::new("complete", "Complete").on_open(|| {})),
         manager,
     );
-    tilo_ui::app::testing::draw_prepared_component_test_frame(&mut app);
+    tilo_ui_app::app::testing::draw_prepared_component_test_frame(&mut app);
     eventually("directory RPC reaches actual host", || {
         !captures.lock().unwrap().directory_attempts.is_empty()
     });
@@ -338,12 +338,12 @@ fn an_ordinary_applications_first_frame_publishes_its_actions_and_directory() {
         // What the app publishes, the host files under the route its
         // connection joined: the Browser's.
         let publication_app_id = "so.tilo.browser";
-        let mut app = tilo_ui::App::with_collaboration_manager(
-            tilo_ui::State::new(),
-            Box::new(tilo_ui::widget::Button::new("complete", "Complete").on_open(|| {})),
+        let mut app = tilo_ui_app::App::with_collaboration_manager(
+            tilo_ui_app::State::new(),
+            Box::new(tilo_ui_app::widget::Button::new("complete", "Complete").on_open(|| {})),
             manager,
         );
-        tilo_ui::app::testing::draw_prepared_component_test_frame(&mut app);
+        tilo_ui_app::app::testing::draw_prepared_component_test_frame(&mut app);
         eventually(
             "ordinary first frame publishes its actions and pull directory",
             || {
@@ -381,7 +381,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
     use crate::support::application::{
         DEVICE, runner_inputs, runner_permissions, runner_probe_definition,
     };
-    use tilo_ui::application::{LaunchTarget, RestoreInput};
+    use tilo_ui_app::application::{LaunchTarget, RestoreInput};
     let cluster = Uuid::new_v4();
     let captures = Captures {
         committed_history_fixture: Some(automerge::AutoCommit::new().save()),
@@ -393,7 +393,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
     };
     let (fd, captures, _thread) = stand_up_fake_broker(broker);
     let definition = runner_probe_definition();
-    let shown = tilo_ui::resource::DocumentId::minted();
+    let shown = tilo_ui_app::resource::DocumentId::minted();
     let manager = manager_on_resource_route(
         fd,
         definition.app_id().to_owned(),
@@ -402,13 +402,13 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
     );
     assert!(manager.has_native_committed_primary());
 
-    let documents = std::rc::Rc::new(tilo_ui::resource::MemoryWorkspace::default());
-    let mut owners = tilo_ui::resource::ResourceOwners::writing(documents.clone());
+    let documents = std::rc::Rc::new(tilo_ui_app::resource::MemoryWorkspace::default());
+    let mut owners = tilo_ui_app::resource::ResourceOwners::writing(documents.clone());
     let records = owners
         .open(definition.app_id(), &cluster.to_string())
         .unwrap();
     let views = std::rc::Rc::new(
-        tilo_ui::application_view::InstanceViewStore::new(
+        tilo_ui_app::application_view::InstanceViewStore::new(
             Some(documents),
             definition.app_id(),
             DEVICE,
@@ -416,9 +416,9 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
         )
         .unwrap(),
     );
-    let context = tilo_ui::application::ProcessContext::prepare_new_resource(
+    let context = tilo_ui_app::application::ProcessContext::prepare_new_resource(
         definition,
-        tilo_ui::application::ProcessContextInputs {
+        tilo_ui_app::application::ProcessContextInputs {
             records,
             views,
             device_id: DEVICE.into(),
@@ -435,11 +435,11 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
     let mut app =
-        tilo_ui::App::from_component_with_collaboration(component, runner_inputs(), manager)
+        tilo_ui_app::App::from_component_with_collaboration(component, runner_inputs(), manager)
             .unwrap();
     assert_eq!(captures.lock().unwrap().joined.len(), 1, "the launch route");
 
-    let wanted = tilo_ui::resource::DocumentId::minted();
+    let wanted = tilo_ui_app::resource::DocumentId::minted();
     let (next, target) = reopener.prepare(definition, wanted.clone()).unwrap();
     let replacement = definition
         .instantiate(next, target, RestoreInput::None)

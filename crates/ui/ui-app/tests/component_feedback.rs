@@ -7,9 +7,9 @@
     reason = "in a test these are the assertion"
 )]
 
-use crate::component_testing::*;
-use crate::testing::harness;
-use crate::{
+use tilo_ui_app::component_testing::*;
+use tilo_ui_app::headless::harness;
+use tilo_ui_app::{
     widget::Badge, widget::BadgeProps, widget::Breadcrumb, widget::BreadcrumbProps,
     widget::DisclosureRow, widget::DisclosureRowProps, widget::StatGroup, widget::StatGroupProps,
     widget::Toolbar, widget::ToolbarProps,
@@ -49,7 +49,7 @@ tilo_test_env::scenario! {
             Node::new("Badge", "new", &queue).prop("count", Value::Int(3)),
         );
         assert_eq!(
-            <Vec<crate::widget::StatTileProps> as PartType>::accepts(),
+            <Vec<tilo_ui_app::widget::StatTileProps> as PartType>::accepts(),
             Accepts::Component("StatTile".into())
         );
         assert!(StatGroupProps::from_source(&mut group).is_err());

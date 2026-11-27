@@ -9,7 +9,7 @@ autotests = false
 autoexamples = false
 repository.workspace = true
 homepage.workspace = true
-description = "The Tilo UI toolkit: the retained-mode widgets, components and app runner, built on tilo-ui-base and drawn with vello."
+description = "The Tilo UI toolkit: the retained-mode widgets and components, built on tilo-ui-base and drawn with vello."
 
 [package.metadata.cargo-machete]
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional
@@ -17,7 +17,7 @@ description = "The Tilo UI toolkit: the retained-mode widgets, components and ap
 # the patched HAL (vendor/wgpu-hal).
 # getrandom02 only selects the browser entropy backend for transitive crypto.
 # serde_bytes is named only inside `#[serde(with = "serde_bytes")]`.
-ignored = ["wgpu-hal", "getrandom02", "serde_bytes"]
+ignored = ["wgpu-hal", "getrandom02"]
 
 [features]
 default = ["native", "broker-transport"]
@@ -35,7 +35,7 @@ model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:c
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::process::ProcessServices`.
-native = ["local-daemons", "collaboration?/native", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch", "tilo-ui-base/native"]
+native = ["local-daemons", "collaboration?/native", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "syntax-definitions", "settings-store?/watch", "tilo-ui-base/native"]
 # X11 windows (winit's X11 backend), for development builds on an X11 host:
 # `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
 # Tilo app runs as a Wayland client in its sandbox, so the shared runtime
@@ -69,7 +69,7 @@ local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboratio
 # client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
-broker-transport = ["local-daemons", "collaboration?/broker-transport", "runtime-collab?/client", "tokio/full", "tilo-ui-base/broker-transport"]
+broker-transport = ["local-daemons", "collaboration?/broker-transport", "runtime-collab?/client", "tilo-ui-base/broker-transport"]
 # An integration test links the library once, without its `cfg(test)`: the
 # fixtures a test draws with ([`headless::Driver::mount`], the pinned font
 # catalogue) come with it.
@@ -175,8 +175,6 @@ tilo-paint-stream = { version = "0.1.0", path = "../../engines/paint-stream" }
 # The system's light/dark, accent, contrast and motion preferences, which a
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }
-# A host search result the OS wakes this app for goes to the runtime.
-tilo-host-search = { version = "0.1.0", path = "../../integrations/tilo-host-search", optional = true }
 # Test builds bound their waits with the shared hang bound.
 tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
@@ -186,7 +184,6 @@ tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentatio
 # (`render_thread::remote`); its transport exists only on Linux, its vocabulary
 # everywhere.
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
-tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # A software adapter's frames are rasterized on the CPU and uploaded, native
 # or in a page (`crate::cpu_raster`).
 tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
@@ -264,10 +261,6 @@ rustc-hash.workspace = true
 # `create_texture_from_hal`.
 ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
-# The portable toolkit needs tasks and channels only; tokio refuses its
-# socket, file and thread features on wasm, so `native` and
-# `broker-transport` enable them.
-tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tilo-rt.workspace = true
 vello.workspace = true
 # A theme's own surface shader (`tokens::shader`) is checked as WGSL when the
@@ -355,7 +348,6 @@ tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model", 
 # the toolkit can name its `SigningKey` without reaching into the
 # tilo-collab-types private module path. Pinned
 # to the same major as `tilo-collab-types`.
-getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # `widget::qr` paints pairing and invite payloads. `qrcode` is a small (no
 # transitive deps), pure-Rust QR encoder that produces a module-matrix we
@@ -369,10 +361,7 @@ unicode-script = "=0.5.8"
 unicode-properties = "=0.1.4"
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 hex.workspace = true
-serde_bytes.workspace = true
 thiserror.workspace = true
-# OS randomness comes from getrandom through its `rand_core` adapter.
-rand_core.workspace = true
 # Accessibility: AccessKit is the cross-platform a11y schema. On Windows,
 # macOS, iOS and Android a window's winit adapter publishes its tree to the
 # platform's accessibility service from the process that draws it. On Linux a
@@ -385,15 +374,8 @@ rand_core.workspace = true
 # back over the shell-ui protocol. `accesskit_winit` 0.34 targets winit
 # 0.30.x — the same pin as the `winit` dep above. See
 # `crates/ui/ui-base/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
-# adapter wiring in `crates/ui/ui-core/src/app.rs`.
+# adapter wiring in tilo-ui-app's runner.
 accesskit = { version = "0.25.0", features = ["serde"] }
-# Built on tilo-winit, so it shares the toolkit's winit types when published.
-accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path = "../../../vendor/accesskit_winit", optional = true, default-features = false, features = ["rwh_06"] }
-# Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
-# focus / value / live-region narration through the offline Tilo TTS engine.
-# `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
-# stack is installed), so depending on this is safe in headless builds.
-tilo-tts = { version = "0.1.0", path = "../../platform/tts" }
 
 [target.'cfg(windows)'.dependencies]
 # The menu bar and Jump List History and Search live in (`host_chrome/windows.rs`).
@@ -446,8 +428,6 @@ tempfile.workspace = true
 # as `TILO_SVC_COLLAB_FD`) set it through `ScopedEnv`, which restores the
 # prior value and serialises every such test in the process.
 tilo-test-env = { path = "../../../tools/test-env" }
-# Paused-clock tests of the collaboration endpoints' deadlines.
-tokio = { workspace = true, features = ["test-util"] }
 # The scoped chooser and URI fixtures the invocation-scope tests select.
 tilo-process-services = { path = "../../sdk/tilo-process-services", features = ["test-support"] }
 # The settings capability the shell hands an app, served by the fake broker.
@@ -458,28 +438,8 @@ name = "theme-looks"
 path = "examples/theme_looks.rs"
 
 [[example]]
-name = "action-presence"
-path = "examples/action_presence.rs"
-required-features = ["native"]
-
-[[example]]
-name = "browser-text-input-qualification"
-path = "examples/browser_text_input_qualification.rs"
-required-features = ["native"]
-
-[[example]]
 name = "page-share-probe"
 path = "examples/page_share_probe.rs"
-required-features = ["native"]
-
-[[example]]
-name = "page-menus"
-path = "examples/page_menus.rs"
-required-features = ["native"]
-
-[[example]]
-name = "startup-frame-probe"
-path = "examples/startup_frame_probe.rs"
 required-features = ["native"]
 
 [[example]]
@@ -502,10 +462,6 @@ workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 winit = { workspace = true, features = ["android-native-activity"] }
-# Soft-keyboard input reaches the runner through the activity's
-# `TiloTextInput` view (`app/android_text_input`).
-jni = { version = "0.21.1", optional = true }
-ndk-context = { version = "0.1.1", optional = true }
 # TalkBack reads the AccessKit tree through a node provider injected into the
 # NativeActivity's window (`accesskit_android_adapter.rs`). accesskit_winit's
 # own Android glue expects GameActivity's `mSurfaceView`, so the injecting

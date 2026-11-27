@@ -27,7 +27,7 @@ use std::sync::{
 use std::thread::JoinHandle;
 
 #[path = "render_timing.rs"]
-pub(crate) mod timing;
+pub mod timing;
 
 #[cfg(test)]
 use crate::retained_raster::{DamageCache, rasterize_damage};
@@ -94,7 +94,7 @@ fn note_surface_loss(reason: String) {
 
 /// The reason recorded by the render worker when it lost its surface.
 #[cfg(feature = "native")]
-pub(crate) fn take_surface_loss() -> Option<String> {
+pub fn take_surface_loss() -> Option<String> {
     SURFACE_LOSS.lock_recover().take()
 }
 
@@ -105,15 +105,15 @@ pub(crate) fn take_surface_loss() -> Option<String> {
         reason = "only the native event-loop runner takes a renderer back to reuse; the worker still hands it back so GPU resources drop on the caller"
     )
 )]
-pub(crate) struct PreparedRenderer {
-    pub(crate) context: RenderContext,
-    pub(crate) device_id: usize,
-    pub(crate) renderer: Renderer,
+pub struct PreparedRenderer {
+    pub context: RenderContext,
+    pub device_id: usize,
+    pub renderer: Renderer,
 }
 
 impl PreparedRenderer {
     #[cfg(feature = "native")]
-    pub(crate) fn device_lost(&self) -> bool {
+    pub fn device_lost(&self) -> bool {
         self.context
             .devices
             .get(self.device_id)
@@ -122,7 +122,7 @@ impl PreparedRenderer {
 }
 
 #[path = "render_retry.rs"]
-pub(crate) mod retry;
+pub mod retry;
 
 use crate::render_bump_recovery as bump_recovery;
 
@@ -149,9 +149,9 @@ pub enum FrameOutcome {
 )]
 pub struct RenderThreadHandle {
     pub render_tx: SyncSender<RenderRequest>,
-    pub(crate) buffers: BufferPool<(Scene, Vec<Rect>)>,
+    pub buffers: BufferPool<(Scene, Vec<Rect>)>,
     pub frame_complete: Receiver<FrameOutcome>,
-    pub(crate) retry: retry::RenderRetryState,
+    pub retry: retry::RenderRetryState,
     /// Set by the worker when presented pixels lost geometry to a Vello bump overflow; the next frame
     /// main submits must repaint everything.
     full_repaint: Arc<AtomicBool>,
@@ -173,7 +173,7 @@ pub struct RenderThreadHandle {
         reason = "the native event-loop runner alone reads the pool; its receiver stays open so the worker can return buffers"
     )
 )]
-pub(crate) struct BufferPool<T> {
+pub struct BufferPool<T> {
     receiver: Receiver<T>,
     prepared: Option<T>,
     waiting: Arc<AtomicBool>,
@@ -189,7 +189,7 @@ impl<T> BufferPool<T> {
     }
 
     #[cfg(feature = "native")]
-    pub(crate) fn redraw_deferred(&self) -> bool {
+    pub fn redraw_deferred(&self) -> bool {
         self.waiting.load(Ordering::SeqCst)
     }
 
@@ -214,12 +214,12 @@ impl<T> BufferPool<T> {
 
     /// Put a reserved buffer back when this redraw will not present.
     #[cfg(feature = "native")]
-    pub(crate) fn unprepare(&mut self, buffers: T) {
+    pub fn unprepare(&mut self, buffers: T) {
         self.prepared = Some(buffers);
     }
 
     #[cfg(feature = "native")]
-    pub(crate) fn recv(&mut self) -> Result<T, mpsc::RecvError> {
+    pub fn recv(&mut self) -> Result<T, mpsc::RecvError> {
         if let Some(buffers) = self.prepared.take() {
             Ok(buffers)
         } else {
@@ -228,7 +228,7 @@ impl<T> BufferPool<T> {
     }
 
     #[cfg(feature = "native")]
-    pub(crate) fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
+    pub fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
         if self.prepare()? {
             self.prepared.take().ok_or(mpsc::TryRecvError::Empty)
         } else {
@@ -239,7 +239,7 @@ impl<T> BufferPool<T> {
 
 /// Do not consume a forced probe or dirty work until both pooled buffers exist.
 #[cfg(feature = "native")]
-pub(crate) fn prepare_frame<T>(
+pub fn prepare_frame<T>(
     retry: &mut retry::RenderRetryState,
     buffers: &mut BufferPool<T>,
     now: crate::time::Instant,
@@ -274,7 +274,7 @@ impl RenderThreadHandle {
     /// A window of `physical` pixels at `scale`, as a frame this worker can draw: past the device's
     /// texture limit it draws at a lower scale.
     #[cfg(feature = "native")]
-    pub(crate) fn frame_extent(
+    pub fn frame_extent(
         &self,
         physical: winit::dpi::PhysicalSize<u32>,
         scale: f64,
@@ -288,7 +288,7 @@ impl RenderThreadHandle {
 
     /// Whether the worker asked for a whole-surface repaint since the last call.
     #[cfg(feature = "native")]
-    pub(crate) fn take_full_repaint(&self) -> bool {
+    pub fn take_full_repaint(&self) -> bool {
         self.full_repaint.swap(false, Ordering::SeqCst)
     }
 
@@ -302,7 +302,7 @@ impl RenderThreadHandle {
     /// [`Self::shutdown_and_join`], taking back the worker's context and renderer if it was still
     /// running.
     #[cfg(feature = "native")]
-    pub(crate) fn shutdown_keeping_renderer(&mut self) -> Option<PreparedRenderer> {
+    pub fn shutdown_keeping_renderer(&mut self) -> Option<PreparedRenderer> {
         self.stop(true)
     }
 
@@ -320,7 +320,7 @@ impl RenderThreadHandle {
 }
 
 /// Same worker with the native window retained for standard Wayland feedback.
-pub(crate) fn spawn_render_thread_for_window(
+pub fn spawn_render_thread_for_window(
     render_cx: RenderContext,
     surface: RenderSurface<'static>,
     renderer: Renderer,
@@ -340,7 +340,7 @@ pub(crate) type RenderParts = (RenderContext, RenderSurface<'static>, Renderer);
     clippy::too_many_lines,
     reason = "keep the single GPU owner's resize/render/trace/recycle/shutdown sequence and resource drop order visible together"
 )]
-pub(crate) fn spawn_render_thread_deferred(
+pub fn spawn_render_thread_deferred(
     prepare: impl FnOnce() -> Result<RenderParts, String> + Send + 'static,
     wake: Arc<dyn Fn() + Send + Sync>,
     window: Option<Arc<winit::window::Window>>,
@@ -1315,7 +1315,7 @@ fn render_one_frame(
 /// Whether the render worker repaints a frame of `width` × `height` with `damage` (physical pixels)
 /// from its scene region by region, never whole: what a frame drawn for its damage only needs
 /// (`tilo_ui_base::draw_cull`).
-pub(crate) fn renders_damage_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
+pub fn renders_damage_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
     tilo_ui_base::damage::bounded_present_damage(width, height, damage).is_some()
         && crate::retained_raster::repaints_alone(width, height, damage)
 }

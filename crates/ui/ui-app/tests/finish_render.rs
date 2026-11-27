@@ -123,12 +123,12 @@ fn render(theme: &Theme, name: &str) -> Vec<u8> {
 }
 
 fn dump(name: &str, rgba: &[u8]) {
-    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
+    let Ok(dir) = tilo_ui_app::env::var("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
     let path = format!("{dir}/finish-{name}.png");
-    tilo_ui::png::write_rgba8(&path, W, H, rgba).unwrap();
+    tilo_ui_app::png::write_rgba8(&path, W, H, rgba).unwrap();
     eprintln!("wrote {path}");
 }
 

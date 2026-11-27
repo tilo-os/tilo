@@ -4,10 +4,10 @@
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use std::collections::HashMap;
 use taffy::TaffyTree;
-use tilo_ui::App;
-use tilo_ui::resource::{DocumentCheckout, DocumentId, ResourceType};
-use tilo_ui::state::State;
-use tilo_ui::view::{FROZEN_VERSION, FreezeThaw, FrozenApp, ThawError, View, ViewContribution};
+use tilo_ui_app::App;
+use tilo_ui_app::resource::{DocumentCheckout, DocumentId, ResourceType};
+use tilo_ui_app::state::State;
+use tilo_ui_app::view::{FROZEN_VERSION, FreezeThaw, FrozenApp, ThawError, View, ViewContribution};
 use tilo_ui_base::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
@@ -37,8 +37,8 @@ impl DocRoot {
 
 impl Widget for DocRoot {
     tilo_ui_base::provides!(
-        dyn tilo_ui::resource::capability::ResourceScoped,
-        dyn tilo_ui::view::capability::ViewState,
+        dyn tilo_ui_app::resource::capability::ResourceScoped,
+        dyn tilo_ui_app::view::capability::ViewState,
         dyn tilo_ui_base::widget::undo_points::UndoPoints
     );
 
@@ -76,7 +76,7 @@ impl tilo_ui_base::widget::undo_points::UndoPoints for DocRoot {
     }
 }
 
-impl tilo_ui::view::capability::ViewState for DocRoot {
+impl tilo_ui_app::view::capability::ViewState for DocRoot {
     fn view_state(&self) -> Option<ViewContribution> {
         Some(ViewContribution {
             scroll: self.scroll.clone(),
@@ -89,7 +89,7 @@ impl tilo_ui::view::capability::ViewState for DocRoot {
     }
 }
 
-impl tilo_ui::resource::capability::ResourceScoped for DocRoot {
+impl tilo_ui_app::resource::capability::ResourceScoped for DocRoot {
     fn record_intent(&self) -> Option<DocumentCheckout> {
         DocumentId::parse(&self.resource)
             .map(|id| DocumentCheckout::new(id, ResourceType::new("document")))
@@ -124,7 +124,7 @@ fn freeze_and_thaw_round_trip_doc_and_view_and_reject_bad_bytes() {
         let mut state = State::new();
         let body = state.doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         state.doc.splice_text(&body, 0, 0, "Hello, world").unwrap();
-        tilo_ui::resource::init(
+        tilo_ui_app::resource::init(
             &mut state.doc,
             &DocumentId::parse(file_resource).unwrap(),
             &ResourceType::new("document"),
@@ -145,7 +145,7 @@ fn freeze_and_thaw_round_trip_doc_and_view_and_reject_bad_bytes() {
         let frozen = app1.freeze();
 
         // The bytes in between carry every field — capture didn't drop any.
-        let env: FrozenApp = tilo_ui::postcard::from_bytes(&frozen).unwrap();
+        let env: FrozenApp = tilo_ui_app::postcard::from_bytes(&frozen).unwrap();
         assert_eq!(env.version, FROZEN_VERSION);
         assert_eq!(env.view, v1);
 
@@ -166,7 +166,7 @@ fn freeze_and_thaw_round_trip_doc_and_view_and_reject_bad_bytes() {
             "the CRDT document round-tripped through freeze/thaw"
         );
         assert_eq!(
-            tilo_ui::resource::identity(&doc2).map(|c| c.id.as_str().to_string()),
+            tilo_ui_app::resource::identity(&doc2).map(|c| c.id.as_str().to_string()),
             Some(file_resource.to_string()),
             "thaw reopened the resource the View named — its document is live"
         );
@@ -205,7 +205,7 @@ fn freeze_and_thaw_round_trip_doc_and_view_and_reject_bad_bytes() {
             state: AutoCommit::new().save(),
             view: View::default(),
         };
-        let bytes = tilo_ui::postcard::to_stdvec(&future).unwrap();
+        let bytes = tilo_ui_app::postcard::to_stdvec(&future).unwrap();
         assert!(matches!(
             app.thaw(&bytes),
             Err(ThawError::UnsupportedVersion { .. })
@@ -246,7 +246,7 @@ fn freeze_and_thaw_round_trip_doc_and_view_and_reject_bad_bytes() {
             "the non-CRDT state round-tripped through the serialize_state hook"
         );
 
-        let env: FrozenApp = tilo_ui::postcard::from_bytes(&frozen).unwrap();
+        let env: FrozenApp = tilo_ui_app::postcard::from_bytes(&frozen).unwrap();
         assert_eq!(env.view, View::default());
 
         // A malformed state payload surfaces as a State error, not a panic.
@@ -255,7 +255,7 @@ fn freeze_and_thaw_round_trip_doc_and_view_and_reject_bad_bytes() {
             state: vec![0xff, 0xfe, 0xfd],
             view: View::default(),
         };
-        let bad_bytes = tilo_ui::postcard::to_stdvec(&bad).unwrap();
+        let bad_bytes = tilo_ui_app::postcard::to_stdvec(&bad).unwrap();
         assert!(matches!(dst.thaw(&bad_bytes), Err(ThawError::State(_))));
     }
 }

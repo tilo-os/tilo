@@ -2,10 +2,10 @@
 //! retained record's activity hands back.
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::{cell::Cell, rc::Rc};
-use tilo_ui::history_mode::testing::*;
-use tilo_ui::history_mode::*;
-use tilo_ui::history_mode::{HistoryHost, SIDE_PANEL_WIDTH};
-use tilo_ui::{State, headless::Driver, widget::Button, widget::Column};
+use tilo_ui_app::history_mode::testing::*;
+use tilo_ui_app::history_mode::*;
+use tilo_ui_app::history_mode::{HistoryHost, SIDE_PANEL_WIDTH};
+use tilo_ui_app::{State, headless::Driver, widget::Button, widget::Column};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
 use vello::{
@@ -34,7 +34,7 @@ fn history_status_and_recovery_keep_the_existing_bar_geometry() {
         ] {
             let status = key
                 .map(tilo_ui_base::i18n::I18nManager::lookup_plain)
-                .map(tilo_ui::widget::WindowStatus::says);
+                .map(tilo_ui_app::widget::WindowStatus::says);
             history.set_sync_status(status.clone());
             let mut tree = taffy::TaffyTree::new();
             let mut nodes = std::collections::HashMap::new();
@@ -139,7 +139,7 @@ fn a_first_build_whose_header_takes_the_history_control_is_admitted_as_built() {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "existing document").unwrap();
     state.commit_action(None, None);
-    let mut live = tilo_ui::widget::NavShell::new()
+    let mut live = tilo_ui_app::widget::NavShell::new()
         .content(Box::new(Button::new("live", "Send")))
         .content_header("Page", Vec::new());
     let mut history = HistoryHost::new(registration(), &state.doc).unwrap();
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .contains("Notebook: first")
         );
-        assert_eq!(tilo_ui::testing::clicks("effect"), 0);
+        assert_eq!(tilo_ui_app::testing::clicks("effect"), 0);
         driver.click_named("history-back-live").unwrap();
         assert!(driver.targets().contains_key("live-effect"));
         assert!(!driver.targets().contains_key("history-preview"));
@@ -381,12 +381,12 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
     state.doc.put(ROOT, "body", "first").unwrap();
     state.commit_action(None, None);
     let first = state.doc.get_heads().pop().unwrap();
-    let id = tilo_ui::history_source::entry_id_from_hash(&first.to_string());
+    let id = tilo_ui_app::history_source::entry_id_from_hash(&first.to_string());
     state.doc.put(ROOT, "body", "second").unwrap();
     state.commit_action(None, None);
     let before = state.doc.get_heads();
     let root = Column::new().push(Box::new(
-        Button::new("live-effect", "Send").on_click(tilo_ui::testing::record_click("effect")),
+        Button::new("live-effect", "Send").on_click(tilo_ui_app::testing::record_click("effect")),
     ));
     let driver = Driver::from_managed_root(
         state,
@@ -496,7 +496,7 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
     assert_history_frame_idle(&mut unavailable, "unavailable timeline");
 }
 fn find_access<'a>(
-    node: &'a tilo_ui::headless::InspectionNode,
+    node: &'a tilo_ui_app::headless::InspectionNode,
     target: &str,
 ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
     fn in_access<'a>(
@@ -531,13 +531,13 @@ static FOLDER_COMPOSITION: HistoryDefinition = HistoryDefinition {
 
 struct FolderCompositionRoot {
     inner: Box<dyn Widget>,
-    source: tilo_ui::history_mode::folder::FolderHistorySource,
+    source: tilo_ui_app::history_mode::folder::FolderHistorySource,
 }
 
 impl Widget for FolderCompositionRoot {
-    tilo_ui_base::provides!(dyn tilo_ui::history_mode::capability::DocumentHistory);
+    tilo_ui_base::provides!(dyn tilo_ui_app::history_mode::capability::DocumentHistory);
 
-    tilo_ui::delegate_widget_methods!(
+    tilo_ui_app::delegate_widget_methods!(
         inner: sync,
         build_layout,
         apply_layout,
@@ -564,7 +564,7 @@ impl Widget for FolderCompositionRoot {
     }
 }
 
-impl tilo_ui::history_mode::capability::DocumentHistory for FolderCompositionRoot {
+impl tilo_ui_app::history_mode::capability::DocumentHistory for FolderCompositionRoot {
     fn history_registration(
         &self,
     ) -> Result<Option<HistoryRegistration>, HistoryRegistrationError> {
@@ -585,7 +585,7 @@ impl tilo_ui::history_mode::capability::DocumentHistory for FolderCompositionRoo
 
 #[test]
 fn folder_activity_keeps_the_wide_live_surface() {
-    let source = tilo_ui::history_mode::folder::FolderHistorySource::default();
+    let source = tilo_ui_app::history_mode::folder::FolderHistorySource::default();
     let registration = HistoryRegistration::new(
         &FOLDER_COMPOSITION,
         vec![HistorySourceRegistration::FolderFiles {
@@ -755,9 +755,9 @@ fn header_history_control_opens_the_registered_history() {
         state.commit_action(None, None);
     }
     let before = state.doc.get_heads();
-    let shell = tilo_ui::widget::NavShell::new()
+    let shell = tilo_ui_app::widget::NavShell::new()
         .content_header("Notes", vec![])
-        .content(Box::new(tilo_ui::widget::Text::new("Body")));
+        .content(Box::new(tilo_ui_app::widget::Text::new("Body")));
     let mut driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
@@ -794,7 +794,7 @@ fn header_history_control_opens_the_registered_history() {
     assert!(driver.targets().contains_key("activity_timeline"));
     driver
         .invoke_local_history_action(
-            &tilo_actions::ActionAddress::new(tilo_ui::history_mode::HISTORY_RESOURCE, "hide"),
+            &tilo_actions::ActionAddress::new(tilo_ui_app::history_mode::HISTORY_RESOURCE, "hide"),
             None,
         )
         .unwrap();
@@ -848,12 +848,12 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
     });
     let overview = vec![probes.next().unwrap(), probes.next().unwrap()];
     let content = vec![probes.next().unwrap(), probes.next().unwrap()];
-    let shell = tilo_ui::widget::NavShell::new()
-        .sidebar(Box::new(tilo_ui::widget::Text::new("Library")))
-        .overview(Box::new(tilo_ui::widget::Text::new("List")))
+    let shell = tilo_ui_app::widget::NavShell::new()
+        .sidebar(Box::new(tilo_ui_app::widget::Text::new("Library")))
+        .overview(Box::new(tilo_ui_app::widget::Text::new("List")))
         .overview_header("All snippets", overview)
         .content_header("Multi-stage build", content)
-        .content(Box::new(tilo_ui::widget::Text::new("Body")));
+        .content(Box::new(tilo_ui_app::widget::Text::new("Body")));
     let mut driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(shell), registration()),
@@ -922,7 +922,7 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
 
     let target = format!(
         "timeline-entry:{}",
-        tilo_ui_base::HistoryEntryId::hex(&tilo_ui::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&tilo_ui_app::history_source::entry_id_from_hash(
             &body_change.to_string()
         ))
     );
@@ -977,9 +977,9 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
     driver.commit_text("First pass");
     driver.key("Enter");
     let names = |driver: &mut Driver| {
-        tilo_ui::history_source::groups::read_named_ranges(
+        tilo_ui_app::history_source::groups::read_named_ranges(
             &driver.state_mut().doc,
-            &tilo_ui::history_source::AuthorDirectory::default(),
+            &tilo_ui_app::history_source::AuthorDirectory::default(),
         )
     };
     let [named] = names(&mut driver).try_into().unwrap();
@@ -1007,7 +1007,7 @@ fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
         (node.role == tilo_ui_base::a11y::Role::TreeItem && node.name.as_deref() == Some(name))
             || node.children.iter().any(|child| band(child, name))
     }
-    fn banded(node: &tilo_ui::headless::InspectionNode, name: &str) -> bool {
+    fn banded(node: &tilo_ui_app::headless::InspectionNode, name: &str) -> bool {
         node.semantics
             .as_ref()
             .is_some_and(|access| band(access, name))

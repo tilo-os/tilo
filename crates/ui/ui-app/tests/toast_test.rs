@@ -11,7 +11,7 @@
 )]
 
 use crate::support::render::write_png;
-use tilo_ui::widget::toast::{ToastCard, ToastKind, paint_card};
+use tilo_ui_app::widget::toast::{ToastCard, ToastKind, paint_card};
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;

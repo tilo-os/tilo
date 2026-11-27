@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::driver::Driver;
 use std::cell::Cell;
 use std::rc::Rc;
 use vello::Scene;
@@ -9,6 +8,13 @@ fn geometry(face: &ListRowFace<'_>, rect: Rect) -> RowGeometry {
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
     face.geometry(rect, &RowMetrics::new(&theme), &mut text, &theme)
+}
+
+/// `row` laid out alone in a window `size` big, as the window's root.
+fn laid_out(mut row: ListRow, (width, height): (u32, u32), theme: &Theme) -> ListRow {
+    crate::testing::lay_out_in(&mut row, width as f32, height as f32, theme)
+        .expect("the row lays out");
+    row
 }
 
 fn hovered() -> Interaction {
@@ -391,8 +397,8 @@ fn a_part_below_stands_in_the_texts_column_under_the_text() {
         } else {
             person()
         };
-        let plain = Driver::for_root(crate::State::new(), plain, (720, 200), theme.clone());
-        let plain = plain.root::<ListRow>();
+        let plain = laid_out(plain, (720, 200), &theme);
+        let plain = &plain;
         let alone = plain.with_face(|face| face.height(&mut text, &theme));
         let row = person().below(Box::new(crate::widget::Text::new(
             "Keeps their place private",
@@ -402,8 +408,7 @@ fn a_part_below_stands_in_the_texts_column_under_the_text() {
         } else {
             row
         };
-        let h = Driver::for_root(crate::State::new(), row, (720, 200), theme.clone());
-        let row = h.root::<ListRow>();
+        let row = &laid_out(row, (720, 200), &theme);
         let band = row.text_band();
         let line = row.below.as_ref().unwrap().element.get_rect();
         let text_edge = row.with_face(|face| face.text_x(band, &m, &mut text, &theme));
@@ -464,8 +469,7 @@ fn a_note_too_long_for_its_column_stands_whole_under_the_row() {
     // Wherever the note stands, it is because of the room the drawn face leaves it: a note that
     // fits the column beside the control stays in it.
     for width in (200_u32..=720).step_by(8) {
-        let h = Driver::for_root(crate::State::new(), agent(), (width, 300), theme.clone());
-        let row = h.root::<ListRow>();
+        let row = &laid_out(agent(), (width, 300), &theme);
         let band = row.text_band();
         let room = row.with_face(|face| {
             let geo = face.geometry(band, &m, &mut text, &theme);
@@ -479,8 +483,7 @@ fn a_note_too_long_for_its_column_stands_whole_under_the_row() {
         );
     }
     for (width, under) in [(720_u32, false), (260, true), (200, true)] {
-        let h = Driver::for_root(crate::State::new(), agent(), (width, 300), theme.clone());
-        let row = h.root::<ListRow>();
+        let row = &laid_out(agent(), (width, 300), &theme);
         let line = row
             .note_line
             .as_ref()

@@ -370,7 +370,7 @@ pub fn provided(widget: &mut dyn tilo_ui_base::widget::Widget) -> bool {
 
 /// What the window remembers per app: its content zoom on this device.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ZoomPrefs {
+pub struct ZoomPrefs {
     /// The window's content zoom; none is the default size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     content_zoom: Option<f32>,
@@ -418,7 +418,7 @@ impl WindowZoom {
     }
 
     /// [`Self::restore_for_app`], with the factor kept in `settings`.
-    pub(crate) fn restore_from(&mut self, settings: crate::storage::Settings<ZoomPrefs>) -> bool {
+    pub fn restore_from(&mut self, settings: crate::storage::Settings<ZoomPrefs>) -> bool {
         let stored = settings
             .get()
             .content_zoom

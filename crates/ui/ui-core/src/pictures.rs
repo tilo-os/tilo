@@ -4,6 +4,10 @@
 //! not here yet keeps its place: the component paints its placeholder until [`Pictures::get`] answers,
 //! and an address that cannot be read fails visibly, as any other image does.
 
+/// A small `data:` picture, for a capture or a test that shows one: a
+/// 64-by-64 image in two colours, small enough to travel in its address.
+pub const FIXTURE_PICTURE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABAAQMAAACQp+OdAAAABlBMVEXyyHpLP7ovf/CwAAAAf0lEQVR42j3RsRHAMAhDUcj+QzEKI1BScJAi+nHjdyp0NvjZdx7dBxYMaFAgQbh6XMlRuGBAgwIJwtTjSo6HLRjQoECCMPW4kuODCwY0KJAgTD2u5BjUggENCiQIU48rOQa+YECDAglCgz329WPBgAYFEgR7Zu8/FgxoUCABNS8YGz171qSmDgAAAABJRU5ErkJggg==";
+
 use vello::peniko::ImageData as PenikoImage;
 
 use crate::widget::PictureSource;

@@ -9,14 +9,15 @@ wgpu, and on the CPU where there is no GPU.
 Depend on `tilo-app` to build an app. It re-exports this toolkit and turns on the model an app is
 made of: resources kept in a synced document, typed actions that change them, and views
 bound to both, with history and undo, the command palette, permissions and search. Depend on
-`tilo-ui` itself for a program that only draws, such as a custom surface or a tool whose state
-does not need to be a shared resource: it compiles none of Tilo's records, sync, settings store or
-identity. [Build an app](../app-development.md) covers `tilo-app`;
+`tilo-ui-app` for a program that only draws, such as a custom surface or a tool whose state
+does not need to be a shared resource: it is the toolkit, `tilo-ui`, with the runner that opens
+its window and the headless host that drives it, and it compiles none of Tilo's records, sync,
+settings store or identity. [Build an app](../app-development.md) covers `tilo-app`;
 this page builds a window on the toolkit alone.
 
 ## A window with the shared components
 
-A new Cargo project depends on the toolkit:
+A new Cargo project depends on the toolkit and its runner:
 
 <!-- file: Cargo.toml -->
 ```toml
@@ -26,7 +27,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tilo-ui = "0.5"
+tilo-ui-app = "0.5"
 ```
 
 The default `native` feature brings the winit event loop that opens the window, the AccessKit
@@ -52,13 +53,13 @@ without the flag the program opens the window.
 
 <!-- file: src/main.rs -->
 ```rust
-use tilo_ui::headless::{Driver, InspectionSnapshot};
-use tilo_ui::widget::{Button, Column, ListRow, Text, TextInput};
-use tilo_ui::{App, LocalState, State, TextRole};
+use tilo_ui_app::headless::{Driver, InspectionSnapshot};
+use tilo_ui_app::widget::{Button, Column, ListRow, Text, TextInput};
+use tilo_ui_app::{App, LocalState, State, TextRole};
 
 /// The window's tree: a heading, a name field, the button that greets with it, the greeting, and
 /// a list.
-fn tree(name: &LocalState<String>, greeting: &LocalState<String>) -> Box<dyn tilo_ui::Widget> {
+fn tree(name: &LocalState<String>, greeting: &LocalState<String>) -> Box<dyn tilo_ui_app::Widget> {
     let greet = {
         let name = name.clone();
         let greeting = greeting.clone();
@@ -203,14 +204,14 @@ process services. That is the build for `wasm32-unknown-unknown`:
 
 ```toml
 [dependencies]
-tilo-ui = { version = "0.5", default-features = false }
+tilo-ui-app = { version = "0.5", default-features = false }
 ```
 
 A browser host drives the widget tree itself. `Driver` lays it out and dispatches the events
 your page delivers, `Driver::frame_output` gives the frame as a vello `Scene` with the same
-accessibility nodes, and `Driver::composition` with `tilo_ui::composition::page::Page` writes it as
+accessibility nodes, and `Driver::composition` with `tilo_ui_app::composition::page::Page` writes it as
 semantic HTML styled from the theme's tokens. Clipboard, file choosers and notifications go
-through `tilo_ui::process`: install browser-backed `ProcessServices` with
+through `tilo_ui_app::process`: install browser-backed `ProcessServices` with
 `process::install_default`, and without one those effects do nothing outside your program.
 
 The components lay out and behave the same on the web, and your page gets the same accessibility

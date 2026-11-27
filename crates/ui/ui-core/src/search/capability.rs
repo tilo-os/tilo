@@ -65,10 +65,10 @@ pub fn search_provider_descriptors(
 /// build of its content answers for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchProviderDescriptor {
-    pub(crate) name: String,
-    pub(crate) owner: Option<uuid::Uuid>,
-    pub(crate) generation: Option<u64>,
-    pub(crate) invocation_domain: tilo_ui_base::widget::ActionDirectoryInvocationDomain,
+    pub name: String,
+    pub owner: Option<uuid::Uuid>,
+    pub generation: Option<u64>,
+    pub invocation_domain: tilo_ui_base::widget::ActionDirectoryInvocationDomain,
 }
 
 /// The component whose answers `provider` serves: only Tilo's model hosts one.

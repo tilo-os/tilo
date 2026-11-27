@@ -60,6 +60,20 @@ view shell_parts(g: Gallery) {
             }
         }
         part(
+            "Magnify",
+            "A dock's items, the one under the pointer standing larger and its neighbours a little less.",
+        ) {
+            row(gap: .related, align: .end) {
+                for pinned in g.chrome_apps {
+                    ui.Magnify(zoom: 0.6) {
+                        ui.Button(pinned.title, icon: pinned.kind.icon(), icon_only: true) {
+                            on press: set(last, pinned.title)
+                        }
+                    }
+                }
+            }
+        }
+        part(
             "Tab strip",
             "A frame's tabs: the one in front lifted, who is at each, and a changed one marked.",
         ) {

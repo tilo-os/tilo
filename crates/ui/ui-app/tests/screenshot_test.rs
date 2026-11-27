@@ -122,7 +122,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
             // at the actual widget pipeline.
             use std::collections::HashMap;
             use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-            use tilo_ui::widget::Container;
+            use tilo_ui_app::widget::Container;
             use tilo_ui_base::presence::PresenceCtx;
             use tilo_ui_base::text_render::TextRenderer;
             use tilo_ui_base::theme::Theme;
@@ -199,7 +199,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
         fn tab_bar_renders_pills_inside_six_px_insets() {
             use std::collections::HashMap;
             use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-            use tilo_ui::{widget::TabBar, widget::TabDescriptor};
+            use tilo_ui_app::{widget::TabBar, widget::TabDescriptor};
             use tilo_ui_base::presence::PresenceCtx;
             use tilo_ui_base::text_render::TextRenderer;
             use tilo_ui_base::theme::Theme;
@@ -266,7 +266,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
             if let Ok(dir) = std::env::var("TILO_UI_SCREENSHOT_DIR") {
                 let path = std::path::Path::new(&dir).join("tab_bar.png");
                 std::fs::create_dir_all(&dir).ok();
-                tilo_ui::png::write_rgba8(&path, bar_w, bar_h, &rgba)
+                tilo_ui_app::png::write_rgba8(&path, bar_w, bar_h, &rgba)
                     .expect("write screenshot png");
                 eprintln!("wrote tab-bar screenshot to {}", path.display());
             }

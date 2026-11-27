@@ -1,29 +1,15 @@
 use super::*;
-use std::sync::{MutexGuard, TryLockError, mpsc};
+use std::sync::mpsc;
 
 pub(crate) mod allocations;
+
+use super::retirement_test_probe as probe;
 
 fn domain() -> RetirementDomain {
     RetirementDomain::new().unwrap()
 }
 fn owner(domain: &RetirementDomain) -> RetirementOwner {
     domain.marker().unwrap()
-}
-
-pub(crate) fn probe(handle: &RetirementHandle) -> Result<MutexGuard<'_, ()>, RetirementError> {
-    let guard = match handle.value.domain.check.try_lock() {
-        Ok(guard) => guard,
-        Err(TryLockError::WouldBlock) => return Err(RetirementError::Busy),
-        Err(TryLockError::Poisoned(_)) => return Err(RetirementError::Poisoned),
-    };
-    if handle.value.domain.requested.load(Ordering::Acquire)
-        || handle.value.domain.retired.load(Ordering::Acquire)
-        || handle.value.marker.requested.load(Ordering::Acquire)
-        || handle.value.marker.retired.load(Ordering::Acquire)
-    {
-        return Err(RetirementError::Retired);
-    }
-    Ok(guard)
 }
 
 tilo_test_env::scenario! {

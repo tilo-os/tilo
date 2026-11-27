@@ -124,7 +124,7 @@ impl Widget for Tripwire {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReplaceAt {
+pub enum ReplaceAt {
     Sync,
     Settle,
     /// While it handles an event, leaving the event unhandled.
@@ -133,7 +133,11 @@ pub(crate) enum ReplaceAt {
 
 /// A container whose focusable child is replaced once `armed` is set, at
 /// the moment `at` names.
-pub(crate) struct Replacing {
+#[tilo_ui_base::component::not_a_component(
+    framework,
+    "a test's container whose focusable child is replaced mid-dispatch"
+)]
+pub struct Replacing {
     child: Box<dyn Widget>,
     child_replaced: Rc<Cell<bool>>,
     graveyard: Vec<Box<dyn Widget>>,
@@ -148,7 +152,7 @@ pub(crate) struct Replacing {
 }
 
 impl Replacing {
-    pub(crate) fn new(at: ReplaceAt) -> (Self, Rc<Cell<bool>>) {
+    pub fn new(at: ReplaceAt) -> (Self, Rc<Cell<bool>>) {
         let (child, child_replaced) = Tripwire::new(true);
         let armed = Rc::new(Cell::new(false));
         (
@@ -168,7 +172,7 @@ impl Replacing {
     }
 
     /// [`Self::new`], but it never reports the replacement.
-    pub(crate) fn unreported(at: ReplaceAt) -> (Self, Rc<Cell<bool>>) {
+    pub fn unreported(at: ReplaceAt) -> (Self, Rc<Cell<bool>>) {
         let (mut replacing, armed) = Self::new(at);
         replacing.reports = false;
         (replacing, armed)
@@ -218,6 +222,10 @@ impl Widget for Replacing {
             self.child.apply_layout(taffy, *child, origin);
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the tripwire is the widget it wraps: that widget draws under the tripwire's key"
+    )]
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,

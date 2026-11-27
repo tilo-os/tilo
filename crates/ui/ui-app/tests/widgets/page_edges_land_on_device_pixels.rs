@@ -7,14 +7,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::arrange::{Page, Row, Stack};
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::arrange::{Page, Row, Stack};
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -47,7 +47,7 @@ fn boxes(widget: &dyn Widget, out: &mut Vec<(String, Rect)>) {
 
 #[test]
 fn every_edge_lands_on_a_device_pixel_at_the_display_scale() {
-    use tilo_ui::widget::Text;
+    use tilo_ui_app::widget::Text;
     use tilo_ui_base::widget::Manual;
     use vello::kurbo::Rect;
     let content = Page::new().push(Box::new(
@@ -73,8 +73,8 @@ fn every_edge_lands_on_a_device_pixel_at_the_display_scale() {
         Ok(available)
     })
     .child(Box::new(content));
-    let mut harness = tilo_ui::app::driver::Driver::new_with_theme(
-        tilo_ui::State::new(),
+    let mut harness = tilo_ui_app::app::driver::Driver::new_with_theme(
+        tilo_ui_app::State::new(),
         Box::new(region),
         (333, 517),
         Theme::light().with_text_scale(1.3),

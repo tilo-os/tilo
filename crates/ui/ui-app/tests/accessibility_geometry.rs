@@ -8,9 +8,9 @@
 //! Linked into the `it` umbrella test binary (see `tests/it.rs`), which also
 //! carries the test-wide lint allowances.
 
-use tilo_ui::State;
-use tilo_ui::headless::{Driver, InspectionNode};
-use tilo_ui::widget::{Dropdown, EmptyState};
+use tilo_ui_app::State;
+use tilo_ui_app::headless::{Driver, InspectionNode};
+use tilo_ui_app::widget::{Dropdown, EmptyState};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{a11y::AccessNode, a11y::Action, a11y::Role};
 
@@ -135,7 +135,7 @@ fn an_open_dropdowns_options_are_in_the_tree_where_they_are_drawn_and_choosable(
 /// The label of the option the focused combobox names as its active
 /// descendant, after checking the tree's focus stayed on the combobox.
 fn active_option(harness: &Driver) -> Option<String> {
-    use tilo_ui::accesskit::Role as AkRole;
+    use tilo_ui_app::accesskit::Role as AkRole;
     let (_, combo) = harness.a11y_focus().expect("something holds focus");
     assert_eq!(
         combo.role(),

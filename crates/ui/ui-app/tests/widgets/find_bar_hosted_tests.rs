@@ -9,13 +9,13 @@ use std::sync::*;
 use std::time::*;
 use taffy::Style;
 use taffy::prelude::{length, percent};
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -139,8 +139,8 @@ fn hosted_accessibility_edits_the_real_find_query_and_replacement() {
     };
     let mut scope = FindScope::new(Box::new(page)).with_bar(FindBar::new().with_replace());
     scope.open();
-    let mut harness = Driver::for_root(tilo_ui::State::new(), scope, (900, 400), Theme::dark());
-    let field = |harness: &tilo_ui::app::driver::Driver, name: &str| {
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), scope, (900, 400), Theme::dark());
+    let field = |harness: &tilo_ui_app::app::driver::Driver, name: &str| {
         harness
             .a11y_nodes()
             .into_iter()

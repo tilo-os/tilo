@@ -3,8 +3,8 @@
 //! -- target/agent-marker, using any cargo drop-in appropriate for the builder.
 
 use std::{cell::Cell, path::Path, rc::Rc};
-use tilo_ui::widget::{Button, Column, resource_actions};
-use tilo_ui::{headless::Driver, state::State};
+use tilo_ui_app::widget::{Button, Column, resource_actions};
+use tilo_ui_app::{headless::Driver, state::State};
 use tilo_ui_base::theme::Theme;
 
 type CaptureResult<T> = Result<T, Box<dyn std::error::Error>>;

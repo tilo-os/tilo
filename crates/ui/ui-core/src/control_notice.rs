@@ -55,7 +55,7 @@ pub fn say_in_window(reason: &str) {
 /// The control the person acted on last, for anchoring what is said about it: under the press
 /// `pressed_at` (the innermost node there that takes focus, else the innermost node), else the node
 /// holding keyboard focus.
-pub(crate) fn acting_control(
+pub fn acting_control(
     taffy: &taffy::TaffyTree<()>,
     root: Option<taffy::NodeId>,
     pressed_at: Option<Point>,

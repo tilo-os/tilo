@@ -4,14 +4,14 @@ use vello::kurbo::Rect;
 use winit::keyboard::NamedKey;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Direction {
+pub enum Direction {
     Up,
     Down,
     Left,
     Right,
 }
 impl Direction {
-    pub(crate) fn from_key(key: NamedKey) -> Option<Self> {
+    pub fn from_key(key: NamedKey) -> Option<Self> {
         match key {
             NamedKey::ArrowUp => Some(Self::Up),
             NamedKey::ArrowDown => Some(Self::Down),
@@ -22,7 +22,7 @@ impl Direction {
     }
 }
 /// Keep tree order for ties, as the native host always has.
-pub(crate) fn next(
+pub fn next(
     current: (NodeId, Rect),
     candidates: impl IntoIterator<Item = (NodeId, Rect)>,
     direction: Direction,
@@ -128,7 +128,7 @@ fn find_trap_focusables(
 }
 
 /// The deepest trapping subtree owns the keyboard order.
-pub(crate) fn order(
+pub fn order(
     root: NodeId,
     widget: &dyn Widget,
     taffy: &TaffyTree<()>,
@@ -181,11 +181,11 @@ pub(crate) fn mapped_order(
     }
     (order, trapped.is_some())
 }
-#[expect(
+#[allow(
     clippy::option_option,
     reason = "the outer Option is whether focus changes; the inner one is the new, possibly empty, focus"
 )]
-pub(crate) fn reconcile_trap(
+pub fn reconcile_trap(
     active: &mut bool,
     before: &mut Option<NodeId>,
     focused: Option<NodeId>,
@@ -219,7 +219,7 @@ pub(crate) fn reconcile_trap(
 /// Keyboard travel (Tab, Shift+Tab, directional focus) outside a trap stays inside the laid-out
 /// keyboard scope ([`Widget::scopes_keyboard_focus`]): `order` narrowed to the scope's subtree, empty
 /// when the scope has no control (travel then moves nowhere rather than onto the chrome around it).
-pub(crate) fn within_keyboard_scope(
+pub fn within_keyboard_scope(
     order: Vec<NodeId>,
     scopes: &[NodeId],
     taffy: &TaffyTree<()>,
@@ -237,7 +237,7 @@ pub(crate) fn within_keyboard_scope(
 /// hides its subtree from focus too). Reads the node `hidden` flag
 /// ([`hidden`]), never its accessibility node or the subtree a document
 /// exports.
-pub(crate) fn probe(widget: &dyn Widget) -> (bool, bool, bool) {
+pub fn probe(widget: &dyn Widget) -> (bool, bool, bool) {
     (
         widget.is_focusable() && widget.is_enabled(),
         widget.traps_focus(),
@@ -261,7 +261,7 @@ impl FocusRestrictions {
 
 /// A surface the host lays over a window's app (its History) as focus order reads it: the nodes it
 /// lays out, whether it takes all input, and whether it traps focus.
-pub(crate) trait FocusSurface {
+pub trait FocusSurface {
     /// The layout nodes the surface owns.
     fn owned_nodes(&self, taffy: &TaffyTree<()>) -> std::collections::HashSet<NodeId>;
     /// Whether only the surface's own nodes take focus.
@@ -276,7 +276,7 @@ pub(crate) trait FocusSurface {
 /// focus, and otherwise they come after the app's. `inspect` answers
 /// [`probe`] for a mapped node (`None` when it is not mapped). Returns the
 /// order and whether something traps focus (an open History review does).
-pub(crate) fn layout_map_order(
+pub fn layout_map_order(
     root: NodeId,
     taffy: &TaffyTree<()>,
     restrictions: &FocusRestrictions,
@@ -314,10 +314,10 @@ fn is_within(mut node: NodeId, scope: NodeId, taffy: &TaffyTree<()>) -> bool {
     }
 }
 
-pub(crate) fn keyboard_nav_allowed(modal: Option<Rect>, trapped: bool) -> bool {
+pub fn keyboard_nav_allowed(modal: Option<Rect>, trapped: bool) -> bool {
     modal.is_none() || trapped
 }
-pub(crate) fn tab_index(order: &[NodeId], focused: Option<NodeId>, back: bool) -> Option<usize> {
+pub fn tab_index(order: &[NodeId], focused: Option<NodeId>, back: bool) -> Option<usize> {
     if order.is_empty() {
         return None;
     }

@@ -76,7 +76,7 @@ impl Crossing {
 /// Inside a component only its root (the widget its boundary hosts)
 /// publishes document actions: it speaks for the resource. What the rest of
 /// the component's tree publishes is kept to views and effects.
-pub(crate) fn collect_widget_resources(
+pub fn collect_widget_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
     resources: &mut Vec<tilo_actions::ResourceSpec>,
@@ -301,9 +301,9 @@ pub fn published_search_providers(
 }
 
 /// Test traversal probe; production callers retain bound provenance.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[cfg(feature = "model")]
-pub(crate) fn resolve_widget_resource(
+pub fn resolve_widget_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
     id: &str,
@@ -313,7 +313,7 @@ pub(crate) fn resolve_widget_resource(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[cfg(feature = "model")]
 fn resolve_bound_resource<R>(
     widget: &dyn Widget,
@@ -354,7 +354,7 @@ fn resolve_bound_resource<R>(
     reason = "outer None means end of traversal; inner None means this ordinal has no bounded provider"
 )]
 #[cfg(feature = "model")]
-pub(crate) fn action_directory_page_at(
+pub fn action_directory_page_at(
     widget: &dyn Widget,
     doc: &AutoCommit,
     target: usize,

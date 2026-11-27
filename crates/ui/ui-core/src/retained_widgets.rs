@@ -62,7 +62,7 @@ fn record(roots: Roots<'_>, walked: &mut Vec<(Identity, usize)>) {
 /// place under it, which unmounts those nodes from `taffy`. They stay in `taffy` until that remount
 /// reaches them, so a node it has not reached yet still names these parts. Returns the nodes
 /// forgotten, for the host's bindings to forget.
-pub(crate) fn let_go_under(
+pub fn let_go_under(
     relaid: &[NodeId],
     taffy: &taffy::TaffyTree<()>,
     nodes: &mut std::collections::HashMap<NodeId, *mut (dyn Widget + 'static)>,
@@ -82,7 +82,7 @@ pub(crate) fn let_go_under(
 
 /// The walk a layout map was admitted against.
 #[derive(Default)]
-pub(crate) struct Adopted {
+pub struct Adopted {
     /// Each widget the walk met, in walk order, with how many widgets the walk met under it: a subtree
     /// laid out again in place ([`Widget::relaid_layout_node`]) is skipped as one.
     walked: Vec<(Identity, usize)>,
@@ -94,7 +94,7 @@ pub(crate) struct Adopted {
 
 impl Adopted {
     /// Forget everything admitted (the map was cleared).
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.walked.clear();
         #[cfg(debug_assertions)]
         self.nodes.clear();
@@ -110,7 +110,7 @@ impl Adopted {
     /// widget: a build registered it from the trees `roots` hands over, and
     /// no widget code ran since.
     #[inline(never)]
-    pub(crate) unsafe fn admit(
+    pub unsafe fn admit(
         &mut self,
         nodes: &std::collections::HashMap<NodeId, *mut (dyn Widget + 'static)>,
         roots: Roots<'_>,
@@ -132,7 +132,7 @@ impl Adopted {
     /// A widget whose children are laid out again in place ([`Widget::relaid_layout_node`]) names none
     /// of them to the walk: its admitted subtree is skipped, and its node handed to `relaid`, so the
     /// host lets go of every node under it before the map is called through.
-    pub(crate) fn still_live(&self, roots: Roots<'_>, relaid: &mut Vec<NodeId>) -> bool {
+    pub fn still_live(&self, roots: Roots<'_>, relaid: &mut Vec<NodeId>) -> bool {
         fn check(
             widget: &dyn Widget,
             walked: &[(Identity, usize)],

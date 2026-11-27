@@ -148,7 +148,7 @@ impl FloatingSurfaceServiceClient {
 
     /// The connection a new window takes: the one the window before it handed over
     /// ([`Self::hand_over`]), else the one the launcher handed this process ([`Self::discover`]).
-    pub(crate) fn for_window() -> Option<Self> {
+    pub fn for_window() -> Option<Self> {
         #[cfg(feature = "local-daemons")]
         if crate::window_link::is_building() {
             let connection = crate::window_link::take_shell_ui()?;
@@ -169,7 +169,7 @@ impl FloatingSurfaceServiceClient {
         not(feature = "native"),
         expect(dead_code, reason = "only a native window gives its place to the next")
     )]
-    pub(crate) fn hand_over(self) {
+    pub fn hand_over(self) {
         HANDED_OVER.with(|slot| *slot.borrow_mut() = Some(self));
     }
 
@@ -224,7 +224,7 @@ impl FloatingSurfaceServiceClient {
     /// The client of `stream`, which says the app's shell-ui version
     /// ([`FloatingSurfaceClientMessage::Hello`]) before anything else.
     #[cfg(any(test, feature = "local-daemons", feature = "test-support"))]
-    pub(crate) fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
+    pub fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
         stream.set_nonblocking(true)?;
         let mut client = Self {
             stream,
@@ -408,7 +408,7 @@ impl FloatingSurfaceServiceClient {
         None
     }
 
-    pub(crate) fn for_window() -> Option<Self> {
+    pub fn for_window() -> Option<Self> {
         None
     }
 

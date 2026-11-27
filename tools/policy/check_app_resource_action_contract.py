@@ -219,6 +219,8 @@ VIEW_CONTEXT_BINDING = re.compile(
 # Closure-taking toolkit builders named `*action*` that are neither counted
 # above nor controls: why.
 NOT_ACTION_BUTTONS = {
+    "draw_action_presence": "paints others' activity on the frame; its closure only names an "
+    "item, and it activates nothing",
     "icon_action": "a menu entry, published as the open menu's own control",
     "destructive_action": "a menu entry, published as the open menu's own control",
     "actions_group": "binds each hit to its published action",
@@ -851,7 +853,7 @@ def is_ui_core_dependency(alias: str, specification: object) -> bool:
         return True
     if isinstance(specification, dict):
         path = specification.get("path")
-        return isinstance(path, str) and Path(path).name in {"ui", "ui-core"}
+        return isinstance(path, str) and Path(path).name in {"ui", "ui-core", "ui-app"}
     return False
 
 
@@ -1834,7 +1836,7 @@ def audit(
     # this invariant spanning its focused implementation modules so moving
     # action/resource code out of app.rs cannot disable the audit.
     if root.resolve() == ROOT.resolve():
-        app_host_path = root / "crates" / "ui" / "ui-core" / "src" / "app.rs"
+        app_host_path = root / "crates" / "ui" / "ui-app" / "src" / "app.rs"
         app_action_path = app_host_path.parent / "app" / "actions.rs"
         app_host = code_only(app_host_path.read_text(encoding="utf-8"))
         if app_action_path.is_file():

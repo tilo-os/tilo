@@ -6,15 +6,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::arrange::{Align, Row, Stack};
-use tilo_ui::widget::internals::virtual_list_component::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::arrange::{Align, Row, Stack};
+use tilo_ui_app::widget::internals::virtual_list_component::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::collection_transition::ListModelChange;
 use tilo_ui_base::component::Component;
 use tilo_ui_base::component::Event;
@@ -175,7 +175,7 @@ fn press_row(
         ));
     }
     for event in &events {
-        tilo_ui::testing::Dispatch::new()
+        tilo_ui_app::testing::Dispatch::new()
             .layout(&taffy, node)
             .send(list, event);
     }
@@ -215,7 +215,7 @@ fn transcript_messages(read_by: impl Fn(usize) -> Vec<Person>) -> DescribedRows 
 }
 
 /// What `list` lays out, as the inspection sees it: where each widget stands.
-fn laid_out(list: DescribedList) -> tilo_ui::headless::InspectionNode {
+fn laid_out(list: DescribedList) -> tilo_ui_app::headless::InspectionNode {
     laid_out_in(list, tilo_ui_base::theme::Theme::dark())
 }
 
@@ -223,15 +223,19 @@ fn laid_out(list: DescribedList) -> tilo_ui::headless::InspectionNode {
 fn laid_out_in(
     list: DescribedList,
     theme: tilo_ui_base::theme::Theme,
-) -> tilo_ui::headless::InspectionNode {
-    let mut harness =
-        tilo_ui::app::driver::Driver::for_root(tilo_ui::State::new(), list, (900, 600), theme);
+) -> tilo_ui_app::headless::InspectionNode {
+    let mut harness = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
+        list,
+        (900, 600),
+        theme,
+    );
     harness.relayout();
     harness.inspection().root
 }
 
 /// The names the faces of `widget` say, in `node` and under it.
-fn find_widget(node: &tilo_ui::headless::InspectionNode, widget: &str, out: &mut Vec<String>) {
+fn find_widget(node: &tilo_ui_app::headless::InspectionNode, widget: &str, out: &mut Vec<String>) {
     if node.widget == widget {
         out.push(
             node.semantics
@@ -276,7 +280,7 @@ fn a_readers_face_stands_once_on_the_line_they_read_to() {
         },
     );
     let laid = laid_out(list);
-    let faces = |node: &tilo_ui::headless::InspectionNode, at: usize| {
+    let faces = |node: &tilo_ui_app::headless::InspectionNode, at: usize| {
         let rows = node
             .children
             .iter()
@@ -333,7 +337,7 @@ fn a_press_on_a_transcript_row_chooses_nothing() {
     Widget::set_focus(list, true);
     let up = tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowUp);
     assert!(
-        tilo_ui::testing::Dispatch::new()
+        tilo_ui_app::testing::Dispatch::new()
             .layout(&taffy, node)
             .send(list, &up)
             .handled,
@@ -404,8 +408,8 @@ fn the_page_a_row_opens_into_carries_the_mark_of_the_change() {
             ..VirtualListProps::default()
         },
     );
-    let mut harness = tilo_ui::app::driver::Driver::for_root(
-        tilo_ui::State::new(),
+    let mut harness = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
         list,
         (900, 600),
         tilo_ui_base::theme::Theme::dark(),
@@ -487,7 +491,7 @@ fn a_row_whose_menu_is_asked_for_lists_its_own_and_its_items_commands() {
     let _settled = tilo_ui_base::motion::testing::settled();
     // A shell that can carry a question is connected, as in an app window: every menu then
     // keeps its "Send to…" row, so an empty one opens rather than being held back.
-    tilo_ui::shared_selection::set_send_host_available(true);
+    tilo_ui_app::shared_selection::set_send_host_available(true);
     // The host answers the ask for the row's menu when the test says so, as an app does a
     // frame or two later.
     let answered = Rc::new(Cell::new(false));
@@ -500,8 +504,8 @@ fn a_row_whose_menu_is_asked_for_lists_its_own_and_its_items_commands() {
             ),
         )))),
     );
-    let mut harness = tilo_ui::app::driver::Driver::for_root(
-        tilo_ui::State::new(),
+    let mut harness = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
         list,
         (900, 600),
         tilo_ui_base::theme::Theme::dark(),
@@ -542,14 +546,14 @@ fn a_row_whose_menu_is_asked_for_lists_its_own_and_its_items_commands() {
         .menu()
         .items()
         .iter()
-        .filter_map(tilo_ui::widget::MenuItem::label)
+        .filter_map(tilo_ui_app::widget::MenuItem::label)
         .collect();
     assert_eq!(
         labels.get(..3),
         Some(["Open as page", "Complete", "Delete"].as_slice()),
         "the row's own command first, then its item's, as a person reads them: {labels:?}"
     );
-    tilo_ui::shared_selection::set_send_host_available(false);
+    tilo_ui_app::shared_selection::set_send_host_available(false);
 }
 
 /// The item a host holds open stands open where it stands: the list it builds again shows
@@ -634,7 +638,7 @@ fn a_reordered_row_reports_the_two_ids_it_moved_between() {
     inner.focus_row("row-0".to_owned());
     let down = tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowDown);
     assert!(
-        tilo_ui::testing::Dispatch::new()
+        tilo_ui_app::testing::Dispatch::new()
             .modifiers(winit::keyboard::ModifiersState::CONTROL)
             .layout(&taffy, node)
             .send(inner, &down)
@@ -675,7 +679,7 @@ fn the_person_opening_a_row_reports_the_item_it_shows() {
     let mut list = DescribedList::from_props("list", props);
     let inner = list.list_mut().expect("the list stands");
     lay_out(inner, 400.0);
-    inner.activate_key(tilo_ui::widget::ListKey::new("row-1".to_owned()));
+    inner.activate_key(tilo_ui_app::widget::ListKey::new("row-1".to_owned()));
     assert_eq!(inner.open_row().map(String::as_str), Some("row-1"));
     let fired = queue.take();
     assert_eq!(fired.len(), 1, "the host hears one event: {fired:?}");
@@ -1154,7 +1158,7 @@ impl Source for ViewItemSource<'_> {
             "row" if self.views => vec![None],
             "row" => vec![Some(ListRowProps::NAME.to_owned())],
             "detail" => vec![None],
-            "attached" => vec![Some(tilo_ui::widget::ContextMenuProps::NAME.to_owned())],
+            "attached" => vec![Some(tilo_ui_app::widget::ContextMenuProps::NAME.to_owned())],
             "menu" if self.menu => vec![
                 Some(MenuItemProps::NAME.to_owned()),
                 Some(MenuItemProps::NAME.to_owned()),
@@ -1415,7 +1419,7 @@ fn a_keyed_row_answers_whichever_way_it_is_drawn() {
             let (taffy, node) = lay_out_tree(inner, 400.0);
             Widget::set_focus(inner, true);
             inner.focus_row("row-0".to_owned());
-            tilo_ui::testing::Dispatch::new()
+            tilo_ui_app::testing::Dispatch::new()
                 .layout(&taffy, node)
                 .send(inner, &pressed)
                 .handled

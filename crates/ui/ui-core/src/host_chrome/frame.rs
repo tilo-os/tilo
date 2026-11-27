@@ -8,7 +8,7 @@ use super::HostChrome;
 
 /// Whether the app draws its own frame, once the first configure has settled `xdg-decoration`
 /// (`server_side`); `None` until then.
-pub(crate) fn app_draws_frame(chrome: HostChrome, server_side: Option<bool>) -> Option<bool> {
+pub fn app_draws_frame(chrome: HostChrome, server_side: Option<bool>) -> Option<bool> {
     match (chrome, server_side) {
         (HostChrome::InWindow, None) => None,
         (HostChrome::InWindow, Some(server_side)) => Some(!server_side),

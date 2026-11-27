@@ -8,14 +8,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
-use tilo_ui::widget::{Autocomplete, Column, Link, ShortcutRecorder, Stepper};
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
+use tilo_ui_app::widget::{Autocomplete, Column, Link, ShortcutRecorder, Stepper};
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -59,8 +59,8 @@ tilo_test_env::scenario! {
             (InteractionEnvironment::default(), false),
             (InteractionEnvironment::TOUCH, true),
         ] {
-            let mut host = tilo_ui::app::driver::Driver::for_root(
-                tilo_ui::State::new(),
+            let mut host = tilo_ui_app::app::driver::Driver::for_root(
+                tilo_ui_app::State::new(),
                 stepper(),
                 (600, 200),
                 Theme::light(),
@@ -115,8 +115,8 @@ tilo_test_env::scenario! {
         let state = tilo_ui_base::LocalState::new("Ctrl+K".to_owned());
         let recorder: Box<dyn Widget> = Box::new(ShortcutRecorder::new("open", &state, "Ctrl+K"));
         let field = Auto::field("to", "ada@example.com");
-        let mut host = tilo_ui::app::driver::Driver::for_root(
-            tilo_ui::State::new(),
+        let mut host = tilo_ui_app::app::driver::Driver::for_root(
+            tilo_ui_app::State::new(),
             Column::new().push(recorder).push(field),
             (400, 300),
             Theme::light(),
@@ -146,9 +146,9 @@ impl Auto {
             path: Vec::new(),
             identity: None,
         };
-        let props = tilo_ui::widget::AutocompleteProps {
+        let props = tilo_ui_app::widget::AutocompleteProps {
             value: bound,
-            ..tilo_ui::widget::AutocompleteProps::default()
+            ..tilo_ui_app::widget::AutocompleteProps::default()
         };
         Box::new(<Autocomplete as Described>::from_props(key, props))
     }

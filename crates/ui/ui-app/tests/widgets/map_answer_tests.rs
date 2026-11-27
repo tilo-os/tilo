@@ -1,3 +1,4 @@
+use crate::support::map::*;
 use std::cell::*;
 use std::collections::*;
 use std::path::*;
@@ -5,16 +6,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::map::test_support::harness;
-use tilo_ui::widget::internals::map::test_support::*;
-use tilo_ui::widget::internals::map::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::map::test_support::*;
+use tilo_ui_app::widget::internals::map::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::Event;
 use tilo_ui_base::component::*;
@@ -39,35 +39,38 @@ fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
     let _frame = tilo_ui_base::motion::pin_frame();
     let _settled = tilo_ui_base::motion::testing::settled();
     // The row as a view describes it (Chat's turn): its steps are its body's views.
-    let row = <tilo_ui::widget::DisclosureRow as tilo_ui_base::component::Described>::from_props(
-        "steps",
-        tilo_ui::widget::DisclosureRowProps {
-            title: "Looked up Notes and 5 more steps".into(),
-            body: (0..6)
-                .map(|index| -> Element {
-                    Box::new(tilo_ui::widget::Text::new(&format!(
-                        "Looked up Notes {index}"
-                    )))
-                })
-                .collect(),
-            dense: true,
-            ..tilo_ui::widget::DisclosureRowProps::default()
-        },
-    );
-    let card = tilo_ui::widget::arrange::Stack::stack()
+    let row =
+        <tilo_ui_app::widget::DisclosureRow as tilo_ui_base::component::Described>::from_props(
+            "steps",
+            tilo_ui_app::widget::DisclosureRowProps {
+                title: "Looked up Notes and 5 more steps".into(),
+                body: (0..6)
+                    .map(|index| -> Element {
+                        Box::new(tilo_ui_app::widget::Text::new(&format!(
+                            "Looked up Notes {index}"
+                        )))
+                    })
+                    .collect(),
+                dense: true,
+                ..tilo_ui_app::widget::DisclosureRowProps::default()
+            },
+        );
+    let card = tilo_ui_app::widget::arrange::Stack::stack()
         .gap(tilo_ui_base::tokens::Rhythm::Related)
-        .push(Box::new(tilo_ui::widget::Text::new("Two notes changed.")))
+        .push(Box::new(tilo_ui_app::widget::Text::new(
+            "Two notes changed.",
+        )))
         .push(Box::new(row));
     let body: Element =
-        Box::new(tilo_ui::widget::Scrollable::new_vertical().with_child(Box::new(card)));
-    let band = tilo_ui::widget::internals::canvas_place::PLACE_BAND;
+        Box::new(tilo_ui_app::widget::Scrollable::new_vertical().with_child(Box::new(card)));
+    let band = tilo_ui_app::widget::internals::canvas_place::PLACE_BAND;
     let place: Element = Box::new(
-        <tilo_ui::widget::internals::canvas_place::CanvasPlace as tilo_ui_base::component::Described>::from_props(
+        <tilo_ui_app::widget::internals::canvas_place::CanvasPlace as tilo_ui_base::component::Described>::from_props(
             "turn",
-            tilo_ui::widget::internals::canvas_place::PlaceProps {
+            tilo_ui_app::widget::internals::canvas_place::PlaceProps {
                 name: Some("what changed?".into()),
                 body: Some(body),
-                ..tilo_ui::widget::internals::canvas_place::PlaceProps::default()
+                ..tilo_ui_app::widget::internals::canvas_place::PlaceProps::default()
             },
         ),
     );
@@ -79,11 +82,15 @@ fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
         },
         place,
     );
-    let mut host =
-        tilo_ui::app::driver::Driver::for_root(tilo_ui::State::new(), map, (800, 600), theme());
+    let mut host = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
+        map,
+        (800, 600),
+        theme(),
+    );
     host.relayout();
     host.recompose().expect("a frame settles");
-    let laid = |host: &mut tilo_ui::app::driver::Driver| {
+    let laid = |host: &mut tilo_ui_app::app::driver::Driver| {
         host.root_widget_mut()
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<Map>())
@@ -109,7 +116,7 @@ fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
     }
     let open = laid(&mut host);
     assert_eq!(
-        host.with_widget_mut(|row: &mut tilo_ui::widget::DisclosureRow| row.is_open()),
+        host.with_widget_mut(|row: &mut tilo_ui_app::widget::DisclosureRow| row.is_open()),
         Some(true),
         "the press opened the steps' line"
     );
@@ -124,22 +131,26 @@ fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
 /// the frames the window draws by itself. Before, it stood only once the pointer moved there.
 #[test]
 fn a_banner_added_to_a_hugging_answer_stands_without_the_pointer() {
-    let card = tilo_ui::widget::arrange::Stack::stack()
+    let card = tilo_ui_app::widget::arrange::Stack::stack()
         .gap(tilo_ui_base::tokens::Rhythm::Related)
-        .push(Box::new(tilo_ui::widget::Text::new(
+        .push(Box::new(tilo_ui_app::widget::Text::new(
             "The model's answer could not be used.",
         )));
     let body: Element =
-        Box::new(tilo_ui::widget::Scrollable::new_vertical().with_child(Box::new(card)));
+        Box::new(tilo_ui_app::widget::Scrollable::new_vertical().with_child(Box::new(card)));
     let map = Map::new().pin("turn", grown(100.0, 80.0, 420.0, 400.0), body);
-    let mut harness =
-        tilo_ui::app::driver::Driver::for_root(tilo_ui::State::new(), map, (800, 600), theme());
+    let mut harness = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
+        map,
+        (800, 600),
+        theme(),
+    );
     harness.relayout();
     harness.recompose().expect("a frame settles");
     for _ in 0..4 {
         harness.idle();
     }
-    let laid = |harness: &mut tilo_ui::app::driver::Driver| {
+    let laid = |harness: &mut tilo_ui_app::app::driver::Driver| {
         harness
             .root_widget_mut()
             .as_any_mut()
@@ -151,37 +162,39 @@ fn a_banner_added_to_a_hugging_answer_stands_without_the_pointer() {
     let before = laid(&mut harness);
     // The view's next tree holds the failure's row: the reconciler inserts it in place.
     harness
-        .with_widget_mut(|scroll: &mut tilo_ui::widget::Scrollable| {
+        .with_widget_mut(|scroll: &mut tilo_ui_app::widget::Scrollable| {
             let stack = scroll
                 .child_mut()
                 .and_then(|child| child.as_any_mut())
-                .and_then(|any| any.downcast_mut::<tilo_ui::widget::arrange::Stack>())
+                .and_then(|any| any.downcast_mut::<tilo_ui_app::widget::arrange::Stack>())
                 .expect("the card");
-            let banner =
-                tilo_ui::widget::Banner::new(tilo_ui::widget::BannerKind::Error, "Request refused");
-            stack.insert(1, tilo_ui::widget::arrange::Part::new(Box::new(banner)));
+            let banner = tilo_ui_app::widget::Banner::new(
+                tilo_ui_app::widget::BannerKind::Error,
+                "Request refused",
+            );
+            stack.insert(1, tilo_ui_app::widget::arrange::Part::new(Box::new(banner)));
         })
         .expect("the scroll");
     // The window draws what it asks for, as time passes, and nothing moves the pointer.
-    let banner_height = |harness: &mut tilo_ui::app::driver::Driver| {
+    let banner_height = |harness: &mut tilo_ui_app::app::driver::Driver| {
         harness
-            .with_widget_mut(|banner: &mut tilo_ui::widget::Banner| banner.get_rect())
+            .with_widget_mut(|banner: &mut tilo_ui_app::widget::Banner| banner.get_rect())
             .map(|rect| rect.height())
     };
-    let deadline = tilo_ui::time::now() + std::time::Duration::from_millis(1500);
+    let deadline = tilo_ui_app::time::now() + std::time::Duration::from_millis(1500);
     loop {
         harness.idle();
         if banner_height(&mut harness).is_some_and(|height| height > 20.0) {
             break;
         }
         assert!(
-            tilo_ui::time::now() < deadline,
+            tilo_ui_app::time::now() < deadline,
             "the banner did not lay itself out without a pointer"
         );
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
     let banner = harness
-        .with_widget_mut(|banner: &mut tilo_ui::widget::Banner| banner.get_rect())
+        .with_widget_mut(|banner: &mut tilo_ui_app::widget::Banner| banner.get_rect())
         .expect("the banner");
     let after = laid(&mut harness);
     assert!(

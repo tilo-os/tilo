@@ -52,7 +52,7 @@ tilo_test_env::scenario! {
         assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
         assert!(
             h.root_mut::<NavShell>()
-                .window_toolbar_event(&tilo_ui::window_toolbar::ToolbarEvent::ToggleSidebar)
+                .window_toolbar_event(&tilo_ui_app::window_toolbar::ToolbarEvent::ToggleSidebar)
         );
         settle(&mut h, 560, 800);
         assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
@@ -117,7 +117,7 @@ fn a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places() {
         "one leading control, its way back: {toolbar:?}"
     );
     assert!(h.root_mut::<NavShell>().window_toolbar_event(
-        &tilo_ui::window_toolbar::ToolbarEvent::Action {
+        &tilo_ui_app::window_toolbar::ToolbarEvent::Action {
             id: WINDOW_BACK.into(),
         }
     ));
@@ -151,13 +151,13 @@ fn the_page_a_row_of_the_places_opens_keeps_back_to_them() {
     };
     // The shell's window frame hosts the shell, as a window of the session hosts a tile: the
     // frame hands its bar to the shell's header row.
-    let mut h = tilo_ui::headless::Driver::in_window_frame(
+    let mut h = tilo_ui_app::headless::Driver::in_window_frame(
         State::new(),
         Box::new(shell()),
         (400, 800),
         Theme::dark(),
     );
-    let settle_framed = |h: &mut tilo_ui::headless::Driver| {
+    let settle_framed = |h: &mut tilo_ui_app::headless::Driver| {
         for _ in 0..2 {
             if let Some(shell) = h.widget_mut::<NavShell>() {
                 shell.snap();
@@ -165,7 +165,7 @@ fn the_page_a_row_of_the_places_opens_keeps_back_to_them() {
             h.relayout();
         }
     };
-    let shell_of = |h: &mut tilo_ui::headless::Driver| -> (NavGeometry, NavPane) {
+    let shell_of = |h: &mut tilo_ui_app::headless::Driver| -> (NavGeometry, NavPane) {
         let shell = h
             .widget_mut::<NavShell>()
             .expect("the frame hosts the shell");

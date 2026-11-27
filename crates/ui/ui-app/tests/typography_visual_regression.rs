@@ -26,14 +26,14 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use tilo_ui::State;
+use tilo_ui_app::State;
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
 
-use tilo_ui::widget::{Column, Container, Divider, Row, Text};
+use tilo_ui_app::widget::{Column, Container, Divider, Row, Text};
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::{
     FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
@@ -222,7 +222,7 @@ fn write_png(path: &Path, frame: &Frame) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("create typography snapshot directory");
     }
-    tilo_ui::png::write_rgba8(path, frame.width, frame.height, &frame.rgba)
+    tilo_ui_app::png::write_rgba8(path, frame.width, frame.height, &frame.rgba)
         .expect("write typography snapshot");
 }
 
@@ -233,7 +233,7 @@ fn read_png(path: &Path) -> Frame {
             path.display()
         )
     });
-    let decoded = tilo_ui::png::decode_rgba8(&bytes).expect("decode typography PNG");
+    let decoded = tilo_ui_app::png::decode_rgba8(&bytes).expect("decode typography PNG");
     Frame {
         width: decoded.width,
         height: decoded.height,

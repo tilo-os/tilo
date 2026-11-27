@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui_app::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;

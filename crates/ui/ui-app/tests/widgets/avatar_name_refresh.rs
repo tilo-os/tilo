@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -36,7 +36,7 @@ use winit::keyboard::*;
 
 #[test]
 fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
-    use tilo_ui::widget::{Row, TextInput};
+    use tilo_ui_app::widget::{Row, TextInput};
     let name = tilo_ui_base::LocalState::new("Ada".to_owned());
     let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
     let avatar = Avatar::person("Ada", "ada")
@@ -46,7 +46,7 @@ fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
     let input = TextInput::local().with_initial_value("Ada");
     let root = Row::new().push(Box::new(avatar)).push(Box::new(input));
     let mut harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(root),
         (640, 320),
         Theme::dark(),

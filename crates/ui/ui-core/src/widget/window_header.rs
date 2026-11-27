@@ -186,7 +186,7 @@ pub struct WindowBarPart {
 /// asks which row holds it agree. A window inside `root` (a frame of its own) is that window's,
 /// whose own frame offers its row its bar: a row in it never takes the bar of the window around
 /// it, which would leave the outer window with no bar of its own and the row two bars to hold.
-pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
+pub fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         return header.set_window_bar(bar);
     }
@@ -206,10 +206,10 @@ pub(crate) fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) ->
 /// Every window asks this of its content, whatever draws it: a frame of the shell's preset
 /// ([`crate::widget::WindowFrame`]), a window of the shell's strips
 /// ([`crate::widget::WindowGroup`]) and the frame the layout check stages
-/// ([`crate::app::driver::Driver`]), so a window shows one bar, never two stacked, and no two
+/// (the headless `Driver`), so a window shows one bar, never two stacked, and no two
 /// of them can disagree about which.
 #[must_use]
-pub(crate) fn content_bar(content: &dyn Widget) -> Option<WindowBarPart> {
+pub fn content_bar(content: &dyn Widget) -> Option<WindowBarPart> {
     let row = root_header_row(content)?;
     (row.header_row_height() > 0.0)
         .then(|| row.window_bar_part())
@@ -218,7 +218,7 @@ pub(crate) fn content_bar(content: &dyn Widget) -> Option<WindowBarPart> {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct RowFurniture {
+pub struct RowFurniture {
     pub row: Rect,
     pub trailing: Rect,
     pub controls: crate::widget::window_controls::WindowControls,
@@ -229,7 +229,7 @@ pub(crate) struct RowFurniture {
 impl RowFurniture {
     /// The furniture of the row holding the bar in `part`. Nothing a row cannot fit is
     /// placed, so a narrow window's furniture never runs into what the app draws.
-    pub(crate) fn of(part: WindowBarPart) -> Self {
+    pub fn of(part: WindowBarPart) -> Self {
         use crate::widget::window_controls::{CONTROL_GAP, CONTROL_PX, LEAD_GAP, WindowControls};
         let trailing = part.controls;
         let controls = WindowControls::lay_out(trailing);
@@ -282,7 +282,7 @@ impl RowFurniture {
         self.new_tab = self.new_tab + shift;
     }
 
-    pub(crate) fn paint(
+    pub fn paint(
         &self,
         ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
         search: &mut crate::widget::WindowSearch,
@@ -321,14 +321,14 @@ impl RowFurniture {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct RowFurnitureState {
+pub struct RowFurnitureState {
     pub controls: crate::widget::window_controls::ControlsState,
     pub new_tab_hovered: bool,
     pub keyboard: Option<RowControl>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RowControl {
+pub enum RowControl {
     NewTab,
     Maximize,
     Close,
@@ -413,7 +413,7 @@ const WIDE_ENOUGH: f64 = 10_000.0;
 
 /// The shell's window frame a window is: its root, or what its root holds alone (a host that
 /// sizes the frame to the window). `None` for a window that holds anything else.
-pub(crate) fn window_frame_of(root: &dyn Widget) -> Option<&crate::widget::WindowFrame> {
+pub fn window_frame_of(root: &dyn Widget) -> Option<&crate::widget::WindowFrame> {
     if let Some(frame) = root
         .as_any()
         .and_then(|any| any.downcast_ref::<crate::widget::WindowFrame>())
@@ -439,7 +439,7 @@ pub fn test_root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
     root_header_row(root)
 }
 
-pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
+pub fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
     if let Some(row) = tilo_ui_base::widget::capability::capability::<dyn WindowHeader>(root) {
         return Some(row);
     }
@@ -587,7 +587,7 @@ pub(crate) fn offer_history_control(
         .any(|child| offer_history_control(child, control))
 }
 
-pub(crate) fn offer_window_search(root: &mut dyn Widget, presents: bool) -> bool {
+pub fn offer_window_search(root: &mut dyn Widget, presents: bool) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         return header.set_window_presents_search(presents);
     }

@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
-ui = { package = "tilo-ui", path = "../ui-core", default-features = false, features = ["model"] }
+ui = { package = "tilo-ui-app", path = "../ui-app", default-features = false, features = ["model"] }
 tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 vello.workspace = true
 winit.workspace = true
@@ -32,7 +32,7 @@ tracing.workspace = true
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
-ui = { package = "tilo-ui", path = "../ui-core", features = ["model"] }
+ui = { package = "tilo-ui-app", path = "../ui-app", features = ["model"] }
 
 [lints]
 workspace = true

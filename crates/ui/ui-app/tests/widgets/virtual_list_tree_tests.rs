@@ -5,15 +5,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::virtual_list::test_support::*;
-use tilo_ui::widget::internals::virtual_list::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::virtual_list::test_support::*;
+use tilo_ui_app::widget::internals::virtual_list::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -31,7 +31,7 @@ use winit::keyboard::*;
 #[test]
 fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
     use accesskit::Role as AkRole;
-    use tilo_ui::widget::{Checkbox, Column, TextInput};
+    use tilo_ui_app::widget::{Checkbox, Column, TextInput};
     use tilo_ui_base::a11y::Action;
 
     let done = tilo_ui_base::LocalState::new(false);
@@ -73,7 +73,7 @@ fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
     })
     .with_tree(Rc::new(TreeMarks::default()))
     .with_viewport_height(300.0);
-    let mut harness = Driver::for_root(tilo_ui::State::new(), list, (400, 500), Theme::dark());
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), list, (400, 500), Theme::dark());
     harness
         .root_mut::<VirtualList<OpenableTree>>()
         .set_open(Some(0));
@@ -113,11 +113,11 @@ fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
 /// holds them under the disclosure it offers.
 #[test]
 fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
-    use tilo_ui::time::testing::with_monotonic_time;
-    use tilo_ui::widget::ListRow;
+    use tilo_ui_app::time::testing::with_monotonic_time;
+    use tilo_ui_app::widget::ListRow;
     use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN};
 
-    let t0 = tilo_ui::time::now();
+    let t0 = tilo_ui_app::time::now();
     let ready = Rc::new(Cell::new(false));
     let model = ArrivingNested {
         rows: Nested {
@@ -134,7 +134,8 @@ fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
     .with_tree(Rc::new(TreeMarks::default()))
     .with_semantic_key(|key| format!("row:{key}"));
     let mut harness = with_monotonic_time(t0, || {
-        let mut harness = Driver::for_root(tilo_ui::State::new(), list, (400, 500), Theme::dark());
+        let mut harness =
+            Driver::for_root(tilo_ui_app::State::new(), list, (400, 500), Theme::dark());
         harness.relayout();
         harness
     });
@@ -146,7 +147,7 @@ fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
         .into_iter()
         .next()
         .expect("the list composes");
-    let folds_first = |node: &tilo_ui::composition::Composed| {
+    let folds_first = |node: &tilo_ui_app::composition::Composed| {
         composed_at(node, "ListRow").into_iter().any(|row| {
             row.semantics.as_ref().is_some_and(|access| {
                 access

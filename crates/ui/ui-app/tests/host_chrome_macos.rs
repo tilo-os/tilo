@@ -3,12 +3,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_ui::objc2::{MainThreadMarker, msg_send};
-use tilo_ui::objc2_app_kit::NSMenu;
+use tilo_ui_app::objc2::{MainThreadMarker, msg_send};
+use tilo_ui_app::objc2_app_kit::NSMenu;
 
-use tilo_ui::host_chrome_macos_testing::{ChromeRequest, MacChrome};
+use tilo_ui_app::host_chrome_macos_testing::{ChromeRequest, MacChrome};
 
-use tilo_ui::app::testing;
+use tilo_ui_app::app::testing;
 
 fn titles(menu: &NSMenu) -> Vec<String> {
     (0..menu.numberOfItems())
@@ -17,8 +17,8 @@ fn titles(menu: &NSMenu) -> Vec<String> {
         .collect()
 }
 
-fn submenu(bar: &NSMenu, title: &str) -> tilo_ui::objc2::rc::Retained<NSMenu> {
-    bar.itemWithTitle(&tilo_ui::objc2_foundation::NSString::from_str(title))
+fn submenu(bar: &NSMenu, title: &str) -> tilo_ui_app::objc2::rc::Retained<NSMenu> {
+    bar.itemWithTitle(&tilo_ui_app::objc2_foundation::NSString::from_str(title))
         .and_then(|item| item.submenu())
         .unwrap_or_else(|| panic!("{title} menu"))
 }
@@ -72,8 +72,8 @@ fn framework_history_apps_search_from_the_title_bar_and_the_edit_menu() {
     chrome.update(app.host_commands_for_test(false));
     assert!(titles(&submenu(&chrome.menu_bar, "Edit")).contains(&"Search…".to_owned()));
 
-    let field = tilo_ui::objc2_app_kit::NSSearchField::new(mtm);
-    field.setStringValue(&tilo_ui::objc2_foundation::NSString::from_str("notes"));
+    let field = tilo_ui_app::objc2_app_kit::NSSearchField::new(mtm);
+    field.setStringValue(&tilo_ui_app::objc2_foundation::NSString::from_str("notes"));
     let target = &*chrome.target;
     let _: () = unsafe { msg_send![target, searchFieldDidStartSearching: &*field] };
     let Some(ChromeRequest::Search(query)) = chosen.borrow_mut().pop() else {

@@ -5,14 +5,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::chip::PillMetrics;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::chip::PillMetrics;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -54,9 +54,9 @@ tilo_test_env::scenario! {
             &automerge::ROOT,
         ));
         assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
-        let mut harness = tilo_ui::app::driver::Driver::new(
-            tilo_ui::State::new(),
-            Box::new(tilo_ui::widget::Row::new().push(Box::new(chip))),
+        let mut harness = tilo_ui_app::app::driver::Driver::new(
+            tilo_ui_app::State::new(),
+            Box::new(tilo_ui_app::widget::Row::new().push(Box::new(chip))),
             (400, 100),
         );
         let [x, y, w, h] = harness.inspection().root.children[0].rect;
@@ -91,9 +91,9 @@ tilo_test_env::scenario! {
                     if pressed { finger } else { pill },
                 ),
             ] {
-                let mut harness = tilo_ui::app::driver::Driver::new(
-                    tilo_ui::State::new(),
-                    Box::new(tilo_ui::widget::Row::new().push(Box::new(chip()))),
+                let mut harness = tilo_ui_app::app::driver::Driver::new(
+                    tilo_ui_app::State::new(),
+                    Box::new(tilo_ui_app::widget::Row::new().push(Box::new(chip()))),
                     (400, 100),
                 );
                 harness.set_interaction_environment(input);
@@ -120,9 +120,9 @@ tilo_test_env::scenario! {
             .on_open(move || counted_open.set(counted_open.get() + 1))
             .on_remove(move || counted_remove.set(counted_remove.get() + 1));
 
-        let mut harness = tilo_ui::app::driver::Driver::new(
-            tilo_ui::State::new(),
-            Box::new(tilo_ui::widget::Row::new().push(Box::new(chip))),
+        let mut harness = tilo_ui_app::app::driver::Driver::new(
+            tilo_ui_app::State::new(),
+            Box::new(tilo_ui_app::widget::Row::new().push(Box::new(chip))),
             (400, 100),
         );
         let resources = harness.resources();
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
                 resource
                     .id
                     .as_str()
-                    .starts_with(tilo_ui::headless::CONTROL_RESOURCE_PREFIX)
+                    .starts_with(tilo_ui_app::headless::CONTROL_RESOURCE_PREFIX)
             })
             .collect();
         let ids: std::collections::HashSet<&str> =

@@ -15,17 +15,17 @@ pub struct Trace {
 }
 
 impl Trace {
-    pub(crate) fn when_enabled(value: Option<&str>) -> Option<Self> {
+    pub fn when_enabled(value: Option<&str>) -> Option<Self> {
         (value == Some("1")).then(Self::default)
     }
 
-    pub(crate) fn observes(event: &WindowEvent) -> bool {
+    pub fn observes(event: &WindowEvent) -> bool {
         matches!(event,
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
         ) || matches!(event, WindowEvent::Ime(Ime::Commit(_)))
     }
 
-    pub(crate) fn has_pending(&self) -> bool {
+    pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
             || (self.redraws_remaining > 0
                 && self

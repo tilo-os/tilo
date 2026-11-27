@@ -2,8 +2,8 @@
 //! show in a document.
 
 use tilo_ui::State;
-use tilo_ui::headless::Driver;
 use tilo_ui::widget::Container;
+use tilo_ui_app::headless::Driver;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
 use winit::event::ElementState;
@@ -141,7 +141,7 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
 }
 
 fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteraction {
-    let mut event = tilo_ui::headless::agent_acting("so.tilo.notes/note", "insert");
+    let mut event = tilo_ui_app::headless::agent_acting("so.tilo.notes/note", "insert");
     event.actor = tilo_actions::Acting::agent("scribe", "portable-review");
     event.action.label = "Write".into();
     event.resource.label = "Note".into();

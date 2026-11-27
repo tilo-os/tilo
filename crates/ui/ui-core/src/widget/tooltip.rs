@@ -632,7 +632,7 @@ impl Widget for Tooltip {
     }
 }
 
-pub(crate) fn placed_target_at(
+pub fn placed_target_at(
     widget: &dyn Widget,
     point: vello::kurbo::Point,
 ) -> Option<(Rect, String, TooltipSide)> {
@@ -641,7 +641,7 @@ pub(crate) fn placed_target_at(
         .map(|(rect, tip)| (rect, tip, widget.tooltip_side()))
 }
 
-pub(crate) fn smallest_target(
+pub fn smallest_target(
     targets: impl IntoIterator<Item = (Rect, String, TooltipSide)>,
 ) -> Option<(Rect, String, TooltipSide)> {
     let area = |rect: &Rect| (rect.width() * rect.height()).max(0.0);
@@ -661,7 +661,7 @@ struct HoverTarget {
     since: Instant,
 }
 
-/// One controller owned by [`crate::app::App`] — not one tooltip widget per
+/// One controller owned by the runner's `App` — not one tooltip widget per
 /// control — is what makes tooltips work for every widget exposing
 /// [`Widget::tooltip`] with zero per-app
 /// wiring, and guarantees at most one chip on screen. Timing is wall-clock
@@ -813,7 +813,7 @@ impl TooltipHost {
     /// (logical). Returns the resolved text, the chip, every pixel it may
     /// paint (shadow included) and whether it is on screen yet: an
     /// arrival's first frame draws nothing.
-    pub(crate) fn paint_shown(
+    pub fn paint_shown(
         &mut self,
         current: Option<(Rect, String, TooltipSide)>,
         text_renderer: &mut TextRenderer,
@@ -841,7 +841,7 @@ impl TooltipHost {
         Some((text, chip, bounds, shown))
     }
 
-    pub(crate) fn dismissed_by(event: &winit::event::WindowEvent) -> bool {
+    pub fn dismissed_by(event: &winit::event::WindowEvent) -> bool {
         use winit::event::{ElementState, WindowEvent};
         matches!(
             event,

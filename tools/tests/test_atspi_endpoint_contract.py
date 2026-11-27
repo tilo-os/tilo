@@ -13,7 +13,7 @@ SPEC.loader.exec_module(contract)
 
 class AtspiEndpointContractTests(unittest.TestCase):
     def test_shared_factory_retains_both_adapters_before_new_windows_are_shown(self):
-        source = (SCRIPT.parents[2] / "crates/ui/ui-core/src/app/native_runner.rs").read_text()
+        source = (SCRIPT.parents[2] / "crates/ui/ui-app/src/app/native_runner.rs").read_text()
         self.assertEqual(contract.adapter_registration_errors(source), [])
         registration = "create_accessibility_adapter(event_loop, &window, self.a11y_proxy.clone());"
         self.assertEqual(source.count(registration), 2)
@@ -64,7 +64,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
             self.assertEqual(contract.external_client_errors(root), [
                 "os/dev/vm.sh: the VM harness does not deliver the external AT-SPI client into the guest"])
 
-    def audit_update(self, update, *, source="crates/ui/ui-core/src/app.rs", cargo='accesskit_winit = "0.34.0"'):
+    def audit_update(self, update, *, source="crates/ui/ui-app/src/app.rs", cargo='accesskit_winit = "0.34.0"'):
         # Every graph this contract reads needs the tree's serde wire: the Linux
         # endpoint is the session, and the window sends its tree to it.
         if "accesskit = " not in cargo:
@@ -73,7 +73,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
             root = Path(temporary)
             repository = SCRIPT.parents[2]
             files = {
-                "crates/ui/ui-core/Cargo.toml": cargo,
+                "crates/ui/ui-app/Cargo.toml": cargo,
                 source: "\n".join([
                     "accesskit_winit::Adapter::with_event_loop_proxy",
                     "self.app.dispatch_a11y_action(req.target_node, &action)",
@@ -102,8 +102,8 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 "apps/tl/files/tilo-app.toml",
                 "apps/tl/photos/tilo-app.toml",
                 "apps/tl/settings/tilo-app.toml",
-                "crates/ui/ui-core/src/app/window_targets.rs",
-                "crates/ui/ui-core/src/app/floating.rs",
+                "crates/ui/ui-app/src/app/window_targets.rs",
+                "crates/ui/ui-app/src/app/floating.rs",
                 "crates/ui/ui-core/src/floating_surface/wire.rs",
                 "crates/desktop/session/src/a11y.rs",
                 "crates/desktop/session/src/app_tabs.rs",
@@ -137,12 +137,12 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 "    app_ref.build_a11y_tree_update(scale),\n"
                 ")\n"
                 "});",
-                source="crates/ui/ui-core/src/app/host.rs",
+                source="crates/ui/ui-app/src/app/host.rs",
             ), [])
         with self.subTest(phase='default native runner feature preserves endpoint contract'):
             self.assertEqual(self.audit_update(
                 self.NATIVE_UPDATE,
-                source="crates/ui/ui-core/src/app/native_runner.rs",
+                source="crates/ui/ui-app/src/app/native_runner.rs",
                 cargo="\n".join([
                     "[features]",
                     'default = ["native"]',
@@ -153,7 +153,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
             ), [])
         with self.subTest(phase='optional adapter outside default features is rejected'):
             self.assertIn(
-                "crates/ui/ui-core/Cargo.toml: AccessKit winit adapter is not enabled by default",
+                "crates/ui/ui-app/Cargo.toml: AccessKit winit adapter is not enabled by default",
                 self.audit_update(
                     self.NATIVE_UPDATE,
                     cargo="\n".join([
@@ -185,26 +185,26 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 + self.WINDOW_TREE
             ), [])
         with self.subTest(phase="a window tree without the app's shared tree is rejected"):
-            self.assertIn("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
+            self.assertIn("crates/ui/ui-app/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
                 "adapter.update_if_active(|| part_bar::window_tree_update(app_ref, bar, scale));\n"
                 + self.WINDOW_TREE.replace("app.build_a11y_tree_update(scale)", "accesskit::TreeUpdate::default()")
             ))
         with self.subTest(phase="a window tree that skips the native conversion is rejected"):
-            self.assertIn("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
+            self.assertIn("crates/ui/ui-app/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
                 "adapter.update_if_active(|| part_bar::window_tree_update(app_ref, bar, scale));\n"
                 + self.WINDOW_TREE.replace("tilo_ui_base::accesskit_bridge::native_tree_update(update)", "update")
             ))
         with self.subTest(phase="a window tree that never reaches the adapter is rejected"):
-            self.assertIn("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
+            self.assertIn("crates/ui/ui-app/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
                 "adapter.update_if_active(|| unrelated_tree);\n" + self.WINDOW_TREE
             ))
         with self.subTest(phase='disconnected tree build does not satisfy update contract'):
-            self.assertIn("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
+            self.assertIn("crates/ui/ui-app/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
                 "tilo_ui_base::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale));\n"
                 "adapter.update_if_active(|| unrelated_tree);"
             ))
         with self.subTest(phase='dropping built tree does not satisfy update contract'):
-            self.assertIn("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
+            self.assertIn("crates/ui/ui-app/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
                 "adapter.update_if_active(|| {\n"
                 "tilo_ui_base::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale));\n"
                 "unrelated_tree\n});"

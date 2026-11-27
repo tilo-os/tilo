@@ -106,6 +106,8 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 mod content_zoom;
+#[cfg(test)]
+pub(crate) mod control_result_probe;
 pub mod driver;
 #[cfg(test)]
 mod driver_apps_a_tests;

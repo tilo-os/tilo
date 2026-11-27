@@ -9,14 +9,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::map::test_support::TEST_ARRIVAL_MARGIN as ARRIVAL_MARGIN;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::map::test_support::TEST_ARRIVAL_MARGIN as ARRIVAL_MARGIN;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -107,19 +107,19 @@ fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
             .get("one")
             .map(|p| p.movement().target())
     );
-    let start = map
-        .test_placed()
-        .borrow()
-        .get("one")
-        .map(|p| p.movement().sampled_after(tilo_ui::time::Duration::ZERO).0);
+    let start = map.test_placed().borrow().get("one").map(|p| {
+        p.movement()
+            .sampled_after(tilo_ui_app::time::Duration::ZERO)
+            .0
+    });
     let mid = map.test_placed().borrow().get("one").map(|p| {
         p.movement()
-            .sampled_after(tilo_ui::time::Duration::from_millis(80))
+            .sampled_after(tilo_ui_app::time::Duration::from_millis(80))
             .0
     });
     let arrived = map.test_placed().borrow().get("one").map(|p| {
         p.movement()
-            .sampled_after(tilo_ui::time::Duration::from_secs(3))
+            .sampled_after(tilo_ui_app::time::Duration::from_secs(3))
             .0
     });
     assert!(
@@ -135,7 +135,7 @@ fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
         "it arrives: {arrived:?}"
     );
     assert!(
-        !map.test_pins_moving(now + tilo_ui::time::Duration::from_secs(3)),
+        !map.test_pins_moving(now + tilo_ui_app::time::Duration::from_secs(3)),
         "and then asks for no frames"
     );
 }
@@ -194,7 +194,7 @@ fn a_place_arriving_in_view_leaves_the_camera_where_the_person_left_it() {
 
 #[test]
 fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on_its_way() {
-    let start = tilo_ui::time::now();
+    let start = tilo_ui_app::time::now();
     let viewport = Rect::new(0.0, 0.0, 1200.0, 600.0);
     let (old, mut map) = {
         let _frame = tilo_ui_base::motion::pin_frame_at(start);
@@ -213,7 +213,7 @@ fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on
     let mut along = Vec::new();
     let mut frame = start;
     for _ in 0..120 {
-        frame += tilo_ui::time::Duration::from_nanos(16_666_667);
+        frame += tilo_ui_app::time::Duration::from_nanos(16_666_667);
         let _frame = tilo_ui_base::motion::pin_frame_at(frame);
         if !Widget::needs_animation_frame(&map) {
             break;
@@ -328,9 +328,13 @@ fn a_place_that_arrives_off_screen_is_panned_into_view() {
 
 /// `map` mounted as a window's whole root, laid out at `viewport`, so its presses and keys go
 /// through the same dispatch a window's do.
-fn mounted(map: Map) -> tilo_ui::app::driver::Driver {
-    let mut harness =
-        tilo_ui::app::driver::Driver::for_root(tilo_ui::State::new(), map, (800, 600), theme());
+fn mounted(map: Map) -> tilo_ui_app::app::driver::Driver {
+    let mut harness = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
+        map,
+        (800, 600),
+        theme(),
+    );
     harness.relayout();
     harness
 }
@@ -338,7 +342,7 @@ fn mounted(map: Map) -> tilo_ui::app::driver::Driver {
 /// A middle drag from `(from_x, from_y)` by `(dx, dy)` in four motions, the press first and the
 /// release last, a frame between — the gesture a person makes with the wheel's button.
 fn middle_drag(
-    harness: &mut tilo_ui::app::driver::Driver,
+    harness: &mut tilo_ui_app::app::driver::Driver,
     (from_x, from_y): (f64, f64),
     (dx, dy): (f64, f64),
 ) {
@@ -361,7 +365,7 @@ fn middle_drag(
 }
 
 /// A pin's rectangle on the screen as the region laid it out: what the person sees move.
-fn laid(harness: &tilo_ui::app::driver::Driver, key: &str) -> Rect {
+fn laid(harness: &tilo_ui_app::app::driver::Driver, key: &str) -> Rect {
     harness
         .root::<Map>()
         .test_laid()

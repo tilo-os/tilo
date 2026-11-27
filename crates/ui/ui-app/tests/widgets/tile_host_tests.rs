@@ -7,15 +7,15 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 use taffy::Style;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::application::{AppComponent, LaunchTarget, RestoreInput};
-use tilo_ui::headless::*;
-use tilo_ui::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefinition};
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::application::{AppComponent, LaunchTarget, RestoreInput};
+use tilo_ui_app::headless::*;
+use tilo_ui_app::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefinition};
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
@@ -38,7 +38,7 @@ static BOUND: HistoryDefinition = HistoryDefinition {
         key: "document",
         title: "Bound notebook",
         presentation: HistoryPresentation::Domain {
-            create: tilo_ui::history_mode::testing::preview,
+            create: tilo_ui_app::history_mode::testing::preview,
         },
     }],
 };
@@ -57,9 +57,9 @@ fn component_with_history() -> (ProbeHarness, AppComponent) {
     (host, component)
 }
 
-fn harness(root: Box<dyn Widget>) -> tilo_ui::app::driver::Driver {
-    tilo_ui::app::driver::Driver::new_with_controlled_inputs(
-        tilo_ui::State::new(),
+fn harness(root: Box<dyn Widget>) -> tilo_ui_app::app::driver::Driver {
+    tilo_ui_app::app::driver::Driver::new_with_controlled_inputs(
+        tilo_ui_app::State::new(),
         root,
         (900, 600),
         Theme::dark(),
@@ -68,14 +68,14 @@ fn harness(root: Box<dyn Widget>) -> tilo_ui::app::driver::Driver {
     )
 }
 
-fn window_history_control(driver: &tilo_ui::app::driver::Driver) -> Option<bool> {
+fn window_history_control(driver: &tilo_ui_app::app::driver::Driver) -> Option<bool> {
     fn find(node: &tilo_ui_base::a11y::AccessNode, target: &str) -> Option<bool> {
         if node.action_target.as_deref() == Some(target) {
             return Some(node.state.checked == Some(true));
         }
         node.children.iter().find_map(|child| find(child, target))
     }
-    fn walk(node: &tilo_ui::headless::InspectionNode, target: &str) -> Option<bool> {
+    fn walk(node: &tilo_ui_app::headless::InspectionNode, target: &str) -> Option<bool> {
         node.semantics
             .as_ref()
             .and_then(|access| find(access, target))
@@ -83,13 +83,13 @@ fn window_history_control(driver: &tilo_ui::app::driver::Driver) -> Option<bool>
     }
     walk(
         &driver.inspection().root,
-        tilo_ui::widget::tabs::WINDOW_HISTORY_TARGET,
+        tilo_ui_app::widget::tabs::WINDOW_HISTORY_TARGET,
     )
 }
 
 #[test]
 fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
-    use tilo_ui::widget::{TabDescriptor, WindowGroup, WindowWidth};
+    use tilo_ui_app::widget::{TabDescriptor, WindowGroup, WindowWidth};
     let history_tile = || {
         let (host, component) = component_with_history();
         (host, TileHost::from_component(component))
@@ -114,7 +114,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
         key.as_str() == "history-open"
             || (key.starts_with("WindowGroup[0]/TileHost")
                 && (key.ends_with("/history-open")
-                    || key.ends_with(&format!("/{}", tilo_ui::widget::HISTORY_CONTROL_ID))))
+                    || key.ends_with(&format!("/{}", tilo_ui_app::widget::HISTORY_CONTROL_ID))))
     });
     assert!(
         band.is_none(),
@@ -124,7 +124,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
     assert!(
         targets.contains_key(&format!(
             "WindowGroup[0]/TabBar[0]/{}",
-            tilo_ui::widget::tabs::WINDOW_HISTORY_TARGET
+            tilo_ui_app::widget::tabs::WINDOW_HISTORY_TARGET
         )),
         "the window's tab offers History instead"
     );
@@ -133,7 +133,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
     driver
         .perform_semantic_named(
             "tabs",
-            Some(tilo_ui::widget::tabs::WINDOW_HISTORY_TARGET),
+            Some(tilo_ui_app::widget::tabs::WINDOW_HISTORY_TARGET),
             &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
@@ -145,11 +145,11 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
             && !driver.targets().contains_key("history-back-live"),
         "open, History draws no toggle or close of its own: the tab's closes it"
     );
-    let press_tab = |driver: &mut tilo_ui::app::driver::Driver| {
+    let press_tab = |driver: &mut tilo_ui_app::app::driver::Driver| {
         driver
             .perform_semantic_named(
                 "tabs",
-                Some(tilo_ui::widget::tabs::WINDOW_HISTORY_TARGET),
+                Some(tilo_ui_app::widget::tabs::WINDOW_HISTORY_TARGET),
                 &tilo_ui_base::a11y::Action::Activate,
             )
             .unwrap();
@@ -200,15 +200,15 @@ impl Widget for Restless {
     }
 }
 
-impl tilo_ui::widget::AppWidget for Restless {
+impl tilo_ui_app::widget::AppWidget for Restless {
     fn app_kind(&self) -> AppKind {
         AppKind::Files
     }
     fn app_title(&self) -> &'static str {
         "Restless"
     }
-    fn app_icon(&self) -> tilo_ui::widget::IconDescriptor {
-        tilo_ui::widget::IconDescriptor::Glyph("R")
+    fn app_icon(&self) -> tilo_ui_app::widget::IconDescriptor {
+        tilo_ui_app::widget::IconDescriptor::Glyph("R")
     }
 }
 

@@ -72,7 +72,7 @@ impl View {
 
 /// What `root` shows, as a [`View`]: its scroll and view mode, and the record it has open. Only
 /// Tilo's model opens a record, so without it a view names none.
-pub(crate) fn capture_widget_view_bound(
+pub fn capture_widget_view_bound(
     root: &dyn tilo_ui_base::widget::Widget,
     focus: Option<FocusView>,
     viewport: ViewRect,
@@ -100,7 +100,7 @@ pub(crate) fn capture_widget_view_bound(
     }
 }
 
-pub(crate) fn capture_focus(
+pub fn capture_focus(
     ordinal: Option<usize>,
     state: impl FnOnce() -> Option<String>,
 ) -> Option<FocusView> {
@@ -111,7 +111,7 @@ pub(crate) fn capture_focus(
 }
 
 /// Restore `view`'s scroll and view mode onto `root`.
-pub(crate) fn restore_widget_view_bound(root: &mut dyn tilo_ui_base::widget::Widget, view: &View) {
+pub fn restore_widget_view_bound(root: &mut dyn tilo_ui_base::widget::Widget, view: &View) {
     #[cfg(feature = "model")]
     let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(root) else {
         return;
@@ -126,10 +126,7 @@ pub(crate) fn restore_widget_view_bound(root: &mut dyn tilo_ui_base::widget::Wid
 }
 
 /// The caller resolves the saved ordinal in its current component's focus order.
-pub(crate) fn restore_focus_state_bound(
-    widget: &mut dyn tilo_ui_base::widget::Widget,
-    focus: &FocusView,
-) {
+pub fn restore_focus_state_bound(widget: &mut dyn tilo_ui_base::widget::Widget, focus: &FocusView) {
     let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
         return;
     };

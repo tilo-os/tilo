@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -55,7 +55,7 @@ fn dock(zoom: f64, count: usize) -> Row {
 
 fn driver_with(zoom: f64, theme: Theme) -> Driver {
     let mut driver = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(dock(zoom, 5)),
         (600, 140),
         theme,
@@ -93,7 +93,11 @@ fn the_item_under_the_pointer_grows_more_than_its_neighbours() {
         let mut along = Vec::new();
         assert!(settle(&mut driver, &mut along), "the growth settles");
         let grown = driver.targets();
-        let height = |name: &str| grown.get(name).map_or(0.0, tilo_ui::kurbo::Rect::height);
+        let height = |name: &str| {
+            grown
+                .get(name)
+                .map_or(0.0, tilo_ui_app::kurbo::Rect::height)
+        };
         let (near, neighbour, far) = (height("t2"), height("t1"), height("t0"));
         assert!(
             near > neighbour + 2.0 && neighbour > far + 1.0,
@@ -173,23 +177,23 @@ fn the_dock_grows_itself_so_the_items_never_overlap() {
 }
 
 /// A tile's props at `size`, as the dock builds its buttons.
-fn tile_props(size: tilo_ui::widget::ControlSize) -> tilo_ui::widget::ButtonProps {
-    tilo_ui::widget::ButtonProps {
+fn tile_props(size: tilo_ui_app::widget::ControlSize) -> tilo_ui_app::widget::ButtonProps {
+    tilo_ui_app::widget::ButtonProps {
         label: "Tile".to_owned(),
         icon: Some(tilo_ui_base::icons::Icon::X),
         icon_only: true,
         size,
-        ..tilo_ui::widget::ButtonProps::default()
+        ..tilo_ui_app::widget::ButtonProps::default()
     }
 }
 
 #[test]
 fn a_size_setting_change_reaches_its_new_height_through_the_frames_between() {
     let mut driver = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         <Button as Described>::from_props(
             "tile",
-            tile_props(tilo_ui::widget::ControlSize::Regular),
+            tile_props(tilo_ui_app::widget::ControlSize::Regular),
         ),
         (400, 200),
         Theme::dark(),
@@ -198,7 +202,7 @@ fn a_size_setting_change_reaches_its_new_height_through_the_frames_between() {
     let regular = driver.targets()["tile"].height();
     let taken = driver
         .with_widget_mut(|button: &mut Button| {
-            button.set_props(tile_props(tilo_ui::widget::ControlSize::Large))
+            button.set_props(tile_props(tilo_ui_app::widget::ControlSize::Large))
         })
         .is_some_and(|taken| taken);
     assert!(taken, "the new size is taken in place, keeping the face");
@@ -229,7 +233,7 @@ fn a_size_setting_change_reaches_its_new_height_through_the_frames_between() {
 /// magnifying item, keeps its own height and its foot edge while the item grows over the band.
 #[test]
 fn a_dock_body_keeps_its_band_while_an_item_grows_over_it() {
-    use tilo_ui::widget::chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
+    use tilo_ui_app::widget::chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
     use tilo_ui_base::widget::Widget;
     let tile = Button::icon_only("tile", tilo_ui_base::icons::Icon::X, "Tile");
     let magnify = Magnify::from_props(
@@ -251,7 +255,7 @@ fn a_dock_body_keeps_its_band_while_an_item_grows_over_it() {
         },
     );
     let mut driver = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(chrome),
         (300, 200),
         Theme::dark(),
@@ -283,7 +287,7 @@ fn a_dock_body_keeps_its_band_while_an_item_grows_over_it() {
 /// clears the non-text contrast floor against a chrome body's ground in both palettes.
 #[test]
 fn a_plain_hover_plate_clears_the_non_text_floor_on_chrome() {
-    use tilo_ui::widget::{ButtonRole, Interaction, face_colors};
+    use tilo_ui_app::widget::{ButtonRole, Interaction, face_colors};
     use tilo_ui_base::a11y::contrast_ratio;
     use tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST;
     for theme in [Theme::dark(), Theme::light()] {

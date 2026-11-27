@@ -126,8 +126,8 @@ animation. Likewise keep UI scale, text scale, theme, and overlays constant.
 `TILO_SHOTS_THEME` selects the offscreen launch fixture (`light`,
 `high-contrast`, otherwise dark); it is not a renderer optimization switch.
 
-Sources: [app.rs](../crates/ui/ui-core/src/app.rs),
-[profiling.rs](../crates/ui/ui-core/src/profiling.rs),
+Sources: [app.rs](../crates/ui/ui-app/src/app.rs),
+[profiling.rs](../crates/ui/ui-app/src/profiling.rs),
 [WebView profiling](../crates/engines/tilo-webview/src/profile.rs).
 
 ## Startup warmup and DMA-BUF routing

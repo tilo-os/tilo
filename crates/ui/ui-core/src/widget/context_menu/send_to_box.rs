@@ -21,8 +21,8 @@ impl ContextMenu {
     /// which never opens rows of its own: the window hands it the pointer and
     /// the keys while it stands ([`Self::is_open`]), draws it over
     /// everything and describes it. It stands beside `anchor`, in `viewport`.
-    /// Only the native window stands it ([`crate::app`]).
-    pub(crate) fn open_window_box(
+    /// Only the native window stands it (the runner's `App`).
+    pub fn open_window_box(
         &mut self,
         about: Option<tilo_ui_base::shared_subject::SharedSelection>,
         anchor: Option<Rect>,
@@ -47,7 +47,7 @@ impl ContextMenu {
     /// Carry `files` in the box [`Self::open_window_box`] stood, each a chip
     /// after what it is about.
     #[cfg(feature = "model")]
-    pub(crate) fn carry_in_window_box(&mut self, files: &[tilo_reference::Attached]) {
+    pub fn carry_in_window_box(&mut self, files: &[tilo_reference::Attached]) {
         let Some(anchor) = self.alone else {
             return;
         };

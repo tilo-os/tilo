@@ -2,7 +2,7 @@
 //! the bar's, it reports what the person did with them as the view's own events,
 //! and it draws nothing of its own.
 
-use tilo_ui::widget::{TabItemProps, TabStrip, TabStripProps};
+use tilo_ui_app::widget::{TabItemProps, TabStrip, TabStripProps};
 use tilo_ui_base::tokens::PresenceHue;
 use tilo_ui_base::{
     component::Described, component::Event, component::Person, component::ResourceId,
@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
     phase a_declared_face_never_marks_a_tab_held;
     {
         let mut tabs = vec![tab("a", "A"), tab("b", "B")];
-        tabs[0].presence = vec![tilo_ui::widget::PresenceFaceProps {
+        tabs[0].presence = vec![tilo_ui_app::widget::PresenceFaceProps {
             key: "mia".to_owned(),
             who: Some(Person {
                 identity: tilo_actions::MemberId::person("mia").into(),
@@ -118,7 +118,7 @@ tilo_test_env::scenario! {
         let changed = strip.bar().tabs()[1].id;
         assert_eq!(
             strip.bar().mark(starting),
-            Some(tilo_ui::widget::TabMark::Busy),
+            Some(tilo_ui_app::widget::TabMark::Busy),
             "a window still starting turns a mark on its tab"
         );
         assert!(
@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
     phase a_face_named_by_colour_is_drawn_on_the_pill;
     {
         let mut tabs = vec![tab("a", "A")];
-        tabs[0].presence = vec![tilo_ui::widget::PresenceFaceProps {
+        tabs[0].presence = vec![tilo_ui_app::widget::PresenceFaceProps {
             key: "bo".to_owned(),
             who: None,
             name: Some("Bo".to_owned()),
@@ -162,7 +162,7 @@ tilo_test_env::scenario! {
 /// its bar marked, so a view hears the pill it was pressed for without asking for reports.
 #[test]
 fn a_press_on_a_pill_is_the_views_event_in_the_same_pass() {
-    use tilo_ui::widget::Column;
+    use tilo_ui_app::widget::Column;
     use tilo_ui_base::widget::Element;
     use tilo_ui_base::{component::Fired, component::Intent, component::Value};
 
@@ -171,8 +171,8 @@ fn a_press_on_a_pill_is_the_views_event_in_the_same_pass() {
     given.activate = Event::View(Intent::new(&queue, "frame", "activate"));
     let strip = TabStrip::from_props("frame", given);
     let column = Column::new().push(Box::new(strip) as Element);
-    let mut harness = tilo_ui::headless::Driver::new_with_theme(
-        tilo_ui::State::new(),
+    let mut harness = tilo_ui_app::headless::Driver::new_with_theme(
+        tilo_ui_app::State::new(),
         Box::new(column),
         (400, 200),
         tilo_ui_base::Theme::light(),
@@ -191,19 +191,19 @@ fn a_press_on_a_pill_is_the_views_event_in_the_same_pass() {
             .map(|(_, rect)| rect);
         found.unwrap_or_else(|| panic!("the second pill is a target; the bar answers to {names:?}"))
     };
-    let device_id = tilo_ui::winit::event::DeviceId::dummy();
-    harness.send_host_event(&tilo_ui::winit::event::WindowEvent::CursorMoved {
+    let device_id = tilo_ui_app::winit::event::DeviceId::dummy();
+    harness.send_host_event(&tilo_ui_app::winit::event::WindowEvent::CursorMoved {
         device_id,
-        position: tilo_ui::winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
+        position: tilo_ui_app::winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
     });
     for state in [
-        tilo_ui::winit::event::ElementState::Pressed,
-        tilo_ui::winit::event::ElementState::Released,
+        tilo_ui_app::winit::event::ElementState::Pressed,
+        tilo_ui_app::winit::event::ElementState::Released,
     ] {
-        harness.send_host_event(&tilo_ui::winit::event::WindowEvent::MouseInput {
+        harness.send_host_event(&tilo_ui_app::winit::event::WindowEvent::MouseInput {
             device_id,
             state,
-            button: tilo_ui::winit::event::MouseButton::Left,
+            button: tilo_ui_app::winit::event::MouseButton::Left,
         });
     }
     let fired = queue.take();

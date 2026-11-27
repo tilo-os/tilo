@@ -9,8 +9,8 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use tilo_ui::profiling::{FrameProfiler, Pass};
 use tilo_ui::state::State;
+use tilo_ui_app::profiling::{FrameProfiler, Pass};
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;

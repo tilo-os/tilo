@@ -2,7 +2,7 @@
 #[cfg(feature = "model")]
 mod bound_widget;
 #[cfg(all(feature = "model", not(any(test, feature = "test-support"))))]
-pub(crate) use bound_widget::history_owner;
+pub use bound_widget::history_owner;
 #[cfg(all(feature = "model", any(test, feature = "test-support")))]
 #[doc(hidden)]
 pub use bound_widget::history_owner;
@@ -10,11 +10,11 @@ pub use bound_widget::history_owner;
 #[cfg(test)]
 pub(crate) use bound_widget::keyboard_input_scope;
 #[cfg(feature = "model")]
-pub(crate) use bound_widget::{BoundTraversal, visit_components, visit_resource_owners};
+pub use bound_widget::{BoundTraversal, visit_components, visit_resource_owners};
 #[cfg(feature = "model")]
 pub use bound_widget::{BoundWidget, callback_binding, resource_owners};
 #[cfg(feature = "model")]
-pub(crate) mod local_target;
+pub mod local_target;
 
 #[cfg(feature = "model")]
 mod published_target;
@@ -37,15 +37,15 @@ mod resource_walk;
 pub use node_map::document_edit_stamp;
 pub use node_map::invoke_bound_node;
 #[cfg(feature = "model")]
-pub(crate) use node_map::{bound_target, callback_binding_of, component_control};
+pub use node_map::{bound_target, callback_binding_of, component_control};
 #[cfg(feature = "model")]
-pub(crate) use resource_walk::action_directory_page_at;
-pub(crate) use resource_walk::collect_widget_resources;
+pub use resource_walk::action_directory_page_at;
+pub use resource_walk::collect_widget_resources;
 #[cfg(feature = "model")]
 pub use resource_walk::published_search_providers;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[cfg(feature = "model")]
-pub(crate) use resource_walk::resolve_widget_resource;
+pub use resource_walk::resolve_widget_resource;
 pub use resource_walk::{
     find_resource, past_page_labels, past_page_len, past_page_range, published_resources,
     resources_past_page,
@@ -54,7 +54,7 @@ pub use resource_walk::{
 #[cfg(feature = "model")]
 mod hosted;
 #[cfg(feature = "model")]
-pub(crate) use hosted::{HostedInvocation, published_here};
+pub use hosted::{HostedInvocation, published_here};
 
 #[cfg(feature = "model")]
 mod deferred_intent;
@@ -63,16 +63,16 @@ mod filter;
 #[cfg(feature = "model")]
 use deferred_intent::validate_deferred_arguments;
 #[cfg(feature = "model")]
-pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
+pub use deferred_intent::{DeferredIntent, PreparedActionIntent};
 #[cfg(feature = "model")]
-pub(crate) use filter::{filter_resource, filter_shared};
+pub use filter::{filter_resource, filter_shared};
 #[cfg(feature = "model")]
-use filter::{inherit_filtered, insert_available_permitted};
+pub use filter::{inherit_filtered, insert_available_permitted};
 
 #[cfg(feature = "model")]
-mod control;
+pub mod control;
 #[cfg(feature = "model")]
-pub(crate) use control::{
+pub use control::{
     ControlContinuationArguments, ControlDeclaration, ControlIdentity, ControlObservation,
     control_declaration, control_draft_identity, control_observation,
     control_observation_with_arguments,
@@ -106,7 +106,7 @@ use tilo_ui_base::{
 #[cfg(feature = "model")]
 mod action_part;
 #[cfg(feature = "model")]
-pub(crate) use action_part::ToolkitPart;
+pub use action_part::ToolkitPart;
 
 #[cfg(feature = "model")]
 use tilo_ui_base::widget::input_provenance::Input;
@@ -150,7 +150,7 @@ impl BoundActionAddress {
 
 #[cfg(feature = "model")]
 #[derive(Debug)]
-pub(crate) enum BoundActionError {
+pub enum BoundActionError {
     Api(tilo_actions::ApiError),
     Dispatch(BoundDispatchError),
     AmbiguousTarget {
@@ -170,7 +170,7 @@ pub(crate) enum BoundActionError {
 
 #[cfg(feature = "model")]
 impl BoundActionError {
-    pub(crate) fn into_api(self) -> tilo_actions::ApiError {
+    pub fn into_api(self) -> tilo_actions::ApiError {
         match self {
             Self::Api(error) => error,
             error => tilo_actions::ApiError::Unavailable {
@@ -243,7 +243,7 @@ fn operation_refusal(refusal: tilo_resource::Refusal) -> tilo_actions::ApiError 
 
 /// The unchanged domain enum groups Unavailable failures.
 #[cfg(feature = "model")]
-pub(crate) fn api_error_code(error: &tilo_actions::ApiError) -> &str {
+pub fn api_error_code(error: &tilo_actions::ApiError) -> &str {
     if let tilo_actions::ApiError::Unavailable { code, .. } = error
         && matches!(
             code.as_str(),
@@ -274,14 +274,14 @@ impl From<BoundDispatchError> for BoundActionError {
 /// the reusable numeric instance or a domain resource ID.
 #[cfg(feature = "model")]
 #[derive(Clone)]
-pub(crate) struct BoundActionTarget {
-    pub(crate) input: Input,
-    pub(crate) binding: CallbackBinding,
-    pub(crate) address: BoundActionAddress,
+pub struct BoundActionTarget {
+    pub input: Input,
+    pub binding: CallbackBinding,
+    pub address: BoundActionAddress,
 }
 #[cfg(feature = "model")]
 impl BoundActionTarget {
-    pub(crate) fn key(&self) -> String {
+    pub fn key(&self) -> String {
         format!(
             "i:{}:{}:{}",
             self.address.instance_id,
@@ -292,7 +292,7 @@ impl BoundActionTarget {
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn has_matching_broker_component(
+pub fn has_matching_broker_component(
     root: &dyn Widget,
     route: Option<&tilo_ui_base::collaboration::AcceptedRoute>,
 ) -> bool {
@@ -313,7 +313,7 @@ pub(crate) fn has_matching_broker_component(
 /// Refresh every component control's availability from its resources, plus the APIs its host answers
 /// for it (`host_apis`): the window's History API wherever History serves it.
 #[cfg(feature = "model")]
-pub(crate) fn refresh_bound_controls(
+pub fn refresh_bound_controls(
     root: &mut dyn Widget,
     snapshots: &[BoundResourceSnapshot],
     host_apis: &std::collections::HashSet<tilo_actions::ActionAddress>,
@@ -352,7 +352,7 @@ pub(crate) fn refresh_bound_controls(
 /// the nodes that changed only. Either needs the same permissions
 /// and APIs; anything else derives afresh.
 #[cfg(feature = "model")]
-pub(crate) fn component_controls_allowed(
+pub fn component_controls_allowed(
     binding: &CallbackBinding,
     snapshots: &[BoundResourceSnapshot],
     addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
@@ -514,13 +514,13 @@ pub(crate) type PendingComponentControl = (
 );
 
 #[cfg(feature = "model")]
-pub(crate) struct DrainedControlInvocations {
-    pub(crate) pending: Vec<PendingComponentControl>,
-    pub(crate) error: Option<BoundDispatchError>,
+pub struct DrainedControlInvocations {
+    pub pending: Vec<PendingComponentControl>,
+    pub error: Option<BoundDispatchError>,
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControlInvocations {
+pub fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControlInvocations {
     let batch = capture_control_invocations(root);
     DrainedControlInvocations {
         pending: batch
@@ -684,11 +684,11 @@ fn answering() -> bool {
 /// even when its declaration answers nothing: it continues an operation
 /// that waits on it, and that operation replies to its caller from it.
 #[cfg(feature = "model")]
-pub(crate) struct Answering(bool);
+pub struct Answering(bool);
 
 #[cfg(feature = "model")]
 impl Answering {
-    pub(crate) fn enter(on: bool) -> Self {
+    pub fn enter(on: bool) -> Self {
         Self(ANSWERING.with(|cell| cell.replace(on)))
     }
 }
@@ -703,7 +703,7 @@ impl Drop for Answering {
 /// Deliver feedback only to the component that emitted the local intent: domain resource addresses can
 /// be shared by several live instances.
 #[cfg(feature = "model")]
-pub(crate) fn notify_control_invocation_result(
+pub fn notify_control_invocation_result(
     root: &mut dyn Widget,
     target: &BoundActionTarget,
     result: &Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError>,
@@ -727,7 +727,7 @@ pub(crate) fn notify_control_invocation_result(
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn poll_resource_operation(
+pub fn poll_resource_operation(
     root: &mut dyn Widget,
     document: &AutoCommit,
     target: &BoundActionTarget,
@@ -765,8 +765,8 @@ pub(crate) fn poll_resource_operation(
 /// One bound component's published resources.
 #[cfg(feature = "model")]
 #[derive(Clone)]
-pub(crate) struct BoundResourceSnapshot {
-    pub(crate) binding: CallbackBinding,
+pub struct BoundResourceSnapshot {
+    pub binding: CallbackBinding,
     forest: Rc<Forest>,
     /// The component controls' allowed addresses last derived, carried from
     /// one snapshot of the component to the one that replaces it.
@@ -781,7 +781,7 @@ struct Forest {
 
 #[cfg(feature = "model")]
 impl BoundResourceSnapshot {
-    pub(crate) fn new(binding: CallbackBinding, resources: Vec<ResourceSpec>) -> Self {
+    pub fn new(binding: CallbackBinding, resources: Vec<ResourceSpec>) -> Self {
         Self {
             binding,
             forest: Rc::new(Forest {
@@ -792,7 +792,7 @@ impl BoundResourceSnapshot {
         }
     }
 
-    pub(crate) fn shared(
+    pub fn shared(
         binding: CallbackBinding,
         forest: Rc<[SharedResource]>,
         controls: Rc<RefCell<Option<ControlAvailability>>>,
@@ -809,7 +809,7 @@ impl BoundResourceSnapshot {
 
     /// The component's resources as ordinary trees, materialised once per snapshot from its shared
     /// forest.
-    pub(crate) fn resources(&self) -> &Rc<Vec<ResourceSpec>> {
+    pub fn resources(&self) -> &Rc<Vec<ResourceSpec>> {
         self.forest.plain.get_or_init(|| {
             Rc::new(crate::published::to_resources(
                 self.forest.shared.get().map_or(&[][..], |forest| forest),
@@ -818,7 +818,7 @@ impl BoundResourceSnapshot {
     }
 
     /// [`Self::resources`] by value.
-    pub(crate) fn into_resources(self) -> Vec<ResourceSpec> {
+    pub fn into_resources(self) -> Vec<ResourceSpec> {
         let resources = Rc::clone(self.resources());
         drop(self);
         Rc::unwrap_or_clone(resources)
@@ -830,7 +830,7 @@ impl BoundResourceSnapshot {
     }
 
     /// Add `more` to the component's resources: a new tree, sharing nothing derived from this one.
-    pub(crate) fn extend(&mut self, more: impl IntoIterator<Item = ResourceSpec>) {
+    pub fn extend(&mut self, more: impl IntoIterator<Item = ResourceSpec>) {
         let binding = self.binding.clone();
         let mut resources =
             std::mem::replace(self, Self::new(binding.clone(), Vec::new())).into_resources();
@@ -843,7 +843,7 @@ impl BoundResourceSnapshot {
 /// read: the forest itself (kept, so the next one is diffed against it), the component's permissions
 /// and the APIs its host offers.
 #[cfg(feature = "model")]
-pub(crate) struct ControlAvailability {
+pub struct ControlAvailability {
     forest: Rc<[SharedResource]>,
     permissions: tilo_ui_base::permissions::DirectoryPermissionObservation,
     addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
@@ -855,11 +855,11 @@ pub(crate) struct ControlAvailability {
 
 /// Reserved transport namespace. Domain resources never contain this rewrite.
 #[cfg(feature = "model")]
-pub(crate) const PUBLICATION_PREFIX: &str = tilo_actions::BOUND_RESOURCE_PREFIX;
+pub const PUBLICATION_PREFIX: &str = tilo_actions::BOUND_RESOURCE_PREFIX;
 #[cfg(feature = "model")]
 const MAX_PUBLICATION_ALIAS: usize = 4096;
 #[cfg(feature = "model")]
-pub(crate) struct BoundPublication {
+pub struct BoundPublication {
     host: uuid::Uuid,
     owners: RefCell<HashMap<uuid::Uuid, CallbackBinding>>,
     /// The alias each live component's resource is published under now, by
@@ -886,7 +886,7 @@ impl Default for BoundPublication {
 }
 #[cfg(feature = "model")]
 impl BoundPublication {
-    pub(crate) fn alias(
+    pub fn alias(
         &self,
         binding: &CallbackBinding,
         resource: &str,
@@ -930,7 +930,7 @@ impl BoundPublication {
         self.published.set(self.published.get().wrapping_add(1));
         Ok(alias)
     }
-    pub(crate) fn target(
+    pub fn target(
         &self,
         address: &tilo_actions::ActionAddress,
     ) -> Result<Option<BoundActionTarget>, BoundActionError> {
@@ -957,13 +957,13 @@ impl BoundPublication {
 
     /// Whether more than one live component publishes resource `id` (the app's own id): the
     /// id then names none of them, and each is addressed by its alias.
-    pub(crate) fn shared(&self, id: &str) -> bool {
+    pub fn shared(&self, id: &str) -> bool {
         self.live_aliases(id).len() > 1
     }
 
     /// [`Self::target`] within a walk that resolves many addresses of one surface: the scope
     /// `held` carries from one lookup to the next.
-    pub(crate) fn target_within(
+    pub fn target_within(
         &self,
         address: &tilo_actions::ActionAddress,
         held: &mut HeldScope,
@@ -1035,7 +1035,7 @@ impl BoundPublication {
             binding,
         }))
     }
-    pub(crate) fn project(
+    pub fn project(
         &self,
         binding: &CallbackBinding,
         mut resource: ResourceSpec,
@@ -1058,7 +1058,7 @@ impl BoundPublication {
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn validate_bound_resources(
+pub fn validate_bound_resources(
     root: &mut dyn Widget,
     binding: &CallbackBinding,
     resources: &[ResourceSpec],
@@ -1069,7 +1069,7 @@ pub(crate) fn validate_bound_resources(
 /// Every contract violation of one component's surface, checked against the component registry and
 /// operation handlers.
 #[cfg(feature = "model")]
-pub(crate) fn bound_contract_violations(
+pub fn bound_contract_violations(
     root: &mut dyn Widget,
     binding: &CallbackBinding,
     resources: &[ResourceSpec],
@@ -1093,7 +1093,7 @@ pub(crate) fn bound_contract_violations(
 /// Collect each retained component once even when an ordinary container does
 /// not forward `search_providers`. Legacy providers keep their root-owned route.
 #[cfg(feature = "model")]
-pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::SearchProvider>> {
+pub fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::SearchProvider>> {
     collect_search_sources(
         root,
         &|widget| crate::search::capability::search_providers(widget),
@@ -1105,7 +1105,7 @@ pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::
 /// same providers in the same order, described without being made, so a
 /// source that indexes to answer builds nothing until someone searches.
 #[cfg(feature = "model")]
-pub(crate) fn search_provider_descriptors(
+pub fn search_provider_descriptors(
     root: &dyn Widget,
 ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
     collect_search_sources(
@@ -1169,7 +1169,7 @@ fn provider_resource(
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn resolve_component_resource(
+pub fn resolve_component_resource(
     root: &mut dyn Widget,
     doc: &AutoCommit,
     binding: &CallbackBinding,
@@ -1202,7 +1202,7 @@ pub(crate) fn resolve_component_resource(
 /// resource `id` yet: it publishes resources this member may see, and `id` is none of them. What a
 /// component publishes nothing of, or nothing this member may see, is not on its way.
 #[cfg(feature = "model")]
-pub(crate) fn component_awaits_resource(
+pub fn component_awaits_resource(
     root: &mut dyn Widget,
     doc: &AutoCommit,
     binding: &CallbackBinding,
@@ -1268,7 +1268,7 @@ fn holds_resource(resource: &ResourceSpec, id: &str) -> bool {
 
 /// [`unbound_resource_pending`] in the component `binding` hosts.
 #[cfg(feature = "model")]
-pub(crate) fn component_resource_pending(
+pub fn component_resource_pending(
     root: &mut dyn Widget,
     binding: &CallbackBinding,
     resource: &str,
@@ -1287,7 +1287,7 @@ pub(crate) fn component_resource_pending(
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn publication_visibility(
+pub fn publication_visibility(
     root: &dyn Widget,
     doc: &AutoCommit,
     owner: Option<&CallbackBinding>,
@@ -1342,7 +1342,7 @@ pub(crate) fn publication_visibility(
 /// [`publication_visibility`] for each of `wanted` (an owner and a resource id), in one walk of the
 /// widget tree: what each resource's first publisher in tree order says discloses it.
 #[cfg(feature = "model")]
-pub(crate) fn publication_visibilities(
+pub fn publication_visibilities(
     root: &dyn Widget,
     doc: &AutoCommit,
     wanted: &[(Option<CallbackBinding>, String)],
@@ -1401,7 +1401,7 @@ pub(crate) fn publication_visibilities(
 
 /// Opaque legacy navigation remains scoped to the provider that produced it.
 #[cfg(feature = "model")]
-pub(crate) fn activate_bound_search(
+pub fn activate_bound_search(
     root: &mut dyn Widget,
     doc: &mut AutoCommit,
     binding: &CallbackBinding,
@@ -1446,23 +1446,23 @@ pub(crate) fn activate_bound_search(
 
 #[cfg(feature = "model")]
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct BoundDirectoryObservation {
+pub struct BoundDirectoryObservation {
     owner: uuid::Uuid,
-    pub(crate) generation: Option<u64>,
+    pub generation: Option<u64>,
     permissions: tilo_ui_base::permissions::DirectoryPermissionObservation,
     revisions: Vec<Option<String>>,
     domains: Vec<tilo_ui_base::widget::ActionDirectoryInvocationDomain>,
 }
 #[cfg(feature = "model")]
 impl BoundDirectoryObservation {
-    pub(crate) fn supports_model_refresh(&self) -> bool {
+    pub fn supports_model_refresh(&self) -> bool {
         self.generation.is_some_and(|value| value != u64::MAX)
             && !self.domains.is_empty()
             && self.domains.iter().all(|domain| domain.is_supported())
     }
     /// Only used after fresh full declaration/effective-domain equality in one
     /// hosted model pass. Generation is bookkeeping, never document authority.
-    pub(crate) fn same_model_owner_after(&self, before: &Self) -> bool {
+    pub fn same_model_owner_after(&self, before: &Self) -> bool {
         self.supports_model_refresh()
             && before.supports_model_refresh()
             && self.owner == before.owner
@@ -1473,7 +1473,7 @@ impl BoundDirectoryObservation {
     }
 }
 #[cfg(feature = "model")]
-pub(crate) fn directory_observation(
+pub fn directory_observation(
     root: &dyn Widget,
     doc: &AutoCommit,
 ) -> Result<Vec<BoundDirectoryObservation>, String> {
@@ -1554,12 +1554,12 @@ pub(crate) fn directory_observation(
 
 #[cfg(feature = "model")]
 #[derive(Default)]
-pub(crate) struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
+pub struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
 
 /// One bound owner's admission generation and record frontier, read on each side of an input
 /// dispatch (the native App).
 #[cfg(feature = "model")]
-pub(crate) struct BoundOwnerMark {
+pub struct BoundOwnerMark {
     binding: CallbackBinding,
     /// Only the native input path has snapshots across generations.
     generation: Option<u64>,
@@ -1579,7 +1579,7 @@ pub(crate) struct OwnerInputs {
 
 #[cfg(feature = "model")]
 impl BoundOwnerMark {
-    pub(crate) fn is_committed(&self) -> bool {
+    pub fn is_committed(&self) -> bool {
         self.document
             .as_ref()
             .is_some_and(|(_, pending)| *pending == 0)
@@ -1588,7 +1588,7 @@ impl BoundOwnerMark {
 
 /// Every live bound owner under `root`, once each, in tree order.
 #[cfg(feature = "model")]
-pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
+pub fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
     owner_marks(root, outer)
 }
 
@@ -1628,11 +1628,7 @@ impl BoundResourceCache {
     /// did `before`, carry each snapshot current then to the generation now. Returns `false`,
     /// carrying nothing, when any owner's record moved or the owners changed: the caller must
     /// republish.
-    pub(crate) fn carry_across_input(
-        &self,
-        before: &[BoundOwnerMark],
-        after: &[BoundOwnerMark],
-    ) -> bool {
+    pub fn carry_across_input(&self, before: &[BoundOwnerMark], after: &[BoundOwnerMark]) -> bool {
         let unmoved = before.len() == after.len()
             && before.iter().zip(after).all(|(before, after)| {
                 before.binding.same_component(&after.binding)
@@ -1659,7 +1655,7 @@ impl BoundResourceCache {
     /// Whether what a component's published resources were read from outside it moved since they
     /// were gathered (a shared record a peer's change merged into): the next gathering reads them
     /// again, and what is shown of them is stale until it does.
-    pub(crate) fn outside_reads_moved(&self) -> bool {
+    pub fn outside_reads_moved(&self) -> bool {
         self.0.borrow().iter().any(
             |entry| matches!(&entry.local, LocalInputs::Owner(_, reads) if reads.stand().is_err()),
         )
@@ -1703,7 +1699,7 @@ impl LocalInputs {
     clippy::too_many_lines,
     reason = "private nested traversal and per-owner cache admission stay together"
 )]
-pub(crate) fn discover_cached_bound_resources(
+pub fn discover_cached_bound_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
     cache: &BoundResourceCache,
@@ -1933,7 +1929,7 @@ pub(crate) fn discover_cached_bound_resources(
 /// dispatch, which asks them. A plain quick control (a button's effect) gets
 /// no further than an action declaring its confirmation.
 #[cfg(feature = "model")]
-pub(crate) fn admit_local_action(
+pub fn admit_local_action(
     permissions: &PermissionContext,
     (app_id, resource, action): (&str, &ResourceSpec, &tilo_actions::ActionSpec),
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -1960,7 +1956,7 @@ pub(crate) fn admit_local_action(
 /// ([`tilo_actions::ActionSpec::confirms_for`]): a delete Undo takes back unless Shift is held,
 /// what Undo cannot take back and what leaves the system always.
 #[cfg(feature = "model")]
-pub(crate) fn press_asks(
+pub fn press_asks(
     spec: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
@@ -1986,7 +1982,7 @@ pub(crate) fn press_asks(
 
 /// Why an invocation the person made did not run, in words for them: what
 /// the window says instead of dropping the click unseen.
-pub(crate) fn refusal_reason(error: &tilo_actions::ApiError) -> String {
+pub fn refusal_reason(error: &tilo_actions::ApiError) -> String {
     use tilo_actions::ApiError;
     let reason = match error {
         ApiError::Unknown(_) | ApiError::UnregisteredType(_) => {
@@ -2071,7 +2067,7 @@ pub(crate) use ::collaboration::permissions::denied;
 /// action's name: a keyboard undo or redo reaches a document that declares its history through the
 /// action it publishes, and exactly one of them.
 #[cfg(feature = "model")]
-pub(crate) fn history_action_resource<'a>(
+pub fn history_action_resource<'a>(
     snapshots: &'a [BoundResourceSnapshot],
     binding: &CallbackBinding,
     request: tilo_ui_base::widget::undo_access::UndoRequest,
@@ -2108,7 +2104,7 @@ pub(crate) fn history_action_resource<'a>(
 /// Read-only traversal releases each checked document borrow before descending
 /// to another component. It never establishes an undo baseline.
 #[cfg(feature = "model")]
-pub(crate) fn discover_bound_resources(
+pub fn discover_bound_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
     lazy_address: Option<&tilo_actions::ActionAddress>,
@@ -2273,7 +2269,7 @@ fn discover_bound_resources_with_filter(
 /// it from them, as the workspace's own API says it; [`tilo_actions::ApiError::Unknown`] where
 /// nothing publishes it.
 #[cfg(feature = "model")]
-pub(crate) fn unoffered(
+pub fn unoffered(
     widget: &dyn Widget,
     doc: &AutoCommit,
     address: &tilo_actions::ActionAddress,
@@ -2300,7 +2296,7 @@ pub(crate) fn unoffered(
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn select_bound_target(
+pub fn select_bound_target(
     snapshots: &[BoundResourceSnapshot],
     address: &tilo_actions::ActionAddress,
     instance: Option<crate::application::InstanceId>,
@@ -2343,7 +2339,7 @@ pub(crate) type ResolvedResourceInvocation<'a> = (
     &'a tilo_actions::ActionSpec,
 );
 
-pub(crate) fn find_action_resource<'a>(
+pub fn find_action_resource<'a>(
     resources: &'a [ResourceSpec],
     id: &str,
 ) -> Option<&'a ResourceSpec> {
@@ -2356,7 +2352,7 @@ pub(crate) fn find_action_resource<'a>(
     })
 }
 
-pub(crate) fn resolve_resource_invocation<'a>(
+pub fn resolve_resource_invocation<'a>(
     resources: &'a [ResourceSpec],
     address: &tilo_actions::ActionAddress,
     argument: Option<&str>,
@@ -2385,7 +2381,7 @@ pub(crate) fn resolve_resource_invocation<'a>(
     Ok((typed, resource, spec))
 }
 
-pub(crate) fn encode_resource_action(
+pub fn encode_resource_action(
     resources: &[ResourceSpec],
     address: &tilo_actions::ActionAddress,
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -2399,7 +2395,7 @@ pub(crate) fn encode_resource_action(
 }
 
 /// Resolve an invocation's arguments against `resources` and encode it.
-pub(crate) fn encode_resource_invocation(
+pub fn encode_resource_invocation(
     resources: &[ResourceSpec],
     address: &tilo_actions::ActionAddress,
     argument: Option<&str>,
@@ -2647,7 +2643,7 @@ fn note_active_writer(writer: &[u8]) {
 
 /// The refusal of an own-device effect for someone not at this device.
 #[cfg(feature = "model")]
-pub(crate) fn own_device_refusal() -> tilo_actions::ApiError {
+pub fn own_device_refusal() -> tilo_actions::ApiError {
     tilo_actions::ApiError::Unavailable {
         code: "own_device".into(),
         reason: "This action acts on the device of whoever invokes it: here, the host presence's"
@@ -2659,7 +2655,7 @@ pub(crate) fn own_device_refusal() -> tilo_actions::ApiError {
 /// the device of whoever invokes it, so only the person at this device, or an agent the broker admitted
 /// acting for them, has it as their own.
 #[cfg(feature = "model")]
-pub(crate) fn runs_own_device(
+pub fn runs_own_device(
     actor: &tilo_actions::Actor,
     local_author: &tilo_actions::MemberId,
     broker_admitted: bool,
@@ -2678,27 +2674,27 @@ pub(crate) fn runs_own_device(
 
 /// A resolved, encoded resource operation and the caller it runs for.
 #[cfg(feature = "model")]
-pub(crate) struct ResourceOperation<'a> {
-    pub(crate) target_route: Option<tilo_ui_base::collaboration::RouteSpec>,
-    pub(crate) address: &'a tilo_actions::ActionAddress,
-    pub(crate) resource: &'a ResourceSpec,
-    pub(crate) spec: &'a tilo_actions::ActionSpec,
-    pub(crate) encoded: tilo_actions::EncodedAction,
-    pub(crate) actor: &'a tilo_actions::Actor,
-    pub(crate) local_author: &'a tilo_actions::MemberId,
-    pub(crate) broker_admitted: bool,
-    pub(crate) invocation: tilo_actions::InvocationId,
+pub struct ResourceOperation<'a> {
+    pub target_route: Option<tilo_ui_base::collaboration::RouteSpec>,
+    pub address: &'a tilo_actions::ActionAddress,
+    pub resource: &'a ResourceSpec,
+    pub spec: &'a tilo_actions::ActionSpec,
+    pub encoded: tilo_actions::EncodedAction,
+    pub actor: &'a tilo_actions::Actor,
+    pub local_author: &'a tilo_actions::MemberId,
+    pub broker_admitted: bool,
+    pub invocation: tilo_actions::InvocationId,
     /// Exact invocation retained by an admitted external dispatch.
-    pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
-    pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
+    pub source_invocation: Option<tilo_actions::InvocationId>,
+    pub ambient: Option<&'a tilo_actions::ActionContext>,
     /// The session's action API of the host running it: where opening another app goes
     /// ([`crate::session_api`]).
-    pub(crate) api: Option<&'a mut dyn crate::session_api::SessionApi>,
+    pub api: Option<&'a mut dyn crate::session_api::SessionApi>,
 }
 
 /// One execution body for bound components, under the broker's admission.
 #[cfg(feature = "model")]
-pub(crate) fn execute_resource_operation(
+pub fn execute_resource_operation(
     widget: &mut dyn Widget,
     doc: &mut AutoCommit,
     path: &ObjId,
@@ -3030,29 +3026,29 @@ fn perform_resource_operation(
 /// One caller's request to a bound resource action, before resolution.
 #[cfg(feature = "model")]
 #[derive(Clone, Copy)]
-pub(crate) struct ResourceActionRequest<'a> {
-    pub(crate) argument: Option<&'a str>,
-    pub(crate) arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
-    pub(crate) actor: &'a tilo_actions::Actor,
+pub struct ResourceActionRequest<'a> {
+    pub argument: Option<&'a str>,
+    pub arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
+    pub actor: &'a tilo_actions::Actor,
     /// The person's approve of the asked record this call was kept as, when it is that call sent
     /// again ([`press_asks`]).
-    pub(crate) approval: Option<&'a tilo_actions::remote::asked::Approval>,
-    pub(crate) broker_admitted: bool,
+    pub approval: Option<&'a tilo_actions::remote::asked::Approval>,
+    pub broker_admitted: bool,
     /// The person's own press made it ([`press_asks`]).
-    pub(crate) pressed: bool,
-    pub(crate) invocation: tilo_actions::InvocationId,
-    pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
-    pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
+    pub pressed: bool,
+    pub invocation: tilo_actions::InvocationId,
+    pub source_invocation: Option<tilo_actions::InvocationId>,
+    pub ambient: Option<&'a tilo_actions::ActionContext>,
     /// Asked with the action as the API resolved it, before any check after resolution and before
     /// anything runs: `true` hands the invocation back unexecuted as [`BoundActionError::Rerouted`],
     /// for the host to route through the workspace broker. Asked with the resource it is invoked
     /// on, as one another workspace holds is admitted there.
-    pub(crate) route: Option<&'a dyn Fn(&ResourceSpec, &tilo_actions::ActionSpec) -> bool>,
+    pub route: Option<&'a dyn Fn(&ResourceSpec, &tilo_actions::ActionSpec) -> bool>,
 }
 
 /// Private checked front API.
 #[cfg(feature = "model")]
-pub(crate) fn invoke_resource_action(
+pub fn invoke_resource_action(
     root: &mut dyn Widget,
     document: &mut AutoCommit,
     target: &BoundActionTarget,
@@ -3393,7 +3389,7 @@ fn resolve_published(
 
 /// What the outer tree rooted at `widget` publishes.
 #[cfg(feature = "model")]
-pub(crate) fn collect_unbound_resources(
+pub fn collect_unbound_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
     resources: &mut Vec<ResourceSpec>,
@@ -3404,7 +3400,7 @@ pub(crate) fn collect_unbound_resources(
 /// [`collect_unbound_resources`] rebuilt for one presence view.
 /// Never cached: it is the invoker's tree at invoke time.
 #[cfg(feature = "model")]
-pub(crate) fn collect_presence_resources(
+pub fn collect_presence_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
     presence: &tilo_actions::PresenceId,
@@ -3415,7 +3411,7 @@ pub(crate) fn collect_presence_resources(
 
 /// Resource `id` resolved in the outer tree rooted at `widget`.
 #[cfg(feature = "model")]
-pub(crate) fn resolve_unbound_resource(
+pub fn resolve_unbound_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
     id: &str,
@@ -3426,7 +3422,7 @@ pub(crate) fn resolve_unbound_resource(
 /// Whether resource `id`, which `widget`'s subtree resolves to nothing now, may resolve once what it
 /// reads arrives ([`crate::widget::resources::PublishesResources::resource_pending`]).
 #[cfg(feature = "model")]
-pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
+pub fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
     if has_separate_document_owner(widget) {
         return false;
     }
@@ -3441,31 +3437,30 @@ pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
 #[cfg(feature = "model")]
 #[derive(Clone)]
 pub struct CallbackBinding {
-    pub(crate) lifetime: WakeHandle,
-    pub(crate) closing: Rc<Cell<bool>>,
-    pub(crate) registry_owner: std::rc::Weak<()>,
-    pub(crate) lifetime_id: uuid::Uuid,
-    pub(crate) control_domain: tilo_ui_base::control_domain::WeakControlDomain,
-    pub(crate) queued_controls:
-        Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
+    pub lifetime: WakeHandle,
+    pub closing: Rc<Cell<bool>>,
+    pub registry_owner: std::rc::Weak<()>,
+    pub lifetime_id: uuid::Uuid,
+    pub control_domain: tilo_ui_base::control_domain::WeakControlDomain,
+    pub queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
     /// Searches the component asked the process to open, drained as process intents by the shell that
     /// presents search.
-    pub(crate) search_requests:
+    pub search_requests:
         Rc<RefCell<std::collections::VecDeque<crate::widget::search_request::SearchRequest>>>,
-    pub(crate) instance_id: crate::application::InstanceId,
-    pub(crate) app_id: String,
+    pub instance_id: crate::application::InstanceId,
+    pub app_id: String,
     /// Executing device supplied by the component's ProcessContext, never its caller.
-    pub(crate) device_id: String,
+    pub device_id: String,
     /// Immutable local person supplied at host preparation, not the action author.
-    pub(crate) local_person: MemberId,
-    pub(crate) records: ResourceStore,
-    pub(crate) checkout: DocumentCheckout,
-    pub(crate) permissions: SharedPermissions,
-    pub(crate) author: MemberId,
-    pub(crate) operation_context: Rc<tilo_actions::ActionContext>,
+    pub local_person: MemberId,
+    pub records: ResourceStore,
+    pub checkout: DocumentCheckout,
+    pub permissions: SharedPermissions,
+    pub author: MemberId,
+    pub operation_context: Rc<tilo_actions::ActionContext>,
     /// Edits commit as the author writer on the record
     /// ([`crate::application::ProcessContext::write_as_author`]).
-    pub(crate) writes_as_author: bool,
+    pub writes_as_author: bool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -3522,10 +3517,10 @@ type ComponentVisitor<'a> = dyn FnMut(
     ) -> Option<(tilo_actions::InvocationId, bool)>
     + 'a;
 #[cfg(feature = "model")]
-pub(crate) struct ComponentRequest<'a> {
-    pub(crate) target: Option<&'a CallbackBinding>,
-    pub(crate) found: bool,
-    pub(crate) visit: &'a mut ComponentVisitor<'a>,
+pub struct ComponentRequest<'a> {
+    pub target: Option<&'a CallbackBinding>,
+    pub found: bool,
+    pub visit: &'a mut ComponentVisitor<'a>,
     /// The component shows its record's save status in place of the visit
     /// ([`service_owner_save_progress`]); `shown` says whether that changed what it shows.
     pub(crate) save_progress: Option<bool>,
@@ -3533,10 +3528,7 @@ pub(crate) struct ComponentRequest<'a> {
 #[cfg(feature = "model")]
 impl<'a> ComponentRequest<'a> {
     /// A visit of the component `target` names, or of every component.
-    pub(crate) fn new(
-        target: Option<&'a CallbackBinding>,
-        visit: &'a mut ComponentVisitor<'a>,
-    ) -> Self {
+    pub fn new(target: Option<&'a CallbackBinding>, visit: &'a mut ComponentVisitor<'a>) -> Self {
         Self {
             target,
             found: false,
@@ -3548,7 +3540,7 @@ impl<'a> ComponentRequest<'a> {
 
 /// One original ordinary model pass for the current retained owner.
 #[cfg(feature = "model")]
-pub(crate) fn service_retained_owner_model(
+pub fn service_retained_owner_model(
     root: &mut dyn Widget,
     outer: &mut AutoCommit,
     work: &crate::owner_wake::OwnerWakeRequest,
@@ -3610,7 +3602,7 @@ pub(crate) fn service_retained_owner_model(
 /// landing after every keystroke repeats the status the key's own frame already showed, and
 /// telling it again would draw a second frame for it. Returns whether what the owner shows changed.
 #[cfg(feature = "model")]
-pub(crate) fn service_owner_save_progress(
+pub fn service_owner_save_progress(
     root: &mut dyn Widget,
     work: &crate::owner_wake::OwnerWakeRequest,
 ) -> Result<bool, BoundDispatchError> {
@@ -3641,7 +3633,7 @@ pub enum BoundDispatchError {
 /// Logical typing ownership survives physical commits made when an opaque
 /// callback from another instance is admitted. Read-only entry never touches it.
 #[cfg(feature = "model")]
-pub(crate) struct PendingResourceAction {
+pub struct PendingResourceAction {
     instance_id: crate::application::InstanceId,
     owner: Rc<Cell<bool>>,
     before: Vec<ChangeHash>,
@@ -4437,7 +4429,7 @@ impl OpenScope {
 /// the same component holds it here, and enters it again only when the component changes.
 #[cfg(feature = "model")]
 #[derive(Default)]
-pub(crate) struct HeldScope {
+pub struct HeldScope {
     held: Option<(CallbackBinding, CallbackScopeGuard)>,
 }
 
@@ -4447,10 +4439,7 @@ impl HeldScope {
     ///
     /// # Errors
     /// As [`CallbackBinding::enter`].
-    pub(crate) fn enter(
-        &mut self,
-        binding: Option<&CallbackBinding>,
-    ) -> Result<(), BoundDispatchError> {
+    pub fn enter(&mut self, binding: Option<&CallbackBinding>) -> Result<(), BoundDispatchError> {
         let Some(binding) = binding else {
             self.held = None;
             return Ok(());
@@ -4495,16 +4484,14 @@ impl CallbackBinding {
     /// Queue a search for the host presenting this component. Only the
     /// latest request matters: an older one the host has not shown yet is
     /// replaced.
-    pub(crate) fn request_search(&self, request: crate::widget::search_request::SearchRequest) {
+    pub fn request_search(&self, request: crate::widget::search_request::SearchRequest) {
         let mut requests = self.search_requests.borrow_mut();
         requests.clear();
         requests.push_back(request);
     }
 
     /// The search this component asked for, once.
-    pub(crate) fn take_search_request(
-        &self,
-    ) -> Option<crate::widget::search_request::SearchRequest> {
+    pub fn take_search_request(&self) -> Option<crate::widget::search_request::SearchRequest> {
         self.search_requests.borrow_mut().pop_front()
     }
 
@@ -4579,7 +4566,7 @@ impl CallbackBinding {
         self.shown_save_status(parts)
     }
 
-    pub(crate) fn broker_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
+    pub fn broker_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
         let (_, app, _) = self.records.canonical_namespace()?;
         if app != self.app_id {
             return None;
@@ -4594,14 +4581,14 @@ impl CallbackBinding {
         }
         self.records.admission_route(&self.checkout).ok()
     }
-    pub(crate) fn matches_broker_route(
+    pub fn matches_broker_route(
         &self,
         observation: Option<&tilo_ui_base::collaboration::AcceptedRoute>,
     ) -> bool {
         observation.is_some_and(|observation| self.matches_route(observation.route()))
     }
     /// Whether `route` is the broker route this binding names.
-    pub(crate) fn matches_route(&self, route: &tilo_ui_base::collaboration::RouteSpec) -> bool {
+    pub fn matches_route(&self, route: &tilo_ui_base::collaboration::RouteSpec) -> bool {
         self.broker_route().as_ref() == Some(route)
             || self.admission_route().as_ref() == Some(route)
     }
@@ -4619,7 +4606,7 @@ impl CallbackBinding {
         }
         Ok(changed)
     }
-    pub(crate) fn undo_status(
+    pub fn undo_status(
         &self,
         outer: &mut AutoCommit,
     ) -> Result<tilo_ui_base::widget::undo_access::UndoStatus, BoundDispatchError> {
@@ -4765,7 +4752,7 @@ impl CallbackBinding {
 
     /// Outside changes need a new admitted history invocation: a local
     /// stack inversion has no current broker caller for its consequence.
-    pub(crate) fn history_uses_compensation(
+    pub fn history_uses_compensation(
         &self,
         outer: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
@@ -4782,7 +4769,7 @@ impl CallbackBinding {
     }
 
     /// Undo or redo in place, reverting the step's changes.
-    pub(crate) fn history_request(
+    pub fn history_request(
         &self,
         outer: &mut AutoCommit,
         request: tilo_ui_base::widget::undo_access::UndoRequest,
@@ -4880,7 +4867,7 @@ impl CallbackBinding {
         }
         Ok(())
     }
-    pub(crate) fn same_component(&self, other: &Self) -> bool {
+    pub fn same_component(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.closing, &other.closing)
             && std::rc::Weak::ptr_eq(&self.registry_owner, &other.registry_owner)
             && self.records.same_owner(&other.records)
@@ -4914,7 +4901,7 @@ impl CallbackBinding {
             None => Ok(None),
         })
     }
-    pub(crate) fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
+    pub fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
         self.check_resource()?;
         let actor = crate::invocation_scope::current_invoker()
             .and_then(|invoker| invoker.acting.members().first().map(|m| (*m).clone()))
@@ -4949,7 +4936,7 @@ impl CallbackBinding {
             opened: Some(opened),
         })
     }
-    pub(crate) fn with_document<R>(
+    pub fn with_document<R>(
         &self,
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
@@ -4958,12 +4945,12 @@ impl CallbackBinding {
     }
     /// Input reached the component outside its passes (an event, an action, focus): its input revision
     /// moves, so its next pass runs ([`tilo_ui_base::component_inputs`]).
-    pub(crate) fn note_input(&self) {
+    pub fn note_input(&self) {
         self.lifetime.note_change();
     }
     /// Lend typed edits without opening a mutation merely because a frame polls.
     /// The executor activates this owner when a typed action actually writes.
-    pub(crate) fn with_settlement<R>(
+    pub fn with_settlement<R>(
         &self,
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
@@ -5156,7 +5143,7 @@ impl CallbackBinding {
         };
         Ok(callback(restore.doc, &ROOT))
     }
-    pub(crate) fn read_document<R>(
+    pub fn read_document<R>(
         &self,
         outer: &AutoCommit,
         callback: impl FnOnce(&AutoCommit, &ObjId) -> R,
@@ -5230,12 +5217,7 @@ pub struct DocumentEditStamp {
 impl DocumentEditStamp {
     /// Bind an embedded field's private equality check to its record and node.
     #[cfg(feature = "native")]
-    pub(crate) fn bind_fingerprint(
-        &self,
-        node: NodeId,
-        field: [u8; 32],
-        key: &[u8; 32],
-    ) -> [u8; 32] {
+    pub fn bind_fingerprint(&self, node: NodeId, field: [u8; 32], key: &[u8; 32]) -> [u8; 32] {
         let mut hash = blake3::Hasher::new_keyed(key);
         hash.update(b"tilo.ime.embedded-edit.v1");
         hash.update(&u64::from(node).to_le_bytes());
@@ -5357,7 +5339,7 @@ pub(crate) fn merge_remote_owned_document(
 /// while History has its live content inert.
 /// # Safety
 /// Same stable, exclusive tree contract as `invoke_bound_node`.
-pub(crate) unsafe fn invoke_bound_semantic_node<R>(
+pub unsafe fn invoke_bound_semantic_node<R>(
     bindings: &BoundNodeMap,
     nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     node: taffy::NodeId,

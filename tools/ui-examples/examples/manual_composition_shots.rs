@@ -3,13 +3,13 @@
 use std::path::PathBuf;
 use taffy::Size;
 use tilo_ui::State;
-use tilo_ui::headless::Driver;
 use tilo_ui::widget::ButtonRole;
 use tilo_ui::{
     widget::Actions, widget::Button, widget::Checkbox, widget::Container, widget::Field,
     widget::Form, widget::FormPage, widget::FormSection, widget::Scrollable, widget::Text,
     widget::TextInput,
 };
+use tilo_ui_app::headless::Driver;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::{
     widget::Element, widget::Manual, widget::ManualContext, widget::MeasureConstraint as M,
@@ -272,7 +272,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .map_or_else(|| PathBuf::from("/tmp/manual-composition"), PathBuf::from);
     std::fs::create_dir_all(&output)?;
-    let theme = tilo_ui::launch::shot_theme_from_env()?;
+    let theme = tilo_ui_app::launch::shot_theme_from_env()?;
     for (name, viewport, scale) in [
         ("wide", (1080, 800), 1.0),
         ("narrow", (340, 800), 1.0),

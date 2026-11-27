@@ -41,7 +41,7 @@ struct Active {
 /// Frozen before input: each retained component has its own route queue and transport aliases from the
 /// directory snapshot that supplied `revision`.
 #[derive(Clone)]
-pub(crate) struct InputRoute {
+pub struct InputRoute {
     pub ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
     pub owner: Option<uuid::Uuid>,
     pub queue: Queue,
@@ -65,11 +65,11 @@ thread_local! {
 /// it. Input that edits nothing (scroll, selection, hover, focus) never sets it: unsigned history is a
 /// fact about recorded edits, not about input.
 #[derive(Clone, Default)]
-pub(crate) struct UnsignedEdits(Rc<std::cell::Cell<bool>>);
+pub struct UnsignedEdits(Rc<std::cell::Cell<bool>>);
 
 impl UnsignedEdits {
     /// Whether an edit was recorded since the last call; clears it.
-    pub(crate) fn take(&self) -> bool {
+    pub fn take(&self) -> bool {
         self.0.replace(false)
     }
 }
@@ -102,7 +102,7 @@ pub fn input_is_active() -> bool {
 }
 
 /// Install only around a synchronous local input/semantic dispatch, never a model pass.
-pub(crate) fn enter_input(routes: Vec<InputRoute>) -> Scope {
+pub fn enter_input(routes: Vec<InputRoute>) -> Scope {
     let scope = suspend();
     if routes.is_empty() {
         ACTIVE.with(|active| {
@@ -121,7 +121,7 @@ pub(crate) fn enter_input(routes: Vec<InputRoute>) -> Scope {
 }
 
 /// Local input with no authenticated publication to observe it.
-pub(crate) fn enter_unsigned_input(edits: UnsignedEdits) -> Scope {
+pub fn enter_unsigned_input(edits: UnsignedEdits) -> Scope {
     let scope = suspend();
     UNSIGNED.with(|unsigned| *unsigned.borrow_mut() = Some(edits));
     scope
@@ -179,7 +179,7 @@ impl Queue {
             .collect()
     }
 
-    pub(crate) fn drain_leased(&self) -> Vec<(CapturedAction, Lease)> {
+    pub fn drain_leased(&self) -> Vec<(CapturedAction, Lease)> {
         let mut actions: Vec<_> = self.0.borrow_mut().actions.drain(..).collect();
         for (_, lease) in &mut actions {
             lease.keepalive = Some(self.clone());
@@ -189,7 +189,7 @@ impl Queue {
 
     /// A refused change the person retries takes the same capacity as fresh
     /// speculative work.
-    pub(crate) fn restore_lease(
+    pub fn restore_lease(
         &self,
         capture: &CapturedAction,
         pin: Option<Rc<dyn std::any::Any>>,
@@ -222,7 +222,7 @@ impl Queue {
         })
     }
 
-    pub(crate) fn has_outstanding(&self) -> bool {
+    pub fn has_outstanding(&self) -> bool {
         self.0.borrow().reserved != 0
     }
 
@@ -257,7 +257,7 @@ pub fn suspend() -> Scope {
 /// thread's input is already observed belongs to that observation, which
 /// carries the routes the person's edits are reported on. What it hands back
 /// restores nothing.
-pub(crate) fn keep() -> Scope {
+pub fn keep() -> Scope {
     Scope {
         previous: None,
         published: None,
@@ -287,7 +287,7 @@ pub fn has_invocation() -> bool {
 }
 
 /// Reserve before mutation.
-pub(crate) fn reserve(
+pub fn reserve(
     encoded: &EncodedAction,
     context: Option<&ActionContext>,
     doc: &AutoCommit,
@@ -390,14 +390,14 @@ pub(crate) fn reserve(
     }))
 }
 
-pub(crate) struct Reservation {
+pub struct Reservation {
     active: Active,
     published: Option<PublishedInvocation>,
     bytes: usize,
     actor: automerge::ActorId,
 }
 impl Reservation {
-    pub(crate) fn finish(
+    pub fn finish(
         mut self,
         doc: &mut AutoCommit,
         before: &[ChangeHash],
@@ -465,7 +465,7 @@ impl Drop for Reservation {
 }
 
 /// Capacity and snapshot ownership remain outstanding until a definitive reply.
-pub(crate) struct Lease {
+pub struct Lease {
     queue: std::rc::Weak<RefCell<Pending>>,
     keepalive: Option<Queue>,
     bytes: usize,
@@ -474,7 +474,7 @@ pub(crate) struct Lease {
 impl Lease {
     /// Hold `pin` instead of the surface the input froze: a report waiting for its answer needs only
     /// the row it is reported against.
-    pub(crate) fn narrow_pin(&mut self, pin: Rc<dyn std::any::Any>) {
+    pub fn narrow_pin(&mut self, pin: Rc<dyn std::any::Any>) {
         self.pin = Some(pin);
     }
 }

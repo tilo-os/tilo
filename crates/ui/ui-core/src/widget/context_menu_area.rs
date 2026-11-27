@@ -782,7 +782,7 @@ impl ContextMenuArea {
 /// The box a menu opened from the keyboard stands under: the item with the
 /// keyboard, deepest first, so a list answers for its focused row rather
 /// than for itself.
-pub(crate) fn keyboard_anchor(widget: &dyn Widget) -> Option<Rect> {
+pub fn keyboard_anchor(widget: &dyn Widget) -> Option<Rect> {
     let mut found = None;
     widget.for_each_child(&mut |child| {
         if found.is_none() {
@@ -1428,7 +1428,6 @@ pub mod test_support {
     use std::sync::*;
     use std::time::*;
     use tilo_ui::automerge::*;
-    use tilo_ui::headless::*;
     use tilo_ui::kurbo::{Affine, Point, Rect};
     use tilo_ui::retained_present::*;
     use tilo_ui::testing::*;

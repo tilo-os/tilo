@@ -49,7 +49,7 @@ pub(crate) use component_nodes::component_resource;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
 use tilo_ui_base::a11y::SemanticId;
-pub(crate) use tilo_ui_base::widget::bound_nodes::AdmittedNodeNames;
+pub use tilo_ui_base::widget::bound_nodes::AdmittedNodeNames;
 use tilo_ui_base::{
     a11y_walk::A11yVisitor, a11y_walk::HostedByIndex, a11y_walk::HostedWidget, a11y_walk::Visit,
     a11y_walk::walk, a11y_walk::walk_synthetic, a11y_walk::with_slot_words,
@@ -81,10 +81,10 @@ use tilo_actions::{ActionSpec, Collects, EncodedAction, OperationKind, ResourceS
 
 /// Operation type used when the retained semantic tree projects an ordinary UI affordance into the
 /// resource/action catalogue.
-pub(crate) use tilo_actions::SEMANTIC_OPERATION_TYPE;
+pub use tilo_actions::SEMANTIC_OPERATION_TYPE;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct SemanticOperation {
+pub struct SemanticOperation {
     pub node: String,
     pub action: String,
     pub value: Option<String>,
@@ -342,7 +342,7 @@ impl SemanticTree {
     ) -> TreeDelta {
         self.refresh_impl::<false>(root, node_map, None, focused, resources, &[], false)
     }
-    pub(crate) fn refresh_bound(
+    pub fn refresh_bound(
         &mut self,
         root: &dyn Widget,
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
@@ -361,7 +361,7 @@ impl SemanticTree {
         )
     }
     /// Build only the durable semantic subtree consumed by action publication.
-    pub(crate) fn refresh_action_projection(
+    pub fn refresh_action_projection(
         &mut self,
         root: &dyn Widget,
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
@@ -372,7 +372,7 @@ impl SemanticTree {
     }
 
     #[cfg(feature = "model")]
-    pub(crate) fn refresh_components(
+    pub fn refresh_components(
         &mut self,
         root: &dyn Widget,
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
@@ -391,9 +391,9 @@ impl SemanticTree {
             false,
         )
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     #[cfg(feature = "model")]
-    pub(crate) fn bound_actions_for_test(
+    pub fn bound_actions_for_test(
         &self,
     ) -> Vec<(SemanticId, crate::bound_dispatch::BoundActionTarget)> {
         self.components
@@ -403,7 +403,7 @@ impl SemanticTree {
             .collect()
     }
     #[cfg(feature = "model")]
-    pub(crate) fn bound_target(
+    pub fn bound_target(
         &self,
         id: &SemanticId,
         action: &str,
@@ -817,7 +817,7 @@ impl SemanticTree {
 
     /// Project every currently operable accessibility node into the canonical Tilo resource/action
     /// surface.
-    pub(crate) fn action_resources(&self) -> Vec<ResourceSpec> {
+    pub fn action_resources(&self) -> Vec<ResourceSpec> {
         self.action_resource_nodes()
             .into_iter()
             .map(|(_, resource)| resource)
@@ -826,7 +826,7 @@ impl SemanticTree {
 
     /// [`Self::action_resources`], each with the layout node of the widget its control stands
     /// in: what tells a host whose control it is.
-    pub(crate) fn action_resource_nodes(&self) -> Vec<(Option<u64>, ResourceSpec)> {
+    pub fn action_resource_nodes(&self) -> Vec<(Option<u64>, ResourceSpec)> {
         self.iter()
             .filter(|node| node.id != self.root && !node.id.0.starts_with("r:"))
             .filter(|node| node.durable_identity)

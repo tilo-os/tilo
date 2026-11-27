@@ -5,15 +5,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::InspectionNode;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
-use tilo_ui::widget::{Button, GraphCanvas, GraphCanvasConnection, GraphCanvasNode};
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::InspectionNode;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
+use tilo_ui_app::widget::{Button, GraphCanvas, GraphCanvasConnection, GraphCanvasNode};
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -53,7 +53,7 @@ fn retained_ports_have_real_accessibility_and_authored_positions() {
         },
     ];
     let mut harness = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(GraphCanvas::new(
             nodes,
             vec![GraphCanvasConnection {
@@ -84,14 +84,15 @@ fn a_titled_graph_shows_its_title_over_its_nodes() {
         content: Box::new(Button::new("output", "Source output")),
     }];
     let harness = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(GraphCanvas::new(nodes, Vec::new()).with_title(Some("Release pipeline".into()))),
         (500, 300),
     );
     let inspection = harness.inspection();
     let output = target(&inspection.root, "output").expect("the node");
     let theme = tilo_ui_base::Theme::light();
-    let band = tilo_ui::widget::chart_navigation::title_band_for_tests(&theme, "Release pipeline");
+    let band =
+        tilo_ui_app::widget::chart_navigation::title_band_for_tests(&theme, "Release pipeline");
     assert!(
         (output.rect[1] - band).abs() < 1.0,
         "the nodes start a chart's title band under the title: {:?}, band {band}",

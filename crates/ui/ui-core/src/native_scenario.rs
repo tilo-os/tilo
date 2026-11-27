@@ -10,10 +10,10 @@ use crate::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 #[path = "native_host_clock.rs"]
-pub(crate) mod host_clock;
+pub mod host_clock;
 
 #[path = "native_log.rs"]
-pub(crate) mod log;
+pub mod log;
 
 // Namespace-local PIDs and render counters can collide across normal sandboxes.
 // This lifetime identity exposes no host PID or host namespace information.
@@ -85,7 +85,7 @@ pub enum Input {
 impl Input {
     /// The window events this step delivers, in order, through the same routing platform input takes.
     #[cfg(feature = "native")]
-    pub(crate) fn window_events(self) -> Vec<winit::event::WindowEvent> {
+    pub fn window_events(self) -> Vec<winit::event::WindowEvent> {
         use tilo_ui_base::synthetic_input as input;
         use winit::event::ElementState;
         match self {
@@ -154,7 +154,7 @@ pub struct Packet {
     /// Captured immediately before invoking the delivery callback.
     pub sent_at: Instant,
     /// Direct host seconds around `sent_at`; absent on unsupported platforms.
-    pub(crate) sent_host: Option<host_clock::HostClockBracket>,
+    pub sent_host: Option<host_clock::HostClockBracket>,
     pub origin: Instant,
     pub input: Input,
     pub warmup: bool,

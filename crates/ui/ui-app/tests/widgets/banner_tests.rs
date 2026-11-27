@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -40,7 +40,7 @@ use winit::keyboard::*;
     reason = "in a test these are the assertion"
 )]
 fn driver(root: Box<dyn Widget>) -> Driver {
-    let mut driver = Driver::new(tilo_ui::State::new(), root, (640, 400));
+    let mut driver = Driver::new(tilo_ui_app::State::new(), root, (640, 400));
     driver.relayout();
     driver
 }
@@ -62,7 +62,7 @@ fn the_retained_banner_holds_its_buttons_and_dismisses_through_its_control() {
                 .on_dismiss(move || seen.set(seen.get() + 1)),
         ))
         .push(Box::new(
-            tilo_ui::widget::Text::new("Below").with_id("below"),
+            tilo_ui_app::widget::Text::new("Below").with_id("below"),
         ));
     let mut d = driver(Box::new(root));
     let targets = d.targets();
@@ -108,7 +108,7 @@ fn a_state_bound_banner_collapses_while_absent() {
     let root = Column::new()
         .push(Box::new(Banner::from_state(&state).with_id("sync")))
         .push(Box::new(
-            tilo_ui::widget::Text::new("Below").with_id("below"),
+            tilo_ui_app::widget::Text::new("Below").with_id("below"),
         ));
     let mut d = driver(Box::new(root));
     let empty_y = d.targets()["below"].y0;
@@ -158,7 +158,7 @@ fn sync_column(
     Column::new()
         .push(Box::new(sync_banner(state, dismissible)))
         .push(Box::new(
-            tilo_ui::widget::Text::new("Below").with_id("below"),
+            tilo_ui_app::widget::Text::new("Below").with_id("below"),
         ))
 }
 
@@ -250,18 +250,18 @@ fn a_banner_in_a_section_or_a_container_moves_what_follows_the_group() {
         let banner: Box<dyn Widget> =
             Box::new(Banner::from_state(&state).with_id(format!("sync-{nest}")));
         let group: Box<dyn Widget> = if nest == "section" {
-            Box::new(tilo_ui::widget::Section::new(vec![
+            Box::new(tilo_ui_app::widget::Section::new(vec![
                 banner,
-                Box::new(tilo_ui::widget::Text::new("Inside").with_id("inside")),
+                Box::new(tilo_ui_app::widget::Text::new("Inside").with_id("inside")),
             ]))
         } else {
-            Box::new(tilo_ui::widget::Container::new().with_child(banner))
+            Box::new(tilo_ui_app::widget::Container::new().with_child(banner))
         };
         let root = Column::new()
             .with_intrinsic_height()
             .push(group)
             .push(Box::new(
-                tilo_ui::widget::Text::new("After").with_id("after"),
+                tilo_ui_app::widget::Text::new("After").with_id("after"),
             ));
         let mut d = driver(Box::new(root));
         let empty_after = d.targets()["after"].y0;
@@ -300,7 +300,7 @@ fn a_banner_in_a_section_or_a_container_moves_what_follows_the_group() {
 }
 
 fn rooted(column: Column) -> Driver {
-    let mut d = Driver::for_root(tilo_ui::State::new(), column, (640, 400), Theme::dark());
+    let mut d = Driver::for_root(tilo_ui_app::State::new(), column, (640, 400), Theme::dark());
     d.relayout();
     d
 }
@@ -312,7 +312,7 @@ fn rebuild(d: &mut Driver, banner: Option<Banner>) {
         children.push(Box::new(banner));
     }
     children.push(Box::new(
-        tilo_ui::widget::Text::new("Below").with_id("below"),
+        tilo_ui_app::widget::Text::new("Below").with_id("below"),
     ));
     d.root_mut::<Column>().set_children(children);
     d.relayout();
@@ -337,13 +337,13 @@ fn offline_view() -> Column {
                 .on_dismiss(move || seen.set(seen.get() + 1)),
         ))
         .push(Box::new(
-            tilo_ui::widget::Text::new("Below").with_id("below"),
+            tilo_ui_app::widget::Text::new("Below").with_id("below"),
         ))
 }
 
 #[test]
 fn a_banner_its_view_stops_building_collapses_and_what_follows_moves_up() {
-    use tilo_ui::time::testing::with_monotonic_time;
+    use tilo_ui_app::time::testing::with_monotonic_time;
     let start = std::time::Instant::now();
     let mut d = with_monotonic_time(start, || rooted(offline_view()));
     let shown_y = d.targets()["below"].y0;
@@ -394,15 +394,15 @@ fn a_banner_its_view_stops_building_collapses_and_what_follows_moves_up() {
 
 #[test]
 fn nothing_leaves_when_the_whole_view_is_replaced() {
-    use tilo_ui::time::testing::with_monotonic_time;
+    use tilo_ui_app::time::testing::with_monotonic_time;
     let start = std::time::Instant::now();
     let mut d = with_monotonic_time(start, || rooted(offline_view()));
     with_monotonic_time(start, || {
         tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         d.root_mut::<Column>().set_children(vec![
             Box::new(tilo_ui_base::widget::Spacer::new()),
-            Box::new(tilo_ui::widget::Text::new("Another page")),
-            Box::new(tilo_ui::widget::Text::new("Below").with_id("below")),
+            Box::new(tilo_ui_app::widget::Text::new("Another page")),
+            Box::new(tilo_ui_app::widget::Text::new("Below").with_id("below")),
         ]);
         d.relayout();
         assert!(d.root::<Column>().drawn_offsets().is_none());
@@ -518,7 +518,7 @@ tilo_test_env::scenario! {
         let mut d = rooted(
             Column::new()
                 .push(Box::new(Banner::warning("Offline")))
-                .push(Box::new(tilo_ui::widget::Text::new("Below").with_id("below"))),
+                .push(Box::new(tilo_ui_app::widget::Text::new("Below").with_id("below"))),
         );
         let shown_y = d.targets()["below"].y0;
         let _frame = tilo_ui_base::motion::pin_frame();
@@ -660,7 +660,7 @@ fn under_reduced_motion_a_banner_lands_and_its_contents_fade_in() {
 
 #[test]
 fn a_banner_leaving_lands_by_key_and_fades_under_reduced_motion() {
-    use tilo_ui::time::testing::with_monotonic_time;
+    use tilo_ui_app::time::testing::with_monotonic_time;
     let start = std::time::Instant::now();
     let mut d = with_monotonic_time(start, || rooted(offline_view()));
     with_monotonic_time(start, || {
@@ -696,7 +696,7 @@ fn offset_of(d: &Driver, index: usize) -> f64 {
 
 #[test]
 fn a_banner_dropped_while_opening_leaves_from_where_it_is_drawn() {
-    use tilo_ui::time::testing::with_monotonic_time;
+    use tilo_ui_app::time::testing::with_monotonic_time;
     let start = std::time::Instant::now();
     let mut d = with_monotonic_time(start, || rooted(Column::new()));
     with_monotonic_time(start, || rebuild(&mut d, None));

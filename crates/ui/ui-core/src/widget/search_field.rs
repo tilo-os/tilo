@@ -1435,8 +1435,8 @@ impl Widget for Filtered {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn observed_language(field: &SearchField) -> &str {
+#[cfg(any(test, feature = "test-support"))]
+pub fn observed_language(field: &SearchField) -> &str {
     field.input.spell_language()
 }
 

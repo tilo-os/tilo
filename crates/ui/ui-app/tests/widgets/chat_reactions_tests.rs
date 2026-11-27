@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::Event;
 use tilo_ui_base::component::*;
@@ -64,7 +64,7 @@ fn a_described_strip_reports_the_emoji_its_pill_toggles() {
         },
     );
     let mut frame = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(strip),
         (420, 80),
         Theme::light(),
@@ -104,7 +104,7 @@ fn a_strip_of_the_map_form_shows_each_emoji_in_key_order_with_who_reacted() {
         },
     );
     let mut frame = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(strip),
         (420, 80),
         Theme::light(),
@@ -128,7 +128,7 @@ fn the_emoji_picker_button_opens_the_picker_and_reports_a_pick() {
         },
     );
     let mut frame = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(button),
         (420, 520),
         Theme::light(),
@@ -163,7 +163,7 @@ fn a_pill_shows_the_face_of_each_person_who_reacted_in_their_colour() {
             },
         );
         let frame = Driver::new_with_theme(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Box::new(strip),
             (240, 60),
             theme.clone(),
@@ -218,7 +218,7 @@ fn choosing_a_face_on_a_described_strip_reports_who_reacted() {
         },
     );
     let mut frame = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(strip),
         (420, 80),
         Theme::light(),

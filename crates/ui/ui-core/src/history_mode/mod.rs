@@ -10,7 +10,7 @@ mod assets;
 static NEWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// [`NEWS`] as it stands.
-pub(crate) fn news() -> u64 {
+pub fn news() -> u64 {
     NEWS.load(std::sync::atomic::Ordering::Acquire)
 }
 
@@ -19,7 +19,7 @@ pub(crate) fn note_news() {
     NEWS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
-pub(crate) mod api;
+pub mod api;
 #[cfg(feature = "model")]
 pub mod capability;
 #[cfg(feature = "model")]
@@ -37,20 +37,20 @@ pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAsse
 #[cfg(feature = "model")]
 use tilo_sort::CompactSort as _;
 #[cfg(feature = "model")]
-pub(crate) mod owner;
+pub mod owner;
 #[cfg(feature = "model")]
 pub mod registration;
 #[cfg(feature = "model")]
 pub use owner::HistoryOwner;
 #[cfg(feature = "model")]
 pub(crate) mod canvas;
-pub(crate) mod frame;
+pub mod frame;
 #[cfg(feature = "model")]
 pub(crate) mod frozen_root;
 #[cfg(feature = "model")]
 pub use frozen_root::{FrozenRootPreview, outline_preview};
 #[cfg(feature = "model")]
-pub(crate) mod host;
+pub mod host;
 #[cfg(feature = "model")]
 pub mod pending_controls;
 #[cfg(feature = "model")]
@@ -623,7 +623,7 @@ fn committed_clone(live: &AutoCommit) -> AutoCommit {
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
+pub fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
     heads.compact_sort();
     heads
 }
@@ -654,7 +654,7 @@ pub use embedded::{FocusRestrictions, allows_focus, has_surfaces};
 pub use testing::preview as test_preview;
 
 #[cfg(feature = "model")]
-pub(crate) mod routes;
+pub mod routes;
 
 #[cfg(feature = "model")]
 /// Opaque retained framework surface used only by owning runner traversal.
@@ -662,4 +662,4 @@ pub(crate) mod routes;
 /// A window's History as the windows that own one hand it to a visitor.
 pub(crate) type FrameworkHistorySurface = host::HistoryHost;
 #[cfg(feature = "model")]
-pub(crate) mod embedded;
+pub mod embedded;

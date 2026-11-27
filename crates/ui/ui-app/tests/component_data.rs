@@ -8,9 +8,9 @@
     reason = "in a test these are the assertion"
 )]
 
-use tilo_ui::component_testing::*;
-use tilo_ui::headless::Driver;
-use tilo_ui::testing::harness;
+use tilo_ui_app::component_testing::*;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::headless::harness;
 use tilo_ui_base::component::*;
 use tilo_ui_base::widget::Widget;
 
@@ -51,7 +51,7 @@ tilo_test_env::scenario! {
         let mut node = table_node(&queue)
             .prop("name", text("Songs"))
             .prop("selectable", Value::Bool(true));
-        let props = tilo_ui::widget::DataTableProps::from_source(&mut node).unwrap();
+        let props = tilo_ui_app::widget::DataTableProps::from_source(&mut node).unwrap();
         assert_eq!(props.columns.len(), 2);
         assert_eq!(props.rows.len(), 2);
         assert_eq!(props.rows[1].item.0, "doc/song:2");
@@ -60,10 +60,10 @@ tilo_test_env::scenario! {
             Some("second"),
             "a cell reads by its column's header"
         );
-        let widget = tilo_ui::widget::DescribedTable::from_props("songs", props);
+        let widget = tilo_ui_app::widget::DescribedTable::from_props("songs", props);
         let mut host = harness(widget);
         host.relayout();
-        let root = host.root::<tilo_ui::widget::DescribedTable>();
+        let root = host.root::<tilo_ui_app::widget::DescribedTable>();
         assert_eq!(root.table().view_rows().len(), 2);
     }
 
@@ -71,10 +71,10 @@ tilo_test_env::scenario! {
     {
         let queue = tilo_ui_base::Intents::default();
         let mut node = table_node(&queue).prop("selectable", Value::Bool(true));
-        let props = tilo_ui::widget::DataTableProps::from_source(&mut node).unwrap();
-        let mut host = harness(tilo_ui::widget::DescribedTable::from_props("songs", props));
+        let props = tilo_ui_app::widget::DataTableProps::from_source(&mut node).unwrap();
+        let mut host = harness(tilo_ui_app::widget::DescribedTable::from_props("songs", props));
         host.relayout();
-        let root = host.root::<tilo_ui::widget::DescribedTable>();
+        let root = host.root::<tilo_ui_app::widget::DescribedTable>();
         let second = root.table().row_rect(1).expect("the second row shows");
         host.click_at(second.center().x, second.center().y);
         assert_eq!(
@@ -91,8 +91,8 @@ tilo_test_env::scenario! {
     {
         let queue = tilo_ui_base::Intents::default();
         let mut node = table_node(&queue);
-        let props = tilo_ui::widget::DataTableProps::from_source(&mut node).unwrap();
-        let mut table = tilo_ui::widget::DescribedTable::from_props("songs", props);
+        let props = tilo_ui_app::widget::DataTableProps::from_source(&mut node).unwrap();
+        let mut table = tilo_ui_app::widget::DescribedTable::from_props("songs", props);
 
         let mut next = table_node(&queue).holding(
             "rows",
@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
                 .holding("cells", cell_node("Name", "third")),
         );
         next = next.prop("selection", Value::List(vec![resource("doc/song:2")]));
-        let props = tilo_ui::widget::DataTableProps::from_source(&mut next).unwrap();
+        let props = tilo_ui_app::widget::DataTableProps::from_source(&mut next).unwrap();
         assert!(table.set_props(props), "changed rows are taken in place");
         assert_eq!(table.table().view_rows().len(), 3);
         let shown = table.table().selected_rows();
@@ -126,10 +126,10 @@ tilo_test_env::scenario! {
             .prop("name", text("Conversation with Ada"))
             .holding("lines", line("msg:a", "are you nearby?"))
             .holding("lines", line("msg:b", "on my way"));
-        let props = tilo_ui::widget::ConversationListProps::from_source(&mut node).unwrap();
+        let props = tilo_ui_app::widget::ConversationListProps::from_source(&mut node).unwrap();
         assert_eq!(props.lines.len(), 2);
         assert_eq!(props.lines[1].said, "on my way");
-        let widget = tilo_ui::widget::DescribedConversationList::from_props("chat", props);
+        let widget = tilo_ui_app::widget::DescribedConversationList::from_props("chat", props);
         assert_eq!(widget.list().lines().len(), 2);
         assert_eq!(widget.list().lines()[0].author, "Ada");
     }
@@ -146,11 +146,11 @@ tilo_test_env::scenario! {
         let mut node = Node::new("CardGrid", "apps", &queue)
             .holding("cards", card("doc/app:1"))
             .holding("cards", card("doc/app:2"));
-        let props = tilo_ui::widget::CardGridProps::from_source(&mut node).unwrap();
+        let props = tilo_ui_app::widget::CardGridProps::from_source(&mut node).unwrap();
         assert_eq!(props.cards.len(), 2);
-        let mut host = harness(tilo_ui::widget::DescribedCardGrid::from_props("apps", props));
+        let mut host = harness(tilo_ui_app::widget::DescribedCardGrid::from_props("apps", props));
         host.relayout();
-        let root = host.root::<tilo_ui::widget::DescribedCardGrid>();
+        let root = host.root::<tilo_ui_app::widget::DescribedCardGrid>();
         assert_eq!(
             root.shown().as_slice(),
             ["doc/app:1".to_owned(), "doc/app:2".to_owned()]
@@ -182,17 +182,17 @@ tilo_test_env::scenario! {
             for (item, title) in titles {
                 grid = grid.holding("cards", card(item, title));
             }
-            tilo_ui::widget::CardGridProps::from_source(&mut grid).expect("the grid reads")
+            tilo_ui_app::widget::CardGridProps::from_source(&mut grid).expect("the grid reads")
         };
         let cards = |host: &Driver| -> Vec<usize> {
-            let grid = host.root::<tilo_ui::widget::DescribedCardGrid>().grid();
+            let grid = host.root::<tilo_ui_app::widget::DescribedCardGrid>().grid();
             (0..grid.len())
                 .filter_map(|index| grid.card(index))
                 .map(|card| std::ptr::from_ref::<dyn Widget>(card.as_ref()).cast::<()>() as usize)
                 .collect()
         };
         let names = |host: &Driver| -> Vec<String> {
-            let grid = host.root::<tilo_ui::widget::DescribedCardGrid>().grid();
+            let grid = host.root::<tilo_ui_app::widget::DescribedCardGrid>().grid();
             let mut out = Vec::new();
             fn walk(w: &dyn Widget, out: &mut Vec<String>) {
                 if let Some(node) = w.accessibility() {
@@ -208,7 +208,7 @@ tilo_test_env::scenario! {
             out
         };
 
-        let mut host = harness(tilo_ui::widget::DescribedCardGrid::from_props(
+        let mut host = harness(tilo_ui_app::widget::DescribedCardGrid::from_props(
             "apps",
             reading(&[("doc/a:1", "Alpha"), ("doc/a:2", "Beta")]),
         ));
@@ -222,7 +222,7 @@ tilo_test_env::scenario! {
         );
 
         assert!(
-            host.root_mut::<tilo_ui::widget::DescribedCardGrid>()
+            host.root_mut::<tilo_ui_app::widget::DescribedCardGrid>()
                 .set_props(reading(&[("doc/a:1", "Alpha"), ("doc/a:2", "Beta II")])),
             "the cards it shows are taken in place"
         );
@@ -262,10 +262,10 @@ tilo_test_env::scenario! {
                 "nodes",
                 node_part("main.rs", Some("doc/dir:src"), "doc/file:main"),
             );
-        let props = tilo_ui::widget::TreeViewProps::from_source(&mut tree).unwrap();
+        let props = tilo_ui_app::widget::TreeViewProps::from_source(&mut tree).unwrap();
         assert_eq!(props.nodes.len(), 3);
-        let host = harness(tilo_ui::widget::DescribedTreeView::from_props("files", props));
-        let root = host.root::<tilo_ui::widget::DescribedTreeView>();
+        let host = harness(tilo_ui_app::widget::DescribedTreeView::from_props("files", props));
+        let root = host.root::<tilo_ui_app::widget::DescribedTreeView>();
         let root_key = root.row_key("doc/dir:root").expect("the root's key");
         assert_ne!(
             root_key,
@@ -275,8 +275,8 @@ tilo_test_env::scenario! {
             .prop("name", text("Files"))
             .holding("nodes", node_part("src", None, "doc/dir:src"))
             .holding("nodes", node_part("Project", None, "doc/dir:root"));
-        let props = tilo_ui::widget::TreeViewProps::from_source(&mut other).unwrap();
-        let other = tilo_ui::widget::DescribedTreeView::from_props("files", props);
+        let props = tilo_ui_app::widget::TreeViewProps::from_source(&mut other).unwrap();
+        let other = tilo_ui_app::widget::DescribedTreeView::from_props("files", props);
         assert_eq!(other.row_key("doc/dir:root"), Some(root_key));
         assert_eq!(
             root.item_of("doc/file:main").map(|i| i.0.as_str()),
@@ -303,8 +303,8 @@ tilo_test_env::scenario! {
                 "nodes",
                 node_part("src", Some("doc/dir:root"), "doc/dir:src"),
             );
-        let props = tilo_ui::widget::TreeViewProps::from_source(&mut first).unwrap();
-        let mut tree = tilo_ui::widget::DescribedTreeView::from_props("files", props);
+        let props = tilo_ui_app::widget::TreeViewProps::from_source(&mut first).unwrap();
+        let mut tree = tilo_ui_app::widget::DescribedTreeView::from_props("files", props);
         let mut next = Node::new("TreeView", "files", &queue)
             .prop("name", text("Files"))
             .holding("nodes", node_part("Project", None, "doc/dir:root"))
@@ -315,7 +315,7 @@ tilo_test_env::scenario! {
         next = next
             .prop("expanded", Value::List(vec![resource("doc/dir:root")]))
             .prop("selection", Value::List(vec![resource("doc/dir:src")]));
-        let props = tilo_ui::widget::TreeViewProps::from_source(&mut next).unwrap();
+        let props = tilo_ui_app::widget::TreeViewProps::from_source(&mut next).unwrap();
         assert!(tree.set_props(props), "the state is taken in place");
         assert!(tree.is_open("doc/dir:root"), "the given branch is open");
         assert_eq!(
@@ -349,10 +349,10 @@ tilo_test_env::scenario! {
             .holding("entries", entry("b", "Moved to Done"))
             .on("revert")
             .on("open");
-        let props = tilo_ui::widget::ActivityTimelineProps::from_source(&mut node).unwrap();
+        let props = tilo_ui_app::widget::ActivityTimelineProps::from_source(&mut node).unwrap();
         assert_eq!(props.entries.len(), 2);
         assert_eq!(props.entries[0].summary, "Rewrote the summary");
-        let widget = tilo_ui::widget::DescribedActivityTimeline::from_props("history", props);
+        let widget = tilo_ui_app::widget::DescribedActivityTimeline::from_props("history", props);
         assert_eq!(widget.timeline().entries().len(), 2);
     }
 
@@ -368,11 +368,11 @@ tilo_test_env::scenario! {
         let mut node = Node::new("ActivityTimeline", "history", &queue)
             .holding("entries", entry("a", "Rewrote the summary"))
             .holding("entries", entry("b", "Moved to Done"));
-        let props = tilo_ui::widget::ActivityTimelineProps::from_source(&mut node).unwrap();
-        let widget = tilo_ui::widget::DescribedActivityTimeline::from_props("history", props);
+        let props = tilo_ui_app::widget::ActivityTimelineProps::from_source(&mut node).unwrap();
+        let widget = tilo_ui_app::widget::DescribedActivityTimeline::from_props("history", props);
         let mut host = harness(widget);
         host.relayout();
-        let root = host.root::<tilo_ui::widget::DescribedActivityTimeline>();
+        let root = host.root::<tilo_ui_app::widget::DescribedActivityTimeline>();
         assert!(
             root.timeline().get_rect().height() > 0.0,
             "a timeline placed in a page has its own height, not zero"
@@ -383,30 +383,30 @@ tilo_test_env::scenario! {
     {
         let queue = tilo_ui_base::Intents::default();
         assert_eq!(
-            <Vec<tilo_ui::widget::DataTableColumnProps> as PartType>::accepts(),
+            <Vec<tilo_ui_app::widget::DataTableColumnProps> as PartType>::accepts(),
             Accepts::Component("DataTableColumn".into())
         );
         assert_eq!(
-            <Vec<tilo_ui::widget::DataTableRowProps> as PartType>::accepts(),
+            <Vec<tilo_ui_app::widget::DataTableRowProps> as PartType>::accepts(),
             Accepts::Component("DataTableRow".into())
         );
         assert_eq!(
-            <Vec<tilo_ui::widget::CardGridCardProps> as PartType>::accepts(),
+            <Vec<tilo_ui_app::widget::CardGridCardProps> as PartType>::accepts(),
             Accepts::Component("CardGridCard".into())
         );
         assert_eq!(
-            <Vec<tilo_ui::widget::TreeViewNodeProps> as PartType>::accepts(),
+            <Vec<tilo_ui_app::widget::TreeViewNodeProps> as PartType>::accepts(),
             Accepts::Component("TreeViewNode".into())
         );
         assert_eq!(
-            <Vec<tilo_ui::widget::ConversationEntryProps> as PartType>::accepts(),
+            <Vec<tilo_ui_app::widget::ConversationEntryProps> as PartType>::accepts(),
             Accepts::Component("ConversationEntry".into())
         );
         assert_eq!(
-            <Vec<tilo_ui::widget::ActivityEntryProps> as PartType>::accepts(),
+            <Vec<tilo_ui_app::widget::ActivityEntryProps> as PartType>::accepts(),
             Accepts::Component("ActivityEntry".into())
         );
         let mut node = table_node(&queue);
-        assert!(tilo_ui::widget::DataTableProps::from_source(&mut node).is_ok());
+        assert!(tilo_ui_app::widget::DataTableProps::from_source(&mut node).is_ok());
     }
 }

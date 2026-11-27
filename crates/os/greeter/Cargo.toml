@@ -24,7 +24,7 @@ tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features 
 # Mirrors the dep set used by the in-tree `ui`-based apps
 # (file-explorer / terminal): the toolkit plus the trait crates its
 # `Widget` impls reference directly.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
+ui = { package = "tilo-ui-app", path = "../../ui/ui-app", default-features = false, features = ["model"] }
 automerge.workspace = true
 vello.workspace = true
 winit.workspace = true
@@ -55,13 +55,13 @@ ui-kms = { package = "tilo-ui-kms", path = "../../ui/ui-kms" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
+ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["model"] }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
+ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["test-support", "model"] }
 # The screen reader's recording speaker, to hear what it said.
 tilo-tts = { path = "../../platform/tts" }
 # A fake greetd that speaks the real conversation protocol over a socket.

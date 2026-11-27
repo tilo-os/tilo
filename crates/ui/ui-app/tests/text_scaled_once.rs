@@ -24,9 +24,9 @@
 //! With `TILO_UI_SCREENSHOT_DIR` set, each frame is also written under
 //! `text_scaled_once/` there as visual evidence.
 
-use tilo_ui::State;
-use tilo_ui::headless::{Driver, InspectionNode};
-use tilo_ui::{
+use tilo_ui_app::State;
+use tilo_ui_app::headless::{Driver, InspectionNode};
+use tilo_ui_app::{
     widget::Avatar, widget::Breadcrumb, widget::ChipFace, widget::Column, widget::ShortcutRecorder,
 };
 use tilo_ui_base::TextRole;

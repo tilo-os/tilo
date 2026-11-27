@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
 
         {
             use tilo_ui_base::text_render::TextRenderer;
-            use tilo_ui::widget::TextInput;
+            use tilo_ui_app::widget::TextInput;
             use tilo_ui_base::widget::Widget;
             use vello::kurbo::Affine;
 

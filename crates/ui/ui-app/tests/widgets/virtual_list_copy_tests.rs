@@ -23,13 +23,13 @@ use std::sync::*;
 use std::time::*;
 use taffy::style_helpers::percent;
 use taffy::{Dimension, Size, Style};
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -48,7 +48,7 @@ use winit::keyboard::*;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use tilo_ui::app::{App, AppSurface, SurfaceDamage};
+use tilo_ui_app::app::{App, AppSurface, SurfaceDamage};
 use tilo_ui_base::collection_transition::ListModelChange;
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::kurbo::RoundedRect;
@@ -132,7 +132,7 @@ fn transcript(theme: &Theme) -> App {
         })
     })
     .with_viewport_height(480.0);
-    let mut app = App::new_with_controlled_inputs(tilo_ui::state::State::new(), Box::new(list));
+    let mut app = App::new_with_controlled_inputs(tilo_ui_app::state::State::new(), Box::new(list));
     app.set_theme(theme.clone());
     app
 }
@@ -341,7 +341,7 @@ fn arrives_and_matches(first: &str, counted: Option<usize>) {
     })
     .in_view("Today", Some(counted.unwrap_or(2)))
     .with_viewport_height(480.0);
-    let mut app = App::new_with_controlled_inputs(tilo_ui::state::State::new(), Box::new(list));
+    let mut app = App::new_with_controlled_inputs(tilo_ui_app::state::State::new(), Box::new(list));
     app.set_theme(theme.clone());
     let background = theme.tokens.colors.surfaces.content;
     let mut damage = SurfaceDamage::copying();

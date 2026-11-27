@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use tilo_ui::ColorCompat;
-use tilo_ui::widget::ColorPicker;
+use tilo_ui_app::ColorCompat;
+use tilo_ui_app::widget::ColorPicker;
 use tilo_ui_base::Widget;
 use vello::peniko::Color;
 use winit::event::{Ime, Modifiers, WindowEvent};

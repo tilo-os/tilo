@@ -1176,38 +1176,6 @@ impl Described for DeclaredPopoverButton {
 mod tests {
     use super::*;
 
-    /// A press off a panel that reports one is a dismissal; a press on the panel, even on its own
-    /// empty ground, is none.
-    #[test]
-    fn a_press_off_a_panel_with_a_dismiss_reports_it_and_one_on_it_does_not() {
-        use crate::component_testing::{Node, fired};
-        use crate::testing::harness;
-        use tilo_ui_base::component::Component;
-        let queue = tilo_ui_base::Intents::default();
-        let mut node = Node::new("FloatingPanel", "panel", &queue)
-            .prop("width", tilo_ui_base::component::Value::Float(200.0))
-            .on("dismiss");
-        let props = FloatingPanelProps::from_source(&mut node).expect("the panel reads");
-        let mut host = harness(DeclaredPanel::from_props("panel", props));
-        host.relayout();
-        let rect = host.root::<DeclaredPanel>().get_rect();
-
-        host.hover_at(rect.x1 + 60.0, rect.y1 + 60.0);
-        host.click_at(rect.x1 + 60.0, rect.y1 + 60.0);
-        assert_eq!(queue.take(), [fired("panel", "dismiss", None)]);
-
-        let (x, y) = (
-            f64::midpoint(rect.x0, rect.x1),
-            f64::midpoint(rect.y0, rect.y1),
-        );
-        host.hover_at(x, y);
-        host.click_at(x, y);
-        assert!(
-            queue.take().is_empty(),
-            "a press on the panel dismisses nothing"
-        );
-    }
-
     /// A popover the person opened stays open while its props are given to it again, and closes
     /// when the host says it is closed.
     #[test]
@@ -1240,86 +1208,6 @@ mod tests {
         assert!(
             !popover.popover().is_open(),
             "a popover the host closed shut"
-        );
-    }
-
-    /// A declared popover open in a window that starts at a single pixel and then takes its real
-    /// size, as a session's surface does: once the window settles, what assistive technology reads
-    /// of its content stands inside the panel it paints, and a press there takes the control.
-    #[test]
-    fn a_declared_popover_is_read_and_pressed_where_it_paints() {
-        use crate::headless::Driver;
-        use crate::widget::arrange::{Align, Distribute, Row, Stack};
-        use std::{cell::Cell, rc::Rc};
-        let _settled = tilo_ui_base::motion::testing::settled();
-        let pressed = Rc::new(Cell::new(false));
-        let shut_down = {
-            let pressed = Rc::clone(&pressed);
-            crate::widget::Button::new("shut-down", "Shut down").on_click(move || pressed.set(true))
-        };
-        let content = Stack::stack()
-            .push(Box::new(crate::widget::Text::new("Power")))
-            .push(Box::new(crate::widget::Button::new("lock", "Lock")))
-            .push(Box::new(shut_down));
-        let popover = DeclaredPopover::new(PopoverProps {
-            label: Some("Power menu".into()),
-            open: true,
-            side: Some(PopoverSide::Below),
-            content: vec![Box::new(content)],
-            ..PopoverProps::default()
-        });
-        let row = Row::row()
-            .fill_width()
-            .align(Align::Start)
-            .distribute(Distribute::End)
-            .push(Box::new(popover));
-        let root = Stack::stack()
-            .fill_width()
-            .push(Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)))
-            .push(Box::new(row));
-        let mut driver = Driver::for_root(
-            crate::State::new(),
-            root,
-            (1, 1),
-            tilo_ui_base::theme::Theme::dark(),
-        );
-        driver.poll_frame().expect("the first frame lays out");
-        driver
-            .resize((800, 600))
-            .expect("the window takes its size");
-        let settled = (0..20).any(|_| !driver.poll_frame().expect("a frame lays out"));
-        assert!(settled, "the window comes to rest at its size");
-
-        let panel = {
-            let mut root = driver.root_mut::<Stack>();
-            let row = &mut *root.children_mut().remove(1);
-            let declared = row.children_mut().remove(0);
-            declared
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<DeclaredPopover>())
-                .expect("the declared popover")
-                .popover()
-                .rect()
-        };
-        let id = driver
-            .a11y_node_named("Shut down")
-            .expect("the panel's control is read");
-        let bounds = driver
-            .a11y_node(id)
-            .and_then(|node| node.bounds())
-            .expect("its bounds");
-        let bounds = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
-        assert!(
-            panel.contains_rect(bounds),
-            "the control {bounds:?} is read inside the panel painted at {panel:?}"
-        );
-
-        let centre = bounds.center();
-        driver.hover_at(centre.x, centre.y);
-        driver.click_at(centre.x, centre.y);
-        assert!(
-            pressed.get(),
-            "a press where the control is read at takes it"
         );
     }
 }

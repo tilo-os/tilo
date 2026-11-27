@@ -3,7 +3,7 @@
 //! skeleton held a while, the answer landing and its cross-fade.
 
 use super::*;
-use crate::launch::ShotFrame;
+use crate::shot_frame::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
 use crate::{
     widget::Column, widget::ListRow, widget::MediaCard, widget::MediaGrid, widget::MediaSource,

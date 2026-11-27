@@ -33,9 +33,9 @@ use winit::event::{ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
 use tilo_rich_edit::slash_menu::SlashMenu;
-use tilo_ui::widget::Dropdown;
-use tilo_ui::widget::autocomplete::{Autocomplete, Suggestion};
-use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
+use tilo_ui_app::widget::Dropdown;
+use tilo_ui_app::widget::autocomplete::{Autocomplete, Suggestion};
+use tilo_ui_app::widget::context_menu::{ContextMenu, MenuItem};
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
@@ -134,12 +134,12 @@ impl Rendered {
     }
 
     fn dump(&self, name: &str) {
-        let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
+        let Ok(dir) = tilo_ui_app::env::var("TILO_UI_SCREENSHOT_DIR") else {
             return;
         };
         std::fs::create_dir_all(&dir).unwrap();
         let path = format!("{dir}/{name}.png");
-        tilo_ui::png::write_rgba8(&path, CANVAS_W, CANVAS_H, &self.rgba).unwrap();
+        tilo_ui_app::png::write_rgba8(&path, CANVAS_W, CANVAS_H, &self.rgba).unwrap();
         eprintln!("wrote {path}");
     }
 }
@@ -205,7 +205,7 @@ fn assert_armed_row(
         lo.3, 0xff,
         "{surface}/{theme_name}: plain row sample is not opaque"
     );
-    let (fill, ink) = tilo_ui::widget::floating_surface::armed_row(theme);
+    let (fill, ink) = tilo_ui_app::widget::floating_surface::armed_row(theme);
     let lift = fill.to_rgba8();
     let close = |a: u8, b: u8| a.abs_diff(b) <= 1;
     assert!(

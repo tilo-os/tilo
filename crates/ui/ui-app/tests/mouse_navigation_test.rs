@@ -1,6 +1,6 @@
-use tilo_ui::State;
-use tilo_ui::headless::Driver;
-use tilo_ui::widget::Text;
+use tilo_ui_app::State;
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::widget::Text;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Router;
 use winit::event::{ElementState, MouseButton};

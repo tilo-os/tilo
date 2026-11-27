@@ -588,14 +588,14 @@ impl WindowFrame {
     }
 
     /// The header row the window's content draws, as the frame laid it out last.
-    pub(crate) fn content_header_row(&self) -> Option<&dyn crate::widget::WindowHeader> {
+    pub fn content_header_row(&self) -> Option<&dyn crate::widget::WindowHeader> {
         let column = *self.layers.children().first()?;
         crate::widget::window_header::root_header_row(column)
     }
 
     /// Where the content's header row stands while it holds the window's bar; `None` while the
     /// frame draws a bar of its own.
-    pub(crate) fn held_bar(&self) -> Option<WindowBarPart> {
+    pub fn held_bar(&self) -> Option<WindowBarPart> {
         if !self.merged {
             return None;
         }
@@ -605,13 +605,13 @@ impl WindowFrame {
 
     /// The window's bar as the frame laid it out last: the content's header row while it holds
     /// the bar, the frame's own bar otherwise.
-    pub(crate) fn bar_rect(&self) -> Rect {
+    pub fn bar_rect(&self) -> Rect {
         self.bar
     }
 
     /// The bar the frame draws of its own above the content, as laid out last: empty while the
     /// content's header row holds the bar.
-    pub(crate) fn own_bar_rect(&self) -> Rect {
+    pub fn own_bar_rect(&self) -> Rect {
         self.layers
             .children()
             .first()

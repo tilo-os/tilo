@@ -21,17 +21,17 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::app::{App, AppSurface, SurfaceDamage};
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::Rect;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::Scene;
-use tilo_ui::vello::*;
-use tilo_ui::widget::DocumentViewport;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::app::{App, AppSurface, SurfaceDamage};
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::Rect;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::Scene;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::DocumentViewport;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -68,16 +68,17 @@ impl AppSurface for Window {
 }
 
 fn sheet(theme: &Theme) -> App {
-    let mut column = tilo_ui::widget::Column::new().with_intrinsic_height();
+    let mut column = tilo_ui_app::widget::Column::new().with_intrinsic_height();
     for row in 0..60 {
-        column = column.push(Box::new(tilo_ui::widget::Toggle::given(
+        column = column.push(Box::new(tilo_ui_app::widget::Toggle::given(
             &format!("switch-{row}"),
             false,
         )));
     }
     let mut viewport = DocumentViewport::new(Box::new(column));
     viewport.set_content_size(400.0, 60.0 * 44.0);
-    let mut app = App::new_with_controlled_inputs(tilo_ui::state::State::new(), Box::new(viewport));
+    let mut app =
+        App::new_with_controlled_inputs(tilo_ui_app::state::State::new(), Box::new(viewport));
     app.set_theme(theme.clone());
     app
 }

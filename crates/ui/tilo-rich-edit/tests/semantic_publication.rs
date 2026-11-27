@@ -7,7 +7,7 @@ use std::cell::Cell;
 
 use tilo_rich_edit::BlockEditor;
 use tilo_ui::State;
-use tilo_ui::app::{App, AppSurface};
+use tilo_ui_app::app::{App, AppSurface};
 use vello::Scene;
 use winit::event::ElementState;
 

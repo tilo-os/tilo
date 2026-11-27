@@ -6,7 +6,7 @@ use super::AppComponent;
 impl AppComponent {
     /// The durability last delivered, as sampled: what the root was told of its record's save, which a
     /// component at rest compares with the store's.
-    pub(crate) fn sampled_resource_save(&self) -> Option<&crate::resource::ResourceSaveStatus> {
+    pub fn sampled_resource_save(&self) -> Option<&crate::resource::ResourceSaveStatus> {
         self.record_save.as_ref()
     }
 

@@ -11,14 +11,14 @@ use std::path::Path;
 /// `$TILO_UI_SCREENSHOT_DIR/<name>.png` when that variable is set.
 /// `name` may contain `/` to group a suite's frames in a subdirectory.
 pub fn save_png(name: &str, width: u32, height: u32, rgba: &[u8]) {
-    let Some(dir) = tilo_ui::env::var_os("TILO_UI_SCREENSHOT_DIR") else {
+    let Some(dir) = tilo_ui_app::env::var_os("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };
     let path = Path::new(&dir).join(format!("{name}.png"));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("create screenshot directory");
     }
-    tilo_ui::png::write_rgba8(&path, width, height, rgba).expect("write screenshot png");
+    tilo_ui_app::png::write_rgba8(&path, width, height, rgba).expect("write screenshot png");
     eprintln!("wrote {}", path.display());
 }
 

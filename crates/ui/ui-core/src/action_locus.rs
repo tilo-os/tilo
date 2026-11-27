@@ -12,7 +12,7 @@ pub struct PaintedActionMarker {
 }
 
 /// Paint semantic activity against this frame's exact action bindings.
-pub(crate) fn draw_action_presence(
+pub fn draw_action_presence(
     paint: &mut tilo_ui_base::paint::PaintCtx<'_>,
     presence: &mut tilo_ui_base::presence::PresenceCtx,
     tree: &crate::a11y_tree::SemanticTree,
@@ -134,7 +134,7 @@ pub struct ActionUiRoute {
     pub disabled: bool,
 }
 
-pub(crate) fn action_ui_routes(
+pub fn action_ui_routes(
     tree: &crate::a11y_tree::SemanticTree,
     bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     address: &tilo_actions::ActionAddress,
@@ -285,7 +285,7 @@ fn resource_of(id: &tilo_ui_base::a11y::SemanticId) -> std::borrow::Cow<'_, str>
 /// Resolve only an unambiguous, currently bound control. Labels and positional
 /// wire IDs cannot establish resource identity. Domain anchors without a shared
 /// resolver remain app-level activity rather than guessed rectangles.
-pub(crate) fn interaction_bounds(
+pub fn interaction_bounds(
     tree: &crate::a11y_tree::SemanticTree,
     bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     interaction: &tilo_actions::SemanticInteraction,
@@ -359,7 +359,7 @@ pub(crate) fn interaction_bounds(
 
 /// The node [`interaction_bounds`] finds `interaction` on, reached through the widget that draws it: a
 /// synthetic child a widget publishes (a terminal's prompt line) belongs to the widget above it.
-pub(crate) fn interaction_node<'tree>(
+pub fn interaction_node<'tree>(
     tree: &'tree crate::a11y_tree::SemanticTree,
     bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     interaction: &tilo_actions::SemanticInteraction,
@@ -471,7 +471,7 @@ fn item_bounds(
 }
 
 /// Exact resource geometry after the host has translated a checked publication.
-pub(crate) fn resource_bounds(
+pub fn resource_bounds(
     tree: &crate::a11y_tree::SemanticTree,
     bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     address: &tilo_actions::ActionAddress,

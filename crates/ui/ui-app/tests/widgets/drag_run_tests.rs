@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
     {
         let width = 1280.0;
         let host = Driver::for_root(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             bar(),
             (width as u32, 200),
             Theme::dark(),
@@ -136,9 +136,9 @@ tilo_test_env::scenario! {
     {
         let width = 1280.0;
         let host = Driver::for_root(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             DragRun::new("dock")
-                .distribute(tilo_ui::widget::arrange::Distribute::Center)
+                .distribute(tilo_ui_app::widget::arrange::Distribute::Center)
                 .push(item("a", 48.0))
                 .push(item("b", 48.0))
                 .push(item("c", 48.0)),
@@ -164,10 +164,11 @@ tilo_test_env::scenario! {
 /// one sibling gap apart, so no button (nor the count on its corner) stands over the next.
 #[test]
 fn a_run_sharing_a_hugging_row_keeps_its_items_a_gap_apart() {
-    use tilo_ui::widget::arrange::Fit;
-    use tilo_ui::widget::{BadgeContent, Button, ButtonRole, ChipStyle, Scrollable};
+    use tilo_ui_app::widget::arrange::Fit;
+    use tilo_ui_app::widget::{BadgeContent, Button, ButtonRole, ChipStyle, Scrollable};
     fn dock() -> Element {
-        let mut run = DragRun::new("dock").distribute(tilo_ui::widget::arrange::Distribute::Center);
+        let mut run =
+            DragRun::new("dock").distribute(tilo_ui_app::widget::arrange::Distribute::Center);
         for (index, key) in ["files", "writer", "mail", "photos", "music"]
             .into_iter()
             .enumerate()
@@ -185,7 +186,7 @@ fn a_run_sharing_a_hugging_row_keeps_its_items_a_gap_apart() {
                 view: Box::new(button),
             });
         }
-        let mut running = tilo_ui::widget::arrange::Row::row().gap(Rhythm::Sibling);
+        let mut running = tilo_ui_app::widget::arrange::Row::row().gap(Rhythm::Sibling);
         for key in ["chat", "notes"] {
             running = running.push(Box::new(
                 Button::icon_only(key, tilo_ui_base::icons::Icon::Bell, key)
@@ -193,13 +194,13 @@ fn a_run_sharing_a_hugging_row_keeps_its_items_a_gap_apart() {
             ));
         }
         Box::new(
-            tilo_ui::widget::arrange::Row::row()
+            tilo_ui_app::widget::arrange::Row::row()
                 .gap(Rhythm::Sibling)
                 .push_fit(Box::new(run), Fit::fill(1.0))
                 .push_fit(Box::new(running), Fit::fill(1.0)),
         )
     }
-    fn collect(node: &tilo_ui::headless::InspectionNode, out: &mut Vec<Rect>) {
+    fn collect(node: &tilo_ui_app::headless::InspectionNode, out: &mut Vec<Rect>) {
         if node.widget == "Button" {
             let [x, y, w, h] = node.rect;
             out.push(Rect::new(x, y, x + w, y + h));
@@ -211,7 +212,7 @@ fn a_run_sharing_a_hugging_row_keeps_its_items_a_gap_apart() {
     for theme in [Theme::light(), Theme::dark()] {
         let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
         let host = Driver::for_root(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Scrollable::new_horizontal().with_child(dock()),
             (1280, 200),
             theme,
@@ -234,7 +235,7 @@ fn a_run_sharing_a_hugging_row_keeps_its_items_a_gap_apart() {
 }
 
 fn harness(run: DragRun) -> Driver {
-    Driver::for_root(tilo_ui::State::new(), run, (600, 200), Theme::dark())
+    Driver::for_root(tilo_ui_app::State::new(), run, (600, 200), Theme::dark())
 }
 
 fn run() -> DragRun {

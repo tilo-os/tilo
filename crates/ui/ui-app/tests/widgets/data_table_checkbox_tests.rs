@@ -8,14 +8,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -94,7 +94,7 @@ fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
     .on_activate(move |_| activated.set(activated.get() + 1));
     table.set_rows(items(2));
     let mut harness = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(RetainedTable(table)),
         (400, 300),
     );

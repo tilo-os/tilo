@@ -1,8 +1,8 @@
 //! A panel the person resizes by its trailing edge: the edge takes hold, the panel follows the
 //! hand, and the width it is let go at is what the view hears.
 
-use tilo_ui::headless::Driver;
-use tilo_ui::widget::internals::primitives::surfaces_component::{
+use tilo_ui_app::headless::Driver;
+use tilo_ui_app::widget::internals::primitives::surfaces_component::{
     DeclaredPanel, FloatingPanelProps,
 };
 use tilo_ui_base::synthetic_input;
@@ -17,7 +17,7 @@ fn harness(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>) -> Dri
             ..FloatingPanelProps::default()
         },
     );
-    Driver::new(tilo_ui::State::new(), Box::new(panel), (800, 600))
+    Driver::new(tilo_ui_app::State::new(), Box::new(panel), (800, 600))
 }
 
 fn resized(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>) -> Vec<f64> {

@@ -237,10 +237,14 @@ mod action_contract;
 #[cfg(unix)]
 #[path = "collaboration_app.rs"]
 mod collaboration_app;
+#[path = "component_controls.rs"]
+mod component_controls;
 #[path = "component_coverage.rs"]
 mod component_coverage;
 #[path = "component_data.rs"]
 mod component_data;
+#[path = "component_feedback.rs"]
+mod component_feedback;
 #[path = "component_media.rs"]
 mod component_media;
 #[path = "component_part_fill.rs"]

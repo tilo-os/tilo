@@ -9,14 +9,137 @@ autotests = false
 autoexamples = false
 repository.workspace = true
 homepage.workspace = true
-description = "The Tilo UI app runner's integration tests, driven through tilo-ui's headless driver."
+description = "The Tilo UI app runner: the App that drives a widget tree in a window, its headless driver, launch, the action palette and frame profiling, over the tilo-ui toolkit."
+
+[package.metadata.cargo-machete]
+# serde_bytes is named only inside `#[serde(with = "serde_bytes")]`.
+ignored = ["serde_bytes"]
+
+[features]
+default = ["native", "broker-transport"]
+# Each feature is the toolkit's of the same name (see tilo-ui), plus what the runner takes for it.
+model = ["tilo-ui/model", "tilo-ui-base/model", "dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-reference"]
+# The native runner: the winit event loop with its AccessKit adapter, the platform chrome and
+# the OS search hand-off.
+native = ["tilo-ui/native", "tilo-ui-base/native", "local-daemons", "dep:accesskit_winit", "dep:tilo-host-search", "dep:objc2", "dep:objc2-app-kit", "dep:windows", "dep:jni", "dep:ndk-context", "tokio/full"]
+x11 = ["tilo-ui/x11"]
+syntax-definitions = ["tilo-ui/syntax-definitions"]
+lazy-highlight = ["tilo-ui/lazy-highlight"]
+lazy-painter = ["tilo-ui/lazy-painter"]
+# The launcher's attachment to the session daemons (`launch`).
+local-daemons = ["tilo-ui/local-daemons", "dep:runtime-portal"]
+broker-transport = ["tilo-ui/broker-transport", "local-daemons", "tokio/full"]
+# The headless driver's fixtures, for the tests above the runner.
+test-support = ["tilo-ui/test-support", "tilo-ui-base/test-support", "dep:tilo-test-env", "tilo-process-services/test-support", "collaboration?/test-support", "runtime-collab?/settings-host"]
+realtime-video = ["tilo-ui/realtime-video"]
+decode = ["tilo-ui/decode"]
+presentation-feedback = ["tilo-ui/presentation-feedback"]
+dx12-shader-cache = ["tilo-ui/dx12-shader-cache"]
+webview-adblock = ["tilo-ui/webview-adblock"]
+lazy-adblock = ["tilo-ui/lazy-adblock"]
+dmabuf-import = ["tilo-ui/dmabuf-import"]
+gpu-video = ["tilo-ui/gpu-video"]
+mpris = ["native", "tilo-ui/mpris"]
+portal = ["native", "tilo-ui/portal"]
+host-portals = ["tilo-ui/host-portals"]
 
 [dependencies]
+tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
+tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
+tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
+tilo-app-id.workspace = true
+tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
+# The launcher hands an app its content-store capability (`launch`).
+tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
+tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["json"] }
+tilo-headless-schema = { version = "0.1.0", path = "../../platform/headless-schema" }
+tilo-image-codec = { version = "0.1.0", path = "../../platform/image-codec" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
+# The open-file limit and Android activity a launched app process starts with.
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
+tilo-process-services = { version = "0.1.0", path = "../../sdk/tilo-process-services", default-features = false }
+tilo-rt.workspace = true
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
+settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model", default-features = false }
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings", optional = true }
+runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../../core/runtime-collab", default-features = false, optional = true }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", optional = true }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types", optional = true }
+runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal", optional = true }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
+tilo-reference = { version = "0.1.0", path = "../../core/reference", optional = true }
+# A host search result the OS wakes this app for goes to the runtime.
+tilo-host-search = { version = "0.1.0", path = "../../integrations/tilo-host-search", optional = true }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
+accesskit = { version = "0.25.0", features = ["serde"] }
+# Built on tilo-winit, so it shares the toolkit's winit types when published.
+accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path = "../../../vendor/accesskit_winit", optional = true, default-features = false, features = ["rwh_06"] }
+automerge.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+jiff.workspace = true
+libc.workspace = true
+pollster.workspace = true
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+taffy = { workspace = true, features = ["content_size"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+tracing.workspace = true
+# The app log reads RUST_LOG (`launch::app_log`).
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid.workspace = true
+vello.workspace = true
+winit.workspace = true
+zeroize.workspace = true
+# `#[serde(with = "serde_bytes")]` on a continuation's carried bytes.
+serde_bytes.workspace = true
+# Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
+# focus / value / live-region narration through the offline Tilo TTS engine.
+# `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
+# stack is installed), so depending on this is safe in headless builds.
+tilo-tts = { version = "0.1.0", path = "../../platform/tts" }
+
+[target.'cfg(windows)'.dependencies]
+# The jump list and menu bar the native runner installs on its window.
+windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { workspace = true, features = ["android-native-activity"] }
+# Soft-keyboard input reaches the runner through the activity's `TiloTextInput` view
+# (`app/android_text_input`).
+jni = { version = "0.21.1", optional = true }
+ndk-context = { version = "0.1.1", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The menu bar and title-bar search the native runner installs on its window.
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSView"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 tilo-member-types.workspace = true
+# The integration tests drive the runner through its `test-support` fixtures. The dev
+# dependencies turn the toolkit's `model` on, so the runner takes it too: its model code
+# names the toolkit's model-only items.
+tilo-ui-app = { path = ".", default-features = false, features = ["test-support", "model"] }
+serial_test.workspace = true
 # The headless driver and its fixtures are behind `test-support`.
-tilo-ui = { path = "../ui-core", features = ["test-support"] }
+tilo-ui = { path = "../ui-core", default-features = false, features = ["test-support"] }
 tilo-ui-base = { path = "../ui-base", features = ["test-support"] }
 # The menus and materials a document editor opens, drawn as the toolkit draws them.
 tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
@@ -27,12 +150,9 @@ collaboration = { package = "tilo-collaboration", path = "../../core/collaborati
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 # The settings capability the shell hands an app, served by the fake broker.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", features = ["settings-host"] }
-tilo-content = { path = "../../core/content", default-features = false }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-doc = { path = "../../sdk/tilo-doc", default-features = false }
-tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-identity-client = { path = "../../core/tilo-identity-client" }
-tilo-action-policy = { path = "../../core/action-policy" }
 # The synthesized engine a video player test plays.
 media = { package = "tilo-media", path = "../../engines/tilo-media" }
 tilo-theme-sdk = { path = "../theme-sdk" }
@@ -45,23 +165,13 @@ wat = "1"
 # Tests whose interface is the process environment set it through `ScopedEnv`.
 tilo-test-env = { path = "../../../tools/test-env" }
 # The broker's admission ack the manager tests wait on wakes through it.
-tokio = { workspace = true, features = ["sync"] }
-accesskit = { version = "0.25.0", features = ["serde"] }
-automerge.workspace = true
-hex.workspace = true
+tokio = { workspace = true, features = ["sync", "test-util"] }
 image = { workspace = true, features = ["png"] }
-libc.workspace = true
-pollster.workspace = true
-jiff.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-taffy = { workspace = true, features = ["content_size"] }
 tempfile.workspace = true
-uuid.workspace = true
-vello.workspace = true
+# The loopback page address the browser text input probe is handed.
+url.workspace = true
 # The draw-tag counts a card's paint asserts on.
 vello_encoding.workspace = true
-winit.workspace = true
 
 [[test]]
 name = "it"
@@ -70,5 +180,22 @@ path = "tests/it.rs"
 [lints]
 workspace = true
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-workspace-hack = { version = "0.1" }
+[[example]]
+name = "browser-text-input-qualification"
+path = "examples/browser_text_input_qualification.rs"
+required-features = ["native"]
+
+[[example]]
+name = "page-menus"
+path = "examples/page_menus.rs"
+required-features = ["native"]
+
+[[example]]
+name = "action-presence"
+path = "examples/action_presence.rs"
+required-features = ["native"]
+
+[[example]]
+name = "startup-frame-probe"
+path = "examples/startup_frame_probe.rs"
+required-features = ["native"]

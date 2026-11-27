@@ -1,6 +1,11 @@
 //! A probe that reports the control results a test drives, in place of an app.
 
-use super::*;
+#![allow(
+    clippy::wildcard_imports,
+    reason = "a probe widget implements the widget contract whole"
+)]
+
+use crate::widget::*;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;

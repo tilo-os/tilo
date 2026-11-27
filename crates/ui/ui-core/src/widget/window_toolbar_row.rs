@@ -741,7 +741,7 @@ impl ToolbarRow {
         self.compact = compact;
     }
 
-    pub(crate) fn strip_height(&self) -> f64 {
+    pub fn strip_height(&self) -> f64 {
         self.strip.height()
     }
 
@@ -753,11 +753,11 @@ impl ToolbarRow {
         self.strip.place(rect);
     }
 
-    pub(crate) fn strip_rect(&self) -> Rect {
+    pub fn strip_rect(&self) -> Rect {
         self.strip.rect()
     }
 
-    pub(crate) fn strip_notice(
+    pub fn strip_notice(
         &self,
     ) -> Option<(&crate::window_toolbar::ToolbarNotice, Rect, bool, Vec<Rect>)> {
         let notice = self.strip.notice()?;
@@ -778,7 +778,7 @@ impl ToolbarRow {
 
     /// Whether the notice up stands whole in the location, as measured
     /// (none: no notice is up, or it is not measured yet).
-    pub(crate) fn notice_whole(&self) -> Option<bool> {
+    pub fn notice_whole(&self) -> Option<bool> {
         self.toolbar()?.notice.as_ref()?;
         let forms = &self.views_size.as_ref()?.forms;
         let whole = forms.text.first()? + forms.chrome;

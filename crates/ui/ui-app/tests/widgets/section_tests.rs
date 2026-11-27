@@ -5,16 +5,16 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::InspectionNode;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::ListRow;
-use tilo_ui::widget::internals::section::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::InspectionNode;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::ListRow;
+use tilo_ui_app::widget::internals::section::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::chrome::RowJoin;
 use tilo_ui_base::component::*;
@@ -59,8 +59,12 @@ fn items_sit_a_sibling_step_apart_and_the_header_closer() {
             .count(3)
             .action(Button::new("stage-all", "Stage all")),
     );
-    let harness =
-        Driver::new_with_theme(tilo_ui::State::new(), Box::new(section), (500, 400), theme);
+    let harness = Driver::new_with_theme(
+        tilo_ui_app::State::new(),
+        Box::new(section),
+        (500, 400),
+        theme,
+    );
     let root = harness.inspection().root;
     let header = &root.children[0];
     let items = &root.children[1..];
@@ -94,7 +98,7 @@ fn list_rows_in_a_section_are_one_list() {
         ],
     );
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(section),
         (500, 400),
         Theme::dark(),
@@ -184,9 +188,9 @@ tilo_test_env::scenario! {
 #[test]
 fn a_disclosure_header_is_a_bound_view_local_control() {
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(
-            tilo_ui::widget::Column::new()
+            tilo_ui_app::widget::Column::new()
                 .with_no_padding()
                 .push(Box::new(
                     Section::new(vec![Box::new(ListRow::new("a", "Ada"))])
@@ -252,9 +256,9 @@ fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
     assert_eq!(Widget::children(&section).len(), 3);
 
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(
-            tilo_ui::widget::Column::new()
+            tilo_ui_app::widget::Column::new()
                 .with_no_padding()
                 .push(Box::new(
                     Section::new(vec![Box::new(ListRow::new("a", "Ada"))])
@@ -278,7 +282,7 @@ fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
 fn headings_take_their_role_and_follow_the_text_scale() {
     let height = |header: SectionHeader, scale: f32| {
         let harness = Driver::new_with_theme(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Box::new(Section::new(vec![Box::new(Text::new("body"))]).with_header(header)),
             (400, 300),
             Theme::dark().with_text_scale(scale),
@@ -304,9 +308,9 @@ fn a_section_says_whether_the_pointer_is_over_it() {
     ])
     .pointer_over(Rc::clone(&over));
     let mut harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(
-            tilo_ui::widget::Column::new()
+            tilo_ui_app::widget::Column::new()
                 .with_no_padding()
                 .push(Box::new(section)),
         ),
@@ -340,7 +344,7 @@ fn a_section_says_whether_the_pointer_is_over_it() {
 /// follows them down, rather than being zero tall in the section and painting over the next.
 #[test]
 fn a_player_a_page_and_a_rail_push_what_follows_down_in_a_section() {
-    use tilo_ui::widget::{
+    use tilo_ui_app::widget::{
         DeclaredRail, DeclaredVideo, PageSidebarProps, VideoPlayerProps, WebView, WebViewProps,
     };
     use tilo_ui_base::component::Described;
@@ -372,12 +376,12 @@ fn a_player_a_page_and_a_rail_push_what_follows_down_in_a_section() {
             view,
             Box::new(Text::new("Below")) as Element,
         ]);
-        let column = tilo_ui::widget::arrange::Stack::stack()
+        let column = tilo_ui_app::widget::arrange::Stack::stack()
             .push(Box::new(section))
             .push(Box::new(Text::new("Next section")));
         let harness = Driver::new_with_theme(
-            tilo_ui::State::new(),
-            Box::new(tilo_ui::widget::Scrollable::new_vertical().with_child(Box::new(column))),
+            tilo_ui_app::State::new(),
+            Box::new(tilo_ui_app::widget::Scrollable::new_vertical().with_child(Box::new(column))),
             (640, 400),
             theme.clone(),
         );
@@ -422,19 +426,19 @@ fn section_child(node: &InspectionNode, index: usize) -> Option<Rect> {
 /// section and as tall as the ratio says, as it is in a stack.
 #[test]
 fn an_aspect_shapes_a_view_placed_straight_in_a_section() {
-    let mut fit = tilo_ui::widget::arrange::Fit::hug();
+    let mut fit = tilo_ui_app::widget::arrange::Fit::hug();
     fit.aspect = Some(2.0);
     let section = Section::new(vec![
         Box::new(Text::new("Above")) as Element,
-        Box::new(tilo_ui::widget::Fitted::new(
+        Box::new(tilo_ui_app::widget::Fitted::new(
             Box::new(tilo_ui_base::widget::Spacer::new()),
             fit,
         )),
         Box::new(Text::new("Below")) as Element,
     ]);
     let harness = Driver::new_with_theme(
-        tilo_ui::State::new(),
-        Box::new(tilo_ui::widget::Scrollable::new_vertical().with_child(Box::new(section))),
+        tilo_ui_app::State::new(),
+        Box::new(tilo_ui_app::widget::Scrollable::new_vertical().with_child(Box::new(section))),
         (640, 400),
         Theme::light(),
     );

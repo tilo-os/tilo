@@ -5,14 +5,14 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::context_menu_area::test_support::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::context_menu_area::test_support::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -34,21 +34,23 @@ use winit::keyboard::*;
 fn an_agent_chooses_a_widgets_own_action_from_its_row() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui_base::motion::testing::settled();
-    use tilo_ui::clipboard::{ClipboardBackend as _, ClipboardTarget, InProcessClipboard};
+    use tilo_ui_app::clipboard::{ClipboardBackend as _, ClipboardTarget, InProcessClipboard};
     let clipboard = std::sync::Arc::new(InProcessClipboard::default());
-    let services = tilo_ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
-    tilo_ui::process::scoped(&services, || {
+    let services = tilo_ui_app::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    tilo_ui_app::process::scoped(&services, || {
         let area = ContextMenuArea::new(
-            Box::new(tilo_ui::widget::Link::new("https://example.org/page").with_label("The page")),
+            Box::new(
+                tilo_ui_app::widget::Link::new("https://example.org/page").with_label("The page"),
+            ),
             |_| {
                 vec![MenuEntry::bound(
                     "Open",
-                    tilo_ui::testing::bound_press("test:menu", "open"),
+                    tilo_ui_app::testing::bound_press("test:menu", "open"),
                 )]
             },
         );
-        let mut harness = tilo_ui::headless::Driver::for_root(
-            tilo_ui::State::new(),
+        let mut harness = tilo_ui_app::headless::Driver::for_root(
+            tilo_ui_app::State::new(),
             area,
             (400, 120),
             tilo_ui_base::theme::Theme::dark(),
@@ -82,25 +84,25 @@ fn an_agent_chooses_a_widgets_own_action_from_its_row() {
 
 /// A 300 px area over an app whose record offers the four rows, in a window whose host
 /// replays a still pointer after the widgets change, the pointer resting at (100, 100).
-fn four_entries() -> (tilo_ui::headless::Driver, Chosen) {
+fn four_entries() -> (tilo_ui_app::headless::Driver, Chosen) {
     let chosen = Chosen::default();
-    let content = tilo_ui::testing::MenuRows::new(&MENU_LABELS, Rc::clone(&chosen));
+    let content = tilo_ui_app::testing::MenuRows::new(&MENU_LABELS, Rc::clone(&chosen));
     let area = ContextMenuArea::new(Box::new(content), |_| {
         MENU_LABELS
             .into_iter()
             .map(|label| {
                 MenuEntry::bound(
                     label,
-                    tilo_ui::testing::bound_press(
-                        tilo_ui::testing::MENU_ROW_RESOURCE,
-                        &tilo_ui::testing::MenuRows::action_of(label),
+                    tilo_ui_app::testing::bound_press(
+                        tilo_ui_app::testing::MENU_ROW_RESOURCE,
+                        &tilo_ui_app::testing::MenuRows::action_of(label),
                     ),
                 )
             })
             .collect()
     });
-    let mut harness = tilo_ui::app::driver::Driver::for_root(
-        tilo_ui::State::new(),
+    let mut harness = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
         area,
         (400, 400),
         tilo_ui_base::theme::Theme::dark(),
@@ -110,14 +112,14 @@ fn four_entries() -> (tilo_ui::headless::Driver, Chosen) {
     (harness, chosen)
 }
 
-fn mouse(harness: &mut tilo_ui::app::driver::Driver, state: ElementState, button: MouseButton) {
+fn mouse(harness: &mut tilo_ui_app::app::driver::Driver, state: ElementState, button: MouseButton) {
     harness.send(&tilo_ui_base::synthetic_input::mouse_input(state, button));
 }
 
 /// Right-click where the pointer rests, with the frame that rebuilds
 /// the changed content and paints the opened menu landing between press
 /// and release, as it does live.
-fn right_click(harness: &mut tilo_ui::app::driver::Driver) {
+fn right_click(harness: &mut tilo_ui_app::app::driver::Driver) {
     mouse(harness, ElementState::Pressed, MouseButton::Right);
     assert!(
         harness.root::<ContextMenuArea>().is_open(),
@@ -198,7 +200,7 @@ fn an_agent_chooses_a_menu_entry_through_the_action_its_row_names() {
         .expect("the third entry names the action it runs");
     assert_eq!(
         address,
-        tilo_actions::ActionAddress::new(tilo_ui::testing::MENU_ROW_RESOURCE, "third")
+        tilo_actions::ActionAddress::new(tilo_ui_app::testing::MENU_ROW_RESOURCE, "third")
     );
     assert_eq!(
         harness
@@ -212,7 +214,7 @@ fn an_agent_chooses_a_menu_entry_through_the_action_its_row_names() {
     let record = harness
         .resources()
         .into_iter()
-        .find(|resource| resource.id.0 == tilo_ui::testing::MENU_ROW_RESOURCE)
+        .find(|resource| resource.id.0 == tilo_ui_app::testing::MENU_ROW_RESOURCE)
         .expect("the app publishes the record its rows act on");
     let third = record
         .actions
@@ -258,12 +260,12 @@ fn the_keyboard_opens_the_menu_under_the_focused_row() {
         |_| {
             vec![MenuEntry::bound(
                 "First",
-                tilo_ui::testing::bound_press("test:menu", "first"),
+                tilo_ui_app::testing::bound_press("test:menu", "first"),
             )]
         },
     );
-    let mut harness = tilo_ui::app::driver::Driver::for_root(
-        tilo_ui::State::new(),
+    let mut harness = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
         area,
         (400, 400),
         tilo_ui_base::theme::Theme::dark(),
@@ -291,21 +293,23 @@ fn the_keyboard_opens_the_menu_under_the_focused_row() {
 fn a_link_under_the_pointer_offers_its_copy_beside_the_owners_rows() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui_base::motion::testing::settled();
-    use tilo_ui::clipboard::{ClipboardBackend as _, ClipboardTarget, InProcessClipboard};
+    use tilo_ui_app::clipboard::{ClipboardBackend as _, ClipboardTarget, InProcessClipboard};
     let clipboard = std::sync::Arc::new(InProcessClipboard::default());
-    let services = tilo_ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
-    tilo_ui::process::scoped(&services, || {
+    let services = tilo_ui_app::process::ProcessServices::null().with_clipboard(clipboard.clone());
+    tilo_ui_app::process::scoped(&services, || {
         let area = ContextMenuArea::new(
-            Box::new(tilo_ui::widget::Link::new("https://example.org/page").with_label("The page")),
+            Box::new(
+                tilo_ui_app::widget::Link::new("https://example.org/page").with_label("The page"),
+            ),
             |_| {
                 vec![MenuEntry::bound(
                     "Open",
-                    tilo_ui::testing::bound_press("test:menu", "open"),
+                    tilo_ui_app::testing::bound_press("test:menu", "open"),
                 )]
             },
         );
-        let mut harness = tilo_ui::headless::Driver::for_root(
-            tilo_ui::State::new(),
+        let mut harness = tilo_ui_app::headless::Driver::for_root(
+            tilo_ui_app::State::new(),
             area,
             (400, 120),
             tilo_ui_base::theme::Theme::dark(),
@@ -390,7 +394,7 @@ fn a_widget_with_no_own_action_adds_no_row() {
 fn a_menu_waiting_for_its_row_opens_on_the_row_and_not_on_the_rows_it_adds() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = tilo_ui_base::motion::testing::settled();
-    tilo_ui::shared_selection::set_send_host_available(true);
+    tilo_ui_app::shared_selection::set_send_host_available(true);
     let arrived = Rc::new(Cell::new(false));
     let area = ContextMenuArea::new(Box::new(Spacer::fixed(300.0)), {
         let arrived = Rc::clone(&arrived);
@@ -398,7 +402,7 @@ fn a_menu_waiting_for_its_row_opens_on_the_row_and_not_on_the_rows_it_adds() {
             if arrived.get() {
                 vec![MenuEntry::bound(
                     "Delete",
-                    tilo_ui::testing::bound_press("test:menu", "delete"),
+                    tilo_ui_app::testing::bound_press("test:menu", "delete"),
                 )]
             } else {
                 Vec::new()
@@ -409,8 +413,8 @@ fn a_menu_waiting_for_its_row_opens_on_the_row_and_not_on_the_rows_it_adds() {
         let arrived = Rc::clone(&arrived);
         move |_, _| !arrived.get()
     });
-    let mut harness = tilo_ui::app::driver::Driver::for_root(
-        tilo_ui::State::new(),
+    let mut harness = tilo_ui_app::app::driver::Driver::for_root(
+        tilo_ui_app::State::new(),
         area,
         (400, 400),
         tilo_ui_base::theme::Theme::dark(),
@@ -419,7 +423,7 @@ fn a_menu_waiting_for_its_row_opens_on_the_row_and_not_on_the_rows_it_adds() {
     let at = Point::new(100.0, 100.0);
     let press =
         tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
-    tilo_ui::widget::context_menu::note_input(&press);
+    tilo_ui_app::widget::context_menu::note_input(&press);
     harness.send(&tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
     harness.send(&press);
     assert!(
@@ -435,5 +439,5 @@ fn a_menu_waiting_for_its_row_opens_on_the_row_and_not_on_the_rows_it_adds() {
         area.menu().items().first().and_then(MenuItem::label),
         Some("Delete")
     );
-    tilo_ui::shared_selection::set_send_host_available(false);
+    tilo_ui_app::shared_selection::set_send_host_available(false);
 }

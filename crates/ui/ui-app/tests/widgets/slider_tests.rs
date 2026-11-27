@@ -5,15 +5,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::slider::test_support::*;
-use tilo_ui::widget::internals::slider::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::slider::test_support::*;
+use tilo_ui_app::widget::internals::slider::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -35,7 +35,7 @@ use winit::keyboard::*;
 fn a_drag_goes_on_through_a_view_that_rebuilds_on_every_value() {
     use std::cell::Cell;
     use std::rc::Rc;
-    use tilo_ui::widget::Slider;
+    use tilo_ui_app::widget::Slider;
     use tilo_ui_base::widget::Widget;
     use winit::event::TouchPhase::{Ended, Moved, Started};
 
@@ -46,13 +46,17 @@ fn a_drag_goes_on_through_a_view_that_rebuilds_on_every_value() {
             rebuilt.set(true);
         })
     }
-    fn view(d: &mut tilo_ui::app::driver::Driver, level: &Rc<Cell<f64>>, rebuilt: &Rc<Cell<bool>>) {
+    fn view(
+        d: &mut tilo_ui_app::app::driver::Driver,
+        level: &Rc<Cell<f64>>,
+        rebuilt: &Rc<Cell<bool>>,
+    ) {
         if rebuilt.replace(false) {
             d.root_mut::<Slider>().replace(built(level, rebuilt));
             d.relayout();
         }
     }
-    fn welded(d: &tilo_ui::app::driver::Driver, x: f64, level: f64) {
+    fn welded(d: &tilo_ui_app::app::driver::Driver, x: f64, level: f64) {
         let s = d.root::<Slider>();
         assert!(s.is_held(), "at {x}: still held");
         let expected = s.value_from_cursor_x(x);
@@ -77,8 +81,8 @@ fn a_drag_goes_on_through_a_view_that_rebuilds_on_every_value() {
     for finger in [false, true] {
         let level = Rc::new(Cell::new(0.2));
         let rebuilt = Rc::new(Cell::new(false));
-        let mut d = tilo_ui::app::driver::Driver::for_root(
-            tilo_ui::State::new(),
+        let mut d = tilo_ui_app::app::driver::Driver::for_root(
+            tilo_ui_app::State::new(),
             built(&level, &rebuilt),
             (400, 80),
             theme.clone(),

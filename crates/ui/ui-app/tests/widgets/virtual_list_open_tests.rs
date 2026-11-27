@@ -5,15 +5,15 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::internals::virtual_list::test_support::*;
-use tilo_ui::widget::internals::virtual_list::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::internals::virtual_list::test_support::*;
+use tilo_ui_app::widget::internals::virtual_list::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -36,7 +36,7 @@ fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
     let saved = Rc::new(Cell::new(0));
     let done = tilo_ui_base::LocalState::new(false);
     let mut harness = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         documented_list(Rc::clone(&saved), done.clone()),
         (400, 600),
         tilo_ui_base::theme::Theme::dark(),

@@ -2,16 +2,16 @@
 //! saved or captured record denies.
 use std::collections::HashMap;
 use taffy::TaffyTree;
-use tilo_ui::history_mode::testing::*;
-use tilo_ui::history_mode::*;
-use tilo_ui::{widget::Button, widget::Column};
+use tilo_ui_app::history_mode::testing::*;
+use tilo_ui_app::history_mode::*;
+use tilo_ui_app::{widget::Button, widget::Column};
 use tilo_ui_base::widget::Widget;
 
 #[test]
 fn headless_focus_order_enumerates_history_once() {
-    let state = tilo_ui::State::new();
+    let state = tilo_ui_app::State::new();
     let (root, visits) = FocusHistoryRoot::new(2_000, &state);
-    let mut frame = tilo_ui::headless::Driver::new_with_controlled_inputs(
+    let mut frame = tilo_ui_app::headless::Driver::new_with_controlled_inputs(
         state,
         Box::new(root),
         (900, 650),
@@ -34,9 +34,9 @@ fn headless_relayout_and_focus_moves_enumerate_history_independently_of_rows() {
     // Both recover or move focus by asking every node whether History
     // admits it; the surfaces must be enumerated per pass, not per node.
     let visits_for = |rows| {
-        let state = tilo_ui::State::new();
+        let state = tilo_ui_app::State::new();
         let (root, visits) = FocusHistoryRoot::new(rows, &state);
-        let mut frame = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut frame = tilo_ui_app::headless::Driver::new_with_controlled_inputs(
             state,
             Box::new(root),
             (900, 650),
@@ -56,7 +56,7 @@ fn headless_relayout_and_focus_moves_enumerate_history_independently_of_rows() {
 
 #[test]
 fn saved_and_captured_history_deny_only_live_composition_nodes() {
-    let state = tilo_ui::State::new();
+    let state = tilo_ui_app::State::new();
     let (mut root, _) = FocusHistoryRoot::new(3, &state);
     let mut tree = TaffyTree::new();
     let mut nodes = HashMap::new();
@@ -107,7 +107,7 @@ fn saved_and_captured_history_deny_only_live_composition_nodes() {
 
 #[test]
 fn nested_history_ownership_does_not_escape_outer_focus_denial() {
-    let state = tilo_ui::State::new();
+    let state = tilo_ui_app::State::new();
     let (inner, _) = FocusHistoryRoot::new(1, &state);
     let (mut outer, _) = FocusHistoryRoot::new(0, &state);
     outer.live = Column::new().push(Box::new(inner));
@@ -121,7 +121,7 @@ fn nested_history_ownership_does_not_escape_outer_focus_denial() {
     let root_node = root.build_layout(&mut tree, &tilo_ui_base::Theme::dark(), &mut nodes);
     let outside = *tree.children(root_node).unwrap().last().unwrap();
     let mut owned_and_live = Vec::new();
-    tilo_ui::history_mode::capability::visit_framework_history(&root, &mut |history, _| {
+    tilo_ui_app::history_mode::capability::visit_framework_history(&root, &mut |history, _| {
         owned_and_live.push((
             nodes
                 .keys()
@@ -133,7 +133,7 @@ fn nested_history_ownership_does_not_escape_outer_focus_denial() {
     });
     assert_eq!(owned_and_live.len(), 3, "outer, inner, independent sibling");
     let mut index = 0;
-    tilo_ui::history_mode::capability::visit_framework_history(&root, &mut |history, _| {
+    tilo_ui_app::history_mode::capability::visit_framework_history(&root, &mut |history, _| {
         if index < 2 {
             assert!(history.request_open());
         }

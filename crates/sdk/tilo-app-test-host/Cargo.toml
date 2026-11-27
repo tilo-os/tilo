@@ -36,7 +36,7 @@ tilo-history = { path = "../tilo-history" }
 tilo-reference = { path = "../../core/reference" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The toolkit's collaboration over a real socket, which the collaboration tests drive.
-ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["broker-transport", "model"] }
+ui-core = { package = "tilo-ui-app", path = "../../ui/ui-app", default-features = false, features = ["broker-transport", "model"] }
 # The collaboration host the real-socket tests stand up: it speaks the collaboration wire and keeps
 # each channel's record as the device's store does, answering the store's record commands.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab" }

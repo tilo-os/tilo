@@ -1,5 +1,5 @@
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
-use tilo_ui::widget::TextInput;
+use tilo_ui_app::widget::TextInput;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::{
     collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PresencePayload,
@@ -41,12 +41,12 @@ fn control_reports_and_crdt_deltas_reach_the_right_protocol() {
         let mut relay = MemoryRelay::new();
         let alice_peer = relay.attach("alice");
         let bob_peer = relay.attach("bob");
-        let mut alice_state = tilo_ui::state::State::new();
+        let mut alice_state = tilo_ui_app::state::State::new();
 
         // Establish the shared document history first. An incremental change
         // cannot be applied until the normal snapshot handshake has run.
         let snapshot = alice_state.save();
-        let mut bob_state = tilo_ui::state::State::load(&snapshot).expect("shared base loads");
+        let mut bob_state = tilo_ui_app::state::State::load(&snapshot).expect("shared base loads");
         let _ = alice_state.save_incremental();
 
         // In production a widget would mutate the doc as part of event

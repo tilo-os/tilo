@@ -133,17 +133,14 @@ pub use patch::{InspectionPatchStats, write_inspection_patch};
 /// What `widget` shows, as a driven frame's inspection reads it: a skipped pass is checked against
 /// it ([`tilo_ui_base::component_inputs`]).
 #[cfg(debug_assertions)]
-pub(crate) fn widget_inspection_json(widget: &dyn Widget) -> String {
+pub fn widget_inspection_json(widget: &dyn Widget) -> String {
     serde_json::to_string(&collect_inspection(widget, "", &mut HashMap::new(), None))
         .unwrap_or_default()
 }
 
 /// The node a semantic `target` names: the one whose action target or semantic key is `target` — the
 /// latter is the name the accessibility tree keys a node by (a list row an agent chooses).
-pub(crate) fn find_semantic_target<'a>(
-    node: &'a AccessNode,
-    target: &str,
-) -> Option<&'a AccessNode> {
+pub fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
     if node.action_target.as_deref() == Some(target) || node.semantic_key.as_deref() == Some(target)
     {
         return Some(node);
@@ -232,7 +229,7 @@ pub(crate) fn compare_optional_bool(
 
 pub(super) use tilo_ui_base::a11y::role_name;
 
-pub(crate) fn collect_targets(
+pub fn collect_targets(
     w: &dyn Widget,
     parent_path: &str,
     sibling_counts: &mut HashMap<String, usize>,
@@ -321,14 +318,14 @@ fn control_bounds(
         .find_map(|child| control_bounds(child, id))
 }
 
-pub(crate) struct RetainedNamedTarget {
-    pub(crate) key: (usize, String),
-    pub(crate) path: String,
-    pub(crate) bare: Option<String>,
-    pub(crate) id: Option<String>,
+pub struct RetainedNamedTarget {
+    pub key: (usize, String),
+    pub path: String,
+    pub bare: Option<String>,
+    pub id: Option<String>,
 }
 
-pub(crate) fn collect_named_targets(
+pub fn collect_named_targets(
     widget: &dyn Widget,
     parent_path: &str,
     sibling_counts: &mut HashMap<String, usize>,
@@ -383,7 +380,7 @@ fn collect_named_targets_called(
     });
 }
 
-pub(crate) fn collect_inspection(
+pub fn collect_inspection(
     widget: &dyn Widget,
     parent_path: &str,
     sibling_counts: &mut HashMap<String, usize>,
@@ -465,7 +462,7 @@ fn collect_inspection_called(
     }
 }
 
-pub(crate) fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<AccessibilityIssue>) {
+pub fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<AccessibilityIssue>) {
     if node.focusable && node.semantics.is_none() {
         push_audit_issue(
             issues,
@@ -484,7 +481,7 @@ pub(crate) fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<Acce
 
 /// Every semantic control a binding may stand behind: the effect-capable roles, and a focusable list
 /// item, which is pressed as a whole (a list row bound through `ListRow::on_view`).
-pub(crate) fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
+pub fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
     effect_control_ids_of(node, &|_| true, true)
 }
 
@@ -517,7 +514,7 @@ struct EffectFilter<'a> {
     pressable_items: bool,
 }
 
-pub(crate) fn inspection_has_semantics(node: &InspectionNode) -> bool {
+pub fn inspection_has_semantics(node: &InspectionNode) -> bool {
     node.semantics.is_some() || node.children.iter().any(inspection_has_semantics)
 }
 
@@ -745,7 +742,7 @@ fn push_audit_issue(
 }
 
 /// Whether `node` is what `expected` says of it: every mismatched field in one diagnostic.
-pub(crate) fn compare_expectation(
+pub fn compare_expectation(
     node: &AccessNode,
     expected: &tilo_headless_schema::SemanticExpectation,
 ) -> Result<(), String> {

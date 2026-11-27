@@ -964,7 +964,7 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
     }
 
     {
-        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+        let (mut probe, observed) = crate::app::control_result_probe::Probe::new(false);
         probe.confirmation = true;
         probe.typed_text = true;
         observed.enqueue_text("run", "captured before confirmation");
@@ -1377,8 +1377,8 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         for closed in [false, true] {
             let owner = ProbeHarness::new();
             let (component, sibling_seen) =
-                crate::widget::control_result_probe::component(&owner, 11, false);
-            let (legacy, legacy_seen) = crate::widget::control_result_probe::Probe::new(false);
+                crate::app::control_result_probe::component(&owner, 11, false);
+            let (legacy, legacy_seen) = crate::app::control_result_probe::Probe::new(false);
             let root = Column::new()
                 .push(Box::new(legacy))
                 .push(Box::new(TileHost::from_component(component)));
@@ -1401,9 +1401,8 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         use crate::application_test_support::ProbeHarness;
         use crate::widget::{Column, TileHost};
         let owner = ProbeHarness::new();
-        let (first, first_seen) = crate::widget::control_result_probe::component(&owner, 11, false);
-        let (second, second_seen) =
-            crate::widget::control_result_probe::component(&owner, 12, false);
+        let (first, first_seen) = crate::app::control_result_probe::component(&owner, 11, false);
+        let (second, second_seen) = crate::app::control_result_probe::component(&owner, 12, false);
         let root = Column::new()
             .push(Box::new(TileHost::from_component(first)))
             .push(Box::new(TileHost::from_component(second)));
@@ -1421,7 +1420,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         for accepted in [false, true] {
             let owner = ProbeHarness::new();
             let (component, observed) =
-                crate::widget::control_result_probe::component(&owner, 11, accepted);
+                crate::app::control_result_probe::component(&owner, 11, accepted);
             let binding = component.callback_binding();
             let mut host = App::from_component(component, runner_inputs()).unwrap();
             observed.enqueue("run");
@@ -1461,7 +1460,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
     }
 
     {
-        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+        let (mut probe, observed) = crate::app::control_result_probe::Probe::new(false);
         probe.confirmation = true;
         let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
         // A press that asks waits on the device's ask, whose workspace peer this plays.
@@ -1496,7 +1495,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
     }
 
     {
-        use crate::widget::control_result_probe::Probe;
+        use crate::app::control_result_probe::Probe;
         for accepted in [false, true] {
             let (probe, observed) = Probe::new(accepted);
             let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
@@ -1527,7 +1526,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
     }
 
     {
-        use crate::widget::control_result_probe::Probe;
+        use crate::app::control_result_probe::Probe;
         // A Viewer's press is decided by the workspace: the control hears the call go, and,
         // with no workspace to carry it, hears the refusal it settles with instead of a
         // press dropped silent.

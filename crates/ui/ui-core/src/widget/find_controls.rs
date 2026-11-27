@@ -161,8 +161,8 @@ impl FindControls {
     }
 
     /// The options menu, for a test that reads what it offers and chooses a row.
-    #[cfg(test)]
-    fn options_menu(&mut self) -> Option<&mut MenuButton> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn options_menu(&mut self) -> Option<&mut MenuButton> {
         self.child_mut::<MenuButton>(self.slots.options)
     }
 
@@ -519,7 +519,3 @@ impl Described for FindControls {
         true
     }
 }
-
-#[cfg(test)]
-#[path = "find_controls/tests.rs"]
-mod tests;

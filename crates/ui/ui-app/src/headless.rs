@@ -53,8 +53,6 @@ pub use crate::inspection::{
 
 pub use crate::inspection::{InspectionPatchStats, write_inspection_patch};
 
-#[cfg(debug_assertions)]
-pub(crate) use crate::inspection::widget_inspection_json;
 pub(crate) use crate::inspection::{
     audit_inspection_node, collect_inspection, collect_named_targets, collect_targets,
     compare_expectation, effect_control_ids, find_semantic_target, inspection_has_semantics,
@@ -66,3 +64,15 @@ pub use crate::launch::DEFAULT_VIEWPORT;
 pub use tilo_headless_schema::{
     Action, Capture, Invocation, SemanticAction, SemanticExpectation, Spec, parse_spec,
 };
+
+/// The widget at a desktop-sized window, laid out in the light theme: a described component's
+/// instance as the component tests read it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn harness<W: crate::widget::Widget + 'static>(root: W) -> Driver {
+    Driver::for_root(
+        crate::State::new(),
+        root,
+        (900, 600),
+        tilo_ui_base::theme::Theme::light(),
+    )
+}

@@ -9,13 +9,13 @@ use std::sync::Arc;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -38,7 +38,7 @@ use winit::keyboard::*;
 #[test]
 fn intrinsic_images_receive_real_layout_bounds() {
     use Driver;
-    use tilo_ui::widget::{Container, Row};
+    use tilo_ui_app::widget::{Container, Row};
 
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_ui_scale(scale);
@@ -50,7 +50,7 @@ fn intrinsic_images_receive_real_layout_bounds() {
         let row = Row::new()
             .push(Box::new(svg))
             .push(Box::new(Image::from_path(
-                tilo_ui::widget::fixture_image_path_for_tests(),
+                tilo_ui_app::widget::fixture_image_path_for_tests(),
             )))
             .push(Box::new(Image::from_rgba(
                 Arc::from(vec![255; 32 * 16 * 4]),
@@ -58,7 +58,7 @@ fn intrinsic_images_receive_real_layout_bounds() {
                 16,
             )));
         let harness =
-            Driver::new_with_theme(tilo_ui::State::new(), Box::new(row), (400, 120), theme);
+            Driver::new_with_theme(tilo_ui_app::State::new(), Box::new(row), (400, 120), theme);
         let children = harness.root_widget().children();
         for (index, (width, height)) in [(32.0, 16.0), (16.0, 16.0), (32.0, 16.0)]
             .into_iter()
@@ -72,7 +72,7 @@ fn intrinsic_images_receive_real_layout_bounds() {
 
     let image = Image::from_rgba(Arc::from(vec![255; 32 * 16 * 4]), 32, 16);
     let harness = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Row::new().push(Box::new(image))),
         (16, 80),
     );
@@ -85,7 +85,7 @@ fn intrinsic_images_receive_real_layout_bounds() {
     );
 
     let harness = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Row::new().push(Box::new(Image::from_path("missing-image.png")))),
         (200, 100),
     );
@@ -101,7 +101,7 @@ fn intrinsic_images_receive_real_layout_bounds() {
         ImageFit::Fill,
         ImageFit::Actual,
     ] {
-        let image = Image::from_path(tilo_ui::widget::fixture_image_path_for_tests())
+        let image = Image::from_path(tilo_ui_app::widget::fixture_image_path_for_tests())
             .filling()
             .with_fit(fit);
         let root = Row::new().push(Box::new(
@@ -110,7 +110,7 @@ fn intrinsic_images_receive_real_layout_bounds() {
                 .with_size(80.0, 40.0)
                 .with_child(Box::new(image)),
         ));
-        let harness = Driver::new(tilo_ui::State::new(), Box::new(root), (200, 100));
+        let harness = Driver::new(tilo_ui_app::State::new(), Box::new(root), (200, 100));
         let container = harness.root_widget().children()[0];
         let rect = container.children()[0].get_rect();
         assert_eq!(rect.width(), 80.0);

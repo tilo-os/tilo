@@ -3879,7 +3879,6 @@ pub mod test_support {
     use std::sync::*;
     use std::time::*;
     use taffy::{AvailableSpace, Size};
-    use tilo_ui::app::driver::Driver;
     use tilo_ui::kurbo::*;
     use tilo_ui::testing::Dispatch;
     use tilo_ui::vello::*;
@@ -4003,23 +4002,6 @@ pub mod test_support {
         map.set_camera(camera);
         map
     }
-    /// A map laid out over the whole viewport, with its camera as given: the camera is the map's
-    /// own, kept across the layout, as a live frame leaves it.
-    pub fn laid_out(mut map: Map) -> Driver {
-        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
-        tilo_ui_base::widget::layout::lay_out_detached(
-            &mut map,
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-            &Theme::dark(),
-            &mut text,
-        )
-        .expect("the map lays out");
-        Driver::for_root(crate::State::new(), map, (800, 600), Theme::dark())
-    }
-    /// [`laid_out`] of a map with no places, looking with `camera`.
-    pub fn harness(queue: &tilo_ui_base::Intents<Fired>, camera: MapCamera) -> Driver {
-        laid_out(pointing_map(queue, camera))
-    }
     /// A camera neither at the origin nor at zoom 1: a pan and a zoom the person might leave the
     /// canvas looking through, so a point read back at it proves the camera is taken into account.
     pub fn shifted() -> MapCamera {
@@ -4050,21 +4032,6 @@ pub mod test_support {
     pub fn reported(queue: &tilo_ui_base::Intents<Fired>) -> Vec<Fired> {
         queue.take()
     }
-    /// Press the map's right button at `at`, with the pointer there.
-    pub fn right_click(host: &mut Driver, at: Point) {
-        let device = winit::event::DeviceId::dummy();
-        host.dispatch_to_root(&WindowEvent::CursorMoved {
-            device_id: device,
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        });
-        for state in [ElementState::Pressed, ElementState::Released] {
-            host.dispatch_to_root(&WindowEvent::MouseInput {
-                device_id: device,
-                state,
-                button: MouseButton::Right,
-            });
-        }
-    }
     /// The drawn height `reports` carries, as the one `drawn` report's key and height: the pin's key
     /// and its height in canvas pixels.
     pub fn drawn_height(reports: &[Fired]) -> i64 {
@@ -4088,23 +4055,37 @@ pub mod test_support {
         };
         *height
     }
-    /// A map of the world laid out for the person, looking with `camera`, reporting the place a
-    /// click lands on.
-    pub fn world_harness(queue: &tilo_ui_base::Intents<Fired>, camera: MapCamera) -> Driver {
+    /// `map` reporting `event` (`resize`, `rest`, `at` or `drawn`) on `queue`, under [`CANVAS`].
+    pub fn reports(mut map: Map, queue: &tilo_ui_base::Intents<Fired>, event: &str) -> Map {
+        let reported = Event::View(Intent::new(queue, CANVAS, event));
+        match event {
+            "resize" => map.resize = reported,
+            "rest" => map.rest = reported,
+            "at" => map.at = reported,
+            "drawn" => map.drawn = reported,
+            other => panic!("a map reports no {other}"),
+        }
+        map
+    }
+    /// `map` as a map of the world, opened on `focus` (latitude, longitude) when one is given.
+    pub fn of_the_world(mut map: Map, focus: Option<(f64, f64)>) -> Map {
+        map.world = true;
+        map.focus = focus;
+        map
+    }
+    /// A map of the world, looking with `camera`, reporting the place a click lands on.
+    pub fn world_map(queue: &tilo_ui_base::Intents<Fired>, camera: MapCamera) -> Map {
         let mut map = pointing_map(queue, camera);
         map.world = true;
         map.at = Event::View(Intent::new(queue, CANVAS, "at"));
-        laid_out(map)
-    }
-    pub fn map_camera(host: &mut Driver) -> MapCamera {
-        host.root_widget_mut()
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<Map>())
-            .expect("the root is the map")
-            .camera()
+        map
     }
     /// What a place holds that takes right presses itself — a field's copy and paste, a row's own
     /// menu — stood for by a probe that takes them.
+    #[tilo_ui_base::component::not_a_component(
+        framework,
+        "a test's content that takes right presses itself"
+    )]
     pub struct TakesRightPress {
         pub inner: tilo_ui_base::widget::Spacer,
         pub took: std::rc::Rc<std::cell::Cell<u32>>,

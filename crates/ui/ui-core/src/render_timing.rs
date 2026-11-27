@@ -2,14 +2,14 @@
 use crate::native_scenario::host_clock::{self, HostClockBracket};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct CallBounds {
+pub struct CallBounds {
     pub before: Option<HostClockBracket>,
     pub after: Option<HostClockBracket>,
 }
 
 #[derive(Clone, Copy)]
 #[cfg(feature = "native")]
-pub(crate) enum MainStage {
+pub enum MainStage {
     BeforeProfilerCommit,
     AfterProfilerCommit,
     AfterNativeFrameLog,
@@ -34,13 +34,13 @@ const MAIN_STAGE_NAMES: [&str; 8] = [
 
 #[derive(Default)]
 #[cfg(feature = "native")]
-pub(crate) struct MainStages {
+pub struct MainStages {
     points: [Option<HostClockBracket>; 8],
 }
 
 #[cfg(feature = "native")]
 impl MainStages {
-    pub(crate) fn row(&self, cpu_frame_id: Option<u64>) -> serde_json::Value {
+    pub fn row(&self, cpu_frame_id: Option<u64>) -> serde_json::Value {
         let mut row = serde_json::Map::new();
         row.insert("cpu_frame_id".into(), serde_json::json!(cpu_frame_id));
         row.insert(
@@ -62,7 +62,7 @@ impl MainStages {
 }
 
 #[cfg(feature = "native")]
-pub(crate) fn record_main_stage(stages: &mut Option<MainStages>, stage: MainStage) {
+pub fn record_main_stage(stages: &mut Option<MainStages>, stage: MainStage) {
     record_main_stage_with(stages, stage, capture);
 }
 
@@ -80,7 +80,7 @@ fn record_main_stage_with(
     }
 }
 
-pub(crate) fn enabled() -> bool {
+pub fn enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
         let diagnostics = &crate::process::environment().diagnostics;
@@ -95,7 +95,7 @@ pub(crate) fn capture() -> Option<HostClockBracket> {
     host_clock::sample().1
 }
 
-pub(crate) fn around<T>(enabled: bool, operation: impl FnOnce() -> T) -> (T, Option<CallBounds>) {
+pub fn around<T>(enabled: bool, operation: impl FnOnce() -> T) -> (T, Option<CallBounds>) {
     around_with(enabled, capture, operation)
 }
 

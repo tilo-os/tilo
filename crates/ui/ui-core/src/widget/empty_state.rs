@@ -908,7 +908,7 @@ const PAINTED_TARGET: &str = "tilo.painted-empty-state:";
 
 /// Whether `target` names a painted empty state's action ([`PaintedEmptyStates`]): no
 /// widget handles it, an activation presses where it is drawn.
-pub(crate) fn is_painted_target(target: &str) -> bool {
+pub fn is_painted_target(target: &str) -> bool {
     target.starts_with(PAINTED_TARGET)
 }
 

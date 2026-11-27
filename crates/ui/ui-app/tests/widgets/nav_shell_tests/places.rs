@@ -71,7 +71,7 @@ tilo_test_env::scenario! {
             1,
             "one leading control, the way back: {toolbar:?}"
         );
-        let event = tilo_ui::window_toolbar::ToolbarEvent::Action {
+        let event = tilo_ui_app::window_toolbar::ToolbarEvent::Action {
             id: WINDOW_BACK.into(),
         };
         assert!(h.root_mut::<NavShell>().window_toolbar_event(&event));

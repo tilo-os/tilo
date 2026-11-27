@@ -47,7 +47,7 @@ fn own_binding(widget: &(impl ComponentBoundary + ?Sized)) -> Option<CallbackBin
 /// How a traversal reaches the components a widget retains, when they differ
 /// from its children: a component root enters its own binding, a tile reaches
 /// its live content however it is shown.
-pub(crate) trait BoundTraversal: Widget {
+pub trait BoundTraversal: Widget {
     fn visit_components(
         &mut self,
         request: &mut ComponentRequest<'_>,
@@ -87,7 +87,7 @@ pub(crate) fn keyboard_input_scope<W: Widget + ?Sized>(
 
 /// [`BoundTraversal::visit_components`] of `widget`, or of its retained
 /// children when it is no bound component.
-pub(crate) fn visit_components<W: Widget + ?Sized>(
+pub fn visit_components<W: Widget + ?Sized>(
     widget: &mut W,
     request: &mut ComponentRequest<'_>,
 ) -> Result<(), BoundDispatchError> {
@@ -104,7 +104,7 @@ pub(crate) fn visit_components<W: Widget + ?Sized>(
 }
 
 /// [`BoundTraversal::visit_resource_owners`] of `widget`.
-pub(crate) fn visit_resource_owners<W: Widget + ?Sized>(
+pub fn visit_resource_owners<W: Widget + ?Sized>(
     widget: &W,
     request: &mut ResourceReadRequest<'_>,
 ) -> Result<(), tilo_actions::ApiError> {

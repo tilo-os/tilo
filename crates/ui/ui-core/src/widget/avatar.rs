@@ -477,7 +477,7 @@ mod tests {
         // the window's pictures as `ui.Image` reads one: the same prop a contact's photo takes.
         let props = AvatarProps {
             name: Some("Ada".into()),
-            picture: Some(crate::headless::FIXTURE_PICTURE.into()),
+            picture: Some(crate::pictures::FIXTURE_PICTURE.into()),
             ..AvatarProps::default()
         };
         let mut pictured = Avatar::from_props("name", props);
@@ -499,7 +499,7 @@ mod tests {
         // A member the workspace pictured shows that picture through the actor a view is
         // handed, as a roster's row names them: an author's face.
         let pictured_member = Person {
-            picture: Some(crate::headless::FIXTURE_PICTURE.into()),
+            picture: Some(crate::pictures::FIXTURE_PICTURE.into()),
             ..Person::new(tilo_actions::MemberId::person("ada"), "Ada")
         };
         let mut author = Avatar::of(pictured_member);

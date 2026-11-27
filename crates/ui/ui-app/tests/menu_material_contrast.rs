@@ -25,8 +25,8 @@ use vello::peniko::{Color, Fill};
 
 use crate::support::render::write_png;
 use std::sync::Arc;
-use tilo_ui::color::contrast_ratio;
-use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
+use tilo_ui_app::color::contrast_ratio;
+use tilo_ui_app::widget::context_menu::{ContextMenu, MenuItem};
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
@@ -198,20 +198,20 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
             );
             let panel = Widget::modal_capture(&shown).expect("the menu is open");
             let material = render(&theme, backdrop_name, |scene, _| {
-                tilo_ui::widget::floating_surface::paint_rounded(
+                tilo_ui_app::widget::floating_surface::paint_rounded(
                     scene,
                     Affine::IDENTITY,
                     panel,
-                    tilo_ui::widget::floating_surface::radius(&theme),
+                    tilo_ui_app::widget::floating_surface::radius(&theme),
                     &theme,
                 );
             });
 
             let (mut lightest, mut darkest) = (0.0_f64, 1.0_f64);
-            let radius = tilo_ui::widget::floating_surface::radius(&theme);
+            let radius = tilo_ui_app::widget::floating_surface::radius(&theme);
             for (x, y) in body_pixels(panel, radius, 2.0) {
                 let under = colour_at(&material, x, y);
-                let luminance = tilo_ui::color::relative_luminance(under);
+                let luminance = tilo_ui_app::color::relative_luminance(under);
                 lightest = lightest.max(luminance);
                 darkest = darkest.min(luminance);
                 for (ink_name, ink) in
@@ -225,7 +225,7 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
                     );
                 }
             }
-            let ground_luminance = tilo_ui::color::relative_luminance(ground);
+            let ground_luminance = tilo_ui_app::color::relative_luminance(ground);
             shifts.push((lightest - ground_luminance).max(ground_luminance - darkest));
 
             let mut enabled_ratios = Vec::new();
@@ -273,7 +273,7 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
 #[test]
 fn the_words_menu_of_dark_words_on_a_light_slide_reads_in_the_dark_theme() {
     use tilo_rich_edit::{BlockContent, BlockEditor};
-    use tilo_ui::widget::Embedded;
+    use tilo_ui_app::widget::Embedded;
     let _settled = tilo_ui_base::motion::testing::settled();
     let theme = Theme::dark();
     let presence = PresenceCtx::default();
@@ -324,11 +324,11 @@ fn the_words_menu_of_dark_words_on_a_light_slide_reads_in_the_dark_theme() {
         &with_text,
     );
     let material = render(&theme, "white", |scene, _| {
-        tilo_ui::widget::floating_surface::paint_rounded(
+        tilo_ui_app::widget::floating_surface::paint_rounded(
             scene,
             Affine::IDENTITY,
             panel,
-            tilo_ui::widget::floating_surface::radius(&theme),
+            tilo_ui_app::widget::floating_surface::radius(&theme),
             &theme,
         );
     });

@@ -5,7 +5,7 @@
     clippy::wildcard_imports,
     reason = "the base's widget contract, for the widgets declared here"
 )]
-use tilo_ui_base::widget::*;
+pub use tilo_ui_base::widget::*;
 
 #[cfg(any(test, feature = "test-support"))]
 mod test_controls;
@@ -30,8 +30,8 @@ pub mod decorator;
 pub mod document_offers;
 pub use {document_offers::DocumentOffer, document_offers::PaintedOffers};
 mod button;
-#[cfg(test)]
-pub(crate) mod replaced_tripwire;
+#[cfg(any(test, feature = "test-support"))]
+pub mod replaced_tripwire;
 pub use {
     button::Button, button::ButtonFace, button::ButtonProps, button::ButtonRole,
     button::REST_BORDER_WIDTH, button::face_colors, button::focus_ring_reach,
@@ -103,10 +103,10 @@ pub use {
 };
 mod nav_shell;
 #[cfg(feature = "native")]
-pub(crate) use nav_shell::memory::remember_for_app as remember_sidebar_widths_for_app;
+pub use nav_shell::memory::remember_for_app as remember_sidebar_widths_for_app;
 pub mod window_controls;
 pub mod window_header;
-pub(crate) mod window_toolbar_row;
+pub mod window_toolbar_row;
 pub use {
     nav_shell::HeldNotice, nav_shell::InspectorFrame, nav_shell::InspectorLink,
     nav_shell::InspectorPlacement, nav_shell::NavGeometry, nav_shell::NavMode, nav_shell::NavPane,
@@ -287,7 +287,7 @@ mod app_widget;
 pub use app_widget::BoundAppWidget;
 #[cfg(feature = "model")]
 #[cfg(not(feature = "test-support"))]
-pub(crate) use app_widget::BoundAppWidget;
+pub use app_widget::BoundAppWidget;
 
 /// A component's widget as a window's managed root holds it, for the tests above the toolkit.
 #[cfg(any(test, feature = "test-support"))]
@@ -299,8 +299,8 @@ pub fn bound_app_widget(
 }
 pub use {
     app_widget::AppCommand, app_widget::AppKind, app_widget::AppProcessIntent,
-    app_widget::AppWidget, app_widget::HostShellAllow, app_widget::IconDescriptor,
-    app_widget::WindowPublication,
+    app_widget::AppWidget, app_widget::DevRoot, app_widget::HostShellAllow,
+    app_widget::IconDescriptor, app_widget::WindowPublication,
 };
 pub mod input_hint;
 pub mod shortcut_recorder;
@@ -725,7 +725,7 @@ pub use {
 mod activation;
 mod dismissal;
 #[cfg(feature = "model")]
-pub(crate) use activation::take_presses;
+pub use activation::take_presses;
 pub use {activation::Interaction, activation::paint_disabled, activation::paint_focus_ring};
 pub mod media_card;
 mod media_grid_component;
@@ -954,8 +954,6 @@ pub use qr::QrWidget;
 pub use qr_component::QrProps;
 #[cfg(test)]
 mod a11y_tree_tests;
-#[cfg(test)]
-pub(crate) mod control_result_probe;
 #[cfg(any(test, feature = "test-support"))]
 pub mod effect_fixture;
 pub mod keyboard_map;

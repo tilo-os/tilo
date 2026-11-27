@@ -8,13 +8,13 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 use taffy::Size;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
 
         let presses = Rc::new(Cell::new(0_u32));
         let counter = Rc::clone(&presses);
-        let button = tilo_ui::widget::Button::new("canvas-button", "Inspect")
+        let button = tilo_ui_app::widget::Button::new("canvas-button", "Inspect")
             .on_click(move || counter.set(counter.get() + 1));
         let manual = tilo_ui_base::widget::Manual::new(|cx| {
             let size = cx
@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
         viewport.set_content_size(600.0, 600.0);
         viewport.state_mut().set_zoom(2.0);
         let mut harness =
-            Driver::new(tilo_ui::State::new(), Box::new(viewport), (800, 900));
+            Driver::new(tilo_ui_app::State::new(), Box::new(viewport), (800, 900));
         let content = canvas_rect(&harness, "canvas-button");
         let pad = f64::from(tilo_ui_base::tokens::Spacing::default().s6);
         let drawn = Point::new(
@@ -103,7 +103,7 @@ tilo_test_env::scenario! {
         let mut viewport = DocumentViewport::new(content).with_zoom(&zoom);
         viewport.set_content_size(600.0, 600.0);
         let mut harness =
-            Driver::new(tilo_ui::State::new(), Box::new(viewport), (800, 600));
+            Driver::new(tilo_ui_app::State::new(), Box::new(viewport), (800, 600));
         let _ = harness.recompose();
         let fit = match zoom.with(|shown| *shown) {
             ViewportZoom::Factor(factor) => factor,
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
 
     phase the_windows_zoom_reaches_a_canvas_that_has_one_of_its_own;
     {
-        use tilo_ui::content_zoom::{ContentZoom, ZoomStep};
+        use tilo_ui_app::content_zoom::{ContentZoom, ZoomStep};
         let (content, _, _) = canvas_with_button("Inspect", 0.0, 0.0);
         let zoom = tilo_ui_base::LocalState::new(ViewportZoom::Fit);
         let mut viewport = DocumentViewport::new(content).with_zoom(&zoom);
@@ -413,7 +413,7 @@ fn kernel() -> ViewportState {
 }
 
 fn canvas_with_button(label: &str, x: f64, y: f64) -> (Element, f64, f64) {
-    let button = tilo_ui::widget::Button::new("canvas-button", label);
+    let button = tilo_ui_app::widget::Button::new("canvas-button", label);
     let manual = tilo_ui_base::widget::Manual::new(move |cx| {
         let size = cx
             .measure_child(
@@ -438,7 +438,7 @@ fn canvas_with_button(label: &str, x: f64, y: f64) -> (Element, f64, f64) {
 }
 
 fn canvas_rect(harness: &Driver, id: &str) -> Rect {
-    fn find(node: &tilo_ui::headless::InspectionNode, id: &str) -> Option<Rect> {
+    fn find(node: &tilo_ui_app::headless::InspectionNode, id: &str) -> Option<Rect> {
         if node.test_id.as_deref() == Some(id) {
             let [x, y, w, h] = node.rect;
             return Some(Rect::new(x, y, x + w, y + h));

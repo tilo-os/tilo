@@ -2,10 +2,10 @@ use crate::support::application::{ProbeHarness, author, existing, instantiate_pr
 use automerge::ReadDoc;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use std::collections::HashMap;
-use tilo_ui::application::{LaunchTarget, RestoreInput};
-use tilo_ui::bound_dispatch::invoke_bound_node;
-use tilo_ui::state::UndoLog;
-use tilo_ui::widget::TileHost;
+use tilo_ui_app::application::{LaunchTarget, RestoreInput};
+use tilo_ui_app::bound_dispatch::invoke_bound_node;
+use tilo_ui_app::state::UndoLog;
+use tilo_ui_app::widget::TileHost;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
@@ -18,7 +18,7 @@ struct BoundProbe {
     _tree: taffy::TaffyTree<()>,
 }
 impl BoundProbe {
-    fn new(component: tilo_ui::application::AppComponent) -> Self {
+    fn new(component: tilo_ui_app::application::AppComponent) -> Self {
         let mut tile = Box::new(TileHost::from_component(component));
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
@@ -45,7 +45,7 @@ impl BoundProbe {
         &mut self,
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut dyn Widget, &mut AutoCommit, &automerge::ObjId) -> R,
-    ) -> Result<R, tilo_ui::bound_dispatch::BoundDispatchError> {
+    ) -> Result<R, tilo_ui_app::bound_dispatch::BoundDispatchError> {
         // SAFETY: exclusive self owns the stable, live tile and both admission maps.
         unsafe {
             invoke_bound_node(
@@ -318,7 +318,7 @@ fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
             a.invoke(&mut outer, |_, doc, _| {
                 assert!(matches!(
                     c.invoke(doc, |_, _, _| panic!("cross-record delivery")),
-                    Err(tilo_ui::bound_dispatch::BoundDispatchError::CrossResourceReentry)
+                    Err(tilo_ui_app::bound_dispatch::BoundDispatchError::CrossResourceReentry)
                 ));
                 doc.put(ROOT, "a", "survives unwind").unwrap();
                 panic!("controlled mutation unwind");

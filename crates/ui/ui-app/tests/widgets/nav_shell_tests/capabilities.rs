@@ -1,6 +1,6 @@
 use super::*;
 use taffy::{Size, Style};
-use tilo_ui::widget::{FilterCount, Filterable};
+use tilo_ui_app::widget::{FilterCount, Filterable};
 use tilo_ui_base::component::Described;
 
 fn labelled(id: &'static str, label: &str, icon: Icon) -> Element {
@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
                 Box::new(
                     Button::new("new", "New note")
                         .with_icon(Icon::Plus)
-                        .role(tilo_ui::widget::ButtonRole::Primary)
+                        .role(tilo_ui_app::widget::ButtonRole::Primary)
                         .on_open(|| {}),
                 ) as Element,
                 labelled("pin", "Pin", Icon::Pin),
@@ -247,7 +247,7 @@ tilo_test_env::scenario! {
         let title = "Quarterly planning for the autumn release, and the review after it";
         let primary = |icon: Option<Icon>| {
             let button = Button::new("new", "New note")
-                .role(tilo_ui::widget::ButtonRole::Primary)
+                .role(tilo_ui_app::widget::ButtonRole::Primary)
                 .on_open(|| {});
             Box::new(match icon {
                 Some(icon) => button.with_icon(icon),
@@ -551,7 +551,7 @@ tilo_test_env::scenario! {
             .content(TestLeaf::fill("detail").boxed().0)
             .overview_header("Contacts", Vec::new())
             .overview_controls(Box::new(
-                tilo_ui::widget::Dropdown::from_state(vec!["Name".into(), "Organization".into()], &order)
+                tilo_ui_app::widget::Dropdown::from_state(vec!["Name".into(), "Organization".into()], &order)
                     .with_accessible_name("Sort contacts"),
             ));
         let mut d = harness(shell, 1280, 800, Theme::dark());
@@ -622,7 +622,7 @@ tilo_test_env::scenario! {
             !h.root::<NavShell>().is_sidebar_open(),
             "the narrow window shows its content"
         );
-        let found = tilo_ui::widget::search_field::apply_filter(&mut *h.root_mut::<NavShell>(), "kai");
+        let found = tilo_ui_app::widget::search_field::apply_filter(&mut *h.root_mut::<NavShell>(), "kai");
         assert_eq!(
             query.borrow().as_str(),
             "kai",

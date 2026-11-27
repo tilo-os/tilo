@@ -600,7 +600,7 @@ fn button_for(role: tilo_ui_base::permissions::Role) -> Driver {
 
 #[test]
 fn a_control_naming_nothing_the_window_has_is_refused_said_and_kept_among_the_failures() {
-    let (probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+    let (probe, observed) = crate::app::control_result_probe::Probe::new(false);
     let mut driver = Driver::new(State::new(), Box::new(probe), (400, 300));
     assert_eq!(driver.refusal_said(), None);
     assert!(driver.control_failures().is_empty());
@@ -976,7 +976,7 @@ fn unknown_recorded() -> crate::headless::Action {
 #[test]
 fn a_real_background_admission_is_not_relabelled_completed() {
     let owner = crate::application_test_support::ProbeHarness::new();
-    let (component, observed) = crate::widget::control_result_probe::component(&owner, 17, true);
+    let (component, observed) = crate::app::control_result_probe::component(&owner, 17, true);
     let mut driver = Driver::from_component(
         component,
         (640, 480),
@@ -1066,7 +1066,7 @@ fn the_entry_limit_fails_the_next_scenario_step_with_a_retained_prefix() {
 #[test]
 fn a_failed_startup_control_keeps_an_empty_explicit_invocation_envelope() {
     let owner = crate::application_test_support::ProbeHarness::new();
-    let (component, observed) = crate::widget::control_result_probe::component(&owner, 18, false);
+    let (component, observed) = crate::app::control_result_probe::component(&owner, 18, false);
     observed.enqueue("missing");
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("results.json");

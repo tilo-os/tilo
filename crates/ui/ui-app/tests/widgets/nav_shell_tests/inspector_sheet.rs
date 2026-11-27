@@ -1,12 +1,12 @@
 use super::*;
-use tilo_ui::widget::SheetDetent;
+use tilo_ui_app::widget::SheetDetent;
 
 const W: u32 = 420;
 const H: u32 = 800;
 
 /// A narrow window with its inspector open as a sheet, settled at half
 /// height; and the content's input counter.
-fn sheet_open() -> (Driver, tilo_ui::testing::Seen) {
+fn sheet_open() -> (Driver, tilo_ui_app::testing::Seen) {
     let (content, events) = TestLeaf::fill("content").boxed();
     let shell = NavShell::new()
         .content(content)
@@ -49,7 +49,7 @@ fn drag_grip_to(h: &mut Driver, y: f64) {
 fn top_at(h: &Driver, detent: SheetDetent) -> f64 {
     let frame = geometry(h).sheet;
     let [peek, half, full] = [SheetDetent::Peek, SheetDetent::Half, SheetDetent::Full].map(|d| {
-        let mut sheet = tilo_ui::widget::BottomSheet::new();
+        let mut sheet = tilo_ui_app::widget::BottomSheet::new();
         sheet.snap_to(d);
         sheet.geometry(frame, 1.0, true).panel.y0
     });
@@ -233,7 +233,7 @@ enum BackInput {
 fn go_back(h: &mut Driver, input: BackInput) {
     match input {
         BackInput::Bar => {
-            let event = tilo_ui::window_toolbar::ToolbarEvent::Action {
+            let event = tilo_ui_app::window_toolbar::ToolbarEvent::Action {
                 id: WINDOW_BACK.into(),
             };
             assert!(h.root_mut::<NavShell>().window_toolbar_event(&event));
@@ -303,9 +303,9 @@ fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
         settle(&mut h, W, H);
         h.root_mut::<NavShell>().open_inspector();
         settle(&mut h, W, H);
-        let mut canvas = tilo_ui::CpuCanvas::new();
+        let mut canvas = tilo_ui_app::CpuCanvas::new();
         canvas
-            .rasterize(&tilo_ui::retained_raster::FrameContent {
+            .rasterize(&tilo_ui_app::retained_raster::FrameContent {
                 scene: h.scene(),
                 width: W,
                 height: H,

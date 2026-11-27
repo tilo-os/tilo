@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::Bound;
 use tilo_ui_base::component::*;
@@ -57,7 +57,7 @@ fn a_title_cut_short_reads_in_full_in_the_tooltip() {
     let theme = tilo_ui_base::theme::Theme::dark();
     let message = "Expected `&[String]`, found `&Vec<String>` in the argument to parse_limit";
     let long = ListRow::new("long", message).meta("Ln 14, Col 29");
-    let h = Driver::for_root(tilo_ui::State::new(), long, (240, 60), theme.clone());
+    let h = Driver::for_root(tilo_ui_app::State::new(), long, (240, 60), theme.clone());
     let row = h.root::<ListRow>();
     let band = row.text_band_for_tests();
     let (rect, text) = Widget::tooltip_target_at(row, band.center()).expect("elided title");
@@ -65,7 +65,7 @@ fn a_title_cut_short_reads_in_full_in_the_tooltip() {
     assert_eq!(rect, band);
 
     let short = ListRow::new("short", "Unused import").meta("Ln 2, Col 5");
-    let h = Driver::for_root(tilo_ui::State::new(), short, (480, 60), theme);
+    let h = Driver::for_root(tilo_ui_app::State::new(), short, (480, 60), theme);
     let row = h.root::<ListRow>();
     assert_eq!(
         Widget::tooltip_target_at(row, row.text_band_for_tests().center()),
@@ -89,7 +89,7 @@ fn a_rows_box_presses_as_far_as_the_pointer_needs() {
         ("a finger", InteractionEnvironment::TOUCH),
     ] {
         let mut h = Driver::for_root(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             Column::new().push(Box::new(row())),
             (360, 300),
             theme.clone(),
@@ -133,7 +133,7 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
         .secondary("ada@example.org")
         .on_open(move || invoked.set(invoked.get() + 1));
     let mut driver = Driver::new(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         Box::new(Column::new().with_no_padding().push(Box::new(row))),
         (400, 200),
     );
@@ -147,7 +147,7 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
             resource
                 .id
                 .as_str()
-                .starts_with(tilo_ui::headless::CONTROL_RESOURCE_PREFIX)
+                .starts_with(tilo_ui_app::headless::CONTROL_RESOURCE_PREFIX)
                 && resource.label.starts_with("Ada Lovelace")
                 && resource
                     .actions
@@ -178,7 +178,7 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
             removed_too.set(removed_too.get() + 1)
         });
     row.set_focus(true);
-    let mut harness = Driver::for_root(tilo_ui::State::new(), row, (420, 80), Theme::dark());
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), row, (420, 80), Theme::dark());
     harness.key("Delete");
     assert_eq!(
         removed.get(),
@@ -194,7 +194,7 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
             ran_too.set(ran_too.get() + 1)
         });
     kept.set_focus(true);
-    let mut harness = Driver::for_root(tilo_ui::State::new(), kept, (420, 80), Theme::dark());
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), kept, (420, 80), Theme::dark());
     harness.key("Delete");
     assert_eq!(ran.get(), 0, "a plain row action is not destructive");
 }
@@ -210,7 +210,7 @@ fn a_menu_shortcut_runs_where_the_row_has_the_keyboard() {
             Rc::new(move || checked_too.set(checked_too.get() + 1)) as Rc<dyn Fn()>,
         )]);
     row.set_focus(true);
-    let mut harness = Driver::for_root(tilo_ui::State::new(), row, (420, 80), Theme::dark());
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), row, (420, 80), Theme::dark());
     harness.key("Enter");
     assert_eq!(checked.get(), 0, "the key on its own is not the chord");
     harness.set_modifiers(&["command".to_owned()]);
@@ -236,7 +236,7 @@ fn a_press_on_the_leading_box_marks_the_row() {
     let toggled = Rc::new(Cell::new(None));
     let seen = Rc::clone(&toggled);
     let row = ListRow::new("milk", "Buy oat milk").checkbox(false, move |on| seen.set(Some(on)));
-    let mut harness = Driver::new(tilo_ui::State::new(), Box::new(row), (400, 60));
+    let mut harness = Driver::new(tilo_ui_app::State::new(), Box::new(row), (400, 60));
     let [x, y, _, h] = find(&harness.inspection().root, "ListRow")
         .expect("the row is laid out")
         .rect;
@@ -253,7 +253,7 @@ fn a_bound_rows_checkbox_follows_a_check_made_elsewhere() {
     let state = tilo_ui_base::LocalState::new(false);
     let intents = tilo_ui_base::Intents::<Fired>::default();
     let row = bound_row(&state, &intents);
-    let mut harness = Driver::for_root(tilo_ui::State::new(), row, (400, 60), Theme::dark());
+    let mut harness = Driver::for_root(tilo_ui_app::State::new(), row, (400, 60), Theme::dark());
     harness.poll_frame().expect("the first frame draws");
     assert_eq!(
         harness
@@ -312,7 +312,7 @@ fn a_double_click_opens_once_and_changes_twice() {
                 .with_no_padding()
                 .push(Box::new(row(Rc::clone(&hits)))),
         );
-        let mut harness = Driver::new(tilo_ui::State::new(), rows, (400, 200));
+        let mut harness = Driver::new(tilo_ui_app::State::new(), rows, (400, 200));
         let [x, y, w, h] = find(&harness.inspection().root, "ListRow")
             .expect("row laid out")
             .rect;
@@ -347,8 +347,8 @@ fn a_double_click_opens_once_and_changes_twice() {
 
 #[test]
 fn a_choice_line_publishes_one_control_and_pressing_the_line_opens_its_list() {
-    use tilo_ui::headless::ControlInput;
-    use tilo_ui::widget::Dropdown;
+    use tilo_ui_app::headless::ControlInput;
+    use tilo_ui_app::widget::Dropdown;
 
     let chosen = tilo_ui_base::LocalState::new("100%".to_string());
     let line: Element = Box::new(Column::new().with_no_padding().push(Box::new(
@@ -357,7 +357,7 @@ fn a_choice_line_publishes_one_control_and_pressing_the_line_opens_its_list() {
             &chosen,
         ))),
     )));
-    let mut harness = Driver::new(tilo_ui::State::new(), line, (480, 240));
+    let mut harness = Driver::new(tilo_ui_app::State::new(), line, (480, 240));
 
     let named: Vec<_> = harness
         .controls()
@@ -397,7 +397,7 @@ fn a_choice_line_publishes_one_control_and_pressing_the_line_opens_its_list() {
 fn a_refused_check_says_why_and_keeps_its_mark() {
     let ran = Rc::new(Cell::new(0));
     let counted = Rc::clone(&ran);
-    let root = tilo_ui::widget::effect_fixture::sends_through(
+    let root = tilo_ui_app::widget::effect_fixture::sends_through(
         move || counted.set(counted.get() + 1),
         |binding| {
             let mut row = ListRow::new("send", "Send").checkbox(false, |_| {});
@@ -405,7 +405,8 @@ fn a_refused_check_says_why_and_keeps_its_mark() {
             Box::new(row)
         },
     );
-    let mut driver = Driver::new_with_theme(tilo_ui::State::new(), root, (600, 400), Theme::dark());
+    let mut driver =
+        Driver::new_with_theme(tilo_ui_app::State::new(), root, (600, 400), Theme::dark());
     driver.connect_peer();
     driver.set_permission_ctx(::collaboration::permissions::PermissionContext::member(
         &::collaboration::permissions::MemberId::person("ada"),
@@ -515,7 +516,7 @@ fn a_check_fills_in_over_frames_unless_the_row_is_still() {
 #[test]
 fn a_row_tooltip_reads_anywhere_the_row_has_nothing_closer_to_say() {
     let row = ListRow::new("used", "Deploy").tooltip("Used 3 times");
-    let h = Driver::for_root(tilo_ui::State::new(), row, (480, 60), Theme::dark());
+    let h = Driver::for_root(tilo_ui_app::State::new(), row, (480, 60), Theme::dark());
     let row = h.root::<ListRow>();
     let (_, text) =
         Widget::tooltip_target_at(row, row.text_band_for_tests().center()).expect("a tooltip");
@@ -544,10 +545,10 @@ fn bound_row(
 /// The level a row's check fill stands at over 24 frames after `press` at 100 ms.
 fn check_levels(row: ListRow, press: impl FnOnce(&mut Driver)) -> Vec<f64> {
     use std::time::{Duration, Instant};
-    use tilo_ui::time::testing::with_monotonic_time;
+    use tilo_ui_app::time::testing::with_monotonic_time;
     let start = Instant::now();
     let mut harness = with_monotonic_time(start, || {
-        Driver::for_root(tilo_ui::State::new(), row, (400, 60), Theme::dark())
+        Driver::for_root(tilo_ui_app::State::new(), row, (400, 60), Theme::dark())
     });
     with_monotonic_time(start, || harness.poll_frame()).expect("the first frame draws");
     assert_eq!(

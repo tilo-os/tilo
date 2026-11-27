@@ -304,11 +304,7 @@ impl CommandEntry {
     /// host chord where the action is one of the toolkit's commands ([`HostShortcut::of_action`]) — the
     /// one shortcut table, so the row shows the keys the press means.
     #[must_use]
-    pub(crate) fn of_action(
-        fa: &FlatAction<'_>,
-        row: ListedRow,
-        platform: PlatformConventions,
-    ) -> Self {
+    pub fn of_action(fa: &FlatAction<'_>, row: ListedRow, platform: PlatformConventions) -> Self {
         let mut entry = Self::from_flat_action_shown(fa, row);
         let host = HostShortcut::of_action(&fa.action.id);
         if entry.icon.is_none() {
@@ -430,11 +426,7 @@ impl CommandEntry {
 
     /// The result list's row for this entry: its label, what it says under it, its picture, and its
     /// shortcut as keycaps.
-    pub(crate) fn result(
-        &self,
-        kind: impl Into<String>,
-        platform: PlatformConventions,
-    ) -> SearchResult {
+    pub fn result(&self, kind: impl Into<String>, platform: PlatformConventions) -> SearchResult {
         let mut result = SearchResult::new(kind, self.label.clone(), self.id.clone());
         result.subtitle.clone_from(&self.description);
         result.icon = self.icon;

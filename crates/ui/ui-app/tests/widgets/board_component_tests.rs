@@ -8,13 +8,13 @@ use std::rc::*;
 use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
-use tilo_ui::app::driver::Driver;
-use tilo_ui::headless::*;
-use tilo_ui::kurbo::*;
-use tilo_ui::retained_present::*;
-use tilo_ui::testing::*;
-use tilo_ui::vello::*;
-use tilo_ui::widget::*;
+use tilo_ui_app::app::driver::Driver;
+use tilo_ui_app::headless::*;
+use tilo_ui_app::kurbo::*;
+use tilo_ui_app::retained_present::*;
+use tilo_ui_app::testing::*;
+use tilo_ui_app::vello::*;
+use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::i18n::*;
@@ -76,7 +76,7 @@ fn harness(queue: &Intents<Fired>) -> Driver {
 
 fn laid_out(props: BoardProps) -> Driver {
     Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         <Board as Described>::from_props("board", props),
         (900, 600),
         Theme::dark(),
@@ -99,7 +99,7 @@ fn list(key: &str, keys: &[&str]) -> BoardListProps {
     }
 }
 
-fn headings(frame: &tilo_ui::headless::InspectionSnapshot) -> usize {
+fn headings(frame: &tilo_ui_app::headless::InspectionSnapshot) -> usize {
     let mut children = vec![&frame.root];
     let mut found = 0;
     while let Some(node) = children.pop() {
@@ -133,10 +133,10 @@ tilo_test_env::scenario! {
             "no band stands over the cards: {card:?} in a list from {band:?}"
         );
         let list = Driver::for_root(
-            tilo_ui::State::new(),
-            tilo_ui::widget::Column::new()
+            tilo_ui_app::State::new(),
+            tilo_ui_app::widget::Column::new()
                 .with_no_padding()
-                .push(Box::new(tilo_ui::widget::ListRow::new("a", "body"))),
+                .push(Box::new(tilo_ui_app::widget::ListRow::new("a", "body"))),
             (900, 600),
             Theme::dark(),
         );
@@ -195,17 +195,17 @@ tilo_test_env::scenario! {
     phase a_card_whose_body_is_a_row_is_that_row_shown_as_a_card;
     {
         let mut props = props(&Intents::default());
-        let row = tilo_ui::widget::ListRow::new("row", "Measure the new study").meta("Thursday");
-        props.lists[0].cards[0].body = vec![Box::new(tilo_ui::widget::ContextMenuArea::new(
+        let row = tilo_ui_app::widget::ListRow::new("row", "Measure the new study").meta("Thursday");
+        props.lists[0].cards[0].body = vec![Box::new(tilo_ui_app::widget::ContextMenuArea::new(
             Box::new(
-                tilo_ui::widget::Container::new()
+                tilo_ui_app::widget::Container::new()
                     .with_no_padding()
                     .with_child(Box::new(row)),
             ),
             |_| Vec::new(),
         ))];
         let host = Driver::for_root(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             <Board as Described>::from_props("board", props),
             (900, 600),
             Theme::dark(),
@@ -226,25 +226,25 @@ tilo_test_env::scenario! {
     // column's edge.
     {
         let board = Board::from_props("board", props(&Intents::default()));
-        let pane = tilo_ui::widget::Scrollable::new_horizontal()
+        let pane = tilo_ui_app::widget::Scrollable::new_horizontal()
             .with_content_min_viewport_width()
             .with_child(Box::new(board));
         // The visible width of the pane: 656 wide, a column of the window.
-        let window = tilo_ui::widget::Container::new()
+        let window = tilo_ui_app::widget::Container::new()
             .with_no_padding()
             .with_width(656.0)
             .with_child(Box::new(pane));
         let mut host = Driver::for_root(
-            tilo_ui::State::new(),
+            tilo_ui_app::State::new(),
             window,
             (656, 600),
             Theme::dark(),
         );
-        let mut window = host.root_mut::<tilo_ui::widget::Container>();
+        let mut window = host.root_mut::<tilo_ui_app::widget::Container>();
         let mut window_children = tilo_ui_base::widget::Widget::children_mut(&mut *window);
         let scroll = window_children[0]
             .as_any_mut()
-            .and_then(|any| any.downcast_mut::<tilo_ui::widget::Scrollable>())
+            .and_then(|any| any.downcast_mut::<tilo_ui_app::widget::Scrollable>())
             .expect("the window shows the pane");
         let mut pane_children = tilo_ui_base::widget::Widget::children_mut(scroll);
         let board = pane_children[0]
@@ -322,7 +322,7 @@ fn where_cards_take_no_drops_the_list_reports_the_place_among_its_other_cards() 
         }
     }
     let mut host = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_app::State::new(),
         <Board as Described>::from_props("board", props),
         (900, 600),
         Theme::dark(),

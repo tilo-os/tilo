@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
 use std::rc::Rc;
-use tilo_ui::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceType};
+use tilo_ui_app::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceType};
 
 const APP: &str = "so.tilo.chat";
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -10,9 +10,9 @@ tilo_test_env::scenario! {
 
     phase primary_owner_is_shared_and_keeps_recordless_wire_identity;
     {
-        let workspace = Rc::new(tilo_ui::resource::MemoryWorkspace::default());
+        let workspace = Rc::new(tilo_ui_app::resource::MemoryWorkspace::default());
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
-        let a = ResourceOwners::writing(Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>)
+        let a = ResourceOwners::writing(Rc::clone(&workspace) as Rc<dyn tilo_ui_app::resource::DocumentPort>)
             .open(APP, WORKSPACE)
             .unwrap();
         a.reserve_resource(&checkout)
@@ -24,7 +24,7 @@ tilo_test_env::scenario! {
             .unwrap();
         a.flush().unwrap();
         // Another window of the app reads the record the workspace now holds.
-        let mut owners = ResourceOwners::writing(Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>);
+        let mut owners = ResourceOwners::writing(Rc::clone(&workspace) as Rc<dyn tilo_ui_app::resource::DocumentPort>);
         let b = owners.open(APP, WORKSPACE).unwrap();
         b.try_open_resource(&checkout).unwrap();
         assert_eq!(a.route(&checkout).unwrap().document, None);
@@ -36,7 +36,7 @@ tilo_test_env::scenario! {
         b.flush().unwrap();
         // The other window's change reached the workspace, for the next start to read.
         let again = ResourceOwners::writing(
-            Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>,
+            Rc::clone(&workspace) as Rc<dyn tilo_ui_app::resource::DocumentPort>,
         )
             .open(APP, WORKSPACE)
             .unwrap();
@@ -55,7 +55,7 @@ tilo_test_env::scenario! {
             Some("two".to_owned())
         );
         assert!(
-            a.read(&checkout.id, tilo_ui::resource::identity)
+            a.read(&checkout.id, tilo_ui_app::resource::identity)
                 .unwrap()
                 .is_none()
         );
@@ -64,11 +64,11 @@ tilo_test_env::scenario! {
 
     phase primary_admission_rejects_stamped_records_and_wire_parse_rejects_internal_key;
     {
-        let workspace = Rc::new(tilo_ui::resource::MemoryWorkspace::default());
+        let workspace = Rc::new(tilo_ui_app::resource::MemoryWorkspace::default());
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
         assert!(DocumentId::parse(checkout.id.as_str()).is_none());
         let mut doc = AutoCommit::new();
-        tilo_ui::resource::init_scoped(
+        tilo_ui_app::resource::init_scoped(
             &mut doc,
             &DocumentId::for_tab(7),
             &checkout.kind,
@@ -76,7 +76,7 @@ tilo_test_env::scenario! {
             Some("workspace"),
         );
         doc.commit();
-        let mut written = tilo_ui::resource::DocumentPort::write(
+        let mut written = tilo_ui_app::resource::DocumentPort::write(
             &*workspace,
             APP,
             WORKSPACE,
@@ -89,15 +89,15 @@ tilo_test_env::scenario! {
         let store = owners.open(APP, WORKSPACE).unwrap();
         assert!(matches!(
             store.try_open_resource(&checkout),
-            Err(tilo_ui::resource::ResourceOpenError::IdentityMismatch)
+            Err(tilo_ui_app::resource::ResourceOpenError::IdentityMismatch)
         ));
     }
 
     phase primary_ownership_is_partitioned_by_package_workspace_and_kind;
     {
-        let workspace = Rc::new(tilo_ui::resource::MemoryWorkspace::default());
+        let workspace = Rc::new(tilo_ui_app::resource::MemoryWorkspace::default());
         let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
-        let mut owners = ResourceOwners::writing(Rc::clone(&workspace) as Rc<dyn tilo_ui::resource::DocumentPort>);
+        let mut owners = ResourceOwners::writing(Rc::clone(&workspace) as Rc<dyn tilo_ui_app::resource::DocumentPort>);
         let a = owners.open(APP, WORKSPACE).unwrap();
         a.reserve_resource(&checkout)
             .unwrap()

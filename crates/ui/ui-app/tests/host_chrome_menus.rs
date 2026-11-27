@@ -1,9 +1,9 @@
 //! A native menu holds its groups in the model's order, with separators between them.
-use tilo_ui::host_chrome_testing::{CommandGroup, Entry, MenuKind, entries};
+use tilo_ui_app::host_chrome_testing::{CommandGroup, Entry, MenuKind, entries};
 
 #[test]
 fn each_menu_holds_its_groups_in_model_order_with_separators_between() {
-    let mut app = tilo_ui::app::testing::native_chrome_app();
+    let mut app = tilo_ui_app::app::testing::native_chrome_app();
     let commands = app.host_commands_for_test(true);
     let group = |entry: &Entry| match entry {
         Entry::Command(index) => Some(commands[*index].group),

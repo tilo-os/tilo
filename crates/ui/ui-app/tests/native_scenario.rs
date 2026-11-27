@@ -1,7 +1,7 @@
 //! An app's native input probe reports the fixture's state as it stands, without changing it.
-use tilo_ui::App;
-use tilo_ui::State;
-use tilo_ui::widget::Text;
+use tilo_ui_app::App;
+use tilo_ui_app::State;
+use tilo_ui_app::widget::Text;
 
 #[test]
 fn effect_probe_reads_current_fixture_state_without_changing_it() {

@@ -1,13 +1,18 @@
 //! A text editor that owns one document string, for tests that need a real document edit
 //! behind a [`TextInput`]. A `TextInput` only edits its own buffer.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test fixture fails the test that writes through it"
+)]
+
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
 
 use crate::widget::TextInput;
 use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath, widget::Widget as _};
 
 /// A [`TextInput`] whose edits its owner writes to the string under `key`.
-pub(crate) struct OwnedText {
+pub struct OwnedText {
     input: TextInput,
     key: &'static str,
     committed: Option<Vec<ChangeHash>>,
@@ -15,7 +20,7 @@ pub(crate) struct OwnedText {
 
 impl OwnedText {
     /// Own the string under `key`, edited through `input`.
-    pub(crate) fn new(key: &'static str, input: TextInput) -> Self {
+    pub fn new(key: &'static str, input: TextInput) -> Self {
         Self {
             input,
             key,
