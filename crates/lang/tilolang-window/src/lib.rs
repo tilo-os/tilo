@@ -408,20 +408,27 @@ fn part_to_open(
     }
 }
 
-/// Open `view` of `app` over `target`, as the session opens a part. The page shows the keyboard,
-/// so its view reads it shown over a text field, as the session hands it when a field asks.
+/// Open `view` of `app` over `target`, as the session opens a part, over what the session hands
+/// the part when it shows it: the keyboard shown over a text field, setup at its first run.
 fn open_part(
     instance: &mut Instance,
     app: &str,
     view: &str,
     target: &tilolang_tilo::runtime::ResourceRef,
 ) -> Result<(), String> {
-    if app == tilolang_tilo::keyboard::KEYBOARD_APP
+    let shown = if app == tilolang_tilo::keyboard::KEYBOARD_APP {
+        Some(tilolang_tilo::keyboard::SHOWN_OVER_TEXT)
+    } else if app == tilolang_tilo::onboarding::SETUP_APP {
+        Some(tilolang_tilo::onboarding::FIRST_RUN)
+    } else {
+        None
+    };
+    if let Some(reading) = shown
         && let Some(host) = instance.host()
     {
         host.runtime()
-            .set_reading(target, tilolang_tilo::keyboard::SHOWN_OVER_TEXT)
-            .map_err(|error| format!("the keyboard reads nothing: {error}"))?;
+            .set_reading(target, reading)
+            .map_err(|error| format!("{app}'s part reads nothing: {error}"))?;
     }
     instance.open_with(&tilolang_tilo::instance::wire::resource(target), view);
     if instance.detail_target().is_none() {

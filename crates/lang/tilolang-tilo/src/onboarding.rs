@@ -11,6 +11,11 @@ pub const SETUP_APP: &str = "so.tilo.onboarding";
 /// The view that draws setup over the session's `setup` reading.
 pub const SETUP_VIEW: &str = "setup";
 
+/// What setup reads when it first runs on a device with no identity: its first page, of its four
+/// steps (choose, connect or create, protect, done), the count the ceremony gives a run that
+/// offers no media codecs step. A page that draws setup starts it here.
+pub const FIRST_RUN: &str = r#"{"step":"intro","total_steps":4}"#;
+
 /// Every file of setup's package, by the name the package knows it by.
 const FILES: &[(&str, &str)] = &[(
     "app.tl",

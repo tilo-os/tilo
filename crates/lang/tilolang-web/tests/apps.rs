@@ -144,7 +144,7 @@ fn every_app_opens_over_its_first_scenario_as_a_page() {
         ("apps/tl/settings", None),
         // Apps with no root, drawn over the session's resource as the session draws them.
         ("apps/tl/osk", Some("Space")),
-        ("apps/tl/onboarding", None),
+        ("apps/tl/onboarding", Some("Step 1 of 4")),
         ("apps/tl/terminal", None),
     ];
     let mut failures = Vec::new();
