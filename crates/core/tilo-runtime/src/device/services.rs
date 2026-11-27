@@ -1448,12 +1448,18 @@ impl Daemon {
     }
 
     /// A link for this device's person's shell, made and admitted by a fresh secret: what a test
-    /// takes in its own process.
+    /// takes in its own process. It is made for this process's seat, as the daemon's native
+    /// endpoint makes the link a shell redeems its token for on the account the kernel names, so
+    /// the processes it hands the device are admitted for that account. A link with no seat is
+    /// still refused what it hands over.
     ///
     /// # Errors
-    /// The dispatch's socket does not take the connection.
+    /// This process's seat has a shell link already, or the dispatch's socket does not take the
+    /// connection.
     pub fn shell_link(&self) -> io::Result<tilo_socket::Stream> {
-        let secret = self.shell_token();
+        let seat = crate::seats::seat_id(crate::seats::own_account(), std::process::id());
+        let person = self.workspaces.device_cert().user_public_key;
+        let secret = self.shell_token_for(person, seat)?;
         self.link_with(&secret)
     }
 
