@@ -20,17 +20,21 @@ title = "Reading settings"
 invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "watch_folder", args = { path = "${HOME}/Books" } }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "open-library_settings" }
+# The switcher in the window's header is what takes a person to the settings, and the window
+# keeps it there.
+perform = { target = "Settings", action = "activate" }
 
 [[situation]]
-name = "serif-font"
+name = "source-serif-font"
 title = "A reading face chosen"
 
 [[situation.steps]]
 invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "watch_folder", args = { path = "${HOME}/Books" } }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "open-library_settings" }
+# The switcher in the window's header is what takes a person to the settings, and the window
+# keeps it there.
+perform = { target = "Settings", action = "activate" }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "set_face", args = { face = "serif" } }
+invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "set_face", args = { face = "source_serif" } }

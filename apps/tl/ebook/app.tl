@@ -1248,16 +1248,19 @@ view library_settings(lib: Library) {
     }
 }
 
-/// One face the page can be set in: what it is called, the family it is, whether the picker
-/// offers it, how large it reads, and the way to rename it or take it away.
+/// One face the page can be set in: its row, and, for the face the page is set in, what it is
+/// called, the family it is, whether the picker offers it, how large it reads, and the way to
+/// rename it or take it away. A face that is not the page's is its row alone, so every face the
+/// reader knows stands in the list at the height a window shows.
 view face_row(lib: Library, f: Font, renaming: State<Text>, draft: State<Text>) {
+    let chosen = lib.face == f.family
     stack(gap: .tight) {
         ui.ListRow(
             item: f,
             title: font_title(f),
             secondary: "{f.family} · set at {f.size}×",
             icon: .type,
-            selected: lib.face == f.family,
+            selected: chosen,
         ) {
             on activate: set_face(lib, f.family)
             trailing: {
@@ -1270,32 +1273,34 @@ view face_row(lib: Library, f: Font, renaming: State<Text>, draft: State<Text>) 
                 }
             }
         }
-        ui.Slider(
-            bind: f.size,
-            label: "How large {font_title(f)} reads",
-            min: 0.7,
-            max: 1.4,
-            step: 0.05,
-            shows_value: true,
-        )
-        row(gap: .related, align: .center) {
-            ui.Button("Rename", icon: .pencil, size: .small) {
-                on press: set(draft, f.name).then(set(renaming, f.family))
-            }
-            if not f.builtin {
-                ui.Button("Remove", icon: .trash_2, size: .small) {
-                    on press: remove_font(lib, f)
-                }
-            }
-        }
-        if renaming == f.family {
+        if chosen {
+            ui.Slider(
+                bind: f.size,
+                label: "How large {font_title(f)} reads",
+                min: 0.7,
+                max: 1.4,
+                step: 0.05,
+                shows_value: true,
+            )
             row(gap: .related, align: .center) {
-                ui.TextInput(bind: draft, placeholder: "The name it shows as")
-                ui.Button("Save name", icon: .check) {
-                    on press: rename_font(lib, f, draft).then(set(renaming, ""))
+                ui.Button("Rename", icon: .pencil, size: .small) {
+                    on press: set(draft, f.name).then(set(renaming, f.family))
                 }
-                ui.Button("Cancel", icon: .x) {
-                    on press: set(renaming, "")
+                if not f.builtin {
+                    ui.Button("Remove", icon: .trash_2, size: .small) {
+                        on press: remove_font(lib, f)
+                    }
+                }
+            }
+            if renaming == f.family {
+                row(gap: .related, align: .center) {
+                    ui.TextInput(bind: draft, placeholder: "The name it shows as")
+                    ui.Button("Save name", icon: .check) {
+                        on press: rename_font(lib, f, draft).then(set(renaming, ""))
+                    }
+                    ui.Button("Cancel", icon: .x) {
+                        on press: set(renaming, "")
+                    }
                 }
             }
         }

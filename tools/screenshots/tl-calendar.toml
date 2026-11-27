@@ -48,26 +48,31 @@ perform = { target = "key:item:agenda", action = "activate" }
 
 [[situation]]
 name = "tasks"
-title = "Tasks in a project, some done"
+title = "Tasks coming up, and two finished"
+
+# A task's own action runs on the row the window shows it in: the tasks are made, the window goes
+# to the list that holds them, and two are checked off there. The finished ones are shown in the
+# list they stand in then.
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Book the room for the offsite", due = "${TODAY+2}" }, bind = "room" }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Book the room for the offsite", due = "${TODAY+2}" } }
-
-[[situation.steps]]
-invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Send the agenda to the team", due = "${TODAY+3}" } }
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Send the agenda to the team", due = "${TODAY+3}" }, bind = "agenda" }
 
 [[situation.steps]]
 invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Order lunch for twelve", due = "${TODAY+6}" } }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Collect feedback from last offsite" }, bind = "feedback" }
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "show-upcoming", bind = "listed" }
 
-# The window goes to its Tasks place, where the task a row shows is published: it is checked
-# off there.
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "show-tasks" }
+invoke = { resource = "{{room.resources.0}}", action = "check_task", args = { done = true }, bind = "checked" }
+
 [[situation.steps]]
-invoke = { resource = "{{feedback.resources.0}}", action = "check_task", args = { done = true } }
+invoke = { resource = "{{agenda.resources.0}}", action = "check_task", args = { done = true }, bind = "checked" }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "show-done" }
 
 [[situation]]
 name = "month"
