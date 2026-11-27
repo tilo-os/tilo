@@ -124,7 +124,7 @@ pub(crate) struct StoreLock {
 
 impl StoreLock {
     fn acquire(layout: &Layout) -> Result<Self, StoreError> {
-        std::fs::create_dir_all(layout.root()).map_err(crate::io_at("create", layout.root()))?;
+        create_shared_dir(layout.root()).map_err(crate::io_at("create", layout.root()))?;
         let lock =
             advisory_lock::FileLock::open(&layout.lock(), advisory_lock::LockMode::Exclusive)
                 .map_err(crate::io_at("lock", layout.lock()))?;
@@ -288,6 +288,19 @@ fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
     Ok(())
+}
+
+/// Create the directory `path` where any account on the device may traverse it.
+///
+/// A device's packages are its signed public bytes: the installer already leaves their files
+/// readable to everyone (0444, or 0555 where one runs), and the launcher opens them for a sandbox
+/// that serves the device as another account. A directory made under a restrictive umask would
+/// close every file under it to that sandbox, and the launcher then refuses the bind with
+/// "Permission denied" — which is how a device-store launch of an app's own origin failed. The
+/// store's directories are therefore made explicitly, not as the umask happens to fall.
+fn create_shared_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    set_mode(path, 0o755)
 }
 
 impl PackageStore {
@@ -697,19 +710,18 @@ impl PackageStore {
         meta: &PackageMeta,
     ) -> Result<(), StoreError> {
         let layout = &self.layout;
-        std::fs::create_dir_all(layout.packages())
-            .map_err(crate::io_at("create", layout.packages()))?;
+        create_shared_dir(&layout.packages()).map_err(crate::io_at("create", layout.packages()))?;
         let tmp = layout.tmp();
         let tree = tmp.join(staging_name(meta.id, "tree"));
         let record = tmp.join(staging_name(meta.id, "pkg"));
         let result = (|| -> Result<(), StoreError> {
-            std::fs::create_dir_all(&tree).map_err(crate::io_at("create", &tree))?;
+            create_shared_dir(&tree).map_err(crate::io_at("create", &tree))?;
             let executable = meta.executable_path();
             let image = Self::image_tree(content, meta, &tree)?;
             for (rel, hash) in &meta.collection.entries {
                 let target = tree.join(rel);
                 if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent).map_err(crate::io_at("create", parent))?;
+                    create_shared_dir(parent).map_err(crate::io_at("create", parent))?;
                 }
                 if !(image.is_some() && rel == tilo_app_package::TREE_FILE) {
                     content.export(hash, &target)?;
@@ -727,7 +739,7 @@ impl PackageStore {
             if let Some(spec) = &image {
                 spec.apply(&tree)?;
             }
-            std::fs::create_dir_all(&record).map_err(crate::io_at("create", &record))?;
+            create_shared_dir(&record).map_err(crate::io_at("create", &record))?;
             let signed_root = record.join(SIGNED_ROOT_FILE);
             tilo_files::native::atomic::write(&signed_root, &meta.signed_root_bytes())
                 .map_err(crate::io_at("write", &signed_root))?;
@@ -978,7 +990,7 @@ impl PackageStore {
             return Ok(());
         }
         let tmp = self.layout.tmp();
-        std::fs::create_dir_all(&tmp).map_err(crate::io_at("create", &tmp))?;
+        create_shared_dir(&tmp).map_err(crate::io_at("create", &tmp))?;
         let gone = tmp.join(staging_name(id, what));
         std::fs::rename(path, &gone).map_err(crate::io_at("move aside", path))?;
         remove_tree(&gone).map_err(crate::io_at("remove", &gone))?;
@@ -1916,5 +1928,46 @@ type = "gui"
             })();
             assert!(result.is_ok(), "{result:?}");
         }
+    }
+
+    /// A device's daemon launches an app through a sandbox that serves the device as another
+    /// account, so the store it reads has to be traversable by one: the installer makes its
+    /// directories explicitly (0755) instead of leaving them to the umask it ran under, while the
+    /// payload's files stay read-only (0444, or 0555 where one runs) as every install leaves them.
+    #[cfg(unix)]
+    #[test]
+    fn an_installed_store_is_traversable_by_every_account() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |path: &std::path::Path| {
+            std::fs::metadata(path)
+                .expect("the installed tree")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        let root = tempfile::tempdir().unwrap();
+        let store = PackageStore::at(root.path());
+        let installed = store
+            .install(
+                archive("1.0.0").unwrap().as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )
+            .expect("the package installs");
+        let payload = &installed.package.payload_root;
+        assert_eq!(mode(root.path()), 0o755, "the store's root");
+        assert_eq!(mode(&store.layout().packages()), 0o755, "the store's pkgs");
+        assert_eq!(mode(payload), 0o755, "the package's payload");
+        assert_eq!(
+            mode(&payload.join("bin")),
+            0o755,
+            "a directory of the payload"
+        );
+        let file = payload.join("bin/app");
+        assert_eq!(
+            mode(&file) & 0o444,
+            0o444,
+            "the payload's files are readable to the sandbox that runs them"
+        );
     }
 }
