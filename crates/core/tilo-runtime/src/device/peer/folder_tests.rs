@@ -371,10 +371,6 @@ async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
         .expect("the server holds workspaces")
         .clone();
     let workspace = hosted.create("Studio").await.unwrap().workspace;
-    hosted
-        .enter(&workspace, (&laptop_cert, &laptop_key))
-        .await
-        .expect("a device of the person enters the workspace");
     // The server holds a file before the computer ever syncs.
     put_on_server(
         &server,
@@ -571,10 +567,6 @@ async fn a_workspace_made_elsewhere_gets_a_folder_that_syncs() {
         .clone();
     // The workspace the computer logged in to, which its login entered.
     let studio = hosted.create("Studio").await.unwrap().workspace;
-    hosted
-        .enter(&studio, (&laptop_cert, &laptop_key))
-        .await
-        .expect("a device of the person enters the workspace");
     let login = login_to(&server, &studio, (&laptop_cert, &server_cert));
     let (dir, home) = (state.path().join("laptop"), state.path().join("home"));
     let computer = Computer::start(&dir, &home, (&laptop_key, &laptop_cert), &login).await;
