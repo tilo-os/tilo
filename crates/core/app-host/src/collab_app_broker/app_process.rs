@@ -46,6 +46,10 @@ pub(super) struct PeerProcess {
     task: Arc<std::os::fd::OwnedFd>,
     launcher: Option<Arc<std::os::fd::OwnedFd>>,
 }
+/// The broker's own process. A kernel that pins no process for a socket's peer still names the
+/// peer's pid, and the one process that pid pins exactly is the one asking: the broker's own, as
+/// the connections of the windows its daemon runs in its own process are (a phone's app is one
+/// process, its device and its windows alike).
 #[cfg(not(target_os = "linux"))]
 pub(super) struct PeerProcess;
 
@@ -155,9 +159,13 @@ impl PeerProcess {
             } => {},
         }
     }
+    /// The peer on `stream`, where it is this process: any other is pinned by nothing here.
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn from_socket(_: &tilo_socket::tokio::Stream) -> Option<Self> {
-        None
+    pub(super) fn from_socket(stream: &tilo_socket::tokio::Stream) -> Option<Self> {
+        tilo_socket::tokio::peer_pid(stream)
+            .ok()
+            .filter(|pid| *pid == std::process::id())
+            .map(|_| Self)
     }
     #[cfg(not(target_os = "linux"))]
     pub(super) fn handed(
@@ -186,13 +194,14 @@ impl PeerProcess {
                 unsafe { libc::poll(&raw mut poll, 1, 0) == 0 }
             })
     }
+    /// This process runs while it asks.
     #[cfg(not(target_os = "linux"))]
     #[expect(
         clippy::unused_self,
         reason = "mirrors the Linux pidfd check, which reads this process handle"
     )]
     fn alive(&self) -> bool {
-        false
+        true
     }
 }
 
