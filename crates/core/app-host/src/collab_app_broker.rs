@@ -242,6 +242,15 @@ struct PendingInvocation {
     cancellation_fence: Arc<AtomicBool>,
 }
 
+/// A host step that declared itself cancellable and has not ended.
+struct HostStepStop {
+    /// The flag that stops it when its caller cancels it.
+    stop: Arc<AtomicBool>,
+    /// The invocation it is a step of, as the dispatch delivered that invocation to the app that
+    /// made the call: that invocation waits on it, and its cancel stops it.
+    continues: Option<tilo_actions::InvocationId>,
+}
+
 impl PendingInvocation {
     fn completion_owner(&self) -> InvocationOwner {
         self.owner.clone()
@@ -484,9 +493,8 @@ pub struct AppBrokerState {
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     /// Host steps whose result stays current, while they are open.
     live_views: live_views::LiveViews,
-    /// The host steps that declared themselves cancellable and have not ended, by job: the flag
-    /// that stops one when its caller cancels it.
-    host_step_stops: Mutex<HashMap<u64, Arc<AtomicBool>>>,
+    /// The host steps that declared themselves cancellable and have not ended, by job.
+    host_step_stops: Mutex<HashMap<u64, HostStepStop>>,
     /// Jobs whose action's contract declares untrusted content, so every
     /// observation of them says so. They share the completed invocation
     /// cache's bounded lifetime.

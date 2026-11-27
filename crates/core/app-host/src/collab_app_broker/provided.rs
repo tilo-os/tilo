@@ -751,11 +751,19 @@ impl AppBrokerState {
         })?;
         // A call whose contract declares it cancellable may be asked to stop while it runs: its
         // caller's cancel sets this flag, and the call stops and answers as cancelled.
+        // The invocation it continues waits on it, so that invocation can be stopped too: its
+        // cancel reaches this step, whatever its own contract declared.
         let stop = Arc::new(AtomicBool::new(false));
         if descriptor.contract.execution.cancellable()
             && let Ok(mut stops) = self.host_step_stops.lock()
         {
-            stops.insert(id, Arc::clone(&stop));
+            stops.insert(
+                id,
+                super::HostStepStop {
+                    stop: Arc::clone(&stop),
+                    continues: serving.as_ref().map(|serving| serving.invocation()),
+                },
+            );
         }
         if descriptor.contract.is_live() {
             let view = match registered.answers.watch(caller, request) {
@@ -892,7 +900,7 @@ impl AppBrokerState {
             .host_step_stops
             .lock()
             .ok()
-            .and_then(|stops| stops.get(&id).cloned());
+            .and_then(|stops| stops.get(&id).map(|step| Arc::clone(&step.stop)));
         stop.is_some_and(|stop| {
             stop.store(true, std::sync::atomic::Ordering::Release);
             true

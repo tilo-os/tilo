@@ -851,12 +851,16 @@ impl AppBrokerState {
         if &job.owner != owner {
             return Err("only the invocation owner may cancel it".into());
         }
-        if !job.cancellable {
+        let waits = self.waits_on_cancellable_step(job.update.invocation());
+        if !job.cancellable && !waits {
             return Err("the action did not declare cooperative cancellation".into());
         }
         let job = pending
             .get_mut(&id)
             .ok_or_else(|| "the invocation is not running".to_string())?;
+        // An action that waits on a step that can be stopped can be stopped through it: it is
+        // asked to, and may answer that it was.
+        job.cancellable = true;
         let durable = self.persist_cancellation(job)?;
         if job.cancellation_requested_at.is_none() {
             job.cancellation_requested_at = Some(tilo_clock::now());
@@ -887,11 +891,23 @@ impl AppBrokerState {
             .lock()
             .ok()
             .and_then(|pending| {
-                pending
-                    .get(&id)
-                    .map(|job| job.cancellable && &job.owner == owner)
+                pending.get(&id).map(|job| {
+                    &job.owner == owner
+                        && (job.cancellable
+                            || self.waits_on_cancellable_step(job.update.invocation()))
+                })
             })
             .unwrap_or(false)
+    }
+    /// Whether `invocation` waits on a host step that declared itself cancellable, one a call
+    /// its app made as its step: an action is cancellable while it awaits such a step, and its
+    /// cancel, which its app passes on to the calls it waits on, stops that step.
+    fn waits_on_cancellable_step(&self, invocation: tilo_actions::InvocationId) -> bool {
+        self.host_step_stops.lock().is_ok_and(|stops| {
+            stops
+                .values()
+                .any(|step| step.continues == Some(invocation))
+        })
     }
     pub(super) fn disconnect_device_media(&self, peer_id: u64) {
         if let Some(media) = self.services.call_media.as_ref() {

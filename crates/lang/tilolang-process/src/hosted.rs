@@ -1815,6 +1815,9 @@ pub struct Hosted {
     children: Rc<RefCell<BTreeMap<String, Child>>>,
     /// The person's presses on their way through the dispatch, each a call of its own.
     presses: Rc<RefCell<Presses>>,
+    /// The invocations whose cancel was passed on to the calls their runs wait on: a run that
+    /// ends failing once its call stopped answers its invocation as stopped.
+    stopping: RefCell<std::collections::HashSet<tilo_actions::InvocationId>>,
     /// Whether the runtime sends its calls of other apps' actions on this instance's connection.
     sending: bool,
     /// Whether the runs an earlier host over this store left waiting were ended.
@@ -2263,6 +2266,7 @@ impl Hosted {
             waiting_calls,
             children,
             presses,
+            stopping: RefCell::default(),
             sending: false,
             left_runs_ended: false,
             platform: platform_roots,
@@ -3780,18 +3784,23 @@ impl Hosted {
     /// Whether any waits.
     fn stop_calls_of(&self, served: u64) -> bool {
         let pressed = self.presses.borrow().delivered_as(served);
-        let calls: Vec<String> = self
+        let calls: Vec<(String, Served)> = self
             .children
             .borrow()
             .iter()
-            .filter(|(_, child)| {
-                child.served.is_some_and(|child| match child {
+            .filter_map(|(call, child)| {
+                let of = child.served?;
+                match of {
                     Served::Delivered(id, _) => id == served,
                     Served::Pressed(press) => Some(press) == pressed,
-                })
+                }
+                .then(|| (call.clone(), of))
             })
-            .map(|(call, _)| call.clone())
             .collect();
+        self.stopping
+            .borrow_mut()
+            .extend(calls.iter().map(|(_, of)| of.invocation()));
+        let calls: Vec<String> = calls.into_iter().map(|(call, _)| call).collect();
         for call in &calls {
             let Ok(invocation) = call.parse::<tilo_actions::InvocationId>() else {
                 continue;
@@ -4026,6 +4035,7 @@ impl Hosted {
                 self.instance.commit_planned();
                 if let Some(served) = served {
                     let invocation = served.invocation();
+                    self.stopping.borrow_mut().remove(&invocation);
                     // The run's value is the action's answer, as its declared result, as it is
                     // for a run that never waited.
                     let output = match &action {
@@ -4058,11 +4068,18 @@ impl Hosted {
             Err(error) => {
                 self.instance.commit_planned();
                 if let Some(served) = served {
-                    self.checks.abandon(served.invocation());
-                    let update = failed(
-                        served.invocation(),
-                        Refused::new("action_failed", error.to_string()),
-                    );
+                    let invocation = served.invocation();
+                    self.checks.abandon(invocation);
+                    // A run whose invocation was cancelled ends when the call it waited on
+                    // stopped: it was stopped, not failed.
+                    let update = if self.stopping.borrow_mut().remove(&invocation) {
+                        InvocationUpdate::Cancelled {
+                            invocation,
+                            message: Some(error.to_string()),
+                        }
+                    } else {
+                        failed(invocation, Refused::new("action_failed", error.to_string()))
+                    };
                     self.answer_served(served, update);
                 }
             }
