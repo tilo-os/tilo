@@ -377,6 +377,58 @@ impl Apps {
         Ok(package)
     }
 
+    /// The device's daemon decides the launch this open makes of `asked`'s app in `workspace`
+    /// before the window process is the app's, and answers the ticket its connection is vouched
+    /// for with. `None` for a session no daemon decides, whose apps reach no socket of one.
+    ///
+    /// # Errors
+    /// The daemon refused the launch, or did not answer.
+    fn window_launch(
+        &self,
+        asked: &tilo_app_launch::Launch,
+        workspace: &Workspace,
+        instance: u64,
+    ) -> Result<Option<u64>, String> {
+        let Some(launches) = self.state.borrow().launches.clone() else {
+            return Ok(None);
+        };
+        if !launches.decided_by_the_daemon() {
+            return Ok(None);
+        }
+        // Content a hosted window opens was kept in the app's own scope in the workspace before
+        // the window exists: what the daemon decides is the app and the workspace the window is
+        // a launch of, and `asked_of` names no such ask.
+        let mut ask = match asked {
+            tilo_app_launch::Launch::Content { app, .. } => {
+                let into = if workspace.is_workspace() {
+                    workspace.id.clone()
+                } else {
+                    String::new()
+                };
+                runtime_collab::wire::shell::LaunchAsk::package(app.clone(), into)
+            }
+            other => super::asked_of(other, workspace, false, Some(instance)).ok_or_else(|| {
+                format!(
+                    "{} starts no window the device's daemon decides",
+                    other.app()
+                )
+            })?,
+        };
+        ask.window = Some(instance);
+        launches.order(ask).map(|order| Some(order.ticket))
+    }
+
+    /// Tell the daemon the launch `ticket` it answered starts no process, and why.
+    fn launch_never_started(&self, ticket: Option<u64>, why: &str) {
+        let Some(ticket) = ticket else {
+            return;
+        };
+        let Some(launches) = self.state.borrow().launches.clone() else {
+            return;
+        };
+        launches.never_started(ticket, why.to_owned());
+    }
+
     /// Bind a spare in `workspace` to `asked`'s app for the window `instance`: the one ready
     /// there, or one started now. `timed` is the open's launch timing, which the spare's first
     /// frame ends.
@@ -405,29 +457,48 @@ impl Apps {
             Some(spare) => spare,
             None => self.start_spare(&workspace.id, package.runtimes.clone())?,
         };
+        // The daemon decides this launch before the window process is the app's: its ticket is
+        // what the process's connections are vouched for with, and what makes the process the
+        // app's on the device's own endpoint.
+        let ticket = self.window_launch(asked, workspace, instance)?;
         // The compositor names the spare's windows by what its connection is bound to: it is
         // bound before the spare is told, so no window of it is ever shown as anything else.
         if !spare.connection.bind(app, &workspace.id) {
+            self.launch_never_started(ticket, "the window was already bound to an app");
             return Err("the spare window was bound already".to_owned());
         }
         // Written down before the spare reaches a service as the app's window.
         let launches = self.state.borrow().launches.clone();
         if let Some(launches) = &launches {
             launches.started(spare.pid, app, &workspace.id, true);
+            if let Some(ticket) = ticket {
+                launches.started_as(ticket, spare.pid);
+            }
         }
-        let (module, surface) = package.handed()?;
-        let held = reservation
-            .bind_spare(
-                tilo_app_launch::Spare {
-                    link: spare.link,
-                    launcher_pid: spare.pid,
-                },
-                instance,
-                opens,
-                module,
-                surface,
-            )
-            .map_err(|error| format!("the spare window was not bound: {error}"))?;
+        let (module, surface) = match package.handed() {
+            Ok(handed) => handed,
+            Err(error) => {
+                self.launch_never_started(ticket, &error);
+                return Err(error);
+            }
+        };
+        let held = match reservation.bind_spare(
+            tilo_app_launch::Spare {
+                link: spare.link,
+                launcher_pid: spare.pid,
+            },
+            instance,
+            opens,
+            module,
+            surface,
+        ) {
+            Ok(held) => held,
+            Err(error) => {
+                let why = format!("the spare window was not bound: {error}");
+                self.launch_never_started(ticket, &why);
+                return Err(why);
+            }
+        };
         tilo_startup_metrics::launch_spawned(timed, spare.pid);
         let mut state = self.state.borrow_mut();
         state.held.insert(spare.launch, held);

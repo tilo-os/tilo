@@ -98,6 +98,14 @@ tilo_test_env::scenario! {
             .started(ticket + 100, child.id(), pinned(&child))
             .unwrap_err();
         assert!(unknown.contains("was ordered"), "{unknown}");
+        // The launch is the daemon's on the device's own endpoint too, not only by the ticket
+        // its shell vouches it with: the process is the app wherever it connects.
+        assert_eq!(
+            apps.attested(child.id()),
+            Some((VIEWER.to_owned(), WORKSPACE.to_owned())),
+            "a launch the seat started is the app the daemon serves"
+        );
+        assert_eq!(apps.launched.ticket(child.id()), Some(ticket));
 
         child.kill().unwrap();
         child.wait().unwrap();
@@ -106,6 +114,13 @@ tilo_test_env::scenario! {
             assert!(
                 ended.elapsed() < Duration::from_secs(5),
                 "an ended launch is forgotten"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        while apps.attested(child.id()).is_some() {
+            assert!(
+                ended.elapsed() < Duration::from_secs(5),
+                "an ended launch is no app on the device's endpoint"
             );
             std::thread::sleep(Duration::from_millis(10));
         }

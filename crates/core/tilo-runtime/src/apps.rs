@@ -2196,35 +2196,51 @@ impl Launched {
             .count()
     }
 
-    /// The ticket of the launch recorded for `pid`, whatever it attests.
+    /// The ticket of the launch `pid` is or descends from, whatever it attests: the nearest
+    /// process at or above it this daemon recorded as a launch, as [`Self::of`] finds it.
     fn ticket(&self, pid: u32) -> Option<u64> {
-        self.0.lock_recover().get(&pid).map(|record| record.ticket)
+        let (at, process) = self.recorded_above(pid)?;
+        if !matches!(process, ProcessOf::Launched { .. }) {
+            return None;
+        }
+        self.0.lock_recover().get(&at).map(|record| record.ticket)
     }
 
-    /// Whether `pid` is still the process recorded for exactly `app` and
-    /// `workspace`: the record names them, and the running process is the one
-    /// recorded, never a later process the kernel gave the same pid.
+    /// Whether `pid` is, or descends from, the process recorded for `app` and `workspace`: the
+    /// launch names them, and the process at or above `pid` is the one recorded, never a later
+    /// process the kernel gave the same pid.
     fn attest(&self, pid: u32, app: &str, workspace: &str) -> bool {
-        let mut launches = self.0.lock_recover();
-        let Some(record) = launches.get_mut(&pid) else {
+        let Some((at, process)) = self.recorded_above(pid) else {
             return false;
         };
-        if record.app != app
-            || record.workspace != workspace
-            || process_start_time(pid) != Some(record.start_time)
-        {
+        let ProcessOf::Launched {
+            app: recorded_app,
+            workspace: recorded_workspace,
+            ..
+        } = process
+        else {
+            return false;
+        };
+        if recorded_app != app || recorded_workspace != workspace {
             return false;
         }
+        let mut launches = self.0.lock_recover();
+        let Some(record) = launches.get_mut(&at) else {
+            return false;
+        };
         record.connected = true;
         drop(launches);
         self.connected_now();
         true
     }
 
-    /// The app launched as `pid` has connected.
+    /// The app launched as `pid` is or descends from has connected.
     fn connects(&self, pid: u32) {
+        let Some((at, _)) = self.recorded_above(pid) else {
+            return;
+        };
         let mut launches = self.0.lock_recover();
-        let Some(record) = launches.get_mut(&pid) else {
+        let Some(record) = launches.get_mut(&at) else {
             return;
         };
         record.connected = true;
@@ -2258,18 +2274,46 @@ impl Launched {
         self.no_window_of(pid, app, workspace) == Some(true)
     }
 
-    /// Whether `pid` is still the process recorded for exactly `app` and `workspace`, and
+    /// Whether `pid` is, or descends from, the process recorded for `app` and `workspace`, and
     /// whether that launch shows no window.
     fn no_window_of(&self, pid: u32, app: &str, workspace: &str) -> Option<bool> {
-        let launches = self.0.lock_recover();
-        let record = launches.get(&pid)?;
-        let (recorded, same, no_window) = (
-            record.start_time,
-            record.app == app && record.workspace == workspace,
-            record.no_window,
-        );
-        drop(launches);
-        (same && process_start_time(pid) == Some(recorded)).then_some(no_window)
+        let (at, process) = self.recorded_above(pid)?;
+        let ProcessOf::Launched {
+            app: recorded_app,
+            workspace: recorded_workspace,
+            ..
+        } = process
+        else {
+            return None;
+        };
+        if recorded_app != app || recorded_workspace != workspace {
+            return None;
+        }
+        self.0
+            .lock_recover()
+            .get(&at)
+            .map(|record| record.no_window)
+    }
+
+    /// The start time `pid` is recorded with, while that record is still its process's: what a
+    /// watcher of the launch's end passes to [`Self::forget_at`].
+    fn recorded_start(&self, pid: u32) -> Option<u64> {
+        self.0
+            .lock_recover()
+            .get(&pid)
+            .map(|record| record.start_time)
+    }
+
+    /// Forget the record of `pid`, once the process started at `started` has ended: a record a
+    /// launch made since for a process that took the pid is another launch's, and stays.
+    pub(crate) fn forget_at(&self, pid: u32, started: u64) {
+        let mut launches = self.0.lock_recover();
+        if launches
+            .get(&pid)
+            .is_some_and(|record| record.start_time == started)
+        {
+            launches.remove(&pid);
+        }
     }
 
     /// Forget `pid`, once its process has been reaped.

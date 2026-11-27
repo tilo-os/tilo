@@ -340,7 +340,7 @@ impl Launches {
     }
 
     /// Tell the device's daemon its order `ticket` started no process, and why.
-    fn never_started(&self, ticket: u64, why: String) {
+    pub(crate) fn never_started(&self, ticket: u64, why: String) {
         if !why.is_empty() {
             tracing::warn!(ticket, %why, "a launch the daemon ordered did not start");
         }
@@ -1077,6 +1077,36 @@ mod tests {
             launches.window(app, workspace, 7, Some(process));
             assert!(!admitted(workspace).unwrap().expect("its launch").windowless);
             assert!(launches.running_apps().contains(app));
+        }
+
+        phase a_launch_is_vouched_for_with_the_ticket_the_daemon_answered;
+        // The process the session started for a launch the daemon decided presents the daemon's
+        // ticket, and no other: it is what the app's connection is vouched for with, and a
+        // process bound to a launch the daemon heard nothing of reaches no workspace.
+        {
+            let launches = Launches::default();
+            let (app, workspace) = ("so.tilo.mail", "workspace-mail");
+            let process = std::process::id();
+            launches.started(process, app, workspace, true);
+            assert!(
+                launches
+                    .authenticated_launch(process, app, workspace, None)
+                    .unwrap()
+                    .expect("the live launch")
+                    .launch_ticket
+                    .is_none(),
+                "a launch the daemon did not decide presents no ticket"
+            );
+            launches.started_as(41, process);
+            assert_eq!(
+                launches
+                    .authenticated_launch(process, app, workspace, None)
+                    .unwrap()
+                    .expect("the live launch")
+                    .launch_ticket,
+                Some(41),
+                "a launch the daemon decided is vouched for with its ticket"
+            );
         }
 
         phase a_withdrawn_window_connection_admits_nothing;

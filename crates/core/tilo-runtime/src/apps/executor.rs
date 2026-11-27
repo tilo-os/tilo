@@ -448,7 +448,36 @@ impl super::Apps {
         self.tickets
             .seat_started(ticket, pid, Arc::clone(&pinned))?;
         tracing::info!(ticket, pid, "the seat's shell started a launch");
-        forget_when_ended(Arc::clone(&self.tickets), ticket, pinned);
+        // The launch is the daemon's on every endpoint it serves, not only by the ticket its
+        // shell vouches it with: a connection the process makes to the device itself is
+        // admitted as the app it runs, as one the daemon started here is.
+        let started = self.tickets.admitted(ticket).and_then(|launch| {
+            let shows = if launch.windowless {
+                super::Shows::Nothing
+            } else {
+                super::Shows::Window
+            };
+            self.launched
+                .record_showing(pid, &launch.app, &launch.workspace, shows, None, ticket)
+                .then(|| self.launched.recorded_start(pid))
+                .flatten()
+        });
+        if started.is_none() {
+            tracing::warn!(
+                ticket,
+                pid,
+                "a launch the seat started is not the app's on the device's own endpoint: its \
+                 process start time cannot be read"
+            );
+        }
+        forget_when_ended(
+            Arc::clone(&self.tickets),
+            Arc::clone(&self.launched),
+            ticket,
+            pid,
+            started,
+            pinned,
+        );
         Ok(())
     }
 
@@ -554,11 +583,15 @@ fn host_may_launch(apps: &super::Apps, ask: &LaunchAsk, entry: &HostEntry) -> Re
     Ok(())
 }
 
-/// Forget the launch `ticket` once the process `pinned` pins ends.
+/// Forget the launch `ticket` once the process `pinned` pins ends, and the record `started`, the
+/// start time the daemon recorded for it, makes of its pid.
 #[cfg(target_os = "linux")]
 fn forget_when_ended(
     tickets: Arc<Tickets>,
+    launched: Arc<super::Launched>,
     ticket: u64,
+    pid: u32,
+    started: Option<u64>,
     pinned: Arc<runtime_portal::descriptors::Owned>,
 ) {
     let watched = std::thread::Builder::new()
@@ -573,6 +606,9 @@ fn forget_when_ended(
             // A pidfd reads once its process ended; an interrupted wait looks again.
             while !matches!(rustix::event::poll(&mut ended, None), Ok(1..)) {}
             tickets.forget(ticket);
+            if let Some(started) = started {
+                launched.forget_at(pid, started);
+            }
         });
     if let Err(error) = watched {
         tracing::error!(%error, ticket, "a launch's end cannot be watched");
@@ -580,7 +616,15 @@ fn forget_when_ended(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn forget_when_ended(_: Arc<Tickets>, _: u64, _: Arc<runtime_portal::descriptors::Owned>) {}
+fn forget_when_ended(
+    _: Arc<Tickets>,
+    _: Arc<super::Launched>,
+    _: u64,
+    _: u32,
+    _: Option<u64>,
+    _: Arc<runtime_portal::descriptors::Owned>,
+) {
+}
 
 /// The device's launcher as a person's shell reaches it.
 pub(crate) struct DeviceLauncher(pub(crate) Arc<super::Apps>);

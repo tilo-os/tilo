@@ -1421,6 +1421,29 @@ tilo_test_env::scenario! {
                 .is_none(),
             "a ticket is presented only for the launch's own app"
         );
+        // A process below a launch the daemon recorded is that launch's, as the ancestry read
+        // the workspace serves admits it: the attestation names it and presents its ticket.
+        let mut below = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn_locked()
+            .unwrap();
+        assert_eq!(
+            ticket(below.id()),
+            first,
+            "a descendant presents the launch's ticket"
+        );
+        assert!(
+            apps.launched.attest(below.id(), VIEWER, WORKSPACE),
+            "a descendant is attested as the launch it descends from"
+        );
+        assert_eq!(
+            apps.attested(below.id()),
+            Some((VIEWER.to_owned(), WORKSPACE.to_owned())),
+            "and it is the app the device serves"
+        );
+        assert!(!apps.launched.attest(below.id(), "so.tilo.other", WORKSPACE));
+        below.kill().unwrap();
+        below.wait().unwrap();
         child.kill().unwrap();
         child.wait().unwrap();
         assert_eq!(ticket(child.id()), None, "a reaped process presents none");
