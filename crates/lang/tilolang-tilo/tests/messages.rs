@@ -109,7 +109,9 @@ impl Device {
 
 impl EngineHost for Device {
     fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        assert_eq!(app, APP, "the engine is Messages'");
+        if app != APP {
+            return Err(format!("the engine is Messages', not {app}'s"));
+        }
         let input: serde_json::Value = serde_json::from_str(input).unwrap_or_default();
         self.calls.borrow_mut().push((op.to_owned(), input.clone()));
         if op != "state" {
@@ -143,7 +145,7 @@ impl EngineHost for Device {
             "sims": serving,
             "actor": "",
             "accounts": accounts,
-            "routes": input["routes"].as_array().map_or(0, Vec::len).max(0)
+            "routes": input["routes"].as_array().map_or(0, Vec::len)
                 .eq(&0).then(Vec::<bool>::new).unwrap_or_else(|| vec![serving]),
         })
         .to_string())
@@ -156,7 +158,9 @@ impl EngineHost for Device {
         input: &str,
         handlers: &JobHandlers,
     ) -> Result<String, String> {
-        assert_eq!(app, APP, "the engine is Messages'");
+        if app != APP {
+            return Err(format!("the engine is Messages', not {app}'s"));
+        }
         let mut jobs = self.jobs.borrow_mut();
         let path = format!("devices/this/jobs/{:04}", jobs.len());
         jobs.insert(
@@ -182,7 +186,7 @@ impl EngineHost for Device {
 
     fn cancel(&self, job: &str) -> bool {
         self.jobs.borrow_mut().get_mut(job).is_some_and(|held| {
-            held.state = "cancelled".to_owned();
+            "cancelled".clone_into(&mut held.state);
             true
         })
     }
@@ -254,7 +258,7 @@ impl Asked {
     }
 }
 
-/// The account Ada's Signal messages go from, and her WhatsApp account.
+/// The account Ada's Signal messages go from, and her `WhatsApp` account.
 const SIGNAL: &str = "acct-signal";
 const WHATSAPP: &str = "acct-whatsapp";
 /// The scope both are confirmed under, and Bo's identity there.
@@ -374,7 +378,7 @@ impl Window {
             .actions
             .iter()
             .find(|action| action.name == name)
-            .unwrap_or_else(|| panic!("no action {name}"))
+            .ok_or_else(|| format!("no action {name}"))?
             .id
             .clone();
         match self
@@ -468,7 +472,7 @@ impl Window {
         let (handlers, record) = {
             let mut jobs = self.device.jobs.borrow_mut();
             let job = jobs.get_mut(path).expect("the job runs");
-            job.state = state.to_owned();
+            state.clone_into(&mut job.state);
             job.detail = detail;
             (job.handlers.clone(), Device::record(path, job))
         };
@@ -603,8 +607,8 @@ fn type_in(window: &ViewInstance, words: &str) {
 /// A page of Bo's Signal history as the engine answers it.
 fn page(lines: &[(&str, &str, bool, &str)], more: bool) -> serde_json::Value {
     json!({
-        "messages": lines.iter().enumerate().map(|(at, (id, text, incoming, delivery))| json!({
-            "key": id, "text": text, "incoming": incoming, "at_ms": 1_790_000_000_000_i64 + at as i64 * 60_000,
+        "messages": lines.iter().enumerate().zip((1_790_000_000_000_i64..).step_by(60_000)).map(|((at, (id, text, incoming, delivery)), at_ms)| json!({
+            "key": id, "text": text, "incoming": incoming, "at_ms": at_ms,
             "at": format!("2026-09-21T13:{:02}:00Z", at), "delivery": delivery,
         })).collect::<Vec<_>>(),
         "more": more,
@@ -712,6 +716,10 @@ fn members_come_first_then_the_address_books_people() {
 /// then the page before it are read by the oldest message shown, and what is written waits in
 /// the draft until the service took it, sent once however often Send is pressed.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one person's flow through the window, step after step"
+)]
 fn a_confirmed_address_is_read_page_by_page_and_written_to_once() {
     let window = Window::new(Device::serving());
     press(&window.window(), "NavItem", "Bo Diaz");
@@ -1112,9 +1120,13 @@ fn linking_this_device_shows_a_private_code_until_it_is_finished() {
     assert_shows(&window.window(), "Choose a person");
 }
 
-/// A first WhatsApp account: its protected storage is reviewed, its code shown and refreshed,
+/// A first `WhatsApp` account: its protected storage is reviewed, its code shown and refreshed,
 /// the linked identity confirmed; Signal shows a code at once; SMS lists the device's SIMs.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one person's flow through the window, step after step"
+)]
 fn a_first_account_is_reviewed_linked_and_confirmed() {
     let window = Window::new(Device::serving());
     press(&window.window(), "NavItem", "Accounts");
@@ -1151,7 +1163,7 @@ fn a_first_account_is_reviewed_linked_and_confirmed() {
     let (begin, asked) = window.device.last("first_begin");
     assert_eq!(asked["service"], "whatsapp", "{asked}");
     let code = json!({"service": "whatsapp", "account": "wa-1", "attempt": "a-1", "generation": 1, "code": "2@private,code"});
-    window.ends(&begin, "done", code.clone());
+    window.ends(&begin, "done", code);
     let shown = window.window();
     assert!(
         shown.capture_protected(),
@@ -1238,7 +1250,7 @@ fn a_first_account_is_reviewed_linked_and_confirmed() {
     assert_shows(&window.window(), "Link a WhatsApp account");
 }
 
-/// The private groups of a WhatsApp account: listed, opened with their members' roles and what
+/// The private groups of a `WhatsApp` account: listed, opened with their members' roles and what
 /// was said, written to, and changed — an administrator removes someone else and adds a
 /// reviewed contact; anyone leaves.
 #[test]
@@ -1349,7 +1361,7 @@ fn without_the_messaging_service_setup_says_why() {
     assert_shows(&shown, "This account's messaging service is unavailable.");
 }
 
-/// What changes something at Signal, WhatsApp or SMS (a message sent, a group changed, a device
+/// What changes something at Signal, `WhatsApp` or SMS (a message sent, a group changed, a device
 /// linked) is an outside effect, which a caller other than the person is asked about first;
 /// keeping a conversation an agent hands Messages is not.
 #[test]
@@ -1409,6 +1421,10 @@ fn a_german_window_reads_the_catalogue() {
 /// What agents and automations hand Messages: deliveries kept once each and in the order they
 /// were sent, refusals for what names nobody, queued replies, search and export.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one person's flow through the window, step after step"
+)]
 fn agents_keep_search_and_export_the_conversations_handed_to_messages() {
     let window = Window::new(Device::serving());
     let deliver = |from: &str, body: &str, date: &str, to: &str| {
