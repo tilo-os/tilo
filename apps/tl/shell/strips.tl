@@ -309,9 +309,17 @@ view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool) {
             // window, a key that brings another forward) is shown the strip they moved to, at
             // the pace the motion sets from their recent input, rather than left to pan for it.
             scroll(axis: .horizontal, keep: "front", fill) {
-                row(gap: .group, align: .stretch, fill) {
+                // Each gap between two windows is a drop target of its own (`gap_here`), so a tab
+                // or a window's bar carried into the row lands at that place in it: the row's own
+                // gap is the room those targets take.
+                row(gap: .none, align: .stretch, fill) {
                     for s in strips {
-                        row_window(a, s, lists)
+                        // A window takes the share its width names against the row's other
+                        // windows, so a carried edge is seen where the person put it, and never
+                        // narrower than the least its bar, its tabs and an app need: a row of
+                        // more windows than that holds scrolls along it.
+                        row_window(a, s, lists, fill(strip_weight(s).to_float()), min: 44rem)
+                        gap_here(held, strips, s, min: 1.5rem, max: 1.5rem)
                     }
                     if strips.is_empty() {
                         ui.EmptyState("No window here yet", inline: true)
@@ -319,6 +327,42 @@ view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool) {
                 }
             }
         }
+    }
+}
+
+/// The strip after `s` in its row, by its key; empty while `s` is the row's last.
+fn strip_after(strips: List<LayoutStrip>, s: LayoutStrip) -> Text {
+    let at = strips.index_of(s) ?? 0
+    if let next = strips.at(at + 1) { next.key } else { "" }
+}
+
+/// The gap after the window of `s`, a drop target of its own: a tab carried out of its bar and let
+/// go here stands as a window of its own at this place in the row, before the window that followed
+/// the gap. It takes the room the row's own gap took between two windows.
+view gap_here(held: LayoutRow, strips: List<LayoutStrip>, s: LayoutStrip) {
+    let next = strip_after(strips, s)
+    ui.DropTarget {
+        on drop(target: host.Resource): drop_strip_here(held, next, target)
+        stack()
+    }
+}
+
+/// Drop the carried place in the gap: it stands as a window of its own at that place in the row,
+/// before the window named `before`, or at the row's end when nothing follows. One arranging
+/// action of the session's, so a press, a script and an agent move it the same way.
+action drop_strip_here(held: LayoutRow, before: Text, target: host.Resource) (
+    icon: .columns_2,
+    label: "Move here",
+) {
+    if let p = place_showing(target.id()) {
+        session.move_tab(
+            tab: p.key,
+            strip: held.key,
+            before: if before == "" { .none } else { .some(before) },
+            group: .none,
+            workspace: .none,
+            display: .none,
+        )
     }
 }
 
@@ -390,6 +434,9 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
     let shown = chosen ?? placed.first()
+    // A window with a window before it carries its leading edge too: the border between them is
+    // the previous window's trailing edge, and it is that window's width the drag changes.
+    let leads = if let _ = strip_lead(a, s) { true } else { false }
     ui.DropTarget {
         on drop(target: host.Resource): tab_place_here(a, s, target)
         ui.WindowFrame(
@@ -401,12 +448,12 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
             carries: if s.floating { floating_bar(shown) } else { window_resource(shown) },
             resizable: resizable,
             narrowest: if resizable { .some(least_window_width()) } else { .none },
+            leads: leads,
             fill,
         ) {
-            // The window's trailing edge carried and let go: one arranging action sets the
-            // share of its row it takes, recorded and undoable, so a press, a script and an
-            // agent resize the same way.
-            on resize(to: Int, was: Int): resize_strip(a, s, to, was)
+            // A window edge carried and let go: one arranging action sets the share of its row it
+            // takes, recorded and undoable, so a press, a script and an agent resize the same way.
+            on resize(at: List<Int>): resize_strip(a, s, at)
             // A press on the window's bar brings it forward, the keyboard in it.
             on press: bring_forward(a, s)
             // The window fills the room the drop target around it is given: the target only
@@ -1466,15 +1513,91 @@ action move_right(w: device.Window (label: "The window")) (
     }
 }
 
-/// Resize the strip `s` to the width its trailing edge was carried to (`to`), from the width it
-/// had when it was grabbed (`was`), both in the shell's pixels: one arranging action
+/// Resize the strip `s` from an edge carried and let go, as the frame reports it: the width it is
+/// taking, the width it had when it was grabbed (both in the shell's pixels), which edge (`0`
+/// leading, `1` trailing), and whether Shift was held. One arranging action of the session's
 /// (`layout.strip.resize`), recorded and undoable like every other, so a press, a script and an
 /// agent resize the same way.
-action resize_strip(a: Layout, s: LayoutStrip, to: Int, was: Int) (
+///
+/// A leading edge is the previous window's trailing edge: a window that has one before it moves
+/// that window's share, whose width is the one whose edge the pointer holds. Shift trades width
+/// between the two windows at the border: what one gains the other loses, and both are set here.
+action resize_strip(a: Layout, s: LayoutStrip, at: List<Int>) (
     icon: .columns_2,
     label: "Resize the window",
 ) {
-    session.resize(strip: the_strip(s.key), permille: share_for_width(a, s, to, was))
+    let to = at.at(0) ?? 0
+    let was = at.at(1) ?? 0
+    let side = at.at(2) ?? 1
+    let shift = (at.at(3) ?? 0) != 0
+    if was > 0 and to > 0 {
+        let own = strip_weight(s)
+        let strips = row_strips(a, s)
+        let total = strips.map(x -> strip_weight(x)).sum()
+        // The width the row gave this window, which its edge measures the travel against.
+        let row_px = was * total / own
+        let previous = strip_lead(a, s)
+        if shift {
+            let travel = if side == 0 { was - to } else { to - was }
+            let after_key = if side == 0 { s.key } else { strip_after(strips, s) }
+            let left = if side == 0 { previous } else { .some(s) }
+            if let l = left {
+                if let r = strips.find(x -> x.key == after_key) {
+                    let pair = row_px * (strip_weight(l) + strip_weight(r)) / total
+                    let least = least_window_width().to_int()
+                    let left_px = row_px * strip_weight(l) / total
+                    let new_left = (left_px + travel).clamp(least, (pair - least).max(least))
+                    let new_right = pair - new_left
+                    session.resize(
+                        strip: the_strip(l.key),
+                        permille: weight_for_width(new_left, total, row_px),
+                    )
+                    session.resize(
+                        strip: the_strip(r.key),
+                        permille: weight_for_width(new_right, total, row_px),
+                    )
+                }
+            }
+        } else if side == 0 {
+            // The edge carried is the previous window's trailing edge: that window takes the
+            // travel, so the border stands under the pointer.
+            if let prev = previous {
+                let prev_px = was * strip_weight(prev) / own
+                session.resize(
+                    strip: the_strip(prev.key),
+                    permille: share_for_width(a, prev, prev_px + (was - to), prev_px),
+                )
+            }
+        } else {
+            session.resize(strip: the_strip(s.key), permille: share_for_width(a, s, to, was))
+        }
+    }
+}
+
+/// The weight that leaves a window `px` pixels wide in a row `total` weights wide over `row_px`
+/// pixels, clamped to the per-mille range a strip stores.
+fn weight_for_width(px: Int, total: Int, row_px: Int) -> Int {
+    if row_px <= 0 {
+        return 667
+    }
+    (px * total / row_px).clamp(1, 100000)
+}
+
+/// The weight a strip takes of its row's width; a usual one where the layout names none.
+fn strip_weight(s: LayoutStrip) -> Int {
+    if s.width <= 0 { 667 } else { s.width }
+}
+
+/// The strips of the row `s` stands in, on its display, in order.
+fn row_strips(a: Layout, s: LayoutStrip) -> List<LayoutStrip> {
+    a.strips.filter(x -> x.row == s.row and x.display == s.display and not x.floating)
+}
+
+/// The strip before `s` in its row; empty when it stands first.
+fn strip_lead(a: Layout, s: LayoutStrip) -> Option<LayoutStrip> {
+    let strips = row_strips(a, s)
+    let at = strips.index_of(s) ?? 0
+    strips.at(at - 1)
 }
 
 /// The share of its row the window of `s` takes when its trailing edge is carried to `to` pixels

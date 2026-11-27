@@ -69,4 +69,34 @@ tilo_test_env::scenario! {
         assert!(b.drag_in_flight(), "a press on a tab of several lifts the tab");
         b.cancel_drag();
     }
+
+    phase a_bar_of_several_tabs_keeps_its_presses_while_the_window_can_be_carried;
+    // A bar that carries the window (its frame hands another window what the window holds) still
+    // keeps its pills for its tabs: the window is carried by the bar's own room, and a person who
+    // presses a pill carries the tab, never the window.
+    {
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = TabBar::new(
+            "g1",
+            vec![TabDescriptor::new(1, "A"), TabDescriptor::new(2, "B")],
+            1,
+        );
+        b.set_window_controls(true);
+        b.set_toolbar(1, Some(crowded_parts()));
+        b.set_carriable(true);
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        assert!(b.carriable, "fixture: the bar carries the window");
+        assert!(!b.lifts_the_window(), "two tabs are a bar of tabs");
+        let title = b.tab_rects[0].center();
+        let mut handled = false;
+        dispatch_cursor(&mut b, title, &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        dispatch_cursor(&mut b, title + Vec2::new(40.0, 30.0), &mut handled);
+        assert!(
+            b.drag_in_flight(),
+            "a press on a tab of several carries the tab, even where the bar carries the window"
+        );
+        b.cancel_drag();
+    }
 }

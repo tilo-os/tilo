@@ -2979,7 +2979,10 @@ impl TabBar {
     /// title.
     #[must_use]
     pub fn lifts_the_window(&self) -> bool {
-        self.carriable || self.tabs.len() < 2
+        // A window of one tab shows it as the bar's title, so the pill is the window's handle. A
+        // bar of several keeps its presses for its tabs, and the window is carried by the bar's
+        // own room, which its frame takes where no tab stands — whether or not the bar carries.
+        self.tabs.len() < 2
     }
 
     /// Whether `p` is on one of the bar's controls: the window's own, the toolbar's (not its

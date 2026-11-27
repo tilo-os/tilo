@@ -1,8 +1,8 @@
-//! The strips style's pointer gestures on a window's edge and its tabs (`docs/design-language.md`,
-//! "Window edge resize"; `docs/designs/app-language/shell.md` §2, §3): a window in a row is
-//! resized by carrying its trailing edge, a tab carried out of its bar lands in the window it is
-//! let go over, a row of windows settles on a window's edge when it is scrolled, and the size a
-//! window is taking reads while its edge is carried.
+//! The strips style's pointer gestures on a window's edge (`docs/design-language.md`, "Window edge
+//! resize"; `docs/designs/app-language/shell.md` §2, §3): a window in a row is resized by carrying
+//! its trailing edge or, where a window stands before it, its leading edge, and Shift trades width
+//! with the window across the border; a row of windows settles on a window's edge when it is
+//! scrolled; and the size a window is taking reads while its edge is carried, in either theme.
 //!
 //! Every check reads what the session keeps — the layout's widths, the strip a place stands in,
 //! and where the shell draws a window for assistive technology — never a pixel.
@@ -24,7 +24,13 @@ use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_session::{Options, Session};
 use tilo_session_core::surface::Scroll;
 
+use crate::common::window::press_key;
 use crate::common::{HEIGHT, PERSON, TITLES, WIDTH, notebook as notes, on_screen, until};
+
+/// The left Shift key, evdev.
+const KEY_LEFTSHIFT: u32 = 42;
+/// A wide display, where a row of windows is wider than the least each keeps.
+const WIDE: i32 = 1920;
 
 /// A session with the shell as the whole screen and the notes a test places.
 fn session() -> (Session, Vec<String>) {
@@ -39,6 +45,72 @@ fn session() -> (Session, Vec<String>) {
         },
     );
     (session, notes)
+}
+
+/// A session with the shell on a wide display, where a row of two windows is wider than the least
+/// a window keeps and has room for an edge to trade.
+fn wide_session() -> (Session, Vec<String>) {
+    let (notebook, notes) = notes(&TITLES);
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDE, HEIGHT)],
+        Options {
+            person: PERSON.to_owned(),
+            collab: false,
+            services: vec![Box::new(notebook)],
+            ..Options::default()
+        },
+    );
+    (session, notes)
+}
+
+/// The appearance section the person's theme is chosen through.
+const APPEARANCE: &str = "settings/appearance";
+
+/// A session with the person's settings service beside the notes, so the shell can show the theme
+/// a test asks for.
+fn themed_session() -> (Session, Vec<String>) {
+    let (notebook, notes) = notes(&TITLES);
+    let services: Vec<Box<dyn tilo_service::Service>> = vec![
+        Box::new(notebook),
+        Box::new(settings_sections::service::SettingsService::new()),
+    ];
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        Options {
+            person: PERSON.to_owned(),
+            collab: false,
+            services,
+            ..Options::default()
+        },
+    );
+    (session, notes)
+}
+
+/// Choose `theme` the way a person does: the theme of its mode, then that mode.
+fn choose_theme(session: &mut Session, light: bool, theme: &str) {
+    // The settings service publishes its sections on a pass of its own.
+    crate::common::wait_for(session, "the appearance section", |session| {
+        session.read(APPEARANCE)
+    });
+    let key = if light { "light_theme" } else { "dark_theme" };
+    for (field, value) in [
+        (key, json!(theme)),
+        ("mode", json!(if light { "light" } else { "dark" })),
+    ] {
+        let arguments: Map<String, Value> = json!({ "value": value }).as_object().unwrap().clone();
+        session
+            .invoke(
+                APPEARANCE,
+                &settings_store::workspace::verb(field),
+                &arguments,
+            )
+            .unwrap_or_else(|error| panic!("set {field}: {error:?}"));
+    }
+    until(session, "the appearance holds it", |session| {
+        let held = session.read(APPEARANCE).unwrap_or(Value::Null);
+        held.get(key) == Some(&json!(theme))
+            && held.get("mode") == Some(&json!(if light { "light" } else { "dark" }))
+    });
 }
 
 /// Place `resource` on the workspace in front, in a strip of its own: the place's id and the
@@ -105,31 +177,15 @@ fn shown_as(session: &Session, title: &str) -> String {
         )
 }
 
-/// Tab the place `place` into the strip `strip`, as letting its window's bar go over that
-/// window's bar does: the layout's published `move` with the strip it becomes a tab of.
-fn tab_into(session: &mut Session, place: u64, strip: u64) {
-    let row = crate::common::strip(session, strip)
-        .expect("the strip reads")
-        .row;
-    let arguments: Map<String, Value> = json!({
-        "row": format!("shell:row:{row}"),
-        "strip": format!("shell:strip:{strip}"),
-        "before": Value::Null,
-    })
-    .as_object()
-    .unwrap()
-    .clone();
-    session
-        .invoke(&format!("shell:place:{place}"), "move", &arguments)
-        .unwrap_or_else(|error| panic!("tab {place} into {strip}: {error:?}"));
-    until(session, "the place is a tab of the strip", |session| {
-        strip_of(session, place) == Some(strip)
-    });
-}
-
 /// A press, a travel of `steps` past the drag threshold, and a release: what a drag with the
 /// pointer is, as a person makes one.
 fn drag(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
+    carry(session, from, to);
+    let_go(session);
+}
+
+/// Press at `from` and travel to `to`, the button still down: what is dragged is still in hand.
+fn carry(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
     let pointer = |session: &mut Session, x: f64, y: f64| {
         session
             .compositor()
@@ -157,7 +213,18 @@ fn drag(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
             from.1 + (to.1 - from.1) * t,
         );
     }
-    button(session, false);
+}
+
+/// Let go of the button where the drag stands.
+fn let_go(session: &mut Session) {
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: crate::common::BTN_LEFT,
+            pressed: false,
+        })
+        .expect("the button");
+    session.step(Duration::from_millis(16)).expect("step");
 }
 
 /// The middle of the rect `(x, y, w, h)` an on-screen control stands in.
@@ -177,21 +244,16 @@ fn bar_of(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
     })
 }
 
-/// Where the pill of the tab named `name` stands: the title is drawn inside it, so where the shell
-/// draws that title is a point on the pill.
-fn pill_of(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
-    crate::common::wait_for(session, "the tab's pill", |session| {
-        session
-            .shell_text_bounds(name)
-            .filter(|(_, _, width, height)| *width > 0.0 && *height > 0.0)
-    })
-}
-
 /// Where a window's trailing edge is, on its bar: the window's name names its bar, which runs
 /// across its top and belongs to the shell, and the edge lies on its trailing side, clear of
 /// the controls' pill.
 fn trailing_edge((x, y, w, h): (f64, f64, f64, f64)) -> (f64, f64) {
     (x + w - 2.0, y + h / 2.0)
+}
+
+/// Where a window's leading edge is, on its bar: the border with the window before it.
+fn leading_edge((x, y, w, h): (f64, f64, f64, f64)) -> (f64, f64) {
+    (x + 2.0, y + h / 2.0)
 }
 
 /// Carry a window's trailing edge by `by` pixels: press the edge, travel, let go.
@@ -201,10 +263,10 @@ fn carry_edge(session: &mut Session, name: &str, by: f64) {
     drag(session, edge, (edge.0 + by, edge.1));
 }
 
-/// Carrying a window's trailing edge resizes the window: its share of the row changes, and one
-/// undo puts it back, because the resize is one arranging action of the session's.
+/// Carrying a window's trailing edge resizes it: its share of the row changes, and the window
+/// beside it keeps the share it had, so the border stands where the pointer let it go.
 #[test]
-fn carrying_a_windows_edge_resizes_it_and_undo_restores_it() {
+fn carrying_a_windows_edge_resizes_it_and_the_neighbour_keeps_its_share() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
@@ -225,53 +287,12 @@ fn carrying_a_windows_edge_resizes_it_and_undo_restores_it() {
         "the edge carried 140 px takes a real share: {before} then {}",
         width_of(&session, own)
     );
-    session.undo_layout().expect("undo the resize");
-    until(&mut session, "the width it had", |session| {
-        width_of(session, own) == before
-    });
     assert_eq!(
         width_of(&session, beside),
         neighbour,
         "the window beside it never changed: only the grabbed edge's window did"
     );
     crate::common::shot(&mut session, "strips-edge-resized");
-}
-
-/// A tab carried out of its window's bar and let go over another window lands in that window:
-/// the drop target under the pointer takes the tab, rather than the shell making a window of it.
-#[test]
-fn a_tab_let_go_over_another_window_lands_in_it() {
-    let _settled = tilo_ui_base::motion::testing::settled();
-    let (mut session, notes) = session();
-    until(&mut session, "the strips", |session| {
-        on_screen(session, "Showing Strips").is_some()
-    });
-    let (first, source) = place(&mut session, &notes[0]);
-    let (_second, target) = place(&mut session, &notes[1]);
-    let (third, _own) = place(&mut session, &notes[2]);
-    assert_ne!(source, target, "the two windows stand apart");
-    // The third place is a tab of the first window, so its bar shows two pills to carry.
-    tab_into(&mut session, third, source);
-    until(&mut session, "the window's tabs", |session| {
-        places_of(session, source) == [first, third]
-    });
-    let carried = shown_as(&session, TITLES[2]);
-    let pill = middle(pill_of(&mut session, &carried));
-    let onto = shown_as(&session, TITLES[1]);
-    let landing = middle(bar_of(&mut session, &onto));
-    // The pill is carried out of its bar and let go over the other window's bar, which the shell
-    // owns and which takes what is dropped on it.
-    drag(&mut session, pill, landing);
-    until(
-        &mut session,
-        "the tab landed in the window it was let go over",
-        |session| strip_of(session, third) == Some(target),
-    );
-    assert_eq!(
-        places_of(&session, source),
-        [first],
-        "the window it left keeps its own place"
-    );
 }
 
 /// A row wider than the screen settles on a window's edge after it is scrolled: a wheel's step
@@ -384,4 +405,141 @@ fn the_size_chip_shows_the_size_while_the_edge_is_carried() {
     until(&mut session, "the resize landed", |session| {
         width_of(session, own) > before
     });
+}
+
+/// The window's share of its row, read by the place `place` stands in.
+fn share_of_place(session: &Session, place: u64) -> i64 {
+    width_of(
+        session,
+        strip_of(session, place).expect("the place stands in a strip"),
+    )
+}
+
+/// Carrying a window's leading edge resizes the window before it: the border between two windows
+/// is the earlier one's trailing edge, so dragging it left narrows the earlier window and widens
+/// the one grabbed, whose own share stays what it was.
+#[test]
+fn carrying_a_windows_leading_edge_resizes_the_window_before_it() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut session, notes) = wide_session();
+    until(&mut session, "the strips", |session| {
+        crate::common::on_screen_at(session, "Showing Strips", WIDE, HEIGHT).is_some()
+    });
+    let (first, before_strip) = place(&mut session, &notes[0]);
+    let (second, own) = place(&mut session, &notes[1]);
+    assert_ne!(
+        before_strip, own,
+        "each place starts in a window of its own"
+    );
+    let before = share_of_place(&session, first);
+    let own_before = share_of_place(&session, second);
+    let name = shown_as(&session, TITLES[1]);
+    let rect = bar_of(&mut session, &name);
+    let edge = leading_edge(rect);
+    // Carried left, the edge takes room from the window before it.
+    drag(&mut session, edge, (edge.0 - 140.0, edge.1));
+    until(
+        &mut session,
+        "the window before it is narrower",
+        |session| share_of_place(session, first) < before,
+    );
+    assert_eq!(
+        share_of_place(&session, second),
+        own_before,
+        "the window whose edge was carried keeps its own share"
+    );
+}
+
+/// Shift carried on an edge trades width with the window across the border: what one gains the
+/// other loses, and both shares are set by the one gesture.
+#[test]
+fn shift_carrying_an_edge_trades_width_with_the_window_beside_it() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut session, notes) = wide_session();
+    until(&mut session, "the strips", |session| {
+        crate::common::on_screen_at(session, "Showing Strips", WIDE, HEIGHT).is_some()
+    });
+    let (_first, own) = place(&mut session, &notes[0]);
+    let (second, beside) = place(&mut session, &notes[1]);
+    assert_ne!(own, beside, "each place starts in a window of its own");
+    let before = width_of(&session, own);
+    let beside_before = width_of(&session, beside);
+    let name = shown_as(&session, TITLES[0]);
+    let rect = bar_of(&mut session, &name);
+    let edge = trailing_edge(rect);
+    press_key(&mut session, KEY_LEFTSHIFT, true);
+    drag(&mut session, edge, (edge.0 + 120.0, edge.1));
+    press_key(&mut session, KEY_LEFTSHIFT, false);
+    until(&mut session, "the window is wider", |session| {
+        width_of(session, own) > before
+    });
+    until(
+        &mut session,
+        "the window beside it is narrower",
+        |session| width_of(session, beside) < beside_before,
+    );
+    let _ = second;
+}
+
+/// The edge light and the size chip read the same in both themes: the shell the person shows, dark
+/// and light, says the size an edge is taking, and the captures stand beside it.
+#[test]
+fn the_edge_light_and_size_chip_read_in_both_themes() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    for (light, theme, name) in [(false, "tilo-dark", "dark"), (true, "paper-light", "light")] {
+        let (mut session, notes) = themed_session();
+        choose_theme(&mut session, light, theme);
+        until(&mut session, "the strips", |session| {
+            on_screen(session, "Showing Strips").is_some()
+        });
+        place(&mut session, &notes[0]);
+        place(&mut session, &notes[1]);
+        let shown = shown_as(&session, TITLES[0]);
+        let rect = bar_of(&mut session, &shown);
+        let edge = trailing_edge(rect);
+        session
+            .compositor()
+            .input(InputEvent::PointerMotion {
+                x: edge.0,
+                y: edge.1,
+            })
+            .expect("the pointer");
+        session.step(Duration::from_millis(16)).expect("step");
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: crate::common::BTN_LEFT,
+                pressed: true,
+            })
+            .expect("the button");
+        session.step(Duration::from_millis(16)).expect("step");
+        for step in 1..=6 {
+            session
+                .compositor()
+                .input(InputEvent::PointerMotion {
+                    x: edge.0 + 20.0 * f64::from(step),
+                    y: edge.1,
+                })
+                .expect("the pointer");
+            session.step(Duration::from_millis(16)).expect("step");
+        }
+        let said: Vec<String> = session
+            .accessible_labels()
+            .into_iter()
+            .filter(|label| label.contains(" by "))
+            .collect();
+        assert!(
+            !said.is_empty(),
+            "the size the edge is taking reads in the {name} theme"
+        );
+        crate::common::shot(&mut session, &format!("strips-edge-{name}"));
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: crate::common::BTN_LEFT,
+                pressed: false,
+            })
+            .expect("the button");
+        session.step(Duration::from_millis(16)).expect("step");
+    }
 }

@@ -1093,13 +1093,20 @@ d-wln2heq6 = Nach vorn holen
 d-wln2heq6-s = S
 
 d-dbsggqsm = Fensterbreite ändern
-    .doc = Setzt die Breite des Fensters der Leiste `s` auf die, bis zu der sein Rand gezogen wurde (`to`), aus der Breite, die es beim Greifen hatte (`was`), beide in Bildschirmpunkten: eine Anordnungsänderung der Sitzung, aufgenommen und rückgängig zu machen.
+    .doc = Setzt die Breite des Fensters der Leiste `s` auf die, bis zu der sein Rand gezogen wurde: die Breite, die es nimmt, die Breite, die es beim Greifen hatte (beide in Bildschirmpunkten), welcher Rand (`0` führend, `1` folgend) und ob Umschalt gehalten wurde. Eine Anordnungsänderung der Sitzung, aufgenommen und rückgängig zu machen.
 
 d-dbsggqsm-s = S
 
-d-dbsggqsm-to = Bis
+d-dbsggqsm-at = Bei
 
-d-dbsggqsm-was = Von
+d-c5bmitfl = Hierher verschieben
+    .doc = Legt den getragenen Ort in die Lücke: Dort steht er als eigenes Fenster der Zeile, vor dem Fenster `before`, oder am Ende der Zeile, wenn nichts folgt.
+
+d-c5bmitfl-before = Vor
+
+d-c5bmitfl-target = Ziel
+
+d-scwczm3e = Lücke
 
 d-3ajs72ce = Einstellungen des Stils
     .doc = Die eigenen Einstellungen des Stils und die zwei Wege, einen Stil zu ändern (`docs/designs/app-language/ shell.md` §6): ohne Agent, an dem einen Ort, an dem die Einstellungen einer Person liegen, und mit Agent, über dieselben Aktionen, die die Bedienelemente der Person ausführen.

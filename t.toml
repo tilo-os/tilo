@@ -3901,6 +3901,21 @@ evidence = ["/target/people-bar-shots/**", "/target/people-bar-shots-light/**"]
 timeout_secs = 3600
 default = false
 
+# Pictures of the strips style's edge resize and a carried tab
+# (crates/desktop/session/tests/strips_gestures.rs): the edge light and the size chip while an edge
+# is carried, in the dark and the light theme, and a tab held over a gap. The tests start the
+# shell's own programs, so this builds them beside the test binary first, as the session's nextest
+# setup does. Only when named.
+[[check]]
+name = "strips-shots"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "rm -rf /target/strips-shots\nbash tools/build-sibling-binaries.sh tilo-lock-screen:tilo-lock-screen tilolang-process:tilolang-process=tilolang-process/app-launch launcher:tilo-launcher=launcher/dev-overrides tilo-daemon:tilo-runtime=tilo-daemon/test-support,tilo-daemon/agents example-shared-checklist:example-shared-checklist\nTL_SHELL_SHOTS=/target/strips-shots bash tools/test-env.sh cargo test --locked -p tilo-session --test it --features ui/test-support -- strips_gestures:: --test-threads=1\n"
+requires = ["arch=x86_64"]
+outputs = ["/target/strips-shots/**"]
+evidence = ["/target/strips-shots/**"]
+timeout_secs = 3600
+default = false
+
 [[check]]
 name = "tilo-vm-binary-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }

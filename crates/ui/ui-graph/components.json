@@ -9992,6 +9992,11 @@
           "type": {
             "option": "float"
           }
+        },
+        {
+          "name": "leads",
+          "doc": "Whether a window stands before it in its row, so its leading edge is a border a person can carry too. The border between two windows is the previous window's trailing edge, and the drag resizes the one whose width it changes.",
+          "type": "bool"
         }
       ],
       "parts": [
@@ -10020,9 +10025,10 @@
         },
         {
           "name": "resize",
-          "doc": "The window's trailing edge was dragged and let go: the width it is taking, in logical pixels, then the width it had when it was grabbed. The shell turns that into the share its row gives it.",
-          "value": "int",
-          "at": "int"
+          "doc": "An edge was carried and let go: the width it is taking, in logical pixels, the width it had when it was grabbed, which edge it was (`0` leading, `1` trailing), and whether Shift was held (a trade of width with the window across the border). The shell turns that into the shares its row gives its windows.",
+          "value": {
+            "list": "int"
+          }
         }
       ],
       "semantics": {
