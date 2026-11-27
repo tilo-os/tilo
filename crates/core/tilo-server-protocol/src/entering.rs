@@ -62,10 +62,6 @@ use serde::{Deserialize, Serialize};
 use crate::directory::EntryRefused;
 use crate::workspaces::Role;
 
-/// How many entries a host runs at once, across every connection: the same
-/// bound its iroh join service holds its exchanges to.
-pub const MAX_ENTERING: usize = 64;
-
 /// How long one entry may take, from the hello to the host's answer: the
 /// iroh join service's bound on one exchange.
 pub const ENTERING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);

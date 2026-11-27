@@ -20,8 +20,7 @@ use collab_types::WorkspaceId;
 use tilo_server_protocol::config::WebTls;
 use tilo_server_protocol::metrics::WorkspaceEgress;
 use tilo_server_protocol::{
-    ComputeAccelerator, DeviceMeshProfile, MetricsSnapshot, PowerAvailability, ServerConfig,
-    ServiceCapabilities, TrustPolicy, WorkSetting,
+    MetricsSnapshot, ServerConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
 };
 
 fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
@@ -53,26 +52,13 @@ where
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn json_encodings_are_pinned() {
-    // Device mesh profile.
-    let profile = DeviceMeshProfile {
-        device: [1; 32],
-        services: ServiceCapabilities::relay_only(),
-        filesystem_endpoints: Vec::new(),
-    };
+    // The services a server says it hosts.
     assert_json(
-        &profile,
+        &ServiceCapabilities::relay_only(),
         concat!(
-            r#"{"device":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"#,
-            r#""services":{"workspace_replication":true,"#,
-            r#""inbound_server":true,"remote_control_server":true,"app_serving":false,"compute":false},"#,
-            r#""filesystem_endpoints":[]}"#,
+            r#"{"workspace_replication":true,"#,
+            r#""inbound_server":true,"remote_control_server":true,"app_serving":false,"compute":false}"#,
         ),
-    );
-
-    // Mesh enums.
-    assert_eq!(
-        serde_json::to_string(&(ComputeAccelerator::Gpu, PowerAvailability::Battery(15))).unwrap(),
-        r#"["gpu",{"battery":15}]"#
     );
 
     // The work a device takes.
@@ -194,33 +180,8 @@ tilo_test_env::scenario! {
 
     phase postcard_wire_encodings_and_shard_ids_are_pinned;
     {
-        // Management responses and compute worker adverts carry these fields in
-        // postcard frames.
+        // Management responses carry these fields in postcard frames.
         assert_postcard(&ServiceCapabilities::personal_server(), "0101010101");
-
-        // Mesh enums.
-        assert_postcard(
-            &[
-                PowerAvailability::Unknown,
-                PowerAvailability::External,
-                PowerAvailability::Charging(80),
-                PowerAvailability::Battery(15),
-            ],
-            "00010250030f",
-        );
-        assert_eq!(postcard_hex(&ComputeAccelerator::Gpu), "00");
-
-        // Mesh profiles may travel in postcard frames as well as JSON.
-        let profile = DeviceMeshProfile {
-            device: [1; 32],
-            services: ServiceCapabilities::relay_only(),
-            filesystem_endpoints: Vec::new(),
-        };
-        let bytes = postcard::to_stdvec(&profile).unwrap();
-        assert_eq!(
-            postcard::from_bytes::<DeviceMeshProfile>(&bytes).unwrap(),
-            profile
-        );
     }
 
     phase toml_encodings_are_pinned;

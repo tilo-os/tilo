@@ -58,5 +58,5 @@ pub use error::{CertifyError, LinkError};
 pub use host::{Carrier, ServerAddress};
 pub use https::{Answer, AnswerFuture, HttpClient, HttpFuture};
 pub use pairing::revoke_device;
-pub use sign_in::{encode, grant_holder, grant_label, key_client, sign_in_proof};
+pub use sign_in::{encode, grant_label, key_client, sign_in_proof};
 pub use signer::{DeviceSigner, MaybeSendSync, SignError, SignFuture};

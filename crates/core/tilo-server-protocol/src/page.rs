@@ -27,58 +27,6 @@ pub const PAGE_PREFIX: &str = "/w/";
 /// The most bytes one message on a page's stream carries.
 pub const MAX_PAGE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
-/// The provider a host's own page actions are listed and run under: the
-/// workspace's business a page offers beside what its records' actions and its
-/// governance offer, and which the host runs itself (inviting, being in
-/// another workspace of one's own, setting an agent up).
-pub const PAGE_ACTIONS_PROVIDER: &str = "tilo.page";
-
-/// One press puts a short invite link on the clipboard: the link is made
-/// ahead and carried by the row, since a clipboard write has to happen inside
-/// the press and the host's answer comes after it. Running the action hands
-/// the next one over.
-pub const COPY_INVITE_LINK: &str = "invite-link";
-
-/// The addresses left at a workspace's entry, waiting to be let in: who may
-/// invite reads them here and invites one by the address it left.
-pub const WAITING_TO_JOIN: &str = "waiting";
-
-/// The person's own devices, and what sets another one up (an agent on a
-/// computer, or a computer of theirs).
-pub const DEVICES_AND_ACCESS: &str = "devices-and-access";
-
-/// What one of [`PAGE_ACTIONS_PROVIDER`]'s actions answered, when its press
-/// opens something on the page rather than saying a line.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PageActionAnswer {
-    /// The addresses waiting at the workspace's entry, and whether the entry
-    /// mails an invitation to one it is asked about.
-    WaitList {
-        mails: bool,
-        entries: Vec<WaitingAddress>,
-    },
-    /// A link the row hands over: on the clipboard from the press, and the
-    /// row carries it for the next one.
-    Link { link: String },
-    /// The person's own devices, and where one more is set up: the site's
-    /// setup screen, which makes the code an agent on another computer runs.
-    Devices { setup: String },
-}
-
-/// An address waiting at a workspace's entry, as the host knows it: what it
-/// left, and the id the workspace names it by when it invites it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WaitingAddress {
-    /// The address's id on the wait list, as [`PageActionAnswer`]'s inviter
-    /// names it.
-    pub entry: String,
-    /// The address the person left.
-    pub contact: String,
-    /// Whether an invitation for it was already issued.
-    pub invited: bool,
-}
-
 /// The app name a page's address carries for the workspace's desktop (`/w/<workspace>/desktop`):
 /// the shell's own view of the layout the workspace's people share, its windows each the app's
 /// own page shown where the shell leaves the well.

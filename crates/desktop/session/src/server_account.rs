@@ -1,7 +1,7 @@
 //! The person's account with the server this session runs on, as a live read
 //! ([`tilo_action_services::server_account::ACCOUNT`]).
 //!
-//! On a server that serves workspaces ([`tilo_server_account::ServerAccountSource`]),
+//! On a server that serves workspaces ([`linux_vm::hosted::account::ServerAccountSource`]),
 //! the answer is what the server offers the session's account: its plans, the
 //! account's subscription, usage and invoices, read from the server's plans file
 //! and its hosted-VM service, and sent again whenever the plans file
@@ -13,6 +13,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use linux_vm::hosted::account::ServerAccountSource;
 use tilo_action_services::server_account::{self as wire, ServerAccount, ServerKind};
 use tilo_actions::remote::Pending;
 use tilo_actions::remote::admitted::top_level;
@@ -22,7 +23,6 @@ use tilo_actions::{
 };
 use tilo_broker_core::BrokerActor;
 use tilo_lock::MutexRecover as _;
-use tilo_server_account::ServerAccountSource;
 
 /// Where the account is read from.
 #[derive(Clone)]

@@ -70,17 +70,6 @@ pub fn names(records: &serde_json::Value) -> std::collections::BTreeMap<String, 
         .collect()
 }
 
-/// Who is here, from a read of who is in a workspace ([`tilo_actions::remote::PRESENCE`]): nobody
-/// when the read answered no one.
-#[must_use]
-pub fn here_in(readings: &serde_json::Value) -> Vec<Here> {
-    record_value(readings)
-        .get("here")
-        .cloned()
-        .and_then(|here| serde_json::from_value(here).ok())
-        .unwrap_or_default()
-}
-
 /// The values of the records [`fleet`] joins, as the record API reads them from the person's
 /// own workspace.
 #[derive(Clone, Debug, Default)]

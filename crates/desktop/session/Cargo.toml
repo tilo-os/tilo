@@ -260,8 +260,9 @@ tilo-workspace-join = { path = "../../core/workspace-join" }
 # The address an invitation names, signed: this device's own endpoint, for a
 # link it makes into a workspace it holds.
 tilo-delivery-protocol = { path = "../../core/tilo-delivery-protocol" }
-# The person's account with the host the session runs on, read live.
-tilo-server-account = { path = "../../core/tilo-server-account" }
+# The person's account with the host the session runs on, read live from its
+# hosted-VM service (`hosted::account`); the VM program's own keeper stays out.
+linux-vm = { path = "../../vm/linux-vm", default-features = false }
 # The session asks the model gateway as Activity, the way an app it starts
 # does, for the history's descriptions and group names.
 tilo-model-client = { path = "../../sdk/model-client", features = ["runtime-client"] }

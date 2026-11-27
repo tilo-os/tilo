@@ -24,15 +24,6 @@ pub use tilo_unlock_protocol::opened::{Opening, UnlockMethod};
 /// `/4` is the first version: the link names its workspace and whether it
 /// takes the workspace's records only as it opens them.
 pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/4";
-/// ALPN of the session between two of the person's own devices: each first
-/// proves its person's certificates (the endpoint id proves the device key),
-/// then the two exchange what is for the person's own devices alone. The
-/// device with the lower endpoint id dials it, the other only when it is not
-/// dialled; of two dialled at once, both keep the lower id's. `/2` is the
-/// second version: the personal fabric's payload no longer numbers a retired
-/// transfer variant, so a device of the first version is not answered rather
-/// than reading its other payloads as that one.
-pub const SIBLING_ALPN: &[u8] = b"tilo-server-sibling/2";
 /// ALPN of one device asking another of its workspace to list, call or watch
 /// an action, on a link of the device's own.
 pub const ACTIONS_ALPN: &[u8] = b"tilo-actions/1";

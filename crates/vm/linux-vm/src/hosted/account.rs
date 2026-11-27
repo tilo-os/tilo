@@ -3,7 +3,7 @@
 //! workspaces knows them.
 //!
 //! Such a server runs a workspace's Linux programs in VMs of its own
-//! ([`linux_vm::hosted`]), admitted by its plans file and metered in its
+//! ([`crate::hosted`]), admitted by its plans file and metered in its
 //! usage log, and runs the workspaces' Browser, metered in the log the
 //! server keeps ([`browser_actions`]). Its account answer is read from those
 //! and nothing else:
@@ -23,9 +23,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use linux_vm::hosted::control::{self, Reply, Request};
-use linux_vm::hosted::meter::{UsageEntry, UsageKind};
-use linux_vm::hosted::plan::{Plans, Sells};
+use super::control::{self, Reply, Request};
+use super::meter::{UsageEntry, UsageKind};
+use super::plan::{Plans, Sells};
 use tilo_action_services::server_account::{
     Entitlement, Limits, ServerAccount, ServerKind, Subscription, Usage, WorkspaceUsage,
 };

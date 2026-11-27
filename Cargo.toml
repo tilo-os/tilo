@@ -218,7 +218,6 @@ members = [
     # The SDKs' native parts: the API in process, as a key the program holds.
     "sdk/python/native",
     "sdk/typescript/native",
-    "crates/core/tilo-server-account",
     "crates/core/tilo-server-client",
     "crates/core/tilo-server-protocol",
     "crates/core/tilo-workspace-service",

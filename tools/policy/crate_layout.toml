@@ -113,7 +113,6 @@ core = [
     "tilo-runtime -> ush",
     "tilo-runtime-collab -> tilo-settings-store",
     "tilo-runtime-portal -> tilo-formats",
-    "tilo-server-account -> linux-vm",
     "tilo-session-client -> tilo-app",
     "tilo-session-client -> tilo-desktop-model",
     "tilo-workspace-directory -> tilo-desktop-model",

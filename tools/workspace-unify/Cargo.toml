@@ -1241,7 +1241,6 @@ doc = false
 "tilo-secrets" = { path = "../../crates/platform/tilo-secrets", default-features = false, features = ["host-keyring"] }
 "tilo-segment" = { path = "../../crates/engines/segment", default-features = false, features = ["infer"] }
 "tilo-selector" = { path = "../../crates/core/tilo-selector", default-features = false, features = [] }
-"tilo-server-account" = { path = "../../crates/core/tilo-server-account", default-features = false, features = [] }
 "tilo-server-client" = { path = "../../crates/core/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../crates/core/tilo-server-protocol", default-features = false, features = [] }
 "tilo-service" = { path = "../../crates/desktop/service", default-features = false, features = [] }
@@ -3673,7 +3672,6 @@ doc = false
 "tilo-secrets" = { path = "../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-segment" = { path = "../../crates/engines/segment", default-features = false, features = ["infer"] }
 "tilo-selector" = { path = "../../crates/core/tilo-selector", default-features = false, features = [] }
-"tilo-server-account" = { path = "../../crates/core/tilo-server-account", default-features = false, features = [] }
 "tilo-server-client" = { path = "../../crates/core/tilo-server-client", default-features = false, features = ["default", "dial"] }
 "tilo-server-protocol" = { path = "../../crates/core/tilo-server-protocol", default-features = false, features = [] }
 "tilo-service" = { path = "../../crates/desktop/service", default-features = false, features = [] }

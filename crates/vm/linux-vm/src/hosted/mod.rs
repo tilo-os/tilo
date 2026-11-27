@@ -8,6 +8,7 @@
     reason = "errors are typed enums whose variants document themselves"
 )]
 
+pub mod account;
 pub mod browser;
 pub mod control;
 pub mod files;

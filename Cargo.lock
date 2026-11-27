@@ -8004,6 +8004,7 @@ dependencies = [
  "fnv",
  "hex",
  "iroh-base",
+ "jiff",
  "libc",
  "linux-vm-agent",
  "linux-vm-protocol",
@@ -19790,7 +19791,6 @@ dependencies = [
  "tilo-runtime-portal",
  "tilo-seal",
  "tilo-secrets",
- "tilo-server-account",
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-session-actions",
@@ -20139,22 +20139,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-server-account"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "linux-vm",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-action-services",
- "tilo-actions",
- "tilo-files",
- "tilo-server-protocol",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-server-client"
 version = "0.1.0"
 dependencies = [
@@ -20265,6 +20249,7 @@ dependencies = [
  "jiff",
  "launcher",
  "libc",
+ "linux-vm",
  "os-actions",
  "pollster",
  "postcard",
@@ -20391,7 +20376,6 @@ dependencies = [
  "tilo-runtime-portal",
  "tilo-seal",
  "tilo-secrets",
- "tilo-server-account",
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-service",
@@ -24156,7 +24140,6 @@ dependencies = [
  "tilo-resource",
  "tilo-runtime-portal",
  "tilo-sandbox-core",
- "tilo-server-account",
  "tilo-server-protocol",
  "tilo-test-env",
  "tilo-user-identity",
@@ -27916,7 +27899,6 @@ dependencies = [
  "tilo-secrets",
  "tilo-segment",
  "tilo-selector",
- "tilo-server-account",
  "tilo-server-client",
  "tilo-server-protocol",
  "tilo-service",

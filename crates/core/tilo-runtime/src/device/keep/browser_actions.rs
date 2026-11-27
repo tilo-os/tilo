@@ -20,10 +20,10 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use linux_vm::hosted::account::browser_actions::{Log, PageAction};
+use linux_vm::hosted::account::{ACTIONS_LOG_ENV, PLANS_ENV, period};
 use linux_vm::hosted::plan::{self, Plans};
 use tilo_action_services::server_account;
-use tilo_server_account::browser_actions::{Log, PageAction};
-use tilo_server_account::{ACTIONS_LOG_ENV, PLANS_ENV, period};
 
 /// The page actions of hosted Browser, counted in the log the host's
 /// environment names.

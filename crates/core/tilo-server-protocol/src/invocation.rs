@@ -19,11 +19,11 @@
 )]
 
 use collab_types::signer::DeviceSigner;
+use tilo_actions::remote::InvokeRequest;
 use tilo_actions::remote::signed_invocation::{
     INVOCATION_SIGNATURE_TOLERANCE_NS, InvocationStatement, MAX_SIGNER_CERT_BYTES,
     StatementMismatch,
 };
-use tilo_actions::remote::{InvokeRequest, RemoteActionMessage};
 use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_device_cert_at};
 
 pub use tilo_actions::remote::SignedInvocation;
@@ -143,51 +143,6 @@ pub fn sign_invocation_now(
     let signature = collab_types::signer::sign_now(signer, statement.signing_message())
         .map_err(|error| InvocationError::Signer(error.0))?;
     Ok(SignedInvocation::new(statement, signature, encoded_cert))
-}
-
-/// Sign the invocation `message` carries, if it carries one, as
-/// [`sign_invocation`] does, replacing any signature it carried: a device signs
-/// what it sends under its own key, never one an app handed it. Every other
-/// message goes as it is.
-///
-/// # Errors
-///
-/// As [`sign_invocation`].
-pub async fn sign_message(
-    workspace: &str,
-    message: &mut RemoteActionMessage,
-    cert: &DeviceCert,
-    signer: &dyn DeviceSigner,
-    now_ns: u64,
-) -> Result<(), InvocationError> {
-    if let RemoteActionMessage::Invoke(request) = message {
-        request.signed = None;
-        request.signed = Some(Box::new(
-            sign_invocation(workspace, request, cert, signer, now_ns).await?,
-        ));
-    }
-    Ok(())
-}
-
-/// [`sign_message`] in this turn, for a signer that answers at once.
-///
-/// # Errors
-///
-/// As [`sign_invocation_now`].
-pub fn sign_message_now(
-    workspace: &str,
-    message: &mut RemoteActionMessage,
-    cert: &DeviceCert,
-    signer: &dyn DeviceSigner,
-    now_ns: u64,
-) -> Result<(), InvocationError> {
-    if let RemoteActionMessage::Invoke(request) = message {
-        request.signed = None;
-        request.signed = Some(Box::new(sign_invocation_now(
-            workspace, request, cert, signer, now_ns,
-        )?));
-    }
-    Ok(())
 }
 
 fn statement_for(

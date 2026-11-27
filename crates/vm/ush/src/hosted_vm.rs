@@ -55,7 +55,7 @@ use tilo_server_protocol::hosted_vm::VmSize;
 use ush_shell::{Input, Output, Program, Std, Stdio};
 use ush_tilo::Programs;
 
-pub use tilo_server_account::{ACCOUNT_ENV, PLANS_ENV, SOCKET_ENV};
+pub use linux_vm::hosted::account::{ACCOUNT_ENV, PLANS_ENV, SOCKET_ENV};
 pub const SIZE_ENV: &str = "TILO_HOSTED_VM_SIZE";
 
 /// The tenant's home on the VM's own disk in the guest image
@@ -597,7 +597,7 @@ struct Hold {
 impl Hold {
     fn start(plans: &Path) -> std::io::Result<Self> {
         let (tell, changes) = std::sync::mpsc::channel();
-        let watch = tilo_server_account::watch_plans(plans, move || {
+        let watch = linux_vm::hosted::account::watch_plans(plans, move || {
             let _ = tell.send(());
         })?;
         Ok(Self {

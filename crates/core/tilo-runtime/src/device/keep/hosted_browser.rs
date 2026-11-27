@@ -512,8 +512,8 @@ impl HostedBrowsers {
                 format!(
                     "{} names who pays for Browser sessions, so {} must name the log their \
                  page actions are counted in",
-                    tilo_server_account::ACCOUNT_ENV,
-                    tilo_server_account::browser_actions::ACTIONS_LOG_ENV
+                    linux_vm::hosted::account::ACCOUNT_ENV,
+                    linux_vm::hosted::account::browser_actions::ACTIONS_LOG_ENV
                 )
             })?;
         // The address their sessions reach this host at is part of serving
@@ -2711,7 +2711,7 @@ mod tests {
     #[test]
     fn a_host_serves_browsers_only_when_it_is_handed_sessions_is_reached_and_counts_them() {
         use crate::device::keep::browser_actions::BrowserMeter;
-        use tilo_server_account::{ACTIONS_LOG_ENV, PLANS_ENV};
+        use linux_vm::hosted::account::{ACTIONS_LOG_ENV, PLANS_ENV};
 
         struct NoMachines;
         impl BrowserSessions for NoMachines {

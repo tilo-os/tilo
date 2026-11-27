@@ -85,24 +85,6 @@ pub fn key_client(name: &str) -> String {
 const KEY_OPEN: &str = "API key \u{201c}";
 const KEY_CLOSE: &str = "\u{201d}";
 
-/// The name an agent's grant goes by in a workspace, from its certificate's
-/// label: the client that holds it, without the service it came through, and
-/// a key ([`key_client`]) by the name its person gave it. "API key “Visa
-/// agent” via mcp.tilo.sh" is "Visa agent"; "Claude Code via mcp.tilo.sh"
-/// is "Claude Code".
-#[must_use]
-pub fn grant_holder(label: &str) -> &str {
-    let who = label
-        .rsplit_once(" via ")
-        .map_or(label, |(who, _server)| who);
-    let who = who
-        .strip_prefix(KEY_OPEN)
-        .and_then(|key| key.strip_suffix(KEY_CLOSE))
-        .unwrap_or(who)
-        .trim();
-    if who.is_empty() { label } else { who }
-}
-
 /// The server of an origin: what a label calls a service. The origin has been
 /// checked by whoever asked (the route that builds a label skips what it
 /// cannot check), so this only has to read one.
@@ -207,23 +189,12 @@ mod tests {
     }
 
     #[test]
-    fn a_grant_goes_by_its_holder() {
+    fn a_key_is_labelled_by_the_name_its_person_gave_it() {
         let key = grant_label(&key_client("Visa agent"), "http://localhost:42510");
         assert_eq!(
             key,
             "API key \u{201c}Visa agent\u{201d} via localhost:42510"
         );
-        assert_eq!(grant_holder(&key), "Visa agent");
-        assert_eq!(
-            grant_holder(&grant_label("Claude Code", AUDIENCE)),
-            "Claude Code"
-        );
-        assert_eq!(
-            grant_holder(&grant_label("Mail via Tilo", AUDIENCE)),
-            "Mail via Tilo"
-        );
-        assert_eq!(grant_holder(&grant_label("", AUDIENCE)), "An agent");
-        assert_eq!(grant_holder("Laptop"), "Laptop");
     }
 
     #[test]

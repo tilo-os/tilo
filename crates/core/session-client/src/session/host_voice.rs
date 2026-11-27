@@ -1,5 +1,5 @@
 //! The host's word for the runs it executes, said and heard outside the live
-//! session ([`tilo_server_protocol::host_voice`]).
+//! session.
 //!
 //! The host's word is a record it writes into the workspace, or an action it
 //! answers; this session carries none of its own. What it keeps here is the one

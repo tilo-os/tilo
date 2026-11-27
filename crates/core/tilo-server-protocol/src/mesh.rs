@@ -11,43 +11,13 @@
 //! - hosts continue to authenticate as ordinary certified devices.
 //!
 //! It therefore does not define another sync protocol. It describes which
-//! services a device offers, and the advertisement a compute worker is
-//! admitted against. Which device serves a workspace is the workspace's
-//! governance and the device's own [`crate::WorkSetting`]; the worker a
-//! compute job runs on is chosen among advertisements by
-//! [`neighbour_wire::placement`].
+//! services a device offers. Which device serves a workspace is the
+//! workspace's governance and the device's own [`crate::WorkSetting`].
 
-use std::collections::BTreeSet;
-
-use crate::WorkspaceId;
-use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 
 /// Stable certified-device routing key.
 pub type DeviceKey = [u8; 32];
-
-/// Effective, certificate-bounded mesh policy of a running device.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DeviceMeshProfile {
-    /// Certified device public key.
-    pub device: DeviceKey,
-    /// Service claims after intersection with the device certificate.
-    pub services: ServiceCapabilities,
-    /// Direct endpoints for the authenticated filesystem/blob protocols. This
-    /// is intentionally distinct from the server endpoint: a client selected
-    /// for content replication must dial one of these addresses.
-    pub filesystem_endpoints: Vec<EndpointAddr>,
-}
-
-impl DeviceMeshProfile {
-    /// Select the direct filesystem endpoint from a verified mesh profile.
-    /// The server endpoint is deliberately not a fallback: it speaks server
-    /// ALPN only and cannot serve authenticated blobs while an owner is away.
-    pub fn content_endpoint(&self) -> Option<EndpointAddr> {
-        self.filesystem_endpoints.first().cloned()
-    }
-}
 
 /// Services an always-on device is willing and certified to provide.
 #[allow(
@@ -117,75 +87,6 @@ impl ServiceCapabilities {
     }
 }
 
-/// Locally observed state for a certified device advertisement.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ServerAdvertisement {
-    /// Certified device public key.
-    pub device: DeviceKey,
-    /// Services this peer advertises. Callers must intersect these with the
-    /// immutable capabilities from its verified device certificate.
-    pub services: ServiceCapabilities,
-    /// Workspaces this server currently hosts.
-    pub workspaces: BTreeSet<WorkspaceId>,
-    /// Apps whose backend can run here. Empty means none, not "all".
-    pub apps: BTreeSet<String>,
-    /// Optional execution hardware available to sandboxed compute jobs.
-    pub accelerators: BTreeSet<ComputeAccelerator>,
-    /// Operator preference; higher is preferred before load balancing.
-    pub priority: i32,
-    /// Smoothed round-trip latency in milliseconds.
-    pub latency_ms: u32,
-    /// Locally observed energy state. This is a routing hint, never trusted
-    /// authority: a lying peer can only attract work it was already certified
-    /// and sandboxed to run.
-    pub power: PowerAvailability,
-    /// Whether the device has asked the mesh to avoid discretionary work.
-    pub energy_saver: bool,
-    /// Active assignments observed for this server.
-    pub active_assignments: u32,
-    /// Maximum concurrent assignments. Zero makes the server ineligible.
-    pub assignment_capacity: u32,
-    /// Whether liveness is fresh enough to route new work.
-    pub online: bool,
-}
-
-/// Hardware class a compute worker can expose through the normal package
-/// sandbox. Advertising hardware grants no additional identity authority.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ComputeAccelerator {
-    /// A sandbox-approved render/compute node selected by the launcher.
-    Gpu,
-    /// Hardware virtualisation (`/dev/kvm`): the worker runs Linux VMs.
-    Kvm,
-}
-
-/// Coarse power information used to keep continuity from unexpectedly draining
-/// a portable device. Exact battery telemetry remains local to the observer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PowerAvailability {
-    /// No reliable power observation is available.
-    #[default]
-    Unknown,
-    /// Stable external power with no battery constraint.
-    External,
-    /// Connected to external power and charging at the given percentage.
-    Charging(u8),
-    /// Running from a battery at the given percentage.
-    Battery(u8),
-}
-
-impl PowerAvailability {
-    /// Whether the device is too low on battery to take discretionary work
-    /// such as app backends or compute jobs. This is the single battery rule
-    /// shared by every admission path.
-    #[must_use]
-    pub const fn is_critically_constrained(self) -> bool {
-        matches!(self, Self::Battery(percent) if percent <= 15)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,20 +104,5 @@ mod tests {
             ServiceCapabilities::personal_server().limited_to(&services),
             services
         );
-    }
-
-    #[test]
-    fn only_a_battery_at_or_below_fifteen_percent_is_critically_constrained() {
-        use PowerAvailability::{Battery, Charging, External, Unknown};
-        for (power, constrained) in [
-            (Battery(0), true),
-            (Battery(15), true),
-            (Battery(16), false),
-            (Charging(5), false),
-            (External, false),
-            (Unknown, false),
-        ] {
-            assert_eq!(power.is_critically_constrained(), constrained, "{power:?}");
-        }
     }
 }

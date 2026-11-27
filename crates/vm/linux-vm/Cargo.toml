@@ -55,7 +55,9 @@ thiserror.workspace = true
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-app-id.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-tilo-files = { path = "../../platform/tilo-files" }
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+# The billing periods of a server's offers to an account (`hosted::account`).
+jiff.workspace = true
 tilo-libvirt-domain = { path = "../libvirt-domain" }
 tilo-paths = { path = "../../platform/tilo-paths" }
 tilo-sandbox-core = { path = "../../platform/sandbox-core" }

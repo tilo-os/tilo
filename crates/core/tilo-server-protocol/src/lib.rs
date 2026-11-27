@@ -16,11 +16,8 @@
 //! - [`operator`] — the wait-list mailbox and status an entry keeps, and the
 //!   JSON-lines protocol a server that ran each workspace as a child process
 //!   spoke with it before the daemon served them itself;
-//! - [`mesh`] — service capabilities and the server advertisements devices
-//!   offer work with;
+//! - [`mesh`] — the services a server says it hosts;
 //! - [`config`] and [`policy`] — the on-disk `server.toml` schema;
-//! - [`home_peer`] — the registry record written after enrolling an
-//!   always-on peer;
 //! - [`hosted`] — what a host hands the browser session in a workspace's VM when
 //!   it gives it the workspace, and the address such a machine reaches it at;
 //! - [`metrics`] — the counter snapshot the daemon persists for status UIs.
@@ -36,7 +33,6 @@ pub mod config;
 pub mod devices;
 pub mod directory;
 pub mod entering;
-pub mod host_voice;
 pub mod hosted;
 pub mod hosted_vm;
 pub mod invocation;
@@ -63,10 +59,7 @@ pub use tilo_workspace_join::delegation;
 pub use auth::{AuthError, AuthenticatedPeer};
 pub use config::{ConfigError, ServerConfig};
 pub use devices::valid_device_label;
-pub use mesh::{
-    ComputeAccelerator, DeviceKey, DeviceMeshProfile, PowerAvailability, ServerAdvertisement,
-    ServiceCapabilities,
-};
+pub use mesh::{DeviceKey, ServiceCapabilities};
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use transport::DocumentAnswer;

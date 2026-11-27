@@ -25,7 +25,7 @@ path = "src/lib.rs"
 dev-overrides = ["tilo-identity/throwaway-test-identity", "package-store/dev-overrides", "launcher/dev-overrides"]
 # A machine that keeps a public workspace runs the apps and agents that answer in
 # it: the server's agent session, which links every web app.
-agents = ["dep:tilo-server-account", "dep:linux-vm"]
+agents = ["dep:linux-vm"]
 # Lets a test hand a session it runs in its own process the shell's end of a link the daemon
 # made ([`daemon::Running::link_shell`]), a test's daemon start the test build of the session
 # as its person's shell ([`daemon::TEST_SHELL_ENV`]), which is not installed beside it, and a
@@ -240,7 +240,6 @@ tilo-rollback = { path = "../../os/tilo-rollback" }
 tilo-crypto = { path = "../tilo-crypto", default-features = false }
 # What a server's account standing is read from, and the machine sizes the Browser page actions
 # it counts are billed at (`agents`).
-tilo-server-account = { path = "../tilo-server-account", optional = true }
 linux-vm = { path = "../../vm/linux-vm", optional = true, default-features = false }
 
 # The launcher's manifest view, service names and developer-override check;

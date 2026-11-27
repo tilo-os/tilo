@@ -103,8 +103,6 @@ uuid.workspace = true
 # A hosted VM's typed refusal, carried in a Terminal mark as base64 JSON.
 base64.workspace = true
 tilo-actions = { path = "../../core/actions" }
-# A held command follows the host's plans file as its account answer does.
-tilo-server-account = { path = "../../core/tilo-server-account" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }

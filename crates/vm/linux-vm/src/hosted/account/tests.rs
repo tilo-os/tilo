@@ -1,5 +1,5 @@
-use linux_vm::hosted::meter::VmIdentity;
-use linux_vm::hosted::plan::Plan;
+use crate::hosted::meter::VmIdentity;
+use crate::hosted::plan::Plan;
 use tilo_action_services::server_account::{InvoiceStatus, PlanOffer};
 use tilo_server_protocol::hosted_vm::VmSize;
 

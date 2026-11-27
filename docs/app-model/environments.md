@@ -458,7 +458,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   server (`tilo.server`, `server.account/account`) as a live read: the plans
   offered, the account's access, usage per workspace, limits, credit,
   invoices and where billing is managed, sent again whenever the plans file
-  changes (`crates/core/tilo-server-account`). A host that sells nothing
+  changes (`linux_vm::hosted::account`). A host that sells nothing
   answers no plans and no access.
 - **ush** runs the program through the VM's agent with the shell's streams
   relayed, when the host names its hosted-VM service (`TILO_HOSTED_VM_SOCKET`,
