@@ -1468,6 +1468,9 @@ struct Typed {
     rendered: usize,
     /// How many times it asked the store while the keys were typed.
     asked: usize,
+    /// How many times it read the notebook's notes as a list, every note's record in it, while
+    /// the keys were typed.
+    listed: usize,
     /// The longest a key took, from its edit sent to the window drawn again.
     slowest: std::time::Duration,
 }
@@ -1612,6 +1615,7 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
         .clone()
         .expect("the press showed the note beside the list");
     let writes = writes_sent(&sent);
+    let listed_before = notebook_listed(&sent);
     let (mut built, mut relabeled) = (0, 0);
     let mut seen: u64 = 0;
     let mut sweeps: u64 = 0;
@@ -1671,8 +1675,27 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
         swept: sweeps,
         rendered,
         asked,
+        listed: notebook_listed(&sent).saturating_sub(listed_before),
         slowest,
     }
+}
+
+/// How many times the instance's connection read the notebook's notes as a list: a page of
+/// the notes the notebook holds, narrowed to none of them (not a note's own sub-notes or its
+/// mentions), every note's record in it.
+fn notebook_listed(sent: &Sent) -> usize {
+    use collab_types::store::{Filter, wire::Command};
+    sent.borrow()
+        .iter()
+        .filter(|request| {
+            matches!(command_of(request), Some(Command::Query(query))
+            if query.kind == "tl.so.tilo.notes.Note"
+                && query.filters.iter().all(|filter| {
+                    matches!(filter, Filter::Is(field, _)
+                        if field == collab_types::store::PARENT)
+                }))
+        })
+        .count()
 }
 
 #[test]
@@ -1693,6 +1716,13 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
         );
         held_by.push((held, body.visited));
         keys_cost_what_they_show(&body, 5, held);
+        // A body's text is no part of where a note stands in the notebook: a key reads the
+        // notebook's list of notes no more, however many it holds.
+        assert_eq!(
+            body.listed, 0,
+            "five keys of a body read the notebook's notes {} times with {held} notes",
+            body.listed
+        );
         asked.push(body.asked);
         assert_eq!(
             body.swept, 0,

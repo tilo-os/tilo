@@ -2522,9 +2522,14 @@ impl ResourceStore {
         } else {
             Command::Batch(commands)
         };
-        let mut written = BTreeMap::new();
+        let mut written = Written::default();
         if ids_written(&command, &mut written) {
-            self.freeze_listings(&written);
+            self.freeze_listings(&written.reshaped);
+            // A resource only edited (a note's body as a person types it) neither joins, leaves
+            // nor moves in a listing: only one ordered or filtered by when it last changed reads
+            // differently.
+            let updated = |key: &str| key.contains(tilo_resource_store::UPDATED);
+            self.freeze_where(&written.edited_only(), updated);
         } else {
             self.forget_listings(None);
         }
@@ -2811,18 +2816,38 @@ impl ResourceStore {
             .get(id)
             .cloned()
             .map_or(Before::Unwritten, Before::Was);
-        self.txn_mut(txn, |state| {
+        let held_before = matches!(before, Before::Was(Some(_)))
+            || self
+                .inner
+                .cache
+                .borrow()
+                .get(id)
+                .is_some_and(Option::is_some);
+        let indexed = self.txn_mut(txn, |state| {
             state.before.entry(id.to_owned()).or_insert(before);
             if !state.dirty.contains_key(id) {
                 state.order.push(id.to_owned());
             }
-            dirty(state.dirty.entry(id.to_owned()).or_default());
+            let written = state.dirty.entry(id.to_owned()).or_default();
+            dirty(written);
+            written.put || written.removed || written.remove.is_some()
         })?;
         let kind = held
             .as_ref()
             .map(|held| held.kind.clone())
             .or_else(|| self.kind_held(id));
         match kind {
+            // An edit of what the index does not hold (a note's body as a person types it)
+            // neither adds, removes nor moves an item: a listing reads the index alone, so only
+            // one ordered or filtered by when its items last changed reads differently.
+            // Freezing every listing of the kind would read each again, whole, at every key.
+            Some(kind) if held.is_some() && held_before && !indexed => {
+                let updated = |key: &str| key.contains(tilo_resource_store::UPDATED);
+                self.freeze_where(
+                    &BTreeMap::from([(kind, BTreeSet::from([id.to_owned()]))]),
+                    updated,
+                );
+            }
             Some(kind) => {
                 self.freeze_listings(&BTreeMap::from([(kind, BTreeSet::from([id.to_owned()]))]));
             }
@@ -6973,15 +6998,52 @@ fn listing_of(key: &str, kind: &str) -> bool {
         .is_some_and(|rest| rest.starts_with('#'))
 }
 
+/// The resources a write names, by kind: those it puts, removes or checkpoints, whose place in
+/// the index can change, and those it only edits the content of, whose place cannot.
+#[derive(Default)]
+struct Written {
+    reshaped: BTreeMap<String, BTreeSet<String>>,
+    edited: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl Written {
+    /// The resources the write edits and does not also put, remove or checkpoint.
+    fn edited_only(&self) -> BTreeMap<String, BTreeSet<String>> {
+        self.edited
+            .iter()
+            .filter_map(|(kind, ids)| {
+                let reshaped = self.reshaped.get(kind);
+                let only: BTreeSet<String> = ids
+                    .iter()
+                    .filter(|id| !reshaped.is_some_and(|held| held.contains(*id)))
+                    .cloned()
+                    .collect();
+                (!only.is_empty()).then(|| (kind.clone(), only))
+            })
+            .collect()
+    }
+}
+
 /// Adds the resources `command` writes to `written`, by kind; `false` when it writes resources
 /// it does not name (an undo).
-fn ids_written(command: &Command, written: &mut BTreeMap<String, BTreeSet<String>>) -> bool {
+fn ids_written(command: &Command, written: &mut Written) -> bool {
     match command {
+        Command::Edit { kind, id, .. } => {
+            written
+                .edited
+                .entry(kind.clone())
+                .or_default()
+                .insert(id.clone());
+            true
+        }
         Command::Put { kind, id, .. }
         | Command::Remove { kind, id, .. }
-        | Command::Edit { kind, id, .. }
         | Command::Checkpoint { kind, id, .. } => {
-            written.entry(kind.clone()).or_default().insert(id.clone());
+            written
+                .reshaped
+                .entry(kind.clone())
+                .or_default()
+                .insert(id.clone());
             true
         }
         Command::Batch(commands) => commands.iter().all(|command| ids_written(command, written)),
