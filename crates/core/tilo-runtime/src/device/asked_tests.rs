@@ -344,6 +344,31 @@ fn a_call_that_stops_for_the_persons_yes_after_it_was_taken_asks_them() {
     );
 }
 
+/// A follow of a call that waits for Ada is woken within its bound though nothing moved, and
+/// reads it still asked: she may take hours, and a follow that asked to be held at most a moment
+/// (`tilo_action_calls::settle_with`, which looks at its deadline only when woken) is answered then.
+#[test]
+fn a_follow_of_a_waiting_call_is_woken_while_its_person_takes_her_time() {
+    let device = Device::start(&Arc::default(), &Arc::default());
+    let call = send_mail();
+    device.send(&call).expect("kept, not refused");
+    let change = device
+        .asked
+        .next_change(&scout(), &call.invocation)
+        .expect("Scout follows its call here");
+    assert!(
+        change.wait_timeout(WAIT).is_ok(),
+        "the follow is woken within its bound"
+    );
+    assert!(
+        matches!(
+            device.standing(&call),
+            Some(InvocationUpdate::Progress { phase, .. }) if phase == asked::ASKED_PHASE
+        ),
+        "Scout reads that it is still asked"
+    );
+}
+
 /// Scout's call that needs Ada's yes is kept: it waits under way, listed as waiting for her,
 /// and asks her, named as Scout's. Her approve sends it once more, byte for byte and under its
 /// id, carrying her approve of that record; a second approve finds nothing to answer.

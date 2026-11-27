@@ -49,6 +49,11 @@ const DISPATCH: &str = "device";
 /// caller to read; the oldest goes first.
 const ENDED_KEPT: usize = 1024;
 
+/// How long a follow of a call that waits here is left before it looks again when nothing
+/// moved: the bound a next change promises ([`ActionProvider::next_change`]), so a follow that
+/// asked to be held at most so long is answered then, while its person may take hours.
+const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// The run a waiting call was made in, as its record keeps it: what admits a run of the same
 /// asker again after the device starts again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1001,9 +1006,21 @@ impl ActionProvider for DeviceAsked {
             return None;
         }
         let (watcher, change) = pending();
-        standing.watching.entry(*id).or_default().push(watcher);
+        let watching = standing.watching.entry(*id).or_default();
+        // A follow that looked again on its own already went: its watcher waits for nobody.
+        watching.retain(|watcher| !watcher.is_abandoned());
+        watching.push(watcher);
         drop(standing);
-        Some(change)
+        let (looked, again) = pending();
+        drop(tilo_rt::app().handle().spawn(async move {
+            tokio::select! {
+                _ = change => {}
+                () = tokio::time::sleep(LOOK_AGAIN) => {}
+                () = looked.abandoned() => return,
+            }
+            looked.complete(());
+        }));
+        Some(again)
     }
 
     /// Stopping a call that waits withdraws its question: its person is asked no more.

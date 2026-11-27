@@ -3044,12 +3044,14 @@ pub fn setting(device: &Device, section: &str, field: &str) -> RemoteActionTarge
 /// settled: a change the settings refused is the assertion.
 ///
 /// The sections are resources of the person's own workspace, so the edit is not offered until
-/// this session reads it there: the set is asked again until it is.
+/// this session reads it there: the set is asked again until it is. A change the person's own
+/// rules ask them about first (a setting that could weaken the device's security) waits as its
+/// asked record, and they say yes to it, as their own prompt does.
 pub fn set_setting(device: &Device, section: &str, field: &str, value: &Value) {
     let target = setting(device, section, field);
     let edit = json!({"value": value});
     let until = tilo_test_env::hang_deadline();
-    let mut answer = device.act_wait(&target, &edit);
+    let mut answer = device.act_confirming(&target, &edit);
     while answer["err"]["code"].as_str() == Some("unknown_action") {
         assert!(
             Instant::now() < until,
@@ -3058,9 +3060,6 @@ pub fn set_setting(device: &Device, section: &str, field: &str, value: &Value) {
             device.diagnostic()
         );
         std::thread::sleep(Duration::from_millis(100));
-        answer = device.act_wait(&target, &edit);
-    }
-    if answer["err"]["code"].as_str() == Some(CONFIRMATION_REQUIRED) {
         answer = device.act_confirming(&target, &edit);
     }
     assert_eq!(
