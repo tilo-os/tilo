@@ -2,12 +2,13 @@
 # Publish one architecture's signed app release (the sign-apps-<arch> check's
 # output) to the Tilo registry at apps.tilo.so.
 #
-#   tools/apps/publish-apps.sh RELEASE_DIR
+#   tools/apps/publish-apps.sh RELEASE_DIR [PACKAGE_CLI]
 #
 # RELEASE_DIR is what dist/apps/package-apps.sh wrote with the release
 # identities: index.json and tapp/, runtime-package/ (the Tilo runtime) with
 # runtime-package/tilolang/ (the tilolang runtime), language-packs/,
-# work/receipt-signers.json, and the tilo-app-package that packed them.
+# work/receipt-signers.json, and the tilo-app-package that packed them, which
+# runs the publication unless PACKAGE_CLI names one built for this machine.
 #
 # Runs only in a trusted run of main (T_REF, T_COMMIT), with two secrets:
 # TILO_PACKAGES_TOKEN writes the immutable generic packages the registry's
@@ -32,7 +33,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 # shellcheck source=/dev/null
 source tools/ci/publish/lib.sh
 
-release=$(realpath -e "${1:?usage: publish-apps.sh RELEASE_DIR}")
+release=$(realpath -e "${1:?usage: publish-apps.sh RELEASE_DIR [PACKAGE_CLI]}")
 [[ $(channel) == dev ]] || die "apps are published from main, not ${T_REF}"
 require_commit
 : "${TILO_PACKAGES_TOKEN:?the package token is not set: the check needs secrets = [\"TILO_PACKAGES_TOKEN\"]}"
@@ -50,7 +51,7 @@ package_api=https://code.tilo.so/api/packages/$owner/generic
 artifacts=$registry/artifacts/$owner/generic
 version=0.0.0-$T_COMMIT
 index=$release/index.json
-cli=$release/tilo-app-package
+cli=${2:-$release/tilo-app-package}
 [[ -f $index && -x $cli ]] || die "$release holds no signed release (index.json, tilo-app-package)"
 arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
 export RUNNER_TEMP=$work

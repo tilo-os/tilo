@@ -3599,9 +3599,11 @@ arch = ["x86_64", "aarch64"]
 name = "publish-apps-{arch}"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/apps/publish-apps.sh /target/app-release/{arch}"
+# t gives the package token only to jobs on a disk-100g node, so both architectures publish from
+# x86_64 with the x86_64 release's package CLI.
+run = "bash tools/apps/publish-apps.sh /target/app-release/{arch} /target/app-release/x86_64/tilo-app-package"
 needs = ["sign-apps-{arch}", "app-release-smoke-{arch}"]
-requires = ["arch={arch}"]
+requires = ["arch=x86_64", "disk-100g"]
 secrets = ["TILO_PACKAGES_TOKEN", "TAPP_PUBLISHER_IDENTITY"]
 cache = false
 on = ["dispatch"]
@@ -3609,6 +3611,10 @@ timeout_secs = 3600
 dispatch_inputs = { apps = "" }
 [check.matrix]
 arch = ["x86_64", "aarch64"]
+
+[[check.matrix.set]]
+when = { arch = "aarch64" }
+needs = ["sign-apps-aarch64", "app-release-smoke-aarch64", "sign-apps-x86_64"]
 
 # Two builds of one app give the same bytes, or every image and update re-sends what did not
 # change: `tools/apps/check-reproducible-tapp.sh` packages a small app twice through the same
