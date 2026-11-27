@@ -559,6 +559,43 @@ fn an_authors_own_records_are_sealed_for_their_devices_alone() {
     );
 }
 
+/// The workspace's owner, and a member who may act anywhere in the workspace's records, ask for
+/// the keys of another member's private draft: each is given none of them. A record only its
+/// author reads is sealed for the author's devices alone, whatever else a caller may do beside it.
+#[test]
+fn an_owner_and_a_member_are_given_none_of_an_authors_draft_keys() {
+    const APP: &str = "so.tilo.messages";
+    let (mut peer, owner_key, _, member, second, third, now) =
+        crate::admission_tests::seeded_editor_with_second_device();
+    put_member(&mut peer, &hex::encode(third.user_public_key), Role::Editor);
+    peer.select_exact_admissions().unwrap();
+    let readers = collab_types::Readers::people([member.user_public_key])
+        .unwrap()
+        .text();
+    let drafts = format!(
+        "{}/messages.Draft#0",
+        collab_types::reader_set_name(&readers)
+    );
+    let route = (APP, drafts.as_str());
+    let holders = peer
+        .document_key_holders_read_by(route, Some(&readers), now)
+        .unwrap();
+    for (asks, who) in [
+        (owner_key.verifying_key().to_bytes(), "the owner's device"),
+        (third.device_public_key, "an editor's device"),
+    ] {
+        assert!(
+            !holders.contains(&asks),
+            "{who} asks for the keys of a draft it does not read and is given none of them"
+        );
+    }
+    assert_eq!(
+        holders,
+        [member.device_public_key, second.device_public_key].into(),
+        "the author's own devices hold the keys, and no one else's"
+    );
+}
+
 fn row(peer: &StatePeer, source: &[u8; 32]) -> DeviceRow {
     let workspace = peer.admitted_workspace().unwrap();
     let identities = workspace
