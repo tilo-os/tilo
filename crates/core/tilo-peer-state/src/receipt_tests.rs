@@ -927,7 +927,7 @@ tilo_test_env::scenario! {
         receive(&mut peer, &guest, upgraded).expect("the updated guest's edit is decided against v2");
         assert_eq!(value(&peer), "\"x\"", "the guest's edit is kept");
 
-        // Taking the choice back lets every version write again.
+        // Uninstalling takes the choice back.
         assert!(
             peer.workspace_mut()
                 .apply_workspace_membership_command(
@@ -1331,4 +1331,404 @@ fn value_has_comment(peer: &StatePeer, id: &str) -> bool {
         return false;
     };
     doc.get(&comments, id).unwrap().is_some()
+}
+
+/// The test app's release whose surface hashes to `surface`.
+fn release_of(surface: [u8; 32], version: &str) -> crate::workspace_membership::AppRelease {
+    crate::workspace_membership::AppRelease {
+        app: APP.into(),
+        version: version.into(),
+        surface: hex::encode(surface),
+        package: hex::encode([9; 32]),
+        publisher: hex::encode([10; 32]),
+        file: None,
+        dev: true,
+        pinned: false,
+        payload: crate::workspace_membership::AppPayload::Tapp,
+    }
+}
+
+/// The workspace runs `release` of the test app from now on, as its owner chose; `None`
+/// uninstalls the app.
+fn run_version(peer: &mut StatePeer, release: Option<crate::workspace_membership::AppRelease>) {
+    use crate::workspace_membership::WorkspaceMembershipCommand;
+    let (owner_key, owner) = owner();
+    let command = match release {
+        Some(release) => WorkspaceMembershipCommand::InstallApp(release),
+        None => WorkspaceMembershipCommand::UninstallApp { app: APP.into() },
+    };
+    assert!(
+        peer.workspace_mut()
+            .apply_workspace_membership_command(&owner, &command, &owner_key, now())
+            .unwrap()
+    );
+}
+
+/// `message`, naming the surface `surface` instead, signed again by its author.
+fn naming(message: NeighbourMsg, surface: [u8; 32], key: &SigningKey) -> NeighbourMsg {
+    let NeighbourMsg::AppDocument {
+        peer,
+        app_id,
+        cluster_id,
+        document_id,
+        mut envelope,
+        readers,
+    } = message
+    else {
+        panic!("a document write")
+    };
+    envelope.surface = Some(surface);
+    collab_types::sign_op(&mut envelope, key).unwrap();
+    NeighbourMsg::AppDocument {
+        peer,
+        app_id,
+        cluster_id,
+        document_id,
+        envelope,
+        readers,
+    }
+}
+
+/// The guest's edit of the record's value to `to`, as the `seq`th write of theirs, naming the
+/// record's own surface.
+fn edit_to(peer: &StatePeer, key: &SigningKey, to: &'static str, seq: u64) -> NeighbourMsg {
+    guest_write_at(
+        peer,
+        key,
+        |doc| doc.put(ROOT, "value", to).unwrap(),
+        edit_value(),
+        None,
+        seq,
+    )
+}
+
+const NEWER: [u8; 32] = [8; 32];
+const NEWEST: [u8; 32] = [11; 32];
+
+/// A change naming a surface the workspace never ran its app with is set aside, and stays set
+/// aside whatever version the workspace moves to, goes back to or uninstalls: it is taken in
+/// only once the workspace runs the surface it names.
+#[test]
+fn a_change_naming_a_surface_the_workspace_never_ran_waits_through_every_version_and_uninstall() {
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
+    run_version(&mut peer, Some(release_of(NEWER, "2.0.0")));
+    let held = peer
+        .receive_from(
+            TransportOrigin::ServerDelta(guest.device_public_key),
+            edit_to(&peer, &key, "x", 1),
+            now(),
+        )
+        .unwrap();
+    assert!(held.deferred, "set aside, not refused");
+    for (change, what) in [
+        (Some(release_of(NEWEST, "3.0.0")), "a newer version"),
+        (Some(release_of(NEWER, "2.0.0")), "going back a version"),
+        (None, "uninstalling the app"),
+    ] {
+        run_version(&mut peer, change);
+        let report = peer.redecide_set_aside(now());
+        assert!(
+            report.deferred,
+            "{what} lets in no surface the workspace never ran"
+        );
+        assert_eq!(value(&peer), "\"seed\"", "{what} merged nothing");
+    }
+    run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
+    peer.redecide_set_aside(now());
+    assert_eq!(
+        value(&peer),
+        "\"x\"",
+        "once the workspace runs the surface it names, the change is taken in"
+    );
+}
+
+/// A change is decided under the surface it names, never the one the workspace happens to run:
+/// one naming a version the workspace ran before is taken in under that version, and one the
+/// newer version refused stays refused once the workspace goes back a version or uninstalls the
+/// app.
+#[test]
+fn a_change_is_decided_under_the_surface_it_names_and_a_refusal_stays_through_a_downgrade() {
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
+    run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
+    run_version(&mut peer, Some(release_of(NEWER, "2.0.0")));
+    let edit = edit_to(&peer, &key, "x", 1);
+    receive(&mut peer, &guest, edit)
+        .expect("a change naming a version the workspace ran is decided under it");
+    assert_eq!(value(&peer), "\"x\"");
+
+    // Naming the newer surface without the record moving to it: the newer surface refuses it.
+    let refused = edit_to(&peer, &key, "y", 2);
+    let refused = naming(refused, NEWER, &key);
+    receive(&mut peer, &guest, refused.clone()).expect_err("the newer surface refuses it");
+    for (change, what) in [
+        (Some(release_of(PINNED, "1.0.0")), "going back a version"),
+        (None, "uninstalling the app"),
+    ] {
+        run_version(&mut peer, change);
+        peer.redecide_set_aside(now());
+        let again = receive(&mut peer, &guest, refused.clone());
+        assert!(
+            again.is_err(),
+            "{what} lets in nothing the newer surface refused"
+        );
+        assert_eq!(value(&peer), "\"x\"", "{what} merged nothing");
+    }
+}
+
+/// Two copies of a workspace take in the same changes whatever order the changes and the
+/// workspace's version changes reach them in: one that set a change aside and decided it again
+/// at each version change ends where one that received the change last does.
+#[test]
+fn two_copies_take_in_the_same_set_aside_changes_whatever_order_they_come_in() {
+    let (mut early, key, guest) = workspace_with(Role::Editor);
+    let mut late = early.clone();
+    let first = edit_to(&early, &key, "x", 1);
+    let never_ran = naming(
+        guest_write_at(
+            &early,
+            &key,
+            |doc| doc.put(ROOT, "other", "z").unwrap(),
+            edit_value(),
+            None,
+            1,
+        ),
+        NEWEST,
+        &key,
+    );
+    let versions = [
+        Some(release_of(NEWER, "2.0.0")),
+        Some(release_of(PINNED, "1.0.0")),
+        Some(release_of(NEWER, "2.0.0")),
+    ];
+
+    // The early copy has both changes before the workspace runs the record's version, and
+    // decides them again at each version change.
+    run_version(&mut early, versions[0].clone());
+    for message in [never_ran.clone(), first.clone()] {
+        let held = early
+            .receive_from(
+                TransportOrigin::ServerDelta(guest.device_public_key),
+                message,
+                now(),
+            )
+            .unwrap();
+        assert!(held.deferred, "set aside, not refused");
+    }
+    for version in versions.iter().skip(1) {
+        run_version(&mut early, version.clone());
+        early.redecide_set_aside(now());
+    }
+
+    // The late copy has every version change first, then the changes, the other way round.
+    for version in versions {
+        run_version(&mut late, version);
+    }
+    for message in [first, never_ran] {
+        let _ = late.receive_from(
+            TransportOrigin::ServerDelta(guest.device_public_key),
+            message,
+            now(),
+        );
+    }
+
+    assert_eq!(
+        value(&early),
+        "\"x\"",
+        "the workspace ran the surface it names"
+    );
+    assert_eq!(
+        value(&late),
+        value(&early),
+        "both copies took in the same change"
+    );
+    let other = |peer: &StatePeer| {
+        AutoCommit::load(&peer.document(APP, RECORD).unwrap())
+            .unwrap()
+            .get(ROOT, "other")
+            .unwrap()
+            .is_some()
+    };
+    assert!(
+        !other(&early) && !other(&late),
+        "neither copy took in the change naming a surface the workspace never ran"
+    );
+}
+
+/// An installed app's right to its own records is whether the workspace runs it: installing
+/// gives it, uninstalling takes it away, and a grant of that id the workspace kept from before
+/// decides nothing.
+#[test]
+fn an_apps_own_records_are_its_while_it_is_installed() {
+    use tilo_action_policy::{Answer, Authority, Context, TreePath};
+    let (mut peer, _, _) = workspace_with(Role::Editor);
+    let may_change = |peer: &StatePeer| {
+        let policy = peer.governance().member_policy().unwrap();
+        Authority::of_acting(&tilo_member_types::Acting::by_app(APP), &policy, &[])
+            .decide(
+                &TreePath::workspace(WORKSPACE).app(APP),
+                ActionKind::Undoable,
+                &Context::at_time(now()),
+            )
+            .answer
+    };
+    assert_eq!(
+        may_change(&peer),
+        Answer::Deny,
+        "an app nobody installed keeps nothing"
+    );
+    run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
+    assert_eq!(
+        may_change(&peer),
+        Answer::Allow,
+        "installing gives it its own records"
+    );
+    let stored = |peer: &StatePeer| {
+        crate::members::stored(peer.admitted_workspace().unwrap(), WORKSPACE)
+            .grants
+            .iter()
+            .any(|grant| grant.id == tilo_action_policy::roles::app_records_grant_id(APP))
+    };
+    assert!(
+        stored(&peer),
+        "installing still writes the grant an older build reads"
+    );
+    run_version(&mut peer, None);
+    assert_eq!(
+        may_change(&peer),
+        Answer::Deny,
+        "uninstalling takes its own records away"
+    );
+    assert!(
+        !stored(&peer),
+        "uninstalling still revokes the grant an older build reads"
+    );
+}
+
+/// The test app's surface after a version that took its title away: everything else as before.
+struct WithoutTitle;
+
+impl ReceiptSurface for WithoutTitle {
+    fn kind(&self) -> &str {
+        App.kind()
+    }
+    fn verb(&self, action: &str) -> Option<(ActionKind, Option<String>)> {
+        App.verb(action)
+    }
+    fn editable(&self, path: &[PathStep]) -> bool {
+        path.first() != Some(&PathStep::Field("title".into()))
+    }
+    fn footprint(&self, action: &ClaimedAction) -> Vec<UnitPath> {
+        App.footprint(action)
+    }
+}
+
+/// The test app's surfaces by version: the newer one has no title.
+struct Versioned;
+
+impl SurfaceSource for Versioned {
+    fn surface(
+        &self,
+        _: &WrittenDocument<'_>,
+        _: Option<&str>,
+        named: Option<&[u8; 32]>,
+    ) -> Option<Arc<dyn ReceiptSurface>> {
+        Some(if named == Some(&NEWER) {
+            Arc::new(WithoutTitle) as Arc<dyn ReceiptSurface>
+        } else {
+            Arc::new(App)
+        })
+    }
+}
+
+fn edit_title() -> Did {
+    Did::Edit(FieldEdit {
+        ty: KIND.into(),
+        field: "title".into(),
+        path: vec![PathStep::Field("title".into())],
+        op: EditOp::Set,
+        old: None,
+        new: None,
+        args: std::collections::BTreeMap::new(),
+    })
+}
+
+/// A change an earlier version made is taken in only where the version the workspace runs
+/// admits it too: a field the newer version removed is set aside while it runs, never refused,
+/// and comes back once the workspace runs the earlier version again; a field both declare is
+/// taken in at once.
+#[test]
+fn an_earlier_versions_change_is_decided_under_both_versions() {
+    let (mut peer, key, guest) = workspace_with(Role::Editor);
+    peer.set_surfaces(Surfaces::from_source(Arc::new(Versioned)));
+    run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
+    run_version(&mut peer, Some(release_of(NEWER, "2.0.0")));
+
+    let both = edit_to(&peer, &key, "x", 1);
+    receive(&mut peer, &guest, both).expect("a field both versions declare is taken in");
+    assert_eq!(value(&peer), "\"x\"");
+
+    let title = guest_write_at(
+        &peer,
+        &key,
+        |doc| doc.put(ROOT, "title", "t").unwrap(),
+        edit_title(),
+        None,
+        2,
+    );
+    let title_kept = |peer: &StatePeer| {
+        AutoCommit::load(&peer.document(APP, RECORD).unwrap())
+            .unwrap()
+            .get(ROOT, "title")
+            .unwrap()
+            .is_some()
+    };
+    let held = peer
+        .receive_from(
+            TransportOrigin::ServerDelta(guest.device_public_key),
+            title,
+            now(),
+        )
+        .expect("set aside, not refused");
+    assert!(held.deferred, "the running version removed the field");
+    assert!(!title_kept(&peer));
+
+    run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
+    peer.redecide_set_aside(now());
+    assert!(
+        title_kept(&peer),
+        "running the earlier version again takes the change in"
+    );
+}
+
+/// The one decision about a surface the workspace has not run sets a change aside, to be decided
+/// again: it has no refusal to give, whatever the workspace runs, ran or uninstalled.
+#[test]
+fn a_surface_the_workspace_has_not_run_sets_a_change_aside() {
+    use crate::state::SurfaceGate;
+    let (mut peer, _, _) = workspace_with(Role::Editor);
+    assert_eq!(
+        peer.surface_gate(APP, Some(NEWEST)),
+        SurfaceGate::Decide,
+        "an app the workspace never ran is decided under the surface it names"
+    );
+    run_version(&mut peer, Some(release_of(NEWER, "2.0.0")));
+    for (named, what) in [(None, "no surface"), (Some(NEWEST), "a surface never run")] {
+        assert_eq!(
+            peer.surface_gate(APP, named),
+            SurfaceGate::SetAside,
+            "{what}"
+        );
+    }
+    assert_eq!(peer.surface_gate(APP, Some(NEWER)), SurfaceGate::Decide);
+    run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
+    run_version(&mut peer, Some(release_of(NEWER, "2.0.0")));
+    assert_eq!(
+        peer.surface_gate(APP, Some(PINNED)),
+        SurfaceGate::AlsoUnder(NEWER),
+        "an earlier version is decided under the running one too"
+    );
+    run_version(&mut peer, None);
+    assert_eq!(peer.surface_gate(APP, Some(NEWEST)), SurfaceGate::SetAside);
+    assert_eq!(peer.surface_gate(APP, Some(PINNED)), SurfaceGate::Decide);
+    assert_eq!(peer.surface_gate(APP, None), SurfaceGate::Decide);
 }

@@ -1549,6 +1549,31 @@ impl StatePeer {
         Ok(decided)
     }
 
+    /// How a change of `app`'s records naming `surface` is decided, as the workspace this peer
+    /// judges by runs the app: under the surface it names when that is the one the workspace
+    /// runs, or the app never ran a version; under it and the running one together when it is
+    /// one the workspace ran before; and set aside otherwise. This is the one place a surface the
+    /// workspace has not run is decided, and it never refuses: a change set aside is decided
+    /// again once the workspace runs more, so a copy that has not seen a version yet keeps out
+    /// nothing a copy that has takes in.
+    pub(crate) fn surface_gate(&self, app: &str, surface: Option<[u8; 32]>) -> SurfaceGate {
+        let running = self.workspace_surface(app);
+        match (surface, running) {
+            (None, None) => SurfaceGate::Decide,
+            (Some(named), Some(running)) if named == running => SurfaceGate::Decide,
+            (None, Some(_)) => SurfaceGate::SetAside,
+            (Some(named), running) => {
+                let ran = self.ran_surfaces(app);
+                match running {
+                    _ if ran.is_empty() => SurfaceGate::Decide,
+                    Some(running) if ran.contains(&named) => SurfaceGate::AlsoUnder(running),
+                    None if ran.contains(&named) => SurfaceGate::Decide,
+                    _ => SurfaceGate::SetAside,
+                }
+            }
+        }
+    }
+
     /// [`Self::authorize_document`] by the governance this peer holds.
     fn decide_written(
         &self,
@@ -1566,13 +1591,17 @@ impl StatePeer {
         let Some((member, history)) = written else {
             return Ok(Authorized::Hold(crate::MissingPrerequisite::RemovalCut));
         };
-        // A change made with another version of the app than the workspace runs
-        // is held: its author's desktop switches to the workspace's version, and
-        // the same changes then name that version's surface.
-        if envelope.kind == collab_types::OpKind::Change
-            && let Some(running) = self.workspace_surface(app_id)
-            && envelope.surface != Some(running)
-        {
+        // A change is decided under the surface it names ([`Self::surface_gate`]). One naming a
+        // surface the workspace never ran the app with waits: its author's desktop switches to
+        // the workspace's version, and the same changes then name that version's surface. What
+        // the workspace ran is read as the write was written, and only grows: a version going
+        // back, or the app being uninstalled, lets in no change naming a surface it never ran.
+        let gate = if envelope.kind == collab_types::OpKind::Change {
+            self.surface_gate(app_id, envelope.surface)
+        } else {
+            SurfaceGate::Decide
+        };
+        if gate == SurfaceGate::SetAside {
             return Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface));
         }
         let route = Route {
@@ -1626,26 +1655,43 @@ impl StatePeer {
         // The invocations the changes keep, and the calls a host made them
         // for, are checked above as they are read: this decides their grants
         // and units, once.
-        let decided = decide(
-            (changes, opened),
-            &collab_types::WrittenDocument {
-                workspace: &self.core.workspace,
-                app: app_id,
-                document: record,
-            },
-            (kind.as_deref(), held, pinned),
-            // The record as this peer keeps it, surfaces enforced or not: what decides a
-            // genesis-named change is whether the record already has what someone made.
-            self.core
-                .documents
-                .get(&route)
-                .map(|document| document.doc.committed_document()),
-            &self.surfaces,
-            &allows,
-            // A framework change that names no one is its signer's: the device's person, or the
-            // agent its key is certified for.
-            (imported.as_ref(), Some(&member.acting)),
-        );
+        let written = collab_types::WrittenDocument {
+            workspace: &self.core.workspace,
+            app: app_id,
+            document: record,
+        };
+        let held_again = matches!(gate, SurfaceGate::AlsoUnder(_)).then(|| held.clone());
+        let decide_under = |surfaces: &collab_types::Surfaces, held| {
+            decide(
+                (changes, opened),
+                &written,
+                (kind.as_deref(), held, pinned),
+                // The record as this peer keeps it, surfaces enforced or not: what decides a
+                // genesis-named change is whether the record already has what someone made.
+                self.core
+                    .documents
+                    .get(&route)
+                    .map(|document| document.doc.committed_document()),
+                surfaces,
+                &allows,
+                // A framework change that names no one is its signer's: the device's person, or
+                // the agent its key is certified for.
+                (imported.as_ref(), Some(&member.acting)),
+            )
+        };
+        let decided = decide_under(&self.surfaces, held);
+        // A change an earlier version made is taken in only where the version the workspace runs
+        // admits it too. What only the earlier one allows is set aside, never refused: it comes
+        // back if the workspace runs that version again.
+        if let (Ok(collab_types::Receipt::Admit), SurfaceGate::AlsoUnder(running), Some(held)) =
+            (&decided, gate, held_again)
+            && !matches!(
+                decide_under(&under_both(&self.surfaces, running), held),
+                Ok(collab_types::Receipt::Admit)
+            )
+        {
+            return Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface));
+        }
         drop(allows);
         match decided {
             Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit {
@@ -2196,5 +2242,96 @@ fn called_person(
     match acting.acted_for_person() {
         Some(person) if effect && certificate.device_public_key == *source => person.to_owned(),
         _ => hex::encode(certificate.user_public_key),
+    }
+}
+
+/// How the surface a change names lets it be decided ([`StatePeer::surface_gate`]). There is no
+/// refusal here: a surface the workspace has not run sets a change aside, to be decided again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SurfaceGate {
+    /// Under the surface the change names.
+    Decide,
+    /// Under the surface it names, an earlier version's, and the one the workspace runs, both:
+    /// what only the earlier one allows is set aside.
+    AlsoUnder([u8; 32]),
+    /// Set aside until the workspace runs the surface it names.
+    SetAside,
+}
+
+/// `surfaces`, each surface a change names read together with `running`'s: what both declare.
+/// Where the running surface is not here yet, neither is the pair, and the change waits for it.
+fn under_both(surfaces: &collab_types::Surfaces, running: [u8; 32]) -> collab_types::Surfaces {
+    match surfaces.source() {
+        Some(source) => collab_types::Surfaces::from_source(std::sync::Arc::new(BothSources {
+            source: std::sync::Arc::clone(source),
+            running,
+        })),
+        None => surfaces.clone(),
+    }
+}
+
+/// The surfaces a source finds, each with the running surface of its record's kind.
+struct BothSources {
+    source: std::sync::Arc<dyn collab_types::SurfaceSource>,
+    running: [u8; 32],
+}
+
+impl collab_types::SurfaceSource for BothSources {
+    fn surface(
+        &self,
+        document: &collab_types::WrittenDocument<'_>,
+        kind: Option<&str>,
+        named: Option<&[u8; 32]>,
+    ) -> Option<std::sync::Arc<dyn collab_types::ReceiptSurface>> {
+        let named = self.source.surface(document, kind, named)?;
+        let running = self.source.surface(document, kind, Some(&self.running))?;
+        // A receiver's surfaces are read where it decides, on one thread, as every source's are.
+        #[allow(
+            clippy::arc_with_non_send_sync,
+            reason = "a surface source answers surfaces that are neither Send nor Sync"
+        )]
+        let both = std::sync::Arc::new(Both { named, running });
+        Some(both)
+    }
+}
+
+/// What two surfaces of one kind both declare.
+struct Both {
+    named: std::sync::Arc<dyn collab_types::ReceiptSurface>,
+    running: std::sync::Arc<dyn collab_types::ReceiptSurface>,
+}
+
+impl collab_types::ReceiptSurface for Both {
+    fn kind(&self) -> &str {
+        self.named.kind()
+    }
+    fn verb(&self, action: &str) -> Option<(tilo_action_types::ActionKind, Option<String>)> {
+        let named = self.named.verb(action)?;
+        (self.running.verb(action)? == named).then_some(named)
+    }
+    fn action_name<'a>(&'a self, action: &str) -> Option<&'a str> {
+        self.named.action_name(action)
+    }
+    fn editable(&self, path: &[tilo_actions::PathStep]) -> bool {
+        self.named.editable(path) && self.running.editable(path)
+    }
+    fn footprint(
+        &self,
+        action: &collab_types::claim::ClaimedAction,
+    ) -> Vec<collab_types::UnitPath> {
+        let running = self.running.footprint(action);
+        self.named
+            .footprint(action)
+            .into_iter()
+            .filter(|unit| running.contains(unit))
+            .collect()
+    }
+    fn outboxes(&self) -> Vec<collab_types::UnitPath> {
+        let running = self.running.outboxes();
+        self.named
+            .outboxes()
+            .into_iter()
+            .filter(|unit| running.contains(unit))
+            .collect()
     }
 }

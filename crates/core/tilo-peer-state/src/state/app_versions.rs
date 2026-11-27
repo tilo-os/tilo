@@ -9,7 +9,10 @@
 //! not refused: once its author runs the workspace's version, the same changes
 //! name that version's surface and are decided against it.
 
-use automerge::{ROOT, ReadDoc, transaction::Transactable};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::signer::DeviceSigner;
 use tilo_action_policy::Change;
 use tilo_action_policy::roles::{self, governance};
@@ -67,9 +70,10 @@ impl StatePeer {
         {
             return Ok(false);
         }
-        // Installing the app gives it its own records, in the same change, as the member who
-        // installed it: a grant the members see and may revoke. Moving an installed app to
-        // another version gives nothing again, so a grant a member revoked stays revoked.
+        // Being installed is what gives the app its own records ([`with_installed_apps`]). The
+        // grant is written all the same, in the same change, because the oldest build this one
+        // still supports reads it to admit the app's own writes. Moving an installed app to
+        // another version gives nothing again.
         let granted = installed.is_none().then(|| {
             Change::Grant(roles::app_records_grant(
                 &self.core.workspace,
@@ -96,14 +100,16 @@ impl StatePeer {
         if self.governance().app_version(app).is_none() {
             return Ok(false);
         }
-        // Uninstalling takes back the grant installing gave, in the same change.
+        // Removing the row takes the app's own records away with it. The grant installing wrote
+        // is revoked in the same change, because the oldest build this one still supports reads
+        // it: as the workspace's operations keep it, never as admission reads it.
         let id = roles::app_records_grant_id(app);
         let revoked = self
             .core
             .workspace_doc
             .as_ref()
             .is_some_and(|doc| {
-                doc.workspace_policy(&self.core.workspace)
+                crate::members::stored(doc, &self.core.workspace)
                     .grants
                     .iter()
                     .any(|grant| grant.id == id)
@@ -127,9 +133,9 @@ impl StatePeer {
         Ok(person_of(&member)?.to_owned())
     }
 
-    /// Write or remove the version of `app` in one governance commit, with `grant`, the grant
-    /// installing gives the app or uninstalling takes back, recorded in the same change as the
-    /// caller's change to the workspace's grants: every member admits it as they admit any.
+    /// Write or remove the version of `app` in one commit, with `grant`, the grant installing
+    /// writes or uninstalling revokes, recorded in the same change: every member admits it as
+    /// they admit any.
     fn put_app_version(
         &mut self,
         app: &str,
@@ -171,8 +177,8 @@ impl StatePeer {
     }
 
     /// The surface the version of `app` the workspace runs names, when it runs one: what a change
-    /// of the app's documents names, so it is merged rather than held for a version the workspace
-    /// does not run.
+    /// of the app's documents names, so it is merged rather than set aside for a version the
+    /// workspace does not run.
     #[must_use]
     pub fn running_surface(&self, app: &str) -> Option<[u8; 32]> {
         self.workspace_surface(app)
@@ -182,61 +188,155 @@ impl StatePeer {
     pub(super) fn workspace_surface(&self, app: &str) -> Option<[u8; 32]> {
         self.governance().app_version(app)?.release.surface_hash()
     }
+
+    /// Every surface the workspace ran `app` with, the one it runs now included, as the
+    /// workspace this peer judges by stands: a change naming one of them is decided under the
+    /// surface it names, and one naming any other surface waits.
+    pub(super) fn ran_surfaces(&self, app: &str) -> Arc<BTreeSet<[u8; 32]>> {
+        let Some(doc) = self.core.workspace_doc.as_ref() else {
+            return Arc::default();
+        };
+        doc.ran_surfaces(app, || {
+            workspace_apps()
+                .ran(&self.core.workspace, doc, app)
+                .iter()
+                .filter_map(AppRelease::surface_hash)
+                .collect()
+        })
+    }
+}
+
+/// Where admission reads which apps a workspace runs: the version of each, who installed it,
+/// and every version it ran before. The running version decides which surface a change of the
+/// app's records is decided under, and being installed is what lets the app keep its own records
+/// ([`with_installed_apps`]). Nothing in admission reads the apps another way.
+///
+/// `governance` is the workspace as the decision reads it: the state a write was written under
+/// when it names one, so every copy decides a write alike whatever order it reaches them in.
+pub trait WorkspaceApps: Send + Sync {
+    /// Each app version `workspace` runs, by app id.
+    fn running(&self, workspace: &str, governance: &AutoCommit) -> BTreeMap<String, InstalledApp>;
+
+    /// Each release `workspace` ran `app` with, the one it runs now included, each once, in the
+    /// order it last ran them. A release once in it stays in it.
+    fn ran(&self, workspace: &str, governance: &AutoCommit, app: &str) -> Vec<AppRelease>;
+}
+
+/// The apps as the workspace's `app_versions_v1` map keeps them.
+pub struct AppVersionsMap;
+
+impl WorkspaceApps for AppVersionsMap {
+    fn running(&self, _: &str, governance: &AutoCommit) -> BTreeMap<String, InstalledApp> {
+        let Ok(Some((_, versions))) = governance.get(ROOT, APP_VERSIONS) else {
+            return BTreeMap::new();
+        };
+        governance
+            .keys(&versions)
+            .filter_map(|app| Some((app.clone(), read_version(governance, &versions, &app)?)))
+            .collect()
+    }
+
+    fn ran(&self, _: &str, governance: &AutoCommit, app: &str) -> Vec<AppRelease> {
+        let Ok(Some((_, versions))) = governance.get(ROOT, APP_VERSIONS) else {
+            return Vec::new();
+        };
+        let mut ran: Vec<AppRelease> = Vec::new();
+        for change in governance.committed_document().get_changes(&[]) {
+            let Some(row) = read_version_at(governance, &versions, app, &[change.hash()]) else {
+                continue;
+            };
+            ran.retain(|earlier| *earlier != row.release);
+            ran.push(row.release);
+        }
+        ran
+    }
+}
+
+/// The source every peer of this process reads its workspace's apps from.
+fn source() -> &'static std::sync::RwLock<Arc<dyn WorkspaceApps>> {
+    static SOURCE: std::sync::OnceLock<std::sync::RwLock<Arc<dyn WorkspaceApps>>> =
+        std::sync::OnceLock::new();
+    SOURCE.get_or_init(|| std::sync::RwLock::new(Arc::new(AppVersionsMap)))
+}
+
+/// Read which apps every workspace of this process runs from `apps`: what a host sets once,
+/// before it opens or restores its workspaces.
+pub fn read_apps_with(apps: Arc<dyn WorkspaceApps>) {
+    *source()
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = apps;
+}
+
+/// Where this process reads its workspaces' apps from ([`read_apps_with`]).
+pub(crate) fn workspace_apps() -> Arc<dyn WorkspaceApps> {
+    Arc::clone(
+        &source()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+}
+
+/// `policy` as `governance` gives it, with the right each installed app has to its own records:
+/// installing an app gives it ([`roles::app_records_grant`], by the member who installed it) and
+/// uninstalling it takes it away, in the same change. A grant of that id a policy keeps itself
+/// is no part of it: the right is whether the app is installed, read in one place.
+pub(crate) fn with_installed_apps(
+    mut policy: tilo_action_policy::WorkspacePolicy,
+    governance: &AutoCommit,
+) -> tilo_action_policy::WorkspacePolicy {
+    policy
+        .grants
+        .retain(|grant| !roles::is_app_records_grant(grant));
+    let installed = workspace_apps().running(&policy.workspace, governance);
+    let workspace = policy.workspace.clone();
+    policy.grants.extend(
+        installed
+            .into_iter()
+            .map(|(app, row)| roles::app_records_grant(&workspace, &app, &row.installed_by)),
+    );
+    policy
 }
 
 impl PeerGovernance<'_> {
     /// Every app version the workspace runs, by app id.
     #[must_use]
     pub fn app_versions(self) -> Vec<InstalledApp> {
-        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
-            return Vec::new();
-        };
-        let Ok(Some((_, versions))) = doc.get(ROOT, APP_VERSIONS) else {
-            return Vec::new();
-        };
-        let mut out: Vec<InstalledApp> = doc
-            .keys(&versions)
-            .filter_map(|app| read_version(&**doc, &versions, &app))
-            .collect();
-        out.sort_by(|a, b| a.release.app.cmp(&b.release.app));
-        out
+        self.running().values().cloned().collect()
     }
 
     /// The version of `app` the workspace runs, if it chose one.
     #[must_use]
     pub fn app_version(self, app: &str) -> Option<InstalledApp> {
-        let doc = self.peer.core.workspace_doc.as_ref()?;
-        let (_, versions) = doc.get(ROOT, APP_VERSIONS).ok()??;
-        read_version(&**doc, &versions, app)
+        self.running().get(app).cloned()
+    }
+
+    /// The apps the workspace runs, as [`WorkspaceApps::running`] reads them.
+    fn running(self) -> Arc<BTreeMap<String, InstalledApp>> {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return Arc::default();
+        };
+        doc.running_apps(|| workspace_apps().running(&self.peer.core.workspace, doc))
     }
 
     /// The releases of `app` the workspace ran before the one it runs now, the most recent
-    /// first, each once: its row as each change of the governance history left it. What going
-    /// back a version goes back to.
+    /// first, each once. What going back a version goes back to.
     #[must_use]
     pub fn earlier_app_versions(self, app: &str) -> Vec<AppRelease> {
-        let Some(doc) = self.peer.core.workspace_doc.as_deref() else {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
             return Vec::new();
         };
-        let Ok(Some((_, versions))) = doc.get(ROOT, APP_VERSIONS) else {
-            return Vec::new();
-        };
-        let current = self.app_version(app).map(|installed| installed.release);
-        let mut ran: Vec<AppRelease> = Vec::new();
-        for change in doc.committed_document().get_changes(&[]) {
-            let Some(row) = read_version_at(doc, &versions, app, &[change.hash()]) else {
-                continue;
-            };
-            let mut release = row.release;
-            // Keeping a version or letting it go is no other version.
+        // Keeping a version or letting it go is no other version.
+        let unpinned = |mut release: AppRelease| {
             release.pinned = false;
+            release
+        };
+        let current = self.app_version(app).map(|row| unpinned(row.release));
+        let mut ran: Vec<AppRelease> = Vec::new();
+        for release in workspace_apps().ran(&self.peer.core.workspace, doc, app) {
+            let release = unpinned(release);
             ran.retain(|earlier| *earlier != release);
             ran.push(release);
         }
-        let current = current.map(|mut release| {
-            release.pinned = false;
-            release
-        });
         ran.retain(|release| Some(release) != current.as_ref());
         ran.reverse();
         ran

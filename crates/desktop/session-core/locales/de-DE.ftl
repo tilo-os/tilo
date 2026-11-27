@@ -490,7 +490,6 @@ workspace-settings-scope-resource-instance-object = Ein Dokument ({ $id })
 workspace-settings-allows-control = { $what } steuern
 workspace-settings-allows-use = { $what } verwenden
 # What installing an app gives it, listed under the app's name.
-workspace-settings-allows-own-records = Eigene Einträge führen
 workspace-settings-allows-reach = { $what } erreichen
 workspace-settings-allows-edit = { $what } bearbeiten
 workspace-settings-allows-view = { $what } ansehen

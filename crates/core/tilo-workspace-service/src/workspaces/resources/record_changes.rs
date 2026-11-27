@@ -1439,8 +1439,8 @@ mod tests {
         );
     }
 
-    /// An app's process writes by itself, never as a person: installing the app gave it a grant
-    /// for its own records, and a change it makes naming the person, with no invocation behind
+    /// An app's process writes by itself, never as a person: installing the app gave it its own
+    /// records, and a change it makes naming the person, with no invocation behind
     /// it, is refused, also on a record that grant does not cover.
     #[tokio::test(flavor = "current_thread")]
     async fn an_apps_process_writes_as_the_app_and_a_change_naming_a_person_is_refused() {
@@ -1448,22 +1448,10 @@ mod tests {
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
         let person = caller_of(workspaces, &workspace).acting().by.clone();
-        let installed_by = caller_of(workspaces, &workspace)
-            .acting()
-            .person_id()
-            .expect("the device's person")
-            .to_owned();
-        // Installing the app gave it its own records: the grant its own writes are decided by.
-        crate::workspaces::fixtures::record_grants(
-            workspaces,
-            &workspace,
-            &[tilo_action_policy::roles::app_records_grant(
-                &workspace,
-                NOTES,
-                &installed_by,
-            )],
-        )
-        .await;
+        // Installing the app gave it its own records: what its own writes are decided by.
+        crate::workspaces::fixtures::install_app(workspaces, &workspace, NOTES)
+            .await
+            .expect("the person installs the app");
 
         let app = tilo_actions::Acting::by_app(NOTES);
         let mut ours = automerge::AutoCommit::new();
@@ -2473,15 +2461,10 @@ mod tests {
             .person_id()
             .expect("the route is a person's")
             .to_owned();
-        // Installing the app gave it its own records: the grant its own writes are decided by.
-        crate::workspaces::fixtures::record_grants(
-            workspaces,
-            &workspace,
-            &[tilo_action_policy::roles::app_records_grant(
-                &workspace, APP, &person,
-            )],
-        )
-        .await;
+        // Installing the app gave it its own records: what its own writes are decided by.
+        crate::workspaces::fixtures::install_app(workspaces, &workspace, APP)
+            .await
+            .expect("the person installs the app");
         let written =
             write_as_app_process(workspaces, &workspace, APP, personal_kept(APP, &person)).await;
         assert!(matches!(written, Ok(Reply::Written)), "{written:?}");

@@ -472,7 +472,9 @@ impl StatePeer {
             now_ns(now),
             command,
         )?;
-        if let Some(why) = members::refused(doc, &members::replay(doc, &workspace), &op) {
+        // Decided as every device replaying the log decides it: against the membership its
+        // operations make, never the policy admission reads beside them.
+        if let Some(why) = members::refused(doc, &members::stored(doc, &workspace), &op) {
             return Err(why);
         }
         members::put_op(doc, &op)?;

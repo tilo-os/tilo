@@ -253,16 +253,34 @@ impl StatePeer {
             .retain(|(author, waiting, _)| !(*author == source && waiting == message));
         self.core.pending_bytes = self.core.pending_bytes.saturating_sub(size);
     }
+    /// Decide every held message again now that the apps the workspace runs changed
+    /// ([`crate::WorkspaceApps`]): a change set aside for the surface it names is taken in once
+    /// the workspace has run that surface, and waits on otherwise. What each takes in is in the
+    /// report, released writes included.
+    pub fn redecide_set_aside(&mut self, now: SystemTime) -> AdmissionReport {
+        let mut report = AdmissionReport::metadata(ReceiveOutcome::default());
+        if !self.core.pending.is_empty() {
+            self.retry_held(&mut report, now, false);
+        }
+        report
+    }
     /// Decide every held message again now that the input `into` reports on
     /// landed: what each takes in is added to `into`, released writes
     /// included, and one that still waits is held again.
+    ///
+    /// They are decided by record, author and sequence, never in the order this copy received
+    /// them: every copy holding the same messages decides them in the same order, so no two
+    /// take in different ones.
     pub(super) fn retry_held(
         &mut self,
         into: &mut AdmissionReport,
         now: SystemTime,
         strict_report: bool,
     ) {
-        let pending = std::mem::take(&mut self.core.pending);
+        let mut pending: Vec<_> = std::mem::take(&mut self.core.pending).into();
+        pending.sort_by_cached_key(|(author, message, replayed)| {
+            (super::written_route(message), *author, *replayed)
+        });
         self.core.pending_bytes = 0;
         for (author, message, replayed) in pending {
             let held = message.clone();

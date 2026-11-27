@@ -736,22 +736,18 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     // The writer is an app this device installed, whose package's surface declares its note.
     collab_types::app_surface::register_package(WRITER_APP, WRITER_SURFACE.as_bytes());
     let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
-    // Installing it gave it its own records: the grant its own write is decided by, the person
-    // who installed it giving it.
+    // Installing it gave it its own records: what its own write is decided by.
     let workspace = session
         .workspace()
         .expect("the person's workspace is founded for their apps");
     tilo_rt::app()
         .handle()
-        .block_on(tilo_workspace_service::workspaces::fixtures::record_grants(
+        .block_on(tilo_workspace_service::workspaces::fixtures::install_app(
             session.workspaces.copies(),
             &workspace,
-            &[tilo_action_policy::roles::app_records_grant(
-                &workspace,
-                WRITER_APP,
-                &session.person_id(),
-            )],
-        ));
+            WRITER_APP,
+        ))
+        .expect("the person installs the writer");
     let log = std::fs::File::create(root.join("writer.log")).unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command

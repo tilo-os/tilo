@@ -452,7 +452,6 @@ workspace-settings-scope-resource-instance-object = one document ({ $id })
 workspace-settings-allows-control = Control { $what }
 workspace-settings-allows-use = Use { $what }
 # What installing an app gives it, listed under the app's name.
-workspace-settings-allows-own-records = Keep its own records
 workspace-settings-allows-reach = Reach { $what }
 workspace-settings-allows-edit = Edit { $what }
 workspace-settings-allows-view = View { $what }

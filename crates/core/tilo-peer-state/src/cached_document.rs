@@ -6,6 +6,7 @@
 //! therefore copies only the documents it actually changes, and a durable
 //! snapshot re-saves only those.
 use automerge::AutoCommit;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, OnceLock};
 
@@ -48,7 +49,15 @@ pub(crate) struct CachedDocument {
     named: Arc<OnceLock<Named>>,
     /// [`Self::newest_change_secs`], once asked.
     newest_change: Arc<OnceLock<Option<i64>>>,
+    /// [`Self::running_apps`], once asked.
+    running_apps: Arc<OnceLock<Arc<RunningApps>>>,
+    /// [`Self::ran_surfaces`], by app, as each was asked.
+    ran_surfaces: Arc<std::sync::Mutex<RanSurfaces>>,
 }
+/// The surfaces a workspace ran each app with, by app id, as each was asked.
+type RanSurfaces = BTreeMap<String, Arc<BTreeSet<[u8; 32]>>>;
+/// The apps a workspace runs, by app id.
+pub(crate) type RunningApps = BTreeMap<String, crate::state::InstalledApp>;
 /// A governance state's changes by the bytes a write names each by
 /// ([`collab_types::governance_head`]), and its changes that build on none.
 #[derive(Default)]
@@ -197,6 +206,8 @@ impl From<AutoCommit> for CachedDocument {
             security_basis: Arc::default(),
             named: Arc::default(),
             newest_change: Arc::default(),
+            running_apps: Arc::default(),
+            ran_surfaces: Arc::default(),
         }
     }
 }
@@ -229,6 +240,8 @@ impl DerefMut for CachedDocument {
         self.security_basis = Arc::default();
         self.named = Arc::default();
         self.newest_change = Arc::default();
+        self.running_apps = Arc::default();
+        self.ran_surfaces = Arc::default();
         Arc::make_mut(&mut self.doc)
     }
 }
@@ -256,6 +269,26 @@ impl CachedDocument {
             "a document names one workspace"
         );
         policy
+    }
+    /// The apps this state runs, as `read` reads them: read once per state.
+    pub(crate) fn running_apps(&self, read: impl FnOnce() -> RunningApps) -> Arc<RunningApps> {
+        Arc::clone(self.running_apps.get_or_init(|| Arc::new(read())))
+    }
+    /// The surfaces this state ran `app` with, as `read` reads them: read once per state and app.
+    pub(crate) fn ran_surfaces(
+        &self,
+        app: &str,
+        read: impl FnOnce() -> BTreeSet<[u8; 32]>,
+    ) -> Arc<BTreeSet<[u8; 32]>> {
+        use tilo_lock::MutexRecover as _;
+        if let Some(ran) = self.ran_surfaces.lock_recover().get(app) {
+            return Arc::clone(ran);
+        }
+        let ran = Arc::new(read());
+        self.ran_surfaces
+            .lock_recover()
+            .insert(app.to_owned(), Arc::clone(&ran));
+        ran
     }
     /// The workspace's entry this state records: whom it lets in.
     pub(crate) fn workspace_entry(&self) -> tilo_action_policy::EntryPolicy {

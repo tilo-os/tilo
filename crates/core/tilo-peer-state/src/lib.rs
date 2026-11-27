@@ -109,6 +109,7 @@ pub use state::{
     seed_workspace_at, trigger_mark, unranked, workspace_device_actor_at, workspace_grants_of,
     workspace_host_actor, workspace_host_actor_at, workspace_seed,
 };
+pub use state::{AppVersionsMap, WorkspaceApps, read_apps_with};
 pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
 pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 pub use state::{Captured, changes_since, saved_whole};

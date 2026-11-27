@@ -543,11 +543,11 @@ pub fn app_records_grant_id(app: &str) -> GrantId {
     GrantId(format!("app-records:{app}"))
 }
 
-/// The grant installing `app` in `workspace` gives it: reading and changing its own records, the
+/// The right an installed `app` has in `workspace`: reading and changing its own records, the
 /// resources under its app id, when it acts by itself (a trigger, a migration, its own
-/// connection). It is a person's grant to an app like any other, given by the member who
-/// installed it (`installed_by`), so members see it among the workspace's grants and may revoke
-/// it, and it stands only while that member reaches the app's records themselves
+/// connection). A workspace's policy carries it for each app the workspace has installed, and
+/// for no other, so uninstalling the app takes it away. It is given by the member who installed
+/// it (`installed_by`) and stands only while that member reaches the app's records themselves
 /// ([`Grant::stands_in`]). Anything beyond the app's own records still asks.
 #[must_use]
 pub fn app_records_grant(workspace: &str, app: &str, installed_by: &str) -> Grant {

@@ -50,7 +50,8 @@ pub use governance_writes::ActionStamp;
 pub(crate) use governance_writes::{commit_governance, wall_secs};
 mod app_versions;
 mod calls;
-pub use app_versions::InstalledApp;
+pub(crate) use app_versions::with_installed_apps;
+pub use app_versions::{AppVersionsMap, InstalledApp, WorkspaceApps, read_apps_with};
 pub use calls::CallGate;
 pub(crate) mod package_registries;
 pub(crate) mod package_trust;
@@ -130,6 +131,8 @@ pub use sealed_compaction::{
 mod admitting;
 mod authority;
 pub use authority::DocumentKeysBasis;
+#[cfg(test)]
+pub(crate) use authority::SurfaceGate;
 mod construction;
 mod durable;
 mod durable_before_call;

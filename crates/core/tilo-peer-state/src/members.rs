@@ -17,4 +17,5 @@ mod tests;
 pub use op::{MEMBERS_KEY, MembershipOpCommand, OpId, SignedMembershipOp, put_op};
 pub use replay::{
     HeldOps, grant_times, growth, heads, heads_of, ops, people, refused, replay, replay_declared,
+    stored,
 };

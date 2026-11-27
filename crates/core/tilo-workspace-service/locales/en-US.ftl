@@ -39,7 +39,7 @@ workspace-default-name = My workspace
 # Said in an app's window when the workspace refuses what the app wrote by itself
 # (a trigger, an update of its records) because a member took back the
 # permission installing it gave: it keeps nothing until that is given back.
-app-records-taken-back = { $app } can't keep its records in this workspace any more, so it stopped. A member took back its permission; installing { $app } again, or giving it back under the workspace's Permissions, lets it carry on.
+app-records-taken-back = { $app } can't keep its records in this workspace any more, so it stopped: whoever installed it can't reach them now. Installing { $app } again lets it carry on.
 app-records-not-installed = { $app } isn't installed in this workspace, so it can't keep records here. Install { $app } in the workspace to use it.
 
 # Said where an app opens when the workspace runs no version of it and opening it could not

@@ -39,7 +39,7 @@ workspace-default-name = Mein Arbeitsbereich
 # Said in an app's window when the workspace refuses what the app wrote by itself
 # (a trigger, an update of its records) because a member took back the
 # permission installing it gave: it keeps nothing until that is given back.
-app-records-taken-back = { $app } kann seine Einträge in diesem Arbeitsbereich nicht mehr führen und hat angehalten. Ein Mitglied hat ihm die Berechtigung entzogen; installiere { $app } erneut oder gib sie unter „Berechtigungen“ des Arbeitsbereichs zurück, damit es weitermacht.
+app-records-taken-back = { $app } kann seine Einträge in diesem Arbeitsbereich nicht mehr führen und hat angehalten: Wer es installiert hat, erreicht sie nicht mehr. Installiere { $app } erneut, damit es weitermacht.
 app-records-not-installed = { $app } ist in diesem Arbeitsbereich nicht installiert und kann hier keine Einträge führen. Installiere { $app } im Arbeitsbereich, um es zu nutzen.
 
 # Said where an app opens when the workspace runs no version of it and opening it could not

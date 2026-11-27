@@ -1,8 +1,8 @@
-//! An app's own records, kept by the grant installing it gave it
+//! An app's own records, kept while the workspace has it installed
 //! ([`tilo_action_policy::roles::app_records_grant`]): when a write the app made by itself (a
-//! trigger, a migration) is refused because that grant was revoked, the refusal is said in the
-//! words a person reads, so the app tells them it can't keep its records rather than failing
-//! where nobody looks.
+//! trigger, a migration) is refused because it is not installed, or whoever installed it can't
+//! reach its records now, the refusal is said in the words a person reads, so the app tells them
+//! it can't keep its records rather than failing where nobody looks.
 
 use collab_types::store::wire::Command;
 use tilo_action_policy::Context;
@@ -113,7 +113,7 @@ mod tests {
         args.set("app", app_name("so.tilo.clocks"));
         let said = crate::i18n::message(None, TAKEN_BACK, &args);
         assert!(said.contains("Clocks"), "{said}");
-        assert!(said.contains("Permissions"), "{said}");
+        assert!(said.contains("Installing"), "{said}");
         let german = crate::i18n::message(Some("de-DE"), TAKEN_BACK, &args);
         assert_ne!(german, said, "the message is translated");
         assert!(german.contains("Clocks"), "{german}");

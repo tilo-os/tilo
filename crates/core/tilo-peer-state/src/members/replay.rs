@@ -65,9 +65,18 @@ pub fn heads(held: &HeldOps) -> Vec<OpId> {
     heads.into_iter().collect()
 }
 
-/// The workspace's membership as `doc`'s operations make it.
+/// The workspace's membership as `doc`'s operations make it, with the right each app `doc`
+/// runs has to its own records ([`crate::state::with_installed_apps`]).
 #[must_use]
 pub fn replay(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
+    crate::state::with_installed_apps(stored(doc, workspace), doc)
+}
+
+/// The workspace's membership exactly as `doc`'s operations make it, the grants they keep
+/// included: what a new operation is decided against, as every device replaying the log decides
+/// it.
+#[must_use]
+pub fn stored(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
     replayed(doc, workspace).policy
 }
 

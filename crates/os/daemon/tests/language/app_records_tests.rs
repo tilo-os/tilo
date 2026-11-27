@@ -1,7 +1,7 @@
-//! Installing an app into a workspace gives it its own records, as a grant the workspace records
-//! like any other: the app's trigger writes them with nobody at it, reaches nothing of another
-//! app's, stops when a member revokes the grant (and says so in its window, in words a person
-//! reads), and keeps them again once it is installed again. No grant is made by hand here.
+//! Installing an app into a workspace gives it its own records for as long as it is installed:
+//! the app's trigger writes them with nobody at it, reaches nothing of another app's, stops once
+//! the app is uninstalled (and says so in its window, in words a person reads), and keeps them
+//! again once it is installed again. No grant is made by hand here.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,8 +19,7 @@ use tilo_member_types::Acting;
 use tilo_workspace_service::tl_records::{Compiled, Package};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, declare_app, hosting_device, install_app, revoke_grant, test_host_holding,
-    uninstall_app,
+    TestGroupKeys, declare_app, hosting_device, install_app, test_host_holding, uninstall_app,
 };
 use tilolang_workspace::records::{Packages, built_in, member, with_tl_record};
 
@@ -76,11 +75,11 @@ async fn ring_next(
 }
 
 // USER REQUIREMENT: an app I install keeps its own records by itself (its alarms ring and write
-// what they rang) without my granting it anything by hand; I see that permission among the
-// workspace's grants and can take it back; then the app stops and tells me plainly it can't keep
-// its records, rather than failing silently; installing it again gives the permission back.
+// what they rang) without my granting it anything by hand; once I uninstall it, it stops and
+// tells me plainly it can't keep its records, rather than failing silently; installing it again
+// lets it carry on.
 #[tokio::test]
-async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_back() {
+async fn installing_an_app_gives_it_its_own_records_until_it_is_uninstalled() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = hosting_device();
     let desk = test_host_holding(dir.path(), &key, &cert, Arc::new(TestGroupKeys::default())).await;
@@ -107,7 +106,7 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
         "an app nobody installed keeps nothing"
     );
 
-    // The person installs Clocks: the workspace records the grant installing gives, as theirs.
+    // The person installs Clocks: the workspace's policy gives it its own records, as theirs.
     install_app(&workspaces, &workspace, APP)
         .await
         .expect("the person installs Clocks");
@@ -116,7 +115,7 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
         .grants
         .iter()
         .find(|held| held.id == grant)
-        .expect("installing records the grant of Clocks' own records");
+        .expect("installing gives Clocks its own records");
     assert!(roles::is_app_records_grant(given), "{given:?}");
     assert_eq!(given.granted_by.person_id(), Some(person.as_str()));
     assert_eq!(app_may_change(&installed, APP, &own), Answer::Allow);
@@ -179,13 +178,16 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
         "the alarm's notice is Clocks' record: {notices:?}"
     );
 
-    // A member revokes the grant, as the workspace's Permissions tab does.
-    revoke_grant(&workspaces, &workspace, grant.clone())
+    // The person uninstalls Clocks: its own records go with it, in the same change.
+    uninstall_app(&workspaces, &workspace, APP)
         .await
-        .expect("the owner revokes Clocks' grant");
-    let revoked = policy(&workspaces, &workspace).await;
-    assert!(!revoked.grants.iter().any(|held| held.id == grant));
-    assert_eq!(app_may_change(&revoked, APP, &own), Answer::Deny);
+        .expect("the person uninstalls Clocks");
+    let uninstalled = policy(&workspaces, &workspace).await;
+    assert!(
+        !uninstalled.grants.iter().any(|held| held.id == grant),
+        "uninstalling takes Clocks' own records with it"
+    );
+    assert_eq!(app_may_change(&uninstalled, APP, &own), Answer::Deny);
 
     // The next write Clocks makes by itself is refused, and Clocks says why in its window.
     alarm(
@@ -200,29 +202,18 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
     assert_eq!(ran, 0, "the workspace refuses what Clocks writes by itself");
     assert!(
         said.iter()
-            .any(|text| text.contains("Clocks") && text.contains("can't keep its records")),
+            .any(|text| text.contains("Clocks") && text.contains("isn't installed")),
         "Clocks tells the person it can't keep its records: {said:?}"
     );
 
     // Installed again, it keeps its records again: the alarm that was refused rings.
-    uninstall_app(&workspaces, &workspace, APP)
-        .await
-        .expect("the person uninstalls Clocks");
-    assert!(
-        !policy(&workspaces, &workspace)
-            .await
-            .grants
-            .iter()
-            .any(|held| held.id == grant),
-        "uninstalling takes the grant with it"
-    );
     install_app(&workspaces, &workspace, APP)
         .await
         .expect("the person installs Clocks again");
     assert_eq!(
         app_may_change(&policy(&workspaces, &workspace).await, APP, &own),
         Answer::Allow,
-        "installing again gives the grant again"
+        "installing again gives Clocks its own records again"
     );
     let (ran, said) = ring_next(&workspaces, &workspace, &packages, &person).await;
     assert_eq!(ran, 1, "Clocks writes its own record again: {said:?}");
@@ -231,9 +222,9 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
 
 // USER REQUIREMENT: what an app writes by itself in the background (a timer, a sync, anything
 // nobody asked it for just then) is the app's doing, never mine because I happen to have its
-// window open: it keeps only what I let the app keep, and stops when I take that back.
+// window open: it keeps only its own records, and only while it is installed.
 #[tokio::test]
-async fn a_native_apps_own_write_is_the_apps_and_stops_when_its_grant_is_taken_back() {
+async fn a_native_apps_own_write_is_the_apps_and_stops_when_it_is_uninstalled() {
     use collab_types::store::{Cell, Resource, Value, wire::Command};
     use tilo_app_host::services::ResourceRequestContext;
     use tilo_resource_store::Stamp;
@@ -296,17 +287,17 @@ async fn a_native_apps_own_write_is_the_apps_and_stops_when_its_grant_is_taken_b
         .await
         .expect("Clocks keeps its own record by itself");
 
-    // Taken back, its next background write is refused, though the owner it would otherwise
+    // Uninstalled, its next background write is refused, though the owner it would otherwise
     // pass for may write anything here.
-    revoke_grant(&workspaces, &workspace, roles::app_records_grant_id(APP))
+    uninstall_app(&workspaces, &workspace, APP)
         .await
-        .expect("the owner revokes Clocks' grant");
+        .expect("the person uninstalls Clocks");
     let refused = workspaces
         .resource_command(&route, city("osaka", "Osaka"))
         .await
         .expect_err("the workspace refuses what Clocks writes by itself");
     assert!(
-        refused.contains("Clocks") && refused.contains("can't keep its records"),
+        refused.contains("Clocks") && refused.contains("isn't installed"),
         "{refused}"
     );
 }
