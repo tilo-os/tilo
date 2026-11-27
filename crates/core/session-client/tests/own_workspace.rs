@@ -23,6 +23,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use serde_json::{Map, json};
+use tilo_action_services::server_account::{NextStepKind, Reason};
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_session_client::device::{Awaiting, Device, DeviceRefusal};
@@ -449,7 +450,9 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
             .unwrap(),
         own.workspace_id
     );
-    // It makes no workspace, and enters no other.
+    // It makes no workspace, and enters no other. Its grant names one workspace: another is its
+    // person's to allow, and is made on their own device, which this site is not. A yes could not
+    // be carried out here, so Bob is not asked: the key is told what works instead.
     let made = script
         .own_workspace(
             Map::from_iter([("name".into(), json!("More"))]),
@@ -457,25 +460,31 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         )
         .await
         .unwrap_err();
-    // Its grant names one workspace: making another is the person's to allow, so they are asked
-    // on the devices that hold their identity. The host keeps the make for them, and the key
-    // reads that it waits, and in which record.
-    assert_eq!(made.code, DeviceRefusal::AWAITING_APPROVAL, "{made:?}");
-    let more = made.awaiting.expect("the make that waits is named");
+    assert_eq!(made.awaiting, None, "{made:?}");
+    let typed = made.refusal.expect("the refusal is typed");
+    assert_eq!(
+        typed.reason,
+        Reason::FoundOnYourDevice {
+            devices: Vec::new()
+        }
+    );
+    for remedy in [
+        NextStepKind::MakeOnYourDevice,
+        NextStepKind::AskThroughYourDevice,
+    ] {
+        assert!(typed.step(remedy).is_some(), "{remedy:?} in {typed:?}");
+    }
+    let records = workspaces.asked_records().unwrap();
+    assert!(
+        records.asked_of(&bob_person).is_empty(),
+        "no question is held"
+    );
     assert!(
         script
             .enter_workspace(&elsewhere.workspace, "A script")
             .await
             .is_err()
     );
-    // Bob says no on his tab, and the key that followed the make reads his no: nothing is made.
-    answer(&device, &more, "decline").await;
-    let declined = script
-        .answer_of(&more, FOLLOWING)
-        .await
-        .expect_err("a declined make makes nothing");
-    assert_eq!(declined.code, DeviceRefusal::DECLINED, "{declined:?}");
-    assert_eq!(declined.awaiting, None);
     script.close();
 
     // A key Bob made for all his workspaces deletes one of them only once he says yes: its

@@ -748,7 +748,9 @@ impl Workspaces {
             ServiceOperation::CreateOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                self.create_own_invoke((caller, device), &args, now).await
+                let approved = request.approval().is_some();
+                self.create_own_invoke((caller, device), &args, (now, approved))
+                    .await
             }
             ServiceOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -917,7 +919,8 @@ impl Workspaces {
                 false
             }
             // A new workspace of a person's own is made for a person the site
-            // let in: what is theirs already they enter as they are.
+            // let in: what is theirs already they enter as they are. A grant for one workspace
+            // asks its person only where their yes can be carried out: on their founding device.
             ServiceOperation::CreateOwnWorkspace => {
                 let makes = device
                     .capabilities
@@ -926,14 +929,17 @@ impl Workspaces {
                     .is_none_or(tilo_user_identity::AgentScope::makes_workspaces);
                 let moving = args.text("workspace")?;
                 let named = args.text("name")?.is_some();
-                makes
-                    && self.own().is_some_and(|own| {
-                        if named {
-                            !moving.is_some_and(|moving| own.is_of(&person, moving))
-                        } else {
-                            moving.is_none() && !own.any_of(&person)
-                        }
-                    })
+                let founds = self.own().is_some_and(|own| {
+                    if named {
+                        !moving.is_some_and(|moving| own.is_of(&person, moving))
+                    } else {
+                        moving.is_none() && !own.any_of(&person)
+                    }
+                });
+                if founds && !makes {
+                    self.founding_here(&person).await?;
+                }
+                makes && founds
             }
             _ => false,
         };
@@ -1213,7 +1219,7 @@ impl Workspaces {
         &self,
         (caller, device): (&Caller, &DeviceCert),
         args: &Args,
-        now: u64,
+        (now, approved): (u64, bool),
     ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
         let name = args.text("name")?;
@@ -1227,12 +1233,13 @@ impl Workspaces {
             return self.enter_host_persons(device, name, moving).await;
         };
         // A grant for one workspace enters that one, already made: it makes no other, and labels
-        // none, labels being its person's for their programs.
-        let makes = device
-            .capabilities
-            .agent
-            .as_ref()
-            .is_none_or(tilo_user_identity::AgentScope::makes_workspaces);
+        // none, labels being its person's for their programs, unless they said yes to it.
+        let makes = approved
+            || device
+                .capabilities
+                .agent
+                .as_ref()
+                .is_none_or(tilo_user_identity::AgentScope::makes_workspaces);
         if !makes && Self::a_grant_asks_for_more(device, (name, moving), labels.as_ref()) {
             return Err(ActionCallError::refused(
                 AdminRefusal::NotYourOwn.to_reason(),
@@ -1292,10 +1299,6 @@ impl Workspaces {
             self.summary(&first)
                 .await
                 .map_err(|error| ActionCallError::refused(error.to_string()))?
-        } else if !makes {
-            return Err(ActionCallError::refused(
-                AdminRefusal::NotYourOwn.to_reason(),
-            ));
         } else {
             // Another one, for a person the site let in ([`Self::check_account`]): one they did
             // not name is named in their language. The person's own workspace and the entry in
@@ -1369,12 +1372,6 @@ impl Workspaces {
         workspace: Option<&str>,
     ) -> Result<WorkspaceSummary, ActionCallError> {
         let person = device.user_public_key;
-        let here = self.device_cert();
-        let founded_here = person == here.user_public_key
-            && self
-                .state(&tilo_server_protocol::servers::person_workspace_id(&person))
-                .await
-                .is_none_or(|theirs| theirs.governance().founder() == Some(here.device_public_key));
         // The person's own device asking itself, or a key they made for their own programs; an
         // agent's grant from their consent is neither.
         let persons_own = caller.device_public_key() == Some(&device.device_public_key)
@@ -1384,20 +1381,36 @@ impl Workspaces {
             } else {
                 device.capabilities.own_key_in("all")
             };
-        if founded_here {
-            self.found(name, workspace).await
-        } else if caller.is_in_process()
+        match self.founding_here(&person).await {
+            Ok(()) => self.found(name, workspace).await,
             // Pages and hosted agents can't found on their own device yet; this path goes once
             // they can.
-            || persons_own
-        {
-            self.create_for(name, workspace, person).await
-        } else {
-            return Err(ActionCallError::refused(
-                AdminRefusal::FoundOnYourDevice.to_reason(),
-            ));
+            Err(_) if caller.is_in_process() || persons_own => {
+                self.create_for(name, workspace, person).await
+            }
+            Err(refused) => return Err(refused),
         }
         .map_err(ActionCallError::refused)
+    }
+
+    /// Whether this host founds `person`'s workspaces, being theirs and the device that founded
+    /// their own workspace (or theirs where they have none yet); else the refusal naming it.
+    async fn founding_here(&self, person: &[u8; 32]) -> Result<(), ActionCallError> {
+        let here = self.device_cert();
+        let founder = self
+            .state(&tilo_server_protocol::servers::person_workspace_id(person))
+            .await
+            .map(|theirs| theirs.governance().founder());
+        if *person == here.user_public_key
+            && founder.is_none_or(|theirs| theirs == Some(here.device_public_key))
+        {
+            return Ok(());
+        }
+        let devices = founder.flatten().iter().map(hex::encode).collect();
+        Err(ActionCallError::refused(
+            tilo_action_services::server_account::Refusal::found_on_your_device(devices)
+                .to_reason(),
+        ))
     }
 
     /// The workspace `person` already has under exactly `labels`, which an ask naming no

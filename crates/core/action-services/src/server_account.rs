@@ -299,6 +299,11 @@ pub enum NextStepKind {
     WaitForIdle,
     /// Use a workspace the account already has.
     UseExisting,
+    /// The person makes it themselves, on their own device.
+    MakeOnYourDevice,
+    /// Ask for it again through one of the person's devices that can make it, as
+    /// [`Reason::FoundOnYourDevice`] names them.
+    AskThroughYourDevice,
 }
 
 /// One way through a refusal.
@@ -339,6 +344,11 @@ pub enum Reason {
         /// The ids of the workspaces it has.
         existing: Vec<String>,
     },
+    /// A new workspace of the person's own is made on their own device, never by this host.
+    FoundOnYourDevice {
+        /// Their devices that make their workspaces, by key in hex, where the host knows them.
+        devices: Vec<String>,
+    },
 }
 
 /// A host's refusal of an action, for whoever ran it.
@@ -354,6 +364,23 @@ pub struct Refusal {
 }
 
 impl Refusal {
+    /// The refusal of a new workspace of the person's own on a host that doesn't make it: made
+    /// on `devices` of theirs, where the host knows which.
+    #[must_use]
+    pub fn found_on_your_device(devices: Vec<String>) -> Self {
+        let step = |kind| NextStep { kind, url: None };
+        Self {
+            reason: Reason::FoundOnYourDevice { devices },
+            message: "A new workspace of your own is made on your own device, not here. Make it \
+                      there, or ask for it through that device."
+                .into(),
+            next: vec![
+                step(NextStepKind::MakeOnYourDevice),
+                step(NextStepKind::AskThroughYourDevice),
+            ],
+        }
+    }
+
     /// The step of `kind`, if the refusal offers it.
     #[must_use]
     pub fn step(&self, kind: NextStepKind) -> Option<&NextStep> {

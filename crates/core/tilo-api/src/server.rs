@@ -223,6 +223,9 @@ impl From<DeviceRefusal> for ServerError {
         if let Some(refused) = WorkspaceRefusal::from_reason(&refusal.message) {
             return Self::RefusedWorkspace(refused);
         }
+        if let Some(typed) = refusal.refusal {
+            return Self::Refused(typed.to_reason());
+        }
         CertifyError::from(refusal).into()
     }
 }

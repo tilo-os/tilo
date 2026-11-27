@@ -863,8 +863,8 @@ pub enum AdminRefusal {
     /// A workspace is founded by a device, which signs its founding and seals
     /// its records, and the host asked to found one has none of its own.
     NoDeviceToFound,
-    /// The caller's person has a device that keeps their own workspace: that device founds
-    /// their workspaces, places them on their server and lists them, and the server founds none.
+    /// What an older host refused a workspace of the person's own with, which their own device
+    /// founds: a host now says so with `server_account::Reason::FoundOnYourDevice`, and its remedies.
     FoundOnYourDevice,
 }
 

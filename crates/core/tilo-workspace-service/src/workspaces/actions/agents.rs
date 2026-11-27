@@ -324,9 +324,16 @@ impl Workspaces {
         };
         Err(ActionCallError::asks(AskedFacts {
             on: Some(place.unwrap_or_else(|| "your workspaces".into())),
+            // An argument of named values (a workspace's labels) shows each of them on its own.
             facts: arguments
                 .iter()
-                .map(|(name, value)| Fact::new(name.clone(), shown(value)))
+                .flat_map(|(name, value)| match value {
+                    Value::Object(named) => named
+                        .iter()
+                        .map(|(each, value)| Fact::new(format!("{name}: {each}"), shown(value)))
+                        .collect(),
+                    _ => vec![Fact::new(name.clone(), shown(value))],
+                })
                 .collect(),
             verb: operation.label.to_lowercase(),
             destructive: operation.confirms,
