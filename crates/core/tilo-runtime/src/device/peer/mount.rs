@@ -83,8 +83,27 @@ pub(crate) struct Parts<'a> {
     pub(crate) writers: Arc<tilo_fs::writer::WriterResolver>,
     /// What the workspace takes of the writes made through it.
     pub(crate) admission: Arc<tilo_fs::admission::FileAdmission>,
+    /// Told the content of each version written through it, which goes to the workspace's host.
+    pub(crate) written: Arc<tilo_fs::WrittenContent>,
     /// Where its availability, staged writes and unsaved bytes are kept.
     pub(crate) state: &'a Path,
+}
+
+/// What pushes each version written into `workspace`'s files here to the device serving the
+/// workspace, from `runtime`: a version is this device's alone until that device keeps it.
+pub(crate) fn pushed_to_host(
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: tilo_server_protocol::WorkspaceId,
+    store: &Arc<tilo_fs::ContentStore>,
+    runtime: tokio::runtime::Handle,
+) -> Arc<tilo_fs::WrittenContent> {
+    let (copies, store) = (workspaces.clone(), Arc::clone(store));
+    Arc::new(move |hash| {
+        let (copies, store) = (copies.clone(), Arc::clone(&store));
+        drop(runtime.spawn_blocking(move || {
+            tilo_workspace_service::files::push_written(&copies, workspace, &store, hash);
+        }));
+    })
 }
 
 /// The filesystem over the replica's namespace, with history, files on demand, staged writes
@@ -105,6 +124,7 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
         .with_actor(parts.actor)
         .with_writers(Arc::clone(&parts.writers))
         .with_admission(Arc::clone(&parts.admission))
+        .with_written_content(Arc::clone(&parts.written))
         .with_pinned_hydration()
         .with_change_journal(parts.replica.journal());
     // Both recoveries block on this device's store to finish. A task of the app's

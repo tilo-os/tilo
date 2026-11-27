@@ -94,6 +94,33 @@ pub async fn start(
     .await
 }
 
+/// Push the content of a version this device wrote into `workspace`'s files to the device
+/// serving the workspace: the version's manifest and every chunk it lists, each going until that
+/// device says it keeps it ([`Workspaces::push_content`]). Reads the store on the calling thread,
+/// which must be inside a runtime.
+pub fn push_written(
+    workspaces: &Workspaces,
+    workspace: WorkspaceId,
+    store: &tilo_fs::ContentStore,
+    hash: Hash,
+) {
+    let name = workspace.to_string();
+    workspaces.push_content(&name, FILES_APP, &hash.to_hex());
+    let Some(manifest) = store.local_now(hash) else {
+        return;
+    };
+    let manifest = match tilo_fs::content::Manifest::decode(&manifest) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            tracing::error!(%workspace, %hash, %error, "a version this device wrote names no manifest, so its bytes stay here");
+            return;
+        }
+    };
+    for chunk in manifest.chunks() {
+        workspaces.push_content(&name, FILES_APP, &Hash::from(chunk.hash).to_hex());
+    }
+}
+
 /// What a tree's sync reads, writes and hears of one workspace in this device's service.
 struct Backend {
     copy: Arc<Copy>,
@@ -440,9 +467,13 @@ async fn follow(
             }
             written = writes.recv() => match written {
                 Ok(written) => {
+                    // A write the store took in is told by the document it keeps the record's
+                    // content in.
+                    let record = collab_types::store_content_resource(&written.record)
+                        .map_or(written.record.as_str(), |(_, id)| id);
                     if written.workspace == copy.name
                         && written.app == FILES_APP
-                        && let Some(chunk) = fs_protocol::tree::chunk_of_record(&written.record)
+                        && let Some(chunk) = fs_protocol::tree::chunk_of_record(record)
                     {
                         told.push(Wake::Wrote(chunk));
                     }

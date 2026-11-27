@@ -163,6 +163,9 @@ impl Drop for NamespaceGuard<'_> {
     }
 }
 
+/// What is told the content of a version written here ([`QuickFS::with_written_content`]).
+pub type WrittenContent = dyn Fn(Hash) + Send + Sync;
+
 /// Commit bookkeeping for one in-memory write buffer. `generation` counts mutations of
 /// the buffer; a buffer whose latest generation is committed is clean and may be
 /// dropped when its last handle closes.
@@ -579,6 +582,9 @@ pub struct QuickFS {
     writers: Option<Arc<crate::writer::WriterResolver>>,
     /// Whether the workspace takes a file action from that writer ([`crate::admission`]).
     admission: Option<Arc<crate::admission::FileAdmission>>,
+    /// Told the content of each version written here, once it is the file's
+    /// ([`Self::with_written_content`]).
+    written: Option<Arc<WrittenContent>>,
     /// Makes the namespace on disk hold the current placements: run after a record group
     /// is durable (native backend), and by `fsync`/`fsyncdir`.
     durability_hook: std::sync::OnceLock<DurabilityHook>,
@@ -650,6 +656,7 @@ impl QuickFS {
             actor: None,
             writers: None,
             admission: None,
+            written: None,
             durability_hook: std::sync::OnceLock::new(),
             journal: None,
             changeset_open: AtomicBool::new(false),
@@ -1947,6 +1954,23 @@ impl QuickFS {
     pub fn with_admission(mut self, admission: Arc<crate::admission::FileAdmission>) -> Self {
         self.admission = Some(admission);
         self
+    }
+
+    /// Tell `written` the content of every version written through this filesystem, the moment
+    /// it is the file's: what the workspace's other devices have only once this device hands it
+    /// to them.
+    #[must_use]
+    pub fn with_written_content(mut self, written: Arc<WrittenContent>) -> Self {
+        self.written = Some(written);
+        self
+    }
+
+    /// `hash` is the content of a version written here now: tell whoever
+    /// [`Self::with_written_content`] names.
+    fn wrote_content(&self, hash: Option<Hash>) {
+        if let (Some(written), Some(hash)) = (&self.written, hash) {
+            written(hash);
+        }
     }
 
     /// Who process `pid` writes for.
@@ -3327,6 +3351,7 @@ impl QuickFS {
             }
             ns.set_content(ino, hash.as_ref(), byte_len, stamp);
         }
+        self.wrote_content(hash);
         self.note_current_content(ino, hash);
         self.publish();
         Ok(())
@@ -3369,6 +3394,8 @@ impl QuickFS {
         let ino = namespace
             .create_file(parent, name, content.as_ref(), byte_len, observed_at_ms)
             .ok_or(ENOENT)?;
+        drop(namespace);
+        self.wrote_content(content);
         Ok(ino)
     }
 

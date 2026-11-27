@@ -144,6 +144,12 @@ impl ReplicaFiles {
         })?;
         tilo_files::native::private::directory(parts.state)?;
         let key_copies = parts.workspaces.clone();
+        let written = mount::pushed_to_host(
+            &parts.workspaces,
+            workspace,
+            &parts.store,
+            tilo_rt::app().handle().clone(),
+        );
         let tree = crate::device::workspaces::block_on_owned({
             let (copies, kept_at) = (parts.workspaces, parts.state.join(super::NAMESPACE));
             let (store, content) = (Arc::clone(&parts.store), Arc::clone(&parts.content));
@@ -184,6 +190,7 @@ impl ReplicaFiles {
         };
         let mounted = mount::Parts {
             keys: keys.clone(),
+            written,
             replica: &tree,
             store: Arc::clone(&parts.store),
             content: Arc::clone(&source),

@@ -145,7 +145,8 @@ pub use peer::{PeerPresence, PeerPresencePayload};
 pub use photo::{MAX_PHOTO_CHARS, PhotoError, avatar_of, photo, photo_bytes, photo_url};
 pub use readers::{
     EVERY_MEMBER, NamedReaders, ROLE_READERS, Readers, app_document_id, content_artifact_id,
-    is_store_document, reader_group, reader_set_name, store_document_readers,
+    is_store_document, reader_group, reader_set_name, store_content_resource,
+    store_document_readers,
 };
 pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,

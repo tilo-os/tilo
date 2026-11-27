@@ -178,6 +178,12 @@ pub(crate) async fn prepare(
     reader: [u8; 32],
 ) -> Result<Prepared, String> {
     if !peer.holds_document(app, resource) {
+        // A record a workspace's store keeps arrives sealed for its channel, and is the store's
+        // to read once this device holds the channel's keys: until then it is on its way, never
+        // absent, or a writer founds the record again beside it.
+        if peer.holds_sealed_content_of(app, resource) {
+            return Ok(Prepared::Answer(DocumentRead::Pending));
+        }
         return Ok(Prepared::Answer(DocumentRead::Absent));
     }
     if peer.checkpoint_pending(app, resource) {

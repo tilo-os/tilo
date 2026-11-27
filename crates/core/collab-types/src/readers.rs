@@ -205,6 +205,17 @@ pub fn store_document_readers(document: &str) -> Option<&str> {
     (named && numbered).then_some(readers)
 }
 
+/// The kind and id of the resource whose content `document` holds, for a content document of a
+/// workspace's resource store (`<readers>/<kind>/<id>~<n>`); `None` for any other document.
+#[must_use]
+pub fn store_content_resource(document: &str) -> Option<(&str, &str)> {
+    store_document_readers(document)?;
+    let (_, rest) = document.split_once('/')?;
+    let (named, _) = rest.rsplit_once('~')?;
+    let (kind, id) = named.split_once('/')?;
+    (!kind.is_empty() && !id.is_empty()).then_some((kind, id))
+}
+
 /// Whether `document` is a document a workspace's resource store placed.
 #[must_use]
 pub fn is_store_document(document: &str) -> bool {
@@ -241,6 +252,12 @@ mod tests {
         assert!(!is_store_document("derived:default@tab:0"));
         assert!(!is_store_document("notes/archive"));
         assert!(!is_store_document("*/tasks.issue"));
+        assert_eq!(
+            store_content_resource("*/files.tree/derived:files.tree@tab:0~0"),
+            Some(("files.tree", "derived:files.tree@tab:0"))
+        );
+        assert_eq!(store_content_resource("*/tasks.issue#0"), None);
+        assert_eq!(store_content_resource("derived:default@tab:0"), None);
         assert_eq!(reader_set_name(EVERY_MEMBER), EVERY_MEMBER);
         assert_eq!(reader_set_name(&"a".repeat(64)).len(), 16);
     }

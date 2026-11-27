@@ -101,7 +101,7 @@ pub use availability::AvailabilityRegistry;
 #[cfg(feature = "filesystem")]
 pub use caps_file::{CapabilityFile, CapsError, Refresh};
 #[cfg(feature = "filesystem")]
-pub use fs::QuickFS;
+pub use fs::{QuickFS, WrittenContent};
 #[cfg(feature = "filesystem")]
 pub use hydration::Hydrator;
 #[cfg(feature = "filesystem")]
