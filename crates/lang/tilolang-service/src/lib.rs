@@ -727,7 +727,11 @@ impl ResourceService {
             return Ok(Started::Later(later));
         }
         let mut output = returned.unwrap_or_default();
-        output.value = wrote.and_then(|wrote| ActionOutput::noting_wrote(output.value, &wrote));
+        // What the action wrote is named beside what it answered. An action that wrote nothing
+        // (a read) still answers with what it returned.
+        if let Some(wrote) = wrote {
+            output.value = ActionOutput::noting_wrote(output.value, &wrote);
+        }
         Ok(Started::Done(output))
     }
 

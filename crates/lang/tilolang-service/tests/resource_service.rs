@@ -263,20 +263,27 @@ tilo_test_env::scenario! {
         let reading = service.read(&note).unwrap();
 
         // The shell's side: notes is another app's package here, its documents read from the session.
+        // Each compiles against the platform's packages, which the imports a view's person picker
+        // and rich input reach (`tilo.workspace`) name.
+        let platform = tilolang_tilo::platform::platform_packages().expect("the platform reads");
         let shell = Host::new(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), || None).unwrap();
         let discussion =
-            tilolang::compile_package(DISCUSSION.0, &IdsLock::parse(DISCUSSION.1).unwrap(), &[])
+            tilolang::compile_package(DISCUSSION.0, &IdsLock::parse(DISCUSSION.1).unwrap(), &platform)
                 .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+        let mut with_discussion = platform.clone();
+        with_discussion.push(discussion.meta.clone());
         let notes = tilolang::compile_package(
             NOTES.0,
             &IdsLock::parse(NOTES.1).unwrap(),
-            std::slice::from_ref(&discussion.meta),
+            &with_discussion,
         )
         .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
         shell
             .load_foreign_package(&notes.wasm, &notes.meta)
             .unwrap();
-        let card = tilolang::compile_package(CARD, &IdsLock::new(), std::slice::from_ref(&notes.meta))
+        let mut with_notes = platform.clone();
+        with_notes.push(notes.meta.clone());
+        let card = tilolang::compile_package(CARD, &IdsLock::new(), &with_notes)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
         shell.load_compiled(&card).unwrap();
         let kind = service
