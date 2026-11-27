@@ -2850,3 +2850,176 @@ fn only_the_persons_root_signs_these_device_actions() {
         );
     }
 }
+
+/// Log the computer `key` in with `ticket`, on the profile below `dir`, and answer the device it
+/// became and the workspace service its daemon starts again running as it.
+async fn logged_in_computer(
+    ticket: &str,
+    dir: &std::path::Path,
+    key: &SigningKey,
+) -> (
+    tilo_device_identity::login::Device,
+    Arc<super::workspaces::ServiceWorkspaces>,
+) {
+    let (_, placeholder) = enrol(
+        &SigningKey::from_bytes(&[0x90; 32]),
+        "a computer",
+        DeviceCapabilities::member(),
+    );
+    let endpoint = endpoint(key).await;
+    let place = tilo_device_identity::login::Place::at(
+        dir.join("login"),
+        tilo_device_identity::IdentityPaths::under(dir.join("login-keys")),
+    );
+    let _daemon = the_daemons_key(place.keys(), key);
+    let tickets = Tickets::new(
+        (key.clone(), placeholder),
+        endpoint.clone(),
+        None,
+        no_root(),
+        None,
+        None,
+        place,
+        ActionService::new(key.clone(), Arc::new(NoActions)),
+    );
+    ask_device(
+        &tickets,
+        LOG_IN,
+        json!({"ticket": ticket, "agent": "Codex", "label": "A computer"}),
+    )
+    .await
+    .unwrap_or_else(|why| panic!("the issuing device certifies the computer: {why}"));
+    let login = tickets
+        .logged_in()
+        .borrow()
+        .clone()
+        .expect("the computer starts again as the device it became");
+    endpoint.close().await;
+    let service = super::workspaces::ServiceWorkspaces::open_for_test(
+        &dir.join("service"),
+        key,
+        &login.cert,
+        &tilo_api::daemon::enter::server_of(&login)
+            .await
+            .expect("the computer's server"),
+    )
+    .await
+    .expect("the computer's service opens");
+    (*login, service)
+}
+
+/// Two computers log in with two tickets one device issued, and both join the person's own
+/// workspace the first of them issued for, and write their row in it: each device writes as
+/// itself, so the second login's device adds its row beside the first's and neither refuses the
+/// other's changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_computers_logged_in_from_one_device_each_join_and_write() {
+    use tilo_server_protocol::WorkspaceId;
+    use tilo_workspace_service::workspaces::person_workspace;
+    use tilo_workspace_service::workspaces::person_workspace::devices::DEVICES;
+
+    let (issuer, state, issuer_key, issuer_cert, _paths) =
+        super::workspaces::ServiceWorkspaces::test_of_person().await;
+    // The person's own workspace, founded here as their first device founds it.
+    let own = person_workspace::found(issuer.copies())
+        .await
+        .expect("the person's own workspace is founded");
+    let place = tilo_device_identity::login::Place::at(
+        state.path().join("issuer"),
+        tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
+    );
+    let root = root_in(state.path().to_path_buf());
+    let mut foreign = issuer_cert.clone();
+    foreign.capabilities.foreign = true;
+    sign_device_cert(&mut foreign, &root().unwrap().unwrap()).unwrap();
+    let actions = issuer.copies().action_service();
+    let tickets = Tickets::new(
+        (issuer_key, foreign),
+        issuer.endpoint(),
+        None,
+        root,
+        Some(FirstWorkspace::founded(
+            Arc::clone(&issuer),
+            WorkspaceId::parse(&own).unwrap(),
+        )),
+        Some(Arc::clone(&issuer)),
+        place,
+        actions.clone(),
+    );
+    let router = serve(&issuer, actions);
+
+    let mut logins = Vec::new();
+    for (n, bytes) in [[0x73_u8; 32], [0x75; 32]].into_iter().enumerate() {
+        let printed = ask_device(&tickets, ISSUE, json!({}))
+            .await
+            .expect("the first device issues a ticket");
+        let text = printed["ticket"].as_str().unwrap().to_owned();
+        let key = SigningKey::from_bytes(&bytes);
+        let dir = state.path().join(format!("computer-{n}"));
+        let (login, service) = logged_in_computer(&text, &dir, &key).await;
+        // The computer enters the person's own workspace the login names, and takes it in.
+        let entered = tilo_test_env::within(
+            "the computer enters the person's own workspace",
+            tilo_api::daemon::enter::connect(&key, &login, Some(service.lent())),
+        )
+        .await
+        .expect("the computer enters");
+        // Joining is the session's own entry, which signs this device's admission there.
+        entered
+            .join(&own)
+            .await
+            .unwrap_or_else(|why| panic!("the computer joins the person's own workspace: {why}"));
+        tilo_test_env::within(
+            "the computer holds the person's own workspace",
+            service.hold(&entered),
+        )
+        .await;
+        // Settling lists this device with its person's: its row in the record of their devices.
+        super::first_workspace::hold_person(service.copies(), &login.cert)
+            .await
+            .expect("the computer is listed with its person's devices");
+        // And it writes a change of its own to the record, as any device of theirs does.
+        tilo_workspace_service::workspaces::person_workspace::devices::keep(
+            service.copies(),
+            &login.cert,
+        )
+        .await
+        .expect("the computer writes its row");
+        entered.close();
+        logins.push((Arc::clone(&service), login));
+    }
+
+    let person = issuer.device_cert().user_public_key;
+    // Each computer reads back the record of the person's devices it wrote its row in, and no two
+    // changes of it were signed under one number of one writer: a second change under a number
+    // another took is what a copy refuses as a duplicate.
+    for (service, login) in &logins {
+        let listed = tilo_workspace_service::workspaces::person_workspace::devices::of(
+            service.copies(),
+            &person,
+        )
+        .await
+        .listed(&person);
+        assert!(
+            listed.iter().any(|device| device.cert == login.cert),
+            "the record reads back on {} as the device that wrote there",
+            hex::encode(login.cert.device_public_key)
+        );
+        let bytes = service
+            .copies()
+            .resource_document(&own, DEVICES.0, DEVICES.1)
+            .await
+            .expect("the record is read")
+            .expect("the device holds the record it wrote in");
+        let mut doc = automerge::AutoCommit::load(&bytes).expect("the record opens");
+        let mut numbers = std::collections::BTreeSet::new();
+        for change in doc.get_changes(&[]) {
+            assert!(
+                numbers.insert((change.actor_id().to_bytes().to_vec(), change.seq())),
+                "one number is given to two changes of the record on {}",
+                hex::encode(login.cert.device_public_key)
+            );
+        }
+    }
+    let _ = router.shutdown().await;
+}
