@@ -780,12 +780,13 @@ if [ "$oobe_started" -ne 1 ]; then
   # installer and is in wheel, which reads the system journal: sign in on the
   # serial console and keep this boot's warnings, the account's own log, the
   # desktop's own record of each of its runs (the session wrapper keeps them
-  # beside the person's state), and who the account is beside the device's
-  # identity files the session reads.
+  # beside the person's state), and who the account and its running session
+  # are (a session keeps the groups it started with) beside the device's
+  # identity files, the private key's among them.
   python3 "$dev_dir/serial-console.py" "$run/serial.sock" \
     --log "$out/target-console.log" --login "$TILO_USER:$TILO_PASS" \
     --timeout 60 --deadline 300 \
-    --run 'journalctl -b -o short-monotonic --no-pager -p 4; journalctl -b -o short-monotonic --no-pager _UID=$(id -u); for log in ~/.local/state/tilo/session-logs/*; do echo "== $log"; tail -c 150000 "$log"; done; echo "== id"; id; echo "== identity files"; ls -laZ /var/lib/tilo/user-identity /var/lib/tilo/device' \
+    --run 'journalctl -b -o short-monotonic --no-pager -p 4; journalctl -b -o short-monotonic --no-pager _UID=$(id -u); for log in ~/.local/state/tilo/session-logs/*; do echo "== $log"; tail -c 150000 "$log"; done; echo "== id"; id; echo "== groups of the running session"; for pid in $(pgrep -x tilo-session); do grep -E "^(Name|Uid|Gid|Groups):" /proc/$pid/status; done; echo "== identity files"; ls -laZ /var/lib/tilo/user-identity /var/lib/tilo/device /var/lib/tilo/device-private' \
     > "$out/target-journal.txt" 2> "$out/target-journal-console.txt" || true
   die "first installed boot did not reach direct OOBE"
 fi
