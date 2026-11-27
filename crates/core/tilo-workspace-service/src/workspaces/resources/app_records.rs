@@ -5,8 +5,7 @@
 //! where nobody looks.
 
 use collab_types::store::wire::Command;
-use tilo_action_policy::{Answer, Authority, Context, TreePath};
-use tilo_action_types::ActionKind;
+use tilo_action_policy::Context;
 use tilo_resource_store::Stamp;
 
 use super::super::Workspaces;
@@ -77,15 +76,11 @@ impl Workspaces {
         let Some(policy) = self.policy_of(workspace).await else {
             return error;
         };
-        let acting = tilo_actions::Acting::by_app(app);
-        let keeps = Authority::of_acting(&acting, &policy, &[])
-            .decide(
-                &TreePath::workspace(workspace).app(app),
-                ActionKind::Undoable,
-                &Context::at_time(tilo_clock::wall()),
-            )
-            .answer
-            == Answer::Allow;
+        let keeps = tilo_action_policy::roles::app_keeps_its_records(
+            &policy,
+            app,
+            &Context::at_time(tilo_clock::wall()),
+        );
         if keeps {
             return error;
         }

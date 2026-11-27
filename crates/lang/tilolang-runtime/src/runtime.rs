@@ -2143,6 +2143,16 @@ impl Runtime {
     /// Where settled outside effects go.
     pub fn set_sink(&self, sink: impl OutsideSink + 'static) {
         *self.core.sink.borrow_mut() = Some(Box::new(sink));
+        self.core
+            .sink_generation
+            .set(self.core.sink_generation.get().saturating_add(1));
+    }
+
+    /// How many sinks were set so far: a host that stopped settling effects it could not write
+    /// compares it, so a sink that can now take them asks for them once more.
+    #[must_use]
+    pub fn sink_generation(&self) -> u64 {
+        self.core.sink_generation.get()
     }
 
     /// Outside effects queued and not yet settled.
@@ -2153,6 +2163,13 @@ impl Runtime {
     /// The network came back: entries waiting to go online are tried again on the next settle.
     pub fn retry_waiting(&self) {
         self.core.retry_waiting.set(true);
+    }
+
+    /// Whether [`Self::retry_waiting`] was asked for and no settle has taken it yet: what a
+    /// caller that stopped writing for effects it could not settle asks before it tries again.
+    #[must_use]
+    pub fn retry_asked(&self) -> bool {
+        self.core.retry_waiting.get()
     }
 
     /// The earliest moment an outside effect waits to be held until, ISO-8601 UTC text

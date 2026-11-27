@@ -212,6 +212,14 @@ pub(crate) trait LaunchGrantsSource: Send + Sync {
     /// narrowed to the app, that the daemon admits an app's process by when it starts one with
     /// no session. `None` where this device does not hold the workspace's policy.
     fn app_access(&self, workspace: &str, app: &str) -> Option<tilo_action_policy::MemberAccess>;
+
+    /// Whether `workspace` lets `app` keep its own records by itself: the grant installing it
+    /// gave it, while it stands ([`tilo_action_policy::roles::app_keeps_its_records`]). An app's
+    /// origin connector keeps exactly those records in step with its outside service, so the
+    /// daemon starts one only where they are the app's to keep: in a workspace that runs no
+    /// version of it, or whose members took that grant back, every change the connector made
+    /// would be refused, on every frame.
+    fn app_keeps_its_records(&self, workspace: &str, app: &str) -> bool;
 }
 
 impl Apps {
@@ -785,6 +793,20 @@ impl Apps {
         if !self.launches_into(workspace) {
             return Err(format!(
                 "workspace {workspace} is not served by this runtime"
+            ));
+        }
+        // The app's own records are what its connector keeps in step, and the workspace grants
+        // them to it alone. One that runs no version of the app, or one whose members took the
+        // grant back, refuses every change the connector makes: it starts nothing there.
+        let Some(source) = self.grants.get() else {
+            return Err(format!(
+                "workspace {workspace} is not served by this runtime"
+            ));
+        };
+        if !source.app_keeps_its_records(workspace, app_id) {
+            return Err(format!(
+                "{app_id} keeps no records of its own in this workspace: it runs no version of \
+                 the app there, or its grant was taken back"
             ));
         }
         let app = self

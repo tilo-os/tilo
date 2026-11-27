@@ -573,6 +573,27 @@ pub fn is_app_records_grant(grant: &Grant) -> bool {
     })
 }
 
+/// Whether `app` may keep its own records by itself in `policy`'s workspace at `cx`: the decision
+/// every admission of a write an app makes alone takes ([`Authority::of_acting`] of the app alone
+/// at its own node). An app holds only the grants naming it, so this is the grant installing it
+/// gave it ([`app_records_grant`]) while that grant stands.
+///
+/// A workspace that runs no version of the app, or whose members took that grant back, lets it
+/// keep nothing there. Its process then writes nothing there, rather than having every change it
+/// makes refused.
+#[must_use]
+pub fn app_keeps_its_records(policy: &crate::WorkspacePolicy, app: &str, cx: &Context<'_>) -> bool {
+    let acting = tilo_member_types::Acting::by_app(app);
+    Authority::of_acting(&acting, policy, &[])
+        .decide(
+            &TreePath::workspace(&policy.workspace).app(app),
+            tilo_action_types::ActionKind::Undoable,
+            cx,
+        )
+        .answer
+        == Answer::Allow
+}
+
 /// The id of the grant that bans `person` from a workspace.
 #[must_use]
 pub fn block_grant_id(person: &str) -> GrantId {
@@ -1255,5 +1276,38 @@ mod tests {
         );
         assert!(!outside_denial_stops(&allow, "so.tilo.mail", "smtp.send"));
         assert_eq!(outside_capability_of("no-outside"), None);
+    }
+
+    /// An app keeps its own records by itself only where instalment gave it the grant for them:
+    /// a workspace that runs no version of it lets it keep nothing, and taking the grant back
+    /// stops it again. Another app's records are never its own.
+    #[test]
+    fn an_app_keeps_its_own_records_only_while_the_grant_installing_it_stands() {
+        let mut policy = crate::WorkspacePolicy::new("w", "ada");
+        let cx = Context::at_secs(1);
+        assert!(
+            !app_keeps_its_records(&policy, "so.tilo.mail", &cx),
+            "an app nobody installed in the workspace keeps nothing there"
+        );
+
+        policy
+            .grants
+            .push(app_records_grant("w", "so.tilo.mail", "ada"));
+        assert!(
+            app_keeps_its_records(&policy, "so.tilo.mail", &cx),
+            "installing the app gives it its own records"
+        );
+        assert!(
+            !app_keeps_its_records(&policy, "so.tilo.notes", &cx),
+            "another app's records are no part of what installing it gave"
+        );
+
+        policy.grants.retain(|grant| {
+            !is_app_records_grant(grant) || grant.grantee.app_id() != Some("so.tilo.mail")
+        });
+        assert!(
+            !app_keeps_its_records(&policy, "so.tilo.mail", &cx),
+            "a grant a member took back stops the app keeping what it kept"
+        );
     }
 }

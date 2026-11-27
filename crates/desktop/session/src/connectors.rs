@@ -53,33 +53,15 @@ pub(crate) fn reconcile(session: &crate::Session) {
     let Some(apps) = session.shared.launch.clone() else {
         return;
     };
-    // The app the record `resource` belongs to, when it is one the shell holds: `tl:<app>:<id>`
-    // names its app, and an app's own resources (`<app>.<Kind>`) name theirs in the catalogue.
-    let app_of = |resource: &str| -> Option<String> {
-        resource
-            .strip_prefix("tl:")
-            .and_then(|rest| rest.split_once(':'))
-            .map(|(app, _)| app.to_owned())
-            .or_else(|| {
-                session
-                    .shared
-                    .services
-                    .borrow()
-                    .resources()
-                    .into_iter()
-                    .find(|spec| spec.id.as_str() == resource)
-                    .and_then(|spec| spec.app().map(str::to_owned))
-            })
-    };
-    // Every workspace the shell holds, by id, and the apps whose records stand in it: what needs a
-    // connector there. A workspace with no place of an app's records needs none, however the
-    // person moves between workspaces.
-    let mut needed: BTreeSet<Key> = BTreeSet::new();
+    // Every workspace the shell holds, by id, and the apps whose records stand in it: what may
+    // need a connector there. A workspace with no place of an app's records needs none, however
+    // the person moves between workspaces.
+    let mut wanted: BTreeSet<Key> = BTreeSet::new();
     for (workspace, records) in session.shared.layout.borrow().records_by_workspace() {
-        for app in records.iter().filter_map(|record| app_of(record)) {
+        for app in records.iter().filter_map(|record| app_of(session, record)) {
             for connector in &connectors {
                 if connector.app == app {
-                    needed.insert((app.clone(), connector.origin.clone(), workspace.clone()));
+                    wanted.insert((app.clone(), connector.origin.clone(), workspace.clone()));
                 }
             }
         }
@@ -94,7 +76,7 @@ pub(crate) fn reconcile(session: &crate::Session) {
         let runs = |app: &str| session.shared.services.borrow().module(app).is_some();
         for connector in &connectors {
             if runs(&connector.app) {
-                needed.insert((
+                wanted.insert((
                     connector.app.clone(),
                     connector.origin.clone(),
                     active.clone(),
@@ -102,6 +84,18 @@ pub(crate) fn reconcile(session: &crate::Session) {
             }
         }
     }
+    // A workspace that runs no version of the app, or whose members took the grant installing it
+    // gave back, refuses every change its origin makes: its origin runs nowhere there.
+    let mut decided: std::collections::BTreeMap<(String, String), bool> =
+        std::collections::BTreeMap::new();
+    let needed: BTreeSet<Key> = wanted
+        .into_iter()
+        .filter(|(app, _, workspace)| {
+            *decided
+                .entry((workspace.clone(), app.clone()))
+                .or_insert_with(|| keeps_its_records(session, workspace, app))
+        })
+        .collect();
     // The connectors no workspace needs any more are forgotten: the daemon keeps each running for
     // the app's instances, and a workspace that shows the app again reaches it once more.
     session
@@ -149,4 +143,42 @@ pub(crate) fn reconcile(session: &crate::Session) {
             ),
         }
     }
+}
+
+/// The app the record `resource` belongs to, when it is one the shell holds: `tl:<app>:<id>` names
+/// its app, and an app's own resources (`<app>.<Kind>`) name theirs in the catalogue.
+fn app_of(session: &crate::Session, resource: &str) -> Option<String> {
+    resource
+        .strip_prefix("tl:")
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(app, _)| app.to_owned())
+        .or_else(|| {
+            session
+                .shared
+                .services
+                .borrow()
+                .resources()
+                .into_iter()
+                .find(|spec| spec.id.as_str() == resource)
+                .and_then(|spec| spec.app().map(str::to_owned))
+        })
+}
+
+/// Whether `workspace` lets `app` keep its own records by itself, as the policy `session`'s
+/// view holds of it now answers: the decision every admission of a write the app makes alone
+/// takes ([`tilo_action_policy::roles::app_keeps_its_records`]).
+///
+/// A workspace that runs no version of the app, or whose members took the grant installing it
+/// gave back, refuses each change the app's origin makes. Reaching its connector there would
+/// write nothing but refusals, on every call, so it is not reached.
+fn keeps_its_records(session: &crate::Session, workspace: &str, app: &str) -> bool {
+    session.shared.view.as_ref().is_some_and(|view| {
+        view.policy(workspace).is_ok_and(|policy| {
+            tilo_action_policy::roles::app_keeps_its_records(
+                &policy,
+                app,
+                &tilo_action_policy::Context::at_time(tilo_clock::wall()),
+            )
+        })
+    })
 }

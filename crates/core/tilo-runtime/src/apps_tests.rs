@@ -167,7 +167,7 @@ fn canonical_temp() -> (tempfile::TempDir, PathBuf) {
 /// The apps installed in `store`, launched into [`WORKSPACE`] with no grants.
 fn apps(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
     let apps = installed(store, root, candidates);
-    apps.keep_launch_grants(Arc::new(Granted(Vec::new())));
+    apps.keep_launch_grants(Arc::new(Granted::new(Vec::new())));
     apps
 }
 
@@ -216,14 +216,41 @@ fn reachable_manifest(id: &str, mode: &str, hosts: &[&str]) -> String {
 }
 
 /// What the workspace service answers about launches into a workspace: the
-/// person's grants, in place of the service that holds the governance.
-struct Granted(Vec<CapOverride>);
+/// person's grants, in place of the service that holds the governance, and whether the
+/// workspace lets an app keep its own records there.
+struct Granted {
+    caps: Vec<CapOverride>,
+    /// Whether the workspace runs the app: [`Self::keeps_records`] says so of the one app these
+    /// tests start.
+    records: bool,
+}
+
+impl Granted {
+    /// The grants of a workspace that runs the app whose records it keeps.
+    #[must_use]
+    fn new(caps: Vec<CapOverride>) -> Self {
+        Self {
+            caps,
+            records: true,
+        }
+    }
+
+    /// The same grants in a workspace that runs no version of the app, or one whose members took
+    /// its grant back: nothing the app keeps by itself is its to keep there.
+    #[must_use]
+    fn keeps_no_records(self) -> Self {
+        Self {
+            records: false,
+            ..self
+        }
+    }
+}
 
 impl LaunchGrantsSource for Granted {
     fn launch_grants(&self, _workspace: &str) -> collab_types::caps::LaunchGrants {
         collab_types::caps::LaunchGrants {
             author: false,
-            sandbox: self.0.clone(),
+            sandbox: self.caps.clone(),
         }
     }
 
@@ -233,6 +260,10 @@ impl LaunchGrantsSource for Granted {
 
     fn app_access(&self, _: &str, _: &str) -> Option<tilo_action_policy::MemberAccess> {
         None
+    }
+
+    fn app_keeps_its_records(&self, workspace: &str, _: &str) -> bool {
+        workspace == WORKSPACE && self.records
     }
 }
 
@@ -255,7 +286,7 @@ tilo_test_env::scenario! {
             Access::Write,
         )
         .through(VIEWER);
-        apps.keep_launch_grants(Arc::new(Granted(vec![granted])));
+        apps.keep_launch_grants(Arc::new(Granted::new(vec![granted])));
         let app = apps.launchable(VIEWER).unwrap();
         let manifest = launcher::manifest::read_manifest(&app.manifest_path).unwrap();
         let (plan, egress) = apps.launch_capabilities(&app, WORKSPACE, &manifest);
@@ -804,7 +835,7 @@ tilo_test_env::scenario! {
             Access::Write,
         )
         .through(of);
-        apps.keep_launch_grants(Arc::new(Granted(vec![to_the_app])));
+        apps.keep_launch_grants(Arc::new(Granted::new(vec![to_the_app])));
         assert!(
             !apps.app_grants(&installed_app, WORKSPACE).sandbox.is_empty(),
             "the installed app keeps its grant"
@@ -821,7 +852,7 @@ tilo_test_env::scenario! {
             Access::Write,
         )
         .through(dev.id.as_str());
-        apps.keep_launch_grants(Arc::new(Granted(vec![to_the_dev])));
+        apps.keep_launch_grants(Arc::new(Granted::new(vec![to_the_dev])));
         assert_eq!(
             apps.app_grants(&dev_app, WORKSPACE).sandbox.len(),
             1,
@@ -1010,7 +1041,7 @@ view value(v: Value) {
             Access::Write,
         )
         .through(of);
-        apps.keep_launch_grants(Arc::new(Granted(vec![to_the_app])));
+        apps.keep_launch_grants(Arc::new(Granted::new(vec![to_the_app])));
         let dev = apps
             .launchable(&id)
             .expect("the device launches the build it installed");
@@ -1681,6 +1712,47 @@ fn a_daemon_with_no_session_starts_an_apps_origin_connector_and_refuses_one_it_m
             .unwrap_err();
         assert!(refused.contains(why), "{refused}");
     }
+}
+
+/// A workspace that runs no version of the app, or whose members took the grant it keeps its
+/// records under back, refuses every change an app's origin connector makes. The connector
+/// starts nowhere there, so it makes none: the launcher is never asked for it, and nothing is
+/// refused on every frame.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_apps_origin_connector_starts_nowhere_the_workspace_will_not_let_it_keep_its_records() {
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    store.install(
+        VIEWER,
+        &manifest(VIEWER, "gui", ""),
+        &[("probe", b"binary")],
+    );
+    let asked = root.join("asked");
+    let launcher = tilo_test_env::stand_in(
+        root.join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$*\" > '{asked}'\nexec cat >/dev/null\n",
+            asked = asked.display()
+        ),
+    )
+    .unwrap();
+    let apps = installed(&store, &root, vec![launcher.path().to_owned()]);
+    apps.keep_launch_grants(Arc::new(Granted::new(Vec::new()).keeps_no_records()));
+    let (_ours, socket) = runtime_portal::origin_connector::pair().unwrap();
+
+    let refused = apps
+        .start_connector(VIEWER, WORKSPACE, "imap", &socket)
+        .map(drop)
+        .unwrap_err();
+    assert!(
+        refused.contains("keeps no records of its own"),
+        "the app's own records are what its connector keeps: {refused}"
+    );
+    assert!(
+        !asked.exists(),
+        "the launcher starts no connector where the workspace refuses what it writes"
+    );
 }
 
 /// A launch starts the package this computer has installed, through the launcher and with the

@@ -215,6 +215,15 @@ pub(crate) struct HostInner {
     /// Whether a migration waits for its turn: another device runs it, or none may yet
     /// ([`Host::migrate`]).
     migrations_wait: Cell<bool>,
+    /// The outside effects a pass could not settle, as they stood, by id: the sink generation
+    /// they were tried with and the effects' ids. A rule refusal is final, so they are not
+    /// written for on every pass; a sink that can now take them asks once more
+    /// ([`Host::settle_effects`]).
+    effects_refused: RefCell<Option<(u64, Vec<String>)>>,
+    /// What moved in the store since a settle was refused: a person's write or a change another
+    /// device made asks the workspace for the waiting effects once more
+    /// ([`Host::settle_effects`]).
+    effects_watch: crate::resources::Watch,
     /// Whether the next plan is the run of an invocation the document applies next
     /// ([`Host::carrying_out`]): what it writes stays, as the change the document commits.
     carried: Cell<bool>,
@@ -1410,6 +1419,10 @@ impl Host {
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let triggers = crate::triggers::Schedule::new(store.watch());
         let members_watch = store.watch();
+        // Armed when a settle is refused, and not before: a watch starts out as "everything
+        // may have moved".
+        let effects_watch = store.watch();
+        let _ = effects_watch.take();
         runtime.set_device(device);
         runtime.set_members_root(&crate::platform::workspace_members());
         let inner = Rc::new(HostInner {
@@ -1425,6 +1438,8 @@ impl Host {
             returned: RefCell::default(),
             triggers,
             migrations_wait: Cell::new(false),
+            effects_refused: RefCell::default(),
+            effects_watch,
             carried: Cell::new(false),
             members_from: RefCell::new(None),
             members_watch,
@@ -1499,10 +1514,24 @@ impl Host {
         self.inner.suspended.borrow_mut().pop_front()
     }
 
-    /// Whether an outside effect this device has yet to carry out waits.
+    /// Whether an outside effect this device has yet to carry out waits, and may be settled: one
+    /// the workspace refused as it stood is not written for again until something changes
+    /// ([`Self::settle_effects`]).
     #[must_use]
     pub fn effects_wait(&self) -> bool {
-        !self.inner.store.pending_effects().is_empty()
+        let pending = self.inner.store.pending_effects();
+        // A service reachable again, or a write of anyone's since, asks for what waited once
+        // more: the refused ones are tried with it.
+        if self.inner.runtime.retry_asked() || self.inner.effects_watch.moved() {
+            return !pending.is_empty();
+        }
+        let refused = self.inner.effects_refused.borrow();
+        let refused = refused
+            .as_ref()
+            .filter(|(sink, _)| *sink == self.inner.runtime.sink_generation());
+        refused.map_or(!pending.is_empty(), |(_, ids)| {
+            pending.iter().any(|entry| !ids.contains(&entry.id))
+        })
     }
 
     /// Carry out the outside effects of this device that wait in the document
@@ -1511,6 +1540,11 @@ impl Host {
     /// without answering is waited on, never handed over again. What `delivery(r)` reads follows
     /// the document either way.
     ///
+    /// A write the workspace refuses is final, not something to try again on every pass: the
+    /// effects waiting as they stood are left unwritten until a person's next one queues or a
+    /// service reachable again asks for them, so a workspace that refuses the app its records is
+    /// not written to on every frame.
+    ///
     /// # Errors
     /// No sink is set, or the store failed.
     pub fn settle_effects(&self) -> Result<EffectsSettled, String> {
@@ -1518,23 +1552,38 @@ impl Host {
             self.inner.runtime.refresh_deliveries();
             return Ok(EffectsSettled::default());
         }
-        self.inner
-            .runtime
-            .settle()
-            .map(|report| EffectsSettled {
-                written: [
-                    report.failed.len(),
-                    report.marked,
-                    report.awaited,
-                    report.deferred,
-                    report.waiting,
-                    report.unknown,
-                ]
-                .into_iter()
-                .fold(report.delivered, usize::saturating_add),
-                owes_settle: report.marked > 0 || report.deferred > 0,
-            })
-            .map_err(|error| error.to_string())
+        match self.inner.runtime.settle() {
+            Ok(report) => {
+                *self.inner.effects_refused.borrow_mut() = None;
+                Ok(EffectsSettled {
+                    written: [
+                        report.failed.len(),
+                        report.marked,
+                        report.awaited,
+                        report.deferred,
+                        report.waiting,
+                        report.unknown,
+                    ]
+                    .into_iter()
+                    .fold(report.delivered, usize::saturating_add),
+                    owes_settle: report.marked > 0 || report.deferred > 0,
+                })
+            }
+            Err(error) => {
+                let ids: Vec<String> = self
+                    .inner
+                    .store
+                    .pending_effects()
+                    .into_iter()
+                    .map(|entry| entry.id)
+                    .collect();
+                *self.inner.effects_refused.borrow_mut() =
+                    Some((self.inner.runtime.sink_generation(), ids));
+                // What moved until now is what led to this attempt; the next write asks again.
+                let _ = self.inner.effects_watch.take();
+                Err(error.to_string())
+            }
+        }
     }
 
     /// The runtime, for blocks, programs and the catalogue.

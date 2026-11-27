@@ -153,3 +153,38 @@ tilo_test_env::scenario! {
     }
 
 }
+
+/// A settlement a pass could not write — the workspace refusing the app's own records, a sink
+/// that is not there — is final, not something to try again on every pass: the effects waiting
+/// as they stood are left until a person's next one queues, or a service reachable again asks
+/// for them.
+#[test]
+fn an_effect_a_pass_could_not_settle_is_not_written_for_by_every_pass() {
+    let (ada, record) = suggested_workspace();
+    approve(&ada, &record);
+    ada.commit();
+    assert!(
+        ada.host.effects_wait(),
+        "the send waits to be carried outside"
+    );
+    // Settling writes the effect's mark; with no sink set the write fails, as a write the
+    // workspace refuses does.
+    assert!(
+        ada.host.settle_effects().is_err(),
+        "the mark is not written, so the effect waits"
+    );
+    assert!(
+        !ada.host.effects_wait(),
+        "the same effects are not written for again by the next pass"
+    );
+    ada.host
+        .settle_effects()
+        .expect("a pass with a refused effect writes nothing and says nothing");
+    // A service reachable again asks for what waited on it once more.
+    ada.host.runtime().retry_waiting();
+    assert!(ada.host.effects_wait(), "the retry asks for them again");
+    assert!(
+        ada.host.settle_effects().is_err(),
+        "the effects are tried once more"
+    );
+}

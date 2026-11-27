@@ -273,6 +273,9 @@ pub struct Core {
     /// (`Runtime::decide_by_workspace`): its run keeps what it wrote before that step.
     pub scenario_stopped: std::cell::Cell<bool>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
+    /// Moves each time a sink is set: what a host that stopped settling effects it could not
+    /// write asks, to try them again for the sink that can now take them.
+    pub sink_generation: std::cell::Cell<u64>,
     /// The network came back: entries waiting to go online are tried again on the next settle.
     pub retry_waiting: std::cell::Cell<bool>,
     /// The words packages and the platform show, in the reader's language: the source words
@@ -604,6 +607,7 @@ impl Core {
             members_decided: std::cell::Cell::new(false),
             scenario_stopped: std::cell::Cell::new(false),
             sink: RefCell::new(None),
+            sink_generation: std::cell::Cell::new(0),
             retry_waiting: std::cell::Cell::new(false),
             words: RefCell::new(Box::new(crate::words::SourceWords)),
             catalogues: RefCell::new(Vec::new()),

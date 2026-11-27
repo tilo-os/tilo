@@ -1080,6 +1080,20 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
             ),
         )
     }
+
+    /// Whether `workspace`, as this device holds its policy now, lets `app` keep its own records
+    /// by itself: the same decision every admission of the app's own writes makes.
+    fn app_keeps_its_records(&self, workspace: &str, app: &str) -> bool {
+        WorkspaceId::parse(workspace)
+            .and_then(|id| self.policy_of(id)())
+            .is_some_and(|policy| {
+                tilo_action_policy::roles::app_keeps_its_records(
+                    &policy,
+                    app,
+                    &tilo_action_policy::Context::at_time(tilo_clock::wall()),
+                )
+            })
+    }
 }
 
 /// The workspace replicas the runtime's own services read: the profile's own
