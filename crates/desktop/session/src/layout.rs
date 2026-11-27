@@ -1633,6 +1633,9 @@ impl Layouts {
             }
             return false;
         }
+        if self.waits_for_admission(&key, workspace, acted.as_ref(), person, kept_back) {
+            return false;
+        }
         let read = self.reached(&key);
         let (reached, revision, holds) = (read.doc, read.revision, read.holds);
         // A layout the workspace holds is laid out here before this device writes it: what the
@@ -1734,6 +1737,32 @@ impl Layouts {
     /// Keep the change this look makes of `workspace` as a step of its own, written once it can be:
     /// the layout as it stands after it, the arranging action that named it, and the step it is of
     /// `person`'s, named here where they made it.
+    /// Whether this look waits for the workspace to admit this device, keeping what the person
+    /// arranged until it does. A device the workspace has not admitted keeps its layout here: the
+    /// workspace would refuse the write, and the person would hear a refusal they can do nothing
+    /// about. What they arranged is written on the look after the admission arrives, which moves
+    /// the daemon's view and this look again.
+    fn waits_for_admission(
+        &self,
+        key: &Key,
+        workspace: &Workspace,
+        acted: Option<&Acted>,
+        person: &str,
+        kept_back: bool,
+    ) -> bool {
+        if self.admitted(workspace.id()) {
+            return false;
+        }
+        self.unwritten(
+            workspace.id(),
+            Some("the workspace has not admitted this device yet"),
+        );
+        if kept_back {
+            self.remember(key, workspace, acted.cloned(), person);
+        }
+        true
+    }
+
     fn remember(&self, key: &Key, workspace: &Workspace, acted: Option<Acted>, person: &str) {
         self.held(key, |held| {
             let moved = acted.is_some()
@@ -2676,6 +2705,28 @@ impl Layouts {
         } else {
             None
         }
+    }
+
+    /// Whether this device is admitted in `workspace`, as the daemon's governance names its
+    /// member devices. A device that has just joined is not until the invitation's admission
+    /// reaches the workspace it joined: it writes nothing of the shared layout until then, and
+    /// says nothing of it, because the person can do nothing about it yet. Where the roster
+    /// cannot be read, nothing is known against the write and it is made as it always was.
+    fn admitted(&self, workspace_id: WorkspaceId) -> bool {
+        let Some(view) = self.view.borrow().clone() else {
+            return true;
+        };
+        let Some(certificate) = self.certificate.borrow().clone() else {
+            return true;
+        };
+        // The device that founded a workspace is in it before its roster is read.
+        if view.is_founding(workspace_id) {
+            return true;
+        }
+        view.roster_devices(&workspace_id.to_string())
+            .map_or(true, |devices| {
+                devices.contains(&certificate.device_public_key)
+            })
     }
 
     /// Whether the last write of `key`'s record waits for changes the workspace does not hold yet,

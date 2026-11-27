@@ -72,6 +72,32 @@ fn words(device: &Device) -> Vec<String> {
         .collect()
 }
 
+/// Every notice `device` was told, by its title.
+fn told(device: &Device) -> Vec<String> {
+    device.state()["state"]["notifications"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|notice| notice["title"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Assert `device` was never told a workspace did not take its layout: a device whose admission
+/// has not arrived yet keeps its layout to itself, so the person hears nothing of a refusal they
+/// can do nothing about.
+#[track_caller]
+fn never_told_of_a_layout(device: &Device) {
+    let told = told(device);
+    assert!(
+        !told
+            .iter()
+            .any(|title| title.contains("did not take your window layout")),
+        "{} was told its layout was refused: {told:?}\n{}",
+        device.label,
+        device.diagnostic()
+    );
+}
+
 /// Where the control `control` stands on the shell: `[x, y, width, height]`.
 fn rect(control: &Value) -> [f64; 4] {
     let at = control["rect"]
@@ -117,9 +143,10 @@ fn explain(device: &Device) -> String {
         })
         .collect();
     format!(
-        "{} has here: {people:?}\nits shell says: {:?}",
+        "{} has here: {people:?}\nits shell says: {:?}\nits session warned:\n{}",
         device.label,
-        words(device)
+        words(device),
+        device.warnings()
     )
 }
 
@@ -230,6 +257,106 @@ fn snapshot(device: &Device, name: &str) {
 
 /// The rows of the screen the bar stands in.
 const BAR_HEIGHT: u32 = 56;
+
+/// How many pixels of the two pictures, inside `rect`, differ by more than a shade, and how many
+/// of those stand in the lower half of the rect: where a follower's mark is drawn on a face.
+#[track_caller]
+fn differing_in(before: &str, after: &str, rect: [f64; 4]) -> (usize, usize) {
+    let (Some(before), Some(after)) = (picture_at(before), picture_at(after)) else {
+        return (0, 0);
+    };
+    let (Ok(was), Ok(is)) = (image::open(&before), image::open(&after)) else {
+        return (0, 0);
+    };
+    let (was, is) = (was.to_rgba8(), is.to_rgba8());
+    let [x, y, width, height] = rect;
+    let place = |value: f64, limit: u32| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a place on the screen, in pixels"
+        )]
+        let pixel = value.round() as u32;
+        pixel.min(limit.saturating_sub(1))
+    };
+    let (x0, x1) = (place(x, was.width()), place(x + width, was.width()));
+    let (y0, y1) = (place(y, was.height()), place(y + height, was.height()));
+    let middle = place(y + height / 2.0, was.height());
+    let (mut changed, mut lower) = (0, 0);
+    for at_y in y0..=y1 {
+        for at_x in x0..=x1 {
+            if at_x >= is.width() || at_y >= is.height() {
+                continue;
+            }
+            let (a, b) = (was.get_pixel(at_x, at_y).0, is.get_pixel(at_x, at_y).0);
+            let moved = (0..3).any(|channel| a[channel].abs_diff(b[channel]) > 8);
+            if moved {
+                changed += 1;
+                if at_y > middle {
+                    lower += 1;
+                }
+            }
+        }
+    }
+    (changed, lower)
+}
+
+/// How many pixels of the picture `name`, inside `rect`, are in a colour rather than in a grey:
+/// a person's face wears their hue, and a glyph of the bar's ink has none.
+#[track_caller]
+fn coloured_in(name: &str, rect: [f64; 4], lower_right: bool) -> usize {
+    let Some(path) = picture_at(name) else {
+        return 0;
+    };
+    let Ok(picture) = image::open(&path) else {
+        return 0;
+    };
+    let picture = picture.to_rgba8();
+    let [x, y, width, height] = rect;
+    let (left, right) = if lower_right {
+        (x + width / 2.0, x + width)
+    } else {
+        (x, x + width)
+    };
+    let (top, bottom) = if lower_right {
+        (y + height / 2.0, y + height)
+    } else {
+        (y, y + height)
+    };
+    let inside = |value: f64, limit: u32| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a place on the screen, in pixels"
+        )]
+        let pixel = value.round() as u32;
+        pixel.min(limit.saturating_sub(1))
+    };
+    let (x0, x1) = (
+        inside(left, picture.width()),
+        inside(right, picture.width()),
+    );
+    let (y0, y1) = (
+        inside(top, picture.height()),
+        inside(bottom, picture.height()),
+    );
+    let mut coloured = 0;
+    for at_y in y0..=y1 {
+        for at_x in x0..=x1 {
+            let pixel = picture.get_pixel(at_x, at_y);
+            let [red, green, blue, alpha] = pixel.0;
+            if alpha < 128 {
+                continue;
+            }
+            let high = red.max(green).max(blue);
+            let low = red.min(green).min(blue);
+            if high.saturating_sub(low) >= 40 {
+                coloured += 1;
+            }
+        }
+    }
+    coloured
+}
 
 /// Take the picture `name` once the frame it holds differs from `previous`'s: a word reaches
 /// assistive technology a frame before the bar paints it, so a picture taken on the word alone can
@@ -361,6 +488,13 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     );
     snapshot_changed(&ada_laptop, "arrival", "before-arrival");
     discard("before-arrival");
+    // His face on her bar is a face: drawn in his colour, not a glyph of the bar's ink.
+    let face = rect(&appear(&ada_laptop, "Bob Builder"));
+    let coloured = coloured_in("arrival", face, false);
+    assert!(
+        coloured >= 60,
+        "the bar draws Bob as his face, in his colour, not as a glyph: {coloured} coloured pixels in {face:?}"
+    );
     // No press took it away: the bar says it for its four seconds and then gives it up.
     gone(&ada_laptop, "Bob is here", Duration::from_secs(10));
     // Her bar with the notice gone, and the time back where it stands: the wave's picture is taken
@@ -370,6 +504,9 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     bob_laptop.wait_holding(&site.workspace);
     bob_laptop.wait_showing(&site.workspace);
     site.wait_for_member(bob.public);
+    // The newcomer's first looks write nothing of the shared layout until the workspace admits
+    // him: nothing tells him his layout was refused.
+    never_told_of_a_layout(&bob_laptop);
     if light() {
         // A device reads the appearance its person chose: his own bar is drawn in it too, so the
         // pictures of both bars are the theme this run is taking.
@@ -407,6 +544,13 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     // Ada's bar marks his face as following her, and a reader hears it on the face's own control.
     says(&ada_laptop, "Bob Builder, follows you");
     snapshot_changed(&ada_laptop, "follower", "wave");
+    // The mark is drawn on his face, and on its lower edge, where the presence face's follower
+    // badge stands: nothing else about the face changed between the two frames.
+    let (changed, lower) = differing_in("wave", "follower", face);
+    assert!(
+        changed > 0 && lower.saturating_mul(2) >= changed,
+        "following draws a mark on the face's lower edge: {changed} pixels changed, {lower} of them there"
+    );
 
     // The wave at Ada goes by itself, once its six seconds are over: nothing about the wave was
     // pressed since it was heard.
@@ -428,6 +572,10 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     );
     appear(&ada_laptop, "Bob Builder");
     snapshot_changed(&ada_laptop, "follower-gone", "follower");
+    // No look of the run told either device that a workspace did not take its layout.
+    for device in [&ada_laptop, &bob_laptop] {
+        never_told_of_a_layout(device);
+    }
 }
 
 /// Someone nobody has named arrives where this person is: the bar says so, with their face, as
