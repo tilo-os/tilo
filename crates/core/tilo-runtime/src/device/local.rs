@@ -340,7 +340,7 @@ impl Frames {
             )),
             _ => None,
         };
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         let shells = match (&self.shells, &out) {
             (Some((workspace, granted, runs_here)), Some(out)) => {
                 Some(ush::app_shells::AppShells::new(
@@ -353,7 +353,7 @@ impl Frames {
             }
             _ => None,
         };
-        #[cfg(not(unix))]
+        #[cfg(not(target_os = "linux"))]
         let shells: Option<()> = None;
         let call = match (&self.lane, out) {
             (Some(granted), Some(out)) => {
@@ -371,7 +371,7 @@ impl Frames {
             audio: self.audio.as_deref(),
             media: call_media.as_ref(),
             presence: presence.as_ref(),
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
             shells,
         });
         tilo_action_services::serve_lines_handing(
@@ -399,7 +399,7 @@ struct Lanes<'a> {
     audio: Option<&'a super::audio_output::AudioLane>,
     media: Option<&'a super::call_media::CallMediaLane>,
     presence: Option<&'a super::app_presence::PresenceLane>,
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     shells: Option<ush::app_shells::AppShells>,
 }
 
@@ -417,7 +417,7 @@ impl tilo_action_services::CallLanes for Lanes<'_> {
                 taken => return taken,
             }
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Some(shells) = &self.shells {
             match tilo_action_services::CallLanes::take(shells, message) {
                 tilo_action_services::Take::NotCall => {}

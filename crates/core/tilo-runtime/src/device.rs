@@ -121,7 +121,7 @@ pub mod serve;
 pub mod server_settings;
 pub mod services;
 mod shell;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) mod ush_line;
 
 mod vpn;
