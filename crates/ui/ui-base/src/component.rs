@@ -1249,6 +1249,13 @@ pub trait PartViews {
         self.len() == 0
     }
 
+    /// Take the view at `index` out of its slot for a new one, when the owner keeps it beside
+    /// what comes (a swap that fades): the reconciler builds the part's view afresh and
+    /// [`Self::replace`]s it, rather than updating the slot where it stands. `false` otherwise.
+    fn prepare_swap(&mut self, _index: usize) -> bool {
+        false
+    }
+
     fn view_mut(&mut self, index: usize) -> Option<&mut Element>;
 
     fn insert(&mut self, index: usize, view: Element);

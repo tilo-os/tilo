@@ -1077,6 +1077,14 @@ impl Reconciler {
             let Some(&before) = held.get(index) else {
                 continue;
             };
+            // A view whose owner swapped what it showed out for what comes (a window's tab
+            // fading): the view it keeps beside the slot is the one that fades, and the slot
+            // takes the part built afresh, so the content is never left empty.
+            if views.prepare_swap(index) {
+                let built = self.part_view(child);
+                views.replace(index, built);
+                continue;
+            }
             let Some(view) = views.view_mut(index) else {
                 continue;
             };

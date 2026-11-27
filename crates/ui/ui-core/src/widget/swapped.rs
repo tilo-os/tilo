@@ -283,17 +283,18 @@ impl PartViews for Swapped {
         1
     }
 
+    fn prepare_swap(&mut self, index: usize) -> bool {
+        if index != 0 || !std::mem::take(&mut self.swap_owed) {
+            return false;
+        }
+        // The content it showed moves beside the slot, where it fades out, and the slot takes
+        // what the reconciler builds for the content that comes: the view is never left blank.
+        self.swap(Box::new(Spacer::fixed(0.0)));
+        true
+    }
+
     fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
-        if index != 0 {
-            return None;
-        }
-        if std::mem::take(&mut self.swap_owed) {
-            // The content the part showed is kept and fades out while what comes fades in: the
-            // reconciler updates what this returns, so it updates an empty stand-in and builds
-            // the new content after, which `replace` takes.
-            self.swap(Box::new(Spacer::fixed(0.0)));
-        }
-        Some(&mut self.current)
+        (index == 0).then_some(&mut self.current)
     }
 
     fn insert(&mut self, _index: usize, view: Element) {

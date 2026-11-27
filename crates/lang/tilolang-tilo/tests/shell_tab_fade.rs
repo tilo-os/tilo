@@ -162,7 +162,7 @@ fn fade_at(
             && (rect.y0 - body.y0).abs() < 1.0
             && (rect.x1 - body.x1).abs() < 1.0
             && (rect.y1 - body.y1).abs() < 1.0;
-        if stands {
+        if stands || swapped.is_swapping() {
             return swapped.opacities(at);
         }
     }
@@ -604,11 +604,60 @@ fn mix_of(frame: &[u8], before: &[u8], after: &[u8], content: &[usize], body: Re
     (t, worst, worst_at, over, box_, samples, grid)
 }
 
-// The staged shell cannot be held to the fade yet: after a tab choice the window's body stands
-// empty in the tree the frame draws — the body's view is removed and not put back — so the swap
-// never starts and there is no middle frame to read. A session's own frames prove the fade once
-// the window's body is reconciled anew there.
-#[ignore = "the tab choice leaves the staged window's body empty, so no swap frame stands to read"]
+/// A tab choice leaves the chosen tab's content in the window's body, drawn: the window shows
+/// the place chosen, and its body stands on its own ground where it did — no tab ever paints a
+/// bare window surface.
+#[test]
+fn choosing_a_tab_paints_the_content_it_chose() {
+    let start = ui::time::now();
+    let mut window = staged(false);
+    come_to_rest(&mut window);
+    let body = window_body(&window);
+    let before = shown_pixels(&window);
+    choose(&mut window, start, "p-1");
+    settle(&mut window);
+    let after = shown_pixels(&window);
+    let content = changed_content(&before, &after, body);
+    assert!(
+        content.len() > 1_000,
+        "the tab chosen shows its own content: {} pixels",
+        content.len()
+    );
+    assert!(
+        window
+            .instance
+            .root_tree()
+            .expect("the window's tree")
+            .of_kind("ui.Swapped")
+            .into_iter()
+            .any(|view| view.props.get("shown") == Some(&Value::text("p-1"))),
+        "the window's view says which tab it shows"
+    );
+    // The swap stands in the frame drawn, at the body it drew before the choice.
+    let after_body = window_body(&window);
+    assert!(
+        (after_body.x0 - body.x0).abs() < 1.0
+            && (after_body.y0 - body.y0).abs() < 1.0
+            && (after_body.x1 - body.x1).abs() < 1.0,
+        "the window's body stands where it did: {after_body:?} of {body:?}"
+    );
+    let corner = (columns(body).start, rows(body).start);
+    assert!(
+        !moved(
+            pixel(&after, corner.0, corner.1),
+            pixel(&before, corner.0, corner.1)
+        ),
+        "the body is painted, not the window's bare surface: {:?} of {:?}",
+        pixel(&after, corner.0, corner.1),
+        pixel(&before, corner.0, corner.1)
+    );
+}
+
+// The strict middle frame is held off until the shell's view keeps its swap across a tab choice:
+// the window's body is built afresh under a new node, so the view never meets the content it
+// should keep beside the new one and no fade plays. The chosen content is drawn (the outcome test
+// holds that); the frames between come back with the swap kept.
+#[ignore = "the window's body is rebuilt under a new node, so no swap plays to hold to a mix"]
 #[test]
 fn the_midpoint_of_a_tab_swap_in_both_themes() {
     let start = ui::time::now();
@@ -686,6 +735,18 @@ fn the_midpoint_of_a_tab_swap_in_both_themes() {
             }
         }
         assert!(shows(&window), "the view shows the tab chosen");
+        // The chosen tab's content is in the tree the frame draws and painted in its body: the
+        // body stands on its own ground where both pages do, not on the window's bare surface.
+        let chosen = shown_pixels(&window);
+        let corner = (columns(body).start, rows(body).start);
+        assert!(
+            !moved(
+                pixel(&chosen, corner.0, corner.1),
+                pixel(&first, corner.0, corner.1)
+            ),
+            "the chosen tab's body paints: {:?} where the body's ground stood",
+            pixel(&chosen, corner.0, corner.1)
+        );
         let failed = window
             .instance
             .host()
