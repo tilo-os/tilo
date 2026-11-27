@@ -204,6 +204,13 @@ ui = [
     "tilo-ui-kms -> tilo-settings-store",
 ]
 
+# A UI crate's feature that is the Rust-app framework's (`crate/feature`): the Tilo host a Rust
+# app's process runs under. A dependency only it turns on is not judged above; the published
+# default never links it (`HOST_ONLY` in the check), and it goes with the framework.
+framework = [
+    "tilo-ui-app/host",
+]
+
 # The I/O the pure evaluation tools/policy/io_free.py names still ships with
 # (`crate -> what it links`), each to cut. The list only shrinks.
 io-free = [

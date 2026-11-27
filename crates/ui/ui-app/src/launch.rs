@@ -15,17 +15,17 @@ mod app_log;
 mod capture_clock;
 #[cfg(feature = "native")]
 use app_log::init_app_log;
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 mod capture;
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 use capture::{capture_directory, capture_font_check, first_frame};
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 mod window_join;
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 pub use window_join::window_gives_place;
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 use window_join::{Unbuilt, construct_native, dispatch_live, live_native, native_connection};
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 pub(crate) use window_join::{WindowBuild, dispatch_window, dispatch_window_arrived};
 
 /// Hand the first window of this process, which is its own launcher, the connection it made for
@@ -38,7 +38,7 @@ pub(crate) use window_join::{WindowBuild, dispatch_window, dispatch_window_arriv
 ///
 /// `Err` hands the window why no connection could be made: it does not open, rather than open on
 /// records of this device alone.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 pub fn hand_connection(connection: Result<::collaboration::HandedConnection, String>) {
     install_handed(connection.as_ref().ok());
     window_join::hand(connection);
@@ -50,7 +50,7 @@ pub fn hand_connection(connection: Result<::collaboration::HandedConnection, Str
 /// the renderer and the loop it had. A phone does so when the person picks another workspace.
 ///
 /// Called on the window's own thread, from its frame: the loop gives the place before it waits.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 pub fn rejoin(connection: Result<::collaboration::HandedConnection, String>) {
     install_handed(connection.as_ref().ok());
     window_join::rejoin(connection);
@@ -58,7 +58,7 @@ pub fn rejoin(connection: Result<::collaboration::HandedConnection, String>) {
 
 /// Install the workspace `handed` joins, and that the window takes part there as an author, as
 /// the launcher's.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn install_handed(handed: Option<&::collaboration::HandedConnection>) {
     if let Some(handed) = handed {
         let mut launched = (*crate::process::environment()).clone();
@@ -72,11 +72,11 @@ fn install_handed(handed: Option<&::collaboration::HandedConnection>) {
 /// ([`hand_connection`]), or tried to: its windows join their workspace as a launched app's do.
 #[must_use]
 pub fn connection_handed() -> bool {
-    #[cfg(all(feature = "native", feature = "model"))]
+    #[cfg(feature = "host")]
     {
         window_join::was_handed()
     }
-    #[cfg(not(all(feature = "native", feature = "model")))]
+    #[cfg(not(feature = "host"))]
     {
         false
     }
@@ -352,7 +352,7 @@ impl LaunchSpec {
     ///
     /// # Errors
     /// The window's join or its build failed, or `args` launch no live window.
-    #[cfg(all(feature = "native", feature = "model"))]
+    #[cfg(feature = "host")]
     pub fn build_window(&self, args: &LaunchArgs) -> Result<crate::App, LaunchError> {
         window_join::build_window(self, args)
     }
@@ -364,7 +364,7 @@ impl LaunchSpec {
     ///
     /// # Errors
     /// The window's join or its build failed.
-    #[cfg(all(feature = "native", feature = "model"))]
+    #[cfg(feature = "host")]
     #[must_use]
     pub fn rejoined_window(&self, args: &LaunchArgs) -> Option<Result<crate::App, LaunchError>> {
         window_join::take_rejoin().then(|| window_join::build_window(self, args))
@@ -439,7 +439,7 @@ impl LaunchSpec {
 
 /// A record, grant or component failure: one only Tilo's model raises.
 // An Android app shows why it did not open and exits with no status.
-#[cfg(all(feature = "native", feature = "model", not(target_os = "android")))]
+#[cfg(all(feature = "host", not(target_os = "android")))]
 const fn is_model_failure(error: &LaunchError) -> bool {
     matches!(
         error,
@@ -451,7 +451,7 @@ const fn is_model_failure(error: &LaunchError) -> bool {
 }
 
 // An Android app shows why it did not open and exits with no status.
-#[cfg(all(feature = "native", feature = "model", not(target_os = "android")))]
+#[cfg(all(feature = "host", not(target_os = "android")))]
 fn exit_code(error: &LaunchError) -> i32 {
     if matches!(
         error,
@@ -471,7 +471,7 @@ fn exit_code(error: &LaunchError) -> i32 {
 /// built from its launch (`spec`, `args`), but with the window's own instance and
 /// connections, opening what the request names (a file opened with the running app) and
 /// nothing its launch named: that was the first window's.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn open_window(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -537,7 +537,7 @@ fn open_window(
               is the documented contract, not an incidental exit deep in \
               library code"
 )]
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 pub fn run_or_exit(spec: &LaunchSpec) {
     if let Err(error) = run(spec) {
         eprintln!("error: {error}");
@@ -558,6 +558,7 @@ pub fn run_or_exit(spec: &LaunchSpec) {
 #[cfg(feature = "native")]
 pub fn warm_window_process() {
     let _detached = crate::wake::WakeScope::enter_detached();
+    #[cfg(feature = "host")]
     let _ = tilo_content_device::device();
     prepare_font_database_beside();
     #[cfg(any(windows, target_os = "linux"))]
@@ -572,7 +573,7 @@ pub fn bind_window_process(app: &str) {
 }
 
 /// Run the standard app lifecycle using `std::env::args`.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
@@ -588,12 +589,12 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     run_with_args(spec, &args)
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
     run_with_args_with_attachment(spec, raw_args, runtime_portal::native::ensure_attached)
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn run_with_args_with_attachment(
     spec: &LaunchSpec,
     raw_args: &[String],
@@ -636,7 +637,7 @@ fn run_with_args_with_attachment(
 /// `--shots-dir`: each declared scenario (or the plain capture, for an app that declares none) captured
 /// on its own, exactly as `--shots --scenario` captures it, into `NN-name.png` so a gallery keeps
 /// declaration order.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn capture_every_scenario(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -664,7 +665,7 @@ fn capture_every_scenario(
 
 /// Whether these arguments run the app in a live native window, rather than headless, as captures or as
 /// an audit.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn opens_native_window(args: &LaunchArgs) -> bool {
     args.headless.is_none()
         && args.shots.is_none()
@@ -680,7 +681,7 @@ fn opens_native_window(args: &LaunchArgs) -> bool {
               reports success by returning Ok — there is no caller to \
               hand a status back to"
 )]
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn run_parsed(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -828,7 +829,7 @@ fn prepare_font_database_beside() {
     });
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn close_component_capture(driver: &mut Driver) -> Result<(), LaunchError> {
     driver.close_components();
     if driver.component_close_reports().iter().any(|report| {
@@ -846,7 +847,7 @@ fn close_component_capture(driver: &mut Driver) -> Result<(), LaunchError> {
     Ok(())
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn finish_component_audit(driver: &mut Driver, app_id: &str) -> Result<(), LaunchError> {
     driver.prepare_component_output();
     let audit = driver.native_app_audit();
@@ -865,7 +866,7 @@ fn finish_component_audit(driver: &mut Driver, app_id: &str) -> Result<(), Launc
     Ok(())
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 pub(crate) enum DefinitionDispatch {
     Native(Box<App>),
     Headless(i32),
@@ -873,7 +874,7 @@ pub(crate) enum DefinitionDispatch {
     Audit(Box<Driver>),
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn dispatch_definition(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -896,7 +897,7 @@ fn dispatch_definition_with_native(
     dispatch_definition_with_manager(spec, args, native, || native_launch_manager(spec, args))
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn dispatch_definition_with_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -911,7 +912,7 @@ fn dispatch_definition_with_manager(
     dispatch_definition_with(spec, args, native, scope, manager).map_err(Unbuilt::into_error)
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn dispatch_definition_with(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1036,7 +1037,7 @@ fn dispatch_definition_with(
 
 /// `--history` and `--search`: open History or this window's search before the capture settles, so the
 /// shot shows it as a person sees it.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn show_history_for_capture(driver: &mut Driver, args: &LaunchArgs) -> Result<(), LaunchError> {
     if args.history {
         driver
@@ -1053,7 +1054,7 @@ fn show_history_for_capture(driver: &mut Driver, args: &LaunchArgs) -> Result<()
     Ok(())
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn selected_local_construction()
 -> Result<::collaboration::native_initial::NativeConstruction, LaunchError> {
     ::collaboration::native_initial::NativeConstruction::enter(
@@ -1064,14 +1065,14 @@ fn selected_local_construction()
 
 /// The actions socket the session handed this process, when it is a surface app's: `None` when the
 /// number in [`tilo_ui_base::surface_services::ACTIONS_FD_ENV`] names no socket.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn surface_peer() -> Option<crate::surface_peer::SurfacePeer> {
     let number = std::env::var(tilo_ui_base::surface_services::ACTIONS_FD_ENV).ok()?;
     let number: i32 = number.trim().parse().ok()?;
     crate::surface_peer::SurfacePeer::from_descriptor(number)
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "host")]
 fn native_launch_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,

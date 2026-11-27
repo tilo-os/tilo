@@ -106,6 +106,7 @@ pub(super) struct FloatingRuntime {
     pub paint_capable_sent: bool,
     /// The payload of this window's page that is being sent, and how much of it went: one too
     /// large for a message goes in parts, and the connection takes only so much at once.
+    #[cfg(feature = "webview")]
     pub share_sending: Option<(crate::webview::paint::SharedFrame, usize)>,
     /// When to send on: the connection had no room for the next part of the page.
     pub share_backlog: Option<crate::time::Instant>,
@@ -264,6 +265,7 @@ impl FloatingRuntime {
             submitted_action_markers: std::collections::VecDeque::new(),
             auxiliary_capture_frames: HashMap::new(),
             paint_capable_sent: false,
+            #[cfg(feature = "webview")]
             share_sending: None,
             share_backlog: None,
             selection_capable_sent: false,
@@ -789,7 +791,7 @@ impl App {
     /// the connection has no room for waits here, and the loop comes back for it
     /// ([`Self::share_backlog_at`]) once the shell has read on, so a page of megabytes never
     /// overruns the connection every other ask of the window travels.
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", feature = "webview"))]
     fn send_shared_page(
         &mut self,
         client: &mut FloatingSurfaceServiceClient,
@@ -873,18 +875,23 @@ impl App {
             *changed = true;
         }
         let protected = self.withholds_captures();
-        if !self.floating.paint_capable_sent && crate::webview::paint::share_capable() {
-            client.send(&crate::floating_surface::FloatingSurfaceClientMessage::PaintCapable)?;
-            self.floating.paint_capable_sent = true;
-        }
-        // A window withheld from captures shares no page either: what it queued is dropped,
-        // and so is a payload half sent.
-        if protected {
-            drop(crate::webview::paint::take_share_frames());
-            self.floating.share_sending = None;
-            self.floating.share_backlog = None;
-        } else {
-            self.send_shared_page(client)?;
+        // A page is shared only from a `WebView`: a window built without one has none to hand.
+        #[cfg(feature = "webview")]
+        {
+            if !self.floating.paint_capable_sent && crate::webview::paint::share_capable() {
+                client
+                    .send(&crate::floating_surface::FloatingSurfaceClientMessage::PaintCapable)?;
+                self.floating.paint_capable_sent = true;
+            }
+            // A window withheld from captures shares no page either: what it queued is
+            // dropped, and so is a payload half sent.
+            if protected {
+                drop(crate::webview::paint::take_share_frames());
+                self.floating.share_sending = None;
+                self.floating.share_backlog = None;
+            } else {
+                self.send_shared_page(client)?;
+            }
         }
         if self.floating.capture_protection_sent != protected {
             self.floating.capture_generation = self
@@ -1349,12 +1356,16 @@ impl App {
                 // Never delivered: the client's `pump` ends on it.
                 FloatingSurfaceHostMessage::VersionMismatch { .. } => {}
                 FloatingSurfaceHostMessage::PaintKeyframe => {
+                    #[cfg(feature = "webview")]
                     crate::webview::paint::set_share_watched(true);
                 }
                 FloatingSurfaceHostMessage::PaintStop => {
-                    crate::webview::paint::set_share_watched(false);
-                    // Nobody takes the rest of a payload half sent.
-                    self.floating.share_sending = None;
+                    #[cfg(feature = "webview")]
+                    {
+                        crate::webview::paint::set_share_watched(false);
+                        // Nobody takes the rest of a payload half sent.
+                        self.floating.share_sending = None;
+                    }
                     self.floating.share_backlog = None;
                 }
                 FloatingSurfaceHostMessage::ToolbarEvent { event, after_input } => {
@@ -1548,6 +1559,7 @@ impl App {
             reply.borrow_mut().answer = Some(false);
         }
         // Without the shell nobody can be watching the shared page.
+        #[cfg(feature = "webview")]
         crate::webview::paint::set_share_watched(false);
         let ids = self
             .floating

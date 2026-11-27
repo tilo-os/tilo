@@ -152,7 +152,7 @@ pub(crate) fn carried(url: &str) -> Option<PenikoImage> {
 /// store): `None` where the build has none (the web) or it is not here.
 #[cfg(feature = "native")]
 fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
-    if let Some(bytes) = crate::content::device().and_then(|store| store.read(hash)) {
+    if let Some(bytes) = device_store().and_then(|store| store.read(hash)) {
         return Some(bytes);
     }
     lent_content()?.read(hash)
@@ -360,12 +360,12 @@ fn shrink_picture(bytes: &[u8]) -> Option<Vec<u8>> {
 
 /// The store a picture is kept in: the device content store the launcher handed this process, and
 /// none in a build that keeps no such store (the web), where a host keeps the picture instead.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "content"))]
 fn device_store() -> Option<crate::content::ContentStore> {
     crate::content::device()
 }
 
-#[cfg(not(feature = "native"))]
+#[cfg(not(all(feature = "native", feature = "content")))]
 fn device_store() -> Option<crate::content::ContentStore> {
     None
 }

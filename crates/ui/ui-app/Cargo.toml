@@ -16,18 +16,27 @@ description = "The Tilo UI app runner: the App that drives a widget tree in a wi
 ignored = ["serde_bytes"]
 
 [features]
-default = ["native", "broker-transport"]
+default = ["native"]
 # Each feature is the toolkit's of the same name (see tilo-ui), plus what the runner takes for it.
-model = ["tilo-ui/model", "tilo-ui-base/model", "dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-reference"]
+model = ["tilo-ui/model", "tilo-ui-base/model", "dep:runtime-collab", "dep:collaboration", "dep:collab-types", "dep:tilo-resource", "dep:tilo-reference"]
 # The native runner: the winit event loop with its AccessKit adapter, the platform chrome and
 # the OS search hand-off.
-native = ["tilo-ui/native", "tilo-ui-base/native", "local-daemons", "dep:accesskit_winit", "dep:tilo-host-search", "dep:objc2", "dep:objc2-app-kit", "dep:windows", "dep:jni", "dep:ndk-context", "tokio/full"]
+native = ["tilo-ui/native", "tilo-ui-base/native", "dep:accesskit_winit", "dep:tilo-host-search", "dep:objc2", "dep:objc2-app-kit", "dep:windows", "dep:jni", "dep:ndk-context", "tokio/full"]
 x11 = ["tilo-ui/x11"]
 syntax-definitions = ["tilo-ui/syntax-definitions"]
 lazy-highlight = ["tilo-ui/lazy-highlight"]
 lazy-painter = ["tilo-ui/lazy-painter"]
-# The launcher's attachment to the session daemons (`launch`).
-local-daemons = ["tilo-ui/local-daemons", "dep:runtime-portal"]
+# The toolkit's clients of the session daemons.
+local-daemons = ["tilo-ui/local-daemons"]
+# The toolkit's `WebView` widget and the device's content store (see tilo-ui).
+webview = ["tilo-ui/webview"]
+content = ["tilo-ui/content"]
+# The Tilo host a Rust app's process runs under: the launcher (`launch::run`) that attaches it
+# to the session's daemons and hands it its content store, the settings file it follows, and
+# the page frames it traces, with everything of the toolkit's `host`. Tilo's own apps and the
+# shell turn it on; the published default links none of it. It belongs to the Rust-app
+# framework and goes with it.
+host = ["native", "model", "local-daemons", "broker-transport", "webview", "content", "tilo-ui/host", "dep:runtime-portal", "dep:settings-store", "dep:tilo-content-device", "dep:tilo-webview"]
 broker-transport = ["tilo-ui/broker-transport", "local-daemons", "tokio/full"]
 # The headless driver's fixtures, for the tests above the runner.
 test-support = ["tilo-ui/test-support", "tilo-ui-base/test-support", "collaboration?/test-support", "runtime-collab?/settings-host"]
@@ -51,7 +60,7 @@ tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = fals
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 # The launcher hands an app its content-store capability (`launch`).
-tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
+tilo-content-device = { version = "0.1.0", path = "../../core/content-device", optional = true }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["json"] }
 tilo-headless-schema = { version = "0.1.0", path = "../../platform/headless-schema" }
 tilo-image-codec = { version = "0.1.0", path = "../../platform/image-codec" }
@@ -64,7 +73,8 @@ tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
 tilo-rt.workspace = true
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
-tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
+# The page frames a window traces (`host`).
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", optional = true }
 settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model", default-features = false }
 settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings", optional = true }
 runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../../core/runtime-collab", default-features = false, optional = true }
@@ -135,7 +145,7 @@ tilo-member-types.workspace = true
 # The integration tests drive the runner through its `test-support` fixtures. The dev
 # dependencies turn the toolkit's `model` on, so the runner takes it too: its model code
 # names the toolkit's model-only items.
-tilo-ui-app = { path = ".", default-features = false, features = ["test-support", "model"] }
+tilo-ui-app = { path = ".", default-features = false, features = ["test-support", "model", "host"] }
 serial_test.workspace = true
 # The headless driver and its fixtures are behind `test-support`.
 tilo-ui = { path = "../ui-core", default-features = false, features = ["test-support"] }
@@ -181,7 +191,7 @@ workspace = true
 [[example]]
 name = "browser-text-input-qualification"
 path = "examples/browser_text_input_qualification.rs"
-required-features = ["native"]
+required-features = ["host"]
 
 [[example]]
 name = "page-menus"

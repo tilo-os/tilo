@@ -27,6 +27,12 @@ tools/policy/crate_layout.toml, each one a dependency to cut. The list only
 shrinks: a dependency missing from it fails, and so does a listed one that no
 longer exists, so cutting one means deleting its line.
 
+A UI crate's feature named under `framework` in the same file belongs to the
+Rust-app framework: the Tilo host a Rust app's process runs under, which goes
+when the framework does. A dependency only that feature turns on is not judged
+here; what the published crate builds by default is, and it links none of the
+Tilo host (`HOST_ONLY`).
+
 The model's pure evaluation, which every group links, promises more: a crate
 tools/policy/io_free.py names does no I/O, and neither does what it ships with
 (its `[io-free]` list in the same file names the I/O it still links, to cut).
@@ -61,6 +67,12 @@ ALLOWED = {
     "services": {"services", "core", "platform"},
     "ui": {"ui", "platform"},
 }
+
+# The published toolkit, as a program on it alone builds it (docs/tilolang/tilo-ui.md), and the
+# Tilo host its default build never links: the session's settings file, the device's content
+# store, the session daemons' descriptors and the web engine.
+PUBLISHED = ("tilo-ui", "tilo-ui-app")
+HOST_ONLY = ("tilo-settings-store", "tilo-content-device", "tilo-runtime-portal", "tilo-webview")
 
 KINDS = (("dependencies", "normal"), ("build-dependencies", "build"), ("dev-dependencies", "dev"))
 
@@ -133,6 +145,46 @@ def listed(root: Path = ROOT) -> dict[str, set[str]]:
     return {key: set(document.get(key, [])) for key in ALLOWED}
 
 
+def framework(root: Path, workspace: io_free.Workspace) -> tuple[set[str], list[str]]:
+    """The `crate -> dependency` edges only a framework feature turns on, and the stale names."""
+    named = tomllib.loads((root / EXCEPTIONS).read_text()).get("framework", [])
+    hosted: set[str] = set()
+    problems = []
+    for entry in named:
+        crate, feature = entry.split("/", 1)
+        home, manifest = workspace.manifests.get(crate, (root, {}))
+        features = manifest.get("features") or {}
+        if feature not in features:
+            problems.append(f"{EXCEPTIONS}: `{entry}` under framework is no feature of {crate}: delete the line")
+            continue
+        others = [e for name, entries in features.items() if name != feature for e in entries]
+        optional = {key: spec for key, spec in io_free._dependencies(manifest) if spec.get("optional")}
+        for turned_on in features[feature]:
+            key = turned_on.removeprefix("dep:")
+            if turned_on == key or key not in optional:
+                continue
+            if any(e == turned_on or e.startswith((f"{key}/", f"{key}?/")) for e in others):
+                continue
+            hosted.add(f"{crate} -> {workspace._resolve(home, key, optional[key])[0]}")
+    return hosted, problems
+
+
+def host_in_default(workspace: io_free.Workspace) -> list[str]:
+    """What of the Tilo host the published toolkit's default build links."""
+    problems = []
+    for crate in PUBLISHED:
+        shipped = workspace.closure(crate)
+        for package in HOST_ONLY:
+            if package in shipped:
+                problems.append(
+                    f"{crate} links {package} by default.\n"
+                    f"  why: a program on the toolkit alone depends on {crate} with its defaults, and\n"
+                    f"  links none of the Tilo host (docs/tilolang/tilo-ui.md).\n"
+                    f"  fix: put what needs {package} behind the `host` feature."
+                )
+    return problems
+
+
 def misplaced(root: Path = ROOT) -> list[str]:
     """Member crates under crates/ in a group the layout does not name."""
     return [
@@ -146,9 +198,13 @@ def misplaced(root: Path = ROOT) -> list[str]:
 def check(root: Path = ROOT) -> list[str]:
     found = edges(root)
     home = {crate: g for crate, g, *_ in found}
-    bad = violations(found)
+    workspace = io_free.Workspace(root)
+    hosted, problems = framework(root, workspace)
+    bad = violations(found) - hosted
     allowed = listed(root)
-    problems = misplaced(root)
+    problems += misplaced(root)
+    if all(crate in workspace.manifests for crate in PUBLISHED):
+        problems += host_in_default(workspace)
     for edge in sorted(bad):
         crate = edge.split(" -> ")[0]
         if edge not in allowed[home[crate]]:

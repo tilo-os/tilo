@@ -207,7 +207,7 @@ uuid.workspace = true
 # Mounts the workspace files where this user can mount FUSE.
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 # The toolkit the Unix launch edge and its surface files are read with.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model", "host"] }
 # What a device whose machine is a server keeps beyond its own copies (`device::keep`): the
 # packet relay it is reached through and runs, and the web listener its pages, certification
 # and entry are served on.
@@ -335,7 +335,7 @@ tilo-web-search = { path = "../../integrations/tilo-web-search", features = ["fi
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model", "host"] }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The action provider the workspace tests answer with.
 tilo-actions = { path = "../actions", features = ["test-support"] }

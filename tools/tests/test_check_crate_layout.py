@@ -92,6 +92,31 @@ class CrateLayoutTests(unittest.TestCase):
         self.assertEqual(len(problems), 1, problems)
         self.assertTrue(problems[0].startswith("crates/collab/actions: crates/collab/ is not a group"))
 
+    def test_the_tilo_host_is_a_framework_feature_the_published_default_leaves_out(self) -> None:
+        root = self.repository(
+            'core = ["tilo-runtime -> tilo-ui-paint", "tilo-runtime -> tilo-compositor"]\n'
+            'framework = ["tilo-ui-app/host"]\n'
+        )
+        crate(root, "crates/engines/tilo-webview", "tilo-webview")
+        crate(root, "crates/ui/ui-core", "tilo-ui", '[dependencies]\ntilo-ui-paint = { path = "../ui-paint" }\n')
+        app = (
+            '[features]\ndefault = ["native"]\nnative = []\nhost = ["native", "dep:tilo-webview"]\n\n'
+            '[dependencies]\ntilo-ui = { path = "../ui-core" }\n'
+            'tilo-webview = { path = "../../engines/tilo-webview", optional = true }\n'
+        )
+        crate(root, "crates/ui/ui-app", "tilo-ui-app", app)
+        # The web engine only `host` turns on is the framework's, and the default leaves it out.
+        self.assertEqual(checker.check(root), [])
+        # Turned on by default, it is in what a program on the toolkit alone links.
+        (root / "crates/ui/ui-app/Cargo.toml").write_text(
+            (root / "crates/ui/ui-app/Cargo.toml").read_text().replace(
+                'default = ["native"]', 'default = ["native", "host"]'
+            )
+        )
+        problems = checker.check(root)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertTrue(problems[0].startswith("tilo-ui-app links tilo-webview by default."))
+
     def test_the_repository_keeps_its_layout(self) -> None:
         self.assertEqual(checker.check(), [])
 

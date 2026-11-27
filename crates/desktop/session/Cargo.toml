@@ -237,7 +237,7 @@ tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The toolkit's native half: the winit runner, the host services and the
 # broker transport, which only a desktop host runs.
-ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["model"] }
+ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["model", "host"] }
 # The live session over this session's own iroh endpoint: native only.
 tilo-live = { path = "../../core/tilo-live", features = ["relay", "iroh"] }
 tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sync", "macros", "time"] }
@@ -616,7 +616,7 @@ tilolang-tilo = { path = "../../lang/tilolang-tilo", features = ["test-support"]
 # store's packages, and the shell names its own styles as a daemon would offer them.
 tilolang-workspace = { path = "../../lang/tilolang-workspace" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
-ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["test-support", "model"] }
+ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["test-support", "model", "host"] }
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }

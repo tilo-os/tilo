@@ -32,7 +32,12 @@ tilo-ui-app = "0.5"
 
 The default `native` feature brings the winit event loop that opens the window, the AccessKit
 adapter that exports what it shows to screen readers, and the process services through which a
-program reaches the clipboard, file choosers and notifications. With that in place,
+program reaches the clipboard, file choosers and notifications. Two parts are features of their
+own: `webview` adds the `WebView` widget, which shows a page through the Chromium helper, and
+`content` adds the device's content store that a Tilo session hands its apps. A program that
+shows a page turns `webview` on. The `host` feature is what Tilo's own apps run under (the
+launcher, the session's daemons and its settings file); a program on the toolkit alone leaves it
+off. With that in place,
 `App::from_factory` takes the app's document (`State::new()` is an empty one) and a closure that
 builds the window's root widget, and `run` opens the window on the platform event loop.
 

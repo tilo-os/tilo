@@ -300,9 +300,10 @@ pub mod window_targets;
 pub mod window_toolbar;
 /// Private completion receipts shared by native and browser text editors.
 pub mod text_input {
-    pub use tilo_webview::text_input::{Failure, Receipt, Resolver};
+    pub use tilo_presentation::text_input::{Failure, Receipt, Resolver};
 }
 pub mod terminal;
+#[cfg(feature = "webview")]
 pub mod webview;
 pub mod widget;
 pub mod window_icon;

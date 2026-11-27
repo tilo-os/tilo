@@ -108,7 +108,7 @@ sha2.workspace = true
 tilo-agent-session = { path = "../agent-session", optional = true }
 # A person's own provider, asked through the gateway's transport with the key
 # their vault keeps: the wires, the stream reading and the price table are its.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true, features = ["model"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true, features = ["model", "host"] }
 # Shortcuts and the events they fire on: what a saved shortcut holds, as its triggers and steps.
 tilo-automation = { path = "../automation" }
 # Resource identity, permissions and invocation leases: the model below the toolkit.
@@ -225,7 +225,7 @@ tilo-test-relay = { path = "../../../tools/test-relay" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 # A test's mail server answers over real sockets, and the tester trusts its
 # certificate, which no authority signed.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model", "host"] }
 
 # The apps the device serves, tested against.
 tilo-workspace-keys = { path = "../workspace-keys", features = ["test-support"] }

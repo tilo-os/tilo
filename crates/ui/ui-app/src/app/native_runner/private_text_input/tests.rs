@@ -3,9 +3,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
+use crate::text_input::Resolver;
 use crate::{widget::Column, widget::TextInput};
 use tilo_ui_base::widget::Decorator;
-use tilo_webview::text_input::Resolver;
 
 #[derive(Default)]
 struct Calls {
@@ -360,7 +360,7 @@ tilo_test_env::scenario! {
             .starts
             .pop()
             .expect("original start");
-        let lease = tilo_webview::text_input::Lease::parse("00000000000000000000000000000000")
+        let lease = tilo_presentation::text_input::Lease::parse("00000000000000000000000000000000")
             .expect("synthetic preparation lease");
         resolver.complete(Ok(Some(lease)));
         f.service();

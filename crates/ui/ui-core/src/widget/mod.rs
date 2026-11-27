@@ -677,7 +677,9 @@ pub use {
 };
 pub mod terminal;
 pub use {terminal::GridEvents, terminal::Terminal, terminal::TerminalProps};
+#[cfg(feature = "webview")]
 pub mod webview;
+#[cfg(feature = "webview")]
 pub use {webview::WebView, webview::WebViewProps};
 pub mod image_viewer;
 mod image_viewer_component;

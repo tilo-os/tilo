@@ -160,11 +160,11 @@ zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"]
 
 [target.'cfg(not(windows))'.dependencies]
 tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
-ui = { package = "tilo-ui-app", path = "../../crates/ui/ui-app", features = ["model"] }
+ui = { package = "tilo-ui-app", path = "../../crates/ui/ui-app", features = ["model", "host"] }
 
 [target.'cfg(windows)'.dependencies]
 tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
-ui = { package = "tilo-ui-app", path = "../../crates/ui/ui-app", features = ["dx12-shader-cache", "model"] }
+ui = { package = "tilo-ui-app", path = "../../crates/ui/ui-app", features = ["dx12-shader-cache", "model", "host"] }
 windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_Memory", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Power", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
 # Windows installs no zoneinfo: the time-zone database comes bundled instead.
 jiff = { workspace = true, features = ["tzdb-bundle-platform"] }
@@ -188,7 +188,7 @@ test-http = { package = "tilo-test-http", path = "../../tools/test-http" }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../tools/test-env" }
 tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
-ui = { package = "tilo-ui-app", path = "../../crates/ui/ui-app", features = ["test-support", "model"] }
+ui = { package = "tilo-ui-app", path = "../../crates/ui/ui-app", features = ["test-support", "model", "host"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The destination's capacity test asks the same compiled rule that

@@ -103,7 +103,7 @@ tilo-workspace-join = { path = "../workspace-join", features = ["test-support"] 
 tilo-automerge.workspace = true
 # The record API apps open their own records with: a person's record reaches
 # their other device through the store the same way an app writes it.
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model", "host"] }
 tempfile.workspace = true
 # The hosted-workspace acceptance test runs against a real server.
 tilo-runtime = { path = "../tilo-runtime", features = ["test-support"] }

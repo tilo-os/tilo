@@ -95,12 +95,12 @@ pub fn dropped_file(path: &Path) -> Result<File, FileRefusal> {
 
 /// The store a file is kept in: the device content store the launcher handed this process, and
 /// none in a build that keeps no such store (the web), where a host keeps the file instead.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "content"))]
 fn device_store() -> Option<crate::content::ContentStore> {
     crate::content::device()
 }
 
-#[cfg(not(feature = "native"))]
+#[cfg(not(all(feature = "native", feature = "content")))]
 fn device_store() -> Option<crate::content::ContentStore> {
     None
 }

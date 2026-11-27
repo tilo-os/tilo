@@ -55,13 +55,13 @@ ui-kms = { package = "tilo-ui-kms", path = "../../ui/ui-kms" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
-ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["model"] }
+ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["model", "host"] }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }
 tempfile.workspace = true
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
-ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["test-support", "model"] }
+ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["test-support", "model", "host"] }
 # The screen reader's recording speaker, to hear what it said.
 tilo-tts = { path = "../../platform/tts" }
 # A fake greetd that speaks the real conversation protocol over a socket.

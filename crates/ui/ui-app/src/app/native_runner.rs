@@ -2722,6 +2722,7 @@ impl AppHandler {
         // pre-seeded scenes are empty too.
 
         let t_draw_start = if perf { Some(crate::time::now()) } else { None };
+        #[cfg(feature = "host")]
         tilo_webview::frame_trace::begin_scene();
         // Floating chrome (menus, popovers, sheets, the palette, tooltips)
         // records what lies below it, and the render worker blurs that
@@ -2846,6 +2847,7 @@ impl AppHandler {
         } else {
             record_main_stage(&mut native_main_stages, MainStage::AfterProfilerCommit);
         }
+        #[cfg(feature = "host")]
         tilo_webview::frame_trace::finish_scene(
             app.profiler
                 .as_ref()
@@ -3946,6 +3948,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     /// surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // A window that closes while its page is watched hands nothing more over.
+        #[cfg(feature = "webview")]
         crate::webview::paint::forget_share();
         self.app.close_wake_scope();
         let _entry = self.app.enter_wake_scope();
@@ -5798,17 +5801,17 @@ fn present_hook(
 mod early_window_tests;
 
 /// What keeps a window hearing its settings change, for as long as it lives.
-#[cfg(feature = "model")]
+#[cfg(feature = "host")]
 type SettingsWatch = settings_store::watch::SettingsWatch;
-#[cfg(not(feature = "model"))]
+#[cfg(not(feature = "host"))]
 type SettingsWatch = std::sync::Arc<tilo_ui_base::settings_source::Listener>;
 
 /// Run `changed` whenever the settings this process reads change: with Tilo's model the profile's
 /// settings file, else the source its host installed. `None` where there is nothing to hear.
 fn watch_settings(changed: impl Fn() + Send + Sync + 'static) -> Option<SettingsWatch> {
-    #[cfg(feature = "model")]
+    #[cfg(feature = "host")]
     let watch = settings_store::watch::watch_settings(changed).ok();
-    #[cfg(not(feature = "model"))]
+    #[cfg(not(feature = "host"))]
     let watch = tilo_ui_base::settings_source::source().map(|source| {
         let listener: SettingsWatch = std::sync::Arc::new(changed);
         source.changes().listen(&listener);

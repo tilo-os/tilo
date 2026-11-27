@@ -140,7 +140,7 @@ tilo-device-identity = { path = "../../core/tilo-device-identity" }
 # a profile's daemon over the socket it names.
 tilo-api = { path = "../../core/tilo-api" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model", "host"] }
 # The development build the process tests install: its manifest, and the action they hand it to
 # the device with.
 tilo-app-package = { path = "../../core/tilo-app-package" }

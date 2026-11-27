@@ -8,6 +8,7 @@
 pub use tilo_content::{
     ContentStore, NoContent, content_address, is_sealed, opened_as, valid_hash, valid_reference,
 };
+#[cfg(feature = "content")]
 pub use tilo_content_device::{PublicCopy, PublicState};
 pub use tilo_content_types::{HEAD_BYTES, Landing, Takes, landing, opened_extension};
 
@@ -58,6 +59,7 @@ pub fn keep_fetched(store: &ContentStore, fetch: &Fetch, url: &str) -> Option<St
 
 /// The device's one copy of the public file `name` (a catalogue the filesystem daemon mirrors for every
 /// app and workspace), when this host keeps such copies: `None` on one that keeps none (the web).
+#[cfg(feature = "content")]
 #[must_use]
 pub fn public_copy(name: &'static str) -> Option<PublicCopy> {
     tilo_content_device::public_copy(name)
@@ -68,6 +70,7 @@ pub fn public_copy(name: &'static str) -> Option<PublicCopy> {
 ///
 /// Any process the launcher starts with the capability reaches it, the sandboxed connectors
 /// included: this asks for the store it was handed, and links none of the native runner.
+#[cfg(feature = "content")]
 #[must_use]
 pub fn device() -> Option<ContentStore> {
     tilo_content_device::device()
@@ -80,7 +83,7 @@ pub fn device() -> Option<ContentStore> {
 /// records whose stills an app's connector kept — and the launcher handed it no capability of its
 /// own, so this is where it reads them from. Which workspace a picture is in is the caller's to
 /// say: the session serves a place's pictures from the workspace that place is in.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "content"))]
 #[must_use]
 pub fn session(workspace: &str) -> Option<ContentStore> {
     tilo_content_device::session(workspace)
@@ -89,7 +92,7 @@ pub fn session(workspace: &str) -> Option<ContentStore> {
 /// Tell every store a process drawing a session's content opens from here on which workspaces it draws,
 /// the workspace in front first: a picture of any of them is read through the one that references it
 /// ([`session`]).
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "content"))]
 pub fn set_session_workspaces(workspaces: Vec<String>) {
     tilo_content_device::set_session_workspaces(workspaces);
 }

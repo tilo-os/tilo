@@ -1286,7 +1286,7 @@ impl Widget for Terminal {
         (self.focused && !self.session.ended()).then_some(tilo_ui_base::ime::InputContent::TERMINAL)
     }
 
-    fn commit_deferred_text(&mut self, text: &str) -> Option<tilo_webview::text_input::Receipt> {
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::text_input::Receipt> {
         // A shell has no fields to receipt: its input is the pty, and the text is written there as
         // an input method's commit is.
         if self.focused && !self.session.ended() {

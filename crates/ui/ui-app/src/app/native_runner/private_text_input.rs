@@ -6,7 +6,7 @@ use winit::event::{Ime, PrivateIme, PrivateImeKind, WindowEvent};
 use winit::window::Window;
 
 use crate::app::App;
-use tilo_webview::text_input::{Failure, Receipt};
+use crate::text_input::{Failure, Receipt};
 
 #[cfg(test)]
 mod tests;

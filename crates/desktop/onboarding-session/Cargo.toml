@@ -56,7 +56,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model", "host"] }
 
 [lints]
 workspace = true
@@ -64,4 +64,4 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model", "host"] }

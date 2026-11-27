@@ -1526,16 +1526,13 @@ mod component_adapter {
                 .unwrap_or(true)
         }
 
-        fn start_deferred_text(&mut self) -> Option<tilo_webview::text_input::Receipt> {
+        fn start_deferred_text(&mut self) -> Option<crate::text_input::Receipt> {
             self.owes_sync = true;
             self.in_root_mut(|root| root.start_deferred_text())
                 .flatten()
         }
 
-        fn commit_deferred_text(
-            &mut self,
-            text: &str,
-        ) -> Option<tilo_webview::text_input::Receipt> {
+        fn commit_deferred_text(&mut self, text: &str) -> Option<crate::text_input::Receipt> {
             self.owes_sync = true;
             self.in_root_mut(|root| root.commit_deferred_text(text))
                 .flatten()
