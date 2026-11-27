@@ -85,7 +85,7 @@ class WorkspaceTests(unittest.TestCase):
             found = setup_filters.problems(self.packages, self.named)
         self.assertEqual(len(found), 2, found)
         self.assertIn("runs `font-catalog` for ['all()']", found[0])
-        self.assertIn(f'filter = "rdeps({setup_filters.FONT_OWNER})"', found[0])
+        self.assertIn(f"rdeps({setup_filters.FONT_OWNER})", found[0])
         self.assertIn("runs `headless-audio` for no test", found[1])
         self.assertIn("rdeps(tilo-media)", found[1])
 
@@ -124,6 +124,11 @@ class StepSelectionTests(unittest.TestCase):
         for package in sorted(served)[:3]:
             with self.subTest(package=package):
                 self.assertIn("audio", self.steps(package))
+
+    def test_a_package_that_prepares_the_catalog_gets_the_fonts_step(self) -> None:
+        # A bundle builder packs the pinned fonts by running tools/font-catalog.py: it sets no
+        # text through the catalog's owner, but it needs the seed the step prepares.
+        self.assertIn("fonts", self.steps("tilo-runtime-bundle"))
 
     def test_a_selection_of_several_gets_the_steps_of_any_of_them(self) -> None:
         self.assertEqual(self.steps("tilo-collab-types", setup_filters.FONT_OWNER, "tilo-media"),

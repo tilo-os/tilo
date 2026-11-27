@@ -66,6 +66,13 @@ CATALOG: Names = [
     ("TILO_FONT_ASSET_CACHE", None), ("TILO_FONT_CATALOG", None), ("TILO_REQUIRE_FONTS", None),
     ("tilo_font_catalog", None),
 ]
+# What prepares the catalog from the pinned seed. A process that runs the tool needs the seed
+# without setting text through the owner: a bundle builder packing the fonts payload, or an app
+# builder resolving the SDK's pinned artifacts.
+PREPARES: Names = [("tools/font-catalog.py", None)]
+# Packages whose only use of the tool is in code their own tests compile (a scenario in the
+# library's `#[cfg(test)]` block): the seed is theirs, not their dependents'.
+PREPARED_FROM_TESTS = {"tilo-runtime-bundle"}
 # Packages outside the owner's dependents that name the catalog without reading it.
 CARRIERS = {
     "tilo-process": "names the variables of the processes it describes (ProcessPaths, "
@@ -146,9 +153,9 @@ def names(text: str, wanted: Names) -> bool:
 
 def evidence(packages: dict[str, dict]) -> list[tuple[str, bool, frozenset[str]]]:
     """What every package's Rust sources name, a file at a time: (package, whether the file is
-    library code, which of "endpoint", "required" and "catalog" it names). A file is its nearest
-    package's: one package's directory may hold another's."""
-    marks = {"endpoint": ENDPOINT, "required": REQUIRED, "catalog": CATALOG}
+    library code, which of "endpoint", "required", "catalog" and "prepares" it names). A file is
+    its nearest package's: one package's directory may hold another's."""
+    marks = {"endpoint": ENDPOINT, "required": REQUIRED, "catalog": CATALOG, "prepares": PREPARES}
     found = []
     directories = {package["directory"] for package in packages.values()}
     for name, package in sorted(packages.items()):
@@ -194,6 +201,17 @@ def catalog_namers(found) -> set[str]:
     return {name for name, _, named in found if "catalog" in named}
 
 
+def catalog_preparers(found) -> tuple[set[str], set[str]]:
+    """From `evidence`: the packages whose library code runs the catalog's preparation tool,
+    which their dependents reach through them, and the packages only whose own tests do."""
+    libraries = {
+        name for name, library, named in found
+        if "prepares" in named and library and name not in PREPARED_FROM_TESTS
+    }
+    alone = {name for name, library, named in found if "prepares" in named} - libraries
+    return libraries, alone
+
+
 def selected(packages: dict[str, dict], filter_: str) -> set[str]:
     """The packages a filter of `rdeps(NAME)` and `package(NAME)` terms selects."""
     terms = re.findall(r"\b(rdeps|package)\(\s*([^)\s]+)\s*\)", filter_)
@@ -207,11 +225,21 @@ def selected(packages: dict[str, dict], filter_: str) -> set[str]:
     }
 
 
-def filters(found) -> dict[str, str]:
+def font_filter(packages: dict[str, dict], found) -> str:
+    """The filter of the font catalog's setup: the catalog's reader and its dependents, plus the
+    packages whose code prepares the catalog from the pinned seed."""
+    libraries, alone = catalog_preparers(found)
+    served = rdeps(packages, {FONT_OWNER})
+    preparing = [f"rdeps({name})" for name in sorted(libraries - served)]
+    preparing += [f"package({name})" for name in sorted(alone)]
+    return " or ".join([f"rdeps({FONT_OWNER})", *preparing])
+
+
+def filters(packages: dict[str, dict], found) -> dict[str, str]:
     """From `evidence`: the filter of each costly setup script, by the script's name in
     .config/nextest.toml."""
     return {
-        "font-catalog": f"rdeps({FONT_OWNER})",
+        "font-catalog": font_filter(packages, found),
         "headless-audio": audio_filter(*audio_clients(found)),
     }
 
@@ -285,7 +313,7 @@ def problems(packages: dict[str, dict], named) -> list[str]:
     `named` is the packages' `evidence`."""
     found = []
     rules = configured()
-    for setup, wanted in filters(named).items():
+    for setup, wanted in filters(packages, named).items():
         if rules.get(setup) != [wanted]:
             found.append(
                 f"{NEXTEST.relative_to(ROOT)}: the ci profile runs `{setup}` for "
@@ -304,6 +332,12 @@ def problems(packages: dict[str, dict], named) -> list[str]:
         found.append(
             f"CARRIERS excuses {name}, which no longer names the font catalog from outside "
             f"{FONT_OWNER}'s dependents: drop it"
+        )
+    preparing = {name for name, _, named in named if "prepares" in named}
+    for name in sorted(PREPARED_FROM_TESTS - preparing):
+        found.append(
+            f"PREPARED_FROM_TESTS names {name}, which no longer runs the font catalog's "
+            f"preparation tool: drop it"
         )
     return found
 
@@ -327,7 +361,7 @@ def main() -> None:
         for problem in found:
             print(problem, file=sys.stderr)
         sys.exit(1 if found else 0)
-    for setup, wanted in filters(named).items():
+    for setup, wanted in filters(packages, named).items():
         print(f"{setup}: {wanted}")
 
 

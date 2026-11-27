@@ -197,14 +197,15 @@ setup = "test-runtime"
 # depending on one of these is served without an edit here. The names are read
 # from the code (tools/ci/setup_filters.py prints both filters, and
 # tools/tests/test_setup_filters.py fails while these are not they): the font
-# catalog's one reader, the crate that owns it; and each package whose sources
+# catalog's one reader, the crate that owns it, and the packages whose code
+# prepares the catalog from the pinned seed; and each package whose sources
 # name an audio endpoint, with its dependents where that is library code.
 # `test-runtime` promises both to every test (TILO_REQUIRE_FONTS,
 # TILO_REQUIRE_AUDIO), so a test that needs one in a package left out here
 # fails, saying so, and never skips.
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "rdeps(tilo-font-catalog)"
+filter = "rdeps(tilo-font-catalog) or package(tilo-device-steps) or package(tilo-runtime-bundle)"
 setup = "font-catalog"
 
 [[profile.ci.scripts]]

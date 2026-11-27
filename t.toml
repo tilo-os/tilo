@@ -207,6 +207,10 @@ packages = [
     "tilolang-tilo", "ush", "windows-vm",
 ]
 isolation = { nested = ["launcher", "tilo-runtime-bundle", "tilo-sandbox-core", "tilo-device-steps", "ush"] }
+# The font catalog a test's setup step copies is the font-seed check's output. A package here
+# whose test prepares the catalog (a bundle's fonts payload, a device step's session swap) links
+# none of the crates whose builds bring the seed with them, so the family is given it.
+needs = ["font-seed"]
 # The programs of other packages these tests find beside their own build: the installer the app
 # CLI's install tests run, the render helper an agent's host renders video in, and the tilolang
 # host a task's programs run in. Each shard is handed them as the test family's are; a job handed
