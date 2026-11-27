@@ -420,4 +420,30 @@ mod tests {
                 .starts_with("/person/state/apps")
         );
     }
+
+    /// A row that was never in a store's `pkgs/` place (a fixture's, or a detached package's at
+    /// paths of its own) names where it lives; reading its store does not move it.
+    #[test]
+    fn a_registry_leaves_a_row_outside_a_store_layout_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::layout::Layout::new(dir.path().join("store"));
+        let payload = dir.path().join("fixture/payload");
+        let manifest = dir.path().join("fixture/meta/manifest.toml");
+        std::fs::create_dir_all(layout.packages()).unwrap();
+        std::fs::write(
+            layout.registry(),
+            format!(
+                "[[entry]]\nid = 'so.tilo.fixture'\npayload_root = {payload:?}\n\
+                 manifest_path = {manifest:?}\n",
+            ),
+        )
+        .unwrap();
+        let row = Registry::load_in(&layout)
+            .unwrap()
+            .find("so.tilo.fixture")
+            .cloned()
+            .expect("the row");
+        assert_eq!(row.payload_root, payload);
+        assert_eq!(row.manifest_path, manifest);
+    }
 }

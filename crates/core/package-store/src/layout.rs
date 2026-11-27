@@ -106,9 +106,20 @@ impl Layout {
     ///
     /// The row's place in its store is kept: an image names each app's tree by its payload
     /// (`trees/<payload root hash>`), not by its id, so only the store's own root is replaced. The
-    /// store a row was installed in is the one its manifest sits in (`<root>/pkgs/<id>.pkg/`).
+    /// store a row was installed in is the one its manifest sits in (`<root>/pkgs/<id>.pkg/`); a
+    /// row outside that place (a fixture's, or a detached package's at paths of its own) names
+    /// what it names and is left alone.
     pub fn resolve(&self, row: &mut crate::registry::InstalledPackage) {
-        let Some(installed) = row.manifest_path.ancestors().nth(3) else {
+        let Some(meta) = row.manifest_path.parent() else {
+            return;
+        };
+        let Some(packages) = meta.parent() else {
+            return;
+        };
+        if packages.file_name() != Some(std::ffi::OsStr::new(PACKAGES_DIR)) {
+            return;
+        }
+        let Some(installed) = packages.parent() else {
             return;
         };
         if installed == self.root {
