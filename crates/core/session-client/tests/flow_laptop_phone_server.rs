@@ -546,7 +546,10 @@ async fn flow_alarm_set_on_laptop_through_the_agent_rings_on_the_phone() {
 /// Someone who has never used Tilo joins on the web through an invitation: they open one app
 /// as a page, and the workspace's canvas as HTML.
 ///
-/// The page is a browser's; the canvas as HTML is not served yet.
+/// The browser's first page is the static web entry's, on a host of its own; it hands a
+/// workspace's page addresses (`/w/<workspace>/<app>`) to the server, as this test asks the
+/// server for them. What the page then renders over its link is the holding device's
+/// (`tilo-runtime`'s `key_sessions::pages`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_newcomer_joins_on_the_web_and_opens_an_app_as_a_page() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -615,14 +618,24 @@ async fn flow_newcomer_joins_on_the_web_and_opens_an_app_as_a_page() {
         "the newcomer opens an app of the workspace as a page: {opened:?}"
     );
 
-    // And the workspace's canvas, as HTML a browser renders.
+    // And the workspace's canvas, as HTML a browser renders: the page the web entry forwards
+    // to the server, whose script dials the server's page link and proves the newcomer's
+    // device there.
     let origin = host.web.plain_origin.clone().unwrap();
+    let canvas = tilo_server_protocol::page::PageAddress {
+        workspace: workspace.workspace.clone(),
+        app: tilo_server_protocol::page::DESKTOP.into(),
+        show: None,
+    };
     let (status, body) =
-        flow::get(flow::address_of(&origin), "/canvas").unwrap_or((0, String::new()));
+        flow::get(flow::address_of(&origin), &canvas.path()).unwrap_or((0, String::new()));
     assert!(
-        status == 200 && body.contains("garden"),
-        "the workspace's 2D canvas is served as HTML to a browser that joined on the web \
-         (status {status}): {body}"
+        status == 200
+            && body.contains(&workspace.workspace)
+            && body.contains(&host.web.link.origin)
+            && body.contains(tilo_server_protocol::web::LINK_PAGE_PATH),
+        "the workspace's 2D canvas is served as HTML to a browser that joined on the web, \
+         dialling the server's page link (status {status}): {body}"
     );
 }
 
@@ -738,6 +751,10 @@ async fn flow_every_device_manages_every_other() {
 /// carries only sealed traffic, and the certificate, with no name set, comes from a local CA
 /// under the person's root.
 ///
+/// The entry page is the static web entry's, on a host of its own: it hands its page the line
+/// the server keeps in its state (`web-host.json`, `TILO_WEB_HOME_HOST_INFO`), and the page
+/// dials the server as that names it.
+///
 /// The listener still serves a development self-signature (the hosting lane takes this step).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_newcomer_browser_joins_through_the_static_entry_with_no_domain_name() {
@@ -760,12 +777,10 @@ async fn flow_newcomer_browser_joins_through_the_static_entry_with_no_domain_nam
         host.server.node_addr().relay_urls().next().is_some(),
         "the server is reached through a relay, so a browser behind any network finds it"
     );
-    let origin = host.web.plain_origin.clone().unwrap();
-    let (status, body) = flow::get(flow::address_of(&origin), "/").unwrap_or((0, String::new()));
-    assert_eq!(
-        status, 200,
-        "the server serves a static entry page a browser can open before it holds anything"
-    );
+    // Found in the server's state as its deployment finds it there, wherever below it is kept.
+    let body = kept_below(state.path(), "web-host.json").unwrap_or_else(|| {
+        panic!("the server keeps what a static entry page hands a browser before it holds anything")
+    });
 
     // The page hands the browser the server's own address, to reach it peer-to-peer: no site
     // name, and the relay it dials.
@@ -794,4 +809,20 @@ async fn flow_newcomer_browser_joins_through_the_static_entry_with_no_domain_nam
          development self-signature: {:?}",
         host.web.certificate_sha256
     );
+}
+
+/// The text of the file `name` somewhere below `dir`, as a deployment finds what its server
+/// keeps in its state.
+fn kept_below(dir: &std::path::Path, name: &str) -> Option<String> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries.filter_map(Result::ok).find_map(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            kept_below(&path, name)
+        } else if entry.file_name() == name {
+            std::fs::read_to_string(path).ok()
+        } else {
+            None
+        }
+    })
 }
