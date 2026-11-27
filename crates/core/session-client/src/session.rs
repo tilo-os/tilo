@@ -592,6 +592,9 @@ struct Latched {
     /// The entry's refusal, when the host's entry turned this session's device away: asking
     /// again changes nothing, so the session stops with it until the page asks again.
     entry_refused: Option<(&'static str, String)>,
+    /// Whether the host's entry let this session's device in: the entry is the way in, and a
+    /// host that forgot the device later says so on its links (`not-admitted`), not here.
+    entered: bool,
 }
 
 struct Task {
@@ -1093,7 +1096,12 @@ impl Task {
     /// `true` when the entry refused the device: the session reports it failed in the same breath
     /// as the refusal, and stops with it ([`Latched::entry_refused`]).
     async fn enter_if_entering(&mut self) -> bool {
-        let Some(entering) = self.config.entering.clone() else {
+        let Some(entering) = self
+            .config
+            .entering
+            .clone()
+            .filter(|_| !self.latched.entered)
+        else {
             return false;
         };
         let store = self.own_store();
@@ -1125,6 +1133,7 @@ impl Task {
                         status.phase = TransportPhase::Failed;
                     }
                 });
+                self.latched.entered = !stops;
                 self.latched.entry_refused = refused;
                 stops
             }
@@ -2890,10 +2899,13 @@ fn refusal(error: &LinkError) -> Refusal {
             "This workspace’s server refused this browser’s certificate.".to_owned(),
         ),
         // A host that refuses the member proof a link's first stream carries says why in its
-        // refusal's typed code (`HelloRefusal`): neither of the reasons it gives changes by
-        // asking again. A refusal with anything else to say is the link's, and is tried again.
+        // refusal's typed code (`HelloRefusal`): none of the reasons it gives changes by asking
+        // again. A refusal with anything else to say is the link's, and is tried again.
         LinkError::Refused(code) if code.as_str() == "device-revoked" => {
             Refusal::Final(DEVICE_REVOKED.0, DEVICE_REVOKED.1.to_owned())
+        }
+        LinkError::Refused(code) if code.as_str() == NOT_ADMITTED.0 => {
+            Refusal::Final(NOT_ADMITTED.0, NOT_ADMITTED.1.to_owned())
         }
         LinkError::Refused(code) if code.as_str() == "certificate-rejected" => Refusal::Final(
             "certificate-rejected",
