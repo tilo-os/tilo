@@ -68,6 +68,9 @@ pub(crate) type Process = launcher_macos::LaunchedApp;
 #[derive(Default)]
 struct Tail {
     last: VecDeque<String>,
+    /// Whether the reader of a connector's error output still reads: only the Linux launcher's
+    /// start hands it a pipe.
+    #[cfg(target_os = "linux")]
     reading: bool,
 }
 
@@ -233,7 +236,12 @@ impl Connectors {
         }
         // A launcher that fails to start the app ends here, before it ever reads a reader: the
         // start did not come up, and what it said is why. One that runs on past the wait is up.
-        if came_up(&mut child, &ours).is_err() {
+        // Only the Linux launcher holds a start back, so only its start is waited on.
+        #[cfg(target_os = "linux")]
+        let went_up = came_up(&mut child, &ours);
+        #[cfg(not(target_os = "linux"))]
+        let went_up: Result<(), ()> = Ok(());
+        if went_up.is_err() {
             return Err(ended_before_up(app, origin, &mut child, said));
         }
         tracing::info!(app, origin, workspace, "an origin connector started");
@@ -390,13 +398,6 @@ fn came_up(child: &mut Process, socket: &Descriptor) -> Result<(), ()> {
             return if let_go { Err(()) } else { Ok(()) };
         }
     }
-}
-
-/// [`came_up`] where a connector's own launch is not the Linux launcher's: a start is taken as
-/// it was.
-#[cfg(not(target_os = "linux"))]
-fn came_up(_: &mut Process, _: &Descriptor) -> Result<(), ()> {
-    Ok(())
 }
 
 /// Why a connector that did not come up is reported by: how it ended, and the first of its error

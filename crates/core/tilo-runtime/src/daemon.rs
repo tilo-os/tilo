@@ -3345,24 +3345,7 @@ fn start_requested(
         )));
     }
     if let Some(capture) = &request.capture {
-        let args = capture.args()?;
-        let asking_app = peer
-            .and_then(|peer| peer.pid)
-            .and_then(|pid| daemon.app_of(pid))
-            .map(|(started, _)| started);
-        let (writes, joins) = capture_grant(
-            &daemon,
-            &app,
-            workspace,
-            args,
-            peer,
-            asks,
-            asking_app.as_deref(),
-        )?;
-        apps.capture(&app.app_id, workspace, args, writes.clone(), joins)
-            .map_err(io::Error::other)?;
-        // The directories the capture was granted, for its caller to see where it wrote.
-        return Ok(json!({"captured": true, "writes": writes}));
+        return start_capture(&daemon, &app, workspace, capture, peer, asks);
     }
     // The app's default presentation is one: a second start shows the one running, and while the
     // first has shown nothing the launch's own lock waits for it, as a launch takes it. A
@@ -3394,10 +3377,62 @@ fn start_requested(
     Ok(json!({"started": true}))
 }
 
+/// Run the capture `capture` asks for, of the app this computer has installed in `workspace`, and
+/// answer once its process ended: what it wrote, and the directories it was granted.
+#[cfg(target_os = "linux")]
+fn start_capture(
+    daemon: &Arc<Daemon>,
+    app: &app_catalogue::apps::InstalledApp,
+    workspace: &str,
+    capture: &runtime_portal::native::Capture,
+    peer: Option<crate::seats::Peer>,
+    asks: Asks,
+) -> io::Result<Value> {
+    let args = capture.args()?;
+    let asking_app = peer
+        .and_then(|peer| peer.pid)
+        .and_then(|pid| daemon.app_of(pid))
+        .map(|(started, _)| started);
+    let (writes, joins) = capture_grant(
+        daemon,
+        app,
+        workspace,
+        args,
+        peer,
+        asks,
+        asking_app.as_deref(),
+    )?;
+    daemon
+        .apps()
+        .capture(&app.app_id, workspace, args, &writes, joins)
+        .map_err(io::Error::other)?;
+    // The directories the capture was granted, for its caller to see where it wrote.
+    Ok(json!({"captured": true, "writes": writes}))
+}
+
+/// [`start_capture`] where no sandbox keeps a capture's directories: the capture runs with no
+/// grant of this computer's, and writes nowhere of its own.
+#[cfg(not(target_os = "linux"))]
+fn start_capture(
+    daemon: &Arc<Daemon>,
+    app: &app_catalogue::apps::InstalledApp,
+    workspace: &str,
+    capture: &runtime_portal::native::Capture,
+    _: Option<crate::seats::Peer>,
+    _: Asks,
+) -> io::Result<Value> {
+    let args = capture.args()?;
+    daemon
+        .apps()
+        .capture(&app.app_id, workspace, args, &[], false)
+        .map_err(io::Error::other)?;
+    Ok(json!({"captured": true, "writes": Vec::<std::path::PathBuf>::new()}))
+}
+
 /// The directories the capture `args` of `app` writes into, granted for its launch alone, and
 /// whether its instance joins the workspace: both only when the person on this device's own
 /// connection asks, for a development build this device made ([`crate::apps::capture`]).
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn capture_grant(
     daemon: &Arc<Daemon>,
     app: &app_catalogue::apps::InstalledApp,
@@ -3407,45 +3442,37 @@ fn capture_grant(
     asks: Asks,
     asking_app: Option<&str>,
 ) -> io::Result<(Vec<std::path::PathBuf>, bool)> {
-    #[cfg(target_os = "linux")]
-    {
-        // Who asks: an app's own connection, or a process the daemon started for an app, is that
-        // app; any other on the person's endpoint is who that endpoint admits.
-        let caller = || match (asks, asking_app) {
-            (Asks::App, None) => Ok(tilo_actions::remote::Caller::launched(app.app_id.as_str())),
-            (_, Some(started)) => Ok(tilo_actions::remote::Caller::launched(started)),
-            (Asks::Person, None) => daemon
-                .connection_tree_in(Some(serving))
-                .map(|(_, caller)| caller)
-                .map_err(|error| error.to_string()),
-        };
-        let writer = crate::apps::capture::Writer {
-            personal: !tilo_api::daemon::system_daemon(),
-            app_id: app.app_id.as_str(),
-            dev: app.dev.as_ref(),
-            device: daemon.key().verifying_key().to_bytes(),
-            uid: peer.map(|peer| peer.uid),
-            protected: [
-                tilo_paths::home(),
-                tilo_paths::workspace_root(),
-                tilo_paths::data_dir(),
-                Some(daemon.apps().root().to_path_buf()),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-        };
-        let granted = crate::apps::capture::writes(args, caller, &writer)
-            .map_err(|refused| io::Error::new(io::ErrorKind::PermissionDenied, refused))?;
-        let joins = crate::apps::capture::joins(args, caller, &writer)
-            .map_err(|refused| io::Error::new(io::ErrorKind::PermissionDenied, refused))?;
-        Ok((granted, joins))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (daemon, app, serving, args, peer, asks, asking_app);
-        Ok((Vec::new(), false))
-    }
+    // Who asks: an app's own connection, or a process the daemon started for an app, is that
+    // app; any other on the person's endpoint is who that endpoint admits.
+    let caller = || match (asks, asking_app) {
+        (Asks::App, None) => Ok(tilo_actions::remote::Caller::launched(app.app_id.as_str())),
+        (_, Some(started)) => Ok(tilo_actions::remote::Caller::launched(started)),
+        (Asks::Person, None) => daemon
+            .connection_tree_in(Some(serving))
+            .map(|(_, caller)| caller)
+            .map_err(|error| error.to_string()),
+    };
+    let writer = crate::apps::capture::Writer {
+        personal: !tilo_api::daemon::system_daemon(),
+        app_id: app.app_id.as_str(),
+        dev: app.dev.as_ref(),
+        device: daemon.key().verifying_key().to_bytes(),
+        uid: peer.map(|peer| peer.uid),
+        protected: [
+            tilo_paths::home(),
+            tilo_paths::workspace_root(),
+            tilo_paths::data_dir(),
+            Some(daemon.apps().root().to_path_buf()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    };
+    let granted = crate::apps::capture::writes(args, caller, &writer)
+        .map_err(|refused| io::Error::new(io::ErrorKind::PermissionDenied, refused))?;
+    let joins = crate::apps::capture::joins(args, caller, &writer)
+        .map_err(|refused| io::Error::new(io::ErrorKind::PermissionDenied, refused))?;
+    Ok((granted, joins))
 }
 
 /// Ask the daemon at `profile` to start an app, and answer what it said: a capture answers once

@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use iroh::endpoint::{Endpoint, presets};
-use iroh::protocol::{DynProtocolHandler, Router};
+use iroh::protocol::DynProtocolHandler;
+#[cfg(any(test, feature = "test-support"))]
+use iroh::protocol::Router;
 use iroh_base::EndpointAddr;
 use tokio::task::JoinHandle;
 

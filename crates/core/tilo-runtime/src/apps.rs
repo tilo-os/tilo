@@ -957,7 +957,7 @@ impl Apps {
         app_id: &str,
         workspace: &str,
         args: &[String],
-        writes: Vec<PathBuf>,
+        writes: &[PathBuf],
         joins: bool,
     ) -> Result<(), String> {
         if args.is_empty() {
@@ -996,7 +996,7 @@ impl Apps {
         let writes = (!writes.is_empty()).then(|| {
             static CAPTURES: AtomicU64 = AtomicU64::new(0);
             capture::Writes {
-                dirs: writes,
+                dirs: writes.to_vec(),
                 grants_dir: self.root.join("tilo/capabilities/captures").join(format!(
                     "{}-{}",
                     std::process::id(),
@@ -1164,7 +1164,9 @@ impl Apps {
         };
         #[cfg(target_os = "android")]
         let mut launch: Launch = {
-            let _ = (&app, &sockets, shows, open_uri);
+            // No app sandbox starts here, and the launcher extras the Unix launchers read from
+            // `runs` have none to read them.
+            let _ = (&app, &sockets, shows, open_uri, &runs.args, &runs.origin);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
         // A capture ends by itself, and is no connection of the app's: nothing attests it and
