@@ -809,10 +809,6 @@ impl InstallerApp {
         self.backend.read_disks()
     }
 
-    pub(crate) fn available_disks(&self) -> &[Disk] {
-        &self.disks
-    }
-
     pub(crate) fn recovery_key(&self) -> Option<&str> {
         self.recovery_key.as_deref()
     }

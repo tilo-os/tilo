@@ -222,75 +222,51 @@ impl PlannedInvocation {
 /// recovery key is not written anywhere here: the installer hands it to the
 /// person's devices with the enrollment, and the machine keeps no copy.
 fn execute_plan(app: &mut InstallerApp, plan: &Plan) -> Result<(), String> {
-    drive_plan(app, plan)?;
-    if app.install_state() != InstallState::Done {
-        let tail = app
-            .console_state()
-            .pointer("/install/log_tail")
-            .and_then(Value::as_array)
-            .and_then(|lines| lines.last())
-            .and_then(Value::as_str)
-            .unwrap_or("the privileged helper did not report success")
-            .to_owned();
-        return Err(format!("The installation failed: {tail}"));
-    }
+    drive(app, plan)?;
+    installed(app)?;
     invoke(app, "reboot@installer", serde_json::json!({}))?;
     Ok(())
 }
 
-fn drive_plan(app: &mut InstallerApp, plan: &Plan) -> Result<(), String> {
-    for _ in 0..32 {
-        let step = app.step();
-        match step {
+/// What one wizard step needs answered: the `action@resource` calls a person's
+/// clicks would make, in the order the step's contract asks them.
+trait StepAnswers {
+    /// `app` is what the machine reports right now, for an answer that must be
+    /// checked against it before anything is written.
+    fn answers(&self, step: Step, app: &InstallerApp) -> Result<Vec<(String, Value)>, String>;
+}
+
+impl StepAnswers for Plan {
+    fn answers(&self, step: Step, _app: &InstallerApp) -> Result<Vec<(String, Value)>, String> {
+        Ok(match step {
             // The plan decides these; the machine's own connection is what
             // the install and its first start use.
-            Step::Keyboard | Step::Network | Step::Disk | Step::Media => advance(app, step)?,
+            Step::Keyboard | Step::Network | Step::Disk | Step::Media => Vec::new(),
+            // A server's one secret opens its disk; it is generated here and
+            // never kept once the volume holds it. The ways in that outlive
+            // this meeting are the owner's devices and the recovery key.
             Step::Account => {
-                // A server's one secret opens its disk; it is generated here
-                // and never kept once the volume holds it. The ways in that
-                // outlive this meeting are the owner's devices and the
-                // recovery key.
                 let secret = plan_startup_secret();
-                invoke(
-                    app,
-                    "set-disk-passphrase@installer",
+                vec![(
+                    "set-disk-passphrase@installer".into(),
                     serde_json::json!({
                         "passphrase": secret,
                         "confirmation": secret,
                         "mode": "passphrase",
                     }),
-                )?;
-                advance(app, step)?;
+                )]
             }
-            Step::Options => {
-                invoke(
-                    app,
-                    "set-hostname@installer",
-                    serde_json::json!({"hostname": plan.name}),
-                )?;
-                advance(app, step)?;
-            }
-            Step::Review => {
-                invoke(
-                    app,
-                    "set-recovery-promise@installer",
-                    serde_json::json!({"acknowledged": true}),
-                )?;
-                let target = app
-                    .console_state()
-                    .pointer("/storage/confirmation_target")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .ok_or_else(|| "The installer names no reviewed target".to_string())?;
-                begin(app, target)?;
-                return Ok(());
-            }
-            Step::Install => {
-                return Err("The installer reached Install before Review could be approved".into());
-            }
-        }
+            Step::Options => vec![(
+                "set-hostname@installer".into(),
+                serde_json::json!({"hostname": self.name}),
+            )],
+            Step::Review => vec![(
+                "set-recovery-promise@installer".into(),
+                serde_json::json!({"acknowledged": true}),
+            )],
+            Step::Install => unreachable!("the driver refuses the install step before asking"),
+        })
     }
-    Err("The installer did not reach Review after 32 reviewed actions".into())
 }
 
 /// A strong startup secret nobody needs to remember: the volume's ways in that
@@ -568,6 +544,118 @@ impl Recipe {
             secrets.push(hash);
         }
         secrets
+    }
+}
+
+impl StepAnswers for Recipe {
+    fn answers(&self, step: Step, app: &InstallerApp) -> Result<Vec<(String, Value)>, String> {
+        Ok(match step {
+            Step::Keyboard => vec![(
+                "set-layout@installer".into(),
+                serde_json::json!({"layout": self.preferences.keyboard_display_name()?}),
+            )],
+            Step::Network => Vec::new(),
+            Step::Disk => {
+                // The reviewed disk has to be attached before it can be
+                // selected; `refresh-disks` answers from the same live
+                // inventory this reads.
+                let disk = reviewed_disk(&app.probe_disks(), &self.disk)?.to_owned();
+                vec![
+                    ("refresh-disks@installer".into(), serde_json::json!({})),
+                    (
+                        "set-method@installer".into(),
+                        serde_json::json!({"method": "erase"}),
+                    ),
+                    (
+                        crate::setup::destination::effects::DestinationEffect::SelectDisk {
+                            device: disk,
+                        }
+                        .console_id(),
+                        serde_json::json!({}),
+                    ),
+                ]
+            }
+            Step::Account => {
+                let mut actions = Vec::new();
+                if let Some(protection) = &self.protection {
+                    actions.push((
+                        "set-disk-passphrase@installer".into(),
+                        serde_json::json!({
+                            "passphrase": protection.secret,
+                            "confirmation": protection.secret,
+                            "mode": protection.kind,
+                        }),
+                    ));
+                }
+                if let Some(hash) = self.account.password_sha512_crypt.as_deref() {
+                    actions.push((
+                        "set-password-hash@installer".into(),
+                        serde_json::json!({"hash": hash}),
+                    ));
+                } else if let Some(password) = self.account.password.as_deref() {
+                    actions.push((
+                        "set-passphrase@installer".into(),
+                        serde_json::json!({
+                            "passphrase": password,
+                            "confirmation": password,
+                        }),
+                    ));
+                }
+                actions.push((
+                    "set-identity@installer".into(),
+                    serde_json::json!({
+                        "username": self.account.username,
+                        "full_name": self.account.full_name,
+                    }),
+                ));
+                actions
+            }
+            Step::Options => {
+                let preferences = &self.preferences;
+                vec![
+                    (
+                        "set-hostname@installer".into(),
+                        serde_json::json!({"hostname": preferences.hostname}),
+                    ),
+                    (
+                        "set-locale@installer".into(),
+                        serde_json::json!({"locale": preferences.locale}),
+                    ),
+                    (
+                        "set-timezone@installer".into(),
+                        serde_json::json!({"timezone": preferences.timezone}),
+                    ),
+                    (
+                        "set-filesystem@installer".into(),
+                        serde_json::json!({"filesystem": preferences.filesystem}),
+                    ),
+                    (
+                        "set-security-key@installer".into(),
+                        serde_json::json!({"enabled": preferences.fido2}),
+                    ),
+                ]
+            }
+            Step::Media => {
+                if self.preferences.codecs {
+                    vec![(
+                        "set-media-codecs@installer".into(),
+                        serde_json::json!({"enabled": true}),
+                    )]
+                } else {
+                    Vec::new()
+                }
+            }
+            Step::Review => {
+                // The final authority is a fresh probe of the actual block
+                // device immediately before the destructive action.
+                reviewed_disk(&app.probe_disks(), &self.disk)?;
+                vec![(
+                    "set-recovery-promise@installer".into(),
+                    serde_json::json!({"acknowledged": true}),
+                )]
+            }
+            Step::Install => unreachable!("the driver refuses the install step before asking"),
+        })
     }
 }
 
@@ -914,17 +1002,7 @@ fn execute(
     }
 
     drive(app, recipe)?;
-    if app.install_state() != InstallState::Done {
-        let tail = app
-            .console_state()
-            .pointer("/install/log_tail")
-            .and_then(Value::as_array)
-            .and_then(|lines| lines.last())
-            .and_then(Value::as_str)
-            .unwrap_or("the privileged helper did not report success")
-            .to_owned();
-        return Err(format!("The installation failed: {tail}"));
-    }
+    installed(app)?;
 
     let key = app
         .recovery_key()
@@ -943,142 +1021,46 @@ fn execute(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per wizard step keeps the published-action sequence together"
-)]
-fn drive(app: &mut InstallerApp, recipe: &Recipe) -> Result<(), String> {
+/// Answer each step as `answers` decides, then begin the install that the
+/// reviewed target names.
+fn drive(app: &mut InstallerApp, answers: &dyn StepAnswers) -> Result<(), String> {
     for _ in 0..32 {
         let step = app.step();
-        match step {
-            Step::Keyboard => {
-                invoke(
-                    app,
-                    "set-layout@installer",
-                    serde_json::json!({"layout": recipe.preferences.keyboard_display_name()?}),
-                )?;
-                advance(app, step)?;
-            }
-            Step::Network => advance(app, step)?,
-            Step::Disk => {
-                invoke(app, "refresh-disks@installer", serde_json::json!({}))?;
-                let disk = reviewed_disk(app.available_disks(), &recipe.disk)?.to_owned();
-                invoke(
-                    app,
-                    "set-method@installer",
-                    serde_json::json!({"method": "erase"}),
-                )?;
-                invoke(
-                    app,
-                    &crate::setup::destination::effects::DestinationEffect::SelectDisk {
-                        device: disk.clone(),
-                    }
-                    .console_id(),
-                    serde_json::json!({}),
-                )?;
-                advance(app, step)?;
-            }
-            Step::Account => {
-                if let Some(protection) = &recipe.protection {
-                    invoke(
-                        app,
-                        "set-disk-passphrase@installer",
-                        serde_json::json!({
-                            "passphrase": protection.secret,
-                            "confirmation": protection.secret,
-                            "mode": protection.kind,
-                        }),
-                    )?;
-                }
-                if let Some(hash) = recipe.account.password_sha512_crypt.as_deref() {
-                    invoke(
-                        app,
-                        "set-password-hash@installer",
-                        serde_json::json!({"hash": hash}),
-                    )?;
-                } else if let Some(password) = recipe.account.password.as_deref() {
-                    invoke(
-                        app,
-                        "set-passphrase@installer",
-                        serde_json::json!({
-                            "passphrase": password,
-                            "confirmation": password,
-                        }),
-                    )?;
-                }
-                invoke(
-                    app,
-                    "set-identity@installer",
-                    serde_json::json!({
-                        "username": recipe.account.username,
-                        "full_name": recipe.account.full_name,
-                    }),
-                )?;
-                advance(app, step)?;
-            }
-            Step::Options => {
-                let preferences = &recipe.preferences;
-                invoke(
-                    app,
-                    "set-hostname@installer",
-                    serde_json::json!({"hostname": preferences.hostname}),
-                )?;
-                invoke(
-                    app,
-                    "set-locale@installer",
-                    serde_json::json!({"locale": preferences.locale}),
-                )?;
-                invoke(
-                    app,
-                    "set-timezone@installer",
-                    serde_json::json!({"timezone": preferences.timezone}),
-                )?;
-                invoke(
-                    app,
-                    "set-filesystem@installer",
-                    serde_json::json!({"filesystem": preferences.filesystem}),
-                )?;
-                invoke(
-                    app,
-                    "set-security-key@installer",
-                    serde_json::json!({"enabled": preferences.fido2}),
-                )?;
-                advance(app, step)?;
-            }
-            Step::Media => {
-                if recipe.preferences.codecs {
-                    invoke(
-                        app,
-                        "set-media-codecs@installer",
-                        serde_json::json!({"enabled": true}),
-                    )?;
-                }
-                advance(app, step)?;
-            }
-            Step::Review => {
-                // The final authority is a fresh probe of the actual block
-                // device immediately before the destructive action.
-                reviewed_disk(&app.probe_disks(), &recipe.disk)?;
-                invoke(
-                    app,
-                    "set-recovery-promise@installer",
-                    serde_json::json!({"acknowledged": true}),
-                )?;
-                let target = app
-                    .console_state()
-                    .pointer("/storage/confirmation_target")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .ok_or_else(|| "The installer names no reviewed target".to_string())?;
-                begin(app, target)?;
-                return Ok(());
-            }
-            Step::Install => {
-                return Err("The installer reached Install before Review could be approved".into());
-            }
+        if step == Step::Install {
+            return Err("The installer reached Install before Review could be approved".into());
         }
+        for (id, args) in answers.answers(step, app)? {
+            invoke(app, &id, args)?;
+        }
+        if step == Step::Review {
+            let target = app
+                .console_state()
+                .pointer("/storage/confirmation_target")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| "The installer names no reviewed target".to_string())?;
+            begin(app, target)?;
+            return Ok(());
+        }
+        advance(app, step)?;
     }
     Err("The installer did not reach Review after 32 reviewed actions".into())
+}
+
+/// The install's own report, once the driver has begun it.
+fn installed(app: &InstallerApp) -> Result<(), String> {
+    if app.install_state() == InstallState::Done {
+        return Ok(());
+    }
+    let tail = app
+        .console_state()
+        .pointer("/install/log_tail")
+        .and_then(Value::as_array)
+        .and_then(|lines| lines.last())
+        .and_then(Value::as_str)
+        .unwrap_or("the privileged helper did not report success")
+        .to_owned();
+    Err(format!("The installation failed: {tail}"))
 }
 
 fn advance(app: &mut InstallerApp, step: Step) -> Result<(), String> {
