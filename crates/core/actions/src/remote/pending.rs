@@ -256,6 +256,32 @@ pub enum PendingPoll<T> {
     Abandoned,
 }
 
+#[cfg(feature = "answer-reads")]
+impl Pending<()> {
+    /// This change, or `bound` passing without one, whichever comes first: the bounded wait
+    /// [`ActionProvider::next_change`](super::ActionProvider::next_change) promises, for a
+    /// provider whose call may stand still for hours (one waiting for its person's yes). The
+    /// change itself is let go of once either comes, so its producer sees nobody waits on it.
+    #[must_use]
+    pub fn or_after(self, bound: Duration) -> Self {
+        let (looked, again) = pending();
+        drop(tilo_rt::app().spawn(async move {
+            let mut change = self;
+            let mut passed = std::pin::pin!(tilo_rt::sleep(bound));
+            std::future::poll_fn(|cx| {
+                if Pin::new(&mut change).poll(cx).is_ready() {
+                    return Poll::Ready(());
+                }
+                passed.as_mut().poll(cx)
+            })
+            .await;
+            drop(change);
+            looked.complete(());
+        }));
+        again
+    }
+}
+
 impl<T> Pending<T> {
     /// An answer that is already known.
     #[must_use]
@@ -600,6 +626,36 @@ mod tests {
         assert_eq!(
             Pin::new(&mut waiting).poll(&mut context),
             Poll::Ready(Some(4))
+        );
+    }
+
+    /// A follow of a call that stands still for hours (one waiting for its person) is answered
+    /// within its bound, and lets go of the change it waited on, so the producer drops its
+    /// watcher; a change that comes first answers it at once.
+    #[cfg(feature = "answer-reads")]
+    #[test]
+    fn a_wait_for_a_change_ends_within_its_bound_and_lets_the_change_go() {
+        let (watcher, change) = pending::<()>();
+        let bounded = change.or_after(Duration::from_millis(50));
+        assert!(
+            bounded.wait_timeout(Duration::from_secs(10)).is_ok(),
+            "nothing changed, and the wait still ends within its bound"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !watcher.is_abandoned() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the change waited on is let go once the bound passed"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        let (watcher, change) = pending::<()>();
+        let bounded = change.or_after(Duration::from_secs(3600));
+        watcher.complete(());
+        assert!(
+            bounded.wait_timeout(Duration::from_secs(10)).is_ok(),
+            "a change that comes first answers the wait at once"
         );
     }
 }

@@ -1011,16 +1011,7 @@ impl ActionProvider for DeviceAsked {
         watching.retain(|watcher| !watcher.is_abandoned());
         watching.push(watcher);
         drop(standing);
-        let (looked, again) = pending();
-        drop(tilo_rt::app().handle().spawn(async move {
-            tokio::select! {
-                _ = change => {}
-                () = tokio::time::sleep(LOOK_AGAIN) => {}
-                () = looked.abandoned() => return,
-            }
-            looked.complete(());
-        }));
-        Some(again)
+        Some(change.or_after(LOOK_AGAIN))
     }
 
     /// Stopping a call that waits withdraws its question: its person is asked no more.

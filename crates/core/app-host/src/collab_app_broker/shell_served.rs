@@ -334,6 +334,10 @@ fn standing(receipt: &InvocationReceipt) -> Option<InvocationUpdate> {
     })
 }
 
+/// How long a follow of a call the shell holds is left before it looks again when nothing moved:
+/// the bound a next change promises ([`ActionProvider::next_change`]).
+const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl ActionProvider for LinkProvider {
     /// What the shell last said it offers, a page at a time: the dispatch lists it at once.
     fn query(
@@ -420,8 +424,12 @@ impl ActionProvider for LinkProvider {
         let followed = calls.get_mut(id)?;
         let (changed, change) = tilo_actions::remote::pending();
         if !followed.state.is_terminal() {
+            // A follow that already went waits for nobody.
+            followed.waiting.retain(|waiting| !waiting.is_abandoned());
             followed.waiting.push(changed);
-            return Some(change);
+            // The shell may hold a call for hours (one its person is asked about): its follower
+            // looks again within the bound a next change promises, as it asked to.
+            return Some(change.or_after(LOOK_AGAIN));
         }
         drop(calls);
         changed.complete(());
