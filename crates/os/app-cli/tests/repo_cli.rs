@@ -219,7 +219,7 @@ tilo_test_env::scenario! {
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
-    phase without_a_trust_anchor_nothing_is_seeded;
+    phase a_device_with_no_trust_file_seeds_the_compiled_main_registry;
     {
         let anchor = tempfile::tempdir().unwrap();
         let device = Device::new(
@@ -230,10 +230,18 @@ tilo_test_env::scenario! {
             )],
         );
         let _daemon = Daemon::start(device.apps.path());
-        assert!(repositories(&device).registries.is_empty());
+        let seeded = repositories(&device);
+        assert_eq!(seeded.registries.len(), 1);
+        assert_eq!(seeded.registries[0].name, "Tilo main");
+        assert_eq!(seeded.registries[0].base_url, "https://apps.tilo.so");
+        assert_eq!(
+            seeded.registries[0].owner_pubkey_hex,
+            app_cli::config::MAIN_REGISTRY_OWNER_PUBKEY_HEX,
+            "an image with no key file trusts the compiled root"
+        );
         assert!(
-            !device.config.path().join("registries.toml").exists(),
-            "without the trust anchor no empty list is written down"
+            device.config.path().join("registries.toml").exists(),
+            "the seeded registry is the record the workspace keeps"
         );
     }
 

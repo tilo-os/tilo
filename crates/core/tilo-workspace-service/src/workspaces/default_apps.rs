@@ -24,10 +24,10 @@ use tilo_peer_state::workspace_membership::{AppPayload, AppRelease};
 type Offered = (app_cli::VerifiedEntry, String, ReleaseChannel);
 
 /// The registries a new workspace fetches apps from: the official one, pinned to the owner key
-/// this device's OS image carries. An image that carries no such key starts the workspace with
-/// none, and a member adds one through `workspace/registries`; no key is ever guessed.
+/// compiled into this build (`app_cli::config::MAIN_REGISTRY_OWNER_PUBKEY_HEX`) or to the key an
+/// image ships in its place. No key is ever guessed.
 pub(super) fn registries() -> RegistriesFile {
-    RegistriesFile::seeded()
+    RegistriesFile::founded_with()
 }
 
 /// `registries` as the rows `workspace/registries` keeps.
