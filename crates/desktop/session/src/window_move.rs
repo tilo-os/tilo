@@ -1169,7 +1169,13 @@ verbs = [
                 &mut self.session,
                 "the app runs where the window went",
                 |session| {
-                    if starts(&self.started) == 2 {
+                    // The launcher writes a start's pid before what it was handed, so a second
+                    // pid is not yet a second start to read: wait for the second start's
+                    // arguments, which is what the assertions below read. A start that names
+                    // another workspace than the move's is read and reported there.
+                    let started_twice = started_with(&self.arguments) == 2
+                        && handed(&self.arguments, "--workspace-id").is_some();
+                    if started_twice {
                         return Some(None);
                     }
                     session
@@ -1183,11 +1189,12 @@ verbs = [
             );
             assert_eq!(told, None, "the move is made, not put back");
             assert_eq!(
-                handed(&self.arguments, "--workspace-id"),
-                self.to_id,
+                handed(&self.arguments, "--workspace-id").as_deref(),
+                Some(self.to_id.as_str()),
                 "the app runs under the grants of the workspace the window went to"
             );
-            let opened = handed(&self.arguments, "--open-uri");
+            let opened = handed(&self.arguments, "--open-uri")
+                .expect("the launch opens the record it shows");
             let id = DocumentId::from_uri(&opened)
                 .expect("the launch opens the record the window carried");
             (opened, id)
@@ -1418,23 +1425,24 @@ verbs = [
             .unwrap_or_default()
     }
 
-    /// What the last start the launcher recorded was handed for `flag` .
-    fn handed(arguments: &Path, flag: &str) -> String {
-        let recorded = fs::read_to_string(arguments).expect("the launcher recorded its start");
-        let arguments: Vec<&str> = recorded
-            .lines()
-            .next_back()
-            .expect("a line per start")
-            .split_whitespace()
-            .collect();
-        let at = arguments
-            .iter()
-            .position(|argument| *argument == flag)
-            .unwrap_or_else(|| panic!("the launch carries {flag}: {arguments:?}"));
+    /// How many starts the launcher wrote down the arguments of: it writes a start's pid before
+    /// what it was handed, so a start is whole here a moment after [`starts`] sees it.
+    fn started_with(arguments: &Path) -> usize {
+        fs::read_to_string(arguments)
+            .map(|written| written.lines().count())
+            .unwrap_or_default()
+    }
+
+    /// What the last start the launcher recorded was handed for `flag` , while it recorded one that
+    /// names `flag` : a start's pid reaches the record before what it was handed, so a caller that
+    /// needs a start's arguments waits until they are there.
+    fn handed(arguments: &Path, flag: &str) -> Option<String> {
+        let recorded = fs::read_to_string(arguments).ok()?;
+        let arguments: Vec<&str> = recorded.lines().next_back()?.split_whitespace().collect();
+        let at = arguments.iter().position(|argument| *argument == flag)?;
         arguments
             .get(at.saturating_add(1))
-            .unwrap_or_else(|| panic!("{flag} names a value: {arguments:?}"))
-            .to_string()
+            .map(|value| (*value).to_owned())
     }
 
     /// Every tab of the shell.
