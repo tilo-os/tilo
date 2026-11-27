@@ -3901,20 +3901,24 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         create_app(request(destination.clone())).expect("create app");
 
         let roots = dev_watch_roots(&destination, true).expect("app and UI watch roots");
-        assert_eq!(roots[0], destination.canonicalize().unwrap());
-        assert_eq!(
-            roots[1],
+        let toolkit = |crate_dir: &str| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../crates/sdk/tilo-app")
+                .join("../../../crates")
+                .join(crate_dir)
                 .canonicalize()
                 .unwrap()
-        );
+        };
         assert_eq!(
-            roots[2],
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../crates/ui/ui-core")
-                .canonicalize()
-                .unwrap()
+            roots,
+            [
+                destination.canonicalize().unwrap(),
+                toolkit("sdk/tilo-app"),
+                // The widgets, the base under them and the runner that draws them: an edit to
+                // any of the three is a change to the app's UI.
+                toolkit("ui/ui-core"),
+                toolkit("ui/ui-base"),
+                toolkit("ui/ui-app"),
+            ]
         );
 
         let app_only = dev_watch_roots(&destination, false).expect("app-only roots");
@@ -4411,14 +4415,11 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     let workspace_patches = workspace["patch"]["crates-io"].as_table().unwrap();
     // winit, vello and automerge are not patched: the SDK depends on its forks
     // by path, as `tilo-winit`, `tilo-vello` and `tilo-automerge-fork`.
-    // The accessibility crates are vendored releases with a manifest edit,
-    // reached like every other fork under vendor/.
-    let forks = [
-        "wayland-backend",
-        "rustls-native-certs",
-        "accesskit_unix",
-        "atspi",
-    ];
+    // The accessibility crates (`accesskit_unix`, `atspi`) are the desktop
+    // session's, which publishes every window's tree; the toolkit never enables
+    // them, so an app's graph does not reach them and its manifest does not
+    // patch them.
+    let forks = ["wayland-backend", "rustls-native-certs"];
     // A fork only an engine library's graph uses (rustypipe, which Music and
     // Tube load from the YouTube engine) is vendored here and patched by that
     // path, but it is not the SDK's: an app links nothing that uses it, so its

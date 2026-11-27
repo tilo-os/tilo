@@ -6473,10 +6473,20 @@ fn dev_watch_roots(app_dir: &Path, watch_ui: bool) -> Result<Vec<PathBuf>> {
         if !roots.iter().any(|root| sdk_dir.starts_with(root)) {
             roots.push(sdk_dir.clone());
         }
-        if let Some(toolkit_dir) = local_dependency(&sdk_dir, "ui-core")?
-            && !roots.iter().any(|root| toolkit_dir.starts_with(root))
-        {
-            roots.push(toolkit_dir);
+        // The toolkit's sources an app is drawn from: the SDK's `ui-core` entry is the app
+        // runner, which draws with the widgets (`tilo-ui`, at crates/ui/ui-core) over the base
+        // (`tilo-ui-base`), and an edit to any of the three rebuilds the app.
+        if let Some(runner_dir) = local_dependency(&sdk_dir, "ui-core")? {
+            for dependency in ["tilo-ui", "tilo-ui-base"] {
+                if let Some(toolkit_dir) = local_dependency(&runner_dir, dependency)?
+                    && !roots.iter().any(|root| toolkit_dir.starts_with(root))
+                {
+                    roots.push(toolkit_dir);
+                }
+            }
+            if !roots.iter().any(|root| runner_dir.starts_with(root)) {
+                roots.push(runner_dir);
+            }
         }
     }
     Ok(roots)
