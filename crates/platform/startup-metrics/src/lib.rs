@@ -706,24 +706,6 @@ pub fn handoff_env_value() -> Option<String> {
     (!marks.is_empty()).then(|| encode_handoff(&marks))
 }
 
-/// Every [`handoff_mark`] so far, as `(name, microseconds since the first mark)`: the launcher
-/// logs these so a launch's own phases are readable from its stream, not only from the app's
-/// timeline file. Empty when the shell asked for no startup metrics.
-#[must_use]
-pub fn phase_marks() -> Vec<(String, u128)> {
-    let Some(Some(marks)) = HANDOFF.get() else {
-        return Vec::new();
-    };
-    let marks = marks.lock_recover();
-    let Some(base) = marks.first().map(|mark| mark.epoch_us) else {
-        return Vec::new();
-    };
-    marks
-        .iter()
-        .map(|mark| (mark.name.clone(), mark.epoch_us.saturating_sub(base)))
-        .collect()
-}
-
 /// One [`LAUNCHER_MARKS_ENV`] entry for `name` at now, for a process between
 /// the launcher and the app (the sandbox shim) to append to the value it
 /// passes on. `None` for a name the app would drop.
