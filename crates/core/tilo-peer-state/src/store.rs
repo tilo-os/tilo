@@ -2370,6 +2370,17 @@ pub fn gaps(cursors: &[Cursor], replay: &Replay) -> Vec<Floor> {
 
 const WORKSPACES: &str = "workspaces";
 
+/// Where the end of the block of sequence numbers reserved for `lineage` of `workspace` is kept:
+/// state of the device's own, beside its frames ([`Store::reserve_sequence`]).
+fn sequence_state_name(workspace: WorkspaceId, lineage: Lineage) -> String {
+    format!(
+        "sequences/{}/{}-{}",
+        workspace,
+        hex::encode(lineage.record),
+        hex::encode(lineage.author)
+    )
+}
+
 /// The layout of the frames a store keeps: segments of records, each frame one
 /// [`NeighbourMsg`] whose claims carry the caller's signed call, which the claim's signature
 /// covers, and whose identity hello may name a placed device's certificate or a placement grant
