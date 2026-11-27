@@ -80,8 +80,10 @@ impl ShownOnPage {
             let composition = composition(frame);
             let opened = widget_of_target(&composition, show)
                 .ok_or_else(|| "nothing the view shows".to_owned())
-                .and_then(|widget| {
-                    frame.perform_semantic_named(&widget, Some(show), &Action::Activate)
+                .and_then(|(widget, named)| {
+                    // The widget answers for the target it carries, whichever form of the
+                    // resource's id the page's address named.
+                    frame.perform_semantic_named(&widget, Some(&named), &Action::Activate)
                 });
             if let Err(reason) = opened {
                 tracing::debug!(%reason, show, "a page's address names nothing it opens");
@@ -239,22 +241,39 @@ fn composition(frame: &mut Driver) -> Composition {
     composition
 }
 
-/// The widget whose semantics name `target`, in `composition`.
-fn widget_of_target(composition: &Composition, target: &str) -> Option<String> {
-    fn find(node: &ui::composition::Composed, target: &str) -> Option<String> {
-        if node
+/// The widget whose semantics name `target`, in `composition`, and the target it carries: a
+/// resource is named by its published address (`tl:<app>:<id>`, what a catalogue row and a link
+/// give) as its app names it (`<id>`, what its own rows carry), and both name the one resource.
+fn widget_of_target(composition: &Composition, target: &str) -> Option<(String, String)> {
+    fn find(node: &ui::composition::Composed, target: &str) -> Option<(String, String)> {
+        if let Some(named) = node
             .semantics
             .as_ref()
             .and_then(|semantics| semantics.action_target.as_deref())
-            == Some(target)
+            && names_one_resource(named, target)
         {
-            return Some(node.path.clone());
+            return Some((node.path.clone(), named.to_owned()));
         }
         node.children.iter().find_map(|child| find(child, target))
     }
     std::iter::once(&composition.root)
         .chain(&composition.layers)
         .find_map(|node| find(node, target))
+}
+
+/// Whether the targets `one` and `other` name the same resource: the same name, or one the
+/// published address of the other's id (`tl:<app>:<id>` and `<id>`).
+fn names_one_resource(one: &str, other: &str) -> bool {
+    one == other || inside_address(one) == inside_address(other)
+}
+
+/// `name` without the app a published address carries (`tl:<app>:<id>` is `<id>`); a name that is
+/// no published address is itself.
+fn inside_address(name: &str) -> &str {
+    name.strip_prefix("tl:")
+        .and_then(|rest| rest.split_once(':'))
+        .filter(|(app, id)| !app.is_empty() && !id.is_empty())
+        .map_or(name, |(_, id)| id)
 }
 
 /// Lay `frame` out at its page's size, `width` by `height` CSS pixels (kept between 240 and 8192
@@ -366,4 +385,30 @@ pub fn serve_from_env(named: &str) -> std::io::Result<()> {
     let mut link = std::os::unix::net::UnixStream::from(link);
     let mut frame = frame_over(channel);
     serve(&mut frame, &mut link)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{inside_address, names_one_resource};
+
+    /// A page address naming a resource by its published address opens the row the app names by
+    /// its own id inside it, and either form names the one resource.
+    #[test]
+    fn a_published_address_and_the_id_inside_it_name_one_resource() {
+        assert_eq!(inside_address("tl:so.tilo.migrate:root-a/i1"), "root-a/i1");
+        assert_eq!(inside_address("root-a/i1"), "root-a/i1");
+        assert!(names_one_resource(
+            "tl:so.tilo.migrate:root-a/i1",
+            "root-a/i1"
+        ));
+        assert!(names_one_resource(
+            "root-a/i1",
+            "tl:so.tilo.migrate:root-a/i1"
+        ));
+        assert!(!names_one_resource(
+            "tl:so.tilo.migrate:root-a/i1",
+            "root-a/i2"
+        ));
+        assert_eq!(inside_address("devices/abc/migrate"), "devices/abc/migrate");
+    }
 }

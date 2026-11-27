@@ -15,8 +15,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_actions::InvocationUpdate;
 use tilo_action_services::workspace_invocations::{self, Invocation, InvocationStatus};
+use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     CatalogueQuery, InvocationState, ResourceAddress, ResourceCopy, application_action_target,
 };
@@ -275,6 +275,31 @@ impl Window {
         }
     }
 
+    /// Answer the calls waiting for their person while `press` runs, as they do on their own
+    /// screen: an action the page presses may make a step of the device, which Tilo asks them
+    /// about before it leaves their device.
+    fn answering(
+        host: std::sync::Arc<host::Host>,
+    ) -> (
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watching = std::sync::Arc::clone(&stop);
+        let answering = tokio::spawn(async move {
+            // The press starts the call the person may be asked about: it is asked once that
+            // call is under way, not before it was made.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            while !watching.load(std::sync::atomic::Ordering::Relaxed) {
+                if approve_waiting(&host).await {
+                    continue;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        });
+        (stop, answering)
+    }
+
     /// Act on the control `find` picks on the page, as a click, Space or a screen reader does.
     async fn act(&self, what: &str, action: PageAction, find: fn(&str, &str) -> Option<u32>) {
         let (daemon, caller, workspace, migration, what) = (
@@ -284,7 +309,8 @@ impl Window {
             self.migration.clone(),
             what.to_owned(),
         );
-        tokio::task::spawn_blocking(move || {
+        let (answered, answering) = Self::answering(std::sync::Arc::clone(&self.host));
+        let pressed = tokio::task::spawn_blocking(move || {
             let pages = daemon
                 .pages()
                 .expect("the daemon serves its workspace's pages");
@@ -314,8 +340,10 @@ impl Window {
             .unwrap_or_else(|refused| panic!("{what:?} is taken: {refused:?}"));
             pages.close(id, opened.page);
         })
-        .await
-        .unwrap();
+        .await;
+        answered.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = answering.await;
+        pressed.unwrap();
     }
 
     /// Press the button labelled `label`.
