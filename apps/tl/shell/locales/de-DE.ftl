@@ -2539,3 +2539,5 @@ d-racosa5u = Suche bestätigen
 
 d-racosa5u-w = Fenster
 
+d-racosa5u-text = Text
+
