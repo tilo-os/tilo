@@ -731,7 +731,20 @@ view shelf(s: Shelf) {
                 .unwrap_or_else(|| panic!("the page offers to delete the project:\n{}", dump(tree)))
                 .key
                 .clone();
-            window.fire(&delete, "choose").unwrap();
+            // Deleting a project is destructive and Undo takes it back, so choosing it asks
+            // unless Shift is held: Shift is the person's yes to it.
+            window
+                .fire_held(
+                    &delete,
+                    "choose",
+                    None,
+                    None,
+                    tilolang_runtime::Held {
+                        shift: true,
+                        ..tilolang_runtime::Held::default()
+                    },
+                )
+                .unwrap();
             let projects = |at: &ResourceRef| match w.rt.read(at, "projects").unwrap() {
                 Value::List(items) => items.len(),
                 other => panic!("a list: {other:?}"),
