@@ -103,6 +103,9 @@ pub struct Button {
     /// The control size the pending transition leaves, resolved at the next layout, where the
     /// theme gives both sizes their heights.
     resize_from: Option<ControlSize>,
+    /// The badge's metrics at its own scale: the count stands on the glyph, so it grows with the
+    /// face from the scale it is laid at now, not only from the one it was built at.
+    count_base: Option<BadgeMetrics>,
     on_click: Option<Box<dyn FnMut()>>,
     action: Option<ActionEmitter<()>>,
     /// Resource and handler synthesized by `on_effect` / `on_view`: ordinary Rust, reachable only
@@ -224,6 +227,7 @@ impl Button {
             visual_scale: 1.0,
             resize: tilo_ui_base::motion::MotionValue::new(1.0),
             resize_from: None,
+            count_base: None,
             default_focus: false,
             main_answer: false,
             on_click: None,
@@ -701,8 +705,12 @@ impl Button {
 
     /// `metrics` under the scale this frame shows the face at.
     fn scaled_metrics(&self, metrics: FaceMetrics) -> FaceMetrics {
-        let scale = self.visual_scale * self.resize.get(tilo_ui_base::motion::frame_now());
-        metrics.scaled(scale)
+        metrics.scaled(self.current_scale())
+    }
+
+    /// The scale the face is laid at this frame: an ancestor's, and the journey to a new size.
+    fn current_scale(&self) -> f64 {
+        self.visual_scale * self.resize.get(tilo_ui_base::motion::frame_now())
     }
 
     #[must_use]
@@ -2291,10 +2299,15 @@ impl Button {
     /// face, so the face's own size is all it needs: the node's margins are its parent's
     /// and stay as the parent gave them.
     fn measure_count(&mut self, text: &mut TextRenderer) {
+        let base = self.count_base.clone();
+        let scale = self.current_scale();
         self.count_size = self
             .count
-            .as_ref()
-            .map_or(vello::kurbo::Size::ZERO, |count| count.size(text));
+            .as_mut()
+            .map_or(vello::kurbo::Size::ZERO, |count| {
+                count.metrics = base.map(|badge| badge.scaled(scale));
+                count.size(text)
+            });
     }
 
     /// The face's height on the node, as the input asks for it now: a button made before the
@@ -2452,11 +2465,10 @@ impl Widget for Button {
             self.resize.set(1.0, timing, now);
             self.dirty = true;
         }
-        if let Some(count) = &mut self.count {
-            let scale = self.visual_scale * self.resize.get(tilo_ui_base::motion::frame_now());
-            let badge = BadgeMetrics::of(theme).scaled(scale);
-            if count.metrics.as_ref() != Some(&badge) {
-                count.metrics = Some(badge);
+        if self.count.is_some() {
+            let badge = BadgeMetrics::of(theme);
+            if self.count_base.as_ref() != Some(&badge) {
+                self.count_base = Some(badge);
                 self.dirty = true;
             }
         }

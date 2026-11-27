@@ -17,8 +17,8 @@ use tilo_ui_base::tokens::EffectiveMotion;
 use tilo_ui_base::widget::{DrawChild, Element, Spacer, Widget};
 
 /// How far from an item's middle the pointer still makes it grow, in its own heights: three
-/// items each way, as a dock's icons reach.
-const REACH_HEIGHTS: f64 = 3.5;
+/// about four items each way, as a dock's icons reach.
+const REACH_HEIGHTS: f64 = 4.5;
 
 /// The smallest reach, in logical pixels: an item smaller than a control should not magnify
 /// only at the pixel under the pointer.
