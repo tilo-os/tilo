@@ -75,6 +75,16 @@ pub struct Caller {
     /// The app whose process the call came through, as the API admitted the connection: what the
     /// action reads as `invoker.app()`.
     pub app: Option<String>,
+    /// What bounds the caller beside its person when it is a Shortcut's unattended run.
+    pub run: Option<ShortcutRun>,
+}
+
+/// What bounds a Shortcut's unattended run beside the person it runs for, as the API admitted it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShortcutRun {
+    /// The agent the run acts through: the one that saved the Shortcut. Its own grants and
+    /// delegation bound every call the run makes, as they bound the agent's own calls.
+    pub through: Option<tilo_actions::MemberId>,
 }
 
 impl Caller {
@@ -123,6 +133,9 @@ impl From<&tilo_actions::ActionInvoker> for Caller {
             on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
             handed: invoker.acting.handed,
             app: invoker.acting.app().map(|app| app.as_str().to_owned()),
+            run: invoker.acting.is_automation().then(|| ShortcutRun {
+                through: invoker.acting.acting_agent().cloned(),
+            }),
         }
     }
 }

@@ -867,6 +867,9 @@ impl HostInner {
     pub(crate) fn admit_agent(&self, caller: &Caller) {
         self.authority
             .admit_agent(&caller.actor, caller.on_behalf_of.as_deref());
+        if let Some(run) = &caller.run {
+            self.authority.admit_run(&caller.actor, run.clone());
+        }
         self.runtime.acts_for(&caller.actor, &caller.principal());
     }
 

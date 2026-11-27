@@ -703,24 +703,57 @@ impl Acting {
         self.by.member_id().and_then(MemberId::bot_id)
     }
 
-    /// The person this acting is for, when it is not the actor itself.
+    /// The person this acting is for, when it is not the actor itself: for an automation acting
+    /// through an agent (the run of a Shortcut an agent saved), the person that agent acts for.
     #[must_use]
     pub fn acted_for_person(&self) -> Option<&str> {
+        self.person_node().and_then(|node| node.person_id())
+    }
+
+    /// The node of the person this acting is for ([`Self::acted_for_person`]), or of the member
+    /// an automation runs for.
+    fn person_node(&self) -> Option<&Self> {
+        let node = self.acted_for.first()?;
+        match node.by.member_id()? {
+            MemberId::Person(_) => Some(node),
+            MemberId::Agent { .. } if self.is_automation() => node
+                .acted_for
+                .first()
+                .filter(|person| person.is_person())
+                .or(Some(node)),
+            _ if self.is_automation() => Some(node),
+            _ => None,
+        }
+    }
+
+    /// The agent acting here: the actor, when it is one, or the agent an automation acts through
+    /// (the one that saved the Shortcut whose run it is). Its own grants bound the whole acting,
+    /// as they bound the agent's own calls, and what holds an agent to its person's word holds
+    /// the run too.
+    #[must_use]
+    pub fn acting_agent(&self) -> Option<&MemberId> {
+        if self.is_agent() {
+            return self.member_id();
+        }
+        if !self.is_automation() {
+            return None;
+        }
         self.acted_for
             .first()
-            .and_then(|node| node.by.member_id())
-            .and_then(MemberId::person_id)
+            .and_then(Self::member_id)
+            .filter(|member| member.is_agent())
     }
 
     /// On whose behalf this acting writes, as an app reads `invoker.principal()`: the actor
-    /// itself, or, for an automation acting for a member (a Shortcut's run), that member. Only
-    /// what an app addresses and groups by follows it (whose conversation a run writes in); who
-    /// may do what, and who history says did it, are decided on the acting itself, where the
-    /// automation stays the actor and nobody is at a screen.
+    /// itself, or, for an automation acting for a member (a Shortcut's run, through the agent
+    /// that saved it or not), that member. Only what an app addresses and groups by follows it
+    /// (whose conversation a run writes in); who may do what, and who history says did it, are
+    /// decided on the acting itself, where the automation stays the actor and nobody is at a
+    /// screen.
     #[must_use]
     pub fn principal(&self) -> &Actor {
-        match (&self.by, self.acted_for.first()) {
-            (Actor::Automation(_), Some(node)) if node.by.member_id().is_some() => &node.by,
+        match (&self.by, self.person_node()) {
+            (Actor::Automation(_), Some(node)) => &node.by,
             _ => &self.by,
         }
     }
@@ -834,11 +867,23 @@ mod tests {
             assert_eq!(run.member_id(), None, "{run:?}");
             assert!(run.is_automation(), "{run:?}");
         }
-        assert_eq!(runs[0].acted_for_person(), Some("q"));
+        for run in &runs {
+            assert_eq!(run.acted_for_person(), Some("q"), "{run:?}");
+            assert_eq!(
+                run.principal(),
+                &Actor::Member(MemberId::person("q")),
+                "the run writes for its person: {run:?}"
+            );
+        }
         assert_eq!(
-            runs[0].principal(),
-            &Actor::Member(MemberId::person("q")),
-            "the run writes for its person"
+            runs[0].acting_agent(),
+            None,
+            "her own Shortcut runs through no agent"
+        );
+        assert_eq!(
+            runs[3].acting_agent(),
+            Some(&MemberId::agent("scout", "q")),
+            "the Shortcut her agent saved runs through it, and its grants bound the run"
         );
         let person = Acting::person("q");
         assert!(person.is_person() && person.direct() && !person.is_automation());

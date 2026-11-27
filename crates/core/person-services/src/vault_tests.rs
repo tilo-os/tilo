@@ -2605,3 +2605,81 @@ async fn the_person_keeps_a_key_from_the_vault_and_links_this_computer_through_t
     }
     server.shutdown().await;
 }
+
+/// A Shortcut her agent saved runs through that agent, for her: what the workspace keeps the agent
+/// from, its run is kept from too, though she reaches it herself and so does a Shortcut she saved.
+#[tokio::test]
+async fn a_run_of_a_shortcut_her_agent_saved_is_kept_from_what_the_agent_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = &crate::PersonServices::of(server.workspaces());
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let kept = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        workspace_vault::ADD,
+        a_login("https://example.com"),
+    )
+    .await
+    .expect("Ada keeps a login");
+    let kept_from_vault = tilo_action_policy::Grant::new(
+        "test:assistant-kept-from-vault",
+        tilo_action_policy::Grantee::agent("assistant", hex::encode(ada.user_public_key)),
+        tilo_action_policy::TreePath::workspace(&workspace)
+            .app(tilo_app_id::apps::PASSWORDS)
+            .kind("passwords.workspace-vault"),
+        tilo_action_types::KindSet::ALL,
+        tilo_action_policy::Answer::Deny,
+        tilo_action_policy::Grantee::person(hex::encode(owner.user_public_key)),
+    );
+    workspaces
+        .put_workspace_grants(&workspace, &owner, [63; 32], vec![kept_from_vault])
+        .await
+        .unwrap();
+
+    for (who, asking) in [
+        ("she", as_ada.clone()),
+        (
+            "a Shortcut she saved",
+            as_ada.clone().running_shortcut("reminder"),
+        ),
+    ] {
+        let listed = ask(
+            &service,
+            workspace_id,
+            (&ada, &asking),
+            workspace_vault::LIST,
+            json!({}),
+        )
+        .await
+        .unwrap_or_else(|refused| panic!("{who} reads the vault: {refused:?}"));
+        assert!(
+            listed["items"]
+                .as_array()
+                .is_some_and(|items| items.contains(&kept)),
+            "{who}: {listed}"
+        );
+    }
+    let run = as_ada
+        .clone()
+        .delegated_to("assistant")
+        .running_shortcut("reminder");
+    for (action, argument) in [
+        (workspace_vault::LIST, json!({})),
+        (workspace_vault::REVEAL, json!({"item": &kept["reference"]})),
+    ] {
+        let refused = ask(&service, workspace_id, (&ada, &run), action, argument).await;
+        assert!(
+            matches!(
+                refused,
+                Err(ActionCallError::NotPermitted | ActionCallError::UnknownAction)
+            ),
+            "a run of the Shortcut her agent saved, {action}: {refused:?}"
+        );
+    }
+    server.shutdown().await;
+}

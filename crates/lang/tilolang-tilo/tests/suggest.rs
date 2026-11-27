@@ -44,6 +44,7 @@ fn agent(who: &str) -> Caller {
         on_behalf_of: Some("ada".to_owned()),
         handed: false,
         app: None,
+        run: None,
     }
 }
 

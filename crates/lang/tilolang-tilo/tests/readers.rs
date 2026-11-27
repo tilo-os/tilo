@@ -124,6 +124,7 @@ fn agent(person: Option<&str>) -> Caller {
         on_behalf_of: person.map(str::to_owned),
         handed: false,
         app: None,
+        run: None,
     }
 }
 

@@ -144,6 +144,7 @@ fn an_agent_passing_done_explicitly_wins() {
         on_behalf_of: Some("ada".to_owned()),
         handed: false,
         app: None,
+        run: None,
     };
     let unchecked = plan(
         &ada,

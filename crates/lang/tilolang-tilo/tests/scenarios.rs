@@ -279,6 +279,7 @@ fn only_a_seed_runs_a_scenario() {
         on_behalf_of: Some("ada".to_owned()),
         handed: false,
         app: None,
+        run: None,
     };
     for caller in [None, Some(&agent)] {
         let refused = replica

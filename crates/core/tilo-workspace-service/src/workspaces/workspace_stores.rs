@@ -276,8 +276,9 @@ impl Workspaces {
             .permissions(certificate.device_public_key, now)
             .map_err(|_| ActionCallError::UnknownAction)?;
         // An agent a device of its person's runs acts as itself, with what its person's grant
-        // gives it, within what its person may.
-        let access = if caller.is_device_agent() {
+        // gives it, within what its person may. A Shortcut's run acts as itself too, for its
+        // person and through the agent that saved it when one did: each of them bounds it.
+        let access = if caller.is_device_agent() || acting.is_automation() {
             access
                 .as_acting(acting.clone())
                 .ok_or(ActionCallError::UnknownAction)?
@@ -287,11 +288,13 @@ impl Workspaces {
         };
         let node = store.node(access.workspace(), action);
         let verdict = access.verdict(&node, effect, &Context::at_time(now));
-        let answer = if acting.is_agent() && effect != ActionKind::Read {
+        // A run of a Shortcut an agent saved is held to what holds that agent.
+        let agent = acting.acting_agent().is_some();
+        let answer = if agent && effect != ActionKind::Read {
             // An agent reads freely. A change it makes is put to its person
             // first, unless they answered that very action in advance.
             agent_change(&verdict, narrowed(access.policy.as_ref(), caller))
-        } else if acting.is_agent() {
+        } else if agent {
             // An agent reads with its person's access: what they read, unless something denies
             // it the read or its person's answers narrow it.
             agent_read(&verdict, narrowed(access.policy.as_ref(), caller))
@@ -483,7 +486,7 @@ fn app_answer(
 pub fn agent_of(caller: &Caller) -> Option<(&str, &str)> {
     caller
         .acting()
-        .member_id()?
+        .acting_agent()?
         .as_agent()
         .map(|(agent, person)| (agent, person.as_str()))
 }

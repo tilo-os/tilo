@@ -720,6 +720,7 @@ fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Call
             .and_then(Json::as_bool)
             .unwrap_or(false),
         app: None,
+        run: None,
     };
     Ok((source.to_owned(), go_ahead, author))
 }

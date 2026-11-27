@@ -82,6 +82,7 @@ fn assistant_of(person: &str) -> Caller {
         on_behalf_of: Some(person.to_owned()),
         handed: true,
         app: None,
+        run: None,
     }
 }
 

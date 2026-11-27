@@ -50,6 +50,8 @@ struct State {
     names: HashMap<String, String>,
     /// The actors the API admitted as software acting for a person, with that person.
     agents: HashMap<Actor, Option<String>>,
+    /// What bounds each Shortcut run the API admitted beside its person.
+    runs: HashMap<Actor, crate::publish::ShortcutRun>,
     /// The hosts each app's package declares its `uses web` requests may reach, as installed.
     web: HashMap<String, Vec<String>>,
     /// The outside capabilities each app's package declares its code can queue (`smtp.send`), by
@@ -184,6 +186,12 @@ impl TiloAuthority {
             .agents
             .insert(actor.clone(), person.map(str::to_owned));
         state.trusted.insert(ModuleHash::written_by(actor));
+    }
+
+    /// Admit `actor` as a Shortcut's unattended run bounded by `run` beside the person it runs
+    /// for ([`Self::admit_agent`]): every call it makes, at any depth, is decided within it.
+    pub fn admit_run(&self, actor: &Actor, run: crate::publish::ShortcutRun) {
+        self.state.borrow_mut().runs.insert(actor.clone(), run);
     }
 
     /// The access of the person at the window it decides by now, when it has one.
@@ -383,8 +391,15 @@ impl Authority for TiloAuthority {
             Some(access) if !alone && access.acting.by == *invoker => access.authority(),
             _ => Policy::person(person_party),
         };
-        let delegation = match (agent, person, invoker.member_id()) {
-            (Some(_), Some(person), Some(member)) if member.is_agent() => Some(
+        // The agent acting: the invoker, or the one a Shortcut's run acts through (the agent that
+        // saved it), whose own grants bound the run as they bound the agent.
+        let run = state.runs.get(invoker);
+        let delegate = match invoker.member_id() {
+            Some(member) if member.is_agent() => Some(member),
+            _ => run.and_then(|run| run.through.as_ref()),
+        };
+        let delegation = match (agent, person, delegate) {
+            (Some(_), Some(person), Some(member)) => Some(
                 tilo_member_types::Acting::member(member.clone())
                     .handed()
                     .acting_for(tilo_member_types::Acting::person(person))
@@ -433,7 +448,8 @@ impl Authority for TiloAuthority {
         }
         // A grant written under an id the app had before (`previously:`) is the app's.
         let earlier = crate::schema::earlier_ids();
-        if let (Some(delegation), Some(agent)) = (&delegation, grantee(invoker)) {
+        let delegate = delegate.and_then(|member| grantee(&Actor::Member(member.clone())));
+        if let (Some(delegation), Some(agent)) = (&delegation, delegate) {
             // An agent is the pair of its id and its person: the grants naming that pair reach
             // it, never one for another person's agent of the same id.
             policy = policy.bounded_by(

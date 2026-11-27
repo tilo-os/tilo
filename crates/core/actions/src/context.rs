@@ -1558,10 +1558,12 @@ impl ActionInvoker {
     pub fn delivered(actor: &Actor, context: Option<&ActionContext>) -> Self {
         let invoker = context.and_then(|context| context.invoker.as_ref());
         // An automation's step is delivered as the person it runs for; the
-        // host names the automation acting for exactly that person.
+        // host names the automation acting for exactly that person, through
+        // the agent that saved it when one did.
         if let Some(automation) = invoker.filter(|invoker| {
             invoker.acting.is_automation()
-                && invoker.acting.acted_for.first().map(|node| &node.by) == Some(actor)
+                && !invoker.acting.acted_for.is_empty()
+                && invoker.acting.principal() == actor
         }) {
             return automation.clone();
         }

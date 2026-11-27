@@ -908,7 +908,8 @@ impl Caller {
 
     /// The caller's invocations are the steps of Shortcut `id`'s run: still
     /// the person's authority (bounded by the Shortcut's own grants, which
-    /// the runner applies), but the Shortcut is who acts, for the person.
+    /// the runner applies), but the Shortcut is who acts, for the person, and
+    /// through the agent that saved it when one did, whose grants bound it too.
     /// Set only by the provider's Shortcut runner.
     #[must_use]
     pub fn running_shortcut(mut self, id: impl Into<String>) -> Self {
@@ -918,7 +919,16 @@ impl Caller {
             .or_else(|| self.acting.acted_for_person())
             .unwrap_or_default()
             .to_owned();
-        let mut acting = Acting::automation(id).acting_for(Acting::person(person));
+        // A Shortcut an agent saved runs through that agent, for its person: the agent's own
+        // grants bound the run wherever it is decided, as they bound the agent's own calls.
+        let through = if self.acting.is_agent() {
+            let mut agent = self.acting.clone();
+            agent.app = None;
+            agent
+        } else {
+            Acting::person(person)
+        };
+        let mut acting = Acting::automation(id).acting_for(through);
         acting.app.clone_from(&self.acting.app);
         acting.foreign_device = self.acting.foreign_device;
         self.acting = acting;
@@ -1257,6 +1267,11 @@ mod tests {
                 "{saved_by}: what a run asks is put to its person"
             );
             assert_eq!(acting.acted_for_person(), Some(ada.as_str()), "{saved_by}");
+            assert_eq!(
+                acting.acting_agent().and_then(|agent| agent.agent_id()),
+                (saved_by == "her agent").then_some("scout"),
+                "{saved_by}: a run its agent saved runs through that agent"
+            );
             assert_eq!(
                 acting.principal().member_id().and_then(|m| m.person_id()),
                 Some(ada.as_str()),
