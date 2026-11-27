@@ -234,7 +234,7 @@ pub enum Part {
 }
 
 pub struct Header {
-    pub title: HeaderTitle,
+    title: HeaderTitle,
     pub binding: Option<LocalBinding<String>>,
     pub actions: Vec<Element>,
     pub more: OverflowButton,

@@ -387,6 +387,10 @@ mod component_adapter {
         widget::Theme, widget::WindowEvent,
     };
 
+    #[tilo_ui_base::component::not_a_component(
+        part,
+        "the widget a window's managed root holds, made by the runner above the toolkit"
+    )]
     pub struct BoundAppWidget {
         pub(crate) component: AppComponent,
         /// A complete-content capture laid the root out in a tree of its own: the host rebuilds its layout

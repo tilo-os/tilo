@@ -17,7 +17,7 @@ use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 /// A column's title in the header row: `Heading`, and an optional count in
 /// a quiet pill after it. Measured by the host, so the actions after it
 /// start where the title ends.
-pub struct HeaderTitle {
+pub(super) struct HeaderTitle {
     pub(super) title: Option<String>,
     pub(super) count: Option<usize>,
     /// The window's sidebar stands beside the content drawing this same count for the place
