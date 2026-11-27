@@ -113,10 +113,11 @@ fn try_call(r: &Replica, action: &str, args: Vec<Value>) -> Result<Value, String
     let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
         r.name.clone(),
     ));
-    match r.host.runtime().invoke_action(&who, (id.as_str(), args)) {
-        Ok(InvokeOutcome::Done(value)) => Ok(value),
-        Ok(other) => Err(format!("{other:?}")),
-        Err(error) => Err(error.to_string()),
+    // A card's sharing, and any other call that leaves the system, asks the person first: the
+    // test's person says yes, and what the action did is what is read here.
+    match crate::invoker::invoke_confirmed(&r.host, &who, (id.as_str(), args))? {
+        InvokeOutcome::Done(value) => Ok(value),
+        other => Err(format!("{other:?}")),
     }
 }
 

@@ -21,12 +21,12 @@ use tilolang_tilo::runtime::{Actor, Value, ViewInstance};
 
 const APP: &str = "so.tilo.settings";
 
-/// The app as it ships, its ids and the platform's packages it reads through.
 /// The person at the settings window.
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
 }
 
+/// The app as it ships, its ids and the platform's packages it reads through.
 fn settings() -> Host {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
     let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");

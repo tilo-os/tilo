@@ -40,12 +40,12 @@ fn compiled() -> (tilolang::Compiled, Vec<tilolang::PackageMeta>) {
     (compiled, imports)
 }
 
-/// The app as it ships, loaded into a host.
 /// The person at the terminal's window.
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
 }
 
+/// The app as it ships, loaded into a host.
 fn terminal() -> Host {
     let (compiled, _) = compiled();
     let host = Host::new(ada(), || None).expect("a host");
