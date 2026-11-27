@@ -31,6 +31,8 @@ use device_vpn::tunnel::dns::DnsRelay;
 use device_vpn::tunnel::{ALPN, Authority, Decision, Exit, ExitDevices, PacketDevice, client};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_lock::MutexRecover as _;
+use tilo_runtime::device::capabilities::{Devices, VpnServing};
+use tilo_runtime::device::wake::ipv4_subnets;
 
 /// How long the relays' names may take to resolve before the carrier leaves them out: opening the
 /// tunnel never waits on a lookup.
@@ -41,7 +43,7 @@ const USERS_EVERY: Duration = Duration::from_secs(1);
 const PACKETS_KEPT: usize = 256;
 
 /// The device VPN, served on the device's endpoint and asked for over a shell's links.
-pub(crate) struct DeviceVpn {
+struct DeviceVpn {
     endpoint: Endpoint,
     /// Who may route through this device, and whether its exit is on.
     allowed: Allowed,
@@ -51,16 +53,24 @@ pub(crate) struct DeviceVpn {
     lent: Arc<Mutex<Option<Arc<LinkPump>>>>,
 }
 
+/// Serve the device VPN on `endpoint`, admitting `devices`.
+pub fn serving(endpoint: Endpoint, devices: Devices) -> VpnServing {
+    let vpn = Arc::new(DeviceVpn::new(endpoint, devices));
+    let links = Arc::clone(&vpn);
+    VpnServing {
+        protocols: vpn.protocols(),
+        links: Arc::new(move |stream| {
+            let vpn = Arc::clone(&links);
+            Box::pin(async move { vpn.serve_link(stream).await })
+        }),
+    }
+}
+
 impl DeviceVpn {
-    /// Serve the device VPN on `endpoint`, for `person`'s devices, whose record `copies` keeps.
-    pub(crate) fn new(
-        endpoint: Endpoint,
-        person: [u8; 32],
-        copies: tilo_workspace_service::workspaces::Workspaces,
-    ) -> Self {
+    /// Serve the device VPN on `endpoint`, admitting `devices`.
+    fn new(endpoint: Endpoint, devices: Devices) -> Self {
         let allowed = Allowed(Arc::new(Who {
-            person,
-            copies: Some(copies),
+            devices,
             on: AtomicBool::new(false),
         }));
         let lent = Arc::new(Mutex::new(None));
@@ -80,9 +90,7 @@ impl DeviceVpn {
 
     /// What this device answers on its endpoint beside its other protocols: the tunnel another of
     /// the person's devices dials to route through this one.
-    pub(crate) fn protocols(
-        &self,
-    ) -> Vec<(&'static [u8], Box<dyn iroh::protocol::DynProtocolHandler>)> {
+    fn protocols(&self) -> Vec<(&'static [u8], Box<dyn iroh::protocol::DynProtocolHandler>)> {
         vec![(
             ALPN,
             Box::<dyn iroh::protocol::DynProtocolHandler>::from(self.exit.clone()),
@@ -92,7 +100,7 @@ impl DeviceVpn {
     /// Serve one link a shell of this device opened until it ends: a route the daemon dials and
     /// carries, a probe of what a device offers, or the shell's exit TUN, lent so the person's
     /// other devices may route through this one.
-    pub(crate) async fn serve_link(&self, stream: tilo_socket::tokio::Stream) {
+    async fn serve_link(&self, stream: tilo_socket::tokio::Stream) {
         let (mut reader, mut writer) = tokio::io::split(stream);
         let ask = match link::read(&mut reader).await {
             Ok(Frame::Control(control)) => control,
@@ -356,35 +364,12 @@ async fn relay_addresses() -> Vec<IpAddr> {
 struct Allowed(Arc<Who>);
 
 struct Who {
-    person: [u8; 32],
-    /// The person's own workspace, whose record of their devices is read here; `None` where this
-    /// device keeps none, and then no device of theirs is known.
-    copies: Option<tilo_workspace_service::workspaces::Workspaces>,
+    /// The person's devices, as the person's own workspace lists them.
+    devices: Devices,
     on: AtomicBool,
 }
 
 impl Allowed {
-    /// The person's devices as their record lists them: certified by their root, not taken back,
-    /// and not expired.
-    fn devices(&self) -> BTreeSet<[u8; 32]> {
-        let Some(copies) = self.0.copies.clone() else {
-            return BTreeSet::new();
-        };
-        let person = self.0.person;
-        let record = super::workspaces::block_on_owned(async move {
-            tilo_workspace_service::workspaces::person_workspace::devices::of(&copies, &person)
-                .await
-        });
-        let now = tilo_clock::unix_now_ns();
-        record
-            .listed(&self.0.person)
-            .into_iter()
-            .filter(|listed| !listed.device.revoked(&listed.cert))
-            .filter(|listed| !listed.cert.is_expired_at(now))
-            .map(|listed| listed.cert.device_public_key)
-            .collect()
-    }
-
     fn on(&self, on: bool) {
         self.0.on.store(on, Ordering::SeqCst);
     }
@@ -393,7 +378,7 @@ impl Allowed {
 impl Authority for Allowed {
     fn decide(&self, peer: &EndpointId) -> Decision {
         decide(
-            &self.devices(),
+            &(self.0.devices)(),
             self.0.on.load(Ordering::SeqCst),
             peer.as_bytes(),
         )
@@ -418,7 +403,7 @@ fn decide(allowed: &BTreeSet<[u8; 32]>, on: bool, peer: &[u8; 32]) -> Decision {
 
 /// The networks this device is attached to, other than the tunnel's own.
 fn home_networks() -> Vec<Ipv4Net> {
-    super::wake::ipv4_subnets()
+    ipv4_subnets()
         .into_iter()
         .filter(|(name, _)| {
             name != device_vpn::net::CLIENT_INTERFACE && name != device_vpn::net::EXIT_INTERFACE
@@ -588,7 +573,6 @@ mod tests {
     /// Only the person's devices are allowed, and only while the exit is on.
     #[test]
     fn only_the_persons_devices_route_through_this_one_while_its_exit_is_on() {
-        let person = [1_u8; 32];
         let theirs = *iroh::SecretKey::generate().public().as_bytes();
         let other = *iroh::SecretKey::generate().public().as_bytes();
         let allowed: BTreeSet<[u8; 32]> = [theirs].into_iter().collect();
@@ -609,9 +593,9 @@ mod tests {
         );
         // The person's record is not here, so no device of theirs is known: this device turns
         // everyone away rather than trusting a device it cannot check.
+        let devices: Devices = Arc::new(BTreeSet::new);
         let allowed = Allowed(Arc::new(Who {
-            person,
-            copies: None,
+            devices,
             on: AtomicBool::new(true),
         }));
         let peer = EndpointId::from_bytes(&theirs).unwrap();

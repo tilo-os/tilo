@@ -1,6 +1,6 @@
 //! What the daemon's program mounts on this device beside the core: the services that answer
 //! on the daemon's dispatch, and what the machine does that only an optional subsystem knows how
-//! to do (hold suspend off, read a radio's wake setting).
+//! to do (hold suspend off, read a radio's wake setting, carry the device VPN).
 //!
 //! The core names none of those subsystems. The `tilo-runtime` program wires them in once, before
 //! the daemon starts ([`mount`]): each service is registered on the one table of providers the
@@ -9,6 +9,7 @@
 //! in process without them) runs the core alone: it serves none of those services, and says so
 //! where it would have used one.
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -42,6 +43,20 @@ pub type Holding = Pin<Box<dyn Future<Output = Option<Awake>> + Send>>;
 /// Registers one service on the daemon's providers as the daemon starts.
 pub type Register = Box<dyn Fn(&Mounting<'_>) + Send + Sync>;
 
+/// The person's devices, as their record lists them: certified by their root, not taken back and
+/// not expired. A mounted device VPN admits only these.
+pub type Devices = Arc<dyn Fn() -> BTreeSet<[u8; 32]> + Send + Sync>;
+
+/// What a mounted device VPN serves on the endpoint: the protocols it answers there, and what
+/// carries a shell's VPN links until they end.
+pub struct VpnServing {
+    pub protocols: Vec<(&'static [u8], Box<dyn iroh::protocol::DynProtocolHandler>)>,
+    pub links: tilo_app_host::shell::DeviceVpnLinks,
+}
+
+/// Serves a device VPN on the endpoint, admitting the person's devices.
+pub type DeviceVpn = Arc<dyn Fn(iroh::Endpoint, Devices) -> VpnServing + Send + Sync>;
+
 /// What the daemon's program mounts.
 #[derive(Default)]
 pub struct Capabilities {
@@ -59,6 +74,9 @@ pub struct Capabilities {
     /// whether or not this program runs then: a moment an app's trigger lands on this device is
     /// armed there ([`tilo_app_host::wakeups`]). A phone's app mounts its own.
     pub alarms: Option<Arc<dyn tilo_app_host::wakeups::Notifier>>,
+    /// The device VPN, which answers the person's other devices on the endpoint: the daemon is
+    /// the one process with the device key.
+    pub vpn: Option<DeviceVpn>,
 }
 
 static MOUNTED: OnceLock<Capabilities> = OnceLock::new();
@@ -95,6 +113,36 @@ pub(crate) fn tilolang() -> Option<tilo_workspace_service::tl_records::Tilolang>
 /// The platform's notifications the program mounted for this device's wakeups, where it did.
 pub(crate) fn alarms() -> Option<Arc<dyn tilo_app_host::wakeups::Notifier>> {
     mounted()?.alarms.clone()
+}
+
+/// The device VPN the program mounted, where it mounted one.
+pub(crate) fn vpn() -> Option<DeviceVpn> {
+    mounted()?.vpn.clone()
+}
+
+/// The person's devices as their record lists them, for a mounted device VPN to admit: certified
+/// by their root, not taken back, and not expired. The record is read as this device last saved
+/// it, as every decision that cannot wait reads it, so a dial never waits on the app runtime.
+pub(crate) fn person_devices(
+    devices: tilo_workspace_service::workspaces::FollowedRecord,
+    person: [u8; 32],
+) -> Devices {
+    Arc::new(move || {
+        let now = tilo_clock::unix_now_ns();
+        devices
+            .state::<tilo_workspace_service::workspaces::person_workspace::devices::Devices>()
+            .map(|record| {
+                record
+                    .listed(&person)
+                    .into_iter()
+                    .filter(|listed| {
+                        !listed.device.revoked(&listed.cert) && !listed.cert.is_expired_at(now)
+                    })
+                    .map(|listed| listed.cert.device_public_key)
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// Take a hold on suspend, where something mounted can.

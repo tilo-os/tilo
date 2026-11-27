@@ -166,9 +166,6 @@ tilo-workspace-keys = { path = "../workspace-keys" }
 # The relay of the workspaces this device serves, and the person's desktop session's links into
 # it or on to another device's.
 tilo-live = { path = "../tilo-live", features = ["relay", "iroh", "app_call"] }
-# The device VPN's tunnel, dialled and answered on this device's endpoint: the daemon holds the
-# key, so only it dials as the device.
-device-vpn = { package = "tilo-device-vpn", path = "../../os/device-vpn", default-features = false, features = ["tunnel"] }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.
 tilo-api = { path = "../tilo-api" }
 # The one migration engine, served as this device's actions.

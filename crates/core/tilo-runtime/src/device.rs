@@ -125,7 +125,6 @@ mod shell;
 #[cfg(target_os = "linux")]
 pub(crate) mod ush_line;
 
-mod vpn;
 /// How the person's workspaces stand, as the daemon publishes them to its person's shells.
 pub use shell::Standing;
 pub mod issuing;

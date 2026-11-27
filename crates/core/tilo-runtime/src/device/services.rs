@@ -2526,15 +2526,30 @@ impl Daemon {
                 &fanout,
             )
         };
-        // The device VPN's peer-to-peer half: the daemon is the one process with the device key,
-        // so it is the one that dials another of the person's devices and the one their other
-        // devices dial to route through this one. The shell keeps the TUN devices, which only it
-        // may open, and hands the packets over its link.
-        let vpn = Arc::new(super::vpn::DeviceVpn::new(
-            workspaces.endpoint(),
-            identity.cert.user_public_key,
-            workspaces.copies().clone(),
-        ));
+        // What is the person's alone is kept in their own workspace, read here as it changes and
+        // written once this device holds it: their devices, and the answers they gave about this
+        // device's camera and microphone, which their other devices see and can take back.
+        let person_devices = {
+            let _entered = tilo_rt::app().handle().enter();
+            workspaces.copies().follow_record(
+                &person_workspace::workspace_id(workspaces.copies()),
+                devices::DEVICES,
+            )
+        };
+        // The device VPN's peer-to-peer half, when this program mounts one: it dials another of
+        // the person's devices and answers their other devices dialling this one. The shell keeps
+        // the TUN devices, which only it may open, and hands the packets over its link.
+        let vpn = super::capabilities::vpn().map(|vpn| {
+            vpn(
+                workspaces.endpoint(),
+                super::capabilities::person_devices(
+                    person_devices.clone(),
+                    identity.cert.user_public_key,
+                ),
+            )
+        });
+        // What carries a shell's VPN links, kept beside the protocols the endpoint takes.
+        let vpn_links = vpn.as_ref().map(|vpn| Arc::clone(&vpn.links));
         // Where this device's member workspaces stand with the devices serving them, published
         // for its person's shell: what an app opening one shows.
         let workspace_sync = {
@@ -2575,13 +2590,9 @@ impl Daemon {
             actions,
             host: (founded.is_some() || kept.is_some()).then(|| workspaces.service().as_ref()),
             kept: kept_protocols,
-            terminals: terminals
-                .into_iter()
-                .chain(live.protocols())
-                .chain(vpn.protocols())
-                .collect(),
+            terminals: terminals.into_iter().chain(live.protocols()).collect(),
             unlock: unlocking,
-            vpn: &vpn,
+            vpn,
         });
         // A founding call that asked for the person's first tickets is answered them from here
         // on: the tickets, the endpoint they name and what serves it are up, and nothing the
@@ -2591,16 +2602,6 @@ impl Daemon {
         if let Some(founding) = founding {
             founding.serving(identity.cert.user_public_key, Arc::clone(&tickets));
         }
-        // What is the person's alone is kept in their own workspace, read here as it changes and
-        // written once this device holds it: their devices, and the answers they gave about this
-        // device's camera and microphone, which their other devices see and can take back.
-        let person_devices = {
-            let _entered = tilo_rt::app().handle().enter();
-            workspaces.copies().follow_record(
-                &person_workspace::workspace_id(workspaces.copies()),
-                devices::DEVICES,
-            )
-        };
         // The Wi-Fi passphrases the person's devices share are kept there too, sealed to each of
         // them: the desktop session shares and joins with them through the device's dispatch.
         super::wifi::Wifi::new(
@@ -2760,7 +2761,7 @@ impl Daemon {
                 shell_dispatch: &shell_dispatch,
                 identity: identity_broker.handover(),
                 live: &live,
-                vpn: &vpn,
+                vpn: vpn_links,
                 fanout: &fanout,
             },
             brokers,
@@ -3488,20 +3489,11 @@ struct BrokerParts<'a> {
     identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
     /// The device's live session, which carries those shells' live links.
     live: &'a Arc<super::live_relay::Live>,
-    /// The device VPN, which carries those shells' device-VPN links.
-    vpn: &'a Arc<super::vpn::DeviceVpn>,
+    /// What carries those shells' device-VPN links.
+    vpn: Option<tilo_app_host::shell::DeviceVpnLinks>,
     /// The broker's fanout, which serves the broker the windows connect to: what the daemon
     /// publishes what those windows hold of.
     fanout: &'a Arc<FanoutState>,
-}
-
-/// What carries a shell's device-VPN links: the device VPN, for as long as each link lasts.
-fn device_vpn_links(vpn: &Arc<super::vpn::DeviceVpn>) -> tilo_app_host::shell::DeviceVpnLinks {
-    let vpn = Arc::clone(vpn);
-    Arc::new(move |stream| {
-        let vpn = Arc::clone(&vpn);
-        Box::pin(async move { vpn.serve_link(stream).await })
-    })
 }
 
 /// What carries a shell's live links: `live`, for as long as each link lasts.
@@ -3852,7 +3844,7 @@ fn shell_services(
         super::shell::Serving {
             identity: Arc::clone(&parts.identity),
             live: Some(live_links(parts.live)),
-            vpn: Some(device_vpn_links(parts.vpn)),
+            vpn: parts.vpn.clone(),
             speaking: Arc::clone(parts.live) as Arc<dyn tilo_app_host::shell::ShellSpeaking>,
         },
     )));
@@ -7659,7 +7651,7 @@ struct EndpointServing<'a> {
     /// device keeps their root and the store the calls that wait for them are kept in.
     unlock: Option<Arc<super::unlock::Unlock>>,
     /// The device VPN, which answers the person's other devices on the endpoint.
-    vpn: &'a Arc<super::vpn::DeviceVpn>,
+    vpn: Option<super::capabilities::VpnServing>,
 }
 
 /// Serve what this runtime answers on the endpoint its workspaces run, from one router: the
@@ -7696,7 +7688,10 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
     for (alpn, handler) in kept {
         router = router.accept(alpn, handler);
     }
-    for (alpn, handler) in terminals.into_iter().chain(vpn.protocols()) {
+    for (alpn, handler) in terminals
+        .into_iter()
+        .chain(vpn.into_iter().flat_map(|vpn| vpn.protocols))
+    {
         router = router.accept(alpn, handler);
     }
     if let Some(unlock) = unlock {

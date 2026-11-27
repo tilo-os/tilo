@@ -71,6 +71,14 @@ tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
+# The device VPN's tunnel, dialled and answered on the daemon's endpoint: it holds the device key,
+# so only it dials as this device. A shell's VPN link is a socket of this device.
+device-vpn = { package = "tilo-device-vpn", path = "../device-vpn", default-features = false, features = ["tunnel"] }
+tilo-endpoint-reachability = { path = "../../core/endpoint-reachability" }
+tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+iroh.workspace = true
+hex.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
@@ -145,13 +153,11 @@ tilo-automerge-isolate.workspace = true
 tilo-paths.workspace = true
 tilo-machine.workspace = true
 anyhow.workspace = true
-hex.workspace = true
 libc.workspace = true
 rand.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
-# The device VPN's tunnel, as the other of the person's devices serves it, and the in-memory
-# stack its exit routes into.
+# The device VPN's test build, with the in-memory stack its exit routes into.
 device-vpn = { package = "tilo-device-vpn", path = "../device-vpn", default-features = false, features = ["tunnel", "test-support"] }
 # A server on this machine's loopback, which a test's device relays through.
 test-server = { path = "../../../tools/test-server" }
@@ -167,8 +173,6 @@ tilolang-mail = { path = "../../integrations/tilolang-mail", features = ["test-s
 tilolang-cli = { path = "../../lang/tilolang-cli" }
 # Another of the person's devices, asking the daemon over the device link as their laptop does.
 tilo-peer-state = { path = "../../core/tilo-peer-state" }
-# A second computer's endpoint, reached through the relays this machine's devices use.
-tilo-endpoint-reachability = { path = "../../core/endpoint-reachability" }
 # The daemon's own log, handed the layers the harness writes.
 tilo-startup-metrics = { path = "../../platform/startup-metrics" }
 # The MCP session a test's agent runs on the daemon, as `tilo mcp` serves its client.
@@ -190,7 +194,6 @@ tilo-fs = { path = "../../core/fs" }
 launcher = { path = "../../core/launcher" }
 # ush's shell is Linux's, so the daemon's shell runs are driven where it builds.
 ush = { path = "../../vm/ush", features = ["quic"] }
-iroh.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
 getrandom.workspace = true

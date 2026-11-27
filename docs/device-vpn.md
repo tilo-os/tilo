@@ -29,7 +29,7 @@ and nobody configures keys, ports or endpoints.
 | --- | --- | --- |
 | Helper | `crates/os/device-vpn` (`tilo-device-vpn`, root system service) | TUN devices, routes and policy rules, NetworkManager DNS for the tunnel, IPv4 forwarding, the nftables kill switch and masquerade |
 | Tunnel | same crate, feature `tunnel` | the `tilo-device-vpn/1` ALPN: handshake, exit authorisation, IP packets as QUIC datagrams, MTU, the exit's DNS relay |
-| Tunnel on the device | `crates/core/tilo-runtime/src/device/vpn.rs` | this device's endpoint for the tunnel, dialling the exit another of their devices serves, answering the one they route through this one, and carrying the packets |
+| Tunnel on the device | `crates/os/daemon/src/vpn.rs` | this device's endpoint for the tunnel, dialling the exit another of their devices serves, answering the one they route through this one, and carrying the packets |
 | Controller | `crates/desktop/session/src/vpn.rs` | the person's choices, the client and exit state machines, the TUN devices (the root helper answers the seat's compositor alone), the status Settings and quick settings show, the actions |
 | Choices and status | `settings_store::device_vpn` | the settings leaves Settings writes and the shell follows; the status file the shell publishes |
 | Shell link | `device_vpn::link` | one tunnel's link between the session and the device's daemon: the ask, the offer, the packets, and what happens to who routes through this device |
