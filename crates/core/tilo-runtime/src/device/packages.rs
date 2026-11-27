@@ -61,6 +61,12 @@ struct Writer {
     flatpaks: Arc<Mutex<()>>,
     /// One change to the record of the apps the follower installed at a time.
     followed: Arc<Mutex<()>>,
+    /// The package each app's workspace named last, by app: an install of a version named
+    /// before it is set aside rather than land over it.
+    named: Arc<Mutex<BTreeMap<String, String>>>,
+    /// One install of a workspace's version at a time: installs run off the reactor side by
+    /// side, and one that started earlier for an older version must not finish last.
+    installing: Arc<Mutex<()>>,
     /// Where a development build this device installs is installed too: the workspace its
     /// person's services serve, once they run ([`PackageCache::install_dev_builds_in`]).
     dev_builds: Arc<Mutex<DevBuildsIn>>,
@@ -451,6 +457,8 @@ impl PackageCache {
                 #[cfg(target_os = "linux")]
                 flatpaks: Arc::default(),
                 followed: Arc::default(),
+                named: Arc::default(),
+                installing: Arc::default(),
                 dev_builds: Arc::default(),
             },
             log: Mutex::default(),
@@ -1144,6 +1152,10 @@ impl PackageCache {
                 named.flatpaks.push(reference.to_owned());
                 continue;
             }
+            self.writer
+                .named
+                .lock_recover()
+                .insert(release.app.clone(), release.package.clone());
             if self.runs(&release.package) {
                 continue;
             }
@@ -1361,6 +1373,9 @@ impl PackageCache {
         lists: &TrustLists,
         registries: &app_cli::config::RegistriesFile,
     ) {
+        if self.superseded(release) {
+            return;
+        }
         self.writer.rows.fetching(release, 0, None);
         let fetched = app_cli::config::with_registries(registries.clone(), || {
             for registry in registries.enabled() {
@@ -1425,6 +1440,26 @@ impl PackageCache {
     }
 
     /// Whether the cache has the package `package` (its root, hex).
+    /// Whether the workspace has named another version of `release`'s app since, or this one is
+    /// installed already: an install started for it is set aside.
+    fn superseded(&self, release: &tilo_peer_state::workspace_membership::AppRelease) -> bool {
+        let newer = self
+            .writer
+            .named
+            .lock_recover()
+            .get(&release.app)
+            .is_some_and(|named| !named.eq_ignore_ascii_case(&release.package));
+        if newer {
+            // The newer version's own install reports its progress and its arrival.
+            return true;
+        }
+        if self.runs(&release.package) {
+            self.writer.rows.arrived(&release.app);
+            return true;
+        }
+        false
+    }
+
     fn runs(&self, package: &str) -> bool {
         let Ok(id) = package_actions::image_id(package) else {
             return false;
@@ -1479,6 +1514,10 @@ impl PackageCache {
         registries: &app_cli::config::RegistriesFile,
         payload_from: Option<String>,
     ) {
+        let _one_at_a_time = self.writer.installing.lock_recover();
+        if self.superseded(release) {
+            return;
+        }
         if let Err(error) = self.keep_runtimes(release, bytes, lists, registries) {
             self.writer.rows.arrived(&release.app);
             tracing::warn!(app = %release.app, %error, "what the version a workspace runs runs on is not here");
