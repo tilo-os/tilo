@@ -1402,7 +1402,9 @@ async fn administers_applications(holder: &crate::keep::common::Hosted, workspac
 /// Another person's server held as a key holder reads the workspace and
 /// serves it without being a member: every holder gives it the keys, it
 /// admits a member's device on its certificate and carries its changes, and
-/// what it writes of who is in the workspace counts nowhere.
+/// it lets in nobody the member list lacks, its own person's devices
+/// included. A further device of a person on the list writes its own row
+/// there as at any holder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
     let alice = TestUser::fresh("Alice");
@@ -1459,13 +1461,29 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
         "the workspace names the device it was made on"
     );
 
-    // It lets nobody in: a device it enters is in no other holder's
-    // workspace, and so holds no keys there.
+    // It lets nobody in whom the member list lacks: its own person's device
+    // is refused, and so holds no keys in any other holder's workspace.
+    let own = site.enrol("laptop", DeviceCapabilities::primary());
     let entered = holder
         .host
         .workspaces()
-        .enter(&workspace.workspace, (&tablet.cert, &tablet.sk))
+        .enter(&workspace.workspace, (&own.cert, &own.sk))
         .await;
+    assert!(entered.is_err(), "{entered:?}");
+    // Alice's further device writes its own row there, on her certificate.
+    holder
+        .host
+        .workspaces()
+        .enter(&workspace.workspace, (&tablet.cert, &tablet.sk))
+        .await
+        .expect("a further device of a person on the list enters at any holder");
+    key_holders_once(
+        &hosting_device,
+        &workspace.workspace,
+        "the further device holds the keys",
+        |holders| holders.contains(&tablet.device_pubkey()),
+    )
+    .await;
     write(&on_holder, &phone, "note:entry", "after the entry").unwrap();
     reaches_host(
         &hosting_device,
@@ -1476,8 +1494,8 @@ async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
     .await;
     let holders = workspaces.key_holders(&workspace.workspace).await.unwrap();
     assert!(
-        !holders.contains(&tablet.device_pubkey()),
-        "a key holder of another person let a device in ({entered:?})"
+        !holders.contains(&own.device_pubkey()),
+        "a key holder of another person let its own person's device in"
     );
 
     drop(on_holder);
