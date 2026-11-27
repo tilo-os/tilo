@@ -322,6 +322,24 @@ pub enum ActionServiceFrame {
     Certificate,
 }
 
+/// Why a host passes a request on to no device: it holds no link the device it names dialled.
+pub const NO_LINK: &str = "has no link open to this one to pass the request on over";
+/// Why a host passes a request on to no device: the key it names dialled in, but the workspace
+/// the request names certifies no such device.
+pub const NOT_OF_WORKSPACE: &str =
+    "dialled in, but is no device of the workspace the request names";
+/// Why a device answers no request passed on to it: it serves nothing over the link it dialled
+/// its host on, so it is reached only at its own address.
+pub const ANSWERS_NONE_PASSED: &str = "answers no request passed on over the link it dialled";
+
+/// The refusal of a request for `target` that was passed on to no device, for `why` (one of
+/// [`NO_LINK`], [`NOT_OF_WORKSPACE`] or [`ANSWERS_NONE_PASSED`]): a caller that also asks the
+/// device at its own address reads it as no answer through the host.
+#[must_use]
+pub fn unpassed(target: [u8; 32], why: &str) -> String {
+    format!("device {} {why}", hex::encode(&target[..8]))
+}
+
 /// Signed actions a target admitted while they are still fresh, so a device
 /// that routes them cannot deliver one twice.
 #[derive(Debug)]

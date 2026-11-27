@@ -271,13 +271,35 @@ type Queue = Arc<Mutex<VecDeque<Event>>>;
 pub type Takes = fn(&Event) -> bool;
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
-/// What serves a request another device addressed to this session's device on this
-/// session with its host: a listing of a window this session holds, a page action
-/// on it. The host routes such a frame here; it is this device's to answer.
+/// What answers a request another device addressed to this session's device, which the host
+/// passes on over the actions link this session dialled it on: a listing of a window this device
+/// holds, an action on it. The device's own action service answers it ([`ActionService`]), so a
+/// request reached through the host is decided and dispatched exactly as one asked of the device
+/// at its own address.
+///
+/// [`ActionService`]: tilo_peer_state::actions::ActionService
 pub trait InboundActions: Send + Sync {
-    /// Serve the frame `from`, certified for `user`, sent this device in `workspace`.
-    /// The answer goes back on this session, to `from`.
-    fn take(&self, workspace: WorkspaceId, user: [u8; 32], from: [u8; 32], frame: Vec<u8>);
+    /// Answer the one request `recv` carries on `send`, as a run of `execution`, the run of the
+    /// link it came over. The link proves only the host, so the request stands on its own
+    /// signature, and a refusal is answered on `send` like any answer.
+    fn answer<'a>(
+        &'a self,
+        execution: &'a tilo_actions::remote::ExecutionLease,
+        send: tilo_peer_state::transport::StreamSend,
+        recv: tilo_peer_state::transport::StreamRecv,
+    ) -> tilo_peer_state::transport::StreamFuture<'a, ()>;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl InboundActions for tilo_peer_state::actions::ActionService {
+    fn answer<'a>(
+        &'a self,
+        execution: &'a tilo_actions::remote::ExecutionLease,
+        send: tilo_peer_state::transport::StreamSend,
+        recv: tilo_peer_state::transport::StreamRecv,
+    ) -> tilo_peer_state::transport::StreamFuture<'a, ()> {
+        Box::pin(self.answer_passed(execution, send, recv))
+    }
 }
 
 /// What a session reports to everyone holding its [`Link`]: its status, the events it heard, and
@@ -329,8 +351,7 @@ impl Reports {
         self.lock().inbound = Some(inbound);
     }
 
-    /// What serves what another device addresses to this device, once the session
-    /// can answer it.
+    /// What answers what another device addresses to this device, once one does.
     #[must_use]
     pub fn inbound(&self) -> Option<Arc<dyn InboundActions>> {
         self.lock().inbound.clone()
@@ -889,8 +910,10 @@ impl Link {
         }
     }
 
-    /// Serve what another device addresses to this device on this session, from
-    /// now on: a window this session holds is reached through the host that way.
+    /// Answer what another device addresses to this device through the host with `inbound`,
+    /// from now on: a device that dialled its host, behind a NAT or on a phone, is reached through
+    /// that host this way. Until then such a request is refused at once
+    /// ([`neighbour_wire::actions::ANSWERS_NONE_PASSED`]).
     pub fn serve_inbound(&self, inbound: Arc<dyn InboundActions>) {
         self.reports.serve_inbound(inbound);
     }

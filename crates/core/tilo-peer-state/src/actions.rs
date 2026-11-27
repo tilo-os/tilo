@@ -80,7 +80,8 @@ use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::actions::{
-    ActionReplayWindow, ActionServiceFrame, DeviceAction, SignedDeviceAction,
+    ANSWERS_NONE_PASSED, ActionReplayWindow, ActionServiceFrame, DeviceAction, NO_LINK,
+    NOT_OF_WORKSPACE, SignedDeviceAction, unpassed,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -1030,7 +1031,7 @@ impl ActionService {
                 .read_workspace_for(
                     Some((source, placement.as_ref())),
                     &action.workspace,
-                    |peer| -> Result<(_, _, _, _, _, _), ActionCallError> {
+                    |peer| -> Result<(_, _, _, _, _, _, _), ActionCallError> {
                         let revocations = revocations_of(peer);
                         let mut acting = source;
                         if let RemoteActionMessage::Invoke(request) = &action.message
@@ -1059,6 +1060,13 @@ impl ActionService {
                             }
                         }
                         let authority = peer.permissions(acting, now);
+                        // Whether the device the request names is one of the workspace's: only
+                        // such a device is passed a request on over the link it dialled.
+                        let target_certified = peer
+                            .certificates()
+                            .iter()
+                            .any(|certificate| certificate.device_public_key == action.target)
+                            || peer.placed_device(&action.target, now).is_some();
                         // A certificate placed for records is no member's, whatever roster lists it.
                         let certificate = peer.certificates().into_iter().find(|certificate| {
                             certificate.device_public_key == acting
@@ -1092,14 +1100,22 @@ impl ActionService {
                                         (created_at, delegation.user_public_key)
                                     })
                             });
-                        Ok((acting, authority, certificate, opened, roster, placed))
+                        Ok((
+                            acting,
+                            authority,
+                            certificate,
+                            opened,
+                            roster,
+                            placed,
+                            target_certified,
+                        ))
                     },
                 )
                 .await
                 .ok_or_else(|| ActionCallError::Refused {
                     reason: "this device does not have that workspace".into(),
                 })??;
-            let (acting, _, certificate, opened, _, placed) = &decided;
+            let (acting, _, certificate, opened, _, placed, _) = &decided;
             let unknown = certificate.is_none() && placed.is_none() && !opened;
             if !proved
                 && unknown
@@ -1112,7 +1128,7 @@ impl ActionService {
             }
             break decided;
         };
-        let (acting, authority, certificate, opened, roster, placed) = decided;
+        let (acting, authority, certificate, opened, roster, placed, target_certified) = decided;
         // A call its device makes for someone else carries their signature: one that names
         // another caller and carries none runs as nobody, and never as the device that sent it.
         let own_call = |caller: Caller| -> Result<Caller, ActionCallError> {
@@ -1139,13 +1155,15 @@ impl ActionService {
         // A request addressed to another device this one reaches: pass it on there, which decides
         // and answers it, and hand its answer back to the caller.
         if action.target != self.device() {
-            // A device whose link is the connection it dialled this one on reads this device at
-            // its other end, and takes only this device's own requests over it: another's is
-            // refused here at once, never left to wait on it.
+            // The request is passed on as it was signed, and the device it names decides it on
+            // that signature by its own admission, as it decides one asked of it directly: this
+            // device judges nothing of the caller here. A key that dialled in proves only itself,
+            // so a request is passed on to it only where the workspace certifies it, and refused
+            // at once otherwise, never left to wait on a key that serves no actions.
             let target = action.target;
-            if self.0.dialled_in.lock_recover().contains(&target) {
+            if !target_certified && self.0.dialled_in.lock_recover().contains(&target) {
                 return Err(ActionCallError::Refused {
-                    reason: unpassed(target, ONLY_ITS_OWN),
+                    reason: unpassed(target, NOT_OF_WORKSPACE),
                 });
             }
             let passed = self
@@ -1286,10 +1304,10 @@ impl ActionService {
     ///
     /// A request is passed on as it was signed, so the device that answers
     /// runs it as the device that signed it, never as the one that carried
-    /// it. That is only sound over a link that names no device of its own —
-    /// a page's session with its host — where a request stands on what it
-    /// proves. A link that names a device carries only that device's own
-    /// requests.
+    /// it. The device at the other end reads what arrives over a link it
+    /// dialled as naming no device of its own ([`Self::answer_passed`]): each
+    /// request stands on what its own signature proves, and that device's
+    /// admission decides it as it decides one asked of it directly.
     async fn pass_on(
         &self,
         signed: &SignedDeviceAction,
@@ -1705,6 +1723,24 @@ impl ActionService {
                 action_service.forget_device(device, &transport);
             }
         });
+    }
+
+    /// Answer the one request `recv` carries on `send`: one the host this device dialled opened a
+    /// stream for on that link, passing on another device's request, or asking its own. The link
+    /// proves only the host, so the request stands on its own signature, and this device's
+    /// admission decides it as it decides one asked of it directly ([`Self::decide`]); a refusal is
+    /// answered on `send` like any answer. `execution` is the run of the link it came over.
+    ///
+    /// # Errors
+    ///
+    /// The stream ended or carried no request frame.
+    pub async fn answer_passed(
+        &self,
+        execution: &ExecutionLease,
+        send: StreamSend,
+        recv: StreamRecv,
+    ) -> Result<(), String> {
+        self.answer_stream(None, execution, None, send, recv).await
     }
 
     /// Read one request from `recv`, answer it on `send`, and finish.
@@ -2296,7 +2332,7 @@ impl Device {
                 .await
                 .map_err(|error| error.to_string())?;
             let message = RemoteActionFrame::decode(&answer).map(|frame| frame.message);
-            for why in [NO_LINK, ONLY_ITS_OWN] {
+            for why in [NO_LINK, NOT_OF_WORKSPACE, ANSWERS_NONE_PASSED] {
                 let reason = unpassed(self.target, why);
                 let refused = tilo_actions::remote::ActionCallError::Refused {
                     reason: reason.clone(),
@@ -2368,15 +2404,6 @@ impl Device {
             .map_err(|error| unavailable(&error))?
             .ok_or_else(|| unavailable("the device closed without answering"))
     }
-}
-
-/// Why a device passes a request for another on to no one ([`unpassed`]).
-const NO_LINK: &str = "has no link open to this one to pass the request on over";
-const ONLY_ITS_OWN: &str = "takes only this device's own requests over the link it dialled";
-
-/// The refusal of a request for `target` a device passes on to no one, for `why`.
-fn unpassed(target: [u8; 32], why: &str) -> String {
-    format!("device {} {why}", hex::encode(&target[..8]))
 }
 
 /// A call to `device`, which neither its workspace's host nor this device has a link to.

@@ -471,12 +471,14 @@ async fn a_device_that_is_not_the_sender_is_refused() {
             panic!("the request naming another device is refused, got {answer:?}");
         };
         let why = if third == c.1.device_public_key {
-            "takes only this device's own requests over the link it dialled"
+            neighbour_wire::actions::NOT_OF_WORKSPACE
         } else {
-            "has no link open to this one to pass the request on over"
+            neighbour_wire::actions::NO_LINK
         };
-        let device = hex::encode(&third[..8]);
-        assert_eq!(refusal(&error), format!("device {device} {why}"));
+        assert_eq!(
+            refusal(&error),
+            neighbour_wire::actions::unpassed(third, why)
+        );
         assert!(
             asked.elapsed() < Duration::from_secs(2),
             "refused at once, not after waiting on the device"

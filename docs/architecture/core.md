@@ -339,6 +339,15 @@ every session like any other, so a person or an agent on any device can do them;
 only one caller of them. There is no site lookup. `/v1` REST is only an edge
 for callers outside Tilo.
 
+A device that is reachable only because it dialled its workspace's host, such as a laptop behind a
+NAT or a phone, is called through that host. The caller signs the request for the device and sends
+it to the host, which passes it on, as it was signed, over the link the device dialled. The host
+checks only that the device is one of the workspace's. The device reads anything that arrives on
+that link as naming no device of its own. It decides each request on the caller's signature, with
+the same admission, replay window and dispatch as a request asked of it at its own address, so a
+caller without a grant is refused there. A device that serves nothing over that link refuses at
+once, and the caller's other attempt, at the device's own address, can still answer.
+
 ### Where work runs
 
 Everything a person, an agent or an automation does is an action on a resource.

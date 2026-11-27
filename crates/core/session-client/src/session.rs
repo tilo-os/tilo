@@ -993,6 +993,11 @@ impl Task {
                         let _ = commands.send(Command::ActionsLinkEnded(epoch));
                     }
                 });
+                n0_future::task::spawn(answer_passed(
+                    link.clone(),
+                    Arc::clone(&self.reports),
+                    self.config.cert.device_public_key,
+                ));
                 self.actions = Some(link);
             }
             Err(error) => {
@@ -4442,6 +4447,73 @@ async fn signed_host_message(
         request.signed = Some(Box::new(signed));
     }
     RemoteActionMessage::Invoke(request)
+}
+
+/// Answer each request the host passes on over `link`, the actions link this session dialled it
+/// on, until the link ends: another device's request addressed to this one, `device`, reached
+/// through the host because this device dialled out. Each is answered on its own stream, by what
+/// answers this device's inbound requests ([`crate::Reports::inbound`]), which decides it on its
+/// own signature as it decides one asked of the device directly; with nothing there to answer
+/// it, it is refused at once, so its caller learns and asks the device elsewhere. The link's
+/// requests are one run, ended with the link.
+async fn answer_passed(
+    link: tilo_server_client::link::Link,
+    reports: Arc<Reports>,
+    device: [u8; 32],
+) {
+    use tilo_peer_state::transport::{StreamRecv, StreamSend};
+    let execution = tilo_actions::remote::ExecutionLease::mint();
+    while let Ok((send, recv)) = link.accept_bi().await {
+        let (send, recv) = (Box::new(send) as StreamSend, Box::new(recv) as StreamRecv);
+        let inbound = reports.inbound();
+        let execution = execution.clone();
+        n0_future::task::spawn(async move {
+            let answered = match inbound {
+                Some(inbound) => inbound.answer(&execution, send, recv).await,
+                None => refuse_passed(device, send, recv).await,
+            };
+            if let Err(error) = answered {
+                tracing::warn!(%error, "a request passed on through the host was not answered");
+            }
+        });
+    }
+    execution.close();
+}
+
+/// Refuse the request `recv` carries on `send`: this device answers nothing passed on to it
+/// through its host ([`neighbour_wire::actions::ANSWERS_NONE_PASSED`]).
+async fn refuse_passed(
+    device: [u8; 32],
+    mut send: tilo_peer_state::transport::StreamSend,
+    mut recv: tilo_peer_state::transport::StreamRecv,
+) -> Result<(), String> {
+    use neighbour_wire::actions::{ANSWERS_NONE_PASSED, ActionServiceFrame, unpassed};
+    use tilo_actions::remote::{ActionCallError, RemoteActionFrame};
+    let bytes = tilo_server_client::frame::read_frame(&mut recv, MAX_ACTION_FRAME)
+        .await
+        .map_err(|error| error.to_string())?;
+    let ActionServiceFrame::Action(signed) =
+        postcard::from_bytes(&bytes).map_err(|error| error.to_string())?
+    else {
+        // Asked which certificate it answers under: a device that answers nothing names none.
+        return tokio::io::AsyncWriteExt::shutdown(&mut send)
+            .await
+            .map_err(|error| error.to_string());
+    };
+    let refused = ActionCallError::Refused {
+        reason: unpassed(device, ANSWERS_NONE_PASSED),
+    };
+    if let Some(answer) = tilo_actions::remote::refuse(&signed.action().message, refused) {
+        let answer = RemoteActionFrame::new(answer)
+            .encode()
+            .map_err(|error| error.to_string())?;
+        tilo_server_client::frame::write_frame(&mut send, &answer)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    tokio::io::AsyncWriteExt::shutdown(&mut send)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Ask the session for another actions link, for an ask that found the one it held closed.
