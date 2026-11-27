@@ -3704,6 +3704,90 @@ fn a_window_awaits_its_apps_first_view_and_a_part_awaits_nothing() {
     );
 }
 
+/// A shell's part takes its view's patches into what they change: the text a patch set shows, a
+/// place a patch put on the row, and what a patch took away, while the tree it holds is the one the
+/// whole view draws.
+#[test]
+fn a_part_shows_what_each_patch_changed_as_its_whole_view_draws_it() {
+    let text = |key: &str, value: &str| {
+        let mut node = UiNode::empty("ui.Text", key);
+        node.props.insert("value".to_owned(), Value::text(value));
+        node
+    };
+    let place = |key: &str, title: &str| {
+        let mut page = UiNode::empty("page", &format!("{key}-page"));
+        page.children.push(text(&format!("{key}-title"), title));
+        let mut embed = UiNode::empty("embed", key);
+        embed.children.push(page);
+        embed
+    };
+    let mut places = UiNode::empty("fragment", "places");
+    places.children = vec![place("a", "Alpha"), place("b", "Beta")];
+    let mut strip = UiNode::empty("row", "strip");
+    strip.children.push(places);
+    let mut tree = UiNode::empty("stack", "shell");
+    tree.children.push(strip);
+
+    let (mut app, end) = local::pair();
+    let mut part = AppWindow::part(Box::new(end));
+    send(
+        &mut app,
+        &[ToUi::Open {
+            level: Level::Root,
+            target: doc(),
+            tree: tree.clone(),
+            front: None,
+            capture_protected: false,
+        }],
+    );
+    part.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(part), (1280, 800));
+    harness.relayout();
+    node_named(&harness, "Alpha");
+
+    let path = |keys: &[&str]| keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
+    let steps = [
+        vec![wire::Patch::SetProp {
+            path: path(&["strip", "places", "a", "a-page", "a-title"]),
+            name: "value".to_owned(),
+            value: Some(Value::text("Alpha, renamed")),
+        }],
+        vec![wire::Patch::Insert {
+            parent: path(&["strip", "places"]),
+            index: 2,
+            node: place("c", "Gamma"),
+        }],
+        vec![wire::Patch::Remove {
+            parent: path(&["strip", "places", "b", "b-page"]),
+            key: "b-title".to_owned(),
+        }],
+    ];
+    for patches in steps {
+        for patch in &patches {
+            patch.clone().apply(&mut tree).expect("the patch applies");
+        }
+        send(
+            &mut app,
+            &[ToUi::Patch {
+                level: Level::Root,
+                patches,
+            }],
+        );
+        drawn_window(&mut harness).receive();
+        harness.relayout();
+        assert_eq!(
+            drawn_window(&mut harness).composed(),
+            Some(&crate::reconcile::normalize_shown(&tree)),
+        );
+    }
+    node_named(&harness, "Alpha, renamed");
+    node_named(&harness, "Gamma");
+    assert!(
+        harness.a11y_node_named("Beta").is_none(),
+        "what a patch took away is gone"
+    );
+}
+
 /// What an app's run waits on a person for is asked on the system's own permission prompt, naming
 /// the action and who asked for it, and the person's choice there is the answer the app hears.
 #[test]

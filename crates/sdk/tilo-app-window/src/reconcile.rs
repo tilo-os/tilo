@@ -130,6 +130,8 @@ pub struct Reconciler {
     /// made again whenever a session was opened or released.
     #[cfg(not(target_arch = "wasm32"))]
     terminals: crate::terminal::Handles,
+    /// What changed of the tree an update in place reconciles ([`Self::update_changed`]).
+    dirt: Option<Dirt>,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -306,13 +308,257 @@ pub fn normalize_shown(node: &UiNode) -> UiNode {
     drawn(page_once(node, false))
 }
 
-fn drawn(mut out: UiNode) -> UiNode {
+fn drawn(out: UiNode) -> UiNode {
+    drawn_within(out, &Within::default())
+}
+
+fn drawn_within(mut out: UiNode, within: &Within) -> UiNode {
     crate::attach::hoist_in(&mut out);
     crate::attach::raise_menus(&mut out);
-    crate::date::under_headings(crate::shell::titled_lists(out))
+    crate::shell::hand_title(&mut out, within.title.as_ref());
+    crate::date::under_heading(out, within.heading.as_deref())
+}
+
+/// What the nodes over a subtree hand it as [`normalize_shown`] draws the whole tree: whether it
+/// stands inside a page or an embed, and the title and heading said over it.
+#[derive(Default)]
+struct Within {
+    inside: bool,
+    title: Option<crate::shell::Title>,
+    heading: Option<String>,
+}
+
+impl Within {
+    /// What `drawn`, a tree as [`normalize_shown`] drew it, hands the node at `path`.
+    fn at(drawn: &UiNode, path: &[String]) -> Self {
+        let mut inside = false;
+        let mut node = drawn;
+        for key in path {
+            inside |= node.kind == "page" || node.kind == "embed";
+            match node.children.iter().find(|child| child.key == *key) {
+                Some(child) => node = child,
+                None => break,
+            }
+        }
+        Self {
+            inside,
+            title: crate::shell::title_at(drawn, path),
+            heading: crate::date::heading_at(drawn, path),
+        }
+    }
+}
+
+/// The subtrees of `drawn`, the tree [`normalize_shown`] drew of a view's tree before the view
+/// changed at `paths` (keys from the root's children down), drawn again from `tree`, the view's
+/// tree now, in place: each where a change stands, or over it where what is drawn there reads
+/// more of the tree than that node (a fragment's menu its layout takes, a list item's
+/// attachments, the rows of a virtual list), or where the widgets the reconciler keeps for it are
+/// reached only through it. What changed, for the reconciler ([`Reconciler::update_changed`]);
+/// `None` when that is the view's root, and the whole tree is to be drawn anew.
+pub(crate) fn redraw_changed(
+    drawn: &mut UiNode,
+    tree: &UiNode,
+    paths: &[Vec<String>],
+) -> Option<Dirt> {
+    let mut roots: Vec<Vec<String>> = Vec::with_capacity(paths.len());
+    for path in paths {
+        roots.push(redrawn_root(drawn, tree, path)?);
+    }
+    roots.sort();
+    roots.dedup();
+    // A change under another that is drawn again is drawn with it.
+    let mut outermost: Vec<Vec<String>> = Vec::with_capacity(roots.len());
+    for root in roots {
+        if !outermost.iter().any(|outer| root.starts_with(outer)) {
+            outermost.push(root);
+        }
+    }
+    let mut dirt = Dirt {
+        over: std::collections::HashSet::new(),
+        replaced: HashMap::with_capacity(outermost.len()),
+        inside: 0,
+    };
+    let mut fresh = Vec::with_capacity(outermost.len());
+    for path in &outermost {
+        let within = Within::at(drawn, path);
+        fresh.push(drawn_within(
+            page_once_from(tree.at(path)?, within.inside, false),
+            &within,
+        ));
+        // Every node over it is met against itself (the root, which the caller may move, always
+        // is); it stands where the node it replaces stood.
+        let mut node = &*drawn;
+        for (depth, key) in path.iter().enumerate() {
+            if depth > 0 {
+                dirt.over.insert(address(node));
+            }
+            node = node.children.iter().find(|child| child.key == *key)?;
+        }
+    }
+    for (path, fresh) in outermost.iter().zip(fresh) {
+        if let Some(slot) = drawn.at_mut(path) {
+            let old = std::mem::replace(slot, fresh);
+            dirt.replaced.insert(address(slot), Rc::new(old));
+        }
+    }
+    Some(dirt)
+}
+
+/// The path of the subtree drawn again for a change at `path`: see [`redraw_changed`]. `None` when
+/// that is the root.
+fn redrawn_root(drawn: &UiNode, tree: &UiNode, path: &[String]) -> Option<Vec<String>> {
+    /// The nodes along `path` from `root`, `root` first, as far as it holds them.
+    fn along<'a>(root: &'a UiNode, path: &[String]) -> Vec<&'a UiNode> {
+        let mut nodes = vec![root];
+        for key in path {
+            let next = nodes
+                .last()
+                .and_then(|node| node.children.iter().find(|child| child.key == *key));
+            match next {
+                Some(next) => nodes.push(next),
+                None => break,
+            }
+        }
+        nodes
+    }
+    let raw = along(tree, path);
+    let shown = along(drawn, path);
+    // A node a later change took away: its parent's children changed.
+    let mut len = raw.len().saturating_sub(1);
+    // The outermost list item over the change takes the attachments its row holds, and a virtual
+    // list draws no rows here: either is drawn again whole.
+    if let Some(depth) = raw.iter().take(len).position(|node| {
+        node.kind == "ui.ListItem" || tilo_render_protocol::patch::is_virtual_list(&node.kind)
+    }) {
+        len = depth;
+    }
+    loop {
+        let was = len;
+        // A fragment and a menu are drawn where their layout takes them.
+        while len > 0
+            && raw
+                .get(len)
+                .is_some_and(|node| node.kind == "fragment" || crate::attach::is_menu(node))
+        {
+            len = len.saturating_sub(1);
+        }
+        // Every node over it reaches the widget of the next without reading what changed.
+        if let Some(depth) =
+            (0..len).find(
+                |depth| match (shown.get(*depth), shown.get(depth.saturating_add(1))) {
+                    (Some(parent), Some(child)) => !passes_through(parent, child),
+                    _ => true,
+                },
+            )
+        {
+            len = depth;
+        }
+        if len == was {
+            break;
+        }
+    }
+    (len > 0).then(|| path.iter().take(len).cloned().collect())
+}
+
+/// Whether the reconciler reaches the widget of `child` from `parent`'s, both of a drawn tree,
+/// without reading what `child` holds: so a change inside `child` alone is reconciled from there
+/// while `parent`'s widget stands as it is ([`Dirt`]).
+fn passes_through(parent: &UiNode, child: &UiNode) -> bool {
+    if crate::attach::is_menu(child) {
+        return false;
+    }
+    let menu = crate::attach::arranges(&parent.kind) && crate::attach::menu_of(parent).is_some();
+    if let Some(description) = crate::adapter::description_of(parent) {
+        // A component reads its data parts whole; the views of its view parts are reconciled where
+        // they stand.
+        return !menu
+            && description
+                .parts
+                .iter()
+                .filter(|part| part.accepts == tilo_ui_base::component::Accepts::View)
+                .any(|part| {
+                    crate::adapter::part_nodes(parent, description, &part.name)
+                        .iter()
+                        .any(|node| std::ptr::eq(*node, child))
+                });
+    }
+    if menu && !is_container(&parent.kind) {
+        return false;
+    }
+    match parent.kind.as_str() {
+        "split" | "scroll" | "embed" => true,
+        kind => is_container(kind),
+    }
+}
+
+/// What an update reconciles in place of a whole tree against another: the one drawn tree, of
+/// which only the subtrees [`redraw_changed`] drew again changed. Each node of it over one of
+/// those, by its address, is reconciled against itself (its own props and its children's keys
+/// are as they were); each of those against the subtree it replaced; and every other node is as
+/// it was.
+pub(crate) struct Dirt {
+    over: std::collections::HashSet<usize>,
+    replaced: HashMap<usize, Rc<UiNode>>,
+    /// How deep the reconciler is inside a subtree drawn again, which it reconciles as a whole
+    /// tree against the one it replaced.
+    inside: usize,
+}
+
+fn address(node: &UiNode) -> usize {
+    std::ptr::from_ref(node) as usize
+}
+
+impl Dirt {
+    fn met(&self, node: &UiNode) -> Met {
+        if self.inside > 0 {
+            return Met::Trees;
+        }
+        let at = address(node);
+        if let Some(old) = self.replaced.get(&at) {
+            return Met::Replaced(Rc::clone(old));
+        }
+        if self.over.contains(&at) {
+            Met::Over
+        } else {
+            Met::Unchanged
+        }
+    }
+
+    /// `node` as it was: the subtree it replaced, or itself.
+    fn before<'a>(&'a self, node: &'a UiNode) -> &'a UiNode {
+        if self.inside > 0 {
+            return node;
+        }
+        self.replaced.get(&address(node)).map_or(node, |old| old)
+    }
+
+    /// Whether `node` holds a change of this update: it was drawn again, or is over one that was.
+    fn holds_change(&self, node: &UiNode) -> bool {
+        if self.inside > 0 {
+            return false;
+        }
+        let at = address(node);
+        self.over.contains(&at) || self.replaced.contains_key(&at)
+    }
+}
+
+/// How the reconciler meets a node of the tree it updates.
+enum Met {
+    /// As two whole trees: no dirt, or inside a subtree drawn again.
+    Trees,
+    /// Over a change: against itself.
+    Over,
+    /// Drawn again: against the subtree it replaced.
+    Replaced(Rc<UiNode>),
+    /// As it was.
+    Unchanged,
 }
 
 fn page_once(node: &UiNode, rows: bool) -> UiNode {
+    page_once_from(node, false, rows)
+}
+
+fn page_once_from(node: &UiNode, inside: bool, rows: bool) -> UiNode {
     fn walk(node: &UiNode, inside: bool, rows: bool) -> UiNode {
         let nested = inside || node.kind == "page" || node.kind == "embed";
         // A page inside another is a stack: it keeps its children and nothing of its own.
@@ -335,7 +581,7 @@ fn page_once(node: &UiNode, rows: bool) -> UiNode {
                 .collect(),
         }
     }
-    walk(node, false, rows)
+    walk(node, inside, rows)
 }
 
 /// How a child is sized in its container: `fill`, `min:`, `max:` bound its inline size.
@@ -620,6 +866,7 @@ impl Reconciler {
             shown_page: Rc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             terminals: crate::terminal::Handles::default(),
+            dirt: None,
         }
     }
 
@@ -641,6 +888,7 @@ impl Reconciler {
             shown_page: Rc::clone(&other.shown_page),
             #[cfg(not(target_arch = "wasm32"))]
             terminals: crate::terminal::Handles::default(),
+            dirt: None,
         }
     }
 
@@ -988,7 +1236,7 @@ impl Reconciler {
         {
             let old = crate::adapter::part_nodes(old_node, description, &part.name);
             let new = crate::adapter::part_nodes(new_node, description, &part.name);
-            if old == new {
+            if self.same_nodes(&old, &new) {
                 continue;
             }
             let Some(views) =
@@ -1795,9 +2043,67 @@ impl Reconciler {
         old_node: &UiNode,
         new_node: &UiNode,
     ) -> Option<Element> {
-        if old_node == new_node {
-            return None;
+        match self
+            .dirt
+            .as_ref()
+            .map_or(Met::Trees, |dirt| dirt.met(new_node))
+        {
+            Met::Trees => {
+                if old_node == new_node {
+                    return None;
+                }
+            }
+            Met::Unchanged => return None,
+            Met::Over => {}
+            Met::Replaced(old) => {
+                self.dirt_inside(1);
+                let replaced = self.update_in(widget, &old, new_node);
+                self.dirt_inside(-1);
+                return replaced;
+            }
         }
+        self.update_node(widget, old_node, new_node)
+    }
+
+    /// Bring `widget`, built for the drawn tree `drawn` was before the subtrees `dirt` names
+    /// ([`redraw_changed`]) were drawn again, up to date with it:
+    /// only what holds those subtrees is reconciled, and every other widget stands as it is.
+    /// `Some` as [`Self::update_in`] says.
+    pub(crate) fn update_changed(
+        &mut self,
+        widget: &mut Element,
+        drawn: &UiNode,
+        dirt: Dirt,
+    ) -> Option<Element> {
+        let held = self.dirt.replace(dirt);
+        let replaced = self.update_node(widget, drawn, drawn);
+        self.dirt = held;
+        replaced
+    }
+
+    fn dirt_inside(&mut self, step: isize) {
+        if let Some(dirt) = self.dirt.as_mut() {
+            dirt.inside = dirt.inside.saturating_add_signed(step);
+        }
+    }
+
+    /// Whether the nodes `old` and `new` of one part are the same: equal, and (in an update in
+    /// place) none of them holds a change.
+    fn same_nodes(&self, old: &[&UiNode], new: &[&UiNode]) -> bool {
+        old == new
+            && self
+                .dirt
+                .as_ref()
+                .is_none_or(|dirt| !new.iter().any(|node| dirt.holds_change(node)))
+    }
+
+    /// [`Self::update_in`] of a node that changed.
+    fn update_node(
+        &mut self,
+        widget: &mut Element,
+        old_node: &UiNode,
+        new_node: &UiNode,
+    ) -> Option<Element> {
         if old_node.kind != new_node.kind || old_node.key != new_node.key {
             return Some(self.build(new_node));
         }
@@ -1917,12 +2223,12 @@ impl Reconciler {
             // on a canvas, or the window of a place just placed, comes into view.
             if kept {
                 let canvas = token(new_node, "axis") == Some("both");
-                let arrived = if canvas {
-                    arrived_card(old_node, new_node)
-                } else {
-                    None
-                }
-                .or_else(|| arrived_window(old_node, new_node));
+                let kind = if canvas { "Card" } else { "WindowFrame" };
+                let arrived = self.arrived(old_node, new_node, kind).or_else(|| {
+                    canvas
+                        .then(|| self.arrived(old_node, new_node, "WindowFrame"))
+                        .flatten()
+                });
                 if let Some(arrived) = arrived {
                     scroll.reveal_on_layout(arrived);
                 }
@@ -2153,49 +2459,48 @@ pub(crate) fn presence_path(node: &UiNode) -> Vec<PathSegment> {
         .unwrap_or_default()
 }
 
-/// The card that arrived under `new_node` since `old_node`, by its key: the last of `new_node`'s
-/// outermost cards (a place on a shell, not what its content holds) `old_node` did not hold. A
-/// card's body is laid out under its key, which is what the scroll holding it finds it by
-/// ([`Scrollable::reveal_on_layout`]).
-fn arrived_card(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
-    fn cards<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
-        if node.kind == crate::adapter::kind("Card") {
-            out.push(&node.key);
-            return;
+impl Reconciler {
+    /// The component `name` that arrived under `new_node` since `old_node`, by its key: the last of
+    /// `new_node`'s outermost such (a place on a shell, not what its content holds) `old_node` did
+    /// not hold. A card's body, or a window's frame, is laid out under its key, which is what the
+    /// scroll holding it finds it by ([`Scrollable::reveal_on_layout`]): a canvas pans to the card
+    /// just put on it, and a row to the window just placed in it, as the shell's own row does, so
+    /// what just came onto the shell is where the person can see it.
+    fn arrived(&self, old_node: &UiNode, new_node: &UiNode, name: &str) -> Option<String> {
+        fn outermost<'a>(
+            node: &'a UiNode,
+            name: &str,
+            dirt: Option<&'a Dirt>,
+            out: &mut Vec<&'a str>,
+        ) {
+            // In an update in place, the tree as it was holds what each subtree drawn again
+            // replaced, and nothing under that is drawn again.
+            let node = match dirt {
+                Some(dirt) => {
+                    let before = dirt.before(node);
+                    if !std::ptr::eq(before, node) {
+                        return outermost(before, name, None, out);
+                    }
+                    before
+                }
+                None => node,
+            };
+            if crate::adapter::component_name(&node.kind) == Some(name) {
+                out.push(&node.key);
+                return;
+            }
+            for child in &node.children {
+                outermost(child, name, dirt, out);
+            }
         }
-        for child in &node.children {
-            cards(child, out);
-        }
+        let (mut before, mut now) = (Vec::new(), Vec::new());
+        outermost(old_node, name, self.dirt.as_ref(), &mut before);
+        outermost(new_node, name, None, &mut now);
+        now.into_iter()
+            .rev()
+            .find(|key| !before.contains(key))
+            .map(str::to_owned)
     }
-    let (mut before, mut now) = (Vec::new(), Vec::new());
-    cards(old_node, &mut before);
-    cards(new_node, &mut now);
-    now.into_iter()
-        .rev()
-        .find(|key| !before.contains(key))
-        .map(str::to_owned)
-}
-
-/// The window that arrived under `new_node` since `old_node`, by its key: the frames a row of a
-/// shell holds, the last of them new. A row pans to the window just placed in it, as the shell's own
-/// row does, so the place that just came onto the shell is where the person can see it.
-fn arrived_window(old_node: &UiNode, new_node: &UiNode) -> Option<String> {
-    fn frames<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
-        if node.kind == crate::adapter::kind("WindowFrame") {
-            out.push(&node.key);
-            return;
-        }
-        for child in &node.children {
-            frames(child, out);
-        }
-    }
-    let (mut before, mut now) = (Vec::new(), Vec::new());
-    frames(old_node, &mut before);
-    frames(new_node, &mut now);
-    now.into_iter()
-        .rev()
-        .find(|key| !before.contains(key))
-        .map(str::to_owned)
 }
 
 /// Whether the embedded view `node` is framed as one object: unless it is made of objects itself,
@@ -2400,6 +2705,264 @@ mod tests {
         // Every reconciler of the same view records into the one list.
         let rows = Reconciler::sharing(&reconciler);
         assert_eq!(rows.broken().len(), 2);
+    }
+
+    /// Every widget under `widget`, itself included, by address.
+    fn every_widget(widget: &dyn tilo_ui_base::widget::Widget, out: &mut Vec<usize>) {
+        out.push(std::ptr::from_ref(widget).cast::<()>() as usize);
+        for child in widget.children() {
+            every_widget(child, out);
+        }
+    }
+
+    fn with(mut node: UiNode, props: &[(&str, Value)], children: Vec<UiNode>) -> UiNode {
+        for (name, value) in props {
+            node.props.insert((*name).to_owned(), value.clone());
+        }
+        node.children = children;
+        node
+    }
+
+    /// A shell's tree as a part draws it: places in a row, each a view embedded with its page,
+    /// a menu a fragment holds for its layout, a day's heading over a row that names the day, a
+    /// navigation shell handing its title to the list it heads, and a list item whose row holds
+    /// its menu.
+    fn shell_tree() -> UiNode {
+        let place = |key: &str, title: &str| {
+            with(
+                node("embed", key),
+                &[],
+                vec![with(
+                    node("page", &format!("{key}-page")),
+                    &[],
+                    vec![
+                        text(&format!("{key}-title"), title),
+                        with(
+                            node("fragment", &format!("{key}-menus")),
+                            &[],
+                            vec![node(crate::attach::MENU, &format!("{key}-menu"))],
+                        ),
+                    ],
+                )],
+            )
+        };
+        let day = "2026-06-30";
+        stack(
+            "shell",
+            vec![
+                with(
+                    node("row", "strip"),
+                    &[],
+                    vec![with(
+                        node("fragment", "places"),
+                        &[],
+                        vec![place("a", "Alpha"), place("b", "Beta")],
+                    )],
+                ),
+                with(
+                    node("stack", "day"),
+                    &[
+                        ("group", Value::text(day)),
+                        ("group:as", Value::text("date")),
+                    ],
+                    vec![with(
+                        node("ui.ListRow", "standup"),
+                        &[
+                            ("title", Value::text("Standup")),
+                            ("meta", Value::text(format!("{day}T09:00:00Z"))),
+                            ("meta:as", Value::text("date")),
+                        ],
+                        vec![],
+                    )],
+                ),
+                with(
+                    node("ui.NavShell", "nav"),
+                    &[("title", Value::text("Inbox"))],
+                    vec![with(
+                        node(crate::adapter::PART, "nav#content"),
+                        &[("name", Value::text("content"))],
+                        vec![stack(
+                            "listing",
+                            vec![node("ui.VirtualList", "list"), text("count", "3")],
+                        )],
+                    )],
+                ),
+                with(
+                    node("ui.ListItem", "item"),
+                    &[],
+                    vec![stack(
+                        "item-row",
+                        vec![
+                            text("item-title", "Item"),
+                            node(crate::attach::MENU, "item-menu"),
+                        ],
+                    )],
+                ),
+            ],
+        )
+    }
+
+    fn at(path: &[&str]) -> Vec<String> {
+        path.iter().map(|key| (*key).to_owned()).collect()
+    }
+
+    fn set(path: &[&str], name: &str, value: &str) -> wire_patch::Patch {
+        wire_patch::Patch::SetProp {
+            path: at(path),
+            name: name.to_owned(),
+            value: Some(Value::text(value)),
+        }
+    }
+
+    use tilo_render_protocol::patch as wire_patch;
+
+    /// Run `test` with the clock at the day a capture shows, so a day's heading reads the same on
+    /// every run.
+    fn at_capture_day<T>(test: impl FnOnce() -> T) -> T {
+        let at = tilo_ui_base::clock::capture_wall().expect("the capture day exists");
+        ui::time::testing::with_wall(at, test)
+    }
+
+    /// What a view's patches changed is drawn again where it stands, and the tree drawn so is the
+    /// one the whole view draws: a menu its layout takes, a list item's attachments, the heading
+    /// and the title said over a node, a page inside an embedded view.
+    #[test]
+    fn what_a_patch_changed_is_drawn_again_as_the_whole_tree_draws_it() {
+        at_capture_day(|| {
+            let mut tree = shell_tree();
+            let mut drawn = normalize_shown(&tree);
+            let steps: Vec<Vec<wire_patch::Patch>> = vec![
+                vec![set(
+                    &["strip", "places", "a", "a-page", "a-title"],
+                    "value",
+                    "Alpha 2",
+                )],
+                vec![wire_patch::Patch::Insert {
+                    parent: at(&["strip", "places", "a", "a-page", "a-menus"]),
+                    index: 1,
+                    node: node(crate::attach::MENU, "a-menu-2"),
+                }],
+                vec![wire_patch::Patch::Insert {
+                    parent: at(&["strip", "places"]),
+                    index: 2,
+                    node: with(
+                        node("embed", "c"),
+                        &[],
+                        vec![with(
+                            node("page", "c-page"),
+                            &[],
+                            vec![text("c-title", "Gamma")],
+                        )],
+                    ),
+                }],
+                vec![
+                    set(&["day", "standup"], "title", "Standup moved"),
+                    set(&["nav", "nav#content", "listing", "count"], "value", "4"),
+                ],
+                vec![set(&["nav"], "title", "Archive")],
+                vec![set(&["item", "item-row", "item-title"], "value", "Item 2")],
+                vec![wire_patch::Patch::Remove {
+                    parent: at(&["strip", "places", "b", "b-page"]),
+                    key: "b-title".to_owned(),
+                }],
+                vec![
+                    set(
+                        &["strip", "places", "c", "c-page", "c-title"],
+                        "value",
+                        "Gamma 2",
+                    ),
+                    wire_patch::Patch::Remove {
+                        parent: at(&["strip", "places"]),
+                        key: "c".to_owned(),
+                    },
+                ],
+            ];
+            for patches in steps {
+                let paths: Vec<Vec<String>> = patches
+                    .iter()
+                    .filter_map(|patch| crate::window::changed_at(patch).map(<[String]>::to_vec))
+                    .collect();
+                for patch in patches {
+                    patch.apply(&mut tree).expect("the patch applies");
+                }
+                redraw_changed(&mut drawn, &tree, &paths).expect("drawn again in place");
+                assert_eq!(drawn, normalize_shown(&tree), "after a change at {paths:?}");
+            }
+        });
+    }
+
+    /// An update in place reconciles only the places that changed: every widget of the others
+    /// stands, and what it keeps and builds is what reconciling the whole trees keeps and builds.
+    #[test]
+    fn an_update_in_place_keeps_every_widget_a_whole_update_keeps() {
+        let place = |key: &str, title: &str| {
+            with(
+                node("embed", key),
+                &[],
+                vec![stack(
+                    &format!("{key}-body"),
+                    vec![text(&format!("{key}-title"), title)],
+                )],
+            )
+        };
+        let shell = |a: &str| {
+            stack(
+                "shell",
+                vec![with(
+                    node("row", "strip"),
+                    &[],
+                    vec![with(
+                        node("fragment", "places"),
+                        &[],
+                        vec![place("a", a), place("b", "Beta")],
+                    )],
+                )],
+            )
+        };
+        let (old_tree, new_tree) = (shell("Alpha"), shell("Alpha 2"));
+        let old = normalize_shown(&old_tree);
+
+        let mut whole = reconciler();
+        let mut whole_built = whole.build(&old);
+        let mut before = Vec::new();
+        every_widget(whole_built.as_ref(), &mut before);
+        if let Some(replaced) = whole.update_in(&mut whole_built, &old, &normalize_shown(&new_tree))
+        {
+            whole_built = replaced;
+        }
+        let mut after = Vec::new();
+        every_widget(whole_built.as_ref(), &mut after);
+        let whole_kept: Vec<bool> = after.iter().map(|widget| before.contains(widget)).collect();
+
+        let mut in_place = reconciler();
+        let mut built = in_place.build(&old);
+        let mut before = Vec::new();
+        every_widget(built.as_ref(), &mut before);
+        let mut drawn = old.clone();
+        let path = at(&["strip", "places", "a", "a-body", "a-title"]);
+        let dirt = redraw_changed(&mut drawn, &new_tree, &[path]).expect("drawn in place");
+        let title = drawn
+            .at(&at(&["strip", "places", "a", "a-body", "a-title"]))
+            .expect("the title");
+        assert_eq!(
+            dirt.replaced.keys().copied().collect::<Vec<_>>(),
+            vec![address(title)],
+            "only the text that changed is drawn again"
+        );
+        // The tree moves to where its window keeps it: what changed is found by the nodes the
+        // tree holds, wherever its root stands.
+        let drawn = Box::new(drawn);
+        if let Some(swapped) = in_place.update_changed(&mut built, &drawn, dirt) {
+            built = swapped;
+        }
+        let mut after = Vec::new();
+        every_widget(built.as_ref(), &mut after);
+        let kept: Vec<bool> = after.iter().map(|widget| before.contains(widget)).collect();
+        assert_eq!(kept, whole_kept);
+        assert!(
+            kept.iter().all(|kept| *kept),
+            "a changed value keeps its widget: {kept:?}"
+        );
     }
 
     #[test]

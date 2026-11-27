@@ -291,6 +291,10 @@ pub struct AppWindow {
     /// takes them as its own to present ([`Self::take_pan_asks`]).
     pan_asks: Vec<f64>,
     built: Option<UiNode>,
+    /// Where the root's view changed since [`Self::built`] was drawn of it, by path (keys from its
+    /// root's children down): only its patches changed it. `None` when anything else did, and the
+    /// next composition draws the whole tree anew.
+    patched: Option<Vec<Vec<String>>>,
     rows: Registry,
     /// What each bound control shows, as the app last sent it, by key in the composed tree.
     bound: BoundValues,
@@ -476,6 +480,10 @@ impl AppWindow {
     /// A window receiving its app's views over `transport`, showing `beside` after its shell and
     /// Ask bar (an embedder's endpoints, which take no room).
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one field per part of the window's state"
+    )]
     pub fn new(transport: Box<dyn Transport>, beside: Vec<Element>) -> Self {
         let mut body = Stack::stack()
             .fill_width()
@@ -523,6 +531,7 @@ impl AppWindow {
             events,
             pan_asks: Vec::new(),
             built: None,
+            patched: None,
             rows,
             bound: Rc::default(),
             texts: HashMap::new(),
@@ -997,6 +1006,10 @@ impl AppWindow {
                     }
                     .ok_or("a patch to a view the window does not show")?;
                     for patch in patches {
+                        match (level, changed_at(&patch), self.patched.as_mut()) {
+                            (Level::Root, Some(path), Some(paths)) => paths.push(path.to_vec()),
+                            _ => self.patched = None,
+                        }
                         patch
                             .apply(&mut view.tree)
                             .map_err(|error| error.to_string())?;
@@ -1090,6 +1103,7 @@ impl AppWindow {
         match level {
             Level::Root => {
                 self.root = Some(view);
+                self.patched = None;
                 // What the window's own view showed in place is no part of a view that opened
                 // again.
                 self.shown_in_place = None;
@@ -1168,6 +1182,7 @@ impl AppWindow {
             // kind: each is built again in its place, and a list rebuilds the rows named changed.
             if let Some(rebound) = rebound {
                 self.built = Some(rebound);
+                self.patched = None;
             }
             self.compose();
         }
@@ -1574,17 +1589,15 @@ impl AppWindow {
             self.refresh_bound();
             return;
         }
+        if self.shape == Shape::Part {
+            self.compose_part();
+            return;
+        }
+        self.patched = None;
         let Some(root) = self.root.as_ref() else {
             return;
         };
         let root_tree = crate::reconcile::normalize_shown(&root.tree);
-        if self.shape == Shape::Part {
-            // A shell's part is its view, with no window shell composed around it.
-            self.reconcile_into_pane(&root_tree);
-            self.built = Some(root_tree);
-            self.refresh_bound();
-            return;
-        }
         let root_shell = crate::shell::as_shell(&root_tree);
         let detail_page = self
             .detail
@@ -1685,6 +1698,64 @@ impl AppWindow {
         self.built = Some(composed);
         self.select_shown();
         self.refresh_bound();
+    }
+
+    /// A shell's part is its view, with no window shell composed around it. What its patches
+    /// changed is drawn again and reconciled where it stands; the rest of the tree, and the
+    /// widgets built for it, stand as they are.
+    fn compose_part(&mut self) {
+        let patched = self.patched.replace(Vec::new());
+        if self.detail.is_none()
+            && let Some(paths) = patched
+            && self.redraw_patched(&paths)
+        {
+            self.refresh_bound();
+            return;
+        }
+        let Some(root) = self.root.as_ref() else {
+            return;
+        };
+        let root_tree = crate::reconcile::normalize_shown(&root.tree);
+        self.reconcile_into_pane(&root_tree);
+        self.built = Some(root_tree);
+        self.refresh_bound();
+    }
+
+    /// Draw again what the root's patches changed at `paths`, in the tree built last, and reconcile
+    /// it where it stands: whether it could, or the whole tree is to be drawn anew (its root
+    /// changed, the person moved a command the window relabels, nothing was built yet).
+    fn redraw_patched(&mut self, paths: &[Vec<String>]) -> bool {
+        if self.built.is_none()
+            || !self.drawn.is_empty()
+            || !self
+                .moved
+                .relabels(&self.app_id, |action| self.declared_keys(action))
+                .is_empty()
+        {
+            return false;
+        }
+        if paths.is_empty() {
+            return true;
+        }
+        let (Some(root), Some(built)) = (self.root.as_ref(), self.built.as_mut()) else {
+            return false;
+        };
+        let Some(dirt) = crate::reconcile::redraw_changed(built, &root.tree, paths) else {
+            return false;
+        };
+        let reconciler = Rc::clone(&self.reconciler);
+        let _window = tilo_ui_base::motion::laying_out_window(true);
+        let built = self.built.take();
+        if let (Some(built), Some(pane)) = (built.as_ref(), self.shell_pane()) {
+            let swapped = reconciler
+                .borrow_mut()
+                .update_changed(pane.content_mut(), built, dirt);
+            if let Some(swapped) = swapped {
+                pane.set(swapped);
+            }
+        }
+        self.built = built;
+        true
     }
 
     fn reconcile_into_pane(&mut self, composed: &UiNode) {
@@ -3084,6 +3155,22 @@ fn is_key_press(event: &ui::winit::event::WindowEvent) -> bool {
         ui::winit::event::WindowEvent::KeyboardInput { event: key, .. }
             if key.state == ui::winit::event::ElementState::Pressed && !key.repeat
     )
+}
+
+/// The node whose own shell or children `patch` changes, by path from the root's children down:
+/// `None` for a patch that replaces the root.
+pub(crate) fn changed_at(patch: &wire::Patch) -> Option<&[String]> {
+    match patch {
+        wire::Patch::SetRoot(_) => None,
+        wire::Patch::Insert { parent, .. }
+        | wire::Patch::Remove { parent, .. }
+        | wire::Patch::Move { parent, .. } => Some(parent),
+        wire::Patch::SetProp { path, .. }
+        | wire::Patch::SetBinding { path, .. }
+        | wire::Patch::SetEvent { path, .. }
+        | wire::Patch::SetAnchor { path, .. }
+        | wire::Patch::SpliceProp { path, .. } => Some(path),
+    }
 }
 
 fn composed_key(level: Level, key: &str) -> String {

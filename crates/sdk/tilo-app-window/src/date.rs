@@ -88,7 +88,8 @@ fn said_by_heading(node: &UiNode, name: &str, heading: &str) -> bool {
 /// prop. `None` where it names none, and where the group is the day a row was done on.
 #[must_use]
 pub fn group_heading(node: &UiNode) -> Option<String> {
-    if done_day(node, "group") {
+    // Most nodes head nothing: they hold no day in a group at all.
+    if !node.props.contains_key("group:as") || done_day(node, "group") {
         return None;
     }
     day_heading(node, "group")
@@ -127,6 +128,24 @@ pub fn heading_of(node: &UiNode) -> Option<String> {
 /// names no time.
 #[must_use]
 pub fn under_headings(node: UiNode) -> UiNode {
+    under_heading(node, None)
+}
+
+/// The heading [`under_headings`] holds over the node at `path` (keys from `tree`'s children
+/// down), as `tree`'s nodes over it say it: what a subtree read on its own stands under
+/// ([`under_heading`]).
+pub(crate) fn heading_at(tree: &UiNode, path: &[String]) -> Option<String> {
+    let mut node = tree;
+    let mut heading: Option<String> = None;
+    for key in path {
+        heading = heading_of(node).or_else(|| group_heading(node)).or(heading);
+        node = node.children.iter().find(|child| child.key == *key)?;
+    }
+    heading
+}
+
+/// [`under_headings`] of a subtree that stands under `heading`.
+pub(crate) fn under_heading(node: UiNode, heading: Option<&str>) -> UiNode {
     fn walk(mut node: UiNode, heading: Option<&str>) -> UiNode {
         let here = heading_of(&node)
             .or_else(|| group_heading(&node))
@@ -157,7 +176,7 @@ pub fn under_headings(node: UiNode) -> UiNode {
             .collect();
         node
     }
-    walk(node, None)
+    walk(node, heading)
 }
 
 fn done_day(node: &UiNode, name: &str) -> bool {

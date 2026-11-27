@@ -41,10 +41,6 @@ fn shell_kind() -> String {
     kind("NavShell")
 }
 
-fn list_kind() -> String {
-    kind("VirtualList")
-}
-
 #[must_use]
 pub fn shell_of(tree: &UiNode) -> Option<&UiNode> {
     if tree.kind == shell_kind() {
@@ -193,7 +189,7 @@ pub fn titled_lists(mut node: UiNode) -> UiNode {
     node
 }
 
-type Title = (String, Option<i64>);
+pub(crate) type Title = (String, Option<i64>);
 
 fn content_title(node: &UiNode) -> Option<Title> {
     let words = match node.props.get("title") {
@@ -207,16 +203,41 @@ fn content_title(node: &UiNode) -> Option<Title> {
     Some((words, count))
 }
 
+/// The title [`titled_lists`] hands the node at `path` (keys from `tree`'s children down), as
+/// `tree`'s nodes over it hand it down: what a subtree normalized on its own is handed
+/// ([`hand_title`]).
+pub(crate) fn title_at(tree: &UiNode, path: &[String]) -> Option<Title> {
+    let mut node = tree;
+    let mut title: Option<Title> = None;
+    for key in path {
+        let shell = is_shell(node);
+        let here = if shell { content_title(node) } else { title };
+        let child = node.children.iter().find(|child| child.key == *key)?;
+        title = (!shell || is_content_part(child)).then_some(here).flatten();
+        node = child;
+    }
+    title
+}
+
+fn is_shell(node: &UiNode) -> bool {
+    crate::adapter::component_name(&node.kind) == Some("NavShell")
+}
+
+fn is_content_part(child: &UiNode) -> bool {
+    child.kind == PART
+        && matches!(child.props.get("name"), Some(Value::Text(name)) if name == "content")
+}
+
 /// Hand `title` down the tree: into a list that stands in it, and into what the tree holds.
-fn hand_title(node: &mut UiNode, title: Option<&Title>) {
-    let shell = node.kind == shell_kind();
+pub(crate) fn hand_title(node: &mut UiNode, title: Option<&Title>) {
+    let shell = is_shell(node);
     let here = if shell {
         content_title(node)
     } else {
         title.cloned()
     };
     if let Some((words, count)) = &here
-        && node.kind == list_kind()
+        && crate::adapter::component_name(&node.kind) == Some("VirtualList")
     {
         node.props
             .insert(VIEW_TITLE.to_owned(), Value::Text(words.clone()));
@@ -227,9 +248,7 @@ fn hand_title(node: &mut UiNode, title: Option<&Title>) {
     }
     for child in &mut node.children {
         // A shell gives its title to the column it heads, and none to the others.
-        let content = !shell
-            || (child.kind == PART
-                && matches!(child.props.get("name"), Some(Value::Text(name)) if name == "content"));
+        let content = !shell || is_content_part(child);
         if content {
             hand_title(child, here.as_ref());
         } else {
