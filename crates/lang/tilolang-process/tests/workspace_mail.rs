@@ -113,6 +113,10 @@ fn policy(workspace: uuid::Uuid) -> WorkspacePolicy {
 
 fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundle>) -> Member {
     let route = tilolang_process::route_of(&bundle.meta, workspace, person);
+    // The workspace's members' resource names who is in it, as its governance publishes it: what
+    // every window reads the people it shows, and who may read, from.
+    bus.member(collaboration::MemberId::person(ADA), "Ada");
+    bus.member(collaboration::MemberId::person(BO), "Bo");
     let broker = Broker::on(bus, route.clone(), person);
     let (inbox, sent) = (broker.inbox(), broker.sent());
     let mut manager = CollaborationManager::with_peer_transport(broker);
