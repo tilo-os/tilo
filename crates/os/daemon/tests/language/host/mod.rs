@@ -193,6 +193,30 @@ where
     F: FnOnce(Arc<Host>) -> Fut,
     Fut: Future<Output = ()>,
 {
+    run_daemon(apps, rust, false, body);
+}
+
+/// [`run_with`], with the daemon deciding every change against the surfaces of the apps
+/// installed here, as the daemon's program does from its first line
+/// ([`tilo_runtime::cli::decide_against_installed_surfaces`]): a change whose app surface
+/// does not declare what it writes is held back or refused here as on a computer.
+///
+/// # Panics
+///
+/// As [`run_with`].
+pub fn run_deciding<F, Fut>(apps: &[&str], body: F)
+where
+    F: FnOnce(Arc<Host>) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    run_daemon(apps, &[], true, body);
+}
+
+fn run_daemon<F, Fut>(apps: &[&str], rust: &[(&str, &str)], deciding: bool, body: F)
+where
+    F: FnOnce(Arc<Host>) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let test = std::thread::current()
         .name()
         .expect("libtest names a test's thread after the test")
@@ -206,6 +230,9 @@ where
     // What the daemon's program mounts, the language runtime among them, as a computer mounts it:
     // the built-in apps' records and the account the device serves are here as they are on a
     // computer running the program.
+    if deciding {
+        tilo_runtime::cli::decide_against_installed_surfaces();
+    }
     tilo_runtime::device::capabilities::mount(tilo_daemon::capabilities());
     let host = Arc::new(Host::start(&profile));
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -63,8 +63,9 @@ fn keep_content(content: &tilo_content::ContentStore, bytes: &[u8]) {
 /// Decide changes against the app surfaces that live in the content store the apps this runtime
 /// hosts keep their content in, and in the store of the apps this device installed: an app
 /// another process of this device installed after the daemon started is one whose signed surface
-/// this process was never handed, and its changes are decided by it.
-fn decide_against_installed_surfaces() {
+/// this process was never handed, and its changes are decided by it. The program does this
+/// before anything else; a test that runs the daemon as the program does too.
+pub fn decide_against_installed_surfaces() {
     let content = tilo_content_device::for_app();
     tilo_app_host::decide_receipt_against_surfaces(move |_, hash| {
         content

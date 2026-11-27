@@ -443,6 +443,18 @@ pub fn check_claims(
             let store_member = store_verb.is_some();
             let kind = match member {
                 ClaimedAction::Verb { .. } if store_member => ActionKind::Undoable,
+                // The whole-record edit beside the verb grants nothing and only bounds what the
+                // verb wrote: it is of the record's kind, whether or not the record offers any
+                // field to edit directly (a record its verbs alone write, the vault's among them).
+                ClaimedAction::Edit { kind, path } if store_member && path.is_empty() => {
+                    if !kind.is_empty() && kind != surface.kind() {
+                        return Err(ReceiptRefusal::NotPublished(format!(
+                            "field edit at {}",
+                            unit_label(path)
+                        )));
+                    }
+                    ActionKind::Undoable
+                }
                 _ => published_kind(document, surface, member)?,
             };
             let kind = match kind {
@@ -999,7 +1011,8 @@ fn per_kind(claim: ChangeClaim) -> Vec<ChangeClaim> {
 
 /// Refuse a change to a resource store's document that claims no kind of the records it writes:
 /// the document has no kind of its own to decide it against, so a claim naming none cannot be
-/// resolved without guessing. `replay` for a write admitted before changes claimed their kinds,
+/// resolved without guessing. A content document holds one record, whose kind its id names: a
+/// change of it that names no kind (its genesis) is of that kind. `replay` for a write admitted before changes claimed their kinds,
 /// which is decided as it was admitted (`collab_admission::decide_op_replayed`).
 ///
 /// # Errors
@@ -1009,7 +1022,10 @@ pub fn check_store_kinds(
     document: &WrittenDocument<'_>,
     replay: bool,
 ) -> Result<(), ReceiptRefusal> {
-    if replay || !crate::is_store_document(document.document) {
+    if replay
+        || !crate::is_store_document(document.document)
+        || crate::claim::content_kind(document.document).is_some()
+    {
         return Ok(());
     }
     if claims
