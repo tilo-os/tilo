@@ -910,37 +910,68 @@ fn a_save_grants_writing_the_node_and_keeps_the_record() {
 }
 
 #[test]
-fn a_mounts_index_is_what_names_a_node_and_a_path_that_is_not_its_record_is_refused() {
+fn a_mounts_index_names_a_node_only_inside_a_workspaces_tree() {
     let mount = tempfile::tempdir().unwrap();
-    let folder = mount.path().join("notes");
-    std::fs::create_dir(&folder).unwrap();
+    let tree = format!("{}/{FILES_WORKSPACE}", tilo_paths::WORKSPACE_TREES_DIR);
+    let folder = mount.path().join(&tree).join("notes");
+    std::fs::create_dir_all(&folder).unwrap();
     let file = folder.join("plan.txt");
     std::fs::write(&file, "Spring planting").unwrap();
-    let id = fs_protocol::FileDocumentId::new();
-    let index = fs_protocol::projection::DocumentIndexExactV2 {
-        schema_version: fs_protocol::projection::DOCUMENT_INDEX_V2_VERSION,
-        revision: "ab".repeat(32),
-        record: fs_protocol::projection::DocumentIndexEntryV1 {
-            document_id: id,
-            path: "/notes/plan.txt".to_owned(),
-            is_dir: false,
-        },
+    let beside = mount.path().join("plan.txt");
+    std::fs::write(&beside, "at the mount's root").unwrap();
+    let index = |id: fs_protocol::FileDocumentId, path: &str| {
+        let index = fs_protocol::projection::DocumentIndexExactV2 {
+            schema_version: fs_protocol::projection::DOCUMENT_INDEX_V2_VERSION,
+            revision: "ab".repeat(32),
+            record: fs_protocol::projection::DocumentIndexEntryV1 {
+                document_id: id,
+                path: path.to_owned(),
+                is_dir: false,
+            },
+        };
+        let name = format!(
+            "{}{}",
+            fs_protocol::projection::DOCUMENT_INDEX_BY_ID_XATTR_PREFIX,
+            id.0
+        );
+        host_fs::attributes::set(mount.path(), name, &serde_json::to_vec(&index).unwrap())
+            .expect("the tests' filesystem keeps user attributes, as a mount's does");
     };
-    let name = format!(
-        "{}{}",
-        fs_protocol::projection::DOCUMENT_INDEX_BY_ID_XATTR_PREFIX,
-        id.0
-    );
-    host_fs::attributes::set(mount.path(), name, &serde_json::to_vec(&index).unwrap())
-        .expect("the tests' filesystem keeps user attributes, as a mount's does");
-    let resolved = super::mounted_node(mount.path(), FILES_WORKSPACE, id, Some(&file))
+    let id = fs_protocol::FileDocumentId::new();
+    index(id, &format!("/{tree}/notes/plan.txt"));
+    let resolved = super::mounted_node(mount.path(), None, id, Some(&file))
         .expect("the mount names where its record is");
     assert_eq!(resolved.host, file);
+    assert_eq!(
+        resolved.workspace, FILES_WORKSPACE,
+        "the node is of the workspace whose tree it lies in"
+    );
     assert!(!resolved.directory);
+    assert!(
+        super::mounted_node(mount.path(), Some(FILES_WORKSPACE), id, None).is_some(),
+        "a reference to the node in its own workspace finds it"
+    );
+    assert!(
+        super::mounted_node(
+            mount.path(),
+            Some("22222222-2222-4222-8222-222222222222"),
+            id,
+            None
+        )
+        .is_none(),
+        "a reference naming another workspace does not reach it"
+    );
     // A file that carries another record's path is not the record.
     assert!(
-        super::mounted_node(mount.path(), FILES_WORKSPACE, id, Some(mount.path())).is_none(),
+        super::mounted_node(mount.path(), None, id, Some(mount.path())).is_none(),
         "a path its record does not name is refused"
+    );
+    // A file at the mount's root lies in no workspace: it is no node, whoever asks.
+    let at_root = fs_protocol::FileDocumentId::new();
+    index(at_root, "/plan.txt");
+    assert!(
+        super::mounted_node(mount.path(), None, at_root, Some(&beside)).is_none(),
+        "the mount's root is no workspace's"
     );
 }
 

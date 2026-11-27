@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::Launches;
 
-/// The login unit that serves the person's own workspace.
+/// The login unit that serves the files of the workspace the session runs.
 const UNIT: &str = "tilo-files-workspace.service";
 /// The app whose endpoint the daemon is: the one that keeps the tree record.
 use ui::apps::FILE_EXPLORER as FILES_APP;
@@ -24,14 +24,10 @@ const WAIT: Duration = Duration::from_secs(30);
 /// How often it looks while waiting.
 const STEP: Duration = Duration::from_millis(200);
 
-/// Record the files daemon's launch on `cluster`, the person's own workspace,
-/// when the login runs it: it is admitted for each workspace it names. A session in another desktop's window serves no
-/// files daemon of its own, so it records none.
-pub fn record(launches: Arc<Launches>, cluster: Option<String>) {
-    let Some(cluster) = cluster else {
-        // No identity yet: the daemon's connections reach nothing, as before.
-        return;
-    };
+/// Record the files daemon's launch when the login runs it: it is admitted for each workspace it
+/// names. A session in another desktop's window serves no files daemon of its own, so it records
+/// none.
+pub fn record(launches: Arc<Launches>) {
     let recorded = std::thread::Builder::new()
         .name("tilo-files-endpoint".into())
         .spawn(move || {
@@ -42,7 +38,7 @@ pub fn record(launches: Arc<Launches>, cluster: Option<String>) {
                 );
                 return;
             };
-            launches.endpoint(pid, FILES_APP, &cluster);
+            launches.endpoint(pid, FILES_APP);
         });
     if let Err(error) = recorded {
         tracing::warn!(%error, "the files daemon's launch cannot be recorded");

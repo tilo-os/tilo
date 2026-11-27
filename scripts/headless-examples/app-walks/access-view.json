@@ -42,7 +42,7 @@
             "tl.so.tilo.file-explorer.Files",
             "show",
             {
-              "path": "/var/workspace"
+              "path": "$FILES"
             }
           ]
         },
@@ -91,7 +91,7 @@
         },
         {
           "choose": {
-            "path": "/var/workspace/Shared plan.md"
+            "path": "$FILES/Shared plan.md"
           }
         },
         {
@@ -113,7 +113,7 @@
             "tl.so.tilo.file-explorer.Files",
             "show",
             {
-              "path": "/var/workspace"
+              "path": "$FILES"
             }
           ]
         },
@@ -144,7 +144,7 @@
         {
           "must": [
             "Notes",
-            "/var/workspace/Shared plan.md",
+            "$FILES/Shared plan.md",
             "Take back"
           ]
         }
@@ -163,7 +163,7 @@
         },
         {
           "must_not": [
-            "/var/workspace/Shared plan.md"
+            "$FILES/Shared plan.md"
           ]
         }
       ]
@@ -180,7 +180,7 @@
             "tl.so.tilo.file-explorer.Files",
             "show",
             {
-              "path": "/var/workspace"
+              "path": "$FILES"
             }
           ]
         },
@@ -218,7 +218,7 @@
             "tl.so.tilo.file-explorer.Files",
             "show",
             {
-              "path": "/var/workspace"
+              "path": "$FILES"
             }
           ]
         },

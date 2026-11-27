@@ -790,10 +790,7 @@ fn start(
     // one only when its run names the process that does — the session then attests that process
     // and nothing beside it.
     if machine.is_owned() || tilo_session::files_daemon::named_endpoint().is_some() {
-        tilo_session::files_daemon::record(
-            Arc::clone(&options.launches),
-            person_workspace(&tilo_session::identity::own_person(&options)),
-        );
+        tilo_session::files_daemon::record(Arc::clone(&options.launches));
     }
     // A headless session has no input device: nothing the person does can ever reset its idle
     // timers, so they would only blank and lock it.
@@ -1454,11 +1451,3 @@ fn search_options() -> tilo_session::SearchOptions {
 
 #[cfg(not(target_os = "linux"))]
 fn main() {}
-
-/// The person's own workspace, from their root key in hex; `None` before there is one.
-#[cfg(target_os = "linux")]
-fn person_workspace(person: &str) -> Option<String> {
-    let mut root = [0_u8; 32];
-    hex::decode_to_slice(person, &mut root).ok()?;
-    Some(tilo_server_protocol::servers::person_workspace_id(&root))
-}

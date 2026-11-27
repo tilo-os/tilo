@@ -376,7 +376,7 @@ pub(crate) fn launch_binds(
         let id = fs_protocol::FileDocumentId(id);
         let Some(node) = tilo_app_launch::downloaded::workspace_roots()
             .iter()
-            .find_map(|root| mounted_node(root, workspace, id, None))
+            .find_map(|root| mounted_node(root, Some(workspace), id, None))
         else {
             continue;
         };
@@ -412,12 +412,6 @@ pub(crate) struct PolicyFiles {
 impl PolicyFiles {
     pub(crate) fn new(view: Arc<crate::workspace_view::WorkspaceView>, person: String) -> Self {
         Self { view, person }
-    }
-
-    /// The workspace the mounts serve: the person's own, whose tree a device's filesystem
-    /// publishes.
-    fn workspace(&self) -> Option<String> {
-        tilo_action_policy::roles::workspace_of_person(&self.person)
     }
 
     /// Write `change` into `workspace`'s governance as this device, waiting for the workspace to
@@ -457,7 +451,6 @@ impl PolicyFiles {
 impl WorkspaceFiles for PolicyFiles {
     fn node(&self, host: &Path) -> Option<WorkspaceNode> {
         let host = host.canonicalize().ok()?;
-        let workspace = self.workspace()?;
         let id = {
             let bytes = host_fs::attributes::get(&host, collab_types::document::DOCUMENT_ID_XATTR)
                 .ok()
@@ -465,19 +458,16 @@ impl WorkspaceFiles for PolicyFiles {
             fs_protocol::FileDocumentId(uuid::Uuid::from_slice(&bytes).ok()?)
         };
         // The record's own binding says where it is: a file that carries another record's id is
-        // not that record.
+        // not that record. Its workspace is the tree it lies in.
         tilo_app_launch::downloaded::workspace_roots()
             .iter()
-            .find_map(|root| mounted_node(root, &workspace, id, Some(&host)))
+            .find_map(|root| mounted_node(root, None, id, Some(&host)))
     }
 
     fn node_at(&self, workspace: &str, id: fs_protocol::FileDocumentId) -> Option<WorkspaceNode> {
-        if self.workspace().as_deref() != Some(workspace) {
-            return None;
-        }
         tilo_app_launch::downloaded::workspace_roots()
             .iter()
-            .find_map(|root| mounted_node(root, workspace, id, None))
+            .find_map(|root| mounted_node(root, Some(workspace), id, None))
     }
 
     fn create(&self, host: &Path, choice: Choice) -> Option<WorkspaceNode> {
@@ -487,9 +477,16 @@ impl WorkspaceFiles for PolicyFiles {
         let parent = host.parent()?.canonicalize().ok()?;
         tilo_app_launch::downloaded::workspace_roots()
             .into_iter()
-            .find(|root| parent.starts_with(root))?;
-        // A save makes the file where the person asked for it, in their own tree: the mount gives
-        // it the record the grant is written on.
+            .find(|root| {
+                parent
+                    .strip_prefix(root)
+                    .ok()
+                    .and_then(tree_workspace)
+                    .is_some()
+            })?;
+        // A save makes the file where the person asked for it, in the workspace's tree it lies in:
+        // the mount gives it the record the grant is written on. A file at the mount's root lies
+        // in no workspace, and is no node.
         std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -589,11 +586,31 @@ fn grant_id(node: &WorkspaceNode, app: &str, write: bool) -> String {
     )
 }
 
-/// The node `id` names in the workspace whose tree `root` mounts, when its record's path is
-/// `expected` (or anywhere, for a reference naming the node alone).
+/// The workspace whose tree `relative`, a path within a mount, lies in: `.workspaces/<id>/…`.
+/// Nothing else of a mount is any workspace's.
+fn tree_workspace(relative: &Path) -> Option<String> {
+    let mut parts = relative.components();
+    let std::path::Component::Normal(trees) = parts.next()? else {
+        return None;
+    };
+    let std::path::Component::Normal(workspace) = parts.next()? else {
+        return None;
+    };
+    if trees != tilo_paths::WORKSPACE_TREES_DIR {
+        return None;
+    }
+    let workspace = workspace.to_str()?;
+    tilo_desktop_model::WorkspaceId::parse(workspace)
+        .filter(|id| id.to_string() == workspace)
+        .map(|_| workspace.to_owned())
+}
+
+/// The node `id` names in the mount at `root`, when its record's path is `expected` (or
+/// anywhere, for a reference naming the node alone) and lies in a workspace's tree: in
+/// `workspace`'s when one is named.
 fn mounted_node(
     root: &Path,
-    workspace: &str,
+    workspace: Option<&str>,
     id: fs_protocol::FileDocumentId,
     expected: Option<&Path>,
 ) -> Option<WorkspaceNode> {
@@ -619,6 +636,10 @@ fn mounted_node(
     {
         return None;
     }
+    let in_tree = tree_workspace(path)?;
+    if workspace.is_some_and(|workspace| workspace != in_tree) {
+        return None;
+    }
     let host = root.join(path);
     if let Some(expected) = expected
         && host.canonicalize().ok()? != expected
@@ -626,7 +647,7 @@ fn mounted_node(
         return None;
     }
     Some(WorkspaceNode {
-        workspace: workspace.to_owned(),
+        workspace: in_tree,
         id,
         host,
         directory: exact.record.is_dir,

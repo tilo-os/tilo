@@ -648,18 +648,18 @@ async fn serve(
     let store = Arc::new(open_workspace_store(cache_dir.clone(), &backend, workspace_id).await?);
     let author = hex::encode(credentials.device_public_key());
     let fresh = np.as_ref().is_none_or(|dir| !namespace_kept(dir));
-    // This mount's tree, as the Files resources of the person's own workspace, synced through
-    // this device's workspace service, which the session serves the trees of. This daemon is the
-    // app's endpoint, so what changes here reaches the person's other devices and the members of
-    // a shared workspace. A tree kept here before the person's own workspace had it goes into it
-    // as this device's write the first time the sync runs, signed as every other change of it is.
+    // This mount's tree, as the Files resources of one workspace, synced through this device's
+    // workspace service, which the device daemon serves the trees of. This daemon is the app's
+    // endpoint, so what changes here reaches the person's other devices and the workspace's
+    // members. The workspace's files are the tree under its id (`.workspaces/<id>`); the mount's
+    // root holds no one's files.
     let workspace =
         tilo_server_protocol::servers::person_workspace_id(&credentials.user_public_key());
     let trees = tree_socket(backend.native_owner.as_deref())?;
     let (tree, namespace, kept, service) = open_tree(
         np.as_deref(),
         trees,
-        workspace,
+        workspace.clone(),
         &credentials,
         author,
         &store,
@@ -696,12 +696,19 @@ async fn serve(
 
     if fresh {
         if let Some(seed) = seed {
-            seed_from_dir(&namespace, &store, &seed).await?;
+            let home = workspace_home(&namespace, &workspace)?;
+            seed_from_dir(&namespace, &store, home, &seed).await?;
             println!("Seeded workspace from {}", seed.display());
         }
     } else if let Some(p) = &np {
         println!("Restored workspace from {}", p.display());
     }
+    let _home = keep_workspace_home(
+        tree.as_ref()
+            .map(tilo_fs::tree_sync::TreeSync::status_changes),
+        Arc::clone(&namespace),
+        workspace,
+    );
 
     let media = blob_sock
         .as_deref()
@@ -1110,12 +1117,62 @@ impl StopSignals {
     }
 }
 
+/// The folder of `workspace`'s own files in the mount's tree, `.workspaces/<id>`, made where the
+/// tree has none: where a person's files of that workspace go. The mount's root is no one's.
+fn workspace_home(namespace: &Arc<Mutex<Namespace>>, workspace: &str) -> Result<u64> {
+    anyhow::ensure!(
+        tilo_paths::is_workspace_tree_id(workspace),
+        "{workspace:?} names no workspace's folder"
+    );
+    home_in(&mut namespace.lock_recover(), workspace)
+}
+
+/// [`workspace_home`] in `namespace`.
+fn home_in(namespace: &mut Namespace, workspace: &str) -> Result<u64> {
+    let mut parent = ROOT_INO;
+    let mut walked = String::new();
+    for folder in [tilo_paths::WORKSPACE_TREES_DIR, workspace] {
+        if !walked.is_empty() {
+            walked.push('/');
+        }
+        walked.push_str(folder);
+        parent = match namespace.resolve_path_ino(&walked) {
+            Some(ino) => ino,
+            None => namespace
+                .create_dir(parent, folder, unix_now_ms())
+                .with_context(|| format!("make the workspace's folder {walked}"))?,
+        };
+    }
+    Ok(parent)
+}
+
+/// Make `workspace`'s folder once the tree holds what the workspace has (`status` says the host
+/// answered for it), so a folder another device made already is the one used; a tree synced
+/// with nothing makes it now.
+fn keep_workspace_home(
+    status: Option<tokio::sync::watch::Receiver<tilo_fs::tree_sync::Status>>,
+    namespace: Arc<Mutex<Namespace>>,
+    workspace: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Some(mut status) = status
+            && status.wait_for(|status| status.opened).await.is_err()
+        {
+            return;
+        }
+        if let Err(error) = workspace_home(&namespace, &workspace) {
+            eprintln!("the workspace's folder: {error:#}");
+        }
+    })
+}
+
 async fn seed_from_dir(
     namespace: &Arc<Mutex<Namespace>>,
     store: &Arc<ContentStore>,
+    home: u64,
     root: &Path,
 ) -> Result<()> {
-    let mut stack = vec![(ROOT_INO, root.to_path_buf())];
+    let mut stack = vec![(home, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;

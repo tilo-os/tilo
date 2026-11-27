@@ -263,13 +263,14 @@ impl Launches {
         );
     }
 
-    /// Record that `pid`, a process this session did not start, runs `app` in `workspace` with no
-    /// window: an endpoint of the app's records the login runs beside this session, such as the
-    /// Files daemon. Its connections are admitted as the app's and take its actions on its records,
-    /// for every workspace it names, since the endpoint serves them all; an `open` is never handed
-    /// to it. A pid whose process cannot be read is recorded by nothing.
-    pub fn endpoint(&self, pid: u32, app: &str, workspace: &str) {
-        self.record(pid, app, workspace, false, true);
+    /// Record that `pid`, a process this session did not start, runs `app` with no window: an
+    /// endpoint of the app's records the login runs beside this session, such as the Files
+    /// daemon. Its connections are admitted as the app's and take its actions on its records, for
+    /// every workspace it names, since the endpoint serves them all; it has no workspace of its
+    /// own, and an `open` is never handed to it. A pid whose process cannot be read is recorded by
+    /// nothing.
+    pub fn endpoint(&self, pid: u32, app: &str) {
+        self.record(pid, app, "", false, true);
         if let Some(launch) = self.started.lock_recover().get_mut(&pid) {
             launch.every_workspace = true;
         }
@@ -370,7 +371,7 @@ impl Launches {
     /// The workspace of the launch that `pid` is or was started by, when it runs `app` : the app a
     /// connection came from, as the window it names.
     pub fn workspace_of(&self, pid: u32, app: &str) -> Option<String> {
-        self.ancestor(pid, |launch| launch.app == app)
+        self.ancestor(pid, |launch| launch.app == app && !launch.every_workspace)
             .map(|(_, launch)| launch.workspace)
     }
 
@@ -799,7 +800,7 @@ mod tests {
                 .arg("30")
                 .spawn_locked()
                 .expect("a process to launch");
-            launches.endpoint(child.id(), app, workspace);
+            launches.endpoint(child.id(), app);
 
             assert!(
                 launches

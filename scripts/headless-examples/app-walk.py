@@ -1676,6 +1676,7 @@ class Walk:
         each op acts on `self.session`, which is that device's session while it runs."""
         device, op = split_on(op, self.step_on)
         (name, value), = op.items()
+        value = self.with_files(value)
         handler = getattr(self, f"op_{name}", None)
         if handler is None:
             raise Failed(f"the step names an op this walk has no way to do: {name!r}")
@@ -1684,6 +1685,22 @@ class Walk:
         if self.devices is None:
             raise Failed(f"the op names the device {device!r}, and the walk names no devices")
         return self.on_device(device, lambda: handler(value) or {})
+
+    #: What a step writes for the folder of the workspace the session runs, where the person's
+    #: files are (`files`): the workspace's id is minted per run, so no step can name it.
+    FILES = "$FILES"
+
+    def with_files(self, value):
+        """`value` with every string's leading `$FILES` read as the person's files folder."""
+        if isinstance(value, str):
+            if value == self.FILES or value.startswith(self.FILES + "/"):
+                return str(self.files()) + value[len(self.FILES):]
+            return value
+        if isinstance(value, list):
+            return [self.with_files(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self.with_files(item) for key, item in value.items()}
+        return value
 
     def on_device(self, device: str, run):
         """`run()` with `device`'s session as the walk's: what it presses, reads and shoots is
@@ -2974,14 +2991,26 @@ class Walk:
         return {"closed": True}
 
     def files(self) -> Path:
-        """Where a person's files are: the workspace the machine serves the signed-in
-        person's session at (`TILO_WORKSPACE_ROOTS`, as a device's login gives it), or the
-        session's own home where the walk runs on a machine that serves none (a
-        developer's own desktop). A step's fixture is written in the one tree the apps
-        read, never in a second beside it."""
+        """Where a person's files are: the folder of the workspace the session runs in the
+        mount the machine serves (`TILO_WORKSPACE_ROOTS/.workspaces/<id>`, as a device's
+        login gives it), or the session's own home where the walk runs on a machine that
+        serves none (a developer's own desktop). The mount's root is no one's: a file
+        written there lies outside every workspace. A step's fixture is written in the
+        one tree the apps read, never in a second beside it."""
         if self.machine is not None and self.machine.account is not None:
-            return self.machine.WORKSPACE
+            return self.workspace_folder()
         return self.session.state / "home"
+
+    def workspace_folder(self) -> Path:
+        """The folder of the workspace the session runs in the machine's mount, once the
+        files daemon serving that workspace has made it."""
+        workspace = until_value(
+            "the workspace the session runs",
+            lambda: ((self.session.state_dump() or {}).get("workspace_tree") or {})
+            .get("active"), 60)
+        folder = self.machine.WORKSPACE / ".workspaces" / workspace
+        until(f"the workspace's folder {folder} in the mount", folder.is_dir, 120.0, 0.2)
+        return folder
 
     def place(self, source: Path, name: str) -> Path:
         """`source`'s bytes at `name` where the person's files are, written as the session
