@@ -719,18 +719,20 @@ class MachineDaemon:
             shutil.copyfile(self.state / "keys/runtime-publishers.txt", publishers)
         else:
             publishers.touch()
-        # The daemon's group writes the user store; every account reads the system store. What
-        # the image ships stays the image's, and the daemon's own files keep its umask.
-        group = self.account.pw_gid if self.account is not None else 0
+        # The person's store is the person's: the session installs there, and the store chmods
+        # what it makes. Every account reads the system store, and what the image ships stays the
+        # image's. The daemon runs as root and reads or writes the person's store beside them.
+        owner = self.account.pw_uid if self.account is not None else os.getuid()
+        group = self.account.pw_gid if self.account is not None else os.getgid()
         for path in [self.IMAGE, *self.IMAGE.rglob("*")]:
-            os.chown(path, 0, group, follow_symlinks=False)
+            within_user = path == user or user in path.parents
+            os.chown(path, owner if within_user else 0, group, follow_symlinks=False)
             if path.is_symlink():
                 continue
-            within_user = path == user or user in path.parents
             if path.is_dir():
-                path.chmod(0o770 if within_user else 0o750)
+                path.chmod(0o755 if within_user else 0o750)
             else:
-                path.chmod(0o660 if within_user else 0o440)
+                path.chmod(0o644 if within_user else 0o440)
         self.IMAGE.chmod(0o750)
         return system, publishers, user
 
