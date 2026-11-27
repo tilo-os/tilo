@@ -549,6 +549,24 @@ pub(crate) struct Session {
     asks: Vec<Asked>,
     /// How many of the requests the instance sent the dispatch has read.
     dispatched: usize,
+    /// The other apps installed in the workspace that the host runs beside the window's: the
+    /// dispatch delivers the window's calls of their actions to them, and their answers back.
+    served: Vec<Served>,
+}
+
+/// Another installed app's instance in the session's host, on a connection of its own to the
+/// window's workspace, as the dispatch reaches it with a call of its action.
+struct Served {
+    app: String,
+    /// Its window, drawn as the host's other windows are: what its instance shows goes somewhere.
+    window: Window,
+    sent: Sent,
+    inbox: Inbox,
+    /// How many of the requests it sent the dispatch has read.
+    dispatched: usize,
+    /// The calls delivered to it, by the id it answers each under: the invocation its caller
+    /// waits on.
+    calls: std::collections::BTreeMap<u64, ui::tilo_actions::InvocationId>,
 }
 
 /// A call of the window's own app's action that its code sent through the dispatch: one the
@@ -656,7 +674,8 @@ impl Session {
     }
 
     /// A person at a Today window the live `App` runs, the workspace having Tasks and Notes
-    /// installed as the apps of their own resources it reads.
+    /// installed as the apps of their own resources it reads: the host runs them too, and the
+    /// dispatch delivers what Today calls of their actions to them.
     fn today(window: impl FnOnce(HostedWindow) -> Window) -> Self {
         let route = RouteSpec::app(TODAY, uuid::Uuid::new_v4());
         let mut spec =
@@ -664,9 +683,62 @@ impl Session {
         for app in [TASKS, NOTES] {
             spec.installed.insert(app.to_owned(), app.to_owned());
         }
-        let mut session = Self::brokered_as(&route, spec, window);
+        let bus = Rc::new(tilolang_process::testing::Bus::default());
+        let broker = Broker::on(&bus, route.clone(), &spec.person);
+        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
+        let manager = CollaborationManager::with_peer_transport(broker);
+        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
+        let mut session = Self::launch(manager, &route, spec, wire, window);
+        for app in [TASKS, NOTES] {
+            session.serve(&bus, &RouteSpec::app(app, route.cluster_id));
+        }
         session.settle();
         session
+    }
+
+    /// Run the app of `route` in the session's host for its person, on a connection of its own on
+    /// `bus`: an installed app the dispatch delivers the window's calls of its actions to.
+    fn serve(&mut self, bus: &Rc<tilolang_process::testing::Bus>, route: &RouteSpec) {
+        let spec = spec_of(route, &self.person);
+        let app = spec.app.clone();
+        let broker = Broker::on(bus, route.clone(), &spec.person);
+        let (sent, inbox) = (broker.sent(), broker.inbox());
+        let mut manager = CollaborationManager::with_peer_transport(broker);
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id,
+            record: None,
+            resource_type: None,
+            handle: Some(spec.person.clone()),
+        }));
+        let early = manager.poll();
+        let connection = tilolang_process::connection::Connection::new(manager)
+            .expect("the connection joins its route");
+        let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(connection.port(None)));
+        let (ours, theirs) = Channel::pair().expect("a patch connection");
+        let watched = std::os::fd::AsFd::as_fd(&ours)
+            .try_clone_to_owned()
+            .expect("the window's connection is watched");
+        let mut hosted = Hosted::new(
+            spec,
+            connection,
+            (store, tilolang_process::hosted::memory_content()),
+            package(package_of(&app)),
+            &tilolang_process::hosted::Kept::default(),
+            Box::new(ChannelTransport::new(ours).expect("the window's transport")),
+            (&Rc::new(Phrases::new("en-US")), self.host.formats()),
+            self.woken.waker(),
+        );
+        hosted.arrived_early(early);
+        self.host.add(hosted, Some(watched));
+        self.served.push(Served {
+            app,
+            window: Window::in_harness(HostedWindow::over(theirs)),
+            sent,
+            inbox,
+            dispatched: 0,
+            calls: std::collections::BTreeMap::new(),
+        });
     }
 
     /// A person at a Notebook window whose notes' bodies are rich text (`tests/richbody`), the
@@ -959,6 +1031,7 @@ impl Session {
             invoked: 1,
             asks: Vec::new(),
             dispatched: 0,
+            served: Vec::new(),
         }
     }
 
@@ -1000,7 +1073,13 @@ impl Session {
     /// `Driver::frame_schedule` says whether the window came to rest.
     fn settle(&mut self) {
         loop {
-            settle::settle(&mut self.host, &self.woken, || self.window.frame());
+            settle::settle(&mut self.host, &self.woken, || {
+                let mut owes = self.window.frame();
+                for served in &mut self.served {
+                    owes |= served.window.frame();
+                }
+                owes
+            });
             if !self.dispatch() {
                 return;
             }
@@ -1011,7 +1090,13 @@ impl Session {
     /// before the window's next frame.
     fn settle_host(&mut self) {
         loop {
-            settle::settle(&mut self.host, &self.woken, || false);
+            settle::settle(&mut self.host, &self.woken, || {
+                let mut owes = false;
+                for served in &mut self.served {
+                    owes |= served.window.frame();
+                }
+                owes
+            });
             if !self.dispatch() {
                 return;
             }
@@ -1028,11 +1113,16 @@ impl Session {
         use ui::tilo_actions::remote::{
             InvocationState, OWN_PROVIDER, RemoteActionMessage, application_provider,
         };
-        let Some((inbox, _)) = self.broker.downcast_ref::<(Inbox, Routed)>() else {
+        let Some(inbox) = self
+            .broker
+            .downcast_ref::<(Inbox, Routed)>()
+            .map(|(inbox, _)| Rc::clone(inbox))
+        else {
             return false;
         };
         let mut told = Vec::new();
         let mut handed = Vec::new();
+        let mut calls = Vec::new();
         let sent = self.sent.borrow();
         // What the test forgot was read already: the dispatch reads on from what is left.
         let from = if sent.len() < self.dispatched {
@@ -1081,6 +1171,14 @@ impl Session {
                         declined: false,
                     });
                 }
+                CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(call),
+                    ..
+                } if application_provider(&call.target.provider)
+                    .is_some_and(|(_, app)| self.served.iter().any(|served| served.app == app)) =>
+                {
+                    calls.push(call.clone());
+                }
                 CollabRequest::UpdateInvocation { id, update } if update.is_terminal() => {
                     if let Some(kept) = self
                         .asks
@@ -1100,7 +1198,10 @@ impl Session {
             }
         }
         drop(sent);
-        let moved = !told.is_empty() || !handed.is_empty();
+        let called = !calls.is_empty();
+        self.deliver_to_served(calls);
+        told.extend(self.answers_of_served());
+        let moved = called || !told.is_empty() || !handed.is_empty();
         let mut inbox = inbox.borrow_mut();
         inbox.extend(handed);
         inbox.extend(
@@ -1108,6 +1209,53 @@ impl Session {
                 .map(|message| CollabEvent::RemoteAction { message }),
         );
         moved
+    }
+
+    /// Deliver `calls`, of the other installed apps' actions, to those apps' instances, as the
+    /// dispatch delivers a call of another app's action: admitted as the person whose window's run
+    /// made it.
+    fn deliver_to_served(&mut self, calls: Vec<ui::tilo_actions::remote::InvokeRequest>) {
+        for call in calls {
+            let app = ui::tilo_actions::remote::application_provider(&call.target.provider)
+                .map(|(_, app)| app.to_owned())
+                .unwrap_or_default();
+            let id = self.invoked;
+            self.invoked += 1;
+            let served = self
+                .served
+                .iter_mut()
+                .find(|served| served.app == app)
+                .expect("the app is served");
+            served.calls.insert(id, call.invocation);
+            served
+                .inbox
+                .borrow_mut()
+                .push_back(delivery(&self.person, id, &call, None));
+        }
+    }
+
+    /// What the other installed apps answered of the calls delivered to them since the last
+    /// call, as the dispatch carries an app's answer on to the caller that waits on it.
+    fn answers_of_served(&mut self) -> Vec<ui::tilo_actions::remote::RemoteActionMessage> {
+        use ui::tilo_actions::remote::{InvocationState, RemoteActionMessage};
+        let mut told = Vec::new();
+        for served in &mut self.served {
+            let sent = served.sent.borrow();
+            for request in sent.iter().skip(served.dispatched) {
+                if let CollabRequest::UpdateInvocation { id, update } = request
+                    && update.is_terminal()
+                    && let Some(invocation) = served.calls.remove(id)
+                {
+                    told.push(RemoteActionMessage::Update {
+                        invocation,
+                        state: Some(InvocationState::new(invocation, update.clone())),
+                        correlation: None,
+                    });
+                }
+            }
+            served.dispatched = sent.len();
+        }
+        told
     }
 
     /// The actions of the calls the dispatch keeps asked that nobody answered yet, oldest
