@@ -526,7 +526,30 @@ impl Host {
     /// authority: the members' roles and who of them reads what (`members(r)`,
     /// `std.may_read`). Who is in the workspace is still its members' resource.
     pub fn give_member_policy(&self, access: &MemberAccess, me: &PersonId) {
+        // The store's one read decision follows the same access: a reader field naming an agent
+        // is placed as that agent's person where the policy lets it read, as a window's host
+        // places it. A record host has no access of its own, so the one given here is the
+        // store's too.
+        self.inner.record_reads.follow_with_kinds(
+            Some(access.clone()),
+            self.viewer(),
+            kind_nodes(self),
+        );
         self.take_member_policy(members_of(access, me), Some(reads_of(access, me, self)));
+        // A store kept by a workspace answers the members' resource from its governance; one
+        // held in this process (a record served with no window, a test's) may hold no record of
+        // it, and the policy the host was opened with names the workspace's people until one is
+        // kept.
+        if matches!(self.store().workspace_members(), Ok(None)) {
+            let people: Vec<serde_json::Value> = members_of(access, me)
+                .into_iter()
+                .map(|member| {
+                    tilolang_runtime::value::to_json(&tilolang_runtime::Value::Actor(member.who()))
+                        .unwrap_or_default()
+                })
+                .collect();
+            self.serve_member_reading(&serde_json::json!({ "people": people }));
+        }
     }
 
     /// Decide by `policy`, the members' roles and the software made members, and by `reads`
