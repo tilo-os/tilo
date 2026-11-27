@@ -471,6 +471,10 @@ impl Publication for Held {
     fn sweeps(&self) -> u64 {
         self.0.publications.borrow().sweeps()
     }
+
+    fn unavailable(&self) -> tilolang_tilo::runtime::Unavailable {
+        self.0.publications.borrow().unavailable()
+    }
 }
 
 /// What an app's surface offers of one resource a device's provider publishes: the resource at

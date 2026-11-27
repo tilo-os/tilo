@@ -41,6 +41,10 @@ pub const INVOKED_WINDOW: &str = "$invoked";
 /// The window the tilolang lines the person ran from each resource are kept under: set by the
 /// host as each runs and answers, read by `lines_run(r)`.
 pub const LINES_WINDOW: &str = "$lines";
+/// The window the actions the host publishes as unavailable are kept under: one slot of no
+/// window, whose value is the count of times the host said something different, so a view that
+/// drew one runs again when it does ([`unavailable_key`], [`crate::unavailable`]).
+pub const UNAVAILABLE_WINDOW: &str = "$unavailable";
 
 /// One line of what suggesting an action with some arguments says: the words a change to the
 /// field reads with, and the value they speak of as its type shows it, when they speak of one.
@@ -277,6 +281,14 @@ pub fn invoked_key(id: &str) -> StateKey {
 #[must_use]
 pub fn lines_key(id: &str) -> StateKey {
     StateKey::runtime(LINES_WINDOW, None, id)
+}
+
+/// The key of the actions the host publishes as unavailable now: what a view that drew a
+/// control reads, so it runs again when the host says one can run where it could not, or the
+/// other way ([`crate::Runtime::set_unavailable_actions`]).
+#[must_use]
+pub fn unavailable_key() -> StateKey {
+    StateKey::runtime(UNAVAILABLE_WINDOW, None, "actions")
 }
 
 /// The id the call service names the call held on `target` by: the item's own id, or the
@@ -3024,6 +3036,46 @@ impl Core {
         Some(holder)
     }
 
+    /// Whether the action `action`, offered with `args` on a target, applies where it is offered
+    /// and can run on it now, as `viewer` sees it: the conditions its target and place decide,
+    /// the person's state, and the availability its own app publishes
+    /// ([`Self::refused_now`]). The answer is `(applies, available, why it cannot run)`; the
+    /// reason is empty while it can.
+    fn offered_state(
+        &self,
+        action: &ActionMeta,
+        args: &[Value],
+        viewer: &Actor,
+    ) -> HResult<(bool, bool, String)> {
+        let mut applies = true;
+        let mut available = true;
+        let mut why = String::new();
+        // An action the person's state denies them (a viewer's change) stands disabled too.
+        if let (Some(refused), _) = self.decided(&action.id, args, viewer, Decides::Applies)? {
+            applies = false;
+            available = false;
+            why = refused;
+        } else if !self.may_decide(viewer, &action.id) {
+            available = false;
+            why = self.word_args(
+                "tilolang-ask-denied",
+                &[],
+                "That change is not allowed here.",
+            );
+        } else if let (Some(refused), _) =
+            self.decided(&action.id, args, viewer, Decides::Requirement)?
+        {
+            available = false;
+            why = refused;
+        } else if let Some(refused) = self.refused_now(&action.id, args) {
+            // The action's app publishes it as unable to run on this resource now: it is offered
+            // disabled, with the reason, as the action layer refuses it.
+            available = false;
+            why = refused;
+        }
+        Ok((applies, available, why))
+    }
+
     /// An offered action as a `host.Action`: presented for the target (its label, icon and
     /// toggled state as its presentation view gives them now), the view taking what that read,
     /// and whether it can run on the target now (`available`, with the `reason` it cannot).
@@ -3059,32 +3111,10 @@ impl Core {
             on = presented.on;
         }
         // Whether it applies to the item where the view offers it at all, and whether it can
-        // run on it now, as the conditions its target and place decide say: a menu leaves out
-        // what cannot apply, and a control for what cannot run stands disabled with the reason.
-        // An action the person's state denies them (a viewer's change) stands disabled too.
+        // run on it now: a menu leaves out what cannot apply, and a control for what cannot run
+        // stands disabled with the reason.
         let viewer = self.viewer_here()?;
-        let mut applies = true;
-        let mut available = true;
-        let mut why = String::new();
-        if let (Some(refused), _) =
-            self.decided(&action.id, &shown.args, &viewer, Decides::Applies)?
-        {
-            applies = false;
-            available = false;
-            why = refused;
-        } else if !self.may_decide(&viewer, &action.id) {
-            available = false;
-            why = self.word_args(
-                "tilolang-ask-denied",
-                &[],
-                "That change is not allowed here.",
-            );
-        } else if let (Some(refused), _) =
-            self.decided(&action.id, &shown.args, &viewer, Decides::Requirement)?
-        {
-            available = false;
-            why = refused;
-        }
+        let (applies, available, why) = self.offered_state(action, &shown.args, &viewer)?;
         // An action that still asks for something opens its form: its label says so, as a menu
         // item that opens a dialog does. What it asks is what this offer left unbound — the
         // parameters after the ones it gave, the target and its places among them — so a
@@ -3351,6 +3381,34 @@ impl Core {
             (!reason.is_empty()).then_some(reason),
             Reading { reads: at, beyond },
         ))
+    }
+
+    /// Why the host publishes the action `action`, bound with `args` in a view, as unable to run
+    /// now: the reason in the person's words, or `None` while it can, or when its host keeps
+    /// nothing of it. A Rust app's action states this in its resource's contract
+    /// ([`crate::unavailable`]), and the action layer refuses a press of it with the same
+    /// reason; a control drawn from this says so before the person presses it.
+    pub(crate) fn refused_now(&self, action: &str, args: &[Value]) -> Option<String> {
+        // The view that drew the control runs again when the host says something different of
+        // an action: what it read here is that statement, whatever the action.
+        let key = unavailable_key();
+        let generation = self.view_states.borrow().generation(&key);
+        self.note_state_read(key, generation, &Value::none());
+        let unavailable = self.unavailable.borrow();
+        if let Some(reason) = unavailable.get(action) {
+            return Some(reason.to_owned());
+        }
+        // A verb a resource publishes without a package declaring it is held under the address
+        // the resource and the verb make, and the resource is the action's first argument.
+        let Value::Ref(target) = args.first()? else {
+            return None;
+        };
+        unavailable
+            .get(&crate::unavailable::address_key(
+                &target.target.id_string(),
+                action,
+            ))
+            .map(str::to_owned)
     }
 
     /// The person the code running is for: whom an action offered now would be offered to.

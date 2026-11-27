@@ -892,20 +892,31 @@ impl Core {
                 ));
             }
         };
-        // A press bound to an action that would be refused now stands dimmed, saying why in the
-        // words of the action's `require`: the view never says it a second time.
-        let unmet = match (&act, event.as_str()) {
-            (Value::Action(run), "press") => {
+        // A control bound to an action that cannot run now stands disabled, saying why: the
+        // action's own `require`, or the availability the host publishes of its app's action
+        // (a Rust app refuses the press with the same reason, and the person reads it before
+        // pressing). A menu row carries its refusal in `disabled`, every other control in
+        // `enabled`; both keep the reason in `description`, which the row and the control read
+        // and a screen reader says, keys and all.
+        let refused = match (&act, event.as_str()) {
+            (Value::Action(run), "press" | "choose" | "activate" | "swipe") => {
                 let viewer = self.with_view(|vs| Ok(vs.viewer.clone()))?;
-                self.unmet(run, &viewer)?
+                match self.unmet(run, &viewer)? {
+                    Some(reason) => Some(reason),
+                    None => self.refused_now(&run.action, &run.args),
+                }
             }
             _ => None,
         };
         self.with_view(|vs| {
             let at = vs.nodes.get_mut(node).ok_or("unknown ui node")?;
             at.events.insert(event, act);
-            if let Some(reason) = unmet {
-                at.props.insert("enabled".to_owned(), Value::Bool(false));
+            if let Some(reason) = refused {
+                let menu = at.kind == "ui.MenuItem";
+                at.props.insert(
+                    if menu { "disabled" } else { "enabled" }.to_owned(),
+                    Value::Bool(menu),
+                );
                 at.props
                     .insert("description".to_owned(), Value::text(reason));
             }
@@ -962,6 +973,9 @@ fn offered_action(action: &Value, event: &str) -> HResult<(Value, Value)> {
             destructive: flag(4).unwrap_or(false),
             on: flag(5),
             key: text(6),
+            // An action its app publishes as unable to run now is offered disabled, with the
+            // reason the action layer refuses it with.
+            description: (!flag(10).unwrap_or(true)).then(|| text(11)).flatten(),
             event: event.to_owned(),
         })),
         run,

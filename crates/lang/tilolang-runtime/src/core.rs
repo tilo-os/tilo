@@ -340,6 +340,11 @@ pub struct Core {
     /// channel) and the runtime sends to the app that publishes it, as it sends any other app's
     /// action to that app's action API. Empty until the host hands it in.
     pub published: RefCell<crate::published::Published>,
+    /// The actions the host publishes as unavailable now, by the key a view names each by
+    /// ([`crate::unavailable`]): what draws a control bound to one disabled, with its reason.
+    /// Empty until the host hands it in, and a view that drew one runs again when it changes
+    /// (`unavailable_key`).
+    pub unavailable: RefCell<crate::unavailable::Unavailable>,
     /// Where a task's programs ask each app what they read of it (`grep`, `find`, `read`,
     /// `describe`), while they run: a host that holds no records; `None` where the runtime
     /// answers what it holds itself.
@@ -621,6 +626,7 @@ impl Core {
             principals: RefCell::default(),
             delegates_own: std::cell::Cell::new(false),
             published: RefCell::new(crate::published::Published::default()),
+            unavailable: RefCell::new(crate::unavailable::Unavailable::default()),
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
             writing: std::cell::Cell::new(false),

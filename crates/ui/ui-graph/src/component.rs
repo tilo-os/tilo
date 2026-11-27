@@ -582,6 +582,10 @@ pub struct Offered {
     /// `key: "e"`: the plain key that runs it while its window has the keyboard (and, on a row's
     /// action, while that row is selected). `None` when it declares none.
     pub key: Option<String>,
+    /// Why it cannot run now, in the person's words, when its app publishes it as unavailable
+    /// (`Availability::Unavailable`): its control stands disabled and says this.
+    #[serde(default)]
+    pub description: Option<String>,
     /// The event of the instance choosing it fires.
     pub event: String,
 }

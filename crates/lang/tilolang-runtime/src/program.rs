@@ -298,6 +298,29 @@ impl Runtime {
         *self.core.published.borrow_mut() = published;
     }
 
+    /// Hand the runtime the actions the host publishes as unable to run now, each with its
+    /// reason ([`crate::unavailable`]): a view's control bound to one is drawn disabled, saying
+    /// why, and is enabled again on the next frame after the host says it can run.
+    pub fn set_unavailable_actions(&self, unavailable: crate::unavailable::Unavailable) {
+        // A host hands the same statement in every turn it publishes what its resources offer:
+        // a view has nothing to run again for a statement it already drew.
+        if *self.core.unavailable.borrow() == unavailable {
+            return;
+        }
+        *self.core.unavailable.borrow_mut() = unavailable;
+        // The slot moves, so every view that drew a control bound to an action runs again and
+        // draws what the action says of itself now.
+        let key = crate::platform::unavailable_key();
+        let moves = {
+            let states = self.core.view_states.borrow();
+            states.generation(&key)
+        };
+        self.core.view_states.borrow_mut().set(
+            key,
+            Value::Int(i64::try_from(moves.wrapping_add(1)).unwrap_or(i64::MAX)),
+        );
+    }
+
     /// Ask `reader` what programs read of each app (`grep`, `find`, `read`, `describe`) while
     /// they run, instead of answering it here: the runtime of a task's host, which holds no
     /// records.

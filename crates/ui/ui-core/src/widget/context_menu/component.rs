@@ -176,15 +176,16 @@ impl MenuItemProps {
 }
 
 impl From<OfferedAction> for MenuItemProps {
-    /// An action offered to the person as a command: choosing it runs the action.
+    /// An action offered to the person as a command: choosing it runs the action, and one its
+    /// app publishes as unable to run now is listed all the same, disabled, saying why.
     fn from(action: OfferedAction) -> Self {
         Self {
             label: action.label,
             icon: action.icon,
             destructive: action.destructive,
             checked: action.on,
-            disabled: false,
-            description: None,
+            disabled: action.description.is_some(),
+            description: action.description,
             group: None,
             key: action.key,
             link: None,

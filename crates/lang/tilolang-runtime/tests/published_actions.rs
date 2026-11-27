@@ -224,4 +224,132 @@ view canvas() {
             assert!(sent.borrow().is_empty(), "nothing was sent on");
         }
     }
+
+    /// A tilolang view whose controls are bound to an action of an app the runtime does not
+    /// run: a menu row (`choose`) and a button (`press`), as the shell's workspace menu binds
+    /// the session's `delete-workspace`.
+    const CONTROLS: &str = r#"app test.canvas "Canvas"
+
+use chat as chat
+
+view canvas() {
+  stack {
+    ui.MenuItem("Remove the channel") {
+      on choose: chat.remove(channel: "c_ask")
+    }
+    ui.Button("Remove") {
+      on press: chat.remove(channel: "c_ask")
+    }
+  }
+}
+"#;
+
+    /// The app whose `remove` the view binds: an action of a described package, which the
+    /// runtime sends to the app's own API, and whose availability the app publishes.
+    fn chat_with_remove() -> Meta {
+        meta(json!({
+            "app": APP,
+            "title": "Chat",
+            "types": [{"id": "Channel", "name": "Channel", "fields": [
+                {"id": "Channel.id", "name": "id", "type": "Text"},
+            ]}],
+            "actions": [{"id": "remove", "name": "remove", "class": "undoable",
+                         "params": [{"name": "channel", "type": "Text"}]}],
+        }))
+    }
+
+    /// The canvas drawn over `chat_with_remove`, with `unavailable` as the actions the host
+    /// publishes as unable to run now, and the runtime it draws on.
+    fn controls(unavailable: tilolang_runtime::Unavailable) -> (Runtime, ViewInstance) {
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+        let app = chat_with_remove();
+        rt.load_foreign(app.clone()).unwrap();
+        rt.set_unavailable_actions(unavailable);
+        let canvas = App::compile(CONTROLS, std::slice::from_ref(&app));
+        canvas.load(&rt);
+        let view = rt
+            .open_view(&person("ada"), &canvas.view("canvas"), Vec::new())
+            .unwrap_or_else(|why| panic!("{why}"));
+        (rt, view)
+    }
+
+    /// The one node of `kind` the tree draws, which must be there.
+    fn one<'a>(view: &'a ViewInstance, kind: &str) -> &'a tilolang_runtime::UiNode {
+        match of_kind(view.tree(), kind).as_slice() {
+            [only] => only,
+            other => panic!("one {kind}, found {}: {}", other.len(), dump(view.tree())),
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_action_a_rust_app_publishes_as_unavailable_is_drawn_disabled_with_its_reason;
+
+        phase an_unavailable_action_disables_every_control_bound_to_it_and_says_why;
+        {
+            let mut unavailable = tilolang_runtime::Unavailable::default();
+            unavailable.insert("remove", "the channel is the workspace's");
+            let (_rt, view) = controls(unavailable);
+            let menu = one(&view, "ui.MenuItem");
+            assert_eq!(
+                menu.props.get("disabled"),
+                Some(&Value::Bool(true)),
+                "a menu row it cannot run stands disabled: {}",
+                dump(view.tree())
+            );
+            assert!(
+                !menu.props.contains_key("enabled"),
+                "a menu row says it in `disabled`, never in `enabled`"
+            );
+            assert_eq!(
+                menu.props.get("description"),
+                Some(&Value::text("the channel is the workspace's")),
+                "the reason is the row's, for a person to read before pressing"
+            );
+            assert_eq!(
+                menu.events.keys().map(String::as_str).collect::<Vec<_>>(),
+                vec!["choose"],
+                "the row keeps what choosing it runs: it is not a mark, and the press is refused \
+                 with the same reason by the action layer"
+            );
+            let button = one(&view, "ui.Button");
+            assert_eq!(
+                button.props.get("enabled"),
+                Some(&Value::Bool(false)),
+                "a button it cannot run is drawn disabled: {}",
+                dump(view.tree())
+            );
+            assert_eq!(
+                button.props.get("description"),
+                Some(&Value::text("the channel is the workspace's")),
+                "the reason is the button's too"
+            );
+        }
+
+        phase the_controls_are_enabled_again_when_the_app_publishes_the_action_available;
+        {
+            let mut unavailable = tilolang_runtime::Unavailable::default();
+            unavailable.insert("remove", "the channel is the workspace's");
+            let (rt, mut view) = controls(unavailable);
+            // The app publishes it available again: the view runs again and draws what it says.
+            rt.set_unavailable_actions(tilolang_runtime::Unavailable::default());
+            assert!(
+                view.is_stale(),
+                "a view that drew an action runs again when its availability moves"
+            );
+            view.poll_patches().unwrap();
+            let menu = one(&view, "ui.MenuItem");
+            assert!(
+                !menu.props.contains_key("disabled"),
+                "the row runs again: {}",
+                dump(view.tree())
+            );
+            assert!(!menu.props.contains_key("description"), "and says no reason");
+            let button = one(&view, "ui.Button");
+            assert!(
+                !button.props.contains_key("enabled"),
+                "the button can be pressed again: {}",
+                dump(view.tree())
+            );
+        }
+    }
 }

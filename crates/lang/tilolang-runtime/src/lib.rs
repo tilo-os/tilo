@@ -87,6 +87,7 @@ pub mod store;
 mod surfaces;
 pub mod textdiff;
 mod time;
+pub mod unavailable;
 pub mod value;
 pub mod view;
 pub mod view_instance;
@@ -127,6 +128,7 @@ pub use store::{
     ANY_FIELD, ChangeNote, ChangeSummary, FieldKey, Listing, ListingChange, PagedItems, Splice,
     Store, StoreError, moved_splices,
 };
+pub use unavailable::Unavailable;
 pub use value::{ActionRef, CollRef, EnumValue, RecordInit, RefValue, ResourceRef, Value};
 pub use view::{BindTarget, Binding, Patch, UiNode};
 pub use view_instance::Held;

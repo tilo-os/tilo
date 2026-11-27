@@ -1996,6 +1996,14 @@ impl Publications {
         &self.trees
     }
 
+    /// The actions the trees it publishes say cannot run now, each with the reason
+    /// ([`tilolang_runtime::unavailable`]): what draws a view's control bound to one of them
+    /// disabled, the way the action layer refuses a press of it.
+    #[must_use]
+    pub fn unavailable(&self) -> tilolang_runtime::Unavailable {
+        tilolang_runtime::unavailable::from_resources(self.trees.values().map(|tree| &**tree))
+    }
+
     /// A number that moves whenever [`Self::trees`] changes, and only then.
     #[must_use]
     pub fn revision(&self) -> u64 {

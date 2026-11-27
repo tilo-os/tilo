@@ -191,6 +191,11 @@ pub trait Publication {
     fn sweeps(&self) -> u64 {
         0
     }
+    /// The actions the resources it publishes say cannot run now, each with its reason
+    /// ([`tilolang_runtime::unavailable`]): what a view's control bound to one draws disabled.
+    fn unavailable(&self) -> tilolang_runtime::Unavailable {
+        tilolang_runtime::Unavailable::default()
+    }
 }
 
 mod platform;
@@ -379,6 +384,11 @@ pub struct Instance {
     names: Rc<dyn NameHost>,
     host: Rc<RefCell<Option<Host>>>,
     publication: Option<Box<dyn Publication>>,
+    /// What the publication above last said of the actions its resources publish as unable to
+    /// run ([`Publication::unavailable`]): the runtime is told only when it says something else,
+    /// so an instance whose own resources say nothing leaves what its origins published as it is
+    /// (the shell's session publishes its resources' actions there).
+    published_unavailable: tilolang_runtime::Unavailable,
     root: Option<Shown>,
     detail: Option<Shown>,
     /// The facts page of a resource whose type declares no view, in the detail level ([`facts`]).
@@ -559,6 +569,7 @@ impl Instance {
             names,
             host,
             publication: None,
+            published_unavailable: tilolang_runtime::Unavailable::default(),
             root: None,
             detail: None,
             facts: None,
@@ -2958,6 +2969,14 @@ impl Instance {
             self.facts_stale |= self.facts.is_some();
             if let Some(publication) = &self.publication {
                 publication.update();
+                // What the resources it publishes say cannot run now: a view's control bound to
+                // one of their actions draws disabled, with the reason, and again when the app
+                // publishes them differently.
+                let unpublished = publication.unavailable();
+                if unpublished != self.published_unavailable {
+                    self.published_unavailable = unpublished.clone();
+                    host.runtime().set_unavailable_actions(unpublished);
+                }
             }
             self.send_bound(Level::Root);
             self.send_bound(Level::Detail);
@@ -2967,6 +2986,11 @@ impl Instance {
             .filter(|p| p.pending() || p.behind())
         {
             publication.update();
+            let unpublished = publication.unavailable();
+            if unpublished != self.published_unavailable {
+                self.published_unavailable = unpublished.clone();
+                host.runtime().set_unavailable_actions(unpublished);
+            }
         }
         self.poll_views();
         self.poll_facts();

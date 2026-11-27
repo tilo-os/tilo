@@ -355,6 +355,9 @@ pub struct OfferedAction {
     /// The plain key that runs it while its window has the keyboard (and, on a row's action, while that
     /// row is selected), as the app declared it.
     pub key: Option<String>,
+    /// Why it cannot run now, in the person's words, when its app publishes it as unavailable:
+    /// its control stands disabled and says this.
+    pub description: Option<String>,
     pub run: Event,
 }
 
@@ -377,6 +380,7 @@ impl PropType for OfferedAction {
             destructive: offered.destructive,
             on: offered.on,
             key: offered.key.clone(),
+            description: offered.description.clone(),
             run: Event::None,
         })
     }
