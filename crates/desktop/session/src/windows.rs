@@ -62,14 +62,7 @@ fn window_reading(
     fullscreen: bool,
     display: String,
 ) -> Window {
-    let app = match &tab.tile {
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::HostedWindow { app_id, .. } => app_id.clone(),
-        TileContent::AppPlaceholder { label, .. } | TileContent::Stub { label, .. } => {
-            label.clone()
-        }
-    };
+    let app = app_of(&tab.tile);
     let title = tab.title.trim();
     // What the window's well shows instead of a picture: its app's own glyph, so two apps' windows
     // never look alike.
@@ -178,6 +171,18 @@ fn window_reading(
             retry: answer.retry,
             details: answer.details,
         }),
+    }
+}
+
+/// The app a window's tile holds, or the label of the one it is waiting for.
+fn app_of(tile: &TileContent) -> String {
+    match tile {
+        TileContent::Foreign { app_id, .. }
+        | TileContent::LocalApp { app_id, .. }
+        | TileContent::HostedWindow { app_id, .. } => app_id.clone(),
+        TileContent::AppPlaceholder { label, .. } | TileContent::Stub { label, .. } => {
+            label.clone()
+        }
     }
 }
 
