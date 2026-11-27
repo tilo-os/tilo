@@ -1249,7 +1249,7 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
     let mut loaders = loaders.borrow_mut();
     let (loader, drawn_for) = loaders.last_mut().expect("the successor is served");
     assert_eq!(loader.next_request().as_deref(), Some(url.as_str()));
-    let content = drawn_for.content().expect("the successor's content");
+    let content = tilo_ui::served_content::content_of(drawn_for).expect("the successor's content");
     assert!(!content.has(&hash));
     assert!(content.read(&hash).is_none());
     assert_eq!(next_link.take_requests().wants, vec![hash.clone()]);

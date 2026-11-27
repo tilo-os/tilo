@@ -224,6 +224,7 @@ pub mod pipeline_cache;
 pub mod pipeline_seed;
 pub mod pointer_replay;
 pub mod published;
+pub mod served_content;
 pub mod shot_frame;
 pub use tilo_ui_paint::raster;
 pub mod storage;

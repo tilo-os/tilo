@@ -16525,6 +16525,7 @@ dependencies = [
 name = "tilo-content-types"
 version = "0.1.0"
 dependencies = [
+ "tilo-mime",
  "workspace-hack",
 ]
 
@@ -21599,7 +21600,6 @@ dependencies = [
  "tilo-clock",
  "tilo-collab-types",
  "tilo-collaboration",
- "tilo-content",
  "tilo-cosmic-text",
  "tilo-cpu-raster",
  "tilo-dialogs",

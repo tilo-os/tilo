@@ -9,6 +9,10 @@ repository.workspace = true
 homepage.workspace = true
 description = "Content descriptors and signature inspection without storage clients."
 
+[dependencies]
+# Tilo's own document types.
+tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
+
 [lints]
 workspace = true
 

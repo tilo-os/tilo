@@ -223,7 +223,6 @@ arriving-received = { $received } received
 arriving-failed = Couldn’t load this
 arriving-retry = Try again
 arriving-continue-without = Continue without it
-content-unavailable = None of the connected devices has it
 workspace-sync-connecting = Connecting to { $workspace }…
 workspace-sync-connecting-unnamed = Connecting…
 workspace-sync-unreachable = Can’t reach { $workspace } right now

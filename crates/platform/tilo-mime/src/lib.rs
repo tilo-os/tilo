@@ -12,6 +12,11 @@ use std::path::Path;
 
 pub const OCTET_STREAM: &str = "application/octet-stream";
 
+/// Tilo's own documents, which no outside table knows, as `(extension, media type)`: a canvas
+/// artwork, and a recording (a stretch of a resource's history its app replays).
+pub const ARTWORK: (&str, &str) = ("artwork", "application/vnd.tilo.artwork+zip");
+pub const RECORDING: (&str, &str) = ("tilo-recording", "application/vnd.tilo.recording");
+
 /// UTF-8 text, the form every text offer is also given in.
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 

@@ -126,13 +126,7 @@ pub fn mime_for_path(path: &Path) -> Option<&'static str> {
         .or_else(|| tilo_mime::from_path(path))
 }
 
-const TILO_TYPES: &[(&str, &str)] = &[
-    ("artwork", "application/vnd.tilo.artwork+zip"),
-    (
-        tilo_content::RECORDING.extension,
-        tilo_content::RECORDING.mime,
-    ),
-];
+const TILO_TYPES: &[(&str, &str)] = &[tilo_mime::ARTWORK, tilo_mime::RECORDING];
 
 /// Start a drag carrying `paths`, out of this app and into whatever
 /// application the pointer is released over. Call from a press-and-move

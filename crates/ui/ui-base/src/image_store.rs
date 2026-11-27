@@ -463,18 +463,17 @@ impl NativeLoader {
 
 /// A window a host serves ([`ImageStore::serve_window`]), as the host's factory sees it: what the
 /// stores it builds draw for.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ServedWindow {
-    content: std::rc::Rc<std::cell::RefCell<Option<tilo_content::ContentStore>>>,
+    window: WakeHandle,
 }
 
 impl ServedWindow {
-    /// The content store the window reads its record's content from, once the window is built: where
-    /// its pictures' bytes are read and, when they are not here yet, asked for, on the window's own
-    /// content requests.
+    /// The window's wake scope: what the host keys the window's own state on, such as the store its
+    /// record's content is read from.
     #[must_use]
-    pub fn content(&self) -> Option<tilo_content::ContentStore> {
-        self.content.borrow().clone()
+    pub const fn window(&self) -> &WakeHandle {
+        &self.window
     }
 }
 
@@ -504,12 +503,10 @@ fn serving_of(window: &WakeHandle) -> Option<(HostImageFactory, ServedWindow)> {
     })
 }
 
-/// `window` is built, reading its record's content from `content`: the pictures its host loads for it
-/// are read, and asked for, there.
-pub fn window_built(window: &WakeHandle, content: Option<tilo_content::ContentStore>) {
-    if let Some((_, served)) = serving_of(window) {
-        *served.content.borrow_mut() = content;
-    }
+/// Whether a host serves `window`'s image stores ([`ImageStore::serve_window`]).
+#[must_use]
+pub fn is_served(window: &WakeHandle) -> bool {
+    serving_of(window).is_some()
 }
 
 impl ImageStore {
@@ -521,7 +518,13 @@ impl ImageStore {
     pub fn serve_window(window: &WakeHandle, factory: HostImageFactory) {
         HOST_FACTORIES.with_borrow_mut(|kept| {
             kept.retain(|(kept, _, _)| kept.same_open_scope(kept) && !kept.same_open_scope(window));
-            kept.push((window.clone(), factory, ServedWindow::default()));
+            kept.push((
+                window.clone(),
+                factory,
+                ServedWindow {
+                    window: window.clone(),
+                },
+            ));
         });
     }
 

@@ -226,7 +226,6 @@ arriving-received = { $received } empfangen
 arriving-failed = Konnte nicht geladen werden
 arriving-retry = Erneut versuchen
 arriving-continue-without = Ohne fortfahren
-content-unavailable = Keines der verbundenen Geräte hat es
 workspace-sync-connecting = Verbinde mit { $workspace }…
 workspace-sync-connecting-unnamed = Verbinde…
 workspace-sync-unreachable = { $workspace } ist gerade nicht erreichbar

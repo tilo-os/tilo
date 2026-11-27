@@ -1184,7 +1184,7 @@ impl ApplicationDefinition {
                 component.application_view = application;
             }
             component.prepared = true;
-            tilo_ui_base::image_store::window_built(
+            crate::served_content::window_built(
                 &component.context.wake_handle(),
                 component.content(),
             );

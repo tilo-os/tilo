@@ -142,9 +142,6 @@ tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # A software adapter's frames are rasterized on the CPU and uploaded, native
 # or in a page (`crate::cpu_raster`).
 tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
-# The content store a host lends a component (`ProcessContext::content`), in every
-# build.
-tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../../platform/font-catalog" }

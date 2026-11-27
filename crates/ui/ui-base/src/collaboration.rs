@@ -2,11 +2,9 @@
 //! committed reads, signing, invocation updates, presence transport) is the
 //! `collaboration` crate, which a process that commits to a workspace links
 //! without the toolkit; it keeps its path here. What stays is the widget
-//! side: who is in the workspace as the toolkit shows them, and the content a
-//! view reads.
+//! side: who is in the workspace as the toolkit shows them.
 
 pub use ::collaboration::*;
-pub mod document_content;
 
 #[cfg(test)]
 #[cfg(feature = "broker-transport")]

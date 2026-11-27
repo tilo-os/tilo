@@ -83,8 +83,8 @@ pub const RECORDING_MAGIC: &[u8] = b"tilo-recording/1\n";
 
 /// A recording ([`RECORDING_MAGIC`]).
 pub const RECORDING: DocumentFormat = DocumentFormat {
-    extension: "tilo-recording",
-    mime: "application/vnd.tilo.recording",
+    extension: tilo_mime::RECORDING.0,
+    mime: tilo_mime::RECORDING.1,
     kind: "a recording of an app's record",
     opened_by: None,
 };
