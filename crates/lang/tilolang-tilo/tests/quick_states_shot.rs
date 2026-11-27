@@ -73,6 +73,40 @@ fn a_saved_networks_menu_in_both_themes() {
     capture(&mut shell, "quick-menu", (1280, 800));
 }
 
+/// The panel hangs under the bar: on a display too short for everything it holds, its heading is
+/// still the first thing on the screen, at the top of the band, rather than centred off it.
+#[test]
+fn the_panels_heading_stands_under_the_bar() {
+    let mut dark = tilo_ui_base::Theme::dark();
+    dark.reduce_motion = true;
+    // Shorter than the panel: a panel centred in the band would stand its heading above it.
+    let mut shell = StagedWindow::staged("the quick settings, at work", (1280, 600), dark);
+    shell.exchange();
+    let snapshot = shell.harness.inspection();
+    let heading = snapshot
+        .root
+        .nodes()
+        .into_iter()
+        .find(|node| {
+            node.semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.name.as_deref() == Some("Quick settings"))
+        })
+        .map_or_else(
+            || panic!("the panel is named for assistive technology"),
+            |node| node.rect,
+        );
+    let (y, height) = (heading[1], heading[3]);
+    assert!(
+        y >= 0.0 && y + height <= 600.0,
+        "the panel's heading stands on the screen: {heading:?}"
+    );
+    assert!(
+        y < 100.0,
+        "the panel hangs from the band's top, not its middle: {heading:?}"
+    );
+}
+
 /// One accessory's page: what the device knows of it, the name it is called by, the devices it can
 /// move to, and the ways to disconnect or forget it.
 #[test]

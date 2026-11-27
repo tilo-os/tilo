@@ -11,7 +11,10 @@ use so.tilo.settings.sections as settings
 /// It is a floating panel at the shell's trailing edge, over what it covers, beside the
 /// notification centre and on the same material; the bar's status opens it.
 view quick_settings() {
-    row(fill, distribute: .end, padding: .related) {
+    // The panel hangs from the band's top edge, under the bar's trailing end: centred in the
+    // room it would float where the height of the band, not the bar, put it, and a panel taller
+    // than the room would stand its heading above the screen.
+    row(fill, align: .start, distribute: .end, padding: .related) {
         quick_settings_panel(fill_height: false, compact: space.compact)
     }
 }

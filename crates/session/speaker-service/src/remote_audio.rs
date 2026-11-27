@@ -939,7 +939,10 @@ fn state() -> &'static Mutex<RemoteAudioState> {
 
 fn random_nonzero_u64(existing: &BTreeMap<u64, LocalAudioSelection>) -> u64 {
     loop {
-        let value = UnwrapErr(SysRng).next_u64();
+        // The token names the sound in the reading the shell draws, where a number is a signed
+        // `Int`: one past `i64::MAX` cannot be read there and the panel says it could not be
+        // shown, so a token stays inside it.
+        let value = UnwrapErr(SysRng).next_u64() >> 1;
         if value != 0 && !existing.contains_key(&value) {
             return value;
         }
@@ -2291,6 +2294,18 @@ mod tests {
             };
             assert!(!selection_focus_valid(&selection, Some(&other)));
             assert!(!selection_focus_valid(&selection, None));
+        }
+
+        phase picker_tokens_fit_the_shells_signed_int;
+        {
+            let existing = BTreeMap::new();
+            for _ in 0..1024 {
+                let token = random_nonzero_u64(&existing);
+                assert!(
+                    token != 0 && i64::try_from(token).is_ok(),
+                    "a token read as the shell's Int: {token}"
+                );
+            }
         }
 
         phase picker_tokens_survive_refresh_only_while_the_source_binding_exists;
