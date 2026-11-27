@@ -14,7 +14,6 @@ pub mod action_button;
 pub mod control;
 pub mod disk_row;
 pub mod effects;
-pub mod hardware_report;
 pub mod installer_app;
 pub mod keyboard_view;
 pub mod seg_choice;

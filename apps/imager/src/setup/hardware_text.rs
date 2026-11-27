@@ -26,7 +26,7 @@ pub(crate) fn component_title(kind: ComponentKind) -> String {
     })
 }
 
-#[cfg(feature = "installation")]
+#[cfg(any(feature = "installation", feature = "destination"))]
 pub(crate) fn state_label(state: hardware_report::SupportState) -> String {
     use hardware_report::SupportState;
     t(match state {

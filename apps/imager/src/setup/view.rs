@@ -10,14 +10,13 @@ use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_ui_base::a11y::Politeness;
-use tilo_ui_base::icons::Icon;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::typography::TextRole;
 use tilo_ui_base::{widget::Spacer, widget::Widget};
 use ui::widget::NumberInput;
 use ui::{
     widget::Button, widget::ButtonRole, widget::Column, widget::Container, widget::ControlSize,
-    widget::ListRow, widget::Row, widget::Section, widget::SectionHeader, widget::Text,
+    widget::Row, widget::Section, widget::SectionHeader, widget::Text,
 };
 
 use super::actions::{HardwareProjection, SETUP_ROW_ID, SetupEffect};
@@ -1981,7 +1980,10 @@ const fn download_phase_key(phase: super::internal_cache::coordinator::Phase) ->
 }
 
 pub(crate) fn another_computer_report_sections(report: &SupportReport) -> Vec<Box<dyn Widget>> {
-    support_report::sections(report, support_report::Placement::AnotherComputer)
+    super::support_report_view::sections(
+        report,
+        super::support_report_view::Placement::AnotherComputer,
+    )
 }
 
 fn launch_worker(name: &str, task: WorkerTask) -> Result<(), String> {

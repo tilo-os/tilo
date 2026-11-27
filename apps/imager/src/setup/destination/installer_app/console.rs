@@ -163,7 +163,7 @@ impl InstallerApp {
                 "recovery_promise": self.recovery_ack,
                 "ready": self.encryption_ready() && self.destructive_confirmation_ready(),
             },
-            "hardware": self.hardware.to_json(),
+            "hardware": crate::setup::support_report_view::facts(self.hardware.as_ref()),
             "install": {
                 "state": self.install_state_name(),
                 "stages": friendly_install_status(&self.status_lines),

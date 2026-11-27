@@ -34,6 +34,8 @@ pub mod journey;
 pub mod model;
 pub mod staging;
 pub(crate) mod strings;
+#[cfg(any(feature = "installation", feature = "destination"))]
+pub(crate) mod support_report_view;
 #[cfg(all(test, feature = "installation"))]
 mod test_support;
 #[cfg(feature = "installation")]

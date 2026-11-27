@@ -478,7 +478,9 @@ pub struct InstallerApp {
     tpm2: bool,
     secure_boot: bool,
     kernel_lockdown: bool,
-    hardware: crate::setup::destination::hardware_report::HardwareReport,
+    /// This computer's hardware, as the shared report read it; `None` when it could not
+    /// identify the computer.
+    hardware: Option<hardware_report::SupportReport>,
     target_verified_boot: bool,
     step: Step,
     install_state: InstallState,
@@ -543,7 +545,8 @@ impl InstallerApp {
     pub fn new() -> Self {
         let mut s = Self::with_disks(SystemBackend.read_disks());
         s.power_probe = current_insufficient_battery_percent;
-        s.hardware = crate::setup::destination::hardware_report::HardwareReport::probe();
+        s.hardware =
+            crate::setup::support_report_view::checked(hardware_report::SupportReport::probe());
         s.timezones = crate::timezones::offered().to_vec();
         match imager_backend::destination::media_profile::load() {
             Ok(Some(profile)) => s.apply_media_profile(profile),
@@ -655,7 +658,7 @@ impl InstallerApp {
             force_startup_passphrase: false,
             unattended_mode: false,
             unattended_error: None,
-            hardware: crate::setup::destination::hardware_report::HardwareReport::default(),
+            hardware: None,
             tpm2: probes::has_tpm2(),
             secure_boot: probes::secure_boot_enabled(),
             kernel_lockdown: probes::kernel_lockdown_active(),
@@ -788,7 +791,8 @@ impl InstallerApp {
     pub(crate) fn for_unattended() -> Self {
         let mut app = Self::with_disks(SystemBackend.read_disks());
         app.power_probe = current_insufficient_battery_percent;
-        app.hardware = crate::setup::destination::hardware_report::HardwareReport::probe();
+        app.hardware =
+            crate::setup::support_report_view::checked(hardware_report::SupportReport::probe());
         app.timezones = crate::timezones::offered().to_vec();
         app.set_filesystem_support(probes::filesystem_support());
         app
@@ -824,8 +828,7 @@ impl InstallerApp {
 
     #[cfg(test)]
     pub(crate) fn with_hardware_for_test(mut self, report: hardware_report::SupportReport) -> Self {
-        self.hardware =
-            crate::setup::destination::hardware_report::HardwareReport::from_report(report);
+        self.hardware = crate::setup::support_report_view::checked(report);
         self
     }
 
@@ -2806,18 +2809,17 @@ impl InstallerApp {
 
     fn hardware_blocks_install(&self) -> bool {
         self.hardware
-            .report()
+            .as_ref()
             .is_some_and(hardware_report::SupportReport::blocks_install)
     }
 
     fn compose_hardware_report(&self, children: &mut Vec<Box<dyn Widget>>) {
-        children.push(crate::setup::destination::hardware_report::summary_row(
-            &self.hardware,
-        ));
-        if let Some(report) = self.hardware.report() {
-            children.extend(crate::setup::destination::hardware_report::component_rows(
+        match &self.hardware {
+            Some(report) => children.extend(crate::setup::support_report_view::sections(
                 report,
-            ));
+                crate::setup::support_report_view::Placement::LiveMedium,
+            )),
+            None => children.push(crate::setup::support_report_view::unavailable()),
         }
     }
 
@@ -3032,11 +3034,7 @@ impl InstallerApp {
 
         self.compose_hardware_report(children);
 
-        if self
-            .hardware
-            .report()
-            .is_some_and(hardware_report::SupportReport::blocks_install)
-        {
+        if self.hardware_blocks_install() {
             children.push(Box::new(
                 Text::new(&crate::setup::strings::t(
                     "installer-hardware-blocks-install",
