@@ -4078,6 +4078,15 @@ requires = ["arch=arm64"]
 outputs = ["/target/windows-arm64/imager/*"]
 on = ["dispatch"]
 
+# Whether the registry owner key t hands the release checks above and below is the one
+# os/publication.env names: a package built with another installs it as the trust root of system
+# app updates. Dispatch it after the secret changes: `t test registry-owner-key`.
+[[check]]
+name = "registry-owner-key"
+run = "bash tools/ci/registry-owner-key.sh"
+on = ["dispatch"]
+secrets = ["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"]
+
 [[check]]
 name = "desktop-package-{deb}"
 # Publishes with a stored token, to hosts no fixed list names.
