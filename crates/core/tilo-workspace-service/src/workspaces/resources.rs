@@ -3283,10 +3283,8 @@ fn caller_may(
     }
     let workspace = hosted.workspace();
     let policy = hosted.peer().governance().member_policy()?;
-    let acting = viewer.acting();
-    let mut granted = acting.handed_preset(workspace);
-    granted.extend(viewer.granted());
-    let authority = tilo_action_policy::Authority::of_acting(acting, &policy, &granted);
+    let access = viewer.access(policy);
+    let authority = access.authority();
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     for (kind, verb) in unserved {
         let mut node = tilo_action_policy::TreePath::workspace(workspace).app(app);

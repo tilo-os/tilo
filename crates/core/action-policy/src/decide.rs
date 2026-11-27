@@ -449,6 +449,7 @@ pub struct Effective {
     people: usize,
     app: Option<AppId>,
     app_kinds: Option<Vec<String>>,
+    shortcut: Option<EffectiveParty>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -477,6 +478,8 @@ pub struct Authority<'g> {
     /// The resource kinds the app declares: in its own node, its records and these kinds alone.
     /// `None` where the host deciding does not hold the app's manifest.
     pub app_kinds: Option<&'g [String]>,
+    /// The rules the person saved with the Shortcut whose run this is ([`Self::within_shortcut`]).
+    pub shortcut: Option<Party<'g>>,
 }
 
 impl<'g> Authority<'g> {
@@ -488,6 +491,27 @@ impl<'g> Authority<'g> {
             people: 1,
             app: None,
             app_kinds: None,
+            shortcut: None,
+        }
+    }
+
+    /// The same authority, a Shortcut's run held to `rules`, the rules its person saved with it
+    /// ([`crate::Rule::bound_party`]): every action it takes, wherever it is decided, is decided
+    /// within them as well. They name actions, so a node that names none (the record an action
+    /// acts on) is decided by whom the run is for alone.
+    #[must_use]
+    pub fn within_shortcut(mut self, rules: Party<'g>) -> Self {
+        self.shortcut = Some(rules);
+        self
+    }
+
+    /// What the Shortcut's rules this run is held to answer at `node` ([`Self::within_shortcut`]).
+    fn shortcut_answer(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Answer {
+        match &self.shortcut {
+            Some(rules) if node.id_at(Level::Action).is_some() => {
+                rules.decide(node, kind, cx).answer
+            }
+            _ => Answer::Allow,
         }
     }
 
@@ -517,6 +541,7 @@ impl<'g> Authority<'g> {
             people: self.people,
             app: self.app.cloned(),
             app_kinds: self.app_kinds.map(<[String]>::to_vec),
+            shortcut: self.shortcut.as_ref().map(Party::effective),
         }
     }
 
@@ -538,7 +563,8 @@ impl<'g> Authority<'g> {
                 .map(|part| part.answer)
                 .min()
                 .unwrap_or(Answer::Deny)
-        };
+        }
+        .min(self.shortcut_answer(node, kind, cx));
         if let (Some(app), Some(kinds)) = (self.app, self.app_kinds)
             && node.id_at(Level::App) == Some(app.as_str())
             && match node.id_at(Level::Kind) {
@@ -615,13 +641,14 @@ impl Authority<'_> {
                 bound.decide(node, kind, cx),
             ];
             if self.answers_in_advance(&parts) {
-                return Answer::Allow;
+                return self.shortcut_answer(node, kind, cx);
             }
         }
         self.bounds
             .iter()
             .map(|bound| bound.decide(node, kind, cx).answer)
             .fold(person, Answer::min)
+            .min(self.shortcut_answer(node, kind, cx))
     }
 
     /// Whether `verdict` allows the call by the answer the person gave their agent in advance

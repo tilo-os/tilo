@@ -2683,3 +2683,70 @@ async fn a_run_of_a_shortcut_her_agent_saved_is_kept_from_what_the_agent_is() {
     }
     server.shutdown().await;
 }
+
+/// A Shortcut's run reaches the vault only as far as the rules she saved with it say, whichever
+/// call of the run asks: rules for another app keep it out, though she reads the vault herself.
+#[tokio::test]
+async fn a_shortcuts_run_reads_the_vault_only_within_its_saved_rules() {
+    use tilo_action_policy::{Answer, Level, Rule, TreePath};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = &crate::PersonServices::of(server.workspaces());
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let kept = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        workspace_vault::ADD,
+        a_login("https://example.com"),
+    )
+    .await
+    .expect("Ada keeps a login");
+    let rules_for = |app: &str| {
+        vec![Rule::new(
+            TreePath::root().any(Level::Workspace).app(app),
+            tilo_action_types::KindSet::ALL,
+            Answer::Allow,
+        )]
+    };
+    let run = |app: &str| {
+        as_ada
+            .clone()
+            .running_shortcut("reminder")
+            .within_shortcut(rules_for(app))
+    };
+
+    let listed = ask(
+        &service,
+        workspace_id,
+        (&ada, &run(tilo_app_id::apps::PASSWORDS)),
+        workspace_vault::LIST,
+        json!({}),
+    )
+    .await
+    .expect("a run whose rules name the vault reads it");
+    assert!(
+        listed["items"]
+            .as_array()
+            .is_some_and(|items| items.contains(&kept)),
+        "{listed}"
+    );
+    let elsewhere = run("so.tilo.notes");
+    for (action, argument) in [
+        (workspace_vault::LIST, json!({})),
+        (workspace_vault::REVEAL, json!({"item": &kept["reference"]})),
+    ] {
+        let refused = ask(&service, workspace_id, (&ada, &elsewhere), action, argument).await;
+        assert!(
+            matches!(
+                refused,
+                Err(ActionCallError::NotPermitted | ActionCallError::UnknownAction)
+            ),
+            "a run whose rules name only another app, {action}: {refused:?}"
+        );
+    }
+    server.shutdown().await;
+}

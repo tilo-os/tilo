@@ -231,7 +231,7 @@ pub(super) enum Authorized {
     /// it as one of the workspace's administrators ([`StatePeer::wrote_as_administrator`]),
     /// as the governance it was judged by says.
     Admit {
-        member: MemberAccess,
+        member: Box<MemberAccess>,
         history: bool,
         by_owner: bool,
     },
@@ -1632,7 +1632,7 @@ impl StatePeer {
         match decided {
             Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit {
                 by_owner: self.wrote_as_administrator(source, history),
-                member,
+                member: Box::new(member),
                 history,
             }),
             Ok(collab_types::Receipt::Hold) => {

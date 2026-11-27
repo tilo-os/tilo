@@ -967,6 +967,32 @@ impl Caller {
         self.shortcut_grant.as_deref()
     }
 
+    /// `access` as this caller holds it: with the grants made for its software
+    /// ([`Self::granted`]) and, for a Shortcut's run, within the rules its person saved with it
+    /// ([`Self::within_shortcut`]). What every gate deciding this caller by a member access
+    /// decides it with.
+    #[must_use]
+    pub fn held(
+        &self,
+        access: tilo_action_policy::MemberAccess,
+    ) -> tilo_action_policy::MemberAccess {
+        access
+            .granted(self.granted())
+            .within_shortcut(self.shortcut_grant())
+    }
+
+    /// This caller's access in the workspace `policy` is, as it acted ([`Self::held`]).
+    #[must_use]
+    pub fn access(
+        &self,
+        policy: impl Into<std::sync::Arc<tilo_action_policy::WorkspacePolicy>>,
+    ) -> tilo_action_policy::MemberAccess {
+        self.held(tilo_action_policy::MemberAccess::new(
+            policy,
+            self.acting.clone(),
+        ))
+    }
+
     /// Whether the person's saved Shortcut consents to this step in advance
     /// ([`Self::consented_in_advance`]).
     #[must_use]

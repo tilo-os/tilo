@@ -311,10 +311,11 @@ impl Workspaces {
         // gives it, within what its person may. A Shortcut's run acts as itself too, for its
         // person and through the agent that saved it when one did: each of them bounds it.
         let access = if caller.is_device_agent() || acting.is_automation() {
-            access
-                .as_acting(acting.clone())
-                .ok_or(ActionCallError::UnknownAction)?
-                .granted(caller.granted())
+            caller.held(
+                access
+                    .as_acting(acting.clone())
+                    .ok_or(ActionCallError::UnknownAction)?,
+            )
         } else {
             access
         };

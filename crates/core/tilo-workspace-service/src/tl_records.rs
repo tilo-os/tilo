@@ -764,10 +764,7 @@ impl Workspaces {
             .ok_or_else(|| ApiError::Failed(format!("{workspace}'s policy does not read here")))?;
         // The record's own authority decides the action as the caller: this device writes it,
         // so nothing else stops an agent from doing what its delegation does not give it.
-        let acting = caller.acting();
-        let access = Arc::new(
-            MemberAccess::new(Arc::clone(&policy), acting.clone()).granted(caller.granted()),
-        );
+        let access = Arc::new(caller.access(Arc::clone(&policy)));
         let app = app.to_owned();
         let (invoker, context) = (invoker.clone(), context.clone());
         let (address, arguments) = (address.clone(), arguments.clone());

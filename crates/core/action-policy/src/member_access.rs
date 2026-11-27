@@ -33,6 +33,12 @@ pub struct MemberAccess {
     /// one that does not.
     #[serde(default)]
     pub confined_to: Option<String>,
+    /// The rules its person saved with the Shortcut whose run this acting is, as grants
+    /// ([`crate::Rule::bound_grants`]): every action it takes is decided within them
+    /// ([`Authority::within_shortcut`]). Set only in process by the host deciding the run, from
+    /// its caller; never encoded, so no access read from elsewhere says it is bounded or not.
+    #[serde(skip)]
+    pub shortcut: Option<Vec<Grant>>,
 }
 
 impl MemberAccess {
@@ -46,6 +52,7 @@ impl MemberAccess {
             policy,
             app_kinds: None,
             confined_to: None,
+            shortcut: None,
         }
     }
 
@@ -212,6 +219,16 @@ impl MemberAccess {
         self
     }
 
+    /// The same access, a Shortcut's run held to `rules`, the rules its person saved with it
+    /// ([`Self::shortcut`]); `None` leaves it as it was.
+    #[must_use]
+    pub fn within_shortcut(mut self, rules: Option<&[crate::Rule]>) -> Self {
+        if let Some(rules) = rules {
+            self.shortcut = Some(crate::Rule::bound_grants(rules));
+        }
+        self
+    }
+
     /// The same access, from a device that is not the person's: what such a
     /// device may do applies ([`crate::Cap::FOREIGN_DEVICE`]).
     #[must_use]
@@ -253,7 +270,10 @@ impl MemberAccess {
     /// The authority this access confers.
     #[must_use]
     pub fn authority(&self) -> Authority<'_> {
-        let authority = Authority::of_acting(&self.acting, &self.policy, &self.granted);
+        let mut authority = Authority::of_acting(&self.acting, &self.policy, &self.granted);
+        if let Some(rules) = &self.shortcut {
+            authority = authority.within_shortcut(crate::Rule::bound_party(rules));
+        }
         match (self.acting.app.as_ref(), self.app_kinds.as_deref()) {
             (Some(_), Some(kinds)) => authority.in_app(kinds),
             _ => authority,

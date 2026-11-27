@@ -122,6 +122,7 @@ impl<'a> Authority<'a> {
             people,
             app: acting.app.as_ref(),
             app_kinds: None,
+            shortcut: None,
         }
     }
 }

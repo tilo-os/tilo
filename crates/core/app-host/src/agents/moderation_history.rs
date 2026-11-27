@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{Answer, Context, MemberAccess};
+use tilo_action_policy::{Answer, Context};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
     Pending, RemoteActionTarget,
@@ -142,8 +142,7 @@ impl TurnHistory {
             return Err(unavailable("this device holds no such workspace"));
         };
         let now = tilo_clock::wall();
-        let access =
-            MemberAccess::new(policy.clone(), caller.acting().clone()).granted(caller.granted());
+        let access = caller.access(policy.clone());
         let node = tilo_actions::action_node(&policy.node(), app, NODE_KIND, app, None, action);
         match access.answer(&node, kind, &Context::at_time(now)) {
             Answer::Allow => Ok(()),

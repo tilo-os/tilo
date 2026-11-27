@@ -726,6 +726,13 @@ impl Rule {
     pub fn bound_grantee() -> Grantee {
         Grantee::role(Role::Viewer)
     }
+
+    /// The party [`Self::bound_grants`] are: what a Shortcut's run is decided within
+    /// ([`crate::Authority::within_shortcut`]).
+    #[must_use]
+    pub fn bound_party(grants: &[Grant]) -> crate::Party<'_> {
+        crate::Party::new(vec![Self::bound_grantee()], grants)
+    }
 }
 
 /// A named grant set people pick instead of writing grants one by one.

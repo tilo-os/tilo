@@ -27,7 +27,6 @@
 use super::vault_entries::{WorkspaceVaultEntries, uses_field};
 use accounts::vault_items::{UseRecord, VaultChange, VaultItems};
 use accounts::{SecretId, SecretItem};
-use tilo_action_policy::ActingPolicy as _;
 use tilo_actions::remote::VAULT_RECORD;
 use tilo_actions::remote::{CallAllowed, InvokeRequest, SignedCall};
 use tilo_member_types::Acting;
@@ -633,15 +632,12 @@ pub fn may_read_vault(
     workspace: &str,
     by: &tilo_actions::remote::Caller,
 ) -> bool {
-    let acting = by.acting();
-    let mut granted = acting.handed_preset(workspace);
-    granted.extend(by.granted());
     let node = collab_types::document_node(workspace, APP, VAULT_RECORD);
-    let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
-    tilo_action_policy::Authority::of_acting(acting, policy, &granted)
-        .decide(&node, tilo_action_types::ActionKind::Read, &cx)
-        .answer
-        == tilo_action_policy::Answer::Allow
+    by.access(policy.clone()).allows(
+        &node,
+        tilo_action_types::ActionKind::Read,
+        tilo_clock::wall(),
+    )
 }
 
 #[cfg(test)]

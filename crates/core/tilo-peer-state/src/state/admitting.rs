@@ -254,7 +254,7 @@ impl StatePeer {
             }
             super::authority::Authorized::Admit {
                 member, by_owner, ..
-            } => (member, by_owner),
+            } => (*member, by_owner),
             super::authority::Authorized::Hold(prerequisite) => {
                 return self.defer(
                     source,
