@@ -7554,6 +7554,10 @@ impl ActionProvider for RuntimeActionProvider {
             // Their answer to an asked record is the record's own action, which this device's
             // asked dispatch answers below: never one of the providers it serves.
             && !tilo_actions::remote::asked::is_resolve(&request.target)
+            // The workspace's own tree is no action of this computer's: it is decided by the
+            // workspace's grants for the device, which this person's own call carries below
+            // ([`Self::admitted_session`]) as one of their devices'.
+            && request.target.provider != tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
             && let Some(registered) = self
                 .workspaces
                 .copies()

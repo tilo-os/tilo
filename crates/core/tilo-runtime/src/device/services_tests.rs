@@ -4512,3 +4512,62 @@ fn founding_writes_only_where_the_daemons_system_unit_lets_it() {
         );
     }
 }
+
+const UPLOAD_TEST: &str =
+    "device::services::tests::a_device_hands_its_workspace_the_first_piece_of_an_apps_file";
+
+/// The person's own call on their daemon hands their workspace the first piece of an app
+/// version's package file, as `tilolang push` does: the workspace takes it and keeps the bytes.
+#[test]
+fn a_device_hands_its_workspace_the_first_piece_of_an_apps_file() {
+    use tilo_actions::InvocationId;
+    use tilo_actions::remote::{
+        ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus,
+        WORKSPACE_GOVERNANCE_PROVIDER,
+    };
+
+    let Some(root) = isolated_root(UPLOAD_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace.clone();
+    let host = daemon.action_provider().unwrap();
+    let caller =
+        tilo_actions::remote::Caller::local_person(daemon.actor()).in_workspace(&workspace);
+    let bytes = b"a developer's own build of the notes app";
+    let file = blake3::hash(bytes).to_hex().to_string();
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("file".to_owned(), file.into());
+    arguments.insert("offset".to_owned(), 0.into());
+    arguments.insert("total".to_owned(), (bytes.len() as u64).into());
+    arguments.insert("data".to_owned(), hex::encode(bytes).into());
+    let request = InvokeRequest {
+        asks: false,
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+            address: tilo_actions::remote::workspace_governance_address(
+                &workspace,
+                "upload-app-file",
+            ),
+        },
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let receipt = answered(host.invoke(&caller, request))
+        .unwrap_or_else(|refused| panic!("the workspace takes the upload: {refused:?}"));
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the workspace takes the upload: {:?}", receipt.status);
+    };
+    assert_eq!(
+        output.value.unwrap_or_default()["received"],
+        serde_json::json!(bytes.len() as u64),
+        "the whole piece is in"
+    );
+}
