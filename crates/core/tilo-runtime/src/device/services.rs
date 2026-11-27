@@ -3037,21 +3037,21 @@ impl Daemon {
             // arrival lists this device when the workspace is here.
             let own_workspace = WorkspaceId::from(collab_types::person_workspace(&person));
             let (copies, own) = (workspaces.copies().clone(), identity.cert.clone());
-            if workspaces.keeps_now(own_workspace)
-                && let Err(error) = block_on_owned(async move {
+            // Those listed it already, so the start does not wait on reading the record back.
+            if workspaces.keeps_now(own_workspace) {
+                tilo_rt::app().spawn(async move {
                     use tilo_workspace_service::workspaces::person_workspace;
                     let listed = person_workspace::devices::of(&copies, &person)
                         .await
                         .listed(&person)
                         .iter()
                         .any(|listed| listed.cert.device_public_key == own.device_public_key);
-                    if listed {
-                        return Ok(());
+                    if !listed
+                        && let Err(error) = person_workspace::devices::keep(&copies, &own).await
+                    {
+                        tracing::warn!(%error, "this device is not listed with its person's");
                     }
-                    person_workspace::devices::keep(&copies, &own).await
-                })
-            {
-                tracing::warn!(%error, "this device is not listed with its person's");
+                });
             }
         }
         // The keys this computer's agents sign with are certified here, with the root it keeps.
