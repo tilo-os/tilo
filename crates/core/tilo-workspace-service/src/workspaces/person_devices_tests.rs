@@ -862,5 +862,31 @@ async fn writes_of_one_record_at_once_all_land() {
         .cloned()
         .collect();
     assert_eq!(facts, names, "the record holds every write");
+    // Every write is this device's: the record's writers do not grow with its writes.
+    let writers = writers_of(desk.workspaces(), &own).await;
+    for name in &names {
+        person_workspace::devices::keep_own_fact(desk.workspaces(), &desk_cert, name, "01")
+            .await
+            .expect("a further write lands");
+    }
+    assert_eq!(writers_of(desk.workspaces(), &own).await, writers);
     drop(desk);
+}
+
+/// The actors that wrote the person's devices record, as `workspaces`' store holds it.
+async fn writers_of(workspaces: &Workspaces, own: &str) -> BTreeSet<automerge::ActorId> {
+    let state = workspaces.workspace(own).await.unwrap();
+    let mut hosted = state.lock().await;
+    let mut store = workspaces.store_of(&mut hosted);
+    let doc = store
+        .content_document(Devices::KIND, DEVICES.1)
+        .unwrap()
+        .unwrap();
+    let writers = doc
+        .get_changes(&[])
+        .iter()
+        .map(|change| change.actor_id().clone())
+        .collect();
+    drop(store);
+    writers
 }

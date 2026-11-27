@@ -798,8 +798,10 @@ impl Workspaces {
         record: &str,
     ) -> Result<(automerge::AutoCommit, Vec<ChangeHash>), String> {
         let mut store = self.store_of(hosted);
-        // A record the store lists is changed from the document that holds it: founding it
-        // again would number this device's change as one the store already holds.
+        // A record the store lists is changed from a copy of the document that holds it: founding
+        // it again would number this device's change as one the store already holds. The copy
+        // writes as this device, never as the store's last actor (a repair's, shared by every
+        // device), and numbers on from this device's changes it holds.
         let held = match store.index().get(kind, record) {
             Some(_) => Some(
                 store
@@ -813,7 +815,9 @@ impl Workspaces {
             None => None,
         };
         let begun = if let Some(held) = held {
-            let mut doc = automerge::AutoCommit::from(held);
+            let device = self.signing_device().cert.device_public_key;
+            let mut doc = automerge::AutoCommit::from(held)
+                .with_actor(automerge::ActorId::from(device.as_slice()));
             let heads = doc.get_heads();
             (doc, heads)
         } else {
