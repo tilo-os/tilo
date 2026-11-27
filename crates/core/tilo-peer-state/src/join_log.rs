@@ -545,17 +545,6 @@ impl JoinLog {
         Ok(admitted)
     }
 
-    /// Drop what the workspace keeps about how `people` joined: their
-    /// invitations, join receipts and pending membership challenges. An
-    /// invitation whose records are gone is refused as not issued here, so
-    /// it still cannot be redeemed again.
-    pub fn forget(&mut self, people: &BTreeSet<[u8; 32]>) {
-        self.withdraw_invitations(people);
-        self.join_completions.retain(|completion| {
-            !people.contains(&completion.bootstrap.device_cert.user_public_key)
-        });
-    }
-
     /// Take back every way in the workspace handed `people`: the invitations
     /// they redeemed or that are addressed to them, and their pending
     /// membership challenges. Their join receipts stay, so a removed
