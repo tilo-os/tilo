@@ -765,13 +765,14 @@ impl Session {
         // The person's settings follow them between their devices in the workspace whose only
         // member is them, and the device's are kept in its owner's: what was set since the last
         // pass is written there, and what another device or an agent set there is taken in.
+        // The device's certificate is the one the session read as it started, never asked of the
+        // daemon again here: a pass that waited on the daemon's answer would stop the loop that
+        // reads what the daemon sends it.
         let view = self.shared.view.as_deref();
-        let identity = view
-            .and_then(|_| crate::sync::device_identity())
-            .map(|identity| {
-                let cert = identity.device_cert;
-                (cert.user_public_key, cert.device_public_key)
-            });
+        let identity = view.and(self.shared.owner_devices.as_ref()).map(|devices| {
+            let cert = devices.cert();
+            (cert.user_public_key, cert.device_public_key)
+        });
         // Whether a write to a workspace is sealed yet: the device's daemon seals what it keeps,
         // so until it keeps the workspace, a setting is kept on the device. The daemon's own
         // reading of what it holds, followed: the loop reads no store of the daemon to learn it.

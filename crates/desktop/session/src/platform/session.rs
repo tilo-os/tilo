@@ -2121,7 +2121,7 @@ impl Session {
                         record: shared
                             .owner_devices
                             .as_ref()
-                            .map(|devices| devices.record().0),
+                            .map(|devices| (devices.record().0, devices.cert().user_public_key)),
                         handle: shared.handle.clone(),
                         readings: Rc::clone(&shared.readings),
                         chosen: Rc::clone(&shared.devices.chosen),

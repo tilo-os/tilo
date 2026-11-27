@@ -213,15 +213,10 @@ fn read(
 /// sign, or one whose revocation does not verify, is none of theirs and is left out: the record
 /// says who may act as them, and its own signatures are what a reader trusts.
 fn access(
-    record: Option<&FollowedResource<DevicesRecord>>,
+    record: Option<&(FollowedResource<DevicesRecord>, [u8; 32])>,
     devices: &[PersonalDevice],
 ) -> Vec<AccessKey> {
-    let Some(kept) = record.map(FollowedResource::get) else {
-        return Vec::new();
-    };
-    let Some(person) =
-        crate::sync::device_identity().map(|identity| identity.device_cert.user_public_key)
-    else {
+    let Some((kept, person)) = record.map(|(record, person)| (record.get(), *person)) else {
         return Vec::new();
     };
     kept.listed(&person)
@@ -296,8 +291,9 @@ fn display_view(output: &settings_store::person_displays::DeviceOutput) -> Devic
 /// The person's devices as the session's services publish them: read off the fabric every pass, so
 /// a device that comes or goes is one revision.
 pub(crate) struct Served {
-    /// The record of the person's devices, which says which of them wake to a magic packet.
-    record: Option<FollowedResource<DevicesRecord>>,
+    /// The record of the person's devices, which says which of them wake to a magic packet, and
+    /// the person it is of: the key their certificate of this device names.
+    record: Option<(FollowedResource<DevicesRecord>, [u8; 32])>,
     fabric: SharedLink,
     /// The person's layout, whose workspaces the reading lists.
     handle: DesktopHandle,
@@ -341,7 +337,10 @@ pub(crate) struct HandOff {
 /// What [`Served::new`] keeps, as the session hands it.
 pub(crate) struct Parts {
     pub(crate) fabric: SharedLink,
-    pub(crate) record: Option<FollowedResource<DevicesRecord>>,
+    /// The record of the person's devices and the person it is of, as this device's certificate
+    /// names them: read once here, since asking the daemon on every pass would hold the session's
+    /// loop on the daemon's answer.
+    pub(crate) record: Option<(FollowedResource<DevicesRecord>, [u8; 32])>,
     pub(crate) handle: DesktopHandle,
     pub(crate) readings: crate::status::Shared,
     pub(crate) chosen: Rc<RefCell<Option<u64>>>,
@@ -388,7 +387,7 @@ impl Served {
     fn current(&self) -> DevicesReading {
         let mut reading = current(
             &self.fabric,
-            self.record.as_ref(),
+            self.record.as_ref().map(|(record, _)| record),
             &self.readings,
             &self.chosen,
             &self.handoff,
