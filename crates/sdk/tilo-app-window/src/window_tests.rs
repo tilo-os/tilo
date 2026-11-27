@@ -795,6 +795,72 @@ fn a_batch_that_breaks_the_protocol_shows_the_error_state_and_nothing_else() {
     assert!(window.receive(), "a scribble is refused, not a panic");
 }
 
+/// Whether the window as laid out under `harness` draws a widget named `widget` anywhere.
+fn draws(harness: &ui::headless::Driver, widget: &str) -> bool {
+    let composition = harness.composition();
+    let mut pending: Vec<&ui::composition::Composed> = std::iter::once(&composition.root)
+        .chain(&composition.layers)
+        .collect();
+    while let Some(node) = pending.pop() {
+        if node.widget == widget {
+            return true;
+        }
+        pending.extend(&node.children);
+    }
+    false
+}
+
+#[test]
+fn a_batch_refused_after_the_window_showed_a_view_keeps_the_error_state_through_later_frames() {
+    let (mut app, mut window) = window();
+    // A shell with its sidebar beside the page, as the gallery's.
+    send(&mut app, &chooser_page(Vec::new()));
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+    }
+    assert!(draws(&harness, "NavShell"), "the shell is drawn first");
+    // A later batch breaks the protocol (here a detail of a component the toolkit lacks; in the
+    // gallery, a prop a component does not declare): the window refuses it and everything after.
+    send(
+        &mut app,
+        &[ToUi::Open {
+            level: Level::Detail,
+            target: note("a"),
+            tree: UiNode::empty("ui.NoSuchComponent", "detail"),
+            front: None,
+            capture_protected: false,
+        }],
+    );
+    assert!(window_of(&mut harness).receive());
+    assert!(
+        window_of(&mut harness).failed().is_some(),
+        "the batch is refused"
+    );
+    // The frames after it lay the window out again. The error state stands: the window never
+    // goes back to the page it showed before, which would look alive while it takes nothing.
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+    }
+    harness.resize((1100, 800)).expect("lays out");
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+    }
+    assert!(
+        window_of(&mut harness).composed().is_none(),
+        "nothing of the view is built again"
+    );
+    assert!(
+        !draws(&harness, "NavShell"),
+        "the shell it showed before is not drawn again"
+    );
+    assert!(
+        draws(&harness, "EmptyState"),
+        "the error state is what the window shows"
+    );
+}
+
 fn catalogue_of(label: &str, shortcut: Option<&str>) -> Vec<u8> {
     catalogue_on("tasks:1", label, shortcut)
 }

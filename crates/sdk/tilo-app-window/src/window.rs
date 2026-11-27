@@ -1575,6 +1575,12 @@ impl AppWindow {
     /// Bring the shell up to date with the views: the root's shell with the view after it as its
     /// content, reconciled into the widgets it was built into.
     fn compose(&mut self) {
+        // A window that refused what its app sent shows the error state until the app opens its
+        // root anew. Building the last view it took again (a layout that moved the sidebar, a
+        // command the person moved) would show a page that looks alive while it takes nothing.
+        if self.failed.is_some() {
+            return;
+        }
         if self.shape == Shape::Part && self.root.is_none() {
             // A part whose whole view is another app's state has no root of its own: what it shows
             // is the detail level's view, keyed as a window's detail view is so a press reaches the
