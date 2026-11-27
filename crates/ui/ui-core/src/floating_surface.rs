@@ -427,6 +427,15 @@ impl FloatingSurfaceServiceClient {
         0
     }
 
+    #[must_use]
+    pub fn share_room(&self) -> usize {
+        0
+    }
+
+    pub fn send_share(&mut self, _message: &FloatingSurfaceClientMessage) -> Result<(), String> {
+        Err("floating-surface service is unavailable on this platform".into())
+    }
+
     pub fn pump(&mut self) -> Result<Vec<FloatingSurfaceHostMessage>, String> {
         Err("floating-surface service is unavailable on this platform".into())
     }
