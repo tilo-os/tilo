@@ -146,12 +146,17 @@ fn lay_out(doc: &mut automerge::AutoCommit, strips: Vec<tilo_desktop_model::Stri
     });
 }
 
-/// [`lay_out`], committed with the message `message` writes for the layout as written.
+/// [`lay_out`], committed with the message `message` writes for the layout as written. The
+/// record is founded first, as the workspace's store founds it
+/// (`tilo_desktop_model::record::founding`): its containers stand before the first entry, so
+/// taking back the step that placed a window leaves the strip it stood in.
 fn laid_out_as(
     doc: &mut automerge::AutoCommit,
     strips: Vec<tilo_desktop_model::Strip>,
     message: impl FnOnce(&automerge::AutoCommit) -> String,
 ) {
+    tilo_desktop_model::record::found_into(&workspace_id().to_string(), doc)
+        .expect("the layout's record is founded");
     let mut workspace = Workspace::new(workspace_id(), "Layout");
     workspace.strips = strips;
     let desktop = tilo_desktop_model::ownership::SharedDesktop {
