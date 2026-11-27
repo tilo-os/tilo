@@ -15,6 +15,9 @@ pub use winit::platform::android::activity::AndroidApp;
 pub fn run_main<T: std::process::Termination>(app: AndroidApp, main: fn() -> T) {
     forward_stdio_to_logcat();
     install_environment(&app);
+    // Before the app's entry runs: what it starts ahead of its window (the phone's device
+    // daemon) logs from its first line.
+    super::app_log::init_app_log();
     if tilo_ui_base::platform::android::APP.set(app).is_err() {
         tilo_ui_base::diag!("tilo: android_main started twice in one process");
         return;
