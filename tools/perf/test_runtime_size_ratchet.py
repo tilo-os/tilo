@@ -323,6 +323,30 @@ class Closure(Scratch):
                       "(libtilo_typst_engine.so <- tilolang-process); an engine library is loaded only by the "
                       "app that uses it", lines)
 
+    def test_the_process_the_tilolang_apps_share_is_read_once(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
+                             "tilolang-process": elf(needed=["libruntime_dylib.so", "libc.so.6"])})
+        system = self.tree({"libc.so.6": elf()})
+        users = budget('apps_without_media = ["clocks", "notes"]\n' + TEXT)
+        apps = [ratchet.App(name, runtime / "tilolang-process", (), True) for name in ("clocks", "notes")]
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", users, "x86_64", apps, [system])
+        self.assertEqual(status, 0, lines)
+        self.assertEqual([line for line in lines if line.startswith("tilolang-process: ")], [
+            "tilolang-process: 3 objects at exec, relocations write 0 pages across them: "
+            "tilolang-process libruntime_dylib.so libc.so.6"])
+
+    def test_a_tilolang_apps_process_loads_no_media(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
+                             "tilolang-process": elf(needed=["libruntime_dylib.so", "libgstreamer-1.0.so.0"]),
+                             "libgstreamer-1.0.so.0": elf(needed=["libc.so.6"])})
+        system = self.tree({"libc.so.6": elf()})
+        users = budget('apps_without_media = ["clocks"]\n' + TEXT)
+        apps = [ratchet.App("clocks", runtime / "tilolang-process", (), True)]
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", users, "x86_64", apps, [system])
+        self.assertEqual(status, 1)
+        self.assertIn("error: tilolang-process loads libgstreamer-1.0.so.0 at exec "
+                      "(libgstreamer-1.0.so.0 <- tilolang-process); none of libgst, libglib-2.0 may be", lines)
+
     def test_an_engine_a_tilolang_app_opens_is_checked_for_media(self):
         runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
                              "tilolang-process": elf(needed=["libruntime_dylib.so"]),

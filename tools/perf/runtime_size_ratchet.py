@@ -577,11 +577,11 @@ def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: l
             lines += more
             continue
         # Every tilolang app runs on one process: what it loads at exec belongs to no app, so it
-        # may load no engine.
+        # may load no engine. Read once for the apps that share it.
         if process is None:
             process = binary_lines(app.binary, budget, [path.parent, *directories], engine_files)
-        status |= process[0]
-        lines += process[1]
+            status |= process[0]
+            lines += process[1]
         # An engine is opened by the app's own code, later: that engine and what it loads are
         # what the app reaches beyond the process.
         for name in app.engines:
@@ -591,8 +591,8 @@ def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: l
                     (1, [f"error: {app.name}: opens {name}, which this build did not produce"])
                     if engine is None
                     else engine_closure(engine, budget, [path.parent, *directories]))
-            status |= opened[name][0]
-            lines += opened[name][1]
+                status |= opened[name][0]
+                lines += opened[name][1]
     return status, lines, stats
 
 
