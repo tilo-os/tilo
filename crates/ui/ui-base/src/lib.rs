@@ -316,8 +316,8 @@ pub use {
     tilo_rt::background, tilo_rt::wake, tilo_secrets as secrets,
 };
 pub use {
-    tilo_doc::paragraph::ComposedLine, tilo_doc::paragraph::ParagraphBox,
-    tilo_doc::paragraph::ParagraphOptions, tilo_doc::paragraph::compose_paragraph,
+    tilo_text_layout::paragraph::ComposedLine, tilo_text_layout::paragraph::ParagraphBox,
+    tilo_text_layout::paragraph::ParagraphOptions, tilo_text_layout::paragraph::compose_paragraph,
 };
 pub use {vello::kurbo, vello::peniko};
 pub use {

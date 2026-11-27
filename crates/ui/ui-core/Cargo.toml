@@ -321,6 +321,7 @@ fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../c
 # also materialises past versions with `tilo_doc::snapshot::at` and writes each
 # history row's summary from its structural snapshot diff.
 tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc", default-features = false }
+tilo-text-layout = { version = "0.1.0", path = "../../platform/text-layout" }
 # Version history, stamped commits and replay of any document.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["local"] }

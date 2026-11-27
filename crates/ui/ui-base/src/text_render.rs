@@ -714,8 +714,8 @@ impl HangingPunctuation {
 pub use cosmic_text::{RowBand, RowBands};
 /// The page-break rules every paged layout shares: fit, manual breaks, widow and orphan
 /// splits, headings kept with their text.
-pub use tilo_doc::paging;
-pub use tilo_doc::paging::Fragmentation;
+pub use tilo_text_layout::paging;
+pub use tilo_text_layout::paging::Fragmentation;
 
 impl Hyphenation {
     pub(crate) fn language(&self) -> Option<hypher::Lang> {

@@ -62,6 +62,8 @@ presentation-feedback = ["tilo-runner-native?/presentation-feedback"]
 dx12-shader-cache = ["tilo-runner-native?/dx12-shader-cache"]
 
 [dependencies]
+# Who wrote a change, as its history says.
+tilo-doc = { version = "0.1.0", path = "../tilo-doc" }
 tilo-member-types.workspace = true
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 jiff.workspace = true

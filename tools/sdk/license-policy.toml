@@ -226,6 +226,7 @@ toolkit_reaches = [
     "tilo-startup-metrics",             # crates/platform/startup-metrics
     "tilo-taffy",                       # vendor/taffy
     "tilo-test-env",                    # tools/test-env
+    "tilo-text-layout",                 # crates/platform/text-layout
     "tilo-theme-painter-wasm",          # crates/ui/theme-painter-wasm
     "tilo-theme-sdk",                   # crates/ui/theme-sdk
     "tilo-tts",                         # crates/platform/tts

@@ -11,6 +11,7 @@ homepage.workspace = true
 
 [dependencies]
 tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
+tilo-text-layout = { version = "0.1.0", path = "../../platform/text-layout" }
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 # Image decode for `image` blocks. PDF export supports PNG/JPEG; disabling
 # defaults avoids pulling every codec into the shared graph.

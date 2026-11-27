@@ -9,13 +9,10 @@
 //! `tilo-doc-codecs`.
 //!
 //! The `model` feature (on by default) is what makes the resources: it brings
-//! Automerge, `tilo-resource` and the actions that change a document. Without it
-//! the crate is the text layout alone — [`breaks`], [`paragraph`] and [`paging`].
+//! Automerge, `tilo-resource` and the actions that change a document. Setting text
+//! into a measure is `tilo-text-layout`'s.
 
-pub mod breaks;
 pub mod inline_time;
-pub mod paging;
-pub mod paragraph;
 pub mod table_source;
 
 #[cfg(feature = "model")]

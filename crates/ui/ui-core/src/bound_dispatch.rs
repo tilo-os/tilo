@@ -2869,7 +2869,7 @@ fn perform_resource_operation(
                         // An answer names the text it wrote too: whoever's view shows that text
                         // draws those characters as the writer's, with the writer's caret at
                         // their end.
-                        match tilo_ui_base::presence::written_by(doc, &changes) {
+                        match tilo_doc::written::written_by(doc, &changes) {
                             Some(wrote) if declared => {
                                 tilo_actions::ActionOutput::noting_wrote(value, &wrote)
                             }

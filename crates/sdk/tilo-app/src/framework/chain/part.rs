@@ -188,7 +188,7 @@ impl PartType {
         let changes = doc.diff(before, &after);
         let value = answer.and_then(|(verb, answer)| answer(doc, verb, &changes));
         match wrote
-            .then(|| tilo_ui_base::presence::written_by(doc, &changes))
+            .then(|| tilo_doc::written::written_by(doc, &changes))
             .flatten()
         {
             Some(wrote) => tilo_actions::ActionOutput::noting_wrote(value, &wrote),

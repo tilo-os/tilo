@@ -359,8 +359,8 @@ pub use {
 #[cfg(feature = "model")]
 pub use {state::DocumentFrontier, state::UndoEntry, state::UndoLog};
 pub use {
-    tilo_doc::paragraph::ComposedLine, tilo_doc::paragraph::ParagraphBox,
-    tilo_doc::paragraph::ParagraphOptions, tilo_doc::paragraph::compose_paragraph,
+    tilo_text_layout::paragraph::ComposedLine, tilo_text_layout::paragraph::ParagraphBox,
+    tilo_text_layout::paragraph::ParagraphOptions, tilo_text_layout::paragraph::compose_paragraph,
 };
 pub use {
     ui_graph::GraphPropKind, ui_graph::LIVE_GRAPH_DIR_ENV, ui_graph::LIVE_GRAPH_OPERATION,

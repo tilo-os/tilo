@@ -15,12 +15,12 @@ mod metrics;
 mod pdf;
 
 use std::fmt;
-use tilo_doc::breaks::discretionary_hyphen_breaks;
 use tilo_doc::export::{BlockKind, ExportBlock, TablePlan};
-use tilo_doc::paging::{Kind, Paginator, Piece, Placed};
-use tilo_doc::paragraph::{ParagraphBox, ParagraphOptions, compose_paragraph};
 use tilo_doc::snapshot::AttrVal;
 use tilo_doc::{BlockView, DocSnapshot};
+use tilo_text_layout::breaks::discretionary_hyphen_breaks;
+use tilo_text_layout::paging::{Kind, Paginator, Piece, Placed};
+use tilo_text_layout::paragraph::{ParagraphBox, ParagraphOptions, compose_paragraph};
 
 use pdf::{ObjId, PdfWriter, escape_pdf_text};
 use tilo_content::ContentSource;

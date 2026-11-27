@@ -14,9 +14,6 @@ mod faces;
 pub mod frame;
 mod geom;
 mod interaction;
-mod written;
-#[cfg(feature = "model")]
-pub use tilo_doc::written::written_by;
 pub mod key;
 mod labels;
 mod layer;
@@ -26,6 +23,7 @@ mod members;
 mod overlay;
 mod placed;
 pub mod render;
+mod written;
 pub use caret_tag::{
     CaretTag, LabeledCaret, TAG_WIDGET, hide_names_beside_caret_tags, overlaps, tag_gap, tags_crowd,
 };

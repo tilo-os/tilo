@@ -15007,6 +15007,7 @@ dependencies = [
  "tilo-collab-types",
  "tilo-content",
  "tilo-content-device",
+ "tilo-doc",
  "tilo-failure",
  "tilo-files",
  "tilo-fs-protocol",
@@ -17141,8 +17142,6 @@ name = "tilo-doc"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "hypher",
- "icu_segmenter",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -17153,8 +17152,6 @@ dependencies = [
  "tilo-resource",
  "tilo-sort",
  "tracing",
- "unic-langid",
- "unicode-linebreak",
  "workspace-hack",
 ]
 
@@ -17186,6 +17183,7 @@ dependencies = [
  "image",
  "tilo-content",
  "tilo-doc",
+ "tilo-text-layout",
  "workspace-hack",
 ]
 
@@ -21179,6 +21177,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-text-layout"
+version = "0.1.0"
+dependencies = [
+ "hypher",
+ "icu_segmenter",
+ "tilo-sort",
+ "unic-langid",
+ "unicode-linebreak",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-theme-bauhaus"
 version = "0.1.0"
 dependencies = [
@@ -21438,6 +21448,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-taffy",
  "tilo-test-env",
+ "tilo-text-layout",
  "tilo-theme-bauhaus",
  "tilo-theme-painter-wasm",
  "tilo-theme-sdk",
@@ -21603,7 +21614,6 @@ dependencies = [
  "tilo-cosmic-text",
  "tilo-cpu-raster",
  "tilo-dialogs",
- "tilo-doc",
  "tilo-emoji",
  "tilo-face",
  "tilo-failure",
@@ -21641,6 +21651,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-taffy",
  "tilo-test-env",
+ "tilo-text-layout",
  "tilo-theme-bauhaus",
  "tilo-theme-painter-wasm",
  "tilo-theme-sdk",

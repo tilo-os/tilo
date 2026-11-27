@@ -52,19 +52,6 @@ impl SemanticReadError {
     }
 }
 
-impl From<tilo_doc::semantic_read::ReadError> for SemanticReadError {
-    fn from(error: tilo_doc::semantic_read::ReadError) -> Self {
-        use tilo_doc::semantic_read::ReadError;
-        match error {
-            ReadError::Pending => Self::Pending,
-            ReadError::StaleCursor => Self::StaleCursor,
-            ReadError::InvalidCursor => Self::InvalidRequest,
-            ReadError::Limit => Self::Limit,
-            ReadError::Malformed => Self::Malformed,
-        }
-    }
-}
-
 /// The exact result schema of a read whose projection yields `content`: the SDK stamps
 /// `version`, `record` and `basis` around it.
 #[must_use]

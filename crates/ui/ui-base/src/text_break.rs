@@ -7,7 +7,7 @@ use tilo_sort::CompactSort as _;
 
 // What may break between and where a word may be hyphenated is the document engine's, so the
 // word processor, PDF export and the reader take it from one place.
-pub use tilo_doc::breaks::{
+pub use tilo_text_layout::breaks::{
     LineBreakKind, discretionary_hyphen_breaks, hyphenate, line_break_opportunities,
     unicode_word_ranges,
 };

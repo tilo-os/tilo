@@ -78,6 +78,7 @@ allowed = [
     "tilo-spellcheck",
     "tilo-startup-metrics",
     "tilo-taffy",
+    "tilo-text-layout",
     "tilo-theme-painter-wasm",
     "tilo-theme-sdk",
     "tilo-tts",
