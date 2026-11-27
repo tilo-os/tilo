@@ -382,6 +382,37 @@ fn the_shells_hint_verbs_are_published_where_its_surface_names_them() {
     );
 }
 
+/// What the person chooses is kept as their choice even where it is what this device shows by
+/// default: their other devices keep it whatever their own default is. Nothing else of the
+/// section is pinned by it.
+#[test]
+fn a_choice_the_same_as_this_devices_default_is_kept_as_the_persons() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settings = crate::in_memory::scoped();
+    let mut service = own_person("ada");
+    let section = &section("appearance");
+    assert_eq!(
+        service.read(section).expect("published")["mode"],
+        json!("dark"),
+        "this device shows dark by default"
+    );
+    assert_eq!(
+        settings_store::load().get("appearance"),
+        None,
+        "nobody chose"
+    );
+
+    let _ = service
+        .invoke(section, "set-mode", &arguments(json!({ "value": "dark" })))
+        .expect("the person chooses dark");
+    let kept = settings_store::load();
+    assert_eq!(
+        kept["appearance"],
+        json!({ "mode": "dark" }),
+        "their choice is kept, and only it"
+    );
+}
+
 #[test]
 fn a_change_is_a_step_the_person_takes_back_through_the_section() {
     let _home = tilo_test_env::TestHome::new().unwrap();

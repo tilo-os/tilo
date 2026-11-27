@@ -338,6 +338,18 @@ impl<T: SettingsSchema> Settings<T> {
     /// [`Self::set`], recording `origin` — the action and who invoked it — in the
     /// document's history of who changed which setting. As [`Self::set`].
     pub fn set_by(&self, value: &T, origin: Option<&ChangeOrigin>) -> std::io::Result<()> {
+        self.set_choosing(value, origin, None)
+    }
+
+    /// [`Self::set_by`] for a change the person made to the field `chosen`: that field is stored
+    /// as their choice even where it holds what is read now, which may be only this device's
+    /// default, so another device of theirs keeps it whatever its own default is.
+    pub fn set_choosing(
+        &self,
+        value: &T,
+        origin: Option<&ChangeOrigin>,
+        chosen: Option<&str>,
+    ) -> std::io::Result<()> {
         let value = value.to_settings_value().map_err(std::io::Error::other)?;
         let current = self.get().to_settings_value().ok();
         store_changed(
@@ -345,6 +357,7 @@ impl<T: SettingsSchema> Settings<T> {
             &self.app_id,
             T::SCOPE,
             value,
+            chosen,
             current,
             origin,
         )
@@ -427,6 +440,7 @@ fn store_changed(
     app_id: &str,
     scope: Scope,
     value: Value,
+    chosen: Option<&str>,
     current: Option<Value>,
     origin: Option<&ChangeOrigin>,
 ) -> std::io::Result<()> {
@@ -434,12 +448,15 @@ fn store_changed(
     // reads as `T`'s default; writing the whole value would store that default as their
     // choice, and a field edit in one place (a text size) would pin every other field of
     // the section to whatever default this build has (the theme mode among them),
-    // replacing what another writer meant by leaving it unset.
+    // replacing what another writer meant by leaving it unset. The field the person chose is
+    // theirs even where it reads the same now: that may be only this device's default.
     let value = match (value, current) {
         (Value::Object(values), Some(Value::Object(current))) => Value::Object(
             values
                 .into_iter()
-                .filter(|(key, value)| current.get(key) != Some(value))
+                .filter(|(key, value)| {
+                    chosen == Some(key.as_str()) || current.get(key) != Some(value)
+                })
                 .collect(),
         ),
         (value, _) => value,

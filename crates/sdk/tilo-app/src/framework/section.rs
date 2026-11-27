@@ -29,8 +29,8 @@ use super::resources::{Held, ResourceApi};
 #[derive(Clone, Copy)]
 enum SectionOp<'a> {
     /// Run the action on the section as stored, and store what it made as
-    /// the change the origin made.
-    Apply(&'a dyn Action, &'a ChangeOrigin),
+    /// the change the origin made, with the field it sets, when it sets one.
+    Apply(&'a dyn Action, &'a ChangeOrigin, Option<&'a str>),
     /// The section as stored, published under an id and a label.
     Publish(&'a str, &'a str),
     Decode(&'a EncodedAction),
@@ -42,9 +42,13 @@ enum SectionOp<'a> {
 enum SectionOut {
     Done,
     Published(Box<tilo_actions::ResourceSpec>),
-    Decoded(Box<dyn Action>),
+    Decoded(Decoded),
     Value(serde_json::Value),
 }
+
+/// A section's action as decoded: the action, and the field it sets when it is the setter of one
+/// (`set-<field>`).
+pub(crate) type Decoded = (Box<dyn Action>, Option<String>);
 
 /// What a section asks of its type: the type's state in a document, as its
 /// JSON, and its action. Each is the type's own function, reached through
@@ -61,10 +65,17 @@ trait SectionType {
     fn stored_json(&self) -> serde_json::Value;
     /// The section as stored, published as `label` under `id`.
     fn publish(&self, id: &str, label: &str) -> tilo_actions::ResourceSpec;
-    /// `state`, a [`Self::read`] state, stored as `origin`'s change.
-    fn store(&self, state: &dyn Any, origin: &ChangeOrigin) -> Result<(), String>;
-    /// The type's action from its encoded payload.
-    fn decode(&self, payload: &[u8]) -> Result<Box<dyn Action>, String>;
+    /// `state`, a [`Self::read`] state, stored as `origin`'s change. The field `chosen` names is
+    /// stored as set even where it holds what the section reads already: it is what the person
+    /// chose, which their other devices keep whatever they would read by default.
+    fn store(
+        &self,
+        state: &dyn Any,
+        origin: &ChangeOrigin,
+        chosen: Option<&str>,
+    ) -> Result<(), String>;
+    /// The type's action from its encoded payload, with the field it sets.
+    fn decode(&self, payload: &[u8]) -> Result<Decoded, String>;
 }
 
 impl<T> SectionType for Settings<T>
@@ -92,19 +103,25 @@ where
         tilo_resource::publish::<T>(id, label, &stored_section(self))
     }
 
-    fn store(&self, state: &dyn Any, origin: &ChangeOrigin) -> Result<(), String> {
+    fn store(
+        &self,
+        state: &dyn Any,
+        origin: &ChangeOrigin,
+        chosen: Option<&str>,
+    ) -> Result<(), String> {
         let state = state
             .downcast_ref::<T>()
             .ok_or_else(|| format!("{} holds another type's state", T::KIND))?;
-        self.set_by(state, Some(origin))
+        self.set_choosing(state, Some(origin), chosen)
             .map_err(|error| error.to_string())
     }
 
-    fn decode(&self, payload: &[u8]) -> Result<Box<dyn Action>, String> {
+    fn decode(&self, payload: &[u8]) -> Result<Decoded, String> {
         let action: T::Action =
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
         super::resources::not_by_app::<T>(&action)?;
-        Ok(Box::new(action))
+        let chosen = T::set_field(&action);
+        Ok((Box::new(action), chosen))
     }
 }
 
@@ -175,12 +192,16 @@ impl SectionKind {
     /// what it made.
     fn apply(
         &self,
-        action: &dyn Action,
+        (action, chosen): &Decoded,
         id: &str,
         by: &tilo_actions::Actor,
     ) -> Result<(), ActionError> {
         let origin = ChangeOrigin::action(format!("{}/{id}", self.kind)).by(actor(by));
-        section_ops(self, SectionOp::Apply(action, &origin)).map(drop)
+        section_ops(
+            self,
+            SectionOp::Apply(action.as_ref(), &origin, chosen.as_deref()),
+        )
+        .map(drop)
     }
 
     fn publish(&self, id: &str) -> Result<tilo_actions::ResourceSpec, ActionError> {
@@ -190,9 +211,9 @@ impl SectionKind {
         }
     }
 
-    fn decode(&self, action: &EncodedAction) -> Result<Box<dyn Action>, ActionError> {
+    fn decode(&self, action: &EncodedAction) -> Result<Decoded, ActionError> {
         match section_ops(self, SectionOp::Decode(action))? {
-            SectionOut::Decoded(action) => Ok(action),
+            SectionOut::Decoded(decoded) => Ok(decoded),
             _ => Err(ActionError::Refused("the section decoded nothing".into())),
         }
     }
@@ -250,7 +271,7 @@ fn actor(by: &tilo_actions::Actor) -> String {
 fn section_ops(kind: &SectionKind, op: SectionOp<'_>) -> Result<SectionOut, ActionError> {
     let refused = |error: &dyn std::fmt::Display| ActionError::Refused(error.to_string());
     Ok(match op {
-        SectionOp::Apply(action, origin) => {
+        SectionOp::Apply(action, origin, chosen) => {
             // A resource's actions apply to a record at a document's root:
             // the section's value is laid out as one for the action to run
             // on, and what it made is stored as the section's change.
@@ -268,7 +289,7 @@ fn section_ops(kind: &SectionKind, op: SectionOp<'_>) -> Result<SectionOut, Acti
                 .read(&record)
                 .map_err(|error| refused(&error))?;
             kind.of_type
-                .store(&*value, origin)
+                .store(&*value, origin, chosen)
                 .map_err(ActionError::Refused)?;
             SectionOut::Done
         }
@@ -345,9 +366,9 @@ impl SectionApi {
     /// Apply the encoded action `encoded` for `invoker`, and store what it
     /// made as what made it.
     fn apply(&self, encoded: &EncodedAction, invoker: &ActionInvoker) -> Result<(), ActionError> {
-        let action = self.kind.decode(encoded)?;
+        let decoded = self.kind.decode(encoded)?;
         let id = action_id(&encoded.payload);
-        self.kind.apply(action.as_ref(), &id, &invoker.acting.by)?;
+        self.kind.apply(&decoded, &id, &invoker.acting.by)?;
         self.notice();
         Ok(())
     }

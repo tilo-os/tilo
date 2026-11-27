@@ -210,6 +210,14 @@ pub trait Resource: Sized + 'static {
         true
     }
 
+    /// The field `action` sets when it is the edit of one field (`set-<field>`): what the person
+    /// chose there, kept as their choice even where it is what the record already reads. `None`
+    /// by default, and for every other action.
+    fn set_field(action: &Self::Action) -> Option<String> {
+        let _ = action;
+        None
+    }
+
     /// The one field of the record `action` writes, when it writes only one:
     /// a reply or a note writes the `comments`, so a grant on that field
     /// (what someone who may only comment holds) reaches it. `None` by

@@ -2468,6 +2468,10 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             type State = #self_ty;
             type Action = #krate::Stamped<#action_enum>;
 
+            fn set_field(action: &Self::Action) -> ::core::option::Option<::std::string::String> {
+                action.edited_field().map(::std::borrow::ToOwned::to_owned)
+            }
+
             /// Its actions, and the undo of a change too large to record
             /// its restoring edits.
             fn register(registry: &mut #krate::__private::ActionRegistry) {

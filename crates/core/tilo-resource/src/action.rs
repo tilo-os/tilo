@@ -703,6 +703,18 @@ pub struct Stamped<O> {
     pub now_ms: i64,
 }
 
+impl<O: Operation> Stamped<O> {
+    /// The field of its record this action sets, when it is the edit of one field: the field its
+    /// path starts at.
+    #[must_use]
+    pub fn edited_field(&self) -> Option<&str> {
+        match self.operation.edit()?.path().first()? {
+            crate::Segment::Field(key) => Some(key),
+            _ => None,
+        }
+    }
+}
+
 impl<O: std::fmt::Debug> std::fmt::Debug for Stamped<O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         fmt_stamped(&self.operation, self.now_ms, f)
