@@ -273,86 +273,70 @@ view setup_card(
         label: if s.step == "tour" { "Desktop tour" } else { eyebrow(s) },
         description: stage_described(s),
     ) {
-        // Where the person is, as the track over the page shows it.
-        header: {
-            if s.step == "tour" {
-                progress_header(
-                    "Desktop tour",
-                    "Step {s.tour} of 4",
-                    s.tour.to_float() / 4.0,
-                    stage_described(s),
-                )
-            } else {
-                progress_header(
-                    eyebrow(s),
-                    "Step {step_number(s)} of {s.total_steps}",
-                    step_number(s).to_float() / s.total_steps.max(1).to_float(),
-                    stage_described(s),
-                )
-            }
-        }
         body: {
-            // The page scrolls under the fixed track and footer. A form keeps the field Tab reaches
-            // in view; a page of explanation keeps its bar showing while there is more below.
-            ui.Scroll(
-                label: if s.step == "tour" { tour_stage(s) } else { stage_name(s) },
+            // The guided page draws where the person is, the page under it that scrolls, and the
+            // ways forward that stay in view.
+            ui.GuidedPage(
+                stage: if s.step == "tour" { "Desktop tour" } else { eyebrow(s) },
+                position: if s.step == "tour" {
+                    "Step {s.tour} of 4"
+                } else {
+                    "Step {step_number(s)} of {s.total_steps}"
+                },
+                progress: if s.step == "tour" {
+                    s.tour.to_float() / 4.0
+                } else {
+                    step_number(s).to_float() / s.total_steps.max(1).to_float()
+                },
+                progress_name: stage_described(s),
+                scroll_label: if s.step == "tour" { tour_stage(s) } else { stage_name(s) },
                 shows_bar: s.step != "backup",
                 reveals_focus: s.step == "backup",
-                fill: 1.0,
+                fills_height: tall,
             ) {
-                ui.PageSlide(level: page_level(s)) {
-                    stack(gap: .section) {
-                        if s.progress_error != "" {
-                            ui.Banner(
-                                "Setup progress needs attention",
-                                message: s.progress_error,
-                                kind: .error,
-                            )
-                        }
-                        if s.step == "tour" {
-                            tour_page(s)
-                        } else if s.step == "intro" {
-                            intro_page(s)
-                        } else if s.step == "existing" {
-                            existing_page(s)
-                        } else if s.step == "nearby" {
-                            nearby_page(s, code)
-                        } else if s.step == "restore" {
-                            restore_page(s, backup_passphrase, path, picked)
-                        } else if s.step == "recovery-key" {
-                            recovery_key_page(s, words)
-                        } else if s.step == "protect" {
-                            protect_page(s)
-                        } else if s.step == "recovery-key-copy" {
-                            key_copy_page(s, first, second, third)
-                        } else if s.step == "backup" {
-                            backup_page(s, new_passphrase, confirmation)
-                        } else if s.step == "codecs" {
-                            codecs_page(s)
-                        } else {
-                            done_page(s)
+                // A form keeps the field Tab reaches in view; a page of explanation keeps its bar
+                // showing while there is more below.
+                body: {
+                    ui.PageSlide(level: page_level(s)) {
+                        stack(gap: .section) {
+                            if s.progress_error != "" {
+                                ui.Banner(
+                                    "Setup progress needs attention",
+                                    message: s.progress_error,
+                                    kind: .error,
+                                )
+                            }
+                            if s.step == "tour" {
+                                tour_page(s)
+                            } else if s.step == "intro" {
+                                intro_page(s)
+                            } else if s.step == "existing" {
+                                existing_page(s)
+                            } else if s.step == "nearby" {
+                                nearby_page(s, code)
+                            } else if s.step == "restore" {
+                                restore_page(s, backup_passphrase, path, picked)
+                            } else if s.step == "recovery-key" {
+                                recovery_key_page(s, words)
+                            } else if s.step == "protect" {
+                                protect_page(s)
+                            } else if s.step == "recovery-key-copy" {
+                                key_copy_page(s, first, second, third)
+                            } else if s.step == "backup" {
+                                backup_page(s, new_passphrase, confirmation)
+                            } else if s.step == "codecs" {
+                                codecs_page(s)
+                            } else {
+                                done_page(s)
+                            }
                         }
                     }
                 }
+                actions: {
+                    footer(s)
+                }
             }
         }
-        footer: {
-            footer(s)
-        }
-    }
-}
-
-/// Where setup is: what it is setting up, the step among its steps, and a track that fills as it
-/// goes on.
-view progress_header(what: Text, step: Text, done: Float, named: Text) {
-    stack(gap: .related) {
-        row(gap: .related, align: .center) {
-            ui.Text(what, role: .label, secondary: true)
-            spacer
-            ui.Text(step, role: .label, secondary: true, numeric: true)
-        }
-        // The words over the track say where the person is; a reader hears the whole stage.
-        ui.ProgressBar(done, accessible_name: named)
     }
 }
 

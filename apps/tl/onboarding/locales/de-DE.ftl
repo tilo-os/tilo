@@ -97,8 +97,6 @@ d-qthaupcj = Einrichtung
     .w-save-another-copy = Weitere Kopie speichern
     .w-choose-location-and-save-backup = Speicherort wählen und Sicherung speichern …
 
-d-n6aidgwc = Fortschrittskopf
-
 d-v4ckqejb = Seitentitel
 
 d-cmteiw7p = Absatz
