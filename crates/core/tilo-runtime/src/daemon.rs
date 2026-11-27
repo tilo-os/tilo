@@ -1573,6 +1573,9 @@ type KeyTake = Box<
 /// alone for its life. The listener itself never waits.
 pub(crate) struct Native {
     answers: crate::device::unclaimed::DeviceOnly,
+    /// What this device's own answers keep of a founding: told when the endpoint serves the
+    /// person below, which is when their services run.
+    founding: Arc<crate::device::unclaimed::Founding>,
     /// Who each connection is, and the device's answers about it.
     pub(crate) seats: Arc<Seats>,
     /// The person's endpoint, while their services run.
@@ -1600,8 +1603,10 @@ impl Native {
         admission: &'static tilo_api::daemon::admission::Admission,
     ) -> Self {
         let seats = Arc::new(Seats::new(admission, device.clone(), peer_of));
+        let founding = device.founding_record();
         Self {
             answers: device,
+            founding,
             seats,
             started: (Mutex::new(()), Condvar::new()),
             person: Mutex::new(None),
@@ -1659,6 +1664,9 @@ impl Native {
         *self.person.lock_recover() = Some(Arc::new(take));
         let _told = self.started.0.lock_recover();
         self.started.1.notify_all();
+        // The person's services run from here: a founding call answered once they do, and the
+        // seats' link that waited for them, are answered now.
+        self.founding.person_serves();
     }
 
     /// Serve the connections of the other people signed in on the computer with `take`, each

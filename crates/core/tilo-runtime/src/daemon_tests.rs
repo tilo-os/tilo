@@ -3213,36 +3213,40 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         "the refusal says what a founding session does: {why}"
     );
 
-    // The account's session founds its person through the same endpoint.
-    let (failed, said) = call(ADA, "devices#found", json!({}));
-    assert!(!failed, "the account founded its person: {said}");
-
-    // The person's services run, as the daemon starts them behind the founding call.
-    let frames = crate::device::local::Frames::of_the_device(answers.clone());
-    native.serve_the_person(super::Endpoint {
-        session_factory: std::sync::Arc::new(move || {
-            Ok(tilo_mcp::McpServer::for_agent(
-                answers.clone(),
-                String::new(),
-                "agent",
-                "",
-            ))
-        }),
-        status: std::sync::Arc::new(|| super::Status {
-            version: 1,
-            pid: std::process::id(),
-            workspace: "home".into(),
-        }),
-        search: std::sync::Arc::new(std::sync::OnceLock::new()),
-        media: None,
-        other_devices: None,
-        agents: None,
-        frames,
-        to_agents: None,
-        launch: None,
-        connections: None,
-        acting: None,
+    // The account's session founds its person through the same endpoint, and the person's part
+    // starts behind the call as the daemon starts it: the founding is answered once their
+    // services run, so it waits for the part while it comes up.
+    let (failed, said) = std::thread::scope(|scope| {
+        let founding = scope.spawn(|| call(ADA, "devices#found", json!({})));
+        // The person's services run, as the daemon starts them behind the founding call.
+        let frames = crate::device::local::Frames::of_the_device(answers.clone());
+        native.serve_the_person(super::Endpoint {
+            session_factory: std::sync::Arc::new(move || {
+                Ok(tilo_mcp::McpServer::for_agent(
+                    answers.clone(),
+                    String::new(),
+                    "agent",
+                    "",
+                ))
+            }),
+            status: std::sync::Arc::new(|| super::Status {
+                version: 1,
+                pid: std::process::id(),
+                workspace: "home".into(),
+            }),
+            search: std::sync::Arc::new(std::sync::OnceLock::new()),
+            media: None,
+            other_devices: None,
+            agents: None,
+            frames,
+            to_agents: None,
+            launch: None,
+            connections: None,
+            acting: None,
+        });
+        founding.join().expect("the founding call answered")
     });
+    assert!(!failed, "the account founded its person: {said}");
     // The same seat acts as the person now, over the link it made them with and with no new
     // sign-in: a call of the person's is no longer held to the setup's reach.
     let (_, why) = call(ADA, "devices#renewCertificates", json!({}));

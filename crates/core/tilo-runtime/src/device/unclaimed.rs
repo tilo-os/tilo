@@ -115,6 +115,9 @@ pub(crate) type Calls = Arc<std::sync::Mutex<HashMap<InvocationId, InvocationSta
 /// their own act issued; nobody else in their account gets any.
 #[derive(Default)]
 pub(crate) struct Founding {
+    /// Whether the person's services run: the start that makes them says so, and the endpoint
+    /// that serves them.
+    running: std::sync::atomic::AtomicBool,
     /// The person's services, and the person they serve, once they run.
     serving: std::sync::Mutex<Option<([u8; 32], Arc<super::ticket::Tickets>)>>,
     /// What sets up this device's boot key, once the person's services run.
@@ -150,6 +153,15 @@ impl Founding {
     /// from now on.
     pub(crate) fn serving(&self, person: [u8; 32], tickets: Arc<super::ticket::Tickets>) {
         *self.serving.lock_recover() = Some((person, tickets));
+        self.person_serves();
+    }
+
+    /// The person's services run from now on: what the start that made them says, and the
+    /// endpoint that serves them ([`crate::daemon`]'s `serve_the_person`). A founding call
+    /// answered once they run waits for this.
+    pub(crate) fn person_serves(&self) {
+        self.running
+            .store(true, std::sync::atomic::Ordering::Release);
         self.announced.notify_waiters();
     }
 
@@ -175,12 +187,29 @@ impl Founding {
         }
     }
 
-    /// The tickets of this device's services once they run, serving `person` when one is named:
-    /// the person's own workspace is founded by then when the device just made their root.
-    /// `reporting` is told the stage under way again every [`REPORTING`] meanwhile.
-    async fn until_serving(
+    /// The person's services run, as `reporting` is told the stage under way again every
+    /// [`REPORTING`] meanwhile: no fixed wait ends this, the caller following the call decides
+    /// when a stage has stopped reporting.
+    async fn until_serving(&self, mut reporting: impl FnMut(&str)) {
+        loop {
+            let heard = self.announced.notified();
+            tokio::pin!(heard);
+            heard.as_mut().enable();
+            if self.running.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            if tokio::time::timeout(REPORTING, heard).await.is_err() {
+                reporting(FOUNDING_FOUNDING);
+            }
+        }
+    }
+
+    /// The tickets of this device's services once they run, serving `person`: the person's own
+    /// workspace is founded by then when the device just made their root. `reporting` is told
+    /// the stage under way again every [`REPORTING`] meanwhile.
+    async fn until_serving_tickets(
         &self,
-        person: Option<[u8; 32]>,
+        person: [u8; 32],
         mut reporting: impl FnMut(&str),
     ) -> Arc<super::ticket::Tickets> {
         loop {
@@ -188,7 +217,7 @@ impl Founding {
             tokio::pin!(heard);
             heard.as_mut().enable();
             if let Some((serving, tickets)) = self.serving.lock_recover().clone()
-                && person.is_none_or(|person| person == serving)
+                && serving == person
             {
                 return tickets;
             }
@@ -210,7 +239,7 @@ impl Founding {
         kinds: &[String],
         mut reporting: impl FnMut(&str),
     ) -> Result<Value, String> {
-        let tickets = self.until_serving(Some(person), &mut reporting).await;
+        let tickets = self.until_serving_tickets(person, &mut reporting).await;
         let mut issued = Vec::with_capacity(kinds.len());
         for kind in kinds {
             reporting(FOUNDING_ISSUING);
@@ -569,6 +598,12 @@ impl DeviceOnly {
         self.0.founding.under_way()
     }
 
+    /// What this device's own answers keep of a founding, told as the person's services run:
+    /// [`Founding::person_serves`] is what the endpoint that serves them says.
+    pub(crate) fn founding_record(&self) -> Arc<Founding> {
+        Arc::clone(&self.0.founding)
+    }
+
     /// The daemon's profile, where founding records the account that made its person and the
     /// seats whose shells are admitted here: empty for a device actions' value no daemon keeps.
     pub(crate) fn profile(&self) -> &std::path::Path {
@@ -784,7 +819,7 @@ impl DeviceOnly {
         let (done, answer) = tilo_actions::remote::pending();
         let answering = self.clone();
         self.0.runtime.spawn(async move {
-            answering.0.founding.until_serving(None, |_| {}).await;
+            answering.0.founding.until_serving(|_| {}).await;
             let update = succeeded(invocation, serde_json::json!({ "person": person }));
             done.complete(Ok(answering.keep(invocation, update)));
         });
