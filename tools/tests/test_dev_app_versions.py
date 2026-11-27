@@ -80,6 +80,14 @@ class DevelopmentVersionTests(unittest.TestCase):
                 self.assertIn('version = "0.1.1-dev.10+g', path.read_text())
                 self.assertIn('version = "9.0.0"', path.read_text())
                 self.assertIn('runtime = "tilo-runtime/1.0.0"', path.read_text())
+        with self.subTest(phase='a tilolang package is built at the version its catalogue row names'):
+            plan = {'catalog': [{'name': 'tl-chat', 'version': '0.1.0'}],
+                    'tilolang': [{'app': 'tl-chat', 'version': '0.1.0'},
+                                 {'app': 'tl-library', 'version': '0.2.0'}]}
+            result = version_plan(plan, 42, 'b' * 40, stable=True)
+            self.assertEqual(result['tilolang'][0]['version'], result['catalog'][0]['version'])
+            self.assertNotEqual(result['tilolang'][0]['version'], '0.1.0')
+            self.assertEqual(result['tilolang'][1]['version'], '0.2.0')
         with self.subTest(phase='selected identity advances but unchanged version is reused'):
             def app(name):
                 return {'name': name, 'id': 'so.tilo.' + name, 'package': name, 'version': '0.1.0', 'runtime': 'tilo-runtime/1.0.0'}

@@ -49,6 +49,12 @@ def version_plan(plan, sequence, source, *, stable=False):
         app["declared_version"] = app["version"]
         version = release_version if stable else development_version
         app["version"] = version(app["version"], sequence, source)
+    # A tilolang package is built from the plan's `tilolang` row of it, and packaged under the
+    # version its catalogue row names: both carry the release's version.
+    released = {app.get("name"): app["version"] for app in result["catalog"]}
+    for package in result.get("tilolang", []):
+        if package["app"] in released:
+            package["version"] = released[package["app"]]
     return result
 
 
