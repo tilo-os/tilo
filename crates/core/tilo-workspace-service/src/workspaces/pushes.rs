@@ -128,7 +128,13 @@ impl Workspaces {
         let device = self.device_cert().device_public_key;
         let workspaces = self.downgrade();
         let (cluster, app, hash) = (workspace.to_string(), app.to_owned(), hash.to_owned());
-        tokio::spawn(async move {
+        // A write may run on a thread that is no runtime's: the service's writes thread carries
+        // the push where its embedder named one, and with none the content stays going to be
+        // pushed when a link starts, never holding up the write.
+        let Some(runtime) = self.record_writes_runtime() else {
+            return;
+        };
+        runtime.spawn(async move {
             let Some(reading) = workspaces.upgrade() else {
                 return;
             };
@@ -217,7 +223,12 @@ impl Workspaces {
         let mut linked = link.content_linked();
         let workspaces = self.downgrade();
         let workspace = workspace.to_owned();
-        tokio::spawn(async move {
+        // The link may start off any runtime: the service's writes thread carries the loop
+        // where its embedder named one, and with none the content goes when the link starts.
+        let Some(runtime) = self.record_writes_runtime() else {
+            return;
+        };
+        runtime.spawn(async move {
             let mut look = tokio::time::interval(PUSH_LOOK_EVERY);
             look.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
@@ -284,7 +295,14 @@ impl Workspaces {
         self.inner.content.pushes.moved.notify_waiters();
         let going = u32::try_from(self.content_going(workspace)).unwrap_or(u32::MAX);
         let (workspaces, workspace) = (self.clone(), workspace.to_owned());
-        tokio::spawn(async move { workspaces.lacks_content(&workspace, going).await });
+        let work = async move { workspaces.lacks_content(&workspace, going).await };
+        // The push is written from whichever thread the app's write ran on, which is not always
+        // a runtime's. The service's writes thread carries it where its embedder named one; with
+        // no runtime at all there is no pass to read the status on, and the pushes still going
+        // are looked at again when a link starts.
+        if let Some(runtime) = self.record_writes_runtime() {
+            runtime.spawn(work);
+        }
     }
 
     /// Push `server`, a server taking `workspace` over from this device, the
@@ -454,6 +472,12 @@ impl Workspaces {
     /// writes that land while it is read are looked at together after, so a
     /// record taking thousands of writes is not read whole for each.
     pub(super) fn own_write_landed(&self, workspace: &str, app: &str, record: &str) {
+        // A write may run on a thread that is no runtime's: the read goes on the service's
+        // writes thread where its embedder named one, and is skipped otherwise, where nothing
+        // could be released yet.
+        let Some(runtime) = self.record_writes_runtime() else {
+            return;
+        };
         let key = (workspace.to_owned(), app.to_owned(), record.to_owned());
         {
             let mut state = self.inner.content.pushes.state.lock_recover();
@@ -470,7 +494,7 @@ impl Workspaces {
             state.reading.insert(key.clone(), false);
         }
         let workspaces = self.clone();
-        tokio::spawn(async move {
+        runtime.spawn(async move {
             let (workspace, app, record) = &key;
             loop {
                 workspaces.own_write_named(workspace, app, record).await;
