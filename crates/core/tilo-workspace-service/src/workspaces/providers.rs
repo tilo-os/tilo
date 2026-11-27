@@ -813,6 +813,14 @@ impl Providers {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
+        // What a workspace's VM device asks the host that placed it (its media keys, a window's
+        // share, a vault item's text) is that host's alone. A provider here registered under the
+        // same name (the workspace's environments) answers its own resources, never these.
+        if tilo_action_services::environment_device::action_of(&request.target).is_some() {
+            let host = self.host_of(caller, &request)?;
+            self.take(request.invocation, Taker::Host(Arc::clone(&host)));
+            return Some(host.invoke(caller, request));
+        }
         let provider = request.target.provider.as_str();
         let named = self.0.provided.read_recover().get(provider).cloned();
         let registered = named.or_else(|| resources(&self.0.provided.read_recover(), provider));
