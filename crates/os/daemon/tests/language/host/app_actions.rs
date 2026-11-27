@@ -138,11 +138,8 @@ fn every_apps_record_reads_with_no_window_open() {
                 continue;
             }
             let held = records(&host, id).await;
-            let unread: Vec<_> = held
-                .iter()
-                .filter(|(_, entry)| !entry["value"].is_object())
-                .collect();
-            if held.is_empty() || !unread.is_empty() {
+            let unread = held.values().any(|entry| !entry["value"].is_object());
+            if held.is_empty() || unread {
                 gaps.push(format!("{id}: its records read {held:#?}"));
                 continue;
             }

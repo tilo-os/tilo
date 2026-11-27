@@ -1411,7 +1411,9 @@ impl Apps {
         } else {
             0
         };
-        self.launched.no_window_processes(app, workspace, record) + instances
+        self.launched
+            .no_window_processes(app, workspace, record)
+            .saturating_add(instances)
     }
 }
 

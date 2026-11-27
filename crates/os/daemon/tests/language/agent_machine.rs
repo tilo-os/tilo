@@ -4,6 +4,8 @@
 //! program typed at a terminal in the machine is asked about as the agent it is, once the person
 //! allows it.
 
+use std::fmt::Write as _;
+
 use serde_json::json;
 
 use crate::language::agent_fixture::{act, open_terminal_allowed};
@@ -27,8 +29,10 @@ async fn named_for_the_machine(host: &host::Host) -> String {
         .await
         .expect("the workspace's records read")
         .into_iter()
-        .map(|(_, held)| format!("{held:?}"))
-        .collect()
+        .fold(String::new(), |mut named, (_, held)| {
+            let _ = write!(named, "{held:?}");
+            named
+        })
 }
 
 /// The person keeps the token in their vault from a device of theirs, as their page does, and
