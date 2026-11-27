@@ -90,20 +90,19 @@ pub(crate) struct Parts<'a> {
 }
 
 /// What pushes each version written into `workspace`'s files here to the device serving the
-/// workspace, from `runtime`: a version is this device's alone until that device keeps it.
+/// workspace: a version is this device's alone until that device keeps it. A file's versions
+/// saved while its last push goes wait, and only the newest of them goes.
 pub(crate) fn pushed_to_host(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
     workspace: tilo_server_protocol::WorkspaceId,
     store: &Arc<tilo_fs::ContentStore>,
-    runtime: tokio::runtime::Handle,
 ) -> Arc<tilo_fs::WrittenContent> {
-    let (copies, store) = (workspaces.clone(), Arc::clone(store));
-    Arc::new(move |hash| {
-        let (copies, store) = (copies.clone(), Arc::clone(&store));
-        drop(runtime.spawn_blocking(move || {
-            tilo_workspace_service::files::push_written(&copies, workspace, &store, hash);
-        }));
-    })
+    let pushes = tilo_workspace_service::files::WrittenPushes::start(
+        workspaces.clone(),
+        workspace,
+        Arc::clone(store),
+    );
+    Arc::new(move |file, version| pushes.wrote(file, version))
 }
 
 /// The filesystem over the replica's namespace, with history, files on demand, staged writes

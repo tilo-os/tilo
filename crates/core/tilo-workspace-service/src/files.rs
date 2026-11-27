@@ -45,12 +45,14 @@ pub mod access;
 mod folders;
 mod opened;
 pub mod paths;
+mod pushed;
 mod puts;
 pub mod socket;
 
 pub use folders::{FOLDERS_APP, Folder, FolderList, Folders};
 pub use opened::OpenedFiles;
 pub use paths::{Entry, EntryKind, Paths};
+pub use pushed::WrittenPushes;
 pub use puts::{FilesWatch, Puts};
 
 /// How long the serving device's word that it holds a write is waited for. It answers only the
@@ -94,33 +96,6 @@ pub async fn start(
         fill: None,
     })
     .await
-}
-
-/// Push the content of a version this device wrote into `workspace`'s files to the device
-/// serving the workspace: the version's manifest and every chunk it lists, each going until that
-/// device says it keeps it ([`Workspaces::push_content`]). Reads the store on the calling thread,
-/// which must be inside a runtime.
-pub fn push_written(
-    workspaces: &Workspaces,
-    workspace: WorkspaceId,
-    store: &tilo_fs::ContentStore,
-    hash: Hash,
-) {
-    let name = workspace.to_string();
-    workspaces.push_content(&name, FILES_APP, &hash.to_hex());
-    let Some(manifest) = store.local_now(hash) else {
-        return;
-    };
-    let manifest = match tilo_fs::content::Manifest::decode(&manifest) {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            tracing::error!(%workspace, %hash, %error, "a version this device wrote names no manifest, so its bytes stay here");
-            return;
-        }
-    };
-    for chunk in manifest.chunks() {
-        workspaces.push_content(&name, FILES_APP, &Hash::from(chunk.hash).to_hex());
-    }
 }
 
 /// What a tree's sync reads, writes and hears of one workspace in this device's service.

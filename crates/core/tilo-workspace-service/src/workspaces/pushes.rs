@@ -407,6 +407,24 @@ impl Workspaces {
             .map_or(0, BTreeMap::len)
     }
 
+    /// Whether any of `hashes`, content this device pushed to the host of `workspace`, is still
+    /// going: not yet kept there, refused or let go.
+    #[must_use]
+    pub fn any_content_going(&self, workspace: &str, hashes: &[String]) -> bool {
+        let state = self.inner.content.pushes.state.lock_recover();
+        state
+            .going
+            .get(workspace)
+            .is_some_and(|going| hashes.iter().any(|hash| going.contains_key(hash)))
+    }
+
+    /// Resolves once something this device pushed is kept, refused or let go, or a push starts:
+    /// what a caller waiting for one of its pushes looks again on. Create it before looking, so
+    /// a move between the look and the wait is not missed.
+    pub fn content_moved(&self) -> tokio::sync::futures::Notified<'_> {
+        self.inner.content.pushes.moved.notified()
+    }
+
     /// Wait, at most `within`, until the host of `workspace` keeps everything
     /// this device pushed to it: what leaving the workspace or removing the
     /// device waits for. How many contents are still going when it stops.

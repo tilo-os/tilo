@@ -473,12 +473,7 @@ impl Peer {
             ));
         let parts = mount::Parts {
             keys,
-            written: mount::pushed_to_host(
-                workspaces,
-                workspace,
-                &self.store,
-                tokio::runtime::Handle::current(),
-            ),
+            written: mount::pushed_to_host(workspaces, workspace, &self.store),
             replica: &replica,
             store: Arc::clone(&self.store),
             content,

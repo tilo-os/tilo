@@ -163,8 +163,9 @@ impl Drop for NamespaceGuard<'_> {
     }
 }
 
-/// What is told the content of a version written here ([`QuickFS::with_written_content`]).
-pub type WrittenContent = dyn Fn(Hash) + Send + Sync;
+/// What is told each version written here: the file (its inode) and the version's content
+/// ([`QuickFS::with_written_content`]).
+pub type WrittenContent = dyn Fn(u64, Hash) + Send + Sync;
 
 /// Commit bookkeeping for one in-memory write buffer. `generation` counts mutations of
 /// the buffer; a buffer whose latest generation is committed is clean and may be
@@ -1956,8 +1957,8 @@ impl QuickFS {
         self
     }
 
-    /// Tell `written` the content of every version written through this filesystem, the moment
-    /// it is the file's: what the workspace's other devices have only once this device hands it
+    /// Tell `written` every version written through this filesystem, by its file and content, the
+    /// moment it is the file's: what the workspace's other devices have only once this device hands it
     /// to them.
     #[must_use]
     pub fn with_written_content(mut self, written: Arc<WrittenContent>) -> Self {
@@ -1965,11 +1966,11 @@ impl QuickFS {
         self
     }
 
-    /// `hash` is the content of a version written here now: tell whoever
+    /// `hash` is the content of a version of `ino` written here now: tell whoever
     /// [`Self::with_written_content`] names.
-    fn wrote_content(&self, hash: Option<Hash>) {
+    fn wrote_content(&self, ino: u64, hash: Option<Hash>) {
         if let (Some(written), Some(hash)) = (&self.written, hash) {
-            written(hash);
+            written(ino, hash);
         }
     }
 
@@ -3351,7 +3352,7 @@ impl QuickFS {
             }
             ns.set_content(ino, hash.as_ref(), byte_len, stamp);
         }
-        self.wrote_content(hash);
+        self.wrote_content(ino, hash);
         self.note_current_content(ino, hash);
         self.publish();
         Ok(())
@@ -3395,7 +3396,7 @@ impl QuickFS {
             .create_file(parent, name, content.as_ref(), byte_len, observed_at_ms)
             .ok_or(ENOENT)?;
         drop(namespace);
-        self.wrote_content(content);
+        self.wrote_content(ino, content);
         Ok(ino)
     }
 
