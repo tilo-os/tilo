@@ -90,6 +90,70 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("rdeps(tilo-media)", found[1])
 
 
+class StepSelectionTests(unittest.TestCase):
+    """The costly steps a command that names packages pays for: the ones the ci profile runs for
+    the packages it selected, and no others (tools/test-env.sh asks this before its steps)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.packages = setup_filters.workspace()
+
+    def steps(self, *chosen: str) -> list[str]:
+        return setup_filters.steps_for(self.packages, set(chosen))
+
+    def test_each_step_is_the_one_its_setup_runs(self) -> None:
+        steps = setup_filters.setup_steps()
+        self.assertEqual({name: steps[name] for name in ("font-catalog", "headless-audio")},
+                         {"font-catalog": "fonts", "headless-audio": "audio"})
+
+    def test_a_package_outside_both_closures_gets_no_step(self) -> None:
+        self.assertEqual(self.steps("tilo-collab-types"), [])
+
+    def test_a_package_the_catalog_serves_gets_the_fonts_step(self) -> None:
+        owner = setup_filters.FONT_OWNER
+        served = setup_filters.selected(self.packages, f"rdeps({owner})")
+        self.assertGreater(len(served), 1, "the catalog serves more than its reader")
+        for package in (owner, *sorted(served - {owner})[:3]):
+            with self.subTest(package=package):
+                self.assertIn("fonts", self.steps(package))
+
+    def test_a_package_the_endpoint_serves_gets_the_audio_step(self) -> None:
+        (filter_,) = setup_filters.configured()["headless-audio"]
+        served = setup_filters.selected(self.packages, filter_)
+        self.assertGreater(len(served), 1, "the endpoint serves more than one package")
+        for package in sorted(served)[:3]:
+            with self.subTest(package=package):
+                self.assertIn("audio", self.steps(package))
+
+    def test_a_selection_of_several_gets_the_steps_of_any_of_them(self) -> None:
+        self.assertEqual(self.steps("tilo-collab-types", setup_filters.FONT_OWNER, "tilo-media"),
+                         ["fonts", "audio"])
+
+    def test_a_package_that_declares_no_test_decides_no_step(self) -> None:
+        # t names the family's unify member beside every command of the family, and it depends on
+        # every library the family builds: it starts no test, so it needs no step of its own.
+        self.assertFalse(self.packages["workspace-unify"]["runs_tests"])
+        self.assertEqual(self.steps("workspace-unify"), [])
+        self.assertEqual(self.steps("workspace-unify", "tilo-collab-types"), [])
+
+    def test_a_command_that_names_no_package_gets_every_step(self) -> None:
+        # A whole-workspace run, and one that names only packages this workspace has not: the
+        # command decides neither step's audience, so all of them are prepared, as they were.
+        self.assertEqual(self.steps(), ["fonts", "audio"])
+        self.assertEqual(self.steps("no-such-package"), ["fonts", "audio"])
+
+    def test_a_filter_the_reading_cannot_read_pays_the_step_rather_than_leaving_it_out(self) -> None:
+        # A step left out fails the tests that need it; one prepared needlessly only takes its
+        # time, so a filter of another shape is taken as selecting the command's packages.
+        packages = {"a": {"directory": Path("a"), "dependencies": set()}}
+        with mock.patch.object(setup_filters, "configured",
+                               return_value={"font-catalog": ["package(a) and test(/draws/)"]}), \
+             mock.patch.object(setup_filters, "setup_steps",
+                               return_value={"font-catalog": "fonts"}), \
+             mock.patch.object(setup_filters, "COSTLY_STEPS", ["fonts"]):
+            self.assertEqual(setup_filters.steps_for(packages, {"a"}), ["fonts"])
+
+
 class ReadingTests(unittest.TestCase):
     """What the reading makes of sources written for it."""
 

@@ -3,6 +3,9 @@
 
     setup_filters.py            # each step's filter, as .config/nextest.toml carries it
     setup_filters.py --check    # exit 1, saying what differs, when it carries another
+    setup_filters.py --steps PACKAGE...
+                                # the costly steps a run of those packages' tests needs, a line
+                                # each: what tools/test-env.sh prepares for a `-p` command
 
 A setup script runs once per nextest run that selects one of its filter's tests, and a suite is
 well over a thousand runs (a package's test binary, or one shard of it). Two of the ci profile's
@@ -12,6 +15,11 @@ both and could use neither. So each runs for the packages whose code can use wha
 and nextest works the set out itself, from the build's own dependency graph (`rdeps(NAME)`: NAME
 and every package that depends on it, through any kind of dependency), so a package that starts
 depending on one of them is served without an edit here.
+
+A command nextest does not run (tools/test-env.sh's `cargo test -p NAME`) selects its packages
+here, by the same filters, so it pays for the same two steps and no others: preparing a step
+whose packages the command cannot name is time its job did not need, and preparing none of one
+its packages need fails the tests that use it.
 
 What an edit here is for is the roots, and they are read from the code:
 
@@ -90,10 +98,13 @@ LIBRARY = {"src", "build.rs"}
 
 
 def workspace() -> dict[str, dict]:
-    """Every workspace package: its directory and the workspace packages it depends on, through
-    any kind of dependency (as nextest's `rdeps` follows them)."""
+    """Every workspace package: its directory, the workspace packages it depends on, through
+    any kind of dependency (as nextest's `rdeps` follows them), and whether anything a test run
+    of it starts (a test, doctest or bench target) exists at all."""
+    # The cargo a caller gave ($CARGO, a drop-in that forwards), else the one on PATH.
+    cargo = os.environ.get("CARGO") or "cargo"
     metadata = subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--no-deps", "--offline", "--locked"],
+        [cargo, "metadata", "--format-version", "1", "--no-deps", "--offline", "--locked"],
         cwd=ROOT, check=True, capture_output=True, text=True).stdout
     packages = json.loads(metadata)["packages"]
     names = {package["name"] for package in packages}
@@ -101,6 +112,10 @@ def workspace() -> dict[str, dict]:
         package["name"]: {
             "directory": Path(package["manifest_path"]).parent,
             "dependencies": {d["name"] for d in package["dependencies"]} & names,
+            "runs_tests": any(
+                target.get("test") or target.get("doctest") or target.get("bench")
+                for target in package["targets"]
+            ),
         }
         for package in packages
     }
@@ -212,6 +227,59 @@ def configured() -> dict[str, list[str]]:
     return found
 
 
+def setup_steps() -> dict[str, str]:
+    """The step each setup script runs, by the script's name in .config/nextest.toml: the
+    argument after tools/test-env-setup.sh in its command."""
+    config = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))
+    steps: dict[str, str] = {}
+    for name, script in config.get("scripts", {}).get("setup", {}).items():
+        command = [str(word) for word in script["command"]]
+        for at, word in enumerate(command[:-1]):
+            if Path(word).name == "test-env-setup.sh":
+                steps[name] = command[at + 1]
+    return steps
+
+
+# The steps that take work, in the order tools/test-env.sh runs them. `runtime` is every
+# command's, and the rest of the ci profile's steps start a program of their own.
+COSTLY_STEPS = ["fonts", "audio"]
+
+
+def selects(packages: dict[str, dict], filter_: str, chosen: set[str]) -> bool:
+    """Whether one of `chosen` is a package `filter_` selects. A filter this reading cannot read
+    is taken as selecting them: a step left out fails the tests that need it, while one prepared
+    needlessly only takes its time."""
+    if " ".join(filter_.split()) == "all()":
+        return True
+    try:
+        return bool(selected(packages, filter_) & chosen)
+    except ValueError:
+        return True
+
+
+def steps_for(packages: dict[str, dict], chosen: set[str]) -> list[str]:
+    """The costly steps a run of the tests of `chosen`'s packages needs: those of the ci
+    profile's scripts whose filter selects one of them.
+
+    A package that declares no test, doctest or bench target starts nothing the steps serve, so
+    it decides none: a family's unify member (`tools/workspace-unify`) is named beside every
+    command of the family and depends on every library it builds, and would otherwise pay for
+    every step. A command that names no package of this workspace at all gets every step, as
+    every command did before the steps were chosen."""
+    chosen = chosen & set(packages)
+    if not chosen:
+        return list(COSTLY_STEPS)
+    chosen = {name for name in chosen if packages[name].get("runs_tests", True)}
+    steps = setup_steps()
+    needed = {
+        step
+        for script, filters in configured().items()
+        if (step := steps.get(script)) in COSTLY_STEPS
+        and any(selects(packages, filter_, chosen) for filter_ in filters)
+    }
+    return [step for step in COSTLY_STEPS if step in needed]
+
+
 def problems(packages: dict[str, dict], named) -> list[str]:
     """What is wrong with the filters in .config/nextest.toml, or with what this file allows:
     `named` is the packages' `evidence`."""
@@ -243,7 +311,15 @@ def problems(packages: dict[str, dict], named) -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--steps", action="store_true",
+                        help="the costly steps a run of these packages' tests needs")
+    parser.add_argument("packages", nargs="*", metavar="PACKAGE",
+                        help="a package a command selected with `-p`")
     args = parser.parse_args()
+    if args.steps:
+        for step in steps_for(workspace(), set(args.packages)):
+            print(step)
+        return
     packages = workspace()
     named = evidence(packages)
     if args.check:

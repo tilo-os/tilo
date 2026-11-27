@@ -39,7 +39,9 @@
 #   the capabilities the image promises (TILO_REQUIRE_*), the pinned font
 #   catalog and a private software audio endpoint that lives as long as
 #   COMMAND. A nextest run prepares the last two only for the packages that
-#   can use them; a command here may be anything, so it gets them all;
+#   can use them, and so does a `cargo` command here that names its packages
+#   (`-p`): a command that names none may start the tests of any of them, and
+#   gets both;
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
@@ -82,6 +84,30 @@ package_name() {
     printf '%s' "${spec%%@*}"
 }
 
+# What a cargo command selects: `selected`, the packages its `-p`/`--package`
+# names (a spec's name), and `whole`, 1 when it names everything
+# (`--workspace`, `--all`). A command that names none selects the whole
+# workspace, as cargo does.
+selected_packages() { # ARGUMENTS
+    local argument next=0
+    selected=()
+    whole=0
+    for argument; do
+        if ((next)); then
+            selected+=("$(package_name "$argument")")
+            next=0
+            continue
+        fi
+        case $argument in
+            --) break ;;
+            --workspace | --all) whole=1 ;;
+            -p | --package) next=1 ;;
+            -p?*) selected+=("$(package_name "${argument#-p}")") ;;
+            --package=*) selected+=("$(package_name "${argument#--package=}")") ;;
+        esac
+    done
+}
+
 # The libtest skips that leave out the tests whose capability this machine
 # lacks, as `.config/nextest-capabilities.toml` maps them: a `package<TAB>test`
 # line per pattern, which tools/cargo-runner.sh hands that package's test
@@ -94,35 +120,26 @@ package_name() {
 # package the manifest has, leaves out nothing and probes nothing.
 capability_skips() {
     local manifest="$repo/.config/nextest-capabilities.toml" argument name text
-    local next=0 all=0 probes=0 index
-    local -a packages=() arguments=()
+    local probes=0
+    local -a packages=()
     [[ ${1:-} == cargo && ${2:-} == test ]] || return 0
     [[ -r $manifest ]] || return 0
     # The probes are Linux's (tilo_test_env::PROBES): elsewhere a test that
     # needs one states so itself, and a probe that ran nowhere would refuse the
     # run instead of answering it.
     [[ $(uname -s) == Linux ]] || return 0
-    arguments=("${@:3}")
-    for ((index = 0; index < ${#arguments[@]}; index++)); do
-        argument=${arguments[index]}
-        if ((next)); then
-            packages+=("$(package_name "$argument")")
-            next=0
-            continue
-        fi
+    for argument in "${@:3}"; do
         case $argument in
             --) break ;;
             --no-run | --list | --doc | --bench | --benches) return 0 ;;
-            --workspace | --all) all=1 ;;
-            -p | --package) next=1 ;;
-            -p?*) packages+=("$(package_name "${argument#-p}")") ;;
-            --package=*) packages+=("$(package_name "${argument#--package=}")") ;;
         esac
     done
+    selected_packages "${@:3}"
+    packages=(${selected[@]+"${selected[@]}"})
     # The manifest's own text says which packages it names: a run of none of
     # them probes nothing (the tool's answer), and asking would cost a build of
     # the probe for an answer it cannot use.
-    if ((all == 0)) && ((${#packages[@]} > 0)); then
+    if ((whole == 0)) && ((${#packages[@]} > 0)); then
         text=$(<"$manifest")
         text=${text//[[:space:]]/}
         for name in "${packages[@]}"; do
@@ -134,12 +151,30 @@ capability_skips() {
         python3 "$repo/tools/ci/capability_filter.py" --skip-patterns --packages
     fi
 }
-steps=(runtime fonts audio)
 # A build: the caller's environment and the build inputs above, prepared by the same script every
 # other build of the suite is given them by.
 if [[ ${1:-} == --build ]]; then
     shift
     exec "$@"
+fi
+# The steps a cargo command pays for: the costly ones only for the packages whose code can use
+# what they prepare, as a nextest run of them prepares them (.config/nextest.toml's setup
+# filters, which tools/ci/setup_filters.py reads from the code). Preparing one a command cannot
+# use is time its job did not need; leaving out one its packages need fails the tests that use
+# it. A command that names everything or nothing (a whole-workspace run), or is the test itself
+# (any other command, which may be anything), gets them all.
+steps=(runtime)
+if [[ ${1:-} == cargo ]]; then
+    selected_packages "${@:2}"
+    if ((whole)) || ((${#selected[@]} == 0)); then
+        steps+=(fonts audio)
+    else
+        # One step per line the resolver prints.
+        # shellcheck disable=SC2046
+        steps+=($(python3 "$repo/tools/ci/setup_filters.py" --steps "${selected[@]}"))
+    fi
+else
+    steps+=(fonts audio)
 fi
 # The tests this machine cannot run, decided where they would run, before the
 # steps that prepare the environment for the rest: a `cargo test` leaves them

@@ -1013,6 +1013,9 @@ class CapabilitySkipTests(unittest.TestCase):
         report.chmod(0o755)
         env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
+               # The workspace's packages, which the steps a `-p` command pays for are read from,
+               # come from the real cargo; the command under test is the fake one above.
+               "CARGO": shutil.which("cargo"),
                "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
                "TILO_FONT_ASSET_CACHE": str(work / "fonts"),
                "NEXTEST_BIN_EXE_tilo-capability-probe": str(report)}
@@ -1087,6 +1090,103 @@ class CapabilitySkipTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("not run:", result.stderr)
             self.assertEqual(skips, [])
+
+
+class StepSelectionTests(unittest.TestCase):
+    """tools/test-env.sh prepares the costly steps for the packages a command selects, as a
+    nextest run of them does (.config/nextest.toml's setup filters), and no others.
+
+    The font catalog's cache is a path this test makes impossible to write, and the audio
+    endpoint is one the pulseaudio on PATH refuses to start, so a run that prepares either says
+    so and stops before cargo: a command that runs got neither step, and one that stops for a
+    step did. That is the machine-independent signal: whether this machine already has a
+    catalog or an endpoint does not change the answer."""
+
+    def wrapped(self, work: Path, *arguments: str, audio: bool = False):
+        """`cargo test ARGUMENTS` through tools/test-env.sh: the result, the cargo invocations
+        the run made, and the catalog's cache path. AUDIO promises the run an endpoint, which
+        the pulseaudio on PATH cannot start."""
+        programs, log = work / "bin", work / "cargo-invocations"
+        programs.mkdir(exist_ok=True)
+        (programs / "cargo").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >>"{log}"\n')
+        (programs / "cargo").chmod(0o755)
+        (programs / "pulseaudio").write_text("#!/bin/sh\necho 'no endpoint here' >&2\nexit 1\n")
+        (programs / "pulseaudio").chmod(0o755)
+        # The capability probe's report, so the run reaches its steps rather than building one.
+        report = work / "probe"
+        report.write_text("#!/bin/sh\necho 'tilo-capability-probe non-root-identity available'\n")
+        report.chmod(0o755)
+        # A file the catalog's cache directory would have to be made in.
+        blocker = work / "blocker"
+        blocker.write_text("")
+        catalog = blocker / "font-artifacts"
+        env = {**SEED, "PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+               # The resolver reads the workspace's packages from the real cargo, while the
+               # command under test is the fake one above.
+               "CARGO": shutil.which("cargo"),
+               "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
+               "TILO_TEST_CACHE_DIR": str(work / "cache"),
+               "TILO_FONT_ASSET_CACHE": str(catalog),
+               "NEXTEST_BIN_EXE_tilo-capability-probe": str(report),
+               "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "1" if audio else "0"}
+        result = subprocess.run(["bash", str(TEST_ENV), "cargo", "test", *arguments],
+                                env=env, capture_output=True, text=True, check=False)
+        ran = log.read_text().splitlines() if log.exists() else []
+        return result, ran, catalog
+
+    def command(self, *arguments: str) -> str:
+        """The invocation the wrapped command is, as the fake cargo records one."""
+        return " ".join(("test", *arguments))
+
+    def test_a_package_outside_both_the_catalog_and_the_endpoint_runs_its_command(self) -> None:
+        # The run this fixes: a package that sets no text and opens no audio endpoint, promised
+        # both, so a step it did not need would stop it.
+        with tempfile.TemporaryDirectory() as tmp:
+            result, ran, _ = self.wrapped(Path(tmp), "-p", "tilo-collab-types", "--lib",
+                                          "history::", audio=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(ran[-1], self.command("-p", "tilo-collab-types", "--lib", "history::"))
+            self.assertNotIn("font catalog", result.stderr)
+            self.assertNotIn("audio endpoint", result.stderr)
+
+    def test_the_unify_member_beside_a_command_decides_no_step(self) -> None:
+        # As t starts one: the family's unify member, by the package id spec it gives, beside the
+        # run's own packages. It depends on every library the family builds and starts no test,
+        # so it is no reason to prepare a step.
+        with tempfile.TemporaryDirectory() as tmp:
+            member = "path+file:///src/tools/workspace-unify#workspace-unify@0.0.0"
+            arguments = ("-p", member, "--message-format", "json", "-p", "tilo-collab-types",
+                         "--lib", "history::")
+            result, ran, _ = self.wrapped(Path(tmp), *arguments, audio=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(ran[-1], self.command(*arguments))
+
+    def test_a_package_the_catalog_serves_gets_the_fonts_step(self) -> None:
+        # The reader, and the toolkit that reads it for the packages built on it.
+        for package in ("tilo-font-catalog", "tilo-ui"):
+            with self.subTest(package=package), tempfile.TemporaryDirectory() as tmp:
+                result, ran, catalog = self.wrapped(Path(tmp), "-p", package)
+                self.assertNotEqual(result.returncode, 0, "the fonts step stopped the run")
+                self.assertNotIn(self.command("-p", package), ran, "the run never got to cargo")
+                self.assertIn(str(catalog), result.stderr, "the catalog is what it prepared")
+
+    def test_a_package_the_endpoint_serves_gets_the_audio_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, ran, _ = self.wrapped(Path(tmp), "-p", "tilo-media", "--lib", "--no-run",
+                                          audio=True)
+            self.assertNotEqual(result.returncode, 0, "the audio step stopped the run")
+            self.assertIn("headless audio endpoint did not start", result.stderr)
+            self.assertNotIn(self.command("-p", "tilo-media", "--lib", "--no-run"), ran)
+
+    def test_a_command_that_names_no_package_gets_every_step(self) -> None:
+        # A whole-workspace run, which may start the tests of any package: what every command
+        # that names no package got before the steps were chosen. `--no-run` keeps this test to
+        # the steps, not to the capability probe of a run that starts tests.
+        with tempfile.TemporaryDirectory() as tmp:
+            result, ran, catalog = self.wrapped(Path(tmp), "--no-run")
+            self.assertNotEqual(result.returncode, 0, "the fonts step stopped the run")
+            self.assertIn(str(catalog), result.stderr, "the catalog is what it prepared")
+            self.assertNotIn(self.command("--no-run"), ran)
 
 
 class DesktopIsolationHelperTests(unittest.TestCase):

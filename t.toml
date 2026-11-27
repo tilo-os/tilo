@@ -258,8 +258,8 @@ requires = ["arch=x86_64"]
 wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-assets\"; exec bash tools/test-env.sh \"$@\"", "examples"]
 args = ["--locked", "--examples"]
 unify = "workspace-unify"
-# tools/test-env.sh prepares the pinned font catalog for every command it runs, not only a package
-# whose own build reads fonts, so each of the family's jobs is given the seed it prepares from.
+# tools/test-env.sh prepares the pinned font catalog for a command that names no package, as this
+# family's commands name none, so each of the family's jobs is given the seed it prepares from.
 needs = ["font-seed"]
 packages = [
     "tilo-accounts", "app-cli", "tilo-key-group",
