@@ -95,8 +95,11 @@ impl Instance {
                 }
                 self.send_open(Level::Root, None);
                 // The window opening on its root is an opening too: a Terminal window's session
-                // opens its shell, as a session opened from a list does.
-                self.run_opened(&target, 0);
+                // opens its shell, as a session opened from a list does. An instance with no
+                // window is opened by nobody: what its callers open runs as they open it.
+                if !self.windowless {
+                    self.run_opened(&target, 0);
+                }
                 self.commit_planned();
             }
             Err(error) => {

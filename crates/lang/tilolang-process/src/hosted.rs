@@ -2106,7 +2106,7 @@ fn open_instance(
         vaults: Rc::default(),
         checks: Rc::clone(&checks),
     };
-    let instance = Instance::new(
+    let mut instance = Instance::new(
         Config {
             app: spec.app.clone(),
             me: spec.person.as_str().into(),
@@ -2122,6 +2122,9 @@ fn open_instance(
         Rc::new(tilolang_tilo::names::Installed),
         window,
     );
+    if spec.shows == Shows::Nothing {
+        instance.without_window();
+    }
     // What its runtime offers and invokes is decided by the person's access as the session
     // says it, read at each decision.
     let access = Rc::new(RefCell::new(spec.access.clone()));

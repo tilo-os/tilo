@@ -477,6 +477,9 @@ pub struct Instance {
     /// The package has no root of its own to open: everything it shows is opened by its
     /// embedder ([`Instance::without_root`]).
     rootless: bool,
+    /// The instance runs with no window, for the callers of its actions
+    /// ([`Instance::without_window`]): nobody opens its root.
+    windowless: bool,
     loading: bool,
     moved: bool,
     /// Whether the package's migrations ran over the workspace document since the window opened,
@@ -597,6 +600,7 @@ impl Instance {
             open_failed: None,
             started: false,
             rootless: false,
+            windowless: false,
             loading: false,
             moved: false,
             migrated: false,
@@ -631,6 +635,13 @@ impl Instance {
     /// starts.
     pub fn without_root(&mut self) {
         self.rootless = true;
+    }
+
+    /// Run with no window, for whoever invokes the app's actions: the root is opened for them to
+    /// act on, but nobody opened it, so its `opened action` (what a person opening it does, such
+    /// as starting their window's state) never runs. Before the host starts.
+    pub fn without_window(&mut self) {
+        self.windowless = true;
     }
 
     /// Read the person's access in the workspace from `source`: what the runtime invokes is decided
