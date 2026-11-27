@@ -1302,7 +1302,20 @@ impl crate::Shared {
     pub(crate) fn follow_enrollments(&self) {
         let mut settled = false;
         let settling = std::mem::take(&mut *self.joins.borrow_mut());
+        let mut arriving = Vec::new();
         for enrolled in settling {
+            // The daemon answers the join before this session's view of it hears the workspace
+            // arrive, and the shell puts on only a workspace this device holds: the landing waits
+            // for the view rather than be refused for good.
+            if enrolled.result.is_ok()
+                && self
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| !view.holds(enrolled.workspace_id))
+            {
+                arriving.push(enrolled);
+                continue;
+            }
             let key = enrolled.workspace_id.to_string();
             let named_on_shell = self.handle.read(|tree| {
                 tree.workspaces
@@ -1412,6 +1425,7 @@ impl crate::Shared {
             self.directory_store.enrolled(&key, &listed, &said);
             settled = true;
         }
+        self.joins.borrow_mut().extend(arriving);
         let Some(state) = &self.directory else {
             return;
         };
