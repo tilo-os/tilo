@@ -433,6 +433,12 @@ fn is_window_frame(widget: &dyn Widget) -> bool {
 }
 
 /// The header row the app's frame draws itself (a shell's), which is the window's top.
+/// The header row a root stands, for a test outside the module.
+#[cfg(feature = "test-support")]
+pub fn test_root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
+    root_header_row(root)
+}
+
 pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
     if let Some(row) = tilo_ui_base::widget::capability::capability::<dyn WindowHeader>(root) {
         return Some(row);

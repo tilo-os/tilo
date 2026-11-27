@@ -26,7 +26,7 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{tokens::MotionSource, tokens::TextRole};
 
 mod access;
-mod layout;
+pub(crate) mod layout;
 #[path = "window_toolbar_location_label.rs"]
 mod location_label;
 mod paint;
@@ -136,7 +136,7 @@ fn menu_rows(
     entries.extend(listed_entries(action, entry).into_iter().map(Some));
 }
 
-pub(crate) struct ToolbarRow {
+pub struct ToolbarRow {
     shown: Option<(u64, WindowToolbar)>,
     fade: CrossFade<Option<u64>>,
     outgoing: Option<(WindowToolbar, Parts)>,
@@ -554,14 +554,14 @@ impl ToolbarRow {
         true
     }
 
-    pub(crate) fn toolbar(&self) -> Option<&WindowToolbar> {
+    pub fn toolbar(&self) -> Option<&WindowToolbar> {
         self.shown.as_ref().map(|(_, toolbar)| toolbar)
     }
 
     /// Whether the location stands cut short of its name or a leading action gave up its place
     /// in the row: what a strip's "+" beside the parts costs them. A bar that can give the row
     /// more width asks before it keeps it.
-    pub(crate) fn parts_yield(&self) -> bool {
+    pub fn parts_yield(&self) -> bool {
         let whole = self
             .views_size
             .as_ref()
@@ -640,8 +640,8 @@ impl ToolbarRow {
         self.menu.is_open() && self.menu_part == Some(Part::Location)
     }
 
-    #[cfg(test)]
-    pub(crate) fn menu_labels(&self) -> Vec<String> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn menu_labels(&self) -> Vec<String> {
         if !self.menu.is_open() {
             return Vec::new();
         }
@@ -653,8 +653,8 @@ impl ToolbarRow {
             .collect()
     }
 
-    #[cfg(test)]
-    pub(crate) fn menu_row(&self, label: &str) -> Option<Rect> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn menu_row(&self, label: &str) -> Option<Rect> {
         if !self.menu.is_open() {
             return None;
         }
@@ -733,7 +733,7 @@ impl ToolbarRow {
         self.touched = None;
     }
 
-    pub(crate) fn parts(&self) -> &Parts {
+    pub fn parts(&self) -> &Parts {
         &self.parts
     }
 
@@ -1387,7 +1387,7 @@ impl ToolbarRow {
             .flatten()
     }
 
-    pub(crate) fn popup_open(&self) -> bool {
+    pub fn popup_open(&self) -> bool {
         self.menu.is_open() || self.suggestions_open() || self.picking()
     }
 

@@ -13,7 +13,7 @@ use tilo_ui_base::theme::Theme;
 /// is what assistive technology reads and the tip of its glyph, in the shell's language.
 const NEW_TAB_KEY: &str = "window-toolbar-new-tab";
 
-pub(crate) fn new_tab_name() -> String {
+pub fn new_tab_name() -> String {
     tilo_ui_base::i18n::I18nManager::lookup_plain(NEW_TAB_KEY)
 }
 

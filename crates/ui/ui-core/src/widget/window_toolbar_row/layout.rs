@@ -29,7 +29,7 @@ pub(crate) enum Part {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Parts {
+pub struct Parts {
     pub sidebar: Rect,
     pub back: Rect,
     pub forward: Rect,

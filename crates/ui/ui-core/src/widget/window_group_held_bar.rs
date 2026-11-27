@@ -29,7 +29,7 @@ impl WindowGroup {
         self.held_bar.is_some() && self.held.trailing.contains(p)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn held_bar_for_tests(&self) -> Option<crate::widget::WindowBarPart> {
         self.held_bar
     }

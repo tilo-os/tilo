@@ -1064,6 +1064,8 @@ pub mod internals {
     }
     pub mod window_group {
         pub use crate::widget::window_group::*;
+        pub use crate::widget::window_toolbar_row::ToolbarRow;
+        pub use crate::widget::window_toolbar_row::layout::Parts as ToolbarRowParts;
     }
 }
 /// The fixtures and measures a test outside this crate reaches.

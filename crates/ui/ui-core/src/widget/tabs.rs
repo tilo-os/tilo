@@ -61,7 +61,11 @@ mod tips;
 mod title_menu;
 #[path = "tabs_toolbar_row.rs"]
 mod toolbar_row;
-pub(crate) use new_tab::{new_tab_control, new_tab_name, paint_new_tab};
+#[cfg(feature = "test-support")]
+pub use new_tab::new_tab_name;
+#[cfg(not(feature = "test-support"))]
+pub(crate) use new_tab::new_tab_name;
+pub(crate) use new_tab::{new_tab_control, paint_new_tab};
 use pill_layout::{chip_rects, fit_pill_widths};
 pub use tabs_faces::TabFaceSpec;
 use tabs_faces::{FaceMetrics, PILL_MAX_FACES, PillFaces, paint_tab_face};
@@ -868,7 +872,7 @@ impl TabBar {
         true
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn toolbar_row(&self) -> &super::window_toolbar_row::ToolbarRow {
         &self.toolbar_row
     }
@@ -7273,3 +7277,13 @@ mod component;
 pub use component::{
     PresenceFaceProps, TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point,
 };
+
+/// What a tab bar's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl TabBar {
+    /// The window's toolbar row, as the bar lays it out.
+    #[must_use]
+    pub fn test_toolbar_row(&self) -> &super::window_toolbar_row::ToolbarRow {
+        self.toolbar_row()
+    }
+}

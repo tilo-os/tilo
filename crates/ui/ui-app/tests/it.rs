@@ -342,3 +342,5 @@ mod nav_shell_tests;
 mod page_edges_land_on_device_pixels;
 #[path = "widgets/virtual_list_copy_tests.rs"]
 mod virtual_list_copy_tests;
+#[path = "widgets/window_group_window_bar_tests.rs"]
+mod window_group_window_bar_tests;

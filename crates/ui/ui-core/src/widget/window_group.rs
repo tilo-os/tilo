@@ -1578,7 +1578,7 @@ impl WindowGroup {
         self.hosts.len()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn draws_its_bar_for_tests(&self) -> bool {
         self.navigation_bar_visible()
     }
@@ -2124,7 +2124,7 @@ impl WindowGroup {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn has_closing_host(&self, id: u64) -> bool {
         self.closing_hosts.contains_key(&id)
     }
@@ -3687,8 +3687,20 @@ impl WindowGroup {
     pub fn test_rect(&self) -> vello::kurbo::Rect {
         self.rect
     }
-}
 
-#[cfg(test)]
-#[path = "window_group_window_bar_tests.rs"]
-mod window_bar_tests;
+    /// Whether the held bar's row stands in place of the window's own.
+    #[must_use]
+    pub fn test_navigation_bar_visible(&self) -> bool {
+        self.navigation_bar_visible()
+    }
+
+    /// Show or leave the bar's fullscreen presentation.
+    pub fn test_set_fullscreen_presentation(&mut self, fullscreen: bool) {
+        self.set_fullscreen_presentation(fullscreen);
+    }
+
+    /// Press the resize handle.
+    pub fn test_press_resize(&mut self) {
+        self.press_resize();
+    }
+}
