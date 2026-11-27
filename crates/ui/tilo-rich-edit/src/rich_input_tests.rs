@@ -181,7 +181,7 @@ tilo_test_env::scenario! {
                             Some("Members".to_owned()),
                             vec![
                                 reference(&MemberId::person("u_ada")),
-                                reference(&MemberId::agent("planner", "u_ada"))
+                                reference(&MemberId::agent("planner", "u_bo"))
                             ]
                         ),
                     ]
@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
         let rich = last_value(&edits).expect("the pick reported the rich text");
         assert_eq!(
             rich.blocks[0].marks[0].value,
-            Attr::Text(reference(&MemberId::agent("planner", "u_ada")))
+            Attr::Text(reference(&MemberId::agent("planner", "u_bo")))
         );
     }
 
