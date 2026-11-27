@@ -1098,14 +1098,10 @@ impl PersonShells {
 }
 
 impl crate::seats::Shells for PersonShells {
-    fn token(&self, importing: bool) -> io::Result<[u8; 32]> {
-        let daemon = self.daemon()?;
-        if !importing {
-            // Founded behind the answer, never in front of it: the sign-in is answered at once,
-            // and a person's workspace the daemon is still founding does not hold the caller.
-            daemon.found_workspace_behind();
-        }
-        Ok(daemon.shell_token())
+    fn token(&self, _importing: bool) -> io::Result<[u8; 32]> {
+        // The person's workspace was founded with their root, or comes from a device of theirs
+        // that has it: a sign-in founds nothing.
+        Ok(self.daemon()?.shell_token())
     }
 
     fn token_holder(&self, token: &[u8; 32]) -> Option<[u8; 32]> {
@@ -3195,7 +3191,7 @@ fn start_requested(
     let workspace = request.workspace.as_str();
     let apps = daemon.apps();
     if !apps.launches_into(workspace) {
-        // The person's own workspace is founded the first time something opens it here.
+        // The person's own workspace, as this computer holds it.
         let own = daemon.workspace().ok();
         if own.as_deref() != Some(workspace) {
             return Err(io::Error::other(format!(

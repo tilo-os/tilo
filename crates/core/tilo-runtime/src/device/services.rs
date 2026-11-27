@@ -145,8 +145,8 @@ pub struct Daemon {
     apps: Arc<apps::Apps>,
     /// The server this device enters its person's workspaces through, once it knows one.
     home: Arc<super::home::Home>,
-    /// The person's workspace here: the one this computer enters through, founded the first time
-    /// the person needs one on a computer no ticket made.
+    /// The person's workspace here: the one this computer enters through, or the one it founded
+    /// with their root.
     first: Arc<super::first_workspace::FirstWorkspace>,
     /// The device actions this daemon answers: a ticket for a new computer, and a login with one.
     tickets: Arc<Tickets>,
@@ -552,11 +552,36 @@ pub(crate) fn person_founded(person: [u8; 32], uid: u32) {
     }
 }
 
+/// How long a device waits before it asks again for its person's own workspace, which the device
+/// keeping their list did not hand it, the first time: doubled each time after, up to
+/// [`PERSONS_WORKSPACE_LONGEST_PAUSE`].
+const PERSONS_WORKSPACE_FIRST_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The longest a device waits between two asks for its person's own workspace.
+const PERSONS_WORKSPACE_LONGEST_PAUSE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The people whose root this process just made, until the start of their services that follows
+/// founds their own workspace: the one step that founds it, on the device that made the root.
+/// Kept in memory alone, so a root whose founding never finished founds nothing at a later start,
+/// and no device that was handed a root founds a second workspace beside the one it made.
+static ROOTS_MADE_HERE: Mutex<Vec<[u8; 32]>> = Mutex::new(Vec::new());
+
+/// Whether this process made `person`'s root and has not founded their workspace yet.
+fn root_made_here(person: &[u8; 32]) -> bool {
+    ROOTS_MADE_HERE.lock_recover().contains(person)
+}
+
+/// `person`'s workspace is founded: their root's making is done.
+fn founded_with_root(person: &[u8; 32]) {
+    ROOTS_MADE_HERE.lock_recover().retain(|made| made != person);
+}
+
 /// Found the person of the account `uid` on this computer, the one way a person is made
 /// ([`tilo_identity::provisioning::create_person`]): their root is kept for that account alone,
-/// founds their own workspace, and certifies this device's key in `keys` with its authority. An
-/// account that holds its person already makes nobody new: its root certifies the device again,
-/// and one whose identity a login or founding stopped partway left is completed from the
+/// and certifies this device's key in `keys` with its authority. Their own workspace is founded
+/// in the same step, by the start of their services that follows in this process, and nowhere
+/// else. An account that holds its person already makes nobody new: its root certifies the device
+/// again, and one whose identity a login or founding stopped partway left is completed from the
 /// certificate this device already holds, or refused naming what to do.
 ///
 /// # Errors
@@ -636,7 +661,9 @@ fn found_a_person_in(
             "this device holds no certificate for the person it names",
         ));
     }
-    tilo_identity::provisioning::create_person(dir, keys, name.trim(), "", storage)
+    let person = tilo_identity::provisioning::create_person(dir, keys, name.trim(), "", storage)?;
+    ROOTS_MADE_HERE.lock_recover().push(person);
+    Ok(person)
 }
 
 /// What founding refuses on a computer whose identity says a person but holds nothing it can
@@ -1350,31 +1377,6 @@ impl Daemon {
             .show(workspace, (app, &title, ""))
     }
 
-    /// A new shell link: a connection to this daemon's dispatch that it opens itself and admits as
-    /// the shell of the person this device acts for, by a one-use secret no other process ever
-    /// sees. Whoever holds it is the shell; hand it only to the shell this daemon starts.
-    ///
-    /// # Errors
-    /// The dispatch's socket does not take the connection.
-    /// Found the person's workspace behind the answer that asked for their shell: a sign-in is
-    /// answered at once, and a workspace the daemon is still founding never holds the caller.
-    pub(crate) fn found_workspace_behind(&self) {
-        if self.first.get().is_some() {
-            return;
-        }
-        let first = Arc::clone(&self.first);
-        let spawned = std::thread::Builder::new()
-            .name("tilo-person-workspace".into())
-            .spawn(move || {
-                if let Err(error) = first.found_blocking() {
-                    tracing::warn!(%error, "the person who signed in has no workspace here");
-                }
-            });
-        if let Err(error) = spawned {
-            tracing::warn!(%error, "the person's workspace is not founded");
-        }
-    }
-
     /// The one-use secret a shell redeems for its link: what this daemon gives the shell it starts
     /// and what root's sign-in answers, and what the shell asks `shells#link` with.
     pub fn shell_token(&self) -> [u8; 32] {
@@ -1850,9 +1852,7 @@ impl Daemon {
     /// own added.
     ///
     /// The person's own workspace is opened the first time a connection reaches it, as every
-    /// other caller of the daemon opens it ([`crate::RuntimeServices::workspace`]): founded then
-    /// on a computer that has none yet, so a command run right after the daemon starts is
-    /// answered.
+    /// other caller of the daemon opens it ([`crate::RuntimeServices::workspace`]).
     ///
     /// A connection that names none reaches the account's own tree when this device cannot admit
     /// it anywhere yet: the person's list answers from their login entry and the copies held so
@@ -2075,40 +2075,53 @@ impl Daemon {
             &home.workspace,
         ));
         // The person's own workspace, whose roster lists every device of theirs, is the first
-        // this device keeps: entered where the person's list says it is.
-        let (own, asked) = (Arc::clone(&self.workspaces), Arc::clone(&account));
+        // this device keeps: entered where the person's list says it is. The device that keeps
+        // that list may not answer yet (it starts beside this one, or is away), so it is asked
+        // again, less often each time, for as long as this account is the one this part asks.
+        let (own, asked) = (Arc::downgrade(&self.workspaces), Arc::downgrade(&account));
         tilo_rt::app().handle().spawn(async move {
             let Some(own_workspace) = WorkspaceId::parse(&person) else {
                 return;
             };
-            // A device confined to one workspace keeps no copy of its person's own.
-            if own.confined().is_some() {
-                return;
-            }
-            if own.keeps(own_workspace).await {
-                return;
-            }
-            let entered = match asked
-                .listed(&person_key, &WorkspaceLabels::new(), Some(&person))
-                .await
-            {
-                Ok(listed) => match listed
-                    .workspaces
-                    .first()
-                    .map(tilo_server_protocol::workspaces::ListedWorkspace::entered_at)
+            let mut pause = PERSONS_WORKSPACE_FIRST_PAUSE;
+            loop {
+                let (Some(own), Some(asked)) = (own.upgrade(), asked.upgrade()) else {
+                    return;
+                };
+                // A device confined to one workspace keeps no copy of its person's own.
+                if own.confined().is_some() || own.keeps(own_workspace).await {
+                    return;
+                }
+                let entered = match asked
+                    .listed(&person_key, &WorkspaceLabels::new(), Some(&person))
+                    .await
                 {
-                    Some(Ok(hint)) => own
-                        .copies()
-                        .hold_as_member(own_workspace, &hint)
-                        .await
-                        .map(drop),
-                    Some(Err(why)) => Err(why),
-                    None => Err("the person's list does not name it yet".to_owned()),
-                },
-                Err(why) => Err(why),
-            };
-            if let Err(why) = entered {
-                tracing::warn!(%why, "the person's own workspace is not kept here yet");
+                    Ok(listed) => match listed
+                        .workspaces
+                        .first()
+                        .map(tilo_server_protocol::workspaces::ListedWorkspace::entered_at)
+                    {
+                        Some(Ok(hint)) => own
+                            .copies()
+                            .hold_as_member(own_workspace, &hint)
+                            .await
+                            .map(drop),
+                        Some(Err(why)) => Err(why),
+                        None => Err("the person's list does not name it yet".to_owned()),
+                    },
+                    Err(why) => Err(why),
+                };
+                let Err(why) = entered else {
+                    return;
+                };
+                tracing::warn!(
+                    %why,
+                    retry_in_s = pause.as_secs(),
+                    "the person's own workspace is not kept here yet"
+                );
+                drop((own, asked));
+                tokio::time::sleep(pause).await;
+                pause = pause.saturating_mul(2).min(PERSONS_WORKSPACE_LONGEST_PAUSE);
             }
         });
         Some(Arc::clone(
@@ -2440,13 +2453,11 @@ impl Daemon {
             .then(|| take_work::Server::from_login(home.get_blocking().as_ref()))
             .flatten();
         // The person's workspace here: their own on a device a ticket made, else the one this
-        // computer founds for them the first time they need one.
+        // computer founded with their root.
         let first = super::first_workspace::FirstWorkspace::open(
             Arc::clone(&workspaces),
             joined.then_some(workspace_id.as_str()),
-            identity.place.dir(),
-            &identity.cert.user_public_key,
-        )?;
+        );
         // A server founds and keeps the workspaces its configuration lists of its own, where
         // this computer holds its person's root: founding one is the founder's own device's act,
         // which a server its person's ticket joined is not. Such a server keeps the workspaces
@@ -2509,6 +2520,16 @@ impl Daemon {
             tilo_rt::app()
                 .handle()
                 .block_on(workspaces.claim_workspaces_here(&identity.cert.user_public_key));
+            // The computer that just made the person's root founds their workspace now, in the
+            // step that made it, before anyone is told the person is here: the founding call
+            // answers once their services run. Any other start founds nothing.
+            let person = identity.cert.user_public_key;
+            if root_made_here(&person) {
+                stage("founding the person's workspace");
+                let founding = Arc::clone(&first);
+                block_on_owned(async move { founding.found().await }).map_err(io::Error::other)?;
+                founded_with_root(&person);
+            }
         }
         // What the person granted apps in a workspace, as the service that holds its governance
         // answers: what every launch here hands the app it starts.
@@ -4257,9 +4278,9 @@ impl RuntimeServices for Daemon {
         self.other_devices.clone()
     }
 
-    /// The person's workspace here, founded now on a computer with no login that has none yet.
+    /// The person's workspace here, or why this computer has none.
     fn workspace(&self) -> io::Result<String> {
-        self.first.found_blocking().map_err(io::Error::other)
+        self.first.here_blocking().map_err(io::Error::other)
     }
 
     fn mcp_workspace(&self, requested: Option<&str>) -> io::Result<String> {
@@ -4296,10 +4317,10 @@ impl RuntimeServices for Daemon {
     #[cfg(unix)]
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
         // The app's connections are opened here, before it runs, and name the person's workspace:
-        // the first app launched in it founds it then, so the device is listed in it before the
-        // app signs anything. An import that came in first is theirs instead.
+        // the first app launched in it settles it then, so the device is listed in it before the
+        // app signs anything.
         self.first
-            .found_if_theirs(&self.workspace)
+            .settle_if_theirs(&self.workspace)
             .map_err(io::Error::other)?;
         // The workspace is here now: the secrets the apps the move carried over kept in this
         // device's old keeper are the person's vault items from now on.
@@ -4429,7 +4450,7 @@ pub(super) struct PersonDispatch {
     /// The calls the device took before this person's services ran, which they answer too.
     kept: super::unclaimed::Calls,
     asked: Arc<super::asked::DeviceAsked>,
-    /// The person's own workspace here, founded the first time a call of theirs needs it.
+    /// The person's own workspace here, settled the first time a call of theirs reaches it.
     first: Arc<super::first_workspace::FirstWorkspace>,
 }
 
@@ -4494,10 +4515,9 @@ impl PersonDispatch {
         caller: Caller,
         (pressed, own_shell): (Option<runtime_collab::wire::shell::ShellPress>, bool),
     ) -> io::Result<RuntimeActionProvider> {
-        // A new person's first call in their own workspace founds it, when nothing came in for
-        // them from their desktop.
+        // A person's first call in their own workspace settles it here.
         self.first
-            .found_if_theirs(workspace)
+            .settle_if_theirs(workspace)
             .map_err(io::Error::other)?;
         let workspaces = Arc::clone(&self.workspaces);
         let actor = self.actor.clone();
@@ -5038,28 +5058,37 @@ impl tilo_api::session::Here for Daemon {
             let carried = serde_json::from_value::<super::workspaces::Carried>(carried)
                 .map_err(|error| format!("what the desktop handed over does not read: {error}"))?;
             let (imported, moved) = workspaces.import(carried).await?;
-            first.moved_in(&moved)?;
+            first.moved_in(&moved);
             Ok(imported)
         })
     }
 
     /// Asked of the person's device that founds their workspaces, in their own workspace, which
-    /// both keep: this device signs the ask as itself.
+    /// both keep: this device signs the ask as itself. A computer with no login that holds no
+    /// copy of the person's workspace reaches none of their devices: it says how to add it.
     fn create_where_founded(
         &self,
         creating: tilo_api::session::Creating,
     ) -> tilo_api::session::FoundingAnswer<'_> {
         let workspaces = Arc::clone(&self.workspaces);
-        Box::pin(async move { super::founding_create::ask(&workspaces, creating).await })
+        let held = self.first.get().is_some();
+        Box::pin(async move {
+            if !held {
+                return Err(tilo_api::session::NotFounded::Refused(
+                    super::first_workspace::not_held(),
+                ));
+            }
+            super::founding_create::ask(&workspaces, creating).await
+        })
     }
 }
 
 impl Daemon {
-    /// Whether this computer keeps its person's account itself: a computer that logged in
-    /// reaches the account through the server that keeps its workspaces, and one that founded
-    /// its person here keeps them itself, and answers for them.
+    /// Whether this computer keeps its person's account itself: the one that founded their
+    /// workspace with their root, and holds it, answers for them. A computer that logged in
+    /// reaches the account through the device it entered from.
     pub(crate) fn keeps_its_own_account(&self) -> bool {
-        self.first.founds()
+        self.first.keeps_account()
     }
 
     /// The daemon as its API reaches it, without keeping it: what a key's connection answers
@@ -8594,7 +8623,7 @@ fn identity_service(
 /// surface, and no attach replaces a surface the runtime already holds.
 pub(super) struct AttachedSurfaces {
     pub(super) apps: Arc<apps::Apps>,
-    /// The person's workspace here, which the first app this daemon launched in it founds.
+    /// The person's workspace here, which the first app this daemon launched in it settles.
     pub(super) first: Arc<super::first_workspace::FirstWorkspace>,
     pub(super) dev: bool,
 }
@@ -8608,11 +8637,11 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
         ui::app_surface::reads_app(reader, owner)
     }
 
-    /// An app this daemon launched in the person's own workspace founds that workspace on a
-    /// computer with no login when nothing came in from their desktop yet, before it signs
-    /// anything: the device is listed in it then. The app is this daemon's only by its exact
-    /// launch record. Any other process, a connection the daemon made for no launch, an app
-    /// launched in another workspace, or a workspace already here, founds nothing.
+    /// An app this daemon launched in the person's own workspace settles that workspace on a
+    /// computer with no login, before it signs anything: the device is listed in it then. The
+    /// app is this daemon's only by its exact launch record. Any other process, a connection the
+    /// daemon made for no launch, or an app launched in another workspace, settles nothing, and
+    /// nothing ever founds the workspace here.
     #[cfg(unix)]
     fn connected(
         &self,
@@ -8627,8 +8656,8 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
         if self.apps.attested(pid) != Some((app_id.to_owned(), workspace.clone())) {
             return;
         }
-        if let Err(error) = self.first.found_if_theirs(&workspace) {
-            tracing::warn!(%error, app_id, "the person's workspace was not founded for their app");
+        if let Err(error) = self.first.settle_if_theirs(&workspace) {
+            tracing::warn!(%error, app_id, "the person's workspace is not settled for their app");
         }
     }
 

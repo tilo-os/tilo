@@ -101,11 +101,10 @@ fn on_own_device(body: impl FnOnce(&Path, &SigningIdentity)) {
 /// key their root certified there, and stop it again: what the device keeps from then on.
 fn keep_devices(profile: &Path, certs: &[&DeviceCert]) {
     let services = Daemon::start_reporting(profile, &mut |_| {}).expect("the daemon starts");
-    // The person's own workspace, which keeps their devices record, is founded when first asked
-    // for, as their own `tilo` asks for it.
+    // The person's own workspace, which keeps their devices record, founded with their root.
     services
         .workspace()
-        .expect("the person's workspace, founded when first asked for");
+        .expect("the person's workspace, founded with their root");
     let keeping = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

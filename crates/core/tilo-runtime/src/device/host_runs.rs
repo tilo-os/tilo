@@ -39,16 +39,16 @@ pub(super) struct HostRuns {
 }
 
 impl HostRuns {
-    /// The person's workspace's dispatch: founded, and admitted for the person, the first time.
+    /// The person's workspace's dispatch: settled, and admitted for the person, the first time.
     ///
-    /// A fresh person's workspace is not held when the daemon starts, so what the start does for
-    /// a person with one is done the first time, also for a workspace that came in from their
-    /// desktop ([`super::first_workspace::FirstWorkspace::found_if_theirs`]).
+    /// What the start does for a person whose workspace is held is done the first time for one
+    /// that came in from their desktop too
+    /// ([`super::first_workspace::FirstWorkspace::settle_if_theirs`]).
     fn provider(&self) -> Result<RuntimeActionProvider, String> {
         if let Some(provider) = self.provider.get() {
             return Ok(provider.clone());
         }
-        self.first.found_if_theirs(&self.workspace)?;
+        self.first.settle_if_theirs(&self.workspace)?;
         let provider = action_provider(
             &self.broker,
             &self.workspaces,

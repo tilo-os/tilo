@@ -175,6 +175,31 @@ impl Founding {
         }
     }
 
+    /// The tickets of this device's services once they run, serving `person` when one is named:
+    /// the person's own workspace is founded by then when the device just made their root.
+    /// `reporting` is told the stage under way again every [`REPORTING`] meanwhile.
+    async fn until_serving(
+        &self,
+        person: Option<[u8; 32]>,
+        mut reporting: impl FnMut(&str),
+    ) -> Arc<super::ticket::Tickets> {
+        loop {
+            let heard = self.announced.notified();
+            tokio::pin!(heard);
+            heard.as_mut().enable();
+            if let Some((serving, tickets)) = self.serving.lock_recover().clone()
+                && person.is_none_or(|person| person == serving)
+            {
+                return tickets;
+            }
+            // The person's part starts: no fixed wait ends this, the caller following the call
+            // decides when a stage has stopped reporting.
+            if tokio::time::timeout(REPORTING, heard).await.is_err() {
+                reporting(FOUNDING_FOUNDING);
+            }
+        }
+    }
+
     /// The tickets `kinds` names, each issued as `person`'s own act on this device: as
     /// `[{"kind": …, "ticket": …}]`, or why they were not. `reporting` is told the stage under
     /// way again every [`REPORTING`], so whoever follows the call sees it move even while one
@@ -185,21 +210,7 @@ impl Founding {
         kinds: &[String],
         mut reporting: impl FnMut(&str),
     ) -> Result<Value, String> {
-        let tickets = loop {
-            let heard = self.announced.notified();
-            tokio::pin!(heard);
-            heard.as_mut().enable();
-            if let Some((serving, tickets)) = self.serving.lock_recover().clone()
-                && serving == person
-            {
-                break tickets;
-            }
-            // The person's part starts: no fixed wait ends this, the caller following the call
-            // decides when a stage has stopped reporting.
-            if tokio::time::timeout(REPORTING, heard).await.is_err() {
-                reporting(FOUNDING_FOUNDING);
-            }
-        };
+        let tickets = self.until_serving(Some(person), &mut reporting).await;
         let mut issued = Vec::with_capacity(kinds.len());
         for kind in kinds {
             reporting(FOUNDING_ISSUING);
@@ -758,6 +769,25 @@ impl DeviceOnly {
         Pending::ready(Ok(receipt))
     }
 
+    /// Answer the founding `invocation` of `person` once this device's services run: the start
+    /// that follows the making of their root founds their own workspace before it serves them
+    /// ([`super::services::found_account_person`]), so the founder hears back once the person has
+    /// one.
+    fn once_serving(
+        &self,
+        invocation: InvocationId,
+        person: String,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (done, answer) = tilo_actions::remote::pending();
+        let answering = self.clone();
+        self.0.runtime.spawn(async move {
+            answering.0.founding.until_serving(None, |_| {}).await;
+            let update = succeeded(invocation, serde_json::json!({ "person": person }));
+            done.complete(Ok(answering.keep(invocation, update)));
+        });
+        answer
+    }
+
     /// Bring a person back on this device ([`RESTORE`]) from the recovery words or the backup
     /// `args` hold, as [`Self::found`] makes one: their root is kept here from then on.
     fn restore(&self, args: &Value) -> Result<String, Refusal> {
@@ -1191,12 +1221,19 @@ impl ActionProvider for DeviceOnly {
                         return self.founding_tickets(invocation, args, kinds);
                     }
                 }
+                // Services that serve a person already start nobody for the one founded now.
+                let serving_already = self.claimed();
                 let made = if address.action == FOUND {
                     self.found(&args)
                 } else {
                     self.restore(&args)
                 };
                 match made {
+                    // The first person founded here has their workspace founded as their
+                    // services start: the founding is answered once they have one.
+                    Ok(person) if address.action == FOUND && !serving_already => {
+                        self.once_serving(invocation, person)
+                    }
                     Ok(person) => Pending::ready(Ok(self.keep(
                         invocation,
                         succeeded(invocation, serde_json::json!({ "person": person })),

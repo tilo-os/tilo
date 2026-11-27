@@ -42,11 +42,11 @@ impl Host {
         drop(taken);
         let daemon = Arc::new(Daemon::start_reporting(profile, &mut |_| {}).unwrap());
         Self {
-            // The person's workspace is founded the first time it is asked for, as their own
-            // `tilo` asks for it: nothing founds it at the daemon's start.
+            // The person's workspace is founded as the daemon starts, in the step that made
+            // their root here.
             workspace: daemon
                 .workspace()
-                .expect("the person's workspace, founded when first asked for"),
+                .expect("the person's workspace, founded with their root"),
             daemon,
         }
     }

@@ -294,9 +294,9 @@ pub(crate) struct Seat {
 
 /// What the daemon does for the person its seats admit, once their services run.
 pub(crate) trait Shells: Send + Sync {
-    /// The person signed in on a seat: find them their workspace, unless their session hands
-    /// over the ones their desktop kept (`importing`), and make the one-use secret their shell
-    /// redeems for its link (`shells#link`).
+    /// The person signed in on a seat, their session handing over the workspaces their desktop
+    /// kept when `importing`: make the one-use secret their shell redeems for its link
+    /// (`shells#link`).
     ///
     /// # Errors
     /// No secret could be made.

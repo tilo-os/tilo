@@ -1727,13 +1727,18 @@ fn ask(socket: &Path, request: &Value) -> Value {
     serde_json::from_str(&line).unwrap()
 }
 
-/// `tilo_do` of `path` with `args`, as the daemon's native endpoint answers it.
+/// `tilo_do` of `path` with `args`, as the daemon's native endpoint answers it, waited on for as
+/// long as a founding takes: it answers once the person's workspace is founded, as their
+/// services start.
 fn do_request(path: &str, args: &Value) -> Value {
     json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": "tilo_do",
-        "arguments": {"path": path, "args": args},
+        "arguments": {"path": path, "args": args, "wait_ms": FOUNDING_WAIT_MS},
     }})
 }
+
+/// How long a test waits on a call that founds a person: their services start before it answers.
+const FOUNDING_WAIT_MS: u64 = 120_000;
 
 /// [`do_request`] as `tilo login --new-identity` makes it: the answer typed, the call waited on
 /// `wait_ms`, and the call `following` named asked again where it is.

@@ -853,7 +853,6 @@ pub(super) async fn server_entry(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
     (session, cert): (Option<&Entered>, &DeviceCert),
     endpoint: Option<iroh::EndpointAddr>,
-    founds: bool,
 ) -> Result<(), String> {
     use tilo_workspace_service::workspaces::servers;
 
@@ -884,12 +883,7 @@ pub(super) async fn server_entry(
     if !tilo_workspace_service::workspaces::person_workspace::holds_person_workspace(workspaces)
         .await
     {
-        if !founds {
-            return Err(
-                "this computer does not hold the person's Servers workspace yet".to_owned(),
-            );
-        }
-        tilo_workspace_service::workspaces::person_workspace::found(workspaces).await?;
+        return Err("this computer does not hold the person's Servers workspace yet".to_owned());
     }
     servers::admit(workspaces, cert, &endpoint).await
 }

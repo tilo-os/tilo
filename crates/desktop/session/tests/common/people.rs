@@ -4,8 +4,10 @@
 //! headless `tilo-session` of its own.
 //!
 //! A person is not a device. A person is the root their devices are certified
-//! under ([`Person`]); each of their devices is a key and a certificate the
-//! root signed ([`Person::device`]). Every device runs as a device does: its
+//! under ([`Person`]), which their first device makes, founding their own
+//! workspace as it does; each later device of theirs is a key and a certificate
+//! the root signed, let in with a ticket from that first device
+//! ([`Person::device`]). Every device runs as a device does: its
 //! own daemon (`tilo-runtime`, the person's own service) with its own home, its
 //! own identity root and its own state, holding the device's endpoint on
 //! loopback, and the session that daemon starts as the person's shell, on the
@@ -56,7 +58,7 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_device_identity::IdentityPaths;
-use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
+use tilo_identity::provisioning::FILE_SECRETS_ENV;
 use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
@@ -956,100 +958,70 @@ pub fn install_log() {
     });
 }
 
-/// Where a device's home holds the person's root its daemon is handed, as a deployment hands its
-/// daemon its owner's root.
-const OWNER_ROOT: &str = "owner-root";
-
-/// A person: the root their devices are certified under, and the identity this machine provisions
-/// them with before any of their devices run.
+/// A person: the identity their first device made, the root their devices are certified under.
+///
+/// Their first device makes them through its own daemon, as `tilo login --new-identity` asks it
+/// (`devices#found`), and founds their own workspace in that step; it is the one device of theirs
+/// that holds their root. Every later device of theirs enters with a ticket that device issues
+/// (`devices#issue`, `devices#logIn`), as `tilo device add` and `tilo login` do, and so takes
+/// their workspace from it.
 pub struct Person {
     /// What they go by.
     pub name: String,
     /// Their root, as a workspace names them.
     pub public: [u8; 32],
+    /// Their root as their first device made it, read from where that device keeps it: what
+    /// certifies the site's own device and a tab a page signed in, which stand where a device
+    /// holding the root signs them in.
     root: tilo_identity::store::SigningIdentity,
-    /// The device key this process took as the machine's daemon, so the account store seals and
-    /// unseals their root with it: let go of with the directory it is kept in.
-    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
-    /// The identity the first use of this machine provisioned for them, its root sealed to this
-    /// machine's device key.
-    identity: tempfile::TempDir,
-    /// Their root's seed as hexadecimal, which each of their devices' daemons is handed as a
-    /// deployment hands its owner's root, and keeps sealed to that device's own key.
-    root_seed: zeroize::Zeroizing<String>,
-    /// Whether the next device made is their first: the one that made their root, which founds
-    /// their own workspace. Every later device is taken into it by one that holds it.
-    first_device: std::sync::atomic::AtomicBool,
+    /// The home of the device that made their root, kept for as long as the person is: the device
+    /// every later one of theirs takes its ticket from.
+    founder: Arc<tempfile::TempDir>,
+    /// Their first device, until [`Self::device`] hands it out.
+    first: Mutex<Option<Device>>,
 }
 
 impl Person {
-    /// The person `name` , provisioned as a computer's first use provisions them.
-    ///
-    /// Provisioned by its roots: the site's threads and every other person's live in this process,
-    /// and the identity they look up is the one the environment names. Only the account store's
-    /// seal reads this computer's device key from the environment, so its identity root is named
-    /// there while the person is made and their root read, and the environment is as it was after.
+    /// The person `name`, made by their first device's daemon (`devices#found`), which founds their
+    /// own workspace as it makes their root. The device is stopped once it has; the first
+    /// [`Self::device`] is that device.
     pub fn new(name: &str) -> Self {
-        let identity = tempfile::tempdir().expect("a directory for the person's identity");
-        let config = identity.path().join("config");
-        // The person's devices, as a host holding their record lists them: what a device's
-        // certificate is checked against before anything signs with it.
-        tilo_identity::sources::test_trust::install();
-        // The account's own store below the identity directory, where every reader looks.
-        let identity_dir =
-            tilo_identity::store::account_identity_dir(&config.join("tilo/identity"));
-        let system = identity.path().join("system");
-        let mut sealing = tilo_test_env::ScopedEnv::new();
-        sealing.set("TILO_IDENTITY_ROOT", &system);
-        // This process stands in for the machine's daemon: it takes the device key first, so the
-        // account store seals the person's root with it, and keeps it while the person lives.
-        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
-            &identity_dir,
-            &IdentityPaths::under(&system),
-            IdentityStorage::Files,
-        )
-        .expect("this person's identity");
-        let record = tilo_identity::store::resolve_active_identity(&identity_dir)
-            .expect("the identity this machine provisioned for the person");
-        let words = tilo_identity::store::recovery_words(&record)
-            .expect("the recovery words of the person's root");
-        let root_seed = zeroize::Zeroizing::new(hex::encode(
-            tilo_user_identity::recovery_words::decode(&words).expect("the root's own words"),
-        ));
-        let root = tilo_identity::store::load_from_path(record).expect("the person's root key");
-        drop(sealing);
+        let home = Arc::new(device_home());
+        let mut first = Device::at(
+            name,
+            "First device",
+            Arc::clone(&home),
+            unsigned_cert([0; 32]),
+        );
+        first.restart_daemon();
+        let founded =
+            first.device_action(tilo_device_identity::login::FOUND, json!({ "name": name }));
+        assert!(
+            matches!(founded, ReceiptStatus::Completed { .. }),
+            "{name}'s first device made them: {founded:?}\n{}",
+            first.warnings()
+        );
+        first.stop();
+        first.cert = tilo_device_identity::persist::read_device_cert(&first.identity().device_cert)
+            .expect("the certificate the founding filed");
+        let root = founded_root(home.path());
+        assert_eq!(
+            root.group_public_key(),
+            first.cert.user_public_key,
+            "the device keeps the root that certified it"
+        );
         Self {
             name: name.to_owned(),
-            public: root.group_public_key(),
+            public: first.cert.user_public_key,
             root,
-            _taken_key: taken_key,
-            identity,
-            root_seed,
-            first_device: std::sync::atomic::AtomicBool::new(true),
+            founder: home,
+            first: Mutex::new(Some(first)),
         }
     }
 
-    /// Certify the device key `paths` holds under this person's root, as the person admits a device
-    /// of theirs: `label` is what it is called, and the capabilities are the ones the identity
-    /// layer grants a joined device.
-    pub fn certify(&self, paths: &IdentityPaths, label: &str) -> DeviceCert {
-        self.certify_with(paths, label, None)
-    }
-
-    /// The configuration home the first use of this machine provisioned the
-    /// person in.
+    /// The configuration home of the device that made the person.
     pub fn config_home(&self) -> PathBuf {
-        self.identity.path().join("config")
-    }
-
-    /// The identity root holding this machine's device key and certificate.
-    pub fn identity_root(&self) -> PathBuf {
-        self.identity.path().join("system")
-    }
-
-    /// The home the first use of this machine provisioned them in.
-    pub fn home(&self) -> PathBuf {
-        self.identity.path().join("home")
+        self.founder.path().join("config")
     }
 
     /// Certify the device key `paths` holds as this person's site: the device a site runs, which
@@ -1061,6 +1033,13 @@ impl Person {
             label,
             Some(tilo_user_identity::DeviceCapabilities::member()),
         )
+    }
+
+    /// Certify the device key `paths` holds under this person's root, as their root signs in a
+    /// tab a page approved: `label` is what it is called, and the capabilities are the ones the
+    /// identity layer grants a joined device.
+    pub fn certify(&self, paths: &IdentityPaths, label: &str) -> DeviceCert {
+        self.certify_with(paths, label, None)
     }
 
     /// [`Self::certify`], with what the person lets the device do said here rather than taken from
@@ -1102,64 +1081,112 @@ impl Person {
         cert
     }
 
-    /// Another of this person's devices, certified under their root as a device is enrolled:
-    /// `label` is what it is called.
+    /// One of this person's devices, called `label`. The first is the one that made them, named
+    /// as the person names a device (`devices#rename`); every later one is a computer of its own
+    /// that enters with a ticket their first device issues ([`Device::redeem_ticket`]). Each is
+    /// left stopped.
     pub fn device(&self, label: &str) -> Device {
-        let home = tempfile::tempdir().expect("a directory for the device");
-        let root = home.path();
-        for directory in ["config", "data", "state", "cache", "runtime", "home"] {
-            std::fs::create_dir_all(root.join(directory)).expect("a device directory");
+        let first = self.first.lock().expect("the person's first device").take();
+        if let Some(mut first) = first {
+            first.label = label.to_owned();
+            first.restart_daemon();
+            let key = hex::encode(first.cert.device_public_key);
+            first.call_until_answered(
+                tilo_device_identity::login::RENAME,
+                &json!({ "device": key, "name": label }),
+            );
+            first.stop();
+            return first;
         }
-        let paths = IdentityPaths::under(root.join("identity"));
-        let cert = self.certify(&paths, label);
-        // The device takes up the person its certificate names, as a device enrolled without the
-        // root does: their public record, its account's active identity. The record carries the
-        // name they go by here, as a person's does once they have given one: a device that took
-        // up an unnamed person says so on everyone's bar, and nobody names them.
-        let identity_dir =
-            tilo_identity::store::account_identity_dir(&root.join("config/tilo/identity"));
+        let mut device = Device::at(
+            &self.name,
+            label,
+            Arc::new(device_home()),
+            unsigned_cert(self.public),
+        );
+        self.let_in(&mut device);
+        // The device names the person as they go by, from the record its login took up: a device
+        // that took up an unnamed person says so on everyone's bar until their record arrives.
+        let identity_dir = tilo_identity::store::account_identity_dir(
+            &device.directory().join("config/tilo/identity"),
+        );
         let took_up = tilo_identity::provisioning::take_up_device_person(
             &identity_dir,
-            &paths,
+            &device.identity(),
             tilo_clock::unix_now_ns(),
             &self.name,
         )
         .expect("the device takes up its person");
         assert!(took_up, "the device's certificate names its person");
-        // Its daemon is handed the person's root, and restores it the one way a person is brought
-        // back on a computer: kept from then on sealed to this device's own key, which only its
-        // daemon holds. A root sealed to another device's key would open nowhere but there.
-        let handed = root.join(OWNER_ROOT);
-        std::fs::write(&handed, self.root_seed.as_bytes()).expect("the root is handed");
-        std::fs::set_permissions(
-            &handed,
-            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
-        )
-        .expect("the handed root is its owner's alone");
-        // Only the device that made the person's root founds their own workspace: a later one
-        // asks a device of theirs to take it in.
-        if self
-            .first_device
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            tilo_identity::provisioning::mark_founding(&identity_dir)
-                .expect("the person's first device founds their workspace");
-        }
-        Device {
-            person: self.name.clone(),
-            label: label.to_owned(),
-            cert,
-            control: root.join("control.sock"),
-            home,
-            child: None,
-            daemon: None,
-            shell: None,
-            announced: None,
-            session: None,
-            seeds: std::cell::Cell::new(false),
-            extra_env: Vec::new(),
-        }
+        device
     }
+
+    /// Let `device` in with a ticket the person's first device issues, as `tilo device add` asks
+    /// it there: that device's daemon as it is, running for a test that started it, else started
+    /// until the person's record of their devices lists the computer, since the device that
+    /// issued a ticket certifies the computer redeeming it and lists it there, and the computer
+    /// enters the person's workspace as a device that record lists.
+    fn let_in(&self, device: &mut Device) {
+        let mut issuer = Device::at(
+            &self.name,
+            "their first device",
+            Arc::clone(&self.founder),
+            unsigned_cert(self.public),
+        );
+        if UnixStream::connect(issuer.native_socket()).is_err() {
+            issuer.restart_daemon();
+        }
+        let ticket = issuer.issue_ticket();
+        device.redeem_ticket(&ticket, "their first device");
+        // Named as the person names it, which only a device the record lists takes.
+        issuer.call_until_answered(
+            tilo_device_identity::login::RENAME,
+            &json!({
+                "device": hex::encode(device.cert.device_public_key),
+                "name": device.label,
+            }),
+        );
+        issuer.stop();
+    }
+}
+
+/// A directory for a device of its own: its home, configuration, data, state, cache and runtime.
+fn device_home() -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("a directory for the device");
+    for directory in ["config", "data", "state", "cache", "runtime", "home"] {
+        std::fs::create_dir_all(home.path().join(directory)).expect("a device directory");
+    }
+    home
+}
+
+/// A certificate nobody signed, naming `person` and no key: what a device is until a root
+/// certifies its key, which its founding or its login files in its place.
+fn unsigned_cert(person: [u8; 32]) -> DeviceCert {
+    DeviceCert {
+        user_public_key: person,
+        device_public_key: [0; 32],
+        device_label: String::new(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 0,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    }
+}
+
+/// The person's root as the stopped device at `home` keeps it: sealed to that device's key, so
+/// this process takes the key, as the device's daemon does, while it reads the root. The
+/// identity root the seal reads the key from is named in the environment for that time alone.
+fn founded_root(home: &Path) -> tilo_identity::store::SigningIdentity {
+    let mut sealing = tilo_test_env::ScopedEnv::new();
+    sealing.set("TILO_IDENTITY_ROOT", home.join("identity"));
+    let _taken = tilo_device_identity::persist::take_device_key(&IdentityPaths::under(
+        home.join("identity"),
+    ))
+    .expect("the stopped device's key is taken as its daemon takes it");
+    let dir = tilo_identity::store::account_identity_dir(&home.join("config/tilo/identity"));
+    let record = tilo_identity::store::held_root(&dir).expect("the device kept the root it made");
+    tilo_identity::store::load_from_path(record).expect("the person's root key")
 }
 
 /// Provisioning a person writes their profile and changes nothing this process reads: another
@@ -1205,9 +1232,9 @@ impl Person {
     /// certified yet: until it redeems a ticket ([`Device::redeem`]) it is no device of the
     /// person's, and opens nothing of theirs.
     ///
-    /// What `source` keeps of the person's root is sealed to `source`'s key, and the root its
-    /// daemon was handed is `source`'s to keep: neither comes along. A copy alone opens nothing,
-    /// and the copy never holds the source's sealed root beside the one it is let into.
+    /// What `source` keeps of the person's root is sealed to `source`'s key, and does not come
+    /// along. A copy alone opens nothing, and the copy never holds the source's sealed root beside
+    /// the one it is let into.
     pub fn copy_of(&self, source: &Device) -> (Device, tilo_device_identity::branch::Branched) {
         use tilo_device_identity::branch::{self, Branch, Machine, Settled};
         assert!(
@@ -1263,31 +1290,15 @@ impl Person {
             signature: [0; 64],
             issuer: None,
         };
-        let control = home.path().join("control.sock");
-        (
-            Device {
-                person: self.name.clone(),
-                label: branched.label.clone(),
-                cert,
-                control,
-                home,
-                child: None,
-                daemon: None,
-                shell: None,
-                announced: None,
-                session: None,
-                seeds: std::cell::Cell::new(source.seeds.get()),
-                extra_env: Vec::new(),
-            },
-            *branched,
-        )
+        let copy = Device::at(&self.name, &branched.label, Arc::new(home), cert);
+        copy.seeds.set(source.seeds.get());
+        (copy, *branched)
     }
 }
 
 /// Leave out of the machine copied to `root` what its source keeps of the person's root: the
-/// record of the root its daemon restored, the share of it sealed to the source's key, and the
-/// root the source's daemon was handed ([`OWNER_ROOT`]). The person's public record, which names
-/// whose device this is, stays.
+/// record of the root it made and the share of it sealed to the source's key. The person's public
+/// record, which names whose device this is, stays.
 fn drop_carried_root(root: &Path) {
     let gone = |path: &Path| match std::fs::remove_file(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
@@ -1295,7 +1306,6 @@ fn drop_carried_root(root: &Path) {
         }
         _ => {}
     };
-    gone(&root.join(OWNER_ROOT));
     let dir = tilo_identity::store::account_identity_dir(&root.join("config/tilo/identity"));
     let record = tilo_identity::store::held_root(&dir).expect("the source kept its person's root");
     gone(&record);
@@ -1310,6 +1320,24 @@ fn drop_carried_root(root: &Path) {
 }
 
 impl Device {
+    /// `person`'s device called `label`, over `home`, its certificate `cert`: nothing runs yet.
+    fn at(person: &str, label: &str, home: Arc<tempfile::TempDir>, cert: DeviceCert) -> Self {
+        Self {
+            person: person.to_owned(),
+            label: label.to_owned(),
+            cert,
+            control: home.path().join("control.sock"),
+            home,
+            child: None,
+            daemon: None,
+            shell: None,
+            announced: None,
+            session: None,
+            seeds: std::cell::Cell::new(false),
+            extra_env: Vec::new(),
+        }
+    }
+
     /// This device's daemon's native endpoint: where a program of the person's on it calls.
     fn native_socket(&self) -> PathBuf {
         self.home
@@ -1324,8 +1352,9 @@ impl Device {
         let Value::Object(argument) = args else {
             panic!("a device action is called with its arguments");
         };
+        let invocation = tilo_actions::InvocationId::new();
         let request = RemoteActionMessage::Invoke(tilo_actions::remote::InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
+            invocation,
             target: RemoteActionTarget {
                 provider: tilo_device_identity::login::PROVIDER.to_owned(),
                 address: tilo_actions::ActionAddress::new(
@@ -1351,50 +1380,99 @@ impl Device {
             .write_all(&RemoteActionFrame::new(request).encode().expect("a frame"))
             .expect("the call is sent");
         writer.write_all(b"\n").expect("the call is sent");
-        let mut line = String::new();
-        BufReader::new(stream)
-            .read_line(&mut line)
-            .expect("the daemon answers");
-        match RemoteActionFrame::decode(line.trim_end().as_bytes())
-            .expect("the answer is a frame")
-            .message
-        {
+        let mut reader = BufReader::new(stream);
+        let mut answer = || {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("the daemon answers");
+            RemoteActionFrame::decode(line.trim_end().as_bytes())
+                .expect("the answer is a frame")
+                .message
+        };
+        let status = match answer() {
             RemoteActionMessage::Receipt(receipt) => receipt.status,
             other => panic!("a call is answered with a receipt, not {other:?}"),
+        };
+        if !matches!(status, ReceiptStatus::Accepted) {
+            return status;
         }
+        // A call answered at once, as a computer no person's certificate names yet answers its
+        // login, is followed until it ends, as `tilo login` follows it.
+        let until = tilo_test_env::hang_deadline();
+        for correlation in 1_u64.. {
+            let observe = RemoteActionMessage::Observe {
+                correlation,
+                invocation,
+                wait_ms: Some(55_000),
+                seen: None,
+            };
+            writer
+                .write_all(&RemoteActionFrame::new(observe).encode().expect("a frame"))
+                .expect("the ask is sent");
+            writer.write_all(b"\n").expect("the ask is sent");
+            let state = loop {
+                match answer() {
+                    RemoteActionMessage::Update {
+                        state,
+                        correlation: Some(answered),
+                        ..
+                    } if answered == correlation => break state,
+                    // An update the daemon pushes as the call goes on answers no ask.
+                    RemoteActionMessage::Update { .. } => {}
+                    other => panic!("an ask is answered with an update, not {other:?}"),
+                }
+            };
+            let state = state.unwrap_or_else(|| panic!("{} lost the call {action}", self.label));
+            if state.is_terminal() {
+                return state.receipt().status;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(
+                Instant::now() < until,
+                "{}'s call {action} did not end: {state:?}\n{}",
+                self.label,
+                self.warnings()
+            );
+        }
+        unreachable!("the asks of one call run out")
     }
 
     /// A ticket this device's daemon issues for one more computer of its person's, as `tilo
     /// device add` asks it on the person's own connection: what that computer logs in with.
     fn issue_ticket(&self) -> String {
+        let issued =
+            self.call_until_answered(tilo_device_identity::login::ISSUE, &json!({"wait": false}));
+        issued["result"]["ticket"]
+            .as_str()
+            .filter(|ticket| !ticket.is_empty())
+            .unwrap_or_else(|| panic!("{} issued no ticket: {issued}", self.label))
+            .to_owned()
+    }
+
+    /// The person's device action `action` with `args`, asked on their own connection to this
+    /// device's daemon as `tilo device` asks it, in the workspace it holds of theirs: its answer,
+    /// asked again until the person's services, which start after the daemon answers, take it.
+    fn call_until_answered(&self, action: &str, args: &Value) -> Value {
         let socket = self.native_socket();
         let until = tilo_test_env::hang_deadline();
         loop {
-            let issued = tilo_rt::app().handle().block_on(async {
+            let answered = tilo_rt::app().handle().block_on(async {
                 let calls = tilo_api::calls::Calls::connect(Some(socket.as_path()), None).await?;
                 calls.founded_workspace().await?;
                 calls
                     .start(
                         None,
                         tilo_device_identity::login::RESOURCE,
-                        tilo_device_identity::login::ISSUE,
-                        &json!({"wait": false}),
-                        "Add a device",
+                        action,
+                        args,
+                        "A device action",
                     )
                     .await
             });
-            match issued {
-                Ok(issued) => {
-                    return issued["result"]["ticket"]
-                        .as_str()
-                        .filter(|ticket| !ticket.is_empty())
-                        .unwrap_or_else(|| panic!("{} issued no ticket: {issued}", self.label))
-                        .to_owned();
-                }
-                // The person's services start after the daemon answers.
+            match answered {
+                Ok(answered) => return answered,
                 Err(error) => assert!(
                     Instant::now() < until,
-                    "{} issued no ticket: {error:#}\n{}",
+                    "{} did not answer {action}: {error:#}\n{}",
                     self.label,
                     self.warnings()
                 ),
@@ -1414,6 +1492,17 @@ impl Device {
             issuer.restart_daemon();
         }
         let ticket = issuer.issue_ticket();
+        // The issuer certifies the computer that redeems its ticket: it runs until then.
+        self.redeem_ticket(&ticket, &issuer.label);
+        if issuer_was_off {
+            issuer.stop();
+        }
+    }
+
+    /// Log this device in with `ticket`, which the device `issued_by` names issued: its daemon
+    /// redeems it (`devices#logIn`, as `tilo login` does), which has the person's root certify
+    /// this device's own key. The daemon is left as it was: stopped, or running.
+    pub fn redeem_ticket(&mut self, ticket: &str, issued_by: &str) {
         let was_off = self.daemon.is_none();
         if was_off {
             self.restart_daemon();
@@ -1424,16 +1513,12 @@ impl Device {
         );
         assert!(
             matches!(logged_in, ReceiptStatus::Completed { .. }),
-            "{} logged in with {}'s ticket: {logged_in:?}\n{}",
+            "{} logged in with {issued_by}'s ticket: {logged_in:?}\n{}",
             self.label,
-            issuer.label,
             self.warnings()
         );
         if was_off {
             self.stop();
-        }
-        if issuer_was_off {
-            issuer.stop();
         }
         self.cert = tilo_device_identity::persist::read_device_cert(&self.identity().device_cert)
             .expect("the certificate the ticket's redemption filed");
@@ -1489,7 +1574,9 @@ pub struct Device {
     pub label: String,
     /// The certificate its person's root signed for it, as a workspace admits it.
     pub cert: DeviceCert,
-    home: tempfile::TempDir,
+    /// Its directory: shared with its person for the device that made them, which issues their
+    /// later devices' tickets.
+    home: Arc<tempfile::TempDir>,
     /// The session this test started, which stands in for the shell the daemon started for it
     /// until that shell ends.
     child: Option<Child>,
@@ -1615,9 +1702,10 @@ impl Device {
             }
             assert!(
                 Instant::now() < deadline,
-                "{}'s daemon did not answer again at {}",
+                "{}'s daemon did not answer again at {}:\n{}",
                 self.label,
-                native.display()
+                native.display(),
+                std::fs::read_to_string(logs.join("session.log")).unwrap_or_default()
             );
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -1793,11 +1881,6 @@ impl Device {
 
         let mut daemon = Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"));
         self.device_env(&mut daemon, &logs);
-        let handed = root.join(OWNER_ROOT);
-        if handed.is_file() {
-            // The person's root this device's daemon keeps ([`Person::device`]).
-            daemon.env(tilo_runtime::device::services::OWNER_ROOT_FILE, handed);
-        }
         daemon
             // The daemon starts this test's build of the session as the person's shell.
             .env(tilo_runtime::daemon::TEST_SHELL_ENV, &program)

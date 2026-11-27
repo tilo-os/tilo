@@ -49,10 +49,6 @@ pub(crate) struct Carried {
     /// The workspaces it took part in.
     #[serde(default)]
     pub(crate) workspaces: Vec<CarriedWorkspace>,
-    /// Whether it was to found its person's own workspace and had not yet
-    /// ([`tilo_identity::provisioning::founds_person_workspace`]).
-    #[serde(default)]
-    pub(crate) founds_person_workspace: bool,
     /// What its own workspace service kept, as [`tilo_workspace_service::workspaces::MovingService::to_hex`]
     /// hands it over.
     #[serde(default)]
@@ -364,8 +360,8 @@ impl ServiceWorkspaces {
     /// it has in each group, and no group is founded again beside one the desktop had. The
     /// workspaces the desktop's own service hosted move here, after the groups
     /// ([`tilo_workspace_service::workspaces::Workspaces::move_in`]), and are answered beside
-    /// the answer. When the desktop was to found its person's own workspace and had not yet, this
-    /// service founds it, after the groups are in.
+    /// the answer. The person's own workspace is never founded here: it was founded where their
+    /// root was made, and comes in with the desktop's service or from a device that has it.
     ///
     /// # Errors
     /// The device keeps no key service, or a group cannot be read, opened or written.
@@ -389,22 +385,6 @@ impl ServiceWorkspaces {
             }
             None => tilo_workspace_service::workspaces::MovedIn::default(),
         };
-        let person = &self.identity.device_cert.user_public_key;
-        let named = tilo_server_protocol::servers::person_workspace_id(person);
-        let person = WorkspaceId::parse(&named)
-            .ok_or_else(|| format!("a person's workspace id {named} is no workspace id"))?;
-        let founded = if carried.founds_person_workspace && !moved.moved.contains(&person) {
-            let workspace = person;
-            let name = tilo_workspace_service::workspaces::person_workspace::NAME;
-            self.found(workspace, name)
-                .await
-                .inspect_err(|error| {
-                    tracing::warn!(%error, "this device did not found its person's own workspace");
-                })
-                .is_ok()
-        } else {
-            false
-        };
         let entering: Vec<_> = carried
             .workspaces
             .iter()
@@ -421,7 +401,6 @@ impl ServiceWorkspaces {
         let answer = serde_json::json!({
             "groups": groups.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "entering": entered,
-            "founded_person_workspace": founded,
             "moved": moved.moved.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "refused": moved
                 .refused
@@ -532,7 +511,7 @@ impl ServiceWorkspaces {
         {
             let me = (Some(device), &self.identity.device_cert);
             let at = Some(self.endpoint.addr());
-            if let Err(error) = super::ticket::server_entry(self.copies(), me, at, false).await {
+            if let Err(error) = super::ticket::server_entry(self.copies(), me, at).await {
                 tracing::warn!(%error, "this device was not entered among its person's servers");
             }
         }

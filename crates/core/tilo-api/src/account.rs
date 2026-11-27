@@ -312,11 +312,6 @@ const VERBS: [Verb; 17] = [
                     "The workspaces it took part in: {workspace, name, hint?}.",
                 ),
                 ActionParam::optional(
-                    "founds_person_workspace",
-                    ParamType::Boolean,
-                    "Whether it was still to found its person's own workspace.",
-                ),
-                ActionParam::optional(
                     "service",
                     ParamType::Secret,
                     "What its own workspace service administered, with the key it wrote under.",

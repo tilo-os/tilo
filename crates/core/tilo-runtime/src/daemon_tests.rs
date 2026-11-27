@@ -2179,7 +2179,7 @@ fn a_session_started_with_a_link_starts_a_nested_shell_with_its_own_link_and_win
         return;
     };
     let session = std::sync::Arc::new(Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap());
-    // The person's workspace is founded the first time it is asked for, as their session does.
+    // The person's workspace, founded with their root as the daemon started.
     session.workspace().unwrap();
     // The session that asks was started with a link of its own.
     let parent = session.shell_link().unwrap();

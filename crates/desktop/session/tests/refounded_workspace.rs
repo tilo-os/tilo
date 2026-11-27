@@ -77,7 +77,7 @@ fn a_device_the_owner_has_not_added_making_the_workspace_on_a_server_leaves_it_w
     site.wait_for_record_of(APP, &laptop);
     let before = held_at(&site);
 
-    // Restored from the person's words: it holds none of the workspace and no list naming it.
+    // Another computer of hers, just let in: it holds none of the workspace.
     let mut restored = ada.device("Ada's restored computer");
     restored.install_dev_apps();
     restored.start();

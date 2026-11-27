@@ -744,8 +744,7 @@ async fn a_workspace_the_desktop_founded_moves_here_and_is_the_persons_own() {
 
     let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
     let (own, directory, key, cert, _) = ServiceWorkspaces::test_of_person().await;
-    let person_key = cert.user_public_key;
-    let home = FirstWorkspace::open(Arc::clone(&own), None, directory.path(), &person_key).unwrap();
+    let home = FirstWorkspace::open(Arc::clone(&own), None);
     assert_eq!(
         home.get(),
         None,
@@ -783,9 +782,9 @@ async fn a_workspace_the_desktop_founded_moves_here_and_is_the_persons_own() {
         serde_json::json!([person.to_string()]),
         "{imported}"
     );
-    home.moved_in(&moved).unwrap();
+    home.moved_in(&moved);
     assert_eq!(
-        home.found().await.unwrap(),
+        home.here().await.unwrap(),
         person.to_string(),
         "the desktop's workspace is the person's here"
     );
@@ -818,73 +817,86 @@ async fn a_workspace_the_desktop_founded_moves_here_and_is_the_persons_own() {
         .await
         .unwrap();
     assert_eq!(again["moved"], serde_json::json!([]), "{again}");
-    let started_again = FirstWorkspace::open(own, None, directory.path(), &person_key).unwrap();
+    let started_again = FirstWorkspace::open(own, None);
     assert_eq!(started_again.get(), Some(person.to_string().as_str()));
 }
 
-/// A computer with no login whose person arrives with nothing from a desktop founds their
-/// workspace once, the first time they need one, and keeps it at every later start.
+/// The computer that made the person's root founds their workspace once, at the id their key
+/// names, and holds it at every later start: one workspace, however often it is asked to found.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_persons_workspace_is_founded_when_they_first_need_one() {
-    let (own, directory, _, cert, _) = ServiceWorkspaces::test_of_person().await;
+async fn the_computer_that_made_the_root_founds_the_persons_workspace_once() {
+    let (own, _directory, _, cert, _) = ServiceWorkspaces::test_of_person().await;
     let person = cert.user_public_key;
-    let home = FirstWorkspace::open(Arc::clone(&own), None, directory.path(), &person).unwrap();
+    let home = FirstWorkspace::open(Arc::clone(&own), None);
     assert!(
         own.workspaces().is_empty(),
         "nothing is founded at the start"
     );
     let founded = home.found().await.unwrap();
+    assert_eq!(
+        founded,
+        tilo_server_protocol::servers::person_workspace_id(&person),
+        "it is founded at the id the person's key names"
+    );
     assert_eq!(home.found().await.unwrap(), founded, "it is founded once");
+    assert!(
+        home.keeps_account(),
+        "the computer keeps its person's account"
+    );
     let listed: Vec<_> = own
         .workspaces()
         .iter()
         .map(|held| (held.id().to_string(), held.name.clone()))
         .collect();
     assert_eq!(listed, [(founded.clone(), "Home".to_owned())]);
-    let started_again = FirstWorkspace::open(own, None, directory.path(), &person).unwrap();
+    let started_again = FirstWorkspace::open(own, None);
     assert_eq!(started_again.get(), Some(founded.as_str()));
 }
 
-/// A computer that founded its person's workspace under an id of its own, before it was founded
-/// at the id their key names, and kept that id in its directory, still founds the person's at
-/// their own id the first time they need one: every device of theirs, and the daemon's own
-/// calls, enter that id. The workspace founded earlier stays held beside it.
+/// A computer that holds the person's root but not their workspace, and holds another workspace
+/// of its own, has none of the person's: every ask of theirs that needs it is refused in words
+/// that say how to add the computer, and nothing founds theirs beside the one their other devices
+/// hold. The workspace it does hold stays as it is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_workspace_founded_under_an_id_of_its_own_is_not_the_persons() {
-    let (own, directory, _, cert, _) = ServiceWorkspaces::test_of_person().await;
+async fn a_computer_holding_the_root_alone_has_no_workspace_of_the_persons() {
+    let (own, _directory, _, cert, _) = ServiceWorkspaces::test_of_person().await;
     let person = cert.user_public_key;
-    let earlier = tilo_desktop_model::WorkspaceId::new();
-    own.found(earlier, "Home").await.unwrap();
-    std::fs::write(
-        directory.path().join(format!(
-            "{}{}",
-            crate::device::first_workspace::FOUNDED,
-            hex::encode(person)
-        )),
-        earlier.to_string(),
-    )
-    .unwrap();
+    let elsewhere = tilo_desktop_model::WorkspaceId::new();
+    own.found(elsewhere, "Plans").await.unwrap();
 
-    let home = FirstWorkspace::open(Arc::clone(&own), None, directory.path(), &person).unwrap();
-    assert_eq!(
-        home.get(),
-        None,
-        "the earlier workspace is not the person's"
-    );
-    let founded = home.found().await.unwrap();
+    let home = FirstWorkspace::open(Arc::clone(&own), None);
+    assert_eq!(home.get(), None, "the other workspace is not the person's");
+    assert!(!home.keeps_account(), "it keeps no account of theirs");
+    let refused = home
+        .here()
+        .await
+        .expect_err("the person has no workspace here");
+    assert!(refused.contains("tilo device add"), "{refused}");
     let theirs = tilo_server_protocol::servers::person_workspace_id(&person);
-    assert_eq!(founded, theirs, "the person's is founded at their own id");
-    let mut held: Vec<_> = own
+    let settling = Arc::clone(&home);
+    let named = theirs.clone();
+    let refused = tokio::task::spawn_blocking(move || settling.settle_if_theirs(&named))
+        .await
+        .unwrap()
+        .expect_err("a call in the person's workspace finds none");
+    assert!(refused.contains("tilo device add"), "{refused}");
+    let settling = Arc::clone(&home);
+    tokio::task::spawn_blocking(move || settling.settle_if_theirs(&elsewhere.to_string()))
+        .await
+        .unwrap()
+        .expect("a call in another workspace is left as it is");
+    let held: Vec<_> = own
         .workspaces()
         .iter()
         .map(|listed| listed.id().to_string())
         .collect();
-    held.sort();
-    let mut expected = vec![earlier.to_string(), theirs.clone()];
-    expected.sort();
-    assert_eq!(held, expected, "the earlier workspace stays held beside it");
-    let started_again = FirstWorkspace::open(own, None, directory.path(), &person).unwrap();
-    assert_eq!(started_again.get(), Some(theirs.as_str()));
+    assert_eq!(
+        held,
+        [elsewhere.to_string()],
+        "nothing was founded beside it"
+    );
+    let started_again = FirstWorkspace::open(own, None);
+    assert_eq!(started_again.get(), None);
 }
 
 /// The standing of the workspace a fresh person's computer founds encodes as the JSON the
@@ -895,9 +907,9 @@ async fn a_founded_workspaces_standing_crosses_as_json() {
     use tilo_peer_state::workspace_view::WorkspaceReading;
     use tilo_workspace_service::workspaces::standing;
 
-    let (own, directory, _, cert, _) = ServiceWorkspaces::test_of_person().await;
+    let (own, _directory, _, cert, _) = ServiceWorkspaces::test_of_person().await;
     let person = cert.user_public_key;
-    let home = FirstWorkspace::open(Arc::clone(&own), None, directory.path(), &person).unwrap();
+    let home = FirstWorkspace::open(Arc::clone(&own), None);
     let founded = home.found().await.unwrap();
 
     let held = own.held();

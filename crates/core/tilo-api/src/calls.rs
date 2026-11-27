@@ -1001,11 +1001,12 @@ impl Calls {
         }
     }
 
-    /// The workspace a computer serves before a login exists: the one it founded, where the
-    /// device actions are called, as `tilo login` and setup call them.
+    /// The person's workspace this computer holds: the one founded with their root, on the
+    /// computer that made it, or the one a login entered. The device actions are called there, as
+    /// `tilo login` and setup call them. Nothing founds one here.
     ///
     /// # Errors
-    /// The workspaces could not be listed, or none is served.
+    /// The workspaces could not be listed, or this computer holds none of the person's.
     pub async fn founded_workspace(&self) -> Result<String> {
         if let Some(served) = self.served_workspace() {
             return Ok(served.to_owned());
@@ -1015,7 +1016,12 @@ impl Calls {
             .pointer("/workspaces/0/id")
             .and_then(Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| anyhow!("this computer's daemon serves no workspace to log in to"))
+            .ok_or_else(|| {
+                anyhow!(
+                    "This computer holds none of your workspaces. Add it from a device of yours \
+                     that has them: run `tilo device add` there, then `tilo login <ticket>` here."
+                )
+            })
     }
 
     /// Run `action` on `resource` in `workspace` (the account with none), titled `title` in

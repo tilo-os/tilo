@@ -385,8 +385,8 @@ pub(super) struct Fleet {
 
 impl Fleet {
     /// Where a computer this device adds enters: the server this device enters through, or, on
-    /// one no ticket made, the person's workspace here through this daemon's endpoint, founded
-    /// now when they have none yet.
+    /// one no ticket made, the person's workspace here through this daemon's endpoint. A computer
+    /// that holds no copy of it adds nobody.
     async fn entered(&self) -> Result<Entry, String> {
         if let Some(home) = &self.home
             && let Some(here) = home.get().await
@@ -396,7 +396,7 @@ impl Fleet {
         let first = self.first.as_ref().ok_or_else(|| {
             "This computer holds no workspace another computer can enter.".to_owned()
         })?;
-        let workspace = first.found().await?;
+        let workspace = first.here().await?;
         let name = self
             .workspaces
             .as_ref()
@@ -452,8 +452,7 @@ impl Issuer for Fleet {
     }
 
     /// A member device asks its host to write the entry, through its session; one that holds the
-    /// person's Servers workspace writes it itself, founding it when it founded the person's own
-    /// workspaces.
+    /// person's Servers workspace writes it itself.
     fn admit<'a>(
         &'a self,
         role: &'a Role,
@@ -473,13 +472,7 @@ impl Issuer for Fleet {
                         &cert.device_public_key,
                     )
                     .await?;
-                    server_entry(
-                        service.copies(),
-                        (session, cert),
-                        Some(reached),
-                        self.first.as_ref().is_some_and(|first| first.founds()),
-                    )
-                    .await
+                    server_entry(service.copies(), (session, cert), Some(reached)).await
                 }
                 Role::Plan(plan) => plan_entry(service.copies(), session, plan, cert).await,
             }

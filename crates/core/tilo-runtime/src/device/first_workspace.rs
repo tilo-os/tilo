@@ -1,11 +1,10 @@
 //! The person's workspace on this computer: the one its login names, or, on a computer with no
-//! login, the one this device hosts for its person. That one is not founded when the daemon
-//! starts: the person's desktop may still hand over the workspace it kept
-//! (`account/workspaces#import`), which then is theirs here. It is founded when the person first
-//! needs one and nothing came in for them, at the id the person's key names (the one every device
-//! of theirs enters), and named in the device's directory from then on.
+//! login, their own workspace held here. That one is founded in the step that makes the person's
+//! root, on the device that makes it ([`super::services::found_account_person`]), and nowhere
+//! else, never later: every other device of theirs, one that was handed their root among them,
+//! enters it from a device that has it. A computer that holds the person's root but not their
+//! workspace founds no second one beside it: it says how to add it.
 
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, Weak};
 
 use tilo_desktop_model::WorkspaceId;
@@ -13,11 +12,7 @@ use tilo_desktop_model::WorkspaceId;
 use super::take_work::files::Replicas;
 use super::workspaces::ServiceWorkspaces;
 
-/// Where a computer with no login keeps the id of its person's workspace, in the device's
-/// directory: this, then the person's key in hex. A root that comes to this computer later
-/// founds a workspace of its own, never enters one another person founded here.
-pub(crate) const FOUNDED: &str = "workspace-of-";
-/// What the workspace founded on a computer with no login is called.
+/// What the workspace founded with a person's root is called.
 pub(crate) const FOUNDED_NAME: &str = "Home";
 
 /// What the daemon does for its person once their workspace is here: what its start does for a
@@ -31,9 +26,10 @@ pub(crate) type Settling = Arc<
 
 /// The person's workspace on this computer, once there is one.
 pub(crate) struct FirstWorkspace {
-    /// The file naming it on a computer with no login; `None` with a login, which names it.
-    file: Option<PathBuf>,
-    id: tokio::sync::OnceCell<String>,
+    /// Whether a login names it: a computer with none keeps its person's account itself, once it
+    /// holds their workspace.
+    login: bool,
+    id: OnceLock<String>,
     workspaces: Arc<ServiceWorkspaces>,
     /// Where the files of the workspaces this computer hosts are shown, once they are.
     replicas: OnceLock<Weak<Replicas>>,
@@ -44,72 +40,41 @@ pub(crate) struct FirstWorkspace {
 }
 
 impl FirstWorkspace {
-    /// The workspace `login` names, or, with no login, the one named in the device's directory
-    /// `dir` for `person` when an earlier start had one.
-    ///
-    /// # Errors
-    /// The file naming it cannot be read, or names no workspace.
-    pub(crate) fn open(
-        workspaces: Arc<ServiceWorkspaces>,
-        login: Option<&str>,
-        dir: &Path,
-        person: &[u8; 32],
-    ) -> std::io::Result<Arc<Self>> {
-        let file = login
-            .is_none()
-            .then(|| dir.join(format!("{FOUNDED}{}", hex::encode(person))));
-        let own = own_workspace(person);
-        let held = || {
+    /// The workspace `login` names, or, with no login, the person's own when this computer holds
+    /// it.
+    pub(crate) fn open(workspaces: Arc<ServiceWorkspaces>, login: Option<&str>) -> Arc<Self> {
+        let named = if let Some(login) = login {
+            Some(login.to_owned())
+        } else {
+            let own = own_workspace(&workspaces.device_cert().user_public_key);
             let kept = Arc::clone(&workspaces);
             super::workspaces::block_on_owned(async move { kept.keeps(own).await })
                 .then(|| own.to_string())
         };
-        let named = match (login, &file) {
-            (Some(login), _) => Some(login.to_owned()),
-            (None, Some(file)) => match std::fs::read_to_string(file) {
-                Ok(kept) => {
-                    let kept = WorkspaceId::parse(kept.trim()).ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("{} names no workspace", file.display()),
-                        )
-                    })?;
-                    // A workspace founded under an id of its own, before the person's was founded
-                    // at the id their key names, is not theirs: every device of theirs, and this
-                    // daemon's own calls, enter that id. It stays held as any other workspace,
-                    // and the person's is founded when they first need one.
-                    if kept == own {
-                        Some(own.to_string())
-                    } else {
-                        held()
-                    }
-                }
-                // A start that founded it before it was named here holds it all the same.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => held(),
-                Err(error) => return Err(error),
-            },
-            (None, None) => None,
-        };
-        Ok(Arc::new(Self {
-            file,
-            id: named.map_or_else(tokio::sync::OnceCell::new, |named| {
-                tokio::sync::OnceCell::new_with(Some(named))
-            }),
+        let id = OnceLock::new();
+        if let Some(named) = named {
+            let _ = id.set(named);
+        }
+        Arc::new(Self {
+            login: login.is_some(),
+            id,
             workspaces,
             replicas: OnceLock::new(),
             settling: OnceLock::new(),
             // A workspace here when the daemon starts is settled as one founded later is: the
             // start settles it ([`Self::settle`]), and so does whatever reaches it first.
             settled: tokio::sync::OnceCell::new(),
-        }))
+        })
     }
 
-    /// The workspace `workspace`, founded earlier on a computer with no login.
+    /// The workspace `workspace`, held on a computer with no login.
     #[cfg(test)]
     pub(crate) fn founded(workspaces: Arc<ServiceWorkspaces>, workspace: WorkspaceId) -> Arc<Self> {
+        let id = OnceLock::new();
+        let _ = id.set(workspace.to_string());
         Arc::new(Self {
-            file: Some(PathBuf::from(FOUNDED)),
-            id: tokio::sync::OnceCell::new_with(Some(workspace.to_string())),
+            login: false,
+            id,
             workspaces,
             replicas: OnceLock::new(),
             settling: OnceLock::new(),
@@ -117,14 +82,15 @@ impl FirstWorkspace {
         })
     }
 
-    /// Show the files of the workspace this computer founds, once it does, in the files daemon's trees.
+    /// Show the files of the workspaces this computer founds or takes in, once it does, in the
+    /// files daemon's trees.
     pub(crate) fn show_files_in(&self, replicas: &Arc<Replicas>) {
         let _ = self.replicas.set(Arc::downgrade(replicas));
     }
 
-    /// Have `settling` done once the person's workspace is here: when it is founded, and when
-    /// whatever first reaches it finds it came in from their desktop ([`Self::settle`]), and as
-    /// the daemon starts when it is here already.
+    /// Have `settling` done once the person's workspace is here: when whatever first reaches it
+    /// finds it came in from their desktop ([`Self::settle`]), and as the daemon starts when it is
+    /// here already.
     pub(crate) fn when_here(&self, settling: Settling) {
         let _ = self.settling.set(settling);
     }
@@ -170,9 +136,12 @@ impl FirstWorkspace {
         super::workspaces::block_on_owned(async move { first.settle().await })
     }
 
-    /// Whether this computer founds its person's workspace itself: it has no login.
-    pub(crate) fn founds(&self) -> bool {
-        self.file.is_some()
+    /// Whether this computer keeps its person's account itself: it has no login, and holds their
+    /// workspace, which was founded here with their root. A computer that logged in reaches the
+    /// account through the device it entered from, and one holding their root without their
+    /// workspace keeps nothing of it.
+    pub(crate) fn keeps_account(&self) -> bool {
+        !self.login && self.get().is_some()
     }
 
     /// The person's workspace, when there is one yet.
@@ -180,92 +149,81 @@ impl FirstWorkspace {
         self.id.get().map(String::as_str)
     }
 
-    /// The person's workspace, founded now when there is none yet.
+    /// Found the person's workspace, at the id their key names, on the computer that just made
+    /// their root: the one step that founds it ([`super::services::found_account_person`]). A
+    /// workspace already held there is theirs as it is.
     ///
     /// # Errors
-    /// The service did not found it, its name cannot be kept, or this device could not be listed
+    /// This computer logged in, the service did not found it, or this device could not be listed
     /// with its person's.
     pub(crate) async fn found(&self) -> Result<String, String> {
-        let founded = self
-            .id
-            .get_or_try_init(|| async {
-                let Some(file) = &self.file else {
-                    return Err("this computer's login names no workspace".to_owned());
-                };
-                let workspace = own_workspace(&self.workspaces.device_cert().user_public_key);
-                self.workspaces.found(workspace, FOUNDED_NAME).await?;
-                self.name(file, workspace)?;
-                let _ = self.show(&[workspace]).await;
-                Ok(workspace.to_string())
-            })
-            .await
-            .cloned()?;
-        // Founded now or before: this device is listed with its person's, and their root marked,
-        // once it holds the workspace — one write, from [`Self::settle`].
-        self.settle().await?;
-        Ok(founded)
-    }
-
-    /// [`Self::found`], from a caller that does not run on the runtime.
-    ///
-    /// # Errors
-    /// As [`Self::found`].
-    pub(crate) fn found_blocking(self: &Arc<Self>) -> Result<String, String> {
-        if let Some(id) = self.get() {
-            // One that came in from the person's desktop is settled by the first that reaches it.
-            self.settle_blocking()?;
-            return Ok(id.to_owned());
+        if self.login {
+            return Err("a computer that logged in founds no workspace of its person's".to_owned());
         }
-        let first = Arc::clone(self);
-        super::workspaces::block_on_owned(async move { first.found().await })
+        let workspace = own_workspace(&self.workspaces.device_cert().user_public_key);
+        if self.get().is_none() {
+            self.workspaces.found(workspace, FOUNDED_NAME).await?;
+            let _ = self.id.set(workspace.to_string());
+            // What waits for a workspace to be kept here (host search) looks again.
+            self.workspaces.entered().notify_waiters();
+            let _ = self.show(&[workspace]).await;
+        }
+        // This device is listed with its person's, and their root marked, once it holds the
+        // workspace: one write, from [`Self::settle`].
+        self.settle().await?;
+        Ok(workspace.to_string())
     }
 
-    /// Found the person's workspace when `workspace` names it and this computer founds it but has
-    /// none yet: what a call of theirs in it does the first time they need one. One that came in
-    /// from their desktop first is theirs here, and is settled instead ([`Self::settle`]). Any
-    /// other workspace is left as it is.
+    /// The person's workspace held here, settled ([`Self::settle`]).
     ///
     /// # Errors
-    /// As [`Self::found`].
-    pub(crate) fn found_if_theirs(self: &Arc<Self>, workspace: &str) -> Result<(), String> {
-        if !self.founds()
+    /// This computer holds the person's root but not their workspace, which only the device that
+    /// made the root founds; or settling it failed.
+    pub(crate) async fn here(&self) -> Result<String, String> {
+        let workspace = self.get().ok_or_else(not_held)?.to_owned();
+        self.settle().await?;
+        Ok(workspace)
+    }
+
+    /// [`Self::here`], from a caller that does not run on the runtime.
+    ///
+    /// # Errors
+    /// As [`Self::here`].
+    pub(crate) fn here_blocking(self: &Arc<Self>) -> Result<String, String> {
+        let workspace = self.get().ok_or_else(not_held)?.to_owned();
+        // One that came in from the person's desktop is settled by the first that reaches it.
+        self.settle_blocking()?;
+        Ok(workspace)
+    }
+
+    /// Settle the person's workspace when `workspace` names it on a computer with no login: what
+    /// a call of theirs in it does the first time, for one that came in from their desktop too
+    /// ([`Self::settle`]). Any other workspace is left as it is.
+    ///
+    /// # Errors
+    /// `workspace` is the person's own and this computer does not hold it, or settling it failed.
+    pub(crate) fn settle_if_theirs(self: &Arc<Self>, workspace: &str) -> Result<(), String> {
+        if self.login
             || workspace
                 != own_workspace(&self.workspaces.device_cert().user_public_key).to_string()
         {
             return Ok(());
         }
-        self.found_blocking().map(drop)
+        self.here_blocking().map(drop)
     }
 
     /// The workspaces `moved` came in from the person's desktop: the person's own among them is
     /// their workspace here, when they have none yet, and every one's files are shown.
-    ///
-    /// # Errors
-    /// The name of the person's workspace cannot be kept.
-    pub(crate) fn moved_in(&self, moved: &[WorkspaceId]) -> Result<(), String> {
-        if let Some(file) = &self.file {
-            let person = &self.workspaces.device_cert().user_public_key;
-            let person = tilo_server_protocol::servers::person_workspace_id(person);
-            if let Some(workspace) = moved
-                .iter()
-                .find(|workspace| workspace.to_string() == person)
-                && self.id.get().is_none()
-            {
-                self.name(file, *workspace)?;
-                let _ = self.id.set(person);
-            }
-            // The import that hands them over runs on the runtime; they show once started.
-            drop(self.show(moved));
+    pub(crate) fn moved_in(&self, moved: &[WorkspaceId]) {
+        if self.login {
+            return;
         }
-        Ok(())
-    }
-
-    fn name(&self, file: &Path, workspace: WorkspaceId) -> Result<(), String> {
-        tilo_files::native::atomic::write_with_mode(file, workspace.to_string().as_bytes(), 0o600)
-            .map_err(|error| format!("{}: {error}", file.display()))?;
-        // What waits for a workspace to be kept here (host search) looks again.
-        self.workspaces.entered().notify_waiters();
-        Ok(())
+        let person = own_workspace(&self.workspaces.device_cert().user_public_key);
+        if moved.contains(&person) && self.id.set(person.to_string()).is_ok() {
+            self.workspaces.entered().notify_waiters();
+        }
+        // The import that hands them over runs on the runtime; they show once started.
+        drop(self.show(moved));
     }
 
     /// Show the files of `workspaces` that are held here, on a thread of its own: starting a
@@ -302,6 +260,16 @@ impl FirstWorkspace {
 /// `person`'s own workspace, at the id their key names.
 pub(super) fn own_workspace(person: &[u8; 32]) -> WorkspaceId {
     WorkspaceId::from(collab_types::person_workspace(person))
+}
+
+/// Why a computer holding the person's root but not their workspace does nothing in it: only the
+/// device that made the root founded it, and a second one founded here would be another
+/// workspace under the same id, which none of their other devices reads.
+pub(crate) fn not_held() -> String {
+    "This computer has your Tilo identity but not your workspace, which only the device that \
+     made your identity founds. Add this computer from a device of yours that has it: run `tilo \
+     device add` there, then `tilo login <ticket>` here."
+        .to_owned()
 }
 
 /// What the daemon's start does for a person whose workspace it holds, done where their workspace

@@ -209,36 +209,6 @@ pub fn login_account_display_name() -> String {
 /// writes when setup mints the person.
 pub const PRIMARY_IDENTITY_FILE: &str = "primary.json";
 
-/// The empty file a device leaves in the identity directory when it generated the person's root
-/// itself: that device founds the person's own workspace when its workspace service first starts.
-/// A root that came from elsewhere (a page, recovery words, another of the person's devices)
-/// leaves none, since its person's workspace exists already and the device takes it in.
-const FOUNDING_MARK: &str = "founds-person-workspace";
-
-/// Mark that this device generated the person's root, so it founds their own workspace.
-///
-/// # Errors
-/// The mark cannot be written.
-pub fn mark_founding(identity_dir: &Path) -> io::Result<()> {
-    tilo_files::native::atomic::write_private(&identity_dir.join(FOUNDING_MARK), b"")
-}
-
-/// Whether this device generated the person's root and has not founded their own workspace yet.
-#[must_use]
-pub fn founds_person_workspace(identity_dir: &Path) -> bool {
-    identity_dir.join(FOUNDING_MARK).is_file()
-}
-
-/// Forget the founding mark, once the person's own workspace is founded and written.
-///
-/// # Errors
-/// The mark is there and cannot be removed.
-pub fn clear_founding_mark(identity_dir: &Path) -> io::Result<()> {
-    match std::fs::remove_file(identity_dir.join(FOUNDING_MARK)) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => Ok(()),
-    }
-}
 /// The id of [`PRIMARY_IDENTITY_FILE`] in the store.
 const PRIMARY_IDENTITY_ID: &str = "primary";
 
@@ -389,7 +359,6 @@ fn create_named_primary_identity(
         avatar_color,
         storage,
     )?;
-    mark_founding(identity_dir)?;
     Ok(ProvisionOutcome::Created { pubkey_hex })
 }
 
@@ -495,7 +464,6 @@ fn ensure_primary_identity_in_context(
     let bytes = Zeroizing::new(encoded?);
 
     import_identity_record(identity_dir, PRIMARY_IDENTITY_ID, &bytes, storage)?;
-    mark_founding(identity_dir)?;
     Ok(ProvisionOutcome::Created { pubkey_hex })
 }
 
@@ -1645,7 +1613,6 @@ pub fn create_person(
     // daemon took, which makes the person.
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     import_single_device_root(identity_dir, &root, display_name, storage)?;
-    mark_founding(identity_dir)?;
     ensure_collaboration_identity_in_context(
         identity_dir,
         paths,
@@ -1895,52 +1862,22 @@ mod tests {
 
     const FILES: IdentityStorage = IdentityStorage::Files;
 
-    tilo_test_env::scenario! {
-        fn only_a_device_that_generated_the_root_founds_the_persons_workspace;
-
-        phase a_root_made_here_leaves_the_mark_until_the_founding_is_written;
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let identity = temp.path().join("identity");
-            let paths = IdentityPaths::under(temp.path().join("device"));
-            create_person(&identity, &paths, "Ada", "laptop", FILES).unwrap();
-            assert!(founds_person_workspace(&identity));
-            clear_founding_mark(&identity).unwrap();
-            assert!(!founds_person_workspace(&identity));
-            clear_founding_mark(&identity).expect("clearing twice is no error");
-
-            let first_login = temp.path().join("first-login");
-            assert!(matches!(
-                ensure_primary_identity(&first_login).unwrap(),
-                ProvisionOutcome::Created { .. }
-            ));
-            assert!(founds_person_workspace(&first_login));
-            clear_founding_mark(&first_login).unwrap();
-            assert!(matches!(
+    /// An account's first use makes its identity, and a later one keeps the identity it made.
+    #[test]
+    fn an_identity_already_made_is_not_made_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let first_login = temp.path().join("first-login");
+        assert!(matches!(
+            ensure_primary_identity(&first_login).unwrap(),
+            ProvisionOutcome::Created { .. }
+        ));
+        assert!(
+            matches!(
                 ensure_primary_identity(&first_login).unwrap(),
                 ProvisionOutcome::Existing
-            ));
-            assert!(
-                !founds_person_workspace(&first_login),
-                "an identity already there is not made again"
-            );
-
-            let chosen = temp.path().join("chosen");
-            create_primary_identity(&chosen, "Bea", [1, 2, 3], FILES).unwrap();
-            assert!(founds_person_workspace(&chosen));
-        }
-
-        phase a_root_from_elsewhere_leaves_none;
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let identity = temp.path().join("identity");
-            let root = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
-            import_single_device_root(&identity, &root, "Ada", FILES).unwrap();
-            assert!(
-                !founds_person_workspace(&identity),
-                "a root opened on a page founded its workspace there"
-            );
-        }
+            ),
+            "an identity already there is not made again"
+        );
     }
 
     #[test]

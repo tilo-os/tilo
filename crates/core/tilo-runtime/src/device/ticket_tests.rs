@@ -1217,7 +1217,7 @@ async fn a_ticket_that_names_a_server_leaves_its_entry() {
     let hosted = &host.hosted;
 
     let (desk_key, desk_cert) = enrol(&root, "home", DeviceCapabilities::primary());
-    super::ticket::server_entry(hosted, (None, &desk_cert), None, false)
+    super::ticket::server_entry(hosted, (None, &desk_cert), None)
         .await
         .expect("the certified server is taken in among the person's servers");
     let device = tilo_workspace_service::workspaces::servers::device_id(
@@ -2337,8 +2337,8 @@ impl RevokeAtRoot {
     async fn the_root_holder_comes_online(&mut self) {
         let copies = self.issuer.copies();
         let root = root_in(self.account_dir.clone())().unwrap().unwrap();
-        // The person's own workspace keeps their devices record. A computer that keeps their root
-        // founds it, at the id their key names, the first time they need it, as it does now.
+        // The person's own workspace keeps their devices record, founded at the id their key
+        // names by the computer that made their root, as it does now.
         self.issuer
             .found(
                 super::first_workspace::own_workspace(&self.cert.user_public_key),
@@ -2518,11 +2518,11 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     revoke.the_answer_runs_under_the_root().await;
 }
 
-const FIRST_APP_TEST: &str = "device::ticket_tests::the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed";
+const FIRST_APP_TEST: &str = "device::ticket_tests::the_first_app_launched_in_the_persons_workspace_lists_the_device_and_founds_nothing";
 /// The socket the helper process of [`FIRST_APP_TEST`] connects to as an app.
 const FIRST_APP_SOCKET: &str = "TILO_FIRST_APP_SOCKET";
 
-/// In the helper process [`the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed`]
+/// In the helper process [`the_first_app_launched_in_the_persons_workspace_lists_the_device_and_founds_nothing`]
 /// starts: connect to the daemon as an app, and stay until told to go. Answers whether this
 /// process is that helper.
 fn connect_as_the_launched_app() -> bool {
@@ -2568,15 +2568,16 @@ fn the_device_is_listed(
 }
 
 /// On a computer with no login, the first app this daemon launched in the person's own workspace
-/// founds that workspace when its service connection names it, before the app signs anything,
-/// and the device is listed in the person's devices then. A process the daemon did not launch,
-/// and an app it launched in another workspace, found nothing.
+/// lists the device in their devices when its service connection names it, before the app signs
+/// anything. A process the daemon did not launch, and an app it launched in another workspace,
+/// list nothing; and on a computer holding the person's root without their workspace, the app
+/// founds none: only the device that made the root founds it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::too_many_lines,
-    reason = "one founding read top to bottom: the launches that found nothing, the one that founds, and the device listed"
+    reason = "one launch read top to bottom: the workspace not here, the launches that list nothing, the one that lists the device"
 )]
-async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed() {
+async fn the_first_app_launched_in_the_persons_workspace_lists_the_device_and_founds_nothing() {
     use tilo_actions::remote::asked::AskedKeeping;
     use tilo_identity::sources::PersonResourceTypes as _;
     use tilo_remote_actions::asked::AskedStore;
@@ -2589,13 +2590,45 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
     let (workspaces, state, key, cert, _paths) =
         super::workspaces::ServiceWorkspaces::test_of_person().await;
     let copies = workspaces.copies().clone();
-    let first = FirstWorkspace::open(
-        Arc::clone(&workspaces),
+    let apps = Arc::new(crate::apps::Apps::new(
         None,
         state.path(),
-        &cert.user_public_key,
-    )
-    .unwrap();
+        crate::daemon::Sockets::in_dir(state.path()),
+        std::path::PathBuf::new(),
+        Vec::new(),
+    ));
+    let own = super::first_workspace::own_workspace(&cert.user_public_key);
+    let elsewhere = tilo_desktop_model::WorkspaceId::new();
+    // The app's service connection, from a process of its own.
+    let socket = state.path().join("identity.sock");
+    let (daemon, mut app) = the_launched_app(&socket);
+    let listed = || the_device_is_listed(&workspaces, cert.device_public_key);
+
+    // The person's root is here and their workspace is not: the app the daemon launched in it
+    // founds nothing.
+    let unheld = super::services::AttachedSurfaces {
+        apps: Arc::clone(&apps),
+        first: FirstWorkspace::open(Arc::clone(&workspaces), None),
+        dev: false,
+    };
+    apps.record_started(app.id(), APP, &own.to_string());
+    let launched = daemon.try_clone().unwrap();
+    tokio::task::spawn_blocking(move || unheld.connected(APP, &own, &launched))
+        .await
+        .unwrap();
+    assert!(
+        !workspaces.keeps_now(own),
+        "an app launched in the person's workspace founds none"
+    );
+    apps.forget_started(app.id());
+
+    // The workspace as the computer that made the root founded it, held at the daemon's start.
+    workspaces
+        .found(own, super::first_workspace::FOUNDED_NAME)
+        .await
+        .unwrap();
+    let first = FirstWorkspace::open(Arc::clone(&workspaces), None);
+    assert_eq!(first.get(), Some(own.to_string().as_str()));
     // What the daemon's start has its person's workspace held with, once it is here.
     let tickets = Arc::new(Tickets::new(
         (key.clone(), cert.clone()),
@@ -2623,59 +2656,39 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
         &tickets,
         &cert,
     ));
-    let apps = Arc::new(crate::apps::Apps::new(
-        None,
-        state.path(),
-        crate::daemon::Sockets::in_dir(state.path()),
-        std::path::PathBuf::new(),
-        Vec::new(),
-    ));
     let surfaces = super::services::AttachedSurfaces {
         apps: Arc::clone(&apps),
         first: Arc::clone(&first),
         dev: false,
     };
-    let own = super::first_workspace::own_workspace(&cert.user_public_key);
-    let elsewhere = tilo_desktop_model::WorkspaceId::new();
-    // The app's service connection, from a process of its own.
-    let socket = state.path().join("identity.sock");
-    let (daemon, mut app) = the_launched_app(&socket);
-    let listed = || the_device_is_listed(&workspaces, cert.device_public_key);
 
-    // A process no launch here started names the person's workspace: nothing is founded.
+    // A process no launch here started names the person's workspace: nothing is listed.
     surfaces.connected(APP, &own, &daemon);
-    assert_eq!(
-        first.get(),
-        None,
-        "a process the daemon did not launch founds nothing"
+    assert!(
+        !listed(),
+        "a process the daemon did not launch lists nothing"
     );
 
     // A connection the daemon made itself for no launch (an agent run, an internal client) names
-    // the person's workspace: nothing is founded.
+    // the person's workspace: nothing is listed.
     let (_internal, made_here) = std::os::unix::net::UnixStream::pair().unwrap();
     surfaces.connected(APP, &own, &made_here);
-    assert_eq!(
-        first.get(),
-        None,
-        "a connection the daemon made for no launch founds nothing"
+    assert!(
+        !listed(),
+        "a connection the daemon made for no launch lists nothing"
     );
 
-    // An app the daemon launched in another workspace names it: nothing is founded either.
+    // An app the daemon launched in another workspace names it: nothing is listed either.
     apps.record_started(app.id(), APP, &elsewhere.to_string());
     surfaces.connected(APP, &elsewhere, &daemon);
-    assert_eq!(
-        first.get(),
-        None,
-        "an app launched elsewhere founds nothing"
-    );
+    assert!(!listed(), "an app launched elsewhere lists nothing");
     apps.forget_started(app.id());
 
-    // The app the daemon launched in the person's own workspace founds it, with this device
-    // listed in their devices before the app signs anything.
+    // The app the daemon launched in the person's own workspace has this device listed in their
+    // devices before the app signs anything.
     apps.record_started(app.id(), APP, &own.to_string());
-    let founding = tokio::task::spawn_blocking(move || surfaces.connected(APP, &own, &daemon));
-    founding.await.unwrap();
-    assert_eq!(first.get(), Some(own.to_string().as_str()));
+    let settling = tokio::task::spawn_blocking(move || surfaces.connected(APP, &own, &daemon));
+    settling.await.unwrap();
     let record = tilo_workspace_service::workspaces::person_workspace::devices::of(
         &copies,
         &cert.user_public_key,

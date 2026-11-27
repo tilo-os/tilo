@@ -397,8 +397,14 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
 /// whose profile environment is private, and returns `None`; in that child,
 /// returns the profile to serve.
 pub(crate) fn isolated_root(test: &str) -> Option<PathBuf> {
+    let root = isolated_profile(test)?;
+    found_here();
+    Some(root)
+}
+
+/// [`isolated_root`] with nobody founded: the child's profile, set up as the test sets it.
+fn isolated_profile(test: &str) -> Option<PathBuf> {
     if let Some(root) = std::env::var_os(PROCESS_ROOT) {
-        found_here();
         return Some(PathBuf::from(root));
     }
     let temp = tempfile::tempdir().unwrap();
@@ -1422,7 +1428,7 @@ fn a_shell_links_secret_admits_one_connection() {
         return;
     };
     let session = Daemon::start_in_dev_mode(&root, &mut |_| {}).unwrap();
-    // The person's workspace is founded the first time it is asked for, as their session does.
+    // The person's workspace, founded with their root as the daemon started.
     crate::RuntimeServices::workspace(&session).unwrap();
     let socket = session.broker.app_socket().to_path_buf();
     let secret = session
@@ -2469,6 +2475,68 @@ fn founding_on_a_persons_device_is_told_it_has_one() {
         assert!(
             matches!(&answered, Some(Ok(_))) && format!("{answered:?}").contains(ALREADY_A_PERSONS),
             "{action} on a person's device is told it has one: {answered:?}"
+        );
+    }
+}
+
+const ROOT_ALONE_TEST: &str =
+    "device::services::tests::a_computer_given_the_persons_root_founds_no_second_workspace";
+
+/// Two computers of one person's hold their root: the one that made it founded their workspace in
+/// that step, and the one their recovery words brought it to never founds a second beside it,
+/// which none of their other devices would read. It keeps no copy of their workspace, and every
+/// ask that needs one, from the person's own `tilo` to making a workspace, is refused in words
+/// that say how to add the computer; a later start founds nothing either.
+#[test]
+fn a_computer_given_the_persons_root_founds_no_second_workspace() {
+    let Some(root) = isolated_profile(ROOT_ALONE_TEST) else {
+        return;
+    };
+    let words = tilo_user_identity::recovery_words::encode(&[0x5a; 32]).unwrap();
+    let person = as_the_daemon(|| {
+        super::restore_account_person(
+            &tilo_identity::provisioning::collaboration_identity_paths(),
+            &json!({ "words": words.as_str() }),
+            this_account_uid(),
+        )
+        .unwrap()
+    });
+    let own = WorkspaceId::parse(&person_workspace_id(&person)).unwrap();
+    for start in ["first", "next"] {
+        let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+        assert!(
+            !daemon.workspaces.keeps_now(own),
+            "the {start} start founds no workspace for the person"
+        );
+        assert!(
+            !daemon.keeps_its_own_account(),
+            "a computer without the person's workspace keeps no account of theirs"
+        );
+        let refused = crate::RuntimeServices::workspace(&*daemon)
+            .expect_err("the person's own tilo finds no workspace here");
+        assert!(
+            refused.to_string().contains("tilo device add"),
+            "the refusal says how to add the computer: {refused}"
+        );
+        let creating = tilo_api::session::Creating {
+            name: "Plans".into(),
+            labels: tilo_server_protocol::workspaces::WorkspaceLabels::default(),
+            id: None,
+        };
+        let asked = Arc::clone(&daemon);
+        let made = tilo_rt::app().handle().block_on(async move {
+            tilo_api::session::Here::create_where_founded(&*asked, creating).await
+        });
+        assert!(
+            matches!(
+                &made,
+                Err(tilo_api::session::NotFounded::Refused(why)) if why.contains("tilo device add")
+            ),
+            "making a workspace is refused, saying how to add the computer: {made:?}"
+        );
+        assert!(
+            !daemon.workspaces.keeps_now(own),
+            "nothing the person asked founded their workspace on the {start} start"
         );
     }
 }

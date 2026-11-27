@@ -151,7 +151,7 @@ async fn studio(devices: &TwoDevices) -> Arc<ServiceWorkspaces> {
 
 /// Mark the first device in the person's record as the one keeping their root, signed by that
 /// root, say where it answers, and wait until the desk's copy of the record says so.
-async fn mark_founding(devices: &TwoDevices) {
+async fn mark_root_kept(devices: &TwoDevices) {
     let root = ticket_tests::root_in(devices.state.path().to_path_buf())()
         .expect("the root reads")
         .expect("the issuer keeps the person's root");
@@ -369,7 +369,7 @@ async fn a_workspace_asked_for_on_a_device_that_founds_none_is_made_on_the_one_t
     );
     let devices = founding_and_desk().await;
     let studio = studio(&devices).await;
-    mark_founding(&devices).await;
+    mark_root_kept(&devices).await;
 
     // The person asks on the desk: the founding device makes it and answers once it has. Each
     // other device of theirs, the desk and the studio, takes it in from the person's list by
@@ -500,7 +500,7 @@ async fn a_workspace_a_device_off_tilo_os_asks_for_waits_for_the_persons_yes_on_
     // it, which the person's grants leave to them.
     let _home = tilo_test_env::TestHome::new().expect("a home");
     let devices = founding_and_desk().await;
-    mark_founding(&devices).await;
+    mark_root_kept(&devices).await;
     let own = WorkspaceId::parse(&person_workspace_id(&devices.person)).unwrap();
 
     // The person says yes on the founding device: it makes the workspace, and the desk opens it.
@@ -615,7 +615,7 @@ async fn a_create_with_no_founding_device_in_reach_is_refused_in_plain_words_in_
     );
 
     // Once it does but is away, the person hears so within the bound, and nothing else is asked.
-    mark_founding(&devices).await;
+    mark_root_kept(&devices).await;
     devices
         .first_router
         .shutdown()

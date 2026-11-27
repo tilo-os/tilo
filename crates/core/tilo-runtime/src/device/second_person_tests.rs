@@ -89,10 +89,9 @@ fn a_second_person_signs_in_certifies_their_key_and_works_in_the_workspace_as_it
     let person = bo.group_public_key();
     assert_ne!(person, daemon.cert.user_public_key, "Bo is another person");
 
-    // Ada makes Bo an editor of the computer's workspace: her first need of it founds it, as a
-    // call of hers in it does on a computer with no login.
+    // Ada makes Bo an editor of the computer's workspace, founded with her root.
     assert_eq!(
-        daemon.first.found_blocking().as_deref(),
+        daemon.first.here_blocking().as_deref(),
         Ok(daemon.workspace.as_str()),
         "Ada's workspace is founded at the id her key names"
     );
@@ -236,12 +235,14 @@ fn answered_json(answer: &Value) -> Value {
 
 /// `tilo_do` of `path` with `args`, asked on a connection of `uid`'s.
 fn do_here(socket: &Path, uid: u32, path: &str, args: &Value) -> Value {
+    // A founding answers once the person's workspace is founded, as their services start: it is
+    // waited on for as long as that takes.
     ask(
         socket,
         uid,
         &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
             "name": "tilo_do",
-            "arguments": {"path": path, "args": args},
+            "arguments": {"path": path, "args": args, "wait_ms": 120_000},
         }}),
     )
 }
