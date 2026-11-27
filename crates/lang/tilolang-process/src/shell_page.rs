@@ -576,7 +576,7 @@ fn apps_reading(listed: &[Listed]) -> Value {
             })
         })
         .collect();
-    json!({ "installed": installed })
+    json!({ "installed": installed, "refused": "" })
 }
 
 /// The windows on `reading`'s layout as `session:windows` lists them to a dock, a launcher and a
@@ -646,6 +646,9 @@ fn windows_reading(reading: &LayoutReading, read: Option<&Value>) -> Value {
             "controls_desktop": false,
             "display_id": "",
             "bar_location": "",
+            // The record the place shows, as the layout names it: a view that says what a window
+            // shows (the bar's menu among them) reads it.
+            "resource": place.resource,
             "bar_field": "",
             "bar_typing": false,
             "find": Value::Null,
