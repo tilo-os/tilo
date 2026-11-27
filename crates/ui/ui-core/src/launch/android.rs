@@ -138,6 +138,22 @@ pub fn install_environment_in(files: &std::path::Path) {
     for (name, value) in vars {
         set_var(name, value);
     }
+    if let Some(filter) = log_filter_property() {
+        set_var("RUST_LOG", filter.into());
+    }
+}
+
+/// The log filter set on the device with `adb shell setprop debug.tilo.log <filter>`: an app on
+/// Android starts with no shell environment a developer could put `RUST_LOG` in.
+fn log_filter_property() -> Option<String> {
+    let mut value = [0; libc::PROP_VALUE_MAX as usize];
+    // SAFETY: the name is NUL-terminated, and `value` holds the PROP_VALUE_MAX bytes the call
+    // writes at most, NUL included.
+    let len =
+        unsafe { libc::__system_property_get(c"debug.tilo.log".as_ptr(), value.as_mut_ptr()) };
+    // SAFETY: the call NUL-terminated what it wrote.
+    let filter = unsafe { std::ffi::CStr::from_ptr(value.as_ptr()) };
+    (len > 0).then(|| filter.to_string_lossy().into_owned())
 }
 
 /// Put `name` in the process's environment before any Tilo code reads it: the JVM's own threads
