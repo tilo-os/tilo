@@ -1009,7 +1009,6 @@ async fn keep_peer(daemon: Arc<Daemon>, home: PathBuf, state: PathBuf) {
     drop(account);
     let own = Arc::clone(daemon.serving());
     let login = daemon.home_source();
-    let key = daemon.key().clone();
     let daemon = Arc::downgrade(&daemon);
     let accounts = move || -> super::peer::Accounts {
         let daemon = daemon.upgrade();
@@ -1020,7 +1019,7 @@ async fn keep_peer(daemon: Arc<Daemon>, home: PathBuf, state: PathBuf) {
             }
         })
     };
-    Box::pin(peer.keep(own, accounts, login, key)).await;
+    Box::pin(peer.keep(own, accounts, login)).await;
 }
 
 #[cfg(test)]

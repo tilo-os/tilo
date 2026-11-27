@@ -15,7 +15,7 @@ use tilo_user_identity::DeviceCapabilities;
 use super::super::keeping::keep_listed;
 use super::super::{Servers, apply, device_id, read};
 use crate::workspaces::fixtures::{
-    TestHost, device_cert, hosting_device, list_workspace, test_host,
+    TestHost, device_cert, hosting_device, invitation_by, list_workspace, lists, test_host,
 };
 use crate::workspaces::{MemberDevice, Workspaces, person_workspace};
 use tilo_server_protocol::servers::person_workspace_id;
@@ -212,7 +212,8 @@ async fn desk_and_laptop() -> DeskAndLaptop {
 
 /// A device of the person's that is no server of theirs enters each workspace their list shows on
 /// it, told by the list's change: the daemon takes in what the person made on another device,
-/// and the desktop shows what it holds.
+/// and the desktop shows what it holds. A workspace the person joins goes on the list, which
+/// the joining device takes it in by too, and leaving it takes it off, and the copy goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_that_is_no_server_enters_what_the_list_shows_on_it() {
     let devices = desk_and_laptop().await;
@@ -230,16 +231,65 @@ async fn a_device_that_is_no_server_enters_what_the_list_shows_on_it() {
         workspaces.is_member(&devices.made).await.unwrap(),
         "it entered as a device of the person, as a member copy of the desk's"
     );
+    // The pass that took it in says so as it ends.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        workspaces.not_here_changed().wait_for(Vec::is_empty),
+    )
+    .await
+    .expect("nothing is missing once the pass that took it in ends")
+    .unwrap();
+
+    // Someone else, whose device keeps a workspace and invites the person into it.
+    let state = tempfile::tempdir().unwrap();
+    let them = SigningKey::from_bytes(&[9; 32]);
+    let (their_key, their_cert) = device_cert(&them, "home", DeviceCapabilities::member());
+    let theirs = test_host(state.path(), &their_key, &their_cert).await;
+    let joined = theirs
+        .workspaces()
+        .create("Theirs")
+        .await
+        .unwrap()
+        .workspace;
+    let person = hosting_device().1;
+    let invited = invitation_by(&them, &theirs, &their_cert, &joined, 72, &person).await;
+    workspaces
+        .join_member(&invited)
+        .await
+        .expect("the laptop joins");
     assert!(
-        workspaces.not_here().is_empty(),
-        "{:?}",
-        workspaces.not_here()
+        workspaces.state(&joined).await.is_some(),
+        "the join answers once it is held"
+    );
+    assert!(
+        lists(workspaces, &joined).await,
+        "the person's list names it"
+    );
+    workspaces
+        .leave_listed(&joined)
+        .await
+        .expect("the person leaves it");
+    keeps(
+        workspaces,
+        &joined,
+        false,
+        "the laptop lets the workspace go",
+    )
+    .await;
+    assert!(
+        !lists(workspaces, &joined).await,
+        "the list no longer names it"
+    );
+    assert!(
+        theirs.workspaces().state(&joined).await.is_some(),
+        "the workspace stays"
     );
 }
 
 /// A workspace the list shows on a device while the device keeping it is away is not here yet,
-/// and the device says so, with why, where it lists the person's workspaces. It tries again by
-/// itself, and once the device keeping it answers again it holds it, with nothing asked of it.
+/// and the device says so, with why, where it lists the person's workspaces and to a join that
+/// waits for it. It tries again by itself, and once the device keeping it answers again it holds
+/// it, with nothing asked of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_listed_workspace_whose_device_is_away_is_not_here_with_why_until_it_answers() {
     let devices = desk_and_laptop().await;
@@ -264,6 +314,16 @@ async fn a_listed_workspace_whose_device_is_away_is_not_here_with_why_until_it_a
     assert_eq!(missing.name, "Desk", "{missing:?}");
     assert!(!missing.why.trim().is_empty(), "it says why: {missing:?}");
     assert!(workspaces.state(&devices.made).await.is_none());
+    // A join waiting for it, or a keep asked of this device, hears the same at once.
+    let why = workspaces
+        .held_within(&devices.made, super::super::keeping::JOINED_WITHIN)
+        .await
+        .expect_err("the laptop does not hold it");
+    assert!(
+        why.starts_with(super::super::keeping::NOT_HERE_YET),
+        "{why}"
+    );
+    assert!(why.contains(&missing.why), "the answer says why: {why}");
 
     devices.desk.back();
     keeps(

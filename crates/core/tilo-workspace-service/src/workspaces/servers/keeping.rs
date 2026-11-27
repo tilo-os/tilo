@@ -5,7 +5,10 @@
 //! each workspace the list shows on it, as a member copy at the address the
 //! list keeps for it ([`crate::workspaces::Workspaces::hold_as_members`]): the
 //! device's daemon does, every device of theirs holding any copy of their own
-//! workspace, and the desktop session shows what it holds. A server
+//! workspace, and the desktop session shows what it holds: the only way a
+//! device takes in a workspace of theirs, the one they just joined on it too
+//! ([`Workspaces::take_in_joined`]). One that goes off the list, or that its
+//! members name them in only as removed, every device lets go of. A server
 //! with an entry among their servers ([`super::SERVERS`]) keeps each workspace
 //! the list names instead, unless its entry turned keeping off for it
 //! ([`Server::keeps_not`]). One its entry no longer keeps it lets go of
@@ -36,6 +39,7 @@ use tilo_server_protocol::workspaces::IDENTITY_LIST;
 use tilo_user_identity::WorkspaceList;
 
 use super::{SERVERS, person_workspace_id, read};
+use crate::workspaces::person_list::{KeptAt, listing, showing, unlisting};
 use crate::workspaces::person_workspace;
 use crate::workspaces::{HostedWorkspace, RELEASED, Workspaces};
 
@@ -67,6 +71,12 @@ pub struct NotHere {
 const FIRST_RETRY: Duration = Duration::from_secs(2);
 /// The longest a workspace not taken in waits for the next attempt.
 const LAST_RETRY: Duration = Duration::from_secs(60);
+/// How long a join waits for this device's follower of the person's list to hold what it joined
+/// ([`Workspaces::take_in_joined`]) before it answers why it is not here yet.
+pub const JOINED_WITHIN: Duration = Duration::from_secs(30);
+/// What a join answers when what it joined is not held here in time: the person is in it, and
+/// this device goes on taking it in.
+pub const NOT_HERE_YET: &str = "you're in it, but it isn't on this device yet";
 
 impl Kept {
     /// Whether the pass changed nothing.
@@ -111,9 +121,32 @@ pub async fn keep_listed(workspaces: &Workspaces) -> Result<Kept, String> {
     }
     let mut entering = Vec::new();
     let mut names = std::collections::BTreeMap::new();
-    for (workspace, name, hint, shown) in
-        listed(workspaces, &own.user_public_key, &own.device_public_key).await?
+    let (listing, went) = listed(workspaces, &own.user_public_key, &own.device_public_key).await?;
+    // A workspace the person left goes from every device of theirs, and one kept off this device
+    // from this one; one this device keeps itself is no member copy, and stays: it serves it.
+    let off_here = listing
+        .iter()
+        .filter(|(.., shown)| entry.is_none() && !shown);
+    for id in went
+        .into_iter()
+        .chain(off_here.map(|(workspace, ..)| workspace.to_string()))
     {
+        if let_go(workspaces, &id).await {
+            kept.released.push(id);
+        }
+    }
+    // One the person was taken out of goes from their list as one they left does: the write
+    // brings the pass that lets it go everywhere.
+    let mut out = Vec::new();
+    for (workspace, ..) in &listing {
+        if taken_out(workspaces, &workspace.to_string(), &own.user_public_key).await {
+            out.push(unlisting(&workspace.to_string()));
+        }
+    }
+    if !out.is_empty() {
+        person_workspace::apply_actions_on(workspaces, &person, IDENTITY_LIST, out, None).await?;
+    }
+    for (workspace, name, hint, shown) in listing {
         let id = workspace.to_string();
         let keeps = entry.as_ref().map_or(shown, |entry| entry.keeps(&id));
         if id == person || !keeps || workspaces.state(&id).await.is_some() {
@@ -176,21 +209,65 @@ async fn enter_as_this_device(workspaces: &Workspaces) -> Kept {
     kept
 }
 
-/// Each workspace of `person`'s list, with its name, the address the list keeps for it
-/// (`None` for one no device of theirs said where it is kept) and whether it
-/// shows on `device`.
+/// Whether `person` was taken out of `workspace`, as the member copy held here says: its members
+/// name them, and only as removed.
+async fn taken_out(workspaces: &Workspaces, workspace: &str, person: &[u8; 32]) -> bool {
+    if !workspaces.is_member(workspace).await.unwrap_or(false) {
+        return false;
+    }
+    let Ok(state) = workspaces.workspace(workspace).await else {
+        return false;
+    };
+    let members = state
+        .lock()
+        .await
+        .peer()
+        .governance()
+        .member_list(tilo_clock::wall());
+    members.is_ok_and(|list| {
+        let mut theirs = list
+            .members
+            .iter()
+            .filter(|member| member.root() == Some(*person));
+        theirs.clone().next().is_some() && theirs.all(|member| member.removed)
+    })
+}
+
+/// Let go of the member copy of `workspace` held here, when there is one: whether it went. Its
+/// files stay, as every copy let go of keeps them.
+async fn let_go(workspaces: &Workspaces, workspace: &str) -> bool {
+    workspaces.is_member(workspace).await.unwrap_or(false)
+        && workspaces
+            .release(workspace)
+            .await
+            .inspect_err(|error| tracing::warn!(%error, %workspace, "a workspace off the person's list here is not let go of yet"))
+            .is_ok()
+}
+
+/// A workspace of the person's list: its id, its name, the address the list keeps for it (`None`
+/// for one no device of theirs said where it is kept) and whether it shows on this device.
+type Listed = (WorkspaceId, String, Option<TransportHint>, bool);
+
+/// Each workspace of `person`'s list, as [`Listed`] says it for `device`, and each the list says
+/// went.
 async fn listed(
     workspaces: &Workspaces,
     person: &[u8; 32],
     device: &[u8; 32],
-) -> Result<Vec<(WorkspaceId, String, Option<TransportHint>, bool)>, String> {
+) -> Result<(Vec<Listed>, Vec<String>), String> {
     let list = person_workspace::read_on::<WorkspaceList>(
         workspaces,
         &person_workspace_id(person),
         IDENTITY_LIST,
     )
     .await?;
-    Ok(list
+    let went = list
+        .left
+        .keys()
+        .filter(|id| WorkspaceId::parse(id).is_some_and(|id| list.went(id)))
+        .cloned()
+        .collect();
+    let listing = list
         .listed()
         .filter_map(|(id, listed)| {
             let workspace = WorkspaceId::parse(&id.to_string())?;
@@ -207,7 +284,8 @@ async fn listed(
                 listed.shows_on(device),
             ))
         })
-        .collect())
+        .collect();
+    Ok((listing, went))
 }
 
 /// Take up again the copy of `workspace` this device let go of, from the files
@@ -256,6 +334,134 @@ impl Workspaces {
     #[must_use]
     pub fn not_here_changed(&self) -> tokio::sync::watch::Receiver<Vec<NotHere>> {
         self.inner.not_here.subscribe()
+    }
+
+    /// Whether this device takes `workspace` in by its person's list: it holds a copy of their
+    /// own workspace, which holds the list, and `workspace` is another. A device with no copy of
+    /// it (one confined to a workspace, or one that has not taken it in yet), and their own
+    /// workspace itself, which the list never names, it takes in itself.
+    pub async fn takes_in_by_list(&self, workspace: &str) -> bool {
+        let cert = self.device_cert();
+        let own = person_workspace_id(&cert.user_public_key);
+        super::super::member::holds_copies(cert).is_ok()
+            && workspace != own
+            && self.state(&own).await.is_some()
+    }
+
+    /// Have `workspace`, which this device's person just joined at the device `hint` names, on
+    /// every device of theirs: listed with where it is kept, so each device's follower of the
+    /// list takes it in, this one's included. Answered once it is held here, within
+    /// [`JOINED_WITHIN`], and listed under its own name then.
+    ///
+    /// # Errors
+    /// The list could not be written, or this device did not hold it in time: why it is not here
+    /// yet ([`Self::held_within`]). It goes on trying.
+    pub async fn take_in_joined(
+        &self,
+        workspace: WorkspaceId,
+        hint: &TransportHint,
+    ) -> Result<WorkspaceId, String> {
+        let (id, own) = (workspace.to_string(), self.own_list());
+        let list = person_workspace::read_on::<WorkspaceList>(self, &own, IDENTITY_LIST).await?;
+        // One listed already keeps its name until the workspace's own is read.
+        let name = list.get(workspace).map(|listed| listed.name.clone());
+        let kept = KeptAt {
+            device: hint.host.device_public_key,
+            hint: Some(hint.clone()),
+        };
+        let listing = listing(&id, name.as_deref().unwrap_or_default(), Some(&kept));
+        person_workspace::apply_actions_on(self, &own, IDENTITY_LIST, listing, None).await?;
+        self.held_within(&id, JOINED_WITHIN).await?;
+        let name = self
+            .state(&id)
+            .await
+            .and_then(|held| held.governance().workspace_name());
+        if let Some(name) = name {
+            let named = WorkspaceList::LIST_WORKSPACE.with((id, name));
+            if let Err(error) =
+                person_workspace::apply_actions_on(self, &own, IDENTITY_LIST, vec![named], None)
+                    .await
+            {
+                tracing::warn!(%error, %workspace, "a joined workspace's name was not listed");
+            }
+        }
+        Ok(workspace)
+    }
+
+    /// Wait until `workspace` is held here, `within` at most, and no longer than until the
+    /// follower of the person's list says why it could not take it in: the person hears that
+    /// at once, while the follower goes on trying.
+    ///
+    /// # Errors
+    /// It was not held: why, as the follower says it ([`Self::not_here`]).
+    pub async fn held_within(&self, workspace: &str, within: Duration) -> Result<(), String> {
+        let mut holds = self.holds_changed();
+        let mut said = self.not_here_changed();
+        let why = |said: &[NotHere]| {
+            said.iter()
+                .find(|missing| missing.workspace == workspace)
+                .map(|missing| missing.why.clone())
+        };
+        let answered = tokio::time::timeout(within, async {
+            loop {
+                if self.state(workspace).await.is_some() {
+                    return None;
+                }
+                let missing = why(&said.borrow_and_update());
+                if missing.is_some() {
+                    return missing;
+                }
+                tokio::select! {
+                    moved = holds.changed() => if moved.is_err() { std::future::pending::<()>().await },
+                    moved = said.changed() => if moved.is_err() { std::future::pending::<()>().await },
+                }
+            }
+        })
+        .await;
+        match answered {
+            Ok(None) => Ok(()),
+            Ok(Some(why)) => Err(format!("{NOT_HERE_YET} ({why}); this device keeps trying")),
+            Err(_) => Err(format!("{NOT_HERE_YET}; this device keeps trying")),
+        }
+    }
+
+    /// Show `workspace`, which the person's list names, on this device again: its follower of the
+    /// list takes it in.
+    ///
+    /// # Errors
+    /// This device follows no list of the person's, or the list does not name it or could not be
+    /// written.
+    pub async fn show_here(&self, workspace: &str) -> Result<(), String> {
+        if !self.takes_in_by_list(workspace).await {
+            return Err(
+                "this device doesn't hold your own workspace yet, whose list it keeps \
+                        your workspaces by"
+                    .to_owned(),
+            );
+        }
+        let device = self.device_cert().device_public_key;
+        let shown = showing(workspace, device, true);
+        person_workspace::apply_actions_on(self, &self.own_list(), IDENTITY_LIST, vec![shown], None)
+            .await
+    }
+
+    /// Take `workspace` off the person's list, where this device follows it: they left it, and
+    /// every device of theirs lets it go.
+    ///
+    /// # Errors
+    /// The list could not be written.
+    pub async fn leave_listed(&self, workspace: &str) -> Result<(), String> {
+        if !self.takes_in_by_list(workspace).await {
+            return Ok(());
+        }
+        let gone = unlisting(workspace);
+        person_workspace::apply_actions_on(self, &self.own_list(), IDENTITY_LIST, vec![gone], None)
+            .await
+    }
+
+    /// The person's own workspace, which holds their list.
+    fn own_list(&self) -> String {
+        person_workspace_id(&self.device_cert().user_public_key)
     }
 
     fn say_not_here(&self, missing: Vec<NotHere>) {

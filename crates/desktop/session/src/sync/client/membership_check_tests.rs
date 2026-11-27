@@ -326,16 +326,14 @@ fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
     let mut personal = Personal::open(tilo_network_actor::DeviceIdentity::kept(cert, key));
     personal.hold_seed(seed);
     let site = WorkspaceId::parse("0b7a5f4e-2c1d-4e8a-9f3b-6d5c4b3a2918").expect("a workspace id");
-    personal.joined(site);
     let mut tree = session.read(Clone::clone);
     tree.workspaces
         .push(tilo_desktop_model::Workspace::new(site, "Lounge"));
     session.replace_tree(tree);
 
-    // No host has answered a list, and the workspace's governance names the person its owner: they
-    // have a workspace of their own, so the one this shell started with goes.
-    let owned = std::collections::BTreeSet::from([site]);
-    assert!(personal.settle_seed(&session, &WorkspaceList::default(), &[site], None, &owned));
+    // No host has answered a list, and the device holds a workspace of theirs: they have one, so
+    // the one this shell started with goes.
+    assert!(personal.settle_seed(&session, &WorkspaceList::default(), &[site], None));
     assert_eq!(personal.seed(), None);
     assert_eq!(
         on_shell(&session),

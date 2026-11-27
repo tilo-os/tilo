@@ -919,13 +919,15 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
     )
     .await
     .expect("the desk enters the founded workspace");
-    // The issuer let the desk in and signed where it holds the workspace: what the desk's own
-    // workspace service holds it by.
-    let id = tilo_server_protocol::WorkspaceId::parse(&workspace.to_string()).unwrap();
-    let hosts = entered.hosts();
+    // The issuer let the desk in and signed where it holds the workspace: the desk's own
+    // workspace service holds it by that.
     assert!(
-        hosts.iter().any(|(admitted, _)| *admitted == id),
-        "the issuer admitted the desk to the workspace it founded: {hosts:?}"
+        desk_service
+            .copies()
+            .state(&workspace.to_string())
+            .await
+            .is_some(),
+        "the issuer admitted the desk to the workspace it founded"
     );
     entered.close();
     let _ = router.shutdown().await;

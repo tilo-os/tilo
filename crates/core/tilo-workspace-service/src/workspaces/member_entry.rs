@@ -43,7 +43,7 @@ impl Workspaces {
         host: &PageHost,
         name: Option<&str>,
     ) -> Result<WorkspaceId, String> {
-        let _entering = self.inner.member.entering.lock().await;
+        let one_join = self.inner.member.entering.lock().await;
         let device = self.member_identity()?;
         holds_copies(&device.cert)?;
         if workspace.is_nil() {
@@ -112,8 +112,13 @@ impl Workspaces {
         let bootstrap = self
             .prove_own(&device, &served.endpoint_addr, workspace)
             .await?;
-        // The person's own computer asked for this join: theirs to write into their list.
-        self.hold_member(&device, &bootstrap, &hint, true).await
+        // The person's own computer asked for this join: it is theirs on every device, taken in
+        // by their list where this device follows one.
+        if self.takes_in_by_list(&workspace.to_string()).await {
+            drop(one_join);
+            return self.take_in_joined(workspace, &hint).await;
+        }
+        self.hold_member(&device, &bootstrap, &hint).await
     }
 }
 

@@ -244,7 +244,7 @@ pub trait Here: Send + Sync {
         Box::pin(async { Err(ServerError::NoAccountHere.to_string()) })
     }
 
-    /// Stop keeping `workspace` here; the person stays in it.
+    /// Leave `workspace`: it goes off the person's list, and from every device of theirs.
     fn leave(&self, _workspace: &str) -> Asked<'_, ()> {
         Box::pin(async { Err(ServerError::NoAccountHere.to_string()) })
     }

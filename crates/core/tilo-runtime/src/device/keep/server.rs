@@ -1751,24 +1751,16 @@ mod tests {
 
         let server_device = server_cert.device_public_key;
         waits_until_listed(kept, &made, server_device).await;
-        // The server keeps it on its own. Should it not, entering it by hand says why, so the
-        // failure names the cause rather than only that it waited.
-        let on_its_own = tokio::time::timeout(std::time::Duration::from_secs(60), async {
-            while !kept.is_member(&made).await.unwrap_or(false) {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
+        // The server keeps it on its own, by the list's change alone.
+        tilo_test_env::within(
+            "the server keeps the workspace its person's list gained",
+            async {
+                while !kept.is_member(&made).await.unwrap_or(false) {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            },
+        )
         .await;
-        if on_its_own.is_err() {
-            let by_hand = kept
-                .hold_as_member(WorkspaceId::parse(&made).unwrap(), &hint)
-                .await;
-            panic!(
-                "the server did not keep the workspace its person's list gained; entering it \
-                 by hand as their device says {by_hand:?}; holding it already: {}",
-                kept.state(&made).await.is_some()
-            );
-        }
         server.shutdown().await;
         desk.shutdown().await;
     }

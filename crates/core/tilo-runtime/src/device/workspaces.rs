@@ -47,22 +47,10 @@ pub(crate) struct Carried {
     /// Each file of its key groups' directory by name, its bytes in hex.
     #[serde(default)]
     pub(crate) groups: std::collections::BTreeMap<String, String>,
-    /// The workspaces it took part in.
-    #[serde(default)]
-    pub(crate) workspaces: Vec<CarriedWorkspace>,
     /// What its own workspace service kept, as [`tilo_workspace_service::workspaces::MovingService::to_hex`]
     /// hands it over.
     #[serde(default)]
     pub(crate) service: Option<String>,
-}
-
-/// A workspace a desktop took part in.
-#[derive(Debug, serde::Deserialize)]
-pub(crate) struct CarriedWorkspace {
-    pub(crate) workspace: String,
-    /// The address its host signed for it, where this device takes part in it as a member.
-    #[serde(default)]
-    pub(crate) hint: Option<tilo_peer_state::join::TransportHint>,
 }
 
 /// What the device's workspace service is opened with.
@@ -385,22 +373,8 @@ impl ServiceWorkspaces {
             }
             None => tilo_workspace_service::workspaces::MovedIn::default(),
         };
-        let entering: Vec<_> = carried
-            .workspaces
-            .iter()
-            .filter_map(|workspace| {
-                Some((
-                    WorkspaceId::parse(&workspace.workspace)?,
-                    workspace.hint.clone()?,
-                ))
-            })
-            .collect();
-        let entered: Vec<String> = entering.iter().map(|(id, _)| id.to_string()).collect();
-        let copies = self.copies().clone();
-        tokio::spawn(async move { copies.hold_as_members(entering).await });
         let answer = serde_json::json!({
             "groups": groups.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            "entering": entered,
             "moved": moved.moved.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "refused": moved
                 .refused
@@ -492,9 +466,8 @@ impl ServiceWorkspaces {
         }
     }
 
-    /// Hold each workspace `device` entered as a member copy here, synced with the server that
-    /// hosts it: those not held yet, each at the address its host signed as it let this device in.
-    /// This service is the device's one copy of them; the session keeps none of its own.
+    /// Keep `device`, the login's session: each workspace it entered was taken in here as its host
+    /// let it in ([`MemberLinks`]), and this service is the device's one copy of them.
     ///
     /// A device that takes its server's work enters itself among its person's servers through
     /// its first session, at the address its endpoint answers on, as a server does on each start:
@@ -515,10 +488,6 @@ impl ServiceWorkspaces {
                 tracing::warn!(%error, "this device was not entered among its person's servers");
             }
         }
-        self.service
-            .workspaces()
-            .hold_as_members(device.hosts())
-            .await;
     }
 
     /// Tell the device this server's `login` entered where it answers: that device took it in by
@@ -1490,7 +1459,18 @@ impl tilo_session_client::MemberLinks for MemberLinks {
 
     fn take_in(&self, workspace: WorkspaceId, host: tilo_peer_state::join::TransportHint) {
         let copies = self.0.workspaces().clone();
-        tokio::spawn(async move { Box::pin(copies.hold_as_members([(workspace, host)])).await });
+        tokio::spawn(async move {
+            // A workspace the person is let into is theirs on every device: listed, and taken in
+            // by each device's follower of the list, this one's too. Their own workspace, which
+            // holds the list, a device that holds no copy of it yet holds itself.
+            if copies.takes_in_by_list(&workspace.to_string()).await {
+                if let Err(why) = Box::pin(copies.take_in_joined(workspace, &host)).await {
+                    tracing::warn!(%workspace, %why, "a workspace this device was let into is not here yet");
+                }
+            } else {
+                Box::pin(copies.hold_as_members([(workspace, host)])).await;
+            }
+        });
     }
 
     fn up(&self, workspace: WorkspaceId) -> Option<tokio::sync::watch::Receiver<bool>> {

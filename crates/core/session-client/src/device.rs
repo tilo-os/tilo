@@ -11,7 +11,6 @@ use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
     UpdateMark,
 };
-use tilo_lock::MutexRecover as _;
 use tilo_server_client::login::Admission;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_server_client::login::{Entry, SignIn};
@@ -57,13 +56,6 @@ pub struct Device {
     workspace_id: WorkspaceId,
     /// What this device calls itself, as its host's journals name it.
     label: String,
-    /// Each workspace's host's signed address, as the host answered this device's entry into it
-    /// ([`Admission::host`]): what this device's workspace service holds its member copy by.
-    hosts: Arc<
-        std::sync::Mutex<
-            std::collections::BTreeMap<WorkspaceId, tilo_peer_state::join::TransportHint>,
-        >,
-    >,
     /// The member copies the device's own service lent this session, which take in each
     /// workspace its host lets this device into.
     #[cfg(not(target_arch = "wasm32"))]
@@ -143,7 +135,6 @@ impl Device {
             server_cert,
             workspace_id: WorkspaceId::from_u128(0),
             label: label.to_owned(),
-            hosts: Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             links: None,
         }
@@ -291,8 +282,8 @@ impl Device {
     ///
     /// The join is the host's own entry, asked on this device's link: it admits the device and
     /// answers the membership it holds and the address its host holds the workspace at, which
-    /// [`Self::hosts`] hands this device's workspace service so the workspace's records reach
-    /// it. Only then does the session take part in the workspace's link, whose host admits the
+    /// this device's workspace service takes it in by, so the workspace's records reach it.
+    /// Only then does the session take part in the workspace's link, whose host admits the
     /// device the entry just let in.
     ///
     /// # Errors
@@ -366,6 +357,7 @@ impl Device {
                 refusal.reason()
             ))
         })?;
+        #[cfg(not(target_arch = "wasm32"))]
         self.keep_host(&admission);
         Ok(admission)
     }
@@ -421,41 +413,25 @@ impl Device {
                 refusal.reason()
             ))
         })?;
+        #[cfg(not(target_arch = "wasm32"))]
         self.keep_host(&admission);
         Ok(admission)
     }
 
-    /// Keep where `admission`'s host said its workspace is held, for [`Self::hosts`]. An address
-    /// that does not read is the host's fault, and the workspace is not held on that word.
+    /// Hand where `admission`'s host said its workspace is held to the member copies the device's
+    /// own service lent this session, which take it in. An address that does not read is the
+    /// host's fault, and the workspace is not held on that word.
+    #[cfg(not(target_arch = "wasm32"))]
     fn keep_host(&self, admission: &Admission) {
-        let Some(host) = &admission.host else {
+        let (Some(host), Some(links)) = (&admission.host, &self.links) else {
             return;
         };
         match postcard::from_bytes::<tilo_peer_state::join::TransportHint>(host) {
-            Ok(hint) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(links) = &self.links {
-                    links.take_in(admission.workspace_id, hint.clone());
-                }
-                self.hosts
-                    .lock_recover()
-                    .insert(admission.workspace_id, hint);
-            }
+            Ok(hint) => links.take_in(admission.workspace_id, hint),
             Err(error) => {
                 tracing::warn!(workspace = %admission.workspace_id, %error, "the host's address for a workspace does not read; this device's service does not hold it");
             }
         }
-    }
-
-    /// Each workspace this device entered whose host said where it holds it, with that host's
-    /// signed address: what this device's workspace service takes each in by, as a member.
-    #[must_use]
-    pub fn hosts(&self) -> Vec<(WorkspaceId, tilo_peer_state::join::TransportHint)> {
-        self.hosts
-            .lock_recover()
-            .iter()
-            .map(|(workspace, host)| (*workspace, host.clone()))
-            .collect()
     }
 
     /// One ask of `entering` on this device's session, once it is connected: the host's answer.

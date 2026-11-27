@@ -219,10 +219,12 @@ async fn reaches_server(
     .await;
 }
 
-/// The computer as `tilo login` leaves it running: its own workspace service, the person's
-/// account at their server, and the peer keeping the person's folders with them.
+/// The computer as `tilo login` leaves it running: its own workspace service, which the login's
+/// session entered the workspace through, the person's account at their server, and the peer
+/// keeping the person's folders with them.
 struct Computer {
     own: Arc<ServiceWorkspaces>,
+    entered: tilo_session_client::device::Device,
     peer: Arc<Peer>,
     keeping: tokio::task::JoinHandle<()>,
 }
@@ -246,6 +248,10 @@ impl Computer {
             }
         })
         .await;
+        let lent = Some(own.lent());
+        let entered = tilo_api::daemon::enter::connect(key, login, lent)
+            .await
+            .unwrap();
         let address = login.server_address.as_ref().unwrap();
         let account = Arc::new(Account::at(&own, &address.endpoint_addr, &login.workspace));
         let peer = Arc::new(Peer::open(dir, home).await.unwrap());
@@ -261,9 +267,13 @@ impl Computer {
                 Box::pin(async move { Some(Some(account)) })
             },
             login,
-            key.clone(),
         ));
-        Self { own, peer, keeping }
+        Self {
+            own,
+            entered,
+            peer,
+            keeping,
+        }
     }
 
     /// Whether the folder's tree on this computer names `name` at its top.
@@ -282,6 +292,7 @@ impl Computer {
 
     /// Stop as the holder stops: the folders kept on disk, the store and the service let go.
     async fn stop(self) {
+        drop(self.entered);
         self.keeping.abort();
         let _ = self.keeping.await;
         self.peer.stop(Duration::from_secs(20)).await;

@@ -7,7 +7,7 @@
 //! - `account/workspaces#list {labels?}`, `#create {name, labels?, id?}`,
 //!   `#branch {workspace, name, labels?, id?}`, `#rename {workspace, name}`,
 //!   `#delete {workspace}`, `#unattended {workspace, on}`, and on a computer's own Tilo service
-//!   `#import {sealed_with?, groups?, workspaces?}`, which takes in once what its desktop kept;
+//!   `#import {sealed_with?, groups?}`, which takes in once what its desktop kept;
 //! - `account/keys#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, and one resource per key,
 //!   `account/keys/<grant>#revoke`. The keys are each workspace's own grants, each a record

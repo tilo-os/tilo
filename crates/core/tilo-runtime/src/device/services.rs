@@ -5061,25 +5061,16 @@ impl tilo_api::session::Here for Daemon {
             if self.workspaces.keeps(id).await {
                 return Ok(());
             }
-            let person = self.cert.user_public_key;
-            let account = Daemon::account(self).await.ok_or(NO_ACCOUNT_YET)?;
-            let listed = account
-                .listed(
-                    &person,
-                    &tilo_server_protocol::workspaces::WorkspaceLabels::new(),
-                    Some(&workspace),
+            // One of the person's list is kept here by showing it here again: this device's
+            // follower of the list takes it in.
+            let copies = self.workspaces.copies();
+            copies.show_here(&workspace).await?;
+            copies
+                .held_within(
+                    &workspace,
+                    tilo_workspace_service::workspaces::servers::keeping::JOINED_WITHIN,
                 )
-                .await?;
-            let entry = listed
-                .workspaces
-                .first()
-                .ok_or("the person's list of workspaces names no such workspace")?;
-            let hint = entry.entered_at()?;
-            self.workspaces
-                .copies()
-                .hold_as_member(id, &hint)
                 .await
-                .map(drop)
         })
     }
 
@@ -5093,7 +5084,11 @@ impl tilo_api::session::Here for Daemon {
                         .to_owned(),
                 );
             }
-            self.workspaces.copies().release(&workspace).await
+            // The person leaves it: it goes off their list, and every device of theirs lets it
+            // go; this one at once.
+            let copies = self.workspaces.copies();
+            copies.leave_listed(&workspace).await?;
+            copies.release(&workspace).await
         })
     }
 
@@ -5744,10 +5739,6 @@ fn answer<T: serde::de::DeserializeOwned>(
         ServerError::Unavailable(format!("the host answered unexpectedly: {error}"))
     })
 }
-
-/// Why a workspace this daemon does not keep cannot be kept: no server says where it is.
-const NO_ACCOUNT_YET: &str = "this computer isn't logged in to a server that says where the \
-     workspace is kept: run `tilo login <ticket>` first";
 
 /// The broker's action links as one more local caller, for no app
 /// connection. Its callers act from this foreign device.

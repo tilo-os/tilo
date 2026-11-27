@@ -20,9 +20,8 @@
 //! says is then brought onto the shell: a workspace it shows on this device
 //! is shown here once the daemon holds it, one taken off the list or kept off
 //! this device is let go, and the shell takes the list's order. A workspace
-//! the list was never told of — one joined through someone's invitation, which
-//! each device of the person joins on its own — stays as it is. Nothing asks
-//! the devices on a timer.
+//! the person joins is on the list too: the daemon lists it as it joins. Nothing
+//! asks the devices on a timer.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -150,9 +149,6 @@ pub(crate) struct Personal {
     /// Listed workspaces handed to the session to open, until their workspace is here: none of them is
     /// taken for one deleted here meanwhile.
     entering: BTreeSet<WorkspaceId>,
-    /// Workspaces joined on this session through someone's invitation while it runs: the person's
-    /// other devices join them each on their own, so the list is never told of them.
-    borrowed: BTreeSet<WorkspaceId>,
     /// Where each workspace this device holds is hosted, as this device's workspace itself says:
     /// the list names that device, never this one, so a device of the person's that opens the
     /// workspace from the list enters it at the device that hosts it.
@@ -264,7 +260,6 @@ impl Personal {
             list: None,
             passed: None,
             entering: BTreeSet::new(),
-            borrowed: BTreeSet::new(),
             hosts: BTreeMap::new(),
             devices: None,
             seen: (0, 0),
@@ -404,12 +399,7 @@ impl Personal {
                     workspace.name.clone_from(&listed.name);
                     changed = true;
                 }
-            } else if !id.is_nil()
-                && !self.borrowed.contains(&id)
-                && self.seed != Some(id)
-                && !self.is_own(id)
-                && !list.went(id)
-            {
+            } else if !id.is_nil() && self.seed != Some(id) && !self.is_own(id) && !list.went(id) {
                 refused.push(id);
             }
         }
@@ -494,9 +484,8 @@ impl Personal {
 
     /// Settle the workspace the shell started with ([`Self::seed`]) once what the person has is
     /// known. A person with a workspace of their own anywhere — on their `list`, held on this
-    /// device (`held`), on what their hosts list (`listed`), or one their governance names them
-    /// the owner of (`owned`, which a workspace they joined is not otherwise) — has it taken off
-    /// `handle`'s shell once another workspace stands there, never founded nor listed; a person
+    /// device (`held`), or on what their hosts list (`listed`) — has it taken off `handle`'s shell
+    /// once another workspace stands there, never founded nor listed; a person
     /// with none has it as their first, founded and listed from then on. `listed` is `None` while
     /// a host has not answered, which leaves it waiting when nothing else says the person has one.
     /// Whether it settled.
@@ -506,16 +495,11 @@ impl Personal {
         list: &WorkspaceList,
         held: &[WorkspaceId],
         listed: Option<&BTreeSet<WorkspaceId>>,
-        owned: &BTreeSet<WorkspaceId>,
     ) -> bool {
         let Some(seed) = self.seed else {
             return false;
         };
-        let theirs = |workspace: &WorkspaceId| {
-            *workspace != seed
-                && !self.is_own(*workspace)
-                && (!self.borrowed.contains(workspace) || owned.contains(workspace))
-        };
+        let theirs = |workspace: &WorkspaceId| *workspace != seed && !self.is_own(*workspace);
         let has = list.listed().any(|(workspace, _)| workspace != seed)
             || held.iter().any(theirs)
             || match listed {
@@ -541,21 +525,6 @@ impl Personal {
         }
         self.seed = None;
         true
-    }
-
-    /// `workspace` was joined here through someone's invitation: it is the workspace of whoever
-    /// let the person in, not one of their own, so their other devices are never told to open it
-    /// themselves — each joins it through its own invitation.
-    pub(crate) fn joined(&mut self, workspace: WorkspaceId) {
-        if !workspace.is_nil() {
-            self.borrowed.insert(workspace);
-        }
-    }
-
-    /// The workspaces joined on this session through someone's invitation while it runs: whose
-    /// workspace they are is their host's governance's to say, not this person's.
-    pub(crate) fn borrowed(&self) -> &BTreeSet<WorkspaceId> {
-        &self.borrowed
     }
 
     /// Whether this device is the one that made `workspace` : it hosts it, or the person's `list`
@@ -590,11 +559,7 @@ impl Personal {
         let mut writes = Vec::new();
         for (workspace, name) in &now {
             let id = *workspace;
-            if id.is_nil()
-                || self.borrowed.contains(&id)
-                || self.seed == Some(id)
-                || self.is_own(id)
-            {
+            if id.is_nil() || self.seed == Some(id) || self.is_own(id) {
                 continue;
             }
             let held_host = self.hosts.get(&id).copied();
@@ -737,7 +702,7 @@ impl Personal {
             self.entering.insert(workspace);
         }
         for workspace in &present {
-            if list.went(*workspace) && !self.borrowed.contains(workspace) {
+            if list.went(*workspace) {
                 self.entering.remove(workspace);
                 adoption.release.push(*workspace);
             }
@@ -1031,11 +996,6 @@ impl crate::Shared {
     /// Who each workspace has in it follows the same rule: what the workspace's own governance here
     /// names is what the session shows, so a change another member's device made shows on this session.
     pub(crate) fn own_workspaces(&self) {
-        let borrowed = self
-            .personal
-            .as_ref()
-            .map(|personal| personal.borrow().borrowed().clone())
-            .unwrap_or_default();
         let mut tree = self.handle.read(Clone::clone);
         let mut changed = false;
         // The workspaces on the shell this device is founding or about to: an ask of one of them
@@ -1052,7 +1012,6 @@ impl crate::Shared {
                         personal.made_here(personal.read().as_deref(), workspace.id())
                     })
                 && !workspace.id().is_nil()
-                && !borrowed.contains(&workspace.id())
                 && !view.holds(workspace.id())
                 // A founding that failed is tried again when another founding lands, not on every
                 // pass: until then nothing waits on it, and an ask of it hears what the daemon
@@ -1108,13 +1067,12 @@ impl crate::Shared {
             {
                 continue;
             }
-            if let Some(owner) = self.owner_of(workspace.id(), &borrowed) {
+            if let Some(owner) = self.owner_of(workspace.id()) {
                 workspace.policy.set_owner(owner);
                 changed = true;
             } else {
                 tracing::debug!(
                     workspace = %workspace.id(),
-                    borrowed = borrowed.contains(&workspace.id()),
                     "a workspace on the session is nobody's this pass: nothing may be done in it"
                 );
             }
@@ -1134,7 +1092,7 @@ impl crate::Shared {
     /// are decided as. `None` for every other workspace not held here yet — one joined through an
     /// API, or one the person's list names that this device is entering, which may be someone
     /// else's they were let in to: whose it is waits for its governance.
-    fn owner_of(&self, workspace: WorkspaceId, borrowed: &BTreeSet<WorkspaceId>) -> Option<String> {
+    fn owner_of(&self, workspace: WorkspaceId) -> Option<String> {
         if let Some(view) = &self.view
             && let Ok(owner) = view.owner_of(&workspace.to_string())
         {
@@ -1148,7 +1106,7 @@ impl crate::Shared {
             let personal = personal.borrow();
             personal.made_here(personal.read().as_deref(), workspace)
         });
-        (founding && !borrowed.contains(&workspace)).then(|| self.person.clone())
+        founding.then(|| self.person.clone())
     }
 
     /// Open a listed workspace on this session, named `name` , through the session's own action for
@@ -1192,8 +1150,6 @@ impl crate::Shared {
             if self.holds(workspace) {
                 return Err("This workspace is already on this device.".into());
             }
-        } else if let Some(personal) = &self.personal {
-            personal.borrow_mut().joined(workspace);
         }
         self.redeem_invitation(joined);
         Ok(())
@@ -1284,10 +1240,7 @@ impl crate::Shared {
                 };
                 joins.borrow_mut().push(tilo_session_client::Enrolled {
                     workspace_id: workspace,
-                    member: false,
-                    name: None,
                     result,
-                    held: false,
                 });
             });
     }
@@ -1337,16 +1290,13 @@ impl crate::Shared {
             });
             // The name the workspace goes by: the one its own governance gives it, which this
             // device holds the moment its host admits it — every device and list of the workspace
-            // reads that one name, and the shell shows it. Until then the name the person's list
-            // gave it, or the site listed it under, says which workspace is meant: a join that is
+            // reads that one name, and the shell shows it. Until then the name the site listed it
+            // under says which workspace is meant: a join that is
             // refused says which workspace stayed away the same way, and one nothing has named is
             // the shell's own word for a workspace, never the id it is numbered by.
             let listed = self
                 .listed_name(enrolled.workspace_id)
-                .or_else(|| match &enrolled.name {
-                    Some(name) => Some(name.clone()),
-                    None => self.directory_store.listed_name(&key),
-                })
+                .or_else(|| self.directory_store.listed_name(&key))
                 .or(named_on_shell)
                 .map_or_else(
                     || tilo_session_core::desktop::names::workspace(""),
@@ -1358,16 +1308,9 @@ impl crate::Shared {
                         target: JOIN_FLOW_TARGET,
                         workspace = %key,
                         name = %listed,
-                        member = enrolled.member,
                         outcome = "enrolled",
                         "join: the host admitted this device and the workspace is held here"
                     );
-                    // A compact link's workspace id is only a routing hint until admission.
-                    if !enrolled.member
-                        && let Some(personal) = &self.personal
-                    {
-                        personal.borrow_mut().joined(enrolled.workspace_id);
-                    }
                     // The workspace's live session opens now, not when a key of some workspace
                     // next moves here: where this session takes part in the peer network.
                     if let Some(sync) = self.sync.as_deref() {
@@ -1376,23 +1319,10 @@ impl crate::Shared {
                     // The workspace is put on the shell now, once the host admitted this
                     // device: the person lands in the workspace they joined,
                     // and the session a refused join left is the session it found.
-                    // One of their own that their list brought from another
-                    // device is put on the shell behind what they are doing.
-                    let arrival = if enrolled.member {
-                        Arrival::Listed
-                    } else {
-                        Arrival::Joined
-                    };
-                    self.open_joined_workspace(&key, &listed, arrival);
-                    if !enrolled.member {
-                        // The person is told the workspace is theirs now,
-                        // where they are: the sheet closed as soon as they
-                        // chose Join, and this is what became of it. A
-                        // workspace of the person's own was on no sheet: it
-                        // arrived on the shell where their list says it
-                        // belongs.
-                        crate::directory::joined_notice(&*self.telling(), &listed);
-                    }
+                    self.open_joined_workspace(&key, &listed, Arrival::Joined);
+                    // The person is told the workspace is theirs now, where they are: the sheet
+                    // closed as soon as they chose Join, and this is what became of it.
+                    crate::directory::joined_notice(&*self.telling(), &listed);
                 }
                 // This computer could not take the workspace in: nothing was
                 // refused, so the workspace it made for the join stays and
@@ -1425,9 +1355,6 @@ impl crate::Shared {
                     // where they are now.
                     tracing::warn!(%key, %error, "a workspace was not joined");
                 }
-            }
-            if enrolled.member {
-                continue;
             }
             let said = enrolled
                 .result
@@ -1611,20 +1538,7 @@ impl crate::Shared {
                 |view| listed_by_daemon(view, &person),
             )
         };
-        // A workspace whose governance names the person its owner is theirs, however it came to
-        // this device: a computer restored from their words that joins their own workspace — their
-        // site's — has a workspace already, and the shell's own is taken off rather than founded
-        // beside it.
-        let owned: BTreeSet<WorkspaceId> = view.map_or_else(BTreeSet::new, |view| {
-            held.iter()
-                .copied()
-                .filter(|workspace| {
-                    view.owner_of(&workspace.to_string())
-                        .is_ok_and(|owner| owner == self.person || self.earlier.contains(&owner))
-                })
-                .collect()
-        });
-        personal.settle_seed(&self.handle, list, &held, listed.as_ref(), &owned);
+        personal.settle_seed(&self.handle, list, &held, listed.as_ref());
     }
 
     /// Show one of the person's workspaces their list shows here once the device's daemon holds it:
@@ -1996,7 +1910,7 @@ mod tests {
         let settle = |personal: &mut Personal,
                       view: Option<&crate::workspace_view::WorkspaceView>| {
             let listed = view.and_then(|view| listed_by_daemon(view, &person));
-            personal.settle_seed(&shell, &list, &[], listed.as_ref(), &BTreeSet::new())
+            personal.settle_seed(&shell, &list, &[], listed.as_ref())
         };
 
         // The part has not served: nothing says what the person has, so the shell's own
@@ -2279,32 +2193,6 @@ mod tests {
             "nothing refused is sent again"
         );
         assert_eq!(pass(&mut laptop, &laptop_shell).refused, None);
-    }
-
-    /// A workspace the person joined on one device through someone's invitation is that person's
-    /// workspace, not theirs: each device of theirs joins it on its own, so their list never names
-    /// it, also when the session starts again and nothing remembers the join but the workspace
-    /// itself, which says it is hosted at the device that let them in.
-    #[test]
-    fn a_workspace_joined_through_someones_invitation_is_never_listed() {
-        let person = Person::start();
-        let laptop_shell = session();
-        let mut laptop = person.device(0x21, "The laptop");
-        pass(&mut laptop, &laptop_shell);
-        let club = WorkspaceId::new();
-        laptop.joined(club);
-        open_here(&laptop_shell, club, "Book club");
-        pass(&mut laptop, &laptop_shell);
-        assert!(!names(&laptop, club), "a joined workspace is not listed");
-
-        // The session starts again: where the workspace is held says it is hosted by the device
-        // of the person who let them in, as this device's workspace service reads it.
-        let mut laptop = person.device(0x21, "The laptop");
-        laptop.hosts.insert(club, key(0x33));
-        let adoption = pass(&mut laptop, &laptop_shell);
-        assert!(!names(&laptop, club), "nor after a restart");
-        assert!(adoption.release.is_empty(), "and it stays on the shell");
-        assert!(on_shell(&laptop_shell).contains(&club));
     }
 
     /// A device the person never named shows no name of its own, and names none to their others.

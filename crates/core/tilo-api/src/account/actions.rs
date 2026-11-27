@@ -70,7 +70,7 @@ pub enum WorkspaceAction {
         #[param("The workspace, by id, as account/workspaces#list names it.")]
         workspace: String,
     },
-    /// Stop keeping a workspace on this device
+    /// Leave a workspace
     #[effect(kind = "outside")]
     Leave {
         #[param("The workspace, by id, as account/workspaces#list names it.")]
@@ -104,8 +104,6 @@ pub enum WorkspaceAction {
         sealed_with: Option<String>,
         #[param("Each file of the desktop's key groups by name, its bytes in hex.")]
         groups: Option<Map<String, Value>>,
-        #[param("The workspaces it took part in: {workspace, name, hint?}.")]
-        workspaces: Option<Vec<Value>>,
         #[param(
             secret,
             "What its own workspace service administered, with the key it wrote under."

@@ -44,8 +44,8 @@ pub mod network;
 pub mod presence;
 /// This session's presence tracks, as a member's client says on them.
 pub mod saying;
-pub mod speakers;
 pub mod session;
+pub mod speakers;
 pub mod states;
 pub mod surfaces;
 pub mod way_in;
@@ -126,13 +126,6 @@ impl From<tilo_peer_state::owner::InstallError> for EnrollFailure {
 #[derive(Debug)]
 pub struct Enrolled {
     pub workspace_id: tilo_desktop_model::WorkspaceId,
-    /// Whether this device entered one of the person's own workspaces as their further device,
-    /// rather than redeeming an invitation into someone's.
-    pub member: bool,
-    /// The name the person's list gave it, when it was entered from there.
-    pub name: Option<String>,
     /// `Ok` once this device holds the workspace and takes part in it.
     pub result: Result<(), EnrollFailure>,
-    /// The entry was for a workspace already on this layout.
-    pub held: bool,
 }

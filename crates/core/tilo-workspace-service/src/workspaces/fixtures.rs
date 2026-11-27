@@ -1616,13 +1616,30 @@ pub async fn invitation(
     seed: u8,
     recipient: &DeviceCert,
 ) -> String {
+    let owner = SigningKey::from_bytes(&[1; 32]);
+    invitation_by(&owner, serving, serving_cert, workspace, seed, recipient).await
+}
+
+/// [`invitation`] into a workspace `owner` owns, who grants it.
+pub async fn invitation_by(
+    owner: &SigningKey,
+    serving: &TestHost,
+    serving_cert: &DeviceCert,
+    workspace: &str,
+    seed: u8,
+    recipient: &DeviceCert,
+) -> String {
+    use ed25519_dalek::Signer as _;
+    let mut grant = signed_pre_admission(workspace, &[seed; 8]);
+    grant.owner_user_public_key = owner.verifying_key().to_bytes();
+    grant.signature = owner.sign(&grant.digest().unwrap()).to_bytes();
     let issued = serving
         .workspaces()
         .pre_admit(
             serving_cert,
             PreAdmitRequest {
                 request_id: [seed; 32],
-                grant: signed_pre_admission(workspace, &[seed; 8]),
+                grant,
                 recipient_user_public_key: Some(recipient.user_public_key),
                 inviter_name: None,
             },

@@ -680,7 +680,7 @@ impl Workspaces {
         invitation: &str,
         name: Option<&str>,
     ) -> Result<WorkspaceId, String> {
-        let _entering = self.inner.member.entering.lock().await;
+        let one_join = self.inner.member.entering.lock().await;
         let device = self.member_identity()?;
         holds_copies(&device.cert)?;
         let now_ns = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
@@ -744,19 +744,25 @@ impl Workspaces {
         if bootstrap.workspace_id != workspace {
             return Err("the device admitted this to another workspace".into());
         }
-        // The person's own computer asked for this join when it redeemed the invitation: theirs
-        // to write into their list.
-        let joined = self.hold_member(&device, &bootstrap, &hint, true).await?;
         let name = name
             .or_else(|| join.grant().invitee_name.as_deref())
             .map(str::trim)
             .filter(|name| !name.is_empty());
+        // The person's own computer asked for this join when it redeemed the invitation: it is
+        // theirs on every device, listed, and each one's follower of the list takes it in, this
+        // one's too. A device with no list to follow holds what the host answered itself.
+        let joined = if self.takes_in_by_list(&workspace.to_string()).await {
+            drop(one_join);
+            self.take_in_joined(workspace, &hint).await
+        } else {
+            self.hold_member(&device, &bootstrap, &hint).await
+        };
         if let Some(name) = name
-            && let Err(why) = self.name_at(&address.endpoint_addr, joined, name).await
+            && let Err(why) = self.name_at(&address.endpoint_addr, workspace, name).await
         {
             tracing::debug!(%why, "the person is not named in the workspace they joined");
         }
-        Ok(joined)
+        joined
     }
 
     /// The join's second exchange: this device's proof of possession and the admission it signed,
@@ -827,25 +833,6 @@ impl Workspaces {
         }
     }
 
-    /// Hold the workspace `bootstrap` answers as a member copy, synced with the device `hint`
-    /// names: what this device's session hands its service once the serving device admitted this
-    /// device, by an invitation, an entry or as a further device of the person. Answers the
-    /// workspace.
-    ///
-    /// # Errors
-    ///
-    /// This service acts as no device, the address `hint` carries is not the workspace's, this
-    /// device's own service serves the workspace, or the copy could not be kept.
-    pub async fn join_admitted(
-        &self,
-        bootstrap: &JoinBootstrap,
-        hint: &TransportHint,
-    ) -> Result<WorkspaceId, String> {
-        let device = self.member_identity()?;
-        holds_copies(&device.cert)?;
-        self.hold_member(&device, bootstrap, hint, false).await
-    }
-
     /// Hold `workspace`, which this device is a member of, as a member copy synced with the
     /// device `hint` names: this device proves its membership there and takes the workspace as
     /// that device answers it. What a device's session asks for each workspace it takes part in
@@ -854,8 +841,9 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// As [`Self::join_admitted`], or the device `hint` names refuses this device's membership or
-    /// cannot be reached.
+    /// This service acts as no device, the address `hint` carries is not the workspace's, this
+    /// device's own service serves the workspace, the device `hint` names refuses this device's
+    /// membership or cannot be reached, or the copy could not be kept.
     pub async fn hold_as_member(
         &self,
         workspace: WorkspaceId,
@@ -899,7 +887,7 @@ impl Workspaces {
         let bootstrap = self
             .prove_own(&device, &address.endpoint_addr, workspace)
             .await?;
-        self.hold_member(&device, &bootstrap, hint, false).await
+        self.hold_member(&device, &bootstrap, hint).await
     }
 
     /// Prove `device`'s membership of `workspace` at the device serving it at `host`: what it
@@ -970,7 +958,6 @@ impl Workspaces {
         device: &MemberDevice,
         bootstrap: &JoinBootstrap,
         hint: &TransportHint,
-        asked: bool,
     ) -> Result<WorkspaceId, String> {
         holds_copies(&device.cert)?;
         if self.stopped() {
@@ -1105,20 +1092,11 @@ impl Workspaces {
         self.inner.executions.fence(workspace);
         self.inner.member.held.notify_waiters();
         tracing::info!(%name, workspace_id = %workspace, "holding a workspace this device joined as a member");
-        // Their list names what they asked to be in and what is theirs: a join their own device
-        // redeemed an invitation for (`asked`), or a workspace a site made for them and handed
-        // to them as its owner. Any other join — one another person's agent or API made for them,
-        // or a workspace their session entered without their asking — is not listed. The record
-        // is written where their own workspace is hosted; a site that made a workspace writes
-        // nothing of theirs.
-        // Their list names what they asked to be in and what is theirs: a join their own device
-        // redeemed an invitation for (`asked`), or a workspace a site made for them and handed
-        // to them as its owner. Any other join — one another person's agent or API made for them,
-        // or a workspace their session entered without their asking — is not listed. The record
-        // is written where their own workspace is hosted; a site that made a workspace writes
-        // nothing of theirs.
+        // A workspace a site made for them and handed to them as its owner is theirs: listed. One
+        // they joined was listed before it was taken in ([`Self::take_in_joined`]), and any other
+        // — one another person's agent or API made for them — is not.
         if taken_in
-            && (asked || theirs)
+            && theirs
             && let Ok(summary) = self.summary(&name).await
         {
             self.list_for(

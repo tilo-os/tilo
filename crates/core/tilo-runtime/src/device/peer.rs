@@ -3,8 +3,8 @@
 //!
 //! The device `tilo login` made runs its own workspace service, which holds
 //! each of the person's workspaces as a member copy ([`super::workspaces`]),
-//! synced with the device that keeps it. The person's list of workspaces, and
-//! where to enter one this device does not keep yet, come from their server's
+//! synced with the device that keeps it; the service's follower of the person's
+//! list takes each in. Which folders to show come from their server's
 //! account ([`super::account`]), which this peer follows ([`Peer::keep`]). In
 //! that copy this device holds each workspace's
 //! file tree, the Files app's record ([`tree`]), with the bytes its files are
@@ -24,7 +24,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ed25519_dalek::SigningKey;
 use serde::Serialize;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
@@ -70,8 +69,6 @@ struct Listed {
     /// its workspace's name, never its id.
     name: Option<String>,
     role: Option<String>,
-    /// Where it is entered, when the list names it.
-    entered_at: Option<tilo_peer_state::join::TransportHint>,
 }
 
 /// The person's account at their server as it is now: `None` once the daemon that keeps it is
@@ -101,30 +98,12 @@ pub(crate) struct Peer {
     connected: std::sync::atomic::AtomicBool,
     /// Why a workspace is not shown, by workspace.
     failed: std::sync::Mutex<Vec<(String, String)>>,
-    /// The workspaces this device could not enter, and when each is tried again: a workspace
-    /// whose server does not answer is not asked again at every look, each of which would wait
-    /// for it while no folder is added, moved or removed.
-    unentered: std::sync::Mutex<std::collections::HashMap<WorkspaceId, Unentered>>,
     /// Why each workspace's files were last said in the log not to be shown here: a look that
     /// fails the same way again says nothing more, so a folder that cannot be mounted here is
     /// told once, not every few seconds for as long as the device runs.
     told: std::sync::Mutex<std::collections::HashMap<WorkspaceId, String>>,
 }
 
-/// A workspace this device could not enter: why, how often in a row, and when it is tried again.
-struct Unentered {
-    why: String,
-    tries: u32,
-    next: Instant,
-}
-
-/// The longest one attempt to enter a workspace is waited for: its server's answer, and following
-/// what it started, otherwise take minutes when the server does not answer.
-const ENTERING_ONE: Duration = Duration::from_secs(30);
-/// How long a workspace that could not be entered waits before it is tried again, the first
-/// time: twice as long after each attempt in a row that failed, up to [`ENTERED_AT_MOST_EVERY`].
-const ENTERED_AGAIN_AFTER: Duration = Duration::from_secs(30);
-const ENTERED_AT_MOST_EVERY: Duration = Duration::from_secs(600);
 /// How long a read waits for content the workspace is asked for.
 const CONTENT_WAIT: Duration = Duration::from_secs(20);
 /// How often the folders look at `tilo folders` again, and a server not reached is asked again.
@@ -168,7 +147,6 @@ impl Peer {
             listed: tokio::sync::Mutex::new(None),
             connected: std::sync::atomic::AtomicBool::new(false),
             failed: std::sync::Mutex::new(Vec::new()),
-            unentered: std::sync::Mutex::new(std::collections::HashMap::new()),
             told: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
@@ -187,7 +165,6 @@ impl Peer {
                 workspace,
                 name: Some(name).filter(|name| !name.trim().is_empty()),
                 role: None,
-                entered_at: None,
             })
             .collect();
         (kept, false)
@@ -204,7 +181,6 @@ impl Peer {
         own: Arc<ServiceWorkspaces>,
         accounts: impl Fn() -> Accounts + Send,
         login: Arc<super::home::Home>,
-        key: SigningKey,
     ) {
         let person = own.device_cert().user_public_key;
         loop {
@@ -238,7 +214,7 @@ impl Peer {
                     *super::serve::NOT_IN.lock_recover() = Some(why);
                 }
             }
-            Box::pin(self.reconcile(&own, &login, &key)).await;
+            Box::pin(self.reconcile(&own, &login)).await;
             tokio::time::sleep(PEER_LOOK).await;
         }
     }
@@ -254,7 +230,6 @@ impl Peer {
                     workspace: WorkspaceId::parse(&entry.workspace)?,
                     name: Some(entry.name.clone()).filter(|name| !name.trim().is_empty()),
                     role: entry.role.clone(),
-                    entered_at: entry.entered_at().ok(),
                 })
             })
             .collect()
@@ -263,18 +238,11 @@ impl Peer {
     /// Show the folders [`folders`] names, and no other: offer a folder to
     /// each workspace that has none yet, then mount, move, pause and remove as
     /// the person set them. Each folder's tree is held in `own`, this device's
-    /// own workspace service; a workspace it does not keep yet is entered
-    /// where the list, or `account`, names.
-    pub(crate) async fn reconcile(
-        &self,
-        own: &ServiceWorkspaces,
-        login: &super::home::Home,
-        key: &SigningKey,
-    ) {
+    /// own workspace service, which takes in a workspace it does not keep yet.
+    pub(crate) async fn reconcile(&self, own: &ServiceWorkspaces, login: &super::home::Home) {
         let (mut listed, complete) = self.listed(own).await;
-        // The workspace this computer's login names is entered even when the person's list
-        // does not name it yet: the login entry alone says where it is kept, as it says where to
-        // enter before any copy of the person's own workspace names the same server.
+        // The workspace this computer's login names is shown even when the person's list does
+        // not name it yet: the login entered it before any copy of the person's own workspace.
         if let Some(entered) = login.get().await
             && let Some(workspace) = WorkspaceId::parse(&entered.workspace)
             && !listed.iter().any(|entry| entry.workspace == workspace)
@@ -284,7 +252,6 @@ impl Peer {
                 workspace,
                 name: entered.workspace_name.clone(),
                 role: None,
-                entered_at: None,
             });
         }
         let mut wanted = match folders::Folders::load(&self.device_dir) {
@@ -349,18 +316,16 @@ impl Peer {
             }
         }
         self.failed.lock().map(|mut failed| failed.clear()).ok();
-        self.show_listed(own, &listed, &wanted, login, key).await;
+        self.show_listed(own, &listed, &wanted).await;
     }
 
-    /// Show each folder `listed` names: pause it as the person set it, enter the workspace where
-    /// it is kept, and say why one is not shown. A workspace with no folder waits for its name.
+    /// Show each folder `listed` names: pause it as the person set it, and say why one is
+    /// not shown. A workspace with no folder waits for its name.
     async fn show_listed(
         &self,
         own: &ServiceWorkspaces,
         listed: &[Listed],
         wanted: &folders::Folders,
-        login: &super::home::Home,
-        key: &SigningKey,
     ) {
         for entry in listed {
             let id = entry.workspace.to_string();
@@ -387,7 +352,7 @@ impl Peer {
             if shown {
                 continue;
             }
-            if let Err(why) = Box::pin(self.enter(own, entry, login, key)).await {
+            if let Err(why) = Self::entered(own, entry.workspace).await {
                 self.not_shown(entry.workspace, &why);
                 continue;
             }
@@ -424,87 +389,23 @@ impl Peer {
         }
     }
 
-    /// Have `own` keep `entry`'s workspace, entering it as a member copy where the person's list
-    /// says it is kept, else through the server this computer's login names: the login entry
-    /// alone is enough to enter, before any listing names where a workspace is kept. Waiting at
-    /// most [`ENTERING_ONE`]; why not, when it was not entered. A workspace that could not be
-    /// entered is tried again only once its wait is over, and until then answers why it was not.
-    async fn enter(
-        &self,
-        own: &ServiceWorkspaces,
-        entry: &Listed,
-        login: &super::home::Home,
-        key: &SigningKey,
-    ) -> Result<(), String> {
-        let workspace = entry.workspace;
+    /// Whether `own` holds `workspace`, which this device's follower of the person's list takes
+    /// in: why not, as the follower says, until it does.
+    async fn entered(own: &ServiceWorkspaces, workspace: WorkspaceId) -> Result<(), String> {
         if own.keeps(workspace).await {
             return Ok(());
         }
-        let now = Instant::now();
-        if let Some(unentered) = self
-            .unentered
-            .lock_recover()
-            .get(&workspace)
-            .filter(|unentered| now < unentered.next)
-        {
-            return Err(format!(
-                "{}; tried again in {}s",
-                unentered.why,
-                unentered
-                    .next
-                    .saturating_duration_since(now)
-                    .as_secs()
-                    .max(1)
-            ));
-        }
-        let entering = async {
-            let Some(hint) = entry.entered_at.clone() else {
-                // The login entry alone says where the person's workspaces are entered: with no
-                // hint from the person's list yet, this computer enters this workspace through
-                // the login's server, as a member that takes work does.
-                let mut login = login.get().await.ok_or(
-                    "this computer's login names nowhere to enter your workspaces from yet",
-                )?;
-                if login.workspace != workspace.to_string() {
-                    login.workspace = workspace.to_string();
-                    login.workspace_name.clone_from(&entry.name);
-                }
-                return Box::pin(super::take_work::enter_from_login(own, key, &login)).await;
-            };
-            own.copies()
-                .hold_as_member(workspace, &hint)
-                .await
-                .map(drop)
-        };
-        let why = match tokio::time::timeout(ENTERING_ONE, Box::pin(entering)).await {
-            Ok(Ok(())) => {
-                self.unentered.lock_recover().remove(&workspace);
-                return Ok(());
-            }
-            Ok(Err(refusal)) => format!("not entered: {refusal}"),
-            Err(_) => format!(
-                "not entered: the workspace's server did not answer within {}s",
-                ENTERING_ONE.as_secs()
-            ),
-        };
-        let tries = self
-            .unentered
-            .lock_recover()
-            .get(&workspace)
-            .map_or(1, |unentered| unentered.tries.saturating_add(1));
-        let wait = ENTERED_AGAIN_AFTER
-            .saturating_mul(2_u32.saturating_pow(tries.saturating_sub(1).min(16)))
-            .min(ENTERED_AT_MOST_EVERY);
-        tracing::warn!(%workspace, why, tries, again_in = wait.as_secs(), "a workspace's files are not shown here");
-        self.unentered.lock_recover().insert(
-            workspace,
-            Unentered {
-                why: why.clone(),
-                tries,
-                next: Instant::now().checked_add(wait).unwrap_or(now),
-            },
-        );
-        Err(why)
+        let id = workspace.to_string();
+        let why = own
+            .copies()
+            .not_here()
+            .into_iter()
+            .find(|missing| missing.workspace == id)
+            .map_or_else(
+                || "it is on its way to this device".to_owned(),
+                |missing| missing.why,
+            );
+        Err(format!("not on this device yet: {why}"))
     }
 
     /// Hold `entry`'s files at `at`, their tree in `own`'s copy of the workspace.
