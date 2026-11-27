@@ -78,11 +78,24 @@ impl UsedApp {
     /// Hand `runtime` the reading of `id`, a resource of type `ty`. A resource the store does
     /// not hold (yet) is left reading as it would start. Whether its reading changed.
     fn hand(&self, runtime: &Runtime, id: &str, ty: &str) -> bool {
-        let Some(reading) = reading_of(&self.host, id) else {
+        // The view asked by the resource's own id (`root-<type>`, `root-<type>/<item>`), or by
+        // the address a named root of another app is read as (`tl:<app>:<id>`): the store reads
+        // its fields from that app's published address either way.
+        let address = if id.starts_with("tl:") {
+            id.to_owned()
+        } else {
+            crate::naming::resource_id(&self.app, id)
+        };
+        let Some(reading) = reading_of(&self.host, &address) else {
             return false;
         };
-        let Some(target) = ResourceRef::parse_id(id, ty.to_owned()) else {
-            return false;
+        // Kept under the id the view asked by, never one parsed out of it: a reading held under
+        // another key is one that view never looks at, and the place it draws stays as its type
+        // starts.
+        let target = ResourceRef {
+            doc: id.to_owned(),
+            item: None,
+            ty: ty.to_owned(),
         };
         runtime
             .set_reading(&target, &reading.to_string())
