@@ -608,9 +608,26 @@ impl Workspaces {
         // every frame the link admits from here on is this reader's, and what
         // the replica held before is not read again.
         let mut reader = link.reader();
+        let (follower, mut asked) = tokio::sync::mpsc::unbounded_channel();
+        self.inner
+            .followers
+            .lock_recover()
+            .insert(name.clone(), follower);
         tokio::spawn(async move {
-            // The link is gone: nothing more comes through it.
-            while let Some(frame) = reader.recv().await {
+            loop {
+                // An ask is answered only while no frame waits: every frame told before it is in.
+                let frame = tokio::select! {
+                    biased;
+                    frame = reader.recv() => frame,
+                    Some(ask) = asked.recv() => {
+                        let _ = ask.send(());
+                        continue;
+                    }
+                };
+                // The link is gone: nothing more comes through it.
+                let Some(frame) = frame else {
+                    return;
+                };
                 // The host this link served is gone: so is the answer.
                 let Some(workspaces) = workspaces.upgrade() else {
                     return;
@@ -672,6 +689,22 @@ impl Workspaces {
                 }
             }
         });
+    }
+
+    /// Wait until the follower of `workspace`'s link took in every frame the link told it so far:
+    /// what this device's copy reads holds them then. At once for a workspace this device serves
+    /// no link of.
+    pub(super) async fn followed(&self, workspace: &str) {
+        let (ask, answer) = tokio::sync::oneshot::channel();
+        let asked = self
+            .inner
+            .followers
+            .lock_recover()
+            .get(workspace)
+            .is_some_and(|follower| follower.send(ask).is_ok());
+        if asked {
+            let _ = answer.await;
+        }
     }
 }
 

@@ -836,6 +836,8 @@ impl Workspaces {
             .link(workspace_id)
             .ok_or("no link serves the workspace on this device")?;
         link.take_frames(frames).await?;
+        // Kept is read: whoever asks the copy here once this answers reads the round.
+        self.followed(workspace).await;
         Ok(true)
     }
 

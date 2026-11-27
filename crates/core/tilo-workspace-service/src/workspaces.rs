@@ -1066,6 +1066,9 @@ type HandOnEnded = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
 /// the workspace: the round they belong to, and its bytes.
 type FramesArriving = HashMap<([u8; 32], String), (String, Vec<u8>)>;
 
+/// Where a served workspace's follower is asked to answer once it took in what its link told it.
+type Follower = tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>;
+
 struct WorkspacesInner {
     /// What a crate built on these workspaces keeps beside them while they live, one value of
     /// each type ([`Workspaces::kept`]).
@@ -1113,6 +1116,9 @@ struct WorkspacesInner {
     /// What devices handing a workspace over sent of a round of its frames so far
     /// ([`Workspaces::take_frames_from`]), by the device and the upload it named.
     frames_arriving: std::sync::Mutex<FramesArriving>,
+    /// What each served workspace's follower answers once it took in every frame its link told
+    /// it before the ask ([`Workspaces::followed`]), by the workspace.
+    followers: std::sync::Mutex<HashMap<String, Follower>>,
     /// Whether this service takes no handed frames in, as a build before the hand-over carried
     /// them does not ([`Workspaces::take_no_frames`]).
     #[cfg(any(test, feature = "test-support"))]
@@ -1694,6 +1700,7 @@ impl Workspaces {
                 revoked: std::sync::RwLock::default(),
                 live: std::sync::OnceLock::new(),
                 frames_arriving: std::sync::Mutex::default(),
+                followers: std::sync::Mutex::default(),
                 #[cfg(any(test, feature = "test-support"))]
                 takes_no_frames: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(any(test, feature = "test-support"))]
