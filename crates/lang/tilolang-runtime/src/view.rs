@@ -127,6 +127,15 @@ impl UiNode {
         })
     }
 
+    /// The node whose children hold the node `key`, searching the whole tree: what a part of a
+    /// control stands in (a case of an enum field), which edits the control it belongs to.
+    pub fn parent_of(&self, key: &str) -> Option<&Self> {
+        if self.children.iter().any(|child| child.key == key) {
+            return Some(self);
+        }
+        self.children.iter().find_map(|child| child.parent_of(key))
+    }
+
     /// Every node of `kind` in the subtree, this one included, in the order the tree holds them.
     pub fn of_kind(&self, kind: &str) -> Vec<&Self> {
         let mut out = Vec::new();

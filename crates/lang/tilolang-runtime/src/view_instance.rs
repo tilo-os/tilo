@@ -15,9 +15,9 @@ use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
     ANSWER_ACTION, BLUR_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
-    CHOOSE_FOLDER_ACTION, CLOSE_ACTION, COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION,
-    MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION,
-    SHORTCUT_ACTION, UNDO_ACTION,
+    CHOOSE_CASE_ACTION, CHOOSE_FOLDER_ACTION, CLOSE_ACTION, COPY_LINK_ACTION, EXPORT_ACTION,
+    KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION,
+    SET_ACTION, SHORTCUT_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -623,6 +623,11 @@ impl ViewInstance {
                 "the action of event `{event}` on `{key}`"
             )));
         };
+        // A case's field is the node the case stands in, which only the press names: the action
+        // takes the pressed node before the case it was built with.
+        if aref.action == CHOOSE_CASE_ACTION {
+            aref.args.insert(0, Value::Text(key.to_owned()));
+        }
         fill_event(&mut aref, value, held).map_err(|()| {
             RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
         })?;
@@ -1084,6 +1089,7 @@ impl ViewInstance {
             REVIEW_ACTION => self.review_mark(aref),
             UNDO_ACTION => self.undo_step(aref),
             MARK_SEEN_ACTION => self.mark_seen(aref),
+            CHOOSE_CASE_ACTION => self.choose_case(aref),
             THEN_ACTION => self.run_then(aref, gesture),
             SHORTCUT_ACTION => self.platform_shortcut(aref, gesture),
             ANSWER_ACTION => self.answer_steps(aref, gesture),
@@ -1236,6 +1242,30 @@ impl ViewInstance {
             self.events.borrow_mut().push(ViewEvent::Seen { count });
         }
         Ok(InvokeOutcome::Done(Value::Unit))
+    }
+
+    /// The case option a person pressed: the field it belongs to takes the case, through the
+    /// binding the window's own pick writes.
+    fn choose_case(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::Text(option), Value::Text(case)] = aref.args.as_slice() else {
+            return Err(RuntimeError::BadArgs("a malformed case choice".into()));
+        };
+        let field = self
+            .tree()
+            .parent_of(option)
+            .map(|field| field.key.clone())
+            .ok_or_else(|| {
+                RuntimeError::NotFound(format!("the field the case `{option}` belongs to"))
+            })?;
+        Ok(match self.edit(&field, &Value::text(case.as_str()))? {
+            EditOutcome::Applied => InvokeOutcome::Done(Value::Unit),
+            EditOutcome::Denied => InvokeOutcome::Denied,
+            EditOutcome::NeedsApproval => {
+                return Err(RuntimeError::BadArgs(
+                    "the person must allow this change first".into(),
+                ));
+            }
+        })
     }
 
     fn run_then(
@@ -1733,18 +1763,25 @@ impl ViewInstance {
     ///
     /// A window sends what a person typed into a field of the item they typed it in, and the
     /// app lays it over that item's text, never over the text of whatever the page shows when
-    /// the typing arrives.
+    /// the typing arrives. A control the view draws for a record held inside the item it shows
+    /// (a form of a draft, kept in the document's own record) edits that record's field: the
+    /// text it holds is read where the edit lands, not from the document the window named.
     pub fn text_shown(&self, key: &str, target: &ResourceRef) -> Option<String> {
         let node = self.live.find(key)?;
         let binding = node.binding.clone().or_else(|| self.begun_binding(key))?;
-        let Some((_, field)) = binding.field() else {
+        let Some((bound, field)) = binding.field() else {
             return match self.bound_value(key)? {
                 Value::Text(text) => Some(text),
                 _ => None,
             };
         };
-        let (_, f) = self.bound_field(target, field).ok()?;
-        match self.core.read_value(target, &f, None).ok()? {
+        let at = if self.bound_field(target, field).is_ok() {
+            target
+        } else {
+            bound
+        };
+        let (_, f) = self.bound_field(at, field).ok()?;
+        match self.core.read_value(at, &f, None).ok()? {
             Value::Text(text) => Some(text),
             _ => None,
         }

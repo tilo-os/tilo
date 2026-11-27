@@ -11648,6 +11648,13 @@
           }
         }
       ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "It was pressed: the field takes the case it names.",
+          "press": true
+        }
+      ],
       "semantics": {
         "role": "MenuItem",
         "label": "label",

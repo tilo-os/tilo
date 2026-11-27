@@ -38,6 +38,11 @@ pub const APPS: [&str; 9] = [
     "scratchpad",
 ];
 
+/// The apps a test installs into a session of its own, beside [`APPS`]: no development session
+/// starts them, and a session a test gave one opens it as a person's device opens an app it
+/// installed ([`install_extra`]).
+pub const EXTRA: [&str; 1] = ["shortcuts"];
+
 /// The tree's `apps/tl` .
 fn packages() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl")
@@ -211,7 +216,7 @@ fn build_into(dir: &Path) {
     let out = dir.join("tapps");
     let publisher = tilolang_cli::identity_at(&dir.join(PUBLISHER)).expect("a publisher key");
     let mut apps: Vec<(String, String)> = Vec::new();
-    for app in APPS {
+    for app in APPS.into_iter().chain(EXTRA) {
         // A build writes the package's ids lock and source catalogue, so the tree's own copy is
         // never built: a scratch copy of the package and of the packages it uses.
         let dirs = tilolang_cli::package_dirs(&packages().join(app), &[packages()])
@@ -284,8 +289,16 @@ fn build_into(dir: &Path) {
 /// # Panics
 /// A package does not compile, the store refuses one, or a file cannot be written.
 pub fn install(store: &Path, _scratch: &Path) -> Vec<String> {
-    let all: Vec<&str> = built().apps.iter().map(|(app, _)| app.as_str()).collect();
-    install_named(store, &all)
+    install_named(store, &APPS)
+}
+
+/// Install the apps [`EXTRA`] names, built from this tree into signed `.tapp`s ([`built`]), into
+/// the app store under `store`: a session a test gave one opens it as it opens any installed app.
+///
+/// # Panics
+/// A package does not compile, the store refuses one, or a file cannot be written.
+pub fn install_extra(store: &Path) -> Vec<String> {
+    install_named(store, &EXTRA)
 }
 
 /// The signed package of `app`, by its package id, as this run built it ([`built`]): what a

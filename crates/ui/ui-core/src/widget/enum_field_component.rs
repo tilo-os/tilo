@@ -2,7 +2,9 @@
 
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::widget::Tone;
-use tilo_ui_base::{component::Bound, component::Component, component::Described};
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+};
 
 use super::{EnumField, field};
 use tilo_ui_base::widget::binding::derived;
@@ -28,6 +30,9 @@ pub struct EnumOptionProps {
     pub icon: Option<Icon>,
     /// The tone the case reads in: what the chip is washed in.
     pub tone: Tone,
+    /// It was pressed: the field takes the case it names.
+    #[component(event(press))]
+    pub press: Event,
 }
 
 /// A value among an enum's cases: the case it holds, as a chip in the case's glyph and

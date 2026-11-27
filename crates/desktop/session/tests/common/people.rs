@@ -2295,6 +2295,13 @@ impl Device {
         super::dev_apps::install_named(&self.store(), &["so.tilo.passwords"]);
     }
 
+    /// Install Shortcuts in this device's store, as a device with the app installed has it: the
+    /// tilolang package this run built, which no development session starts.
+    pub fn install_shortcuts(&self) {
+        super::dev_apps::install_extra(&self.store());
+        super::dev_apps::install_runtimes(&self.store().join("runtimes"));
+    }
+
     /// Install Chat in this device's store, as a device its person installed it on has it, with
     /// the runtimes its window starts on: a second device of a workspace sends a message through
     /// Chat's action here, without seeding a scenario of its own into the workspace.

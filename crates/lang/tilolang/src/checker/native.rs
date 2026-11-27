@@ -1516,6 +1516,9 @@ impl Checker<'_> {
             if let Some(tone) = &case.tone {
                 self.emit(prop("tone", tone));
             }
+            // The case is pressed where the view runs without a window (a test, an agent): the
+            // field takes the case through its binding, as a picked one does in the window.
+            self.emit(host(Imp::UiChoose, vec![option.clone(), Ex::str(&case.id)]));
             self.emit(host(Imp::UiChild, vec![view.clone(), option]));
         }
     }

@@ -24,6 +24,11 @@ pub const KEEP_ACTION: &str = "$keep";
 /// (empty for the default view of its type) and whether a narrow window brings it in front.
 pub const OPEN_ACTION: &str = "$open";
 
+/// The action of a pressed case of an enum field: the field the case belongs to takes it. Its
+/// argument is the case's name; the press puts the node the case stands in before it, since the
+/// key a window draws a case by is the press's, not the view's.
+pub const CHOOSE_CASE_ACTION: &str = "$choose-case";
+
 /// The action of a handler that binds an action's answer (`let id = add_box(b)`): its arguments
 /// are the action, the id of the function of the steps after the binding, and the values those
 /// steps are handed besides the answer. The steps run when the action answers, and not when it
@@ -800,6 +805,7 @@ impl Core {
             Imp::UiBind => self.ui_bind(a),
             Imp::UiBindBegin => self.ui_bind_begin(a),
             Imp::UiOn => self.ui_on(a),
+            Imp::UiChoose => self.ui_choose(a),
             Imp::UiActions => self.offer_actions(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::UiAction => self.offer_action(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::UiAnchor => {
@@ -930,6 +936,26 @@ impl Core {
                         .insert("description".to_owned(), Value::text(reason));
                 }
             }
+            Ok(())
+        })?;
+        ret_void()
+    }
+
+    /// `ui_choose`: the press of the case option `a(0)` takes the case `a(1)` into the field the
+    /// option belongs to. A window shows the cases in a menu of its own and sends the pick; where
+    /// the view runs without one (a test, an agent) the option is pressed directly.
+    fn ui_choose(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let node = self.node_index(a.h(0)?)?;
+        let case = self.text(a.h(1)?)?;
+        self.with_view(|vs| {
+            vs.nodes
+                .get_mut(node)
+                .ok_or("unknown ui node")?
+                .events
+                .insert(
+                    "press".to_owned(),
+                    Value::Action(ActionRef::new(CHOOSE_CASE_ACTION, vec![Value::Text(case)])),
+                );
             Ok(())
         })?;
         ret_void()

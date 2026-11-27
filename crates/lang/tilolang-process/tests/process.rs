@@ -60,6 +60,10 @@ mod results;
 /// Tasks in a hosted window, and Today reading Tasks' resources from the workspace's store.
 #[path = "process/tasks.rs"]
 mod tasks;
+/// A record a view keeps inside the document it shows, edited from the window: the trigger
+/// form a draft's editor draws.
+#[path = "process/trigger_form.rs"]
+mod trigger_form;
 #[path = "process/wakes.rs"]
 mod wakes;
 

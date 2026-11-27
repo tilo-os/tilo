@@ -323,6 +323,8 @@ mod tools;
 mod traditional_desktop;
 #[path = "tray.rs"]
 mod tray;
+#[path = "type_in_a_tl_app.rs"]
+mod type_in_a_tl_app;
 #[path = "unheld_workspace.rs"]
 mod unheld_workspace;
 #[path = "visual_alerts.rs"]

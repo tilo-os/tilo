@@ -86,3 +86,83 @@ fn new_shortcut_opens_the_draft_it_makes() {
     );
     labelled(view.tree(), "ui.Button", "Review and save…");
 }
+
+/// The case `label` of the case field `field`, as the press that picks it.
+fn case_of(field: &tilolang_runtime::UiNode, label: &str) -> String {
+    field
+        .children
+        .iter()
+        .find(|child| {
+            child.kind == "ui.EnumOption"
+                && matches!(
+                    child.props.get("label"),
+                    Some(tilolang_runtime::Value::Text(text)) if text == label
+                )
+        })
+        .unwrap_or_else(|| panic!("the field offers the case {label:?}: {:?}", field.children))
+        .key
+        .clone()
+}
+
+/// The trigger form is filled where no window shows its menu: the case field's case is pressed
+/// (the field takes it through its binding), the app id is typed into the form's field, and Add
+/// trigger puts the trigger in the draft, with the app the form holds.
+#[test]
+fn the_trigger_form_fills_and_adds_a_trigger() {
+    let (_host, mut view) = window();
+    for _ in 0..8 {
+        view.poll_patches().expect("the window draws");
+    }
+    let new = labelled(view.tree(), "ui.Button", "New shortcut");
+    view.press(&new).expect("a draft starts");
+    for _ in 0..16 {
+        view.poll_patches().expect("the window draws");
+    }
+    let field = labelled(view.tree(), "ui.EnumField", "What starts it");
+    let started = case_of(view.find(&field).expect("the case field"), "App opened");
+    let outcome = view.press(&started).expect("the case is pressed");
+    assert!(
+        matches!(outcome, tilolang_runtime::InvokeOutcome::Done(_)),
+        "the field takes the pressed case: {outcome:?}"
+    );
+    for _ in 0..16 {
+        view.poll_patches().expect("the window draws");
+    }
+    // The form asks for the app now, the case it took.
+    let root = view.tree().clone();
+    let input = root
+        .of_kind("ui.TextInput")
+        .into_iter()
+        .find(|node| {
+            matches!(
+                node.props.get("placeholder"),
+                Some(tilolang_runtime::Value::Text(text)) if text == "so.tilo.notes"
+            )
+        })
+        .expect("the app-opened form takes an app id")
+        .key
+        .clone();
+    view.edit(&input, &tilolang_runtime::Value::text("so.tilo.chat"))
+        .expect("the form holds the app");
+    view.press(&labelled(view.tree(), "ui.Button", "Add trigger"))
+        .expect("the trigger is added");
+    for _ in 0..16 {
+        view.poll_patches().expect("the window draws");
+    }
+    let row = view
+        .tree()
+        .of_kind("ui.ListRow")
+        .into_iter()
+        .find(|row| {
+            matches!(
+                row.props.get("title"),
+                Some(tilolang_runtime::Value::Text(text)) if text == "An app opens"
+            )
+        })
+        .expect("the draft lists its trigger");
+    assert_eq!(
+        row.props.get("secondary"),
+        Some(&tilolang_runtime::Value::text("so.tilo.chat")),
+        "the trigger is for the app the form held"
+    );
+}

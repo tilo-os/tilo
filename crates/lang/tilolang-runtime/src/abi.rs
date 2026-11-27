@@ -265,6 +265,7 @@ imports! {
     (UiBind, "ui_bind", "iii", ""),
     (UiBindBegin, "ui_bind_begin", "ii", ""),
     (UiOn, "ui_on", "iii", ""),
+    (UiChoose, "ui_choose", "ii", ""),
     (UiAnchor, "ui_anchor", "ii", ""),
     (UiBindState, "ui_bind_state", "ii", ""),
     (UiBindStateAt, "ui_bind_state_at", "iil", ""),

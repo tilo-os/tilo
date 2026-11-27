@@ -299,6 +299,7 @@ imports! {
     UiBind = "ui_bind" ([H, H, H] -> []);
     UiBindBegin = "ui_bind_begin" ([H, H] -> []);
     UiOn = "ui_on" ([H, H, H] -> []);
+    UiChoose = "ui_choose" ([H, H] -> []);
     UiAnchor = "ui_anchor" ([H, H] -> []);
     UiBindState = "ui_bind_state" ([H, H] -> []);
     UiBindStateAt = "ui_bind_state_at" ([H, H, I64] -> []);
