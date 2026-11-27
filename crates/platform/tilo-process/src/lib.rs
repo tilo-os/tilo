@@ -134,6 +134,29 @@ pub fn raise_open_file_limit() {
     limits::raise_open_files();
 }
 
+/// Raise this process's soft open-file limit to its hard limit: what a desktop session takes,
+/// which holds descriptors for every window it shows (each client's connection, its buffers and
+/// its links). At the 1024 a process starts with, a few dozen windows exhaust it, and then no
+/// window, service or person's request gets through. The apps it starts are held to their own
+/// limit by the launcher's sandbox, never this one.
+#[cfg(unix)]
+pub fn raise_open_file_limit_to_hard() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit only writes the rlimit it is given.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } != 0
+        || limit.rlim_cur >= limit.rlim_max
+    {
+        return;
+    }
+    limit.rlim_cur = limit.rlim_max;
+    // SAFETY: setrlimit only reads the initialized rlimit it is given. A refusal leaves the
+    // previous limit, which still works for fewer windows.
+    let _ = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
+}
+
 #[cfg(target_os = "macos")]
 mod limits {
     const OPEN_FILES: libc::rlim_t = 1024;

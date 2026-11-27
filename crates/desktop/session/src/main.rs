@@ -63,6 +63,9 @@ fn main() -> std::process::ExitCode {
     // the variable naming it goes with it, so no program the session starts takes the descriptor
     // for a link of its own.
     let launch_link = tilo_session::shell_start::take_launch_link();
+    // Every window the session shows holds descriptors here: the limit a process starts with
+    // would end the desktop at a few dozen windows.
+    tilo_process::raise_open_file_limit_to_hard();
     // The earliest point the process can measure itself from: what the session's own startup marks
     // are read against.
     tilo_startup_metrics::init();
