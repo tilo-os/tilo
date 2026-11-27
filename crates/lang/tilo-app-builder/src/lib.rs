@@ -4019,6 +4019,23 @@ fn write_ui_graph(path: &Path, document: &tilo_ui_graph::UiDocument) -> Result<(
         .with_context(|| format!("publishing UI graph {}", path.display()))
 }
 
+/// Why `program` did not start for `doing`. A missing `cargo` means this computer has no Rust
+/// toolchain, which a Rust app is checked and built with, so the error says how to install it.
+pub(crate) fn not_started(
+    program: &std::ffi::OsStr,
+    doing: impl std::fmt::Display,
+    error: io::Error,
+) -> anyhow::Error {
+    let named = Path::new(program).file_stem();
+    if error.kind() == io::ErrorKind::NotFound && named == Some(std::ffi::OsStr::new("cargo")) {
+        return anyhow::anyhow!(
+            "{doing}: Rust isn't installed (no `cargo` on PATH). A Rust app needs Rust to check \
+             and build it: install it with rustup (https://rustup.rs), then run this again"
+        );
+    }
+    anyhow::Error::new(error).context(format!("starting {doing}"))
+}
+
 impl CargoPlan {
     pub fn execute(&self) -> Result<()> {
         let mut command = ProcessCommand::new(&self.program);
@@ -4026,7 +4043,7 @@ impl CargoPlan {
         attach_surface_env(&mut command, &self.app_dir);
         let status = command
             .status()
-            .with_context(|| format!("starting {}", self.program.to_string_lossy()))?;
+            .map_err(|error| not_started(&self.program, self.program.to_string_lossy(), error))?;
         if !status.success() {
             bail!(
                 "{} {} failed with {status}",
@@ -4884,10 +4901,10 @@ impl ScenarioSuitePlan {
     }
 
     fn build_app(&self) -> Result<PathBuf> {
-        let mut child = self
-            .build_command()
-            .spawn()
-            .with_context(|| format!("starting {} build", self.build.program.to_string_lossy()))?;
+        let mut child = self.build_command().spawn().map_err(|error| {
+            let doing = format!("{} build", self.build.program.to_string_lossy());
+            not_started(&self.build.program, doing, error)
+        })?;
         let stdout = child
             .stdout
             .take()
@@ -5753,9 +5770,9 @@ fn build_entrypoints(
     if !features.is_empty() {
         command.arg("--features").arg(features.join(","));
     }
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("starting {} build", cargo.to_string_lossy()))?;
+    let mut child = command.spawn().map_err(|error| {
+        not_started(&cargo, format!("{} build", cargo.to_string_lossy()), error)
+    })?;
     let stdout = child
         .stdout
         .take()
@@ -6256,9 +6273,10 @@ fn run_dev_cargo(
         .stdout(Stdio::piped());
     #[cfg(unix)]
     command.process_group(0);
-    let mut build = command
-        .spawn()
-        .with_context(|| format!("starting {} build", plan.program.to_string_lossy()))?;
+    let mut build = command.spawn().map_err(|error| {
+        let doing = format!("{} build", plan.program.to_string_lossy());
+        not_started(&plan.program, doing, error)
+    })?;
     let stdout = build
         .stdout
         .take()

@@ -618,7 +618,9 @@ pub(crate) fn run_cargo_build(
     command: &mut ProcessCommand,
     manifest: &Path,
 ) -> Result<HashMap<String, PathBuf>> {
-    let mut child = command.spawn().context("starting cargo build")?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| crate::not_started(command.get_program(), "cargo build", error))?;
     let stdout = child
         .stdout
         .take()

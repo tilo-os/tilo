@@ -202,7 +202,7 @@ pub fn run_bounded(mut command: ProcessCommand, wait: Duration, doing: &str) -> 
     bounded_command::own_process_tree(&mut command);
     let mut child = command
         .spawn()
-        .with_context(|| format!("starting {doing}"))?;
+        .map_err(|error| crate::not_started(command.get_program(), doing, error))?;
     let stdout = child
         .stdout
         .take()

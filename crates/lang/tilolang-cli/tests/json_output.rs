@@ -515,4 +515,23 @@ fn a_machine_without_fonts_checks_its_apps_in_tilos_catalog() {
         marker.exists(),
         "the check stopped before Cargo on a machine without fonts: {report}"
     );
+
+    // Without Rust either, the check says to install it rather than that a program is missing.
+    let output = Command::new(checkout.join("tools/with-test-environment.sh"))
+        .arg("env")
+        .arg(format!("XDG_DATA_DIRS={}", dir.path().display()))
+        .arg(format!("XDG_DATA_HOME={}", dir.path().display()))
+        .arg(tilo_test_env::package_binary!("tilolang"))
+        .args(["check", "--json"])
+        .arg(&app)
+        .env("CARGO", dir.path().join("no-rust/cargo"))
+        .output_locked()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let report = document(&output);
+    let error = report["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("Rust isn't installed") && error.contains("https://rustup.rs"),
+        "{report}"
+    );
 }
