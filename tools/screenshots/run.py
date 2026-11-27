@@ -271,6 +271,11 @@ def profile_env(root: Path) -> dict:
         path.mkdir(parents=True, exist_ok=True)
     (root / "run").chmod(0o700)
     env.update({key: str(path) for key, path in dirs.items()})
+    # The profile is a test beside this machine's own session, not a session that owns it: no
+    # launch asks the machine's systemd user manager for a scope (there is none here), and none
+    # reaches the host's daemons. A launch that asked anyway would print why it runs outside a
+    # scope into the capture's log, where it reads as the capture's failure.
+    env["TILO_MACHINE"] = "hosted"
     # No display and no bus: a bus address nothing listens on, so an app
     # that looks for one fails fast instead of reaching the caller's.
     env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={root / 'run' / 'no-bus'}"

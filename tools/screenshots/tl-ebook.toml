@@ -20,7 +20,7 @@ title = "Reading settings"
 invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "watch_folder", args = { path = "${HOME}/Books" } }
 
 [[situation.steps]]
-perform = { target = "ToggleGroup", semantic_target = "segment:1", action = "activate" }
+invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "open-library_settings" }
 
 [[situation]]
 name = "serif-font"
@@ -30,7 +30,7 @@ title = "A reading face chosen"
 invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "watch_folder", args = { path = "${HOME}/Books" } }
 
 [[situation.steps]]
-perform = { target = "ToggleGroup", semantic_target = "segment:1", action = "activate" }
+invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "open-library_settings" }
 
 [[situation.steps]]
 invoke = { resource = "tl:so.tilo.ebook:root-srrcatfl", action = "set_face", args = { face = "serif" } }
