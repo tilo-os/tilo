@@ -532,7 +532,7 @@ fn a_press_on_the_desktop_page_changes_only_what_its_person_may() {
         let computer = Computer::of(&daemon, &workspace);
         computer.open_first(host.person(), (TASKS, "Tasks")).await;
 
-        let viewer = host
+        let (viewer, _) = host
             .other_browser(
                 "Bo's browser",
                 &workspace,
@@ -540,31 +540,184 @@ fn a_press_on_the_desktop_page_changes_only_what_its_person_may() {
             )
             .await;
         let theirs = Page::of(&daemon, &workspace, &viewer).await;
-        let shown = theirs
-            .until("the viewer's page shows the window", |html| {
-                button_in_window(html, "Tasks", "Close").is_some()
-            })
-            .await;
-        let close = button_in_window(&shown, "Tasks", "Close").unwrap();
-        theirs.act(Some((close, PageAction::Activate))).await;
-        theirs.act(None).await;
-        assert_eq!(
-            computer.window_apps().await,
-            [TASKS],
-            "a viewer's press closes nothing"
-        );
+        presses_close_to_no_avail(&computer, &theirs, "a viewer's press closes nothing").await;
         theirs.close();
+        the_persons_press_closes_it(&host, &computer).await;
+    });
+}
 
-        let page = Page::of(&daemon, &workspace, &browser(&host)).await;
-        let shown = page
-            .until("the person's page shows the window", |html| {
-                button_in_window(html, "Tasks", "Close").is_some()
-            })
-            .await;
-        let close = button_in_window(&shown, "Tasks", "Close").unwrap();
-        page.act(Some((close, PageAction::Activate))).await;
-        computer.shows(&[]).await;
+/// `page`, open on the workspace's desktop page while the computer shows Tasks: its press of the
+/// window's Close, answered, leaves the window where it is (`why` names whose press it is).
+async fn presses_close_to_no_avail(computer: &Computer, page: &Page, why: &str) {
+    let shown = page
+        .until("the page shows the window", |html| {
+            button_in_window(html, "Tasks", "Close").is_some()
+        })
+        .await;
+    let close = button_in_window(&shown, "Tasks", "Close").unwrap();
+    page.act(Some((close, PageAction::Activate))).await;
+    page.act(None).await;
+    assert_eq!(computer.window_apps().await, [TASKS], "{why}");
+}
+
+/// The person's own press of Close on their desktop page closes the window: the presses refused
+/// before were refused for who pressed, not for what.
+async fn the_persons_press_closes_it(host: &host::Host, computer: &Computer) {
+    let page = Page::of(&host.daemon(), host.workspace(), &browser(host)).await;
+    let shown = page
+        .until("the person's page shows the window", |html| {
+            button_in_window(html, "Tasks", "Close").is_some()
+        })
+        .await;
+    let close = button_in_window(&shown, "Tasks", "Close").unwrap();
+    page.act(Some((close, PageAction::Activate))).await;
+    computer.shows(&[]).await;
+    page.close();
+}
+
+/// The person revokes a browser's key while its desktop page is open: the open page changes
+/// nothing from then on, and the key opens no page again.
+#[test]
+fn a_revoked_browser_key_acts_on_no_desktop_page() {
+    host::run_with(&["shell", "tasks"], |host| async move {
+        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
+        let computer = Computer::of(&daemon, &workspace);
+        computer.open_first(host.person(), (TASKS, "Tasks")).await;
+        let (_, cert) = host.certify(
+            "Ada's old browser",
+            tilo_user_identity::DeviceCapabilities::member(),
+        );
+        let reader = host::linked(&cert, &workspace);
+        let page = Page::of(&daemon, &workspace, &reader).await;
+
+        let revoke = tilo_actions::remote::InvokeRequest {
+            argument: tilo_server_protocol::device_tickets::Revoke::retired(&hex::encode(
+                cert.device_public_key,
+            ))
+            .argument(),
+            ..tilo_actions::remote::InvokeRequest::plain(
+                tilo_server_protocol::device_tickets::target(
+                    tilo_server_protocol::device_tickets::REVOKE,
+                ),
+                serde_json::Map::new(),
+            )
+        };
+        let revoked = host
+            .dispatch()
+            .invoke(&host.caller(), revoke)
+            .await
+            .expect("the dispatch answers")
+            .expect("the person revokes the browser's key");
+        assert!(
+            matches!(
+                revoked.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "{revoked:?}"
+        );
+        presses_close_to_no_avail(&computer, &page, "a revoked key's press closes nothing").await;
         page.close();
+        let again = open(&daemon, &workspace, &reader).await;
+        assert!(
+            again.is_err(),
+            "a revoked key opens no page: {:?}",
+            again.map(|page| page.page)
+        );
+        the_persons_press_closes_it(&host, &computer).await;
+    });
+}
+
+/// The workspace's owner removes a person while their browser has its desktop page open: the
+/// open page changes nothing from then on, and their browser opens no page again.
+#[test]
+fn a_removed_persons_browser_acts_on_no_desktop_page() {
+    host::run_with(&["shell", "tasks"], |host| async move {
+        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
+        let computer = Computer::of(&daemon, &workspace);
+        computer.open_first(host.person(), (TASKS, "Tasks")).await;
+        let (editor, _) = host
+            .other_browser(
+                "Bo's browser",
+                &workspace,
+                tilo_peer_state::join::Role::Editor,
+            )
+            .await;
+        let page = Page::of(&daemon, &workspace, &editor).await;
+        host.remove_person(&workspace, editor.1.user_public_key)
+            .await;
+        presses_close_to_no_avail(&computer, &page, "a removed person's press closes nothing")
+            .await;
+        page.close();
+        let again = open(&daemon, &workspace, &editor).await;
+        assert!(
+            again.is_err(),
+            "a removed person opens no page: {:?}",
+            again.map(|page| page.page)
+        );
+        the_persons_press_closes_it(&host, &computer).await;
+    });
+}
+
+/// A certificate naming the person that their root never signed opens no desktop page: a key
+/// does not become the person by naming them.
+#[test]
+fn a_certificate_the_persons_root_never_signed_opens_no_desktop_page() {
+    host::run_with(&["shell"], |host| async move {
+        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
+        let mut person = [0; 32];
+        hex::decode_to_slice(host.person(), &mut person).unwrap();
+        let (forger, _) = host::stranger("Someone else's browser");
+        let (_, forged) = host::certified(
+            &forger,
+            person,
+            "Not Ada's browser",
+            tilo_user_identity::DeviceCapabilities::member(),
+        );
+        let refused = open(&daemon, &workspace, &host::linked(&forged, &workspace)).await;
+        assert!(
+            refused.is_err(),
+            "a certificate the person's root never signed opens nothing: {:?}",
+            refused.map(|page| page.page)
+        );
+    });
+}
+
+/// An agent's key of another person of the workspace reaches no host action through a desktop
+/// page: it is no person, so the layout's close it would reach through its run is refused,
+/// though the computer serving the page could close the window.
+#[test]
+fn another_persons_agent_key_reaches_no_host_action_on_a_desktop_page() {
+    host::run_with(&["shell", "tasks"], |host| async move {
+        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
+        let computer = Computer::of(&daemon, &workspace);
+        computer.open_first(host.person(), (TASKS, "Tasks")).await;
+        let (_, root) = host
+            .other_browser(
+                "Bo's browser",
+                &workspace,
+                tilo_peer_state::join::Role::Editor,
+            )
+            .await;
+        let (_, agent) = host::certified(
+            &root,
+            root.verifying_key().to_bytes(),
+            "Bo's assistant",
+            tilo_user_identity::DeviceCapabilities::agent_grant(
+                tilo_user_identity::AgentScope::AllWorkspaces,
+            ),
+        );
+        let reader = host::linked(&agent, &workspace);
+        if let Ok(opened) = open(&daemon, &workspace, &reader).await {
+            let page = Page {
+                daemon: Arc::clone(&daemon),
+                workspace: collab_types::WorkspaceId::parse(&workspace).unwrap(),
+                opened,
+            };
+            presses_close_to_no_avail(&computer, &page, "an agent key's press closes nothing")
+                .await;
+            page.close();
+        }
+        the_persons_press_closes_it(&host, &computer).await;
     });
 }
 
@@ -856,10 +1009,12 @@ fn an_agents_pick_and_a_press_change_the_shells_record_the_computer_merges() {
         let (picked, failed) = act(&agent, "shell#show_style", json!({ "style": FRAMES })).await;
         assert!(!failed, "the agent picks the canvas: {picked}");
         let document = computer.picked(&own, FRAMES).await;
-        assert!(
-            !document.contains('/'),
-            "the shell's document is named as the store names it, no record's name before it: \
-             {document}"
+        // The shell's record is the person's own: its document, as the store of their own
+        // workspace places it, is read by them alone, so by their own devices and no one else.
+        assert_eq!(
+            collab_types::store_document_readers(&document),
+            Some(collab_types::reader_set_name(host.person()).as_str()),
+            "the shell's document is read by its person alone: {document}"
         );
 
         let page = Page::of(&daemon, &workspace, &browser(&host)).await;

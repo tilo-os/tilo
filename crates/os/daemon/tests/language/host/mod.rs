@@ -918,7 +918,7 @@ impl Host {
     /// shared with other people has among its members. Answered with their person's root, by
     /// which the owner names them.
     pub async fn other_person(&self, label: &str, workspace: &str) -> (Member, [u8; 32]) {
-        let (key, cert) = self
+        let (key, cert, _) = self
             .other_person_as(label, workspace, tilo_peer_state::join::Role::Editor)
             .await;
         (self.dial(key, workspace).await, cert.user_public_key)
@@ -926,17 +926,15 @@ impl Host {
 
     /// The browser of another person than this computer's, `label`, whom the workspace's owner
     /// added to `workspace` as `role`, as a page's link verified it: the caller the link takes it
-    /// as, and the certificate it proved.
+    /// as and the certificate it proved, with the person's root, which certifies their other keys.
     pub async fn other_browser(
         &self,
         label: &str,
         workspace: &str,
         role: tilo_peer_state::join::Role,
-    ) -> (Caller, DeviceCert) {
-        let (_, cert) = self.other_person_as(label, workspace, role).await;
-        let caller =
-            tilo_workspace_service::service::local_caller(&cert).in_workspace(workspace.to_owned());
-        (caller, cert)
+    ) -> ((Caller, DeviceCert), SigningKey) {
+        let (_, cert, root) = self.other_person_as(label, workspace, role).await;
+        (linked(&cert, workspace), root)
     }
 
     /// A device of another person than this computer's, `label`, whom the workspace's owner added
@@ -946,7 +944,7 @@ impl Host {
         label: &str,
         workspace: &str,
         role: tilo_peer_state::join::Role,
-    ) -> (SigningKey, DeviceCert) {
+    ) -> (SigningKey, DeviceCert, SigningKey) {
         use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
 
         let (root, user) = tilo_user_identity::UserIdentity::generate(label, 1);
@@ -986,7 +984,7 @@ impl Host {
             .enter(workspace, (&cert, &key))
             .await
             .expect("their device lists itself");
-        (key, cert)
+        (key, cert, root)
     }
 
     /// The workspace's owner removes the person `user` from `workspace`, and every device of
@@ -1314,6 +1312,15 @@ fn random_key() -> SigningKey {
     let mut secret = [0; 32];
     getrandom::fill(&mut secret).unwrap();
     SigningKey::from_bytes(&secret)
+}
+
+/// The caller a page's link takes the key `cert` certifies as, opening pages in `workspace`, and
+/// the certificate it proved.
+#[must_use]
+pub fn linked(cert: &DeviceCert, workspace: &str) -> (Caller, DeviceCert) {
+    let caller =
+        tilo_workspace_service::service::local_caller(cert).in_workspace(workspace.to_owned());
+    (caller, cert.clone())
 }
 
 /// A new key `label` of the person whose root `root` is, certified with `capabilities`.
