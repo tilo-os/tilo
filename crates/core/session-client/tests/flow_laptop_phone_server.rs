@@ -432,39 +432,59 @@ async fn flow_phone_joins_like_any_other_device() {
     drop(laptop);
 }
 
-/// The laptop's person picks the 2D canvas as their shell, and it is their layout: the phone
-/// shows the same canvas for the workspace.
+/// The laptop's person lays the workspace out as a canvas, and it is their layout: the phone
+/// reads the same canvas for the workspace.
 ///
-/// The style is the person's: `show_style` on their shell `Viewing` record chooses the frames
-/// style, and the layout is the session's `shell:layout`, whose `place` at x/y makes a
-/// workspace a canvas. Neither is reachable from a workspace session in this fixture: the
-/// layout's actions are the session's own, and the profile they write is on the person's
-/// cluster, not the workspace host.
+/// The layout is the workspace's `workspace:layout`, which the server keeps: `place` puts a
+/// window of an app on it, and `position` sets where on the canvas it stands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_laptop_picks_the_canvas_shell_and_it_is_their_layout() {
     let f = Box::pin(rig()).await;
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
-    let placed = flow::ask(
+    let layout = |device, action, arguments| {
+        flow::ask(
+            device,
+            f.work_id(),
+            "so.tilo.layout",
+            "workspace:layout",
+            action,
+            arguments,
+        )
+    };
+    layout(&laptop, "place", json!({"app": "so.tilo.clocks"}))
+        .await
+        .unwrap_or_else(|error| panic!("the laptop places Clocks on the layout: {error:?}"));
+    let read = layout(&laptop, "read", json!({}))
+        .await
+        .unwrap_or_else(|error| panic!("the laptop reads the layout: {error:?}"));
+    let window = read["windows"]
+        .as_array()
+        .and_then(|windows| {
+            windows
+                .iter()
+                .find(|window| window["app"] == "so.tilo.clocks")
+        })
+        .and_then(|window| window["key"].as_str())
+        .unwrap_or_else(|| panic!("the layout shows the window the laptop placed: {read}"))
+        .to_owned();
+    layout(
         &laptop,
-        f.work_id(),
-        "so.tilo.session",
-        "shell:layout",
-        "place",
-        json!({
-            "workspace": f.work,
-            "x": 0,
-            "y": 0,
-            "width": 640,
-            "height": 480,
-        }),
+        "position",
+        json!({"window": window, "x": 120, "y": 80}),
     )
-    .await;
+    .await
+    .unwrap_or_else(|error| panic!("the laptop stands the window on the canvas: {error:?}"));
+
+    // The phone reads the same layout, with the laptop's window on it.
+    let phone = f.client(&f.phone_session, &f.phone, "android-phone");
+    let seen = layout(&phone, "read", json!({}))
+        .await
+        .unwrap_or_else(|error| panic!("the phone reads the layout: {error:?}"));
     assert!(
-        placed.is_ok(),
-        "the session's `shell:layout#place` with x/y makes the workspace's layout a canvas, \
-         and `show_style` on the person's shell `Viewing` record chooses the frames style: this \
-         fixture reaches neither, as the layout's actions are the session's own and the profile \
-         is on the person's cluster, not the workspace host: {placed:?}"
+        seen["windows"]
+            .as_array()
+            .is_some_and(|windows| windows.iter().any(|shown| shown["key"] == window.as_str())),
+        "the phone reads the laptop's canvas: {seen}"
     );
 }
 
@@ -533,9 +553,9 @@ async fn flow_alarm_set_on_laptop_through_the_agent_rings_on_the_phone() {
     let rung = flow::ask(
         &laptop,
         f.work_id(),
-        "so.tilo.clocks",
-        "clocks",
-        "add-alarm",
+        "record:so.tilo.clocks:",
+        "tl:so.tilo.clocks",
+        "add_alarm",
         json!({"label": "Standup", "hour": 7, "minute": 0}),
     )
     .await;
@@ -545,7 +565,9 @@ async fn flow_alarm_set_on_laptop_through_the_agent_rings_on_the_phone() {
         )
     });
     assert!(
-        set.get("resource").is_some(),
+        set["made"][0]["address"]
+            .as_str()
+            .is_some_and(|made| made.starts_with("tl:so.tilo.clocks:")),
         "the alarm is one resource of the person's workspace, which the phone watches: {set}"
     );
 }
@@ -708,32 +730,37 @@ async fn flow_every_device_manages_every_other() {
         flow::ask(
             &phone,
             f.person_id(),
-            "so.tilo.devices",
-            "devices",
+            "record:so.tilo.devices:devices",
+            "tilo.devices",
             "name-device",
             json!({"device": key, "name": name}),
         )
         .await
         .unwrap_or_else(|error| panic!("the phone names the device {key}: {error:?}"));
     }
-    let record = tilo_workspace_service::workspaces::person_workspace::read::<
-        tilo_workspace_service::workspaces::person_workspace::devices::Devices,
-    >(
-        workspaces,
-        tilo_workspace_service::workspaces::person_workspace::devices::DEVICES,
+    // Every list shows the phone's name for the laptop: the person's own computer reads it in
+    // its copy of their record.
+    crate::support::wait_for(
+        "the phone's name for the laptop reaches every list",
+        || async {
+            let record = tilo_workspace_service::workspaces::person_workspace::read::<
+                tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+            >(
+                workspaces,
+                tilo_workspace_service::workspaces::person_workspace::devices::DEVICES,
+            )
+            .await
+            .ok()?;
+            record
+                .devices
+                .iter()
+                .any(|(key, device)| {
+                    key.as_str() == laptop_key && device.name.as_deref() == Some("Ada's laptop")
+                })
+                .then_some(())
+        },
     )
-    .await
-    .expect("the record of the person's devices reads");
-    let named = record
-        .devices
-        .iter()
-        .find(|(key, _)| key.as_str() == laptop_key)
-        .and_then(|(_, device)| device.name.clone());
-    assert_eq!(
-        named.as_deref(),
-        Some("Ada's laptop"),
-        "the phone's name for the laptop is what every list shows"
-    );
+    .await;
 
     // From the phone, the laptop is updated and its settings changed.
     let managed = flow::ask(

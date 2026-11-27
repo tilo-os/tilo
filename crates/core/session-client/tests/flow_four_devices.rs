@@ -897,7 +897,7 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
 }
 
 /// Ask the person's devices, through the one device link, for `action` with `arguments`: the
-/// typed action a step of this flow needs on `so.tilo.devices/devices`.
+/// typed action a step of this flow needs on the record of their devices.
 async fn device_action(
     f: &Four,
     label: &str,
@@ -908,8 +908,8 @@ async fn device_action(
     flow::ask(
         &laptop,
         f.person_id(),
-        "so.tilo.devices",
-        "devices",
+        "record:so.tilo.devices:devices",
+        "tilo.devices",
         action,
         arguments,
     )
