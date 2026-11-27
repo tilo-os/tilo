@@ -1072,6 +1072,7 @@ impl<R: FloatingRow> FloatingList<R> {
     }
 
     /// The rows' bar thumb and track.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn scrollbar_thumb(&self) -> Option<(Rect, Rect)> {
         self.scroll.vertical_thumb(&self.theme)
     }
