@@ -329,8 +329,10 @@ if (( tilolang_apps > 0 )); then
     mkdir -p "$tilolang_out"
     while IFS=$'\t' read -r name dir id version runtime; do
         printf 'building tilolang app=%s id=%s runtime=%s\n' "$name" "$id" "$runtime"
+        # A package names the exact Tilo runtime build, as a native app does: a device offers a
+        # Tilo OS version only when its runtime names the build, never a bare release.
         tilolang_build_package "$release_dir/tilolang" "$repo_root" "$dir" "$name" \
-            "$tilolang_out" "$identity" "$version" "tilo-runtime/$runtime_release" "$id" \
+            "$tilolang_out" "$identity" "$version" "$runtime_id" "$id" \
             || { printf 'building the tilolang package %s failed\n' "$name" >&2; exit 1; }
         install -pm 0644 "$tilolang_out/$name.tapp" \
             "$out/tapp/$name-$version-$tilolang_arch.tapp"
