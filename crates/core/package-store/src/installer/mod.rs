@@ -639,6 +639,15 @@ pub fn install_dev(
 
 /// Whether a user copy of `version` must be held in front of the image's copy: it is older, so only
 /// an explicit choice (a rollback, a forced install) put it there.
+/// The name of one install's staging directory: `prefix`, this process and an install number of
+/// its own, since one process (the daemon) installs several packages at once, and two installs
+/// sharing a directory each find the other's files there or lose their own to its cleanup.
+fn staging_name(prefix: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let install = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{prefix}{}-{install}", std::process::id())
+}
+
 fn held_below_image(layers: &crate::Layers, version: &str) -> bool {
     layers.image.as_ref().is_some_and(|image| {
         tilo_app_package::version::compare(version, &image.version) == std::cmp::Ordering::Less

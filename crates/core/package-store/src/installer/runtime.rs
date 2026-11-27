@@ -161,11 +161,7 @@ pub(super) fn install(
     fs::create_dir_all(root)?;
     let bundles = runtime_bundle::gc::BundleRoot::new(root);
     let _collection_held_off = bundles.install_lock()?;
-    let staging = root.join(format!(
-        "{}{}",
-        runtime_bundle::gc::STAGING_PREFIX,
-        std::process::id()
-    ));
+    let staging = root.join(super::staging_name(runtime_bundle::gc::STAGING_PREFIX));
     if staging.exists() {
         fs::remove_dir_all(&staging)?;
     }

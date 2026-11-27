@@ -40,7 +40,7 @@ pub(super) fn install(
         return Ok(());
     }
     fs::create_dir_all(&root)?;
-    let staging = root.join(format!(".staging-{}", std::process::id()));
+    let staging = root.join(super::staging_name(".staging-"));
     if staging.exists() {
         fs::remove_dir_all(&staging)?;
     }
