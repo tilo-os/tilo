@@ -625,9 +625,18 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
             panic!("the assistant's own call sets one reminder up: {kept:?}")
         };
         assert_eq!(
-            (reminder.name.as_str(), reminder.sort, reminder.runs),
-            ("Call home", Sort::Scheduled, 0),
-            "it is on a clock and has not run: {reminder:?}"
+            (reminder.name.as_str(), reminder.sort),
+            ("Call home", Sort::Scheduled),
+            "it is on a clock: {reminder:?}"
+        );
+        // A busy machine may reach its moment before this reads it: then it ran once, and not
+        // before its moment.
+        assert!(
+            match &reminder.last_run {
+                None => reminder.runs == 0,
+                Some(run) => reminder.runs == 1 && run.at_ms >= at_ms,
+            },
+            "it runs at its moment, never before: {reminder:?}"
         );
         assert_eq!(
             reminder.by,
