@@ -55,7 +55,7 @@ pub enum LayoutAction {
     Read,
     /// Open a window of an app on the layout, as the caller's: beside the window in front, on the
     /// record it names or the app's own. A record a window shows already stays where it is.
-    #[effect(kind = "outside")]
+    #[effect(kind = "undoable")]
     #[effect(icon = "app-window", keywords = "open window, show")]
     Place {
         #[param("The app the window shows, by its id")]
@@ -64,7 +64,7 @@ pub enum LayoutAction {
         record: Option<String>,
     },
     /// Close a window on the layout, everywhere it is shown. Its record stays in the workspace.
-    #[effect(kind = "outside")]
+    #[effect(kind = "undoable")]
     #[effect(icon = "x", keywords = "close window")]
     Close {
         #[param("The window, by its key on the layout")]
