@@ -250,7 +250,15 @@ impl Service for SessionPower {
     /// again once a minute, so its chart fills in as the readings land.
     fn poll(&mut self) -> bool {
         let moved = self.link.bridge().readings_moved();
-        std::mem::replace(&mut self.seen, moved) != moved || self.history_due()
+        let readings = std::mem::replace(&mut self.seen, moved) != moved;
+        // The history is read here, when it is due, so the resource the host republishes
+        // carries it: a pass that only said it was due would ask again on every pass and never
+        // read it.
+        if self.history_due() {
+            let _ = self.history_now();
+            return true;
+        }
+        readings
     }
 
     fn read(&self, resource: &str) -> Option<Value> {

@@ -277,7 +277,10 @@ fn the_sleep_resource_carries_no_power_profiles_or_duplicate_action() {
     );
 
     // Power-profile updates on the bridge belong to `power`, not `power:sleep`.
-    assert!(!service.poll(), "nothing moved yet");
+    // The first pass reads the battery's history, which the service reports as
+    // its own change; every pass after it asks nothing until a reading moves.
+    assert!(service.poll(), "the history is read once");
+    assert!(!service.poll(), "nothing else moved yet");
     link.bridge().note_profiles(vec![
         "performance".into(),
         "balanced".into(),
