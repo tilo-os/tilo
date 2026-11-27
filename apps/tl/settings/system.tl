@@ -622,11 +622,36 @@ view about_pane() {
             }
         }
         ui.Section("Hardware") {
+            let model = host.model
+            if model != "" {
+                ui.Property("Model", model)
+            }
             if host.cpu != "unknown" {
                 ui.Property("Processor", host.cpu)
             }
             if host.memory != "unknown" {
                 ui.Property("Memory", host.memory)
+            }
+            let firmware = host.firmware
+            if firmware != "" {
+                ui.Property("Firmware", firmware)
+            }
+            // What the installation checked, part by part: the same report the installer read.
+            for part in host.components {
+                if part.present {
+                    ui.ListRow(
+                        hardware_kind(part.kind),
+                        secondary: hardware_state(part.state),
+                        icon: .cpu,
+                    )
+                }
+            }
+            if host.blocked {
+                ui.Text(
+                    "A part the desktop needs is not supported on this computer.",
+                    role: .caption,
+                    secondary: true,
+                )
             }
             if host.unknown {
                 ui.Text(
@@ -638,6 +663,46 @@ view about_pane() {
         }
         problems_section(problem)
     }
+}
+
+/// What a part of the computer is called, in the words About shows.
+fn hardware_kind(kind: Text) -> Text {
+    if kind == "graphics" {
+        "Graphics"
+    } else if kind == "display" {
+        "Displays"
+    } else if kind == "wifi" {
+        "Wi-Fi"
+    } else if kind == "ethernet" {
+        "Ethernet"
+    } else if kind == "bluetooth" {
+        "Bluetooth"
+    } else if kind == "audio" {
+        "Sound output"
+    } else if kind == "microphone" {
+        "Microphone"
+    } else if kind == "camera" {
+        "Camera"
+    } else if kind == "fingerprint" {
+        "Fingerprint reader"
+    } else if kind == "power" {
+        "Power"
+    } else if kind == "acpi" {
+        "ACPI"
+    } else if kind == "boot" {
+        "Startup and firmware"
+    } else if kind == "storage" {
+        "Storage"
+    } else if kind == "input" { "Keyboard and pointing devices" } else { "Other hardware" }
+}
+
+/// What the check found of a part, in the words About shows.
+fn hardware_state(state: Text) -> Text {
+    if state == "supported" {
+        "Supported"
+    } else if state == "limited" {
+        "Limited"
+    } else if state == "unsupported" { "Unsupported" } else { "Not verified" }
 }
 
 /// The problems this computer recorded — a desktop that stopped, the computer itself stopping, a

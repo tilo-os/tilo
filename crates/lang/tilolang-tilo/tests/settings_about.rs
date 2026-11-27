@@ -106,7 +106,20 @@ fn serve_about_readings(host: &Host) {
         host,
         "host-info",
         "so.tilo.device#HostInfo",
-        serde_json::json!({ "hostname": "build", "arch": "x86_64" }),
+        serde_json::json!({
+            "hostname": "build",
+            "arch": "x86_64",
+            "model": "Framework Laptop 13 (AMD)",
+            "firmware": "03.03",
+            "cpu": "AMD Ryzen 7 7840U",
+            "memory": "32 GB",
+            "components": [
+                { "kind": "graphics", "name": "AMD Radeon 780M", "state": "supported", "present": true },
+                { "kind": "fingerprint", "name": "Goodix reader", "state": "limited", "present": true },
+                { "kind": "camera", "name": "", "state": "unverified", "present": false }
+            ],
+            "blocked": false
+        }),
     );
     let reports = serde_json::json!([
         {
@@ -202,6 +215,25 @@ fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
     ] {
         assert!(shown.iter().any(|text| text == word), "{word}: {shown:?}");
     }
+
+    // Hardware is the report an installation read: the model, the firmware and each part the
+    // check found, and no row for a part this computer does not have.
+    for word in [
+        "Framework Laptop 13 (AMD)",
+        "AMD Ryzen 7 7840U",
+        "32 GB",
+        "03.03",
+        "Graphics",
+        "Supported",
+        "Fingerprint reader",
+        "Limited",
+    ] {
+        assert!(shown.iter().any(|text| text == word), "{word}: {shown:?}");
+    }
+    assert!(
+        !shown.iter().any(|text| text == "Camera"),
+        "an absent part is no row: {shown:?}"
+    );
     assert!(
         !shown.iter().any(|text| text.contains("Kernel panic")),
         "no record is read to list it: {shown:?}"

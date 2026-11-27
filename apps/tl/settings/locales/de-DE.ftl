@@ -1735,6 +1735,29 @@ d-jv7cixf2 = Einen Bericht senden
 
 d-jv7cixf2-body = Text
 
+d-vrdt3277 = Worte der Hardwareart
+    .w-graphics = Grafik
+    .w-displays = Bildschirme
+    .w-wi-fi = WLAN
+    .w-ethernet = Ethernet
+    .w-bluetooth = Bluetooth
+    .w-sound-output = Tonausgabe
+    .w-microphone = Mikrofon
+    .w-camera = Kamera
+    .w-fingerprint-reader = Fingerabdrucksensor
+    .w-power = Energieversorgung
+    .w-acpi = ACPI
+    .w-startup-and-firmware = Start und Firmware
+    .w-storage = Datenspeicher
+    .w-keyboard-and-pointing-devices = Tastatur und Zeigegeräte
+    .w-other-hardware = Andere Hardware
+
+d-hmpowcqm = Worte des Hardwarezustands
+    .w-supported = Unterstützt
+    .w-limited = Eingeschränkt
+    .w-unsupported = Nicht unterstützt
+    .w-not-verified = Nicht überprüft
+
 d-v4nrmplh = Worte der Fehlerart
     .w-the-desktop-stopped-responding = Der Desktop reagierte nicht mehr
     .w-the-desktop-stopped-unexpectedly = Der Desktop wurde unerwartet beendet
@@ -1819,8 +1842,11 @@ d-juhocpyw = About pane
     .w-up-for = Läuft seit
     .w-read-these-facts-again = Diese Angaben erneut lesen
     .w-hardware = Hardware
+    .w-model = Modell
     .w-processor = Prozessor
     .w-memory = Speicher
+    .w-firmware = Firmware
+    .w-a-part-the-desktop-needs-is = Ein Teil, den die Arbeitsfläche braucht, wird auf diesem Computer nicht unterstützt.
     .w-some-of-this-device-s-facts = Einige Angaben dieses Geräts konnten nicht gelesen werden.
     .w-what-happened = Was geschah
     .w-back = Zurück
