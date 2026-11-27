@@ -354,12 +354,44 @@ pub const NO_CHOSEN_FILES: &str =
 /// The file or folder at `path`, opened by the person's chooser: a reference the chooser answered
 /// for this app, or a path inside a folder it answered. The chooser opens it only while the
 /// person's grant to the app stands (a workspace's folder by the grant on its node), so nothing
-/// else of this computer is reached, and a path it never answered is refused in its words.
-fn chosen(chooser: &dyn FilePicker, path: &str, write: bool) -> Result<std::fs::File, String> {
+/// else of this computer is reached, and a path it never answered is refused in its words. The
+/// name is what the chooser calls it, which for a chosen folder is the folder's own name rather
+/// than its reference.
+fn chosen(
+    chooser: &dyn FilePicker,
+    path: &str,
+    write: bool,
+) -> Result<(std::fs::File, String), String> {
     match wait(&chooser.reopen(std::path::Path::new(path), write))? {
-        OpenFileOutcome::Opened(opened) => Ok(opened.into_file().into_std()),
+        OpenFileOutcome::Opened(opened) => {
+            let name = opened.display_name().to_owned();
+            Ok((opened.into_file().into_std(), name))
+        }
         OpenFileOutcome::Failed(why) => Err(why),
         OpenFileOutcome::Cancelled => Err(format!("{path} was not opened")),
+    }
+}
+
+/// Ask the person for a folder and answer the reference that reaches it again: what
+/// `file.choose_folder` fills when the action takes the folder itself, and what `File.list`,
+/// `File.read` and `File.watch` take. `None` when they dismissed the chooser.
+///
+/// # Errors
+///
+/// Why there is no folder: no chooser answers here, it refused, or it cannot name the folder
+/// again.
+pub fn choose_folder(
+    chooser: &dyn FilePicker,
+    request: &FileRequest,
+) -> Result<Option<String>, String> {
+    let pick = PickRequest::directory(&request.title, "").thread_name("tilolang-choose-folder");
+    match wait(&chooser.open_handle(pick))? {
+        OpenFileOutcome::Cancelled => Ok(None),
+        OpenFileOutcome::Failed(why) => Err(why),
+        OpenFileOutcome::Opened(opened) => opened
+            .reference()
+            .map(|reference| Some(reference.to_string_lossy().into_owned()))
+            .ok_or_else(|| "the folder you chose cannot be opened again here".to_owned()),
     }
 }
 
@@ -420,7 +452,7 @@ fn split(path: &str) -> Option<(&str, &str)> {
 /// The person never chose it for the app (or took the choice back), it is not a folder, or it is
 /// gone.
 pub fn list(chooser: &dyn FilePicker, path: &str) -> Result<Vec<Entry>, String> {
-    let folder = chosen(chooser, path, false)?;
+    let (folder, _) = chosen(chooser, path, false)?;
     let base = path.trim_end_matches('/');
     let mut entries = Vec::new();
     for (name, facts) in folder_entries(&folder, path)? {
@@ -476,12 +508,12 @@ pub fn stat(chooser: &dyn FilePicker, path: &str) -> Result<Option<Entry>, Strin
     {
         return Ok(listed.into_iter().find(|entry| entry.name == name));
     }
-    // The folder the person chose itself: the folder it stands in was never theirs to give.
-    let opened = chosen(chooser, path, false)?;
+    // The folder the person chose itself: the folder it stands in was never theirs to give, and
+    // the chooser names it as the person knows it (a workspace folder by its name, not its id).
+    let (opened, name) = chosen(chooser, path, false)?;
     let meta = opened
         .metadata()
         .map_err(|error| format!("{path}: {error}"))?;
-    let name = split(path).map_or(path, |(_, name)| name).to_owned();
     Ok(Some(described(name, path.to_owned(), Facts::of(&meta))))
 }
 
@@ -492,7 +524,7 @@ pub fn stat(chooser: &dyn FilePicker, path: &str) -> Result<Option<Entry>, Strin
 ///
 /// The person never chose it for the app, it is a folder, or it is gone.
 pub fn read_bytes(chooser: &dyn FilePicker, path: &str) -> Result<Vec<u8>, String> {
-    let mut file = chosen(chooser, path, false)?;
+    let (mut file, _) = chosen(chooser, path, false)?;
     if file.metadata().is_ok_and(|meta| meta.is_dir()) {
         return Err(format!("{path} is a folder"));
     }
@@ -524,7 +556,7 @@ pub fn write(chooser: &dyn FilePicker, path: &str, bytes: &[u8]) -> Result<Entry
     if stat(chooser, path)?.is_some() {
         return Err(format!("{path} already exists"));
     }
-    let mut file = chosen(chooser, path, true)?;
+    let (mut file, _) = chosen(chooser, path, true)?;
     file.write_all(bytes)
         .map_err(|error| format!("{path}: {error}"))?;
     drop(file);

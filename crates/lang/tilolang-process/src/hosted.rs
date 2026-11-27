@@ -1207,6 +1207,16 @@ impl Platform for HostPlatform {
         crate::files::choose(self.store(), chooser, request)
     }
 
+    fn choose_folder(
+        &self,
+        request: &tilolang_tilo::runtime::blob::FileRequest,
+    ) -> Result<Option<String>, String> {
+        let Some(chooser) = self.chooser.as_deref() else {
+            return Err(self.no_chooser.clone());
+        };
+        crate::files::choose_folder(chooser, request)
+    }
+
     fn save_file(
         &self,
         request: &tilolang_tilo::runtime::blob::SaveRequest,
@@ -1299,7 +1309,12 @@ impl Platform for HostPlatform {
         crate::files::read_bytes(self.chosen_files()?, path)
     }
 
+    /// `File.watch`: a folder the person chose for the app, through their chooser, which opens it
+    /// only while their grant stands. The watch is then the platform's on the folder itself.
     fn watch_folder(&self, path: &str, run: &str) -> Result<String, String> {
+        // A path the chooser never answered is refused here, as `File.list` refuses it: watching
+        // is a way of reading what changes in the folder.
+        crate::files::stat(self.chosen_files()?, path)?;
         self.watches.watch(path, run, &self.person)
     }
 
@@ -2632,9 +2647,22 @@ impl Hosted {
         let mut ran = false;
         for (run, actor) in due {
             let actor = tilolang_tilo::runtime::Actor::Member(MemberId::person(actor.as_str()));
+            // `File.watch` names the package's action as its source names it (`foldered`); the
+            // runtime invokes it by the id the package loaded now holds it under.
+            let action = host
+                .package(&self.spec.app)
+                .and_then(|package| {
+                    package
+                        .meta
+                        .actions
+                        .iter()
+                        .find(|action| action.id == run || (!action.scenario && action.name == run))
+                        .map(|action| action.id.clone())
+                })
+                .unwrap_or_else(|| run.clone());
             match host
                 .runtime()
-                .invoke_action(&actor, (run.as_str(), vec![Value::resource(&root)]))
+                .invoke_action(&actor, (action.as_str(), vec![Value::resource(&root)]))
             {
                 Ok(_) => ran = true,
                 Err(error) => {

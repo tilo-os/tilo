@@ -100,6 +100,10 @@ action imported_folder(s: Shelf, files: List<File>) (label: "Import folder") {
     s.note = "{files.len()} {first}"
 }
 
+action imported_path(s: Shelf, folder: Text) (label: "Import folder's path") {
+    s.note = folder
+}
+
 view shelf(s: Shelf) {
     stack {
         ui.Button("Import many") {
@@ -110,6 +114,9 @@ view shelf(s: Shelf) {
         }
         ui.Button("Import folder") {
             on press: file.choose_folder(imported_folder(s))
+        }
+        ui.Button("Import folder's path") {
+            on press: file.choose_folder(imported_path(s))
         }
     }
 }
@@ -287,6 +294,13 @@ view shelf(s: Shelf) {
                 .with_path("trip/b.png");
             bench.device.pick(vec![one, two]);
             assert_eq!(bench.press("Import folder"), "2 trip/a.png");
+            let asked = bench.device.asked().last().cloned().unwrap();
+            assert!(asked.folder, "a folder chooser asks for a folder");
+
+            // An action taking the folder itself is filled with the reference that reaches it:
+            // what `File.list`, `File.read` and `File.watch` take, never a list of its files.
+            bench.device.pick_folder("/chosen/Shelf");
+            assert_eq!(bench.press("Import folder's path"), "/chosen/Shelf");
             let asked = bench.device.asked().last().cloned().unwrap();
             assert!(asked.folder, "a folder chooser asks for a folder");
         }

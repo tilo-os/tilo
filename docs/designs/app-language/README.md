@@ -324,7 +324,10 @@ arriving rather than showing nothing.
 file the next parameter takes, or every file when it is a `List<File>`. `file.choose_folder(a,
 accept: [...])` asks for a folder and runs `a` with the files it holds, each with the path it stands
 at inside it (`file.path`); `file.path` is that path, or the file's own name when one file was
-chosen, and never a host path. Both stand on a control, since they ask the person at the window.
+chosen, and never a host path. When the next parameter is a `Text`, the folder itself fills it, as
+the reference the person's choice answers: what `File.list`, `File.read` and `File.watch` take, and
+what reads the folder again later. Both stand on a control, since they ask the person at the
+window.
 
 ```
 action remind(t: Task) uses notify {

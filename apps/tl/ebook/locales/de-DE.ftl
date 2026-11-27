@@ -177,6 +177,10 @@ d-in25mwb6 = Überwacht
     }
 
 d-zfzcnyj7 = Pfad
+    .doc = Der Ordner, wie der Ordnerdialog des Systems ihn genannt hat: was `File.list` liest. Einen Ordner, den kein Dialog beantwortet hat, liest keine App.
+
+d-idbgmutp = Name
+    .doc = Wie der Ordner heißt, wo die Person ihn gewählt hat, damit die Einstellungen ihn zeigen können.
 
 d-l4rfzd5q = Marke
     .doc = Die Überwachung, die dieses Gerät hält, sodass eine Änderung am Ordner die Suche der Bibliothek startet.
@@ -223,9 +227,6 @@ d-wc5z47pj = Eigene Seitenfarbe
 
 d-yiozk22e = Eigene Schriftfarbe
 
-d-dww4lfs6 = Ordnerentwurf
-    .doc = Der Ordner, den das Feld der Einstellungen nennt: was "Überwachen" überwacht.
-
 d-trpwrvrr = Ordner
     .doc = Die Ordner, die dieses Gerät nach Büchern überwacht.
 
@@ -253,7 +254,7 @@ d-umxlbp4p-files = Dateien
 d-vmft5yuq = Ordner überwachen
     .doc = Überwacht den Ordner `path` nach Büchern: jedes EPUB darin, und jedes, das ankommt, wird ein Buch, und die Stelle der Person bleibt, wie bei einem selbst geöffneten.
     .did = überwachte einen Ordner für Bücher
-    .w-a-folder-is-watched-by-its = Ein Ordner wird über seinen Namen überwacht
+    .w-a-folder-is-watched-through-the = Ein Ordner wird über den Ordnerdialog des Systems überwacht
 
 d-vmft5yuq-path = Pfad
 
@@ -517,8 +518,7 @@ d-cmr5ibgv = Leseeinstellungen
     .w-save-name = Namen speichern
     .w-cancel = Abbrechen
     .w-watched-folders = Überwachte Ordner
-    .w-a-folder-on-this-device = Ein Ordner auf diesem Gerät
-    .w-watch-it = Überwachen
+    .w-watch-a-folder = Ordner auswählen…
     .w-add-a-face = Schriftart hinzufügen
     .w-page-palettes = Seitenfarben
     .w-palette-name = Name der Farben

@@ -234,6 +234,20 @@ pub trait BlobHost {
     /// stored.
     fn choose(&self, request: &FileRequest) -> Result<Vec<FileValue>, String>;
 
+    /// Ask the person for a folder and answer the path that reaches it again: what
+    /// `file.choose_folder(a)` fills when `a` takes the folder itself rather than the files it
+    /// holds. The path is the reference the person's choice answers (what `File.list`,
+    /// `File.read` and `File.watch` take), never a host path; `None` is a chooser the person
+    /// dismissed.
+    ///
+    /// # Errors
+    ///
+    /// Why there is no folder: no chooser answers here, or it refused.
+    fn choose_folder(&self, request: &FileRequest) -> Result<Option<String>, String> {
+        let _ = request;
+        Err("this host chooses no folders".to_owned())
+    }
+
     /// Put `content` in a file the person names, offering `request`'s name.
     ///
     /// # Errors

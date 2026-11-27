@@ -1415,15 +1415,26 @@ impl ViewInstance {
     }
 
     /// `file.choose(a, accept)`: ask the person for files and run `a` with what they chose, as
-    /// the argument it still needs; `folder` asks for a folder and runs `a` with the files it
-    /// holds. A parameter of `File` takes the one file chosen; `List<File>` takes every file.
-    /// What the person picks is a [`crate::blob::FileValue`], so the invocation records its
-    /// address and never its bytes.
+    /// the argument it still needs. A parameter of `File` takes the one file chosen;
+    /// `List<File>` takes every file; `file.choose_folder` fills a `Text` with the folder the
+    /// person chose, or a `List<File>` with the files it holds. What the person picks is a
+    /// [`crate::blob::FileValue`], so a file's invocation records its address and never its
+    /// bytes; a folder is the reference the chooser answered, which is what `File.list`,
+    /// `File.read` and `File.watch` take.
     fn platform_choose(
         &self,
         aref: &ActionRef,
         folder: bool,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        /// What the parameter the action leaves out takes.
+        enum Filled {
+            /// The one file the person chose.
+            One,
+            /// Every file the person chose.
+            Many,
+            /// The folder the person chose, by the reference that reaches it again.
+            Folder,
+        }
         let [Value::Action(next), Value::List(accept)] = aref.args.as_slice() else {
             return Err(RuntimeError::BadArgs("a malformed `file.choose`".into()));
         };
@@ -1440,17 +1451,25 @@ impl ViewInstance {
         let next_param = action.params.get(next.args.len());
         let fills =
             next_param.and_then(|param| crate::meta::parse_ty(&param.ty, &package.meta.app).ok());
-        let many = match fills {
-            Some(Ty::File) if !folder => false,
-            Some(Ty::List(inner)) if inner.as_ref() == &Ty::File => true,
+        let filled = match (folder, fills) {
+            (false, Some(Ty::File)) => Filled::One,
+            (_, Some(Ty::List(inner))) if inner.as_ref() == &Ty::File => Filled::Many,
+            (true, Some(Ty::Text)) => Filled::Folder,
             _ => {
                 return Err(RuntimeError::BadArgs(format!(
-                    "`{}` has no {} parameter next: a file fills the parameter it stands for",
+                    "`{}` has no {} parameter next: {}",
                     crate::platform::label_of(action),
-                    if folder { "`List<File>`" } else { "file" }
+                    if folder { "folder" } else { "file" },
+                    if folder {
+                        "`file.choose_folder` fills a `Text` with the folder the person chose, \
+                         or a `List<File>` with the files it holds"
+                    } else {
+                        "a file fills the parameter it stands for"
+                    }
                 )));
             }
         };
+        let many = matches!(filled, Filled::Many);
         let request = crate::blob::FileRequest {
             title: {
                 let label = crate::platform::label_of(action);
@@ -1465,49 +1484,31 @@ impl ViewInstance {
             multiple: many && !folder,
             folder,
         };
-        let chosen = {
+        let filled_value = {
             let blobs = self.core.blobs.borrow();
             let Some(blobs) = blobs.as_ref() else {
                 return Err(RuntimeError::Package(
                     "this host chooses no files".to_owned(),
                 ));
             };
-            blobs.choose(&request).map_err(RuntimeError::Package)?
-        };
-        if chosen.is_empty() {
-            // The person dismissed the chooser, or the folder held nothing to take: nothing runs.
-            return Ok(InvokeOutcome::Done(Value::Unit));
-        }
-        for file in &chosen {
-            if file.size > crate::blob::MAX_CHOSEN_BYTES {
-                return Err(RuntimeError::Package(format!(
-                    "`{}` is {} bytes: more than the {MAX_CHOSEN} a file may be",
-                    file.name,
-                    file.size,
-                    MAX_CHOSEN = crate::blob::MAX_CHOSEN_BYTES
-                )));
+            if matches!(filled, Filled::Folder) {
+                match blobs
+                    .choose_folder(&request)
+                    .map_err(RuntimeError::Package)?
+                {
+                    Some(reference) => Value::text(reference),
+                    // The person dismissed the chooser: nothing runs.
+                    None => return Ok(InvokeOutcome::Done(Value::Unit)),
+                }
+            } else {
+                let chosen = blobs.choose(&request).map_err(RuntimeError::Package)?;
+                match chosen_files_value(chosen, many, &accept)? {
+                    Some(value) => value,
+                    // The person dismissed the chooser, or the folder held nothing to take:
+                    // nothing runs.
+                    None => return Ok(InvokeOutcome::Done(Value::Unit)),
+                }
             }
-            if !crate::blob::accepts(&accept, &file.media) {
-                return Err(RuntimeError::Package(format!(
-                    "`{}` is a {}, and what is chosen here is {}",
-                    file.name,
-                    file.media,
-                    if accept.is_empty() {
-                        "any file".to_owned()
-                    } else {
-                        accept.join(", ")
-                    }
-                )));
-            }
-        }
-        let filled_value = if many {
-            Value::List(chosen.into_iter().map(Value::file).collect())
-        } else if let [file] = chosen.as_slice() {
-            Value::file(file.clone())
-        } else {
-            return Err(RuntimeError::Package(
-                "the chooser answered more than the one file this asks for".to_owned(),
-            ));
         };
         let filled = ActionRef {
             args: next
@@ -2074,6 +2075,52 @@ impl ViewInstance {
         store.commit(txn, &change)?;
         Ok(EditOutcome::Applied)
     }
+}
+
+/// The files the chooser answered, as the value the action takes next: every file of a
+/// `List<File>`, or the one a `File` takes. `None` when the person answered nothing. A file
+/// larger than one a person may choose, or of a media type the request does not accept, is
+/// refused with why.
+fn chosen_files_value(
+    chosen: Vec<crate::blob::FileValue>,
+    many: bool,
+    accept: &[String],
+) -> Result<Option<Value>, RuntimeError> {
+    if chosen.is_empty() {
+        return Ok(None);
+    }
+    for file in &chosen {
+        if file.size > crate::blob::MAX_CHOSEN_BYTES {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is {} bytes: more than the {MAX_CHOSEN} a file may be",
+                file.name,
+                file.size,
+                MAX_CHOSEN = crate::blob::MAX_CHOSEN_BYTES
+            )));
+        }
+        if !crate::blob::accepts(accept, &file.media) {
+            return Err(RuntimeError::Package(format!(
+                "`{}` is a {}, and what is chosen here is {}",
+                file.name,
+                file.media,
+                if accept.is_empty() {
+                    "any file".to_owned()
+                } else {
+                    accept.join(", ")
+                }
+            )));
+        }
+    }
+    let value = if many {
+        Value::List(chosen.into_iter().map(Value::file).collect())
+    } else if let [file] = chosen.as_slice() {
+        Value::file(file.clone())
+    } else {
+        return Err(RuntimeError::Package(
+            "the chooser answered more than the one file this asks for".to_owned(),
+        ));
+    };
+    Ok(Some(value))
 }
 
 /// Fill what the event carries (`value`) into the place an argument holds it: the value the

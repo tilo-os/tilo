@@ -129,9 +129,14 @@ type Found (title: title) {
     query: Text
 }
 
-/// A folder on a device the library watches: every EPUB in it, now or later, becomes a book.
-type Watched (title: path) {
+/// A folder the person chose for the library to watch: every EPUB in it, now or later, becomes
+/// a book.
+type Watched (title: name) {
+    /// The folder as the system's chooser named it, which is what `File.list` reads: a folder no
+    /// chooser answered is one no app reads.
     path: Text
+    /// What the folder is called where the person chose it, for the settings to show.
+    name: Text = ""
     /// The watch this device keeps, so a change to the folder runs the library's scan.
     token: Text = ""
     /// The paths it already gave books for, so a scan reads only what is new.
@@ -162,8 +167,6 @@ type Library {
     draft_scheme: Text = ""
     custom_page: Text = "#f5ead6"
     custom_ink: Text = "#33291d"
-    /// The folder the settings' field names: what "Watch it" watches.
-    draft_folder: Text = ""
     /// The folders this device watches for books.
     folders: Collection<Watched>
     /// How the shelf orders its books: `title`, `author` or `added`, the last added first.
@@ -260,25 +263,35 @@ action drop_books(lib: Library, files: List<File>) uses time {
     }
 }
 
-/// Watches the folder `path` for books: each EPUB it holds, and each that arrives, becomes a
-/// book, keeping the person's place as one they opened themselves does.
+/// Watches the folder the person chose for books: each EPUB it holds, and each that arrives,
+/// becomes a book, keeping the person's place as one they opened themselves does. The folder is
+/// one the system's chooser answered for this app; a path it did not answer is refused here, as
+/// it would be when read.
 action watch_folder(lib: Library, path: Text) uses files, time (
     icon: .folder_open,
     did: "watched a folder for books",
 ) {
-    require path.trim() != "" "A folder is watched by its name"
+    require path.trim() != "" "A folder is watched through the system's chooser"
     let folder = path.trim()
     if lib.folders.any(f -> f.path == folder) {
         return
     }
-    let watched = lib.folders.insert(Watched(path: folder, added: today))
+    // The system opens the folder for the watch only while the person's choice of it stands, so
+    // a path no chooser answered records no watch and gives no books.
     match File.watch(folder, "foldered") {
         .ok(token) => {
-            watched.token = token
+            let name = match File.stat(folder) {
+                .ok(found) => match found {
+                    .some(entry) => entry.name,
+                    .none => "",
+                },
+                .err(_) => "",
+            }
+            lib.folders.insert(Watched(path: folder, name: name, token: token, added: today))
+            scan_folder(lib, folder)
         }
-        .err(why) => {}
+        .err(_) => {}
     }
-    scan_folder(lib, folder)
 }
 
 /// Reads the folder `path`'s EPUBs, giving a book to each file the library does not hold yet.
@@ -1183,20 +1196,13 @@ view library_settings(lib: Library) {
                     stack(gap: .related) {
                         for folder in lib.folders.sort_by(.path) {
                             ui.ListRow(
-                                title: folder.path,
+                                title: if folder.name == "" { folder.path } else { folder.name },
                                 secondary: "New EPUBs here become books",
                                 icon: .folder,
                             )
                         }
-                        row(gap: .related, align: .center) {
-                            ui.TextInput(
-                                bind: lib.draft_folder,
-                                placeholder: "A folder on this device",
-                                fill,
-                            )
-                            ui.Button("Watch it", icon: .folder_open) {
-                                on press: watch_folder(lib, lib.draft_folder)
-                            }
+                        ui.Button("Watch a folder…", icon: .folder_open) {
+                            on press: file.choose_folder(watch_folder(lib))
                         }
                     }
                 }

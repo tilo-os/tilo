@@ -336,6 +336,18 @@ pub trait Platform {
         Err("this host chooses no files".to_owned())
     }
 
+    /// Ask the person for a folder, answering the reference that reaches it again: what
+    /// `file.choose_folder(a)` fills when `a` takes the folder itself. `None` when they
+    /// dismissed the chooser. A platform without a chooser answers the error saying so.
+    ///
+    /// # Errors
+    ///
+    /// Why there is no folder: there is no chooser, or the one there is refused it.
+    fn choose_folder(&self, request: &FileRequest) -> Result<Option<String>, String> {
+        let _ = request;
+        Err("this host chooses no folders".to_owned())
+    }
+
     /// Put `content` where the person says, offering `request`'s name. A platform without a
     /// chooser answers the error saying so.
     ///
@@ -804,6 +816,10 @@ impl BlobHost for PlatformBlobs {
 
     fn choose(&self, request: &FileRequest) -> Result<Vec<FileValue>, String> {
         self.0.choose_files(request)
+    }
+
+    fn choose_folder(&self, request: &FileRequest) -> Result<Option<String>, String> {
+        self.0.choose_folder(request)
     }
 
     fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {

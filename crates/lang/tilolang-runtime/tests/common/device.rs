@@ -21,6 +21,8 @@ pub struct Files {
     /// The window's scope, in which the store answers the engines' reads of a file.
     pub scope: Rc<tilo_wake::WakeScope>,
     picked: Rc<RefCell<Vec<FileValue>>>,
+    /// The reference the next folder chooser answers, as a person choosing a folder does.
+    picked_folder: Rc<RefCell<Option<String>>>,
     asked: Rc<RefCell<Vec<FileRequest>>>,
     saved: Rc<RefCell<HashMap<String, Vec<u8>>>>,
     previews: Rc<RefCell<Option<Box<Preview>>>>,
@@ -38,6 +40,7 @@ impl Default for Files {
             store,
             scope,
             picked: Rc::default(),
+            picked_folder: Rc::default(),
             asked: Rc::default(),
             saved: Rc::default(),
             previews: Rc::default(),
@@ -115,6 +118,11 @@ impl Files {
         *self.picked.borrow_mut() = files;
     }
 
+    /// The folder the next folder chooser answers, by the reference that reaches it again.
+    pub fn pick_folder(&self, reference: &str) {
+        *self.picked_folder.borrow_mut() = Some(reference.to_owned());
+    }
+
     /// The choosers an app opened, in order.
     pub fn asked(&self) -> Vec<FileRequest> {
         self.asked.borrow().clone()
@@ -151,6 +159,11 @@ impl BlobHost for Files {
     fn choose(&self, request: &FileRequest) -> Result<Vec<FileValue>, String> {
         self.asked.borrow_mut().push(request.clone());
         Ok(self.picked.borrow().clone())
+    }
+
+    fn choose_folder(&self, request: &FileRequest) -> Result<Option<String>, String> {
+        self.asked.borrow_mut().push(request.clone());
+        Ok(self.picked_folder.borrow().clone())
     }
 
     fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
