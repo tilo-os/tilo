@@ -3258,13 +3258,18 @@ class Walk:
         self.step_on = step.get("on")
         try:
             for op in ops:
-                record["ops"].append({**op, "found": self.op(op)})
+                # Each op's own time, so a step over its budget says where the time went.
+                op_began = time.monotonic()
+                found = self.op(op)
+                record["ops"].append({**op, "found": found,
+                                      "took_ms": round((time.monotonic() - op_began) * 1000)})
             # Whatever this step waited for, the window it leaves open says the app: a window
             # that drew nothing of the app is a blank window, and no wait on a word catches one
             # whose words the shell draws itself.
             self.require_shown()
             if self.catalogued is not None:
                 record["catalogue"] = self.catalogued
+            shots_began = time.monotonic()
             if step.get("shot", True):
                 name = f"{index:02d}-{step['id']}"
                 record["shot"] = self.shot(name)
@@ -3277,6 +3282,7 @@ class Walk:
                 if dark:
                     record["shot_dark"] = self.theme_shot(name, True)
                     self.set_dark(False)
+            record["shots_ms"] = round((time.monotonic() - shots_began) * 1000)
             budget = step.get("budget_ms")
             took = round((time.monotonic() - began) * 1000)
             if budget is not None and took > budget:
@@ -3293,6 +3299,13 @@ class Walk:
                                          and "/" not in t["name"] and "~" not in t["name"]})
         except Failed as error:
             record["failed"] = str(error)
+            # Where the time went is the finding of a step over its budget.
+            spent = [f"{next(iter(op))} {op['took_ms']} ms" for op in record["ops"]
+                     if "took_ms" in op]
+            if "shots_ms" in record:
+                spent.append(f"shots {record['shots_ms']} ms")
+            if spent and "budget" in record["failed"]:
+                record["failed"] += f" ({', '.join(spent)})"
             record["took_ms"] = record.get("took_ms") or round((time.monotonic() - began) * 1000)
             # What a failed step looks like is the finding: shoot it, and go on.
             # What the app offered instead is the finding too, so a step that
