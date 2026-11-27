@@ -479,11 +479,13 @@ fn founded_layout(
         &[],
         &std::collections::BTreeMap::default(),
     );
-    doc.commit_with(
-        automerge::transaction::CommitOptions::default().with_message(
-            tilo_desktop_model::shared_resource::housekeeping_message(person),
-        ),
+    // The founding names the workspace's strips again where they were named otherwise.
+    let message = tilo_desktop_model::shared_resource::claiming_renames(
+        &doc,
+        &automerge::transaction::Transactable::base_heads(&doc),
+        tilo_desktop_model::shared_resource::housekeeping_message(person),
     );
+    doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
     Ok(doc)
 }
 

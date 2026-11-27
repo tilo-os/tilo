@@ -351,7 +351,7 @@ fn merged_writes(
         .transpose()?;
     let mut transfers = crate::document_frame::Transfers::default();
     let mut writes = Vec::new();
-    let mut refused = RefusedChanges::default();
+    let mut refused = RefusedChanges::of(document);
     let mut named = Vec::new();
     for (index, op) in cached.iter().enumerate() {
         let of_start = from.as_ref().is_some_and(|(first, parsed)| {

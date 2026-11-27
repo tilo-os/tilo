@@ -155,16 +155,7 @@ pub fn judge(
         // A rename is decided as the moderation its change claims, by the writer's grants, where
         // the change is admitted ([`crate::ownership::rename_path`]), whether or not this holder
         // reads it: here it is only held to say every rename it makes.
-        let named = renames_named(change.message());
-        if let Some(strip) = renamed(&seen, &left)
-            .into_iter()
-            .find(|strip| !named.contains(strip))
-        {
-            return Err(DesktopRefusal::UnclaimedRename {
-                writer: writer.person.to_owned(),
-                strip,
-            });
-        }
+        renames_claimed(&seen, &left, change.message(), writer.person)?;
         if let Some(act) = foreign_acts(&seen, &left, writer.person, writer.members)
             .into_iter()
             .filter(|act| act.act != crate::ownership::Act::Rename)
@@ -202,7 +193,51 @@ fn renamed(
         .collect()
 }
 
-/// The strips the history entry `message` claims to rename ([`crate::ownership::rename_path`]).
+/// Refuse a change that renames a strip of the shared desktop without claiming the rename in its
+/// history entry `message`: `seen` is the desktop its writer saw, `left` the one it left. The one
+/// check of what a change's renames say, made wherever the change is read: a holder that takes it
+/// in the clear ([`judge`]), and every device that opens it sealed ([`change_renames_claimed`]).
+/// Whether the writer may rename is decided apart, from the claim, by their grants.
+///
+/// # Errors
+/// [`DesktopRefusal::UnclaimedRename`] for the first strip renamed without its claim.
+pub fn renames_claimed(
+    seen: &crate::ownership::SharedDesktop,
+    left: &crate::ownership::SharedDesktop,
+    message: Option<&str>,
+    writer: &str,
+) -> Result<(), DesktopRefusal> {
+    let named = renames_named(message);
+    match renamed(seen, left)
+        .into_iter()
+        .find(|strip| !named.contains(strip))
+    {
+        Some(strip) => Err(DesktopRefusal::UnclaimedRename {
+            writer: writer.to_owned(),
+            strip,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// [`renames_claimed`] for `change`, a change `doc` holds with every change it builds on: the
+/// desktop it saw is read at its dependencies, the one it left at itself, whatever else `doc`
+/// holds beside them.
+///
+/// # Errors
+/// As [`renames_claimed`].
+pub fn change_renames_claimed(
+    doc: &AutoCommit,
+    change: &automerge::Change,
+) -> Result<(), DesktopRefusal> {
+    let seen = super::read_as_kept(doc, Some(change.deps())).unwrap_or_default();
+    let left = super::read_as_kept(doc, Some(&[change.hash()])).unwrap_or_default();
+    let writer = super::change_author(change.message()).unwrap_or_default();
+    renames_claimed(&seen, &left, change.message(), &writer)
+}
+
+/// The strips the history entry `message` claims to rename ([`crate::ownership::rename_path`]):
+/// its own renames, and those of a step it takes back or brings back.
 fn renames_named(message: Option<&str>) -> BTreeSet<u64> {
     fn walk(did: &tilo_actions::Did, named: &mut BTreeSet<u64>) {
         match did {
@@ -219,7 +254,12 @@ fn renames_named(message: Option<&str>) -> BTreeSet<u64> {
                     walk(member, named);
                 }
             }
-            tilo_actions::Did::Verb(_) | tilo_actions::Did::History(_) => {}
+            tilo_actions::Did::History(step) => {
+                if let Some(of) = &step.of {
+                    walk(&of.what, named);
+                }
+            }
+            tilo_actions::Did::Verb(_) => {}
         }
     }
     let mut named = BTreeSet::new();

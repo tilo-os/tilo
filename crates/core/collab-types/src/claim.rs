@@ -273,8 +273,55 @@ impl ClaimedAction {
             Did::History(step) if matches!(step.op, HistoryOp::Migrate { .. }) => {
                 Self::Framework(FrameworkChange::Migrate)
             }
-            Did::History(step) => Self::History(step.op.clone()),
+            // Taking back or bringing back a step that moderated (renamed a shared desktop's
+            // strip, say) moderates the same: it claims those edits beside the step through
+            // history, so it is decided by the same grant as the step it moves.
+            Did::History(step) => {
+                let history = Self::History(step.op.clone());
+                let mut moderated = Vec::new();
+                if let Some(of) = &step.of {
+                    Self::moderation_edits(&of.what, kind, &mut moderated);
+                }
+                if moderated.is_empty() {
+                    history
+                } else {
+                    Self::Group(std::iter::once(history).chain(moderated).collect())
+                }
+            }
         })
+    }
+
+    /// Each edit `what` makes under a [`tilo_action_policy::roles::MODERATION_FIELD`], as a claim
+    /// on a resource of kind `kind`, into `into`: what a step through history that moves `what`
+    /// does again.
+    fn moderation_edits(what: &Did, kind: &str, into: &mut Vec<Self>) {
+        match what {
+            Did::Edit(edit)
+                if edit.path.iter().any(|step| {
+                    matches!(step, PathStep::Field(field)
+                        if field == tilo_action_policy::roles::MODERATION_FIELD)
+                }) =>
+            {
+                let edit = Self::Edit {
+                    kind: kind.to_owned(),
+                    path: edit.path.clone(),
+                };
+                if !into.contains(&edit) {
+                    into.push(edit);
+                }
+            }
+            Did::Group(group) => {
+                for member in group.members.iter().chain(&group.distinct) {
+                    Self::moderation_edits(member, kind, into);
+                }
+            }
+            Did::History(step) => {
+                if let Some(of) = &step.of {
+                    Self::moderation_edits(&of.what, kind, into);
+                }
+            }
+            Did::Edit(_) | Did::Verb(_) => {}
+        }
     }
 
     /// What a continuation message (the next keystroke of a gesture) says

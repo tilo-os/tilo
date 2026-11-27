@@ -151,8 +151,80 @@ fn write_of(
     let heads = doc.get_heads();
     change(&mut doc);
     shared_resource::commit_change(&mut doc, person, 0, None);
-    let mutation = if held.is_some() {
-        collab_types::DocumentMutation::Incremental(doc.save_after(&heads))
+    signed(key, record, held.is_some(), &mut doc, &heads, sequence)
+}
+
+/// The workspace's desktop as `key`'s device holds it, to write.
+fn held_desktop(peer: &StatePeer, key: &SigningKey) -> AutoCommit {
+    let mut doc = AutoCommit::load(&peer.document(DESKTOP_APP, DESKTOP_DOCUMENT).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    doc
+}
+
+/// `key`'s signed write of the workspace's desktop, as `commit` changes and commits it.
+fn write_of_committed(
+    peer: &StatePeer,
+    key: &SigningKey,
+    sequence: u64,
+    commit: impl FnOnce(&mut AutoCommit),
+) -> NeighbourMsg {
+    let mut doc = held_desktop(peer, key);
+    let heads = doc.get_heads();
+    commit(&mut doc);
+    signed(key, DESKTOP_DOCUMENT, true, &mut doc, &heads, sequence)
+}
+
+/// `person`'s rename of the desktop to `desktop` as one step of theirs, and their undo of it, as
+/// `key`'s writes `sequence` and the one after: what a session's Ctrl+Z after a rename sends.
+fn rename_and_take_back(
+    peer: &StatePeer,
+    key: &SigningKey,
+    person: &str,
+    desktop: &SharedDesktop,
+    sequence: u64,
+) -> (NeighbourMsg, NeighbourMsg) {
+    let mut doc = held_desktop(peer, key);
+    let mut log = collab_types::history::UndoLog::new(&mut doc);
+    let member = collab_types::MemberId::person(person);
+    let before = doc.get_heads();
+    shared_resource::write(&mut doc, desktop).unwrap();
+    shared_resource::commit_change(&mut doc, person, 0, None);
+    log.record_committed_action_authored(
+        &mut doc,
+        before.clone(),
+        None,
+        None,
+        Some(member.clone()),
+    );
+    let after = doc.get_heads();
+    let step = signed(key, DESKTOP_DOCUMENT, true, &mut doc, &before, sequence);
+    log.undo_as(&mut doc, Some(&member), None, None)
+        .expect("the rename is theirs to take back");
+    let undo = signed(
+        key,
+        DESKTOP_DOCUMENT,
+        true,
+        &mut doc,
+        &after,
+        sequence.saturating_add(1),
+    );
+    (step, undo)
+}
+
+/// `key`'s signed write of `record` in the workspace: what `doc` holds after `heads`, or the whole
+/// of it when the workspace `held` none of the record yet.
+fn signed(
+    key: &SigningKey,
+    record: &str,
+    held: bool,
+    doc: &mut AutoCommit,
+    heads: &[automerge::ChangeHash],
+    sequence: u64,
+) -> NeighbourMsg {
+    let mutation = if held {
+        collab_types::DocumentMutation::Incremental(doc.save_after(heads))
     } else {
         collab_types::DocumentMutation::Snapshot(doc.save())
     };
@@ -256,6 +328,59 @@ tilo_test_env::scenario! {
         receive(&mut peer, &guest, clears).expect("a moderator closes any window");
         assert!(windows(&peer).is_empty());
         assert_eq!(strip_names(&peer), ["Renamed"]);
+    }
+
+    phase a_rename_says_it_is_one_and_taking_it_back_is_moderation_too;
+    // A change that renames a strip says so, whoever makes it: one that hides its rename is
+    // refused, whatever its writer may do. Taking a rename back renames the strip again, so it
+    // needs the moderation grant the rename did: a moderator takes theirs back.
+    {
+        let (mut peer, owner, key, guest) = workspace_with(Role::Moderator);
+        let person = hex::encode(guest.user_public_key);
+        let mut renamed = desktop(&[(1, &owner)]);
+        renamed.tree.workspaces[0].strips[0].name = "Renamed".into();
+
+        let hides = write_of_committed(&peer, &key, 1, |doc| {
+            shared_resource::write(doc, &renamed).unwrap();
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(shared_resource::change_message(&person)),
+            );
+        });
+        let refused = receive(&mut peer, &guest, hides).unwrap_err();
+        assert!(refused.contains("without claiming"), "{refused}");
+        assert_eq!(strip_names(&peer), ["Workspace"]);
+
+        let (step, undo) = rename_and_take_back(&peer, &key, &person, &renamed, 2);
+        receive(&mut peer, &guest, step).expect("a moderator renames the strip");
+        assert_eq!(strip_names(&peer), ["Renamed"]);
+        receive(&mut peer, &guest, undo).expect("a moderator takes their rename back");
+        assert_eq!(strip_names(&peer), ["Workspace"]);
+    }
+
+    phase a_former_moderator_takes_no_rename_back;
+    // Once the workspace made them an editor, the moderator may not take their rename back: the
+    // undo claims the rename it takes back, which an editor's role denies.
+    {
+        let (mut peer, owner, key, guest) = workspace_with(Role::Moderator);
+        let person = hex::encode(guest.user_public_key);
+        let mut renamed = desktop(&[(1, &owner)]);
+        renamed.tree.workspaces[0].strips[0].name = "Renamed".into();
+        let (step, undo) = rename_and_take_back(&peer, &key, &person, &renamed, 1);
+        receive(&mut peer, &guest, step).expect("a moderator renames the strip");
+        assert!(
+            peer.governance_mut()
+                .set_member_role(
+                    guest.user_public_key,
+                    Role::Editor,
+                    &SigningKey::from_bytes(&[2; 32]),
+                    now(),
+                )
+                .unwrap()
+        );
+        let refused = receive(&mut peer, &guest, undo).unwrap_err();
+        assert!(refused.contains("item:10/field:moderation"), "{refused}");
+        assert_eq!(strip_names(&peer), ["Renamed"], "refused, the rename stands");
     }
 
     phase another_devices_page_reaches_the_shell_and_its_rename_follows;

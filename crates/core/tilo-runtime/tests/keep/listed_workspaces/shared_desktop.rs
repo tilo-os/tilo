@@ -338,6 +338,62 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
     assert!(refused.contains("field:moderation"), "{refused}");
     assert_eq!(strip_name_in(&ben_copy).as_deref(), Some("Lounge"));
 
+    // A rename whose change leaves its claim out claims only an edit of the desktop, which the
+    // host, deciding by the claim without reading it, takes from Ada. Every device that reads it
+    // sees the rename the claim hides, and leaves the write out.
+    let mut doc = AutoCommit::load(&held)
+        .unwrap()
+        .with_actor(automerge::ActorId::from(
+            ada_browser.device_pubkey().to_vec(),
+        ));
+    let heads = doc.get_heads();
+    shared_resource::write(&mut doc, &renamed).unwrap();
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(shared_resource::change_message(&a)),
+    );
+    let claims =
+        collab_types::claim::claims_of(&doc.get_changes(&heads), collab_types::claim::record_unit)
+            .expect("the change names what it did");
+    let hidden = crate::keep::common::signed_by_hand(
+        &ada_browser.sk,
+        (&hosted.workspace, DESKTOP_APP, DESKTOP_DOCUMENT),
+        &collab_types::DocumentMutation::Incremental(doc.save_after(&heads)),
+        seq,
+        None,
+        claims,
+    );
+    commit(&ada_link, &hidden)
+        .await
+        .expect("the host takes the write by what it claims");
+    let left_out = |peer: &StatePeer| {
+        let mut open = |op: &collab_types::SignedOp| {
+            let metadata = op.encryption.ok_or("not sealed")?;
+            let ciphertext =
+                collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+            KEYS.open_content(op.artifact, &metadata, &ciphertext)
+                .map(|plaintext| plaintext.to_vec())
+                .map_err(|error| error.to_string())
+        };
+        peer.publication()
+            .opened_document(DESKTOP_APP, DESKTOP_DOCUMENT, &mut open)
+            .unwrap()
+            .map_or_else(Vec::new, |opened| opened.unmerged)
+            .into_iter()
+            .any(|write| {
+                write.author == ada_browser.device_pubkey()
+                    && write.seq == seq
+                    && matches!(&write.reason, tilo_peer_state::UnmergedReason::Refused { refusal }
+                        if refusal.contains("without claiming"))
+            })
+    };
+    crate::keep::common::receives(&ben_link, left_out).await;
+    assert_eq!(
+        ben_link.read(strip_name_in).as_deref(),
+        Some("Lounge"),
+        "Ben's device reads the desktop without the rename"
+    );
+
     // The workspace's windows are every member's: Cy moves Ben's window into Ada's, and closes it.
     let into_hers = desktop(&[(1, 100, a.clone()), (2, 100, b.clone())]);
     write_desktop(&cy_link, &cy_laptop, &c, &into_hers).expect("Cy moves Ben's window");

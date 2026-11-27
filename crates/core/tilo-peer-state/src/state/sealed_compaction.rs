@@ -680,7 +680,7 @@ fn holds_every_change(
         return Err("the sealed compaction's snapshot is not complete".into());
     }
     let mut transfers = crate::document_frame::Transfers::default();
-    let mut refused = RefusedChanges::default();
+    let mut refused = RefusedChanges::of(document);
     let mut writes = Vec::new();
     for (index, write) in replaced.iter().enumerate() {
         let Some(mutation) = transfers.take(*write.author.as_bytes(), &open(write)?)? else {
@@ -776,7 +776,7 @@ pub(super) fn merge_sealed_reading(
     // whatever order they were admitted in: a merge per write copied the
     // whole record into the isolate each time.
     let mut writes = Vec::new();
-    let mut refused = RefusedChanges::default();
+    let mut refused = RefusedChanges::of(document);
     // A write too large for one op, a compaction's snapshot among them, is
     // read once all of its segments are.
     let mut transfers = crate::document_frame::Transfers::default();
@@ -824,7 +824,9 @@ pub(super) fn merge_sealed_reading(
     }
     let base = (*document.doc).clone();
     let mut merged = base.clone();
-    if !history.is_empty() {
+    // A record with rules of its own reads each write by them, which one pass over the whole
+    // history does not.
+    if !history.is_empty() && !refused.ruled() {
         match crate::document::merge_committed_with_status(
             &mut merged,
             &DocumentMutation::Incremental(history),
@@ -1063,9 +1065,42 @@ pub(super) type LeftWrite = (usize, UnmergedReason, DocumentMutation);
 /// The verdict on a write is the same on every device that opens it, so every reader leaves out
 /// the same writes, and a compaction folds them away.
 #[derive(Clone, Debug, Default)]
-pub(super) struct RefusedChanges(std::collections::HashSet<automerge::ChangeHash>);
+pub(super) struct RefusedChanges(
+    std::collections::HashSet<automerge::ChangeHash>,
+    Option<ContentRule>,
+);
+
+/// What a record's own rules say of one of its changes, read from the record that holds it and
+/// every change it builds on: why it is refused. A rule that a reader of the record decides from
+/// what the change wrote, which a holder without its keys cannot.
+pub(super) type ContentRule = fn(&AutoCommit, &automerge::Change) -> Result<(), String>;
 
 impl RefusedChanges {
+    /// The changes refused in reading `document`, decided by its own rules as well as the
+    /// workspace's: a workspace's shared desktop refuses a change that renames a strip without
+    /// claiming it ([`tilo_desktop_model::shared_resource::guard::change_renames_claimed`]),
+    /// which the claim alone, all a holder without its keys decides by, cannot show.
+    pub(super) fn of(document: &super::Document) -> Self {
+        use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+        let desktop = collab_types::document_artifact_id(
+            DESKTOP_APP,
+            &document.channel.workspace,
+            DESKTOP_DOCUMENT,
+        );
+        let is_desktop = document.channel.artifacts.contains_key(&desktop)
+            || document.sealed.iter().any(|op| op.artifact == desktop);
+        let rule: Option<ContentRule> = is_desktop.then_some(|doc, change| {
+            tilo_desktop_model::shared_resource::guard::change_renames_claimed(doc, change)
+                .map_err(|refusal| refusal.to_string())
+        });
+        Self(std::collections::HashSet::new(), rule)
+    }
+
+    /// Whether the record's own rules read its writes ([`Self::of`]).
+    pub(super) const fn ruled(&self) -> bool {
+        self.1.is_some()
+    }
+
     /// Leave out `mutation`, a write the workspace's rules refuse: what is built on its changes is
     /// left out with it. A whole document names no change of its own apart from those it folds,
     /// which other writes build on; it is left out alone.
@@ -1171,6 +1206,71 @@ pub(super) struct Signers<'a> {
 /// `refused` is left out whatever `policy` is ([`UnmergedReason::BuiltOnRefused`]), and its
 /// changes join `refused`.
 pub(super) fn merge_writes(
+    merged: AutoCommit,
+    writes: Vec<(usize, DocumentMutation)>,
+    policy: LeftOut,
+    signers: Option<&Signers<'_>>,
+    refused: &mut RefusedChanges,
+) -> Result<(AutoCommit, Vec<LeftWrite>), String> {
+    let Some(rule) = refused.1 else {
+        return merge_writes_as_they_come(merged, writes, policy, signers, refused);
+    };
+    // The record's own rules read each write as it stands among the changes it builds on, which
+    // the merged record holds whatever order the writes came in: a write they refuse is left out,
+    // with every write built on it, and the rest merged again without them.
+    let base = merged.clone();
+    let all = writes.clone();
+    let (mut merged, left) = merge_writes_as_they_come(merged, writes, policy, signers, refused)?;
+    let not_merged: std::collections::HashSet<usize> =
+        left.iter().map(|(index, _, _)| *index).collect();
+    let mut ruled_out: Vec<(usize, String)> = Vec::new();
+    for (index, mutation) in &all {
+        let DocumentMutation::Incremental(bytes) = mutation else {
+            continue;
+        };
+        if not_merged.contains(index) {
+            continue;
+        }
+        let changes: Vec<automerge::Change> = tilo_automerge_isolate::change_hashes(bytes)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|hash| merged.get_change_by_hash(hash))
+            .collect();
+        if let Some(why) = changes
+            .iter()
+            .find_map(|change| rule(&merged, change).err())
+        {
+            ruled_out.push((*index, why));
+        }
+    }
+    if ruled_out.is_empty() {
+        return Ok((merged, left));
+    }
+    let mut kept = Vec::with_capacity(all.len());
+    let mut refused_now = Vec::with_capacity(ruled_out.len());
+    for (index, mutation) in all {
+        match ruled_out.iter().find(|(out, _)| *out == index) {
+            Some((_, why)) => {
+                refused.refuse(&mutation);
+                refused_now.push((
+                    index,
+                    UnmergedReason::Refused {
+                        refusal: why.clone(),
+                    },
+                    mutation,
+                ));
+            }
+            None => kept.push((index, mutation)),
+        }
+    }
+    let (merged, mut left) = merge_writes(base, kept, policy, signers, refused)?;
+    left.extend(refused_now);
+    left.sort_by_key(|(index, _, _)| *index);
+    Ok((merged, left))
+}
+
+/// [`merge_writes`] by the workspace's rules alone, each write decided before it came here.
+fn merge_writes_as_they_come(
     mut merged: AutoCommit,
     writes: Vec<(usize, DocumentMutation)>,
     policy: LeftOut,
@@ -1489,7 +1589,7 @@ pub(super) fn open_sealed_after(
     };
     let mut unmerged = Vec::new();
     let mut writes = Vec::new();
-    let mut refused = RefusedChanges::default();
+    let mut refused = RefusedChanges::of(document);
     // Writes the checkpoint stands in for that the workspace's rules refuse: no write of the
     // history, so named apart.
     let mut beside = Vec::new();

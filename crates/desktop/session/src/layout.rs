@@ -2518,9 +2518,13 @@ impl Layouts {
                 tracing::warn!(%workspace_id, "a layout edit was made by no person");
                 return false;
             };
+            let message = shared_resource::claiming_renames(
+                &candidate,
+                &candidate.base_heads(),
+                shared_resource::change_message(&author),
+            );
             candidate.commit_with(
-                automerge::transaction::CommitOptions::default()
-                    .with_message(shared_resource::change_message(&author)),
+                automerge::transaction::CommitOptions::default().with_message(message),
             );
         }
         let changes = candidate.save_after(heads);
@@ -2825,12 +2829,17 @@ fn found(
         tracing::warn!(%error, "the layout's founding does not apply");
         automerge::AutomergeError::Fail
     })?;
+    let before = doc.base_heads();
     device::write(doc, workspace_id, &strips, writer)?;
+    // The founding names the workspace's strips again where they were named otherwise.
+    let message = shared_resource::claiming_renames(
+        doc,
+        &before,
+        shared_resource::housekeeping_message(writer.person.unwrap_or_default()),
+    );
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(shared_resource::housekeeping_message(
-                writer.person.unwrap_or_default(),
-            ))
+            .with_message(message)
             .with_time(crate::activity::now_seconds()),
     );
     Ok(())

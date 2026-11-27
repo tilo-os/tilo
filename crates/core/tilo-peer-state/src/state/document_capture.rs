@@ -844,7 +844,7 @@ fn opened_history(
                 captured: None,
                 stuck: Vec::new(),
                 waiting: Vec::new(),
-                refusing: super::sealed_compaction::RefusedChanges::default(),
+                refusing: super::sealed_compaction::RefusedChanges::of(document),
                 refused: Vec::new(),
                 // The document's cleartext part as it stands, which is what a sealed history opens
                 // onto ([`super::sealed_compaction::open_sealed_after`]): a compaction folds the
