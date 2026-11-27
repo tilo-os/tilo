@@ -126,6 +126,11 @@ pub struct Schema {
     pub verbs: Vec<Verb>,
     /// Who reads a resource of each kind that says, by kind: the store places it by this alone.
     pub readers: BTreeMap<String, ReaderRule>,
+    /// The apps that declare each kind, by kind: an app writes the kinds it declares and never
+    /// another app's, whoever carries the change. A schema declared on its own
+    /// ([`Schema::from_surface`]) names no owner, and a kind whose owner a store does not know is
+    /// not judged.
+    pub owners: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// What one verb writes: each kind it writes resources of, and the kinds it may write that
@@ -429,6 +434,8 @@ impl Schema {
                 .iter()
                 .map(|rule| (surface.kind.clone(), rule.clone()))
                 .collect(),
+            // Whose kind it is an app names (`of_app`); a surface declared on its own names none.
+            owners: BTreeMap::new(),
         }
     }
 
@@ -437,6 +444,11 @@ impl Schema {
     #[must_use]
     pub fn of_app(app: &str, surface: &Surface) -> Self {
         let mut schema = Self::from_surface(surface);
+        schema
+            .owners
+            .entry(surface.kind.clone())
+            .or_default()
+            .insert(app.to_owned());
         for verb in &mut schema.verbs {
             if let Some(declared) = surface
                 .verbs

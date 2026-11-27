@@ -179,6 +179,38 @@ pub(crate) fn declared(
     Ok(())
 }
 
+/// Whether the change's stamp names an app, and the change writes only kinds that app declares:
+/// an app writes its own kinds and never another app's, whoever carries the change, so every
+/// holder reaches the same refusal. A change no app made (a person's, an agent's, one the
+/// platform wrote) is no app's to own, and a kind the schema knows no owner of is not judged.
+pub(crate) fn owned_by_its_app(
+    schema: &Schema,
+    touched: &Touched,
+    stamp: Option<&Stamp>,
+) -> Result<(), String> {
+    let Some(app) = stamp
+        .and_then(Stamp::invoked_by)
+        .and_then(|actor| actor.app().cloned())
+    else {
+        return Ok(());
+    };
+    for touch in touched.resources.values() {
+        let Some(kind) = &touch.kind else {
+            continue;
+        };
+        if let Some(owners) = schema.owners.get(kind)
+            && !owners.is_empty()
+            && !owners.contains(app.as_str())
+        {
+            return Err(format!(
+                "`{app}` writes `{kind}`, which {} declares",
+                owners.iter().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Whether what `touched` writes lies within what the verbs `stamp` names declare they write, the
 /// change making `operations` operations. A change names one verb, or the several actions of a
 /// group its entry says it was one step of, each of which must be declared and one of which

@@ -2696,6 +2696,12 @@ impl Store {
             .cloned()
             .collect();
         self.rules.extend(schema.readers);
+        // A kind may be declared by more than one app (the platform's own kinds ship with every
+        // package): its owners are each of them, and the kind is judged against all a holder
+        // knows.
+        for (kind, apps) in schema.owners {
+            self.schema.owners.entry(kind).or_default().extend(apps);
+        }
         for kind in ruled {
             for id in self.index.ids(&kind) {
                 self.file_by_rule(&kind, &id);
@@ -2934,6 +2940,7 @@ impl Store {
             return self.judge_founding(schema, (kind, id), received);
         }
         let stamp = self.stamp_of(doc_id, &received.change)?;
+        self.judge_ownership(schema, &touched, stamp.as_ref())?;
         // The migration verb's two forms. A record's step to a storage version is admitted only
         // as the one its kind and id derive for that version, up to the version its type stands
         // at: the step every holder makes, whoever sends it. The app's rewrite of its content for
@@ -2985,6 +2992,20 @@ impl Store {
         } else {
             Err(Refusal::NotPermitted)
         }
+    }
+
+    /// Refuses a change that names one app and writes another app's kind: every holder judges it
+    /// before the types, verbs and readers, whoever carried the change.
+    fn judge_ownership(
+        &self,
+        schema: Option<&Schema>,
+        touched: &collab_types::touch::Touched,
+        stamp: Option<&Stamp>,
+    ) -> Result<(), Refusal> {
+        for schema in std::iter::once(&self.schema).chain(schema) {
+            crate::admit::owned_by_its_app(schema, touched, stamp).map_err(Refusal::Undeclared)?;
+        }
+        Ok(())
     }
 
     /// Applies `change`, admitted, to `doc_id`, and indexes the resources it touched.

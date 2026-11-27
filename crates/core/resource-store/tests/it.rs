@@ -3429,6 +3429,7 @@ mod store {
                     ..Verb::default()
                 }],
                 readers: BTreeMap::new(),
+                owners: BTreeMap::new(),
             })
             .unwrap();
         let change = issues()
@@ -4375,6 +4376,7 @@ mod store {
                 verb("convert", &[ISSUE, "Comment"]),
             ],
             readers: BTreeMap::new(),
+            owners: BTreeMap::new(),
         };
         let mut here = Store::new(crate::WORKSPACE);
         let mut holders = [
@@ -5445,6 +5447,7 @@ mod outside_effects {
                 ..Verb::default()
             }],
             readers: BTreeMap::from([(EFFECT.to_owned(), ReaderRule::Author { until: None })]),
+            owners: BTreeMap::new(),
         }
     }
 
@@ -5612,6 +5615,7 @@ mod outside_effects {
                     until: Some("ready".to_owned()),
                 },
             )]),
+            owners: BTreeMap::new(),
         };
         let held = |ready: bool| {
             let mut writer = store(schema());
@@ -5825,5 +5829,108 @@ fn the_content_a_resource_names_is_found_by_its_address_as_commits_leave_it() {
     assert!(
         naming(&index, &other).is_empty(),
         "a forgotten document names nothing"
+    );
+}
+/// The surface of an app that declares the kind `kind` and the verb `save` on it.
+fn app_surface(kind: &str) -> tilo_actions::surface::Surface {
+    use tilo_actions::surface::{RESOURCE_UNIT, Surface, VerbSurface};
+    Surface {
+        kind: kind.to_owned(),
+        label: kind.to_owned(),
+        version: 1,
+        person: false,
+        readers: None,
+        verbs: vec![VerbSurface {
+            id: "save".to_owned(),
+            name: String::new(),
+            label: "Save".to_owned(),
+            description: None,
+            kind: tilo_actions::policy::ActionKind::Undoable,
+            destructive: false,
+            incoming_message: false,
+            params: Vec::new(),
+            returns: None,
+            writes: vec![RESOURCE_UNIT.to_owned()],
+            field: None,
+            tags: Vec::new(),
+            outside: Vec::new(),
+            notice: false,
+            origin: None,
+        }],
+        fields: Vec::new(),
+        types: Vec::new(),
+        shows: Vec::new(),
+        live: None,
+        setters: false,
+    }
+}
+
+/// Two stores that know the two apps' surfaces, as a holder of the workspace does.
+fn two_apps() -> tilo_resource_store::Store {
+    let mut store = tilo_resource_store::Store::new(WORKSPACE);
+    store
+        .declare(Schema::of_app("so.tilo.a", &app_surface("test.a.record")))
+        .unwrap();
+    store
+        .declare(Schema::of_app("so.tilo.b", &app_surface("test.b.record")))
+        .unwrap();
+    store
+}
+
+/// Admits every change, as a holder of records with no permission rule of their own does.
+fn admits_everything(_: &tilo_resource_store::Proposal<'_>) -> bool {
+    true
+}
+
+/// A change of app A's kind whose stamp names app B as its invoker is refused by every holder: a
+/// kind is its app's to write, whatever device carries the change.
+#[test]
+fn a_change_of_one_apps_kind_stamped_by_another_app_is_refused() {
+    use tilo_actions::Actor;
+    use tilo_resource_store::{Received, Refusal, Stamp};
+    let mut writer = two_apps();
+    let mut holder = two_apps();
+    let stamp = Stamp {
+        invoked: String::new(),
+        verb: "save".to_owned(),
+        invoker: Stamp::by(&Actor::App("so.tilo.b".into())),
+        invocation: "i1".to_owned(),
+        ..Stamp::default()
+    };
+    let resource = collab_types::store::Resource {
+        readers: "*".to_owned(),
+        parent: None,
+        order: None,
+        fields: BTreeMap::new(),
+    };
+    let written = writer
+        .put("test.a.record", "r1", resource, &stamp)
+        .expect("the writer makes it");
+    assert_eq!(written.len(), 1);
+    let write = &written[0];
+    let refused = holder
+        .receive(
+            &write.doc,
+            &write.readers,
+            vec![Received {
+                change: write.change.clone(),
+                author: [7; 32],
+                claimed: None,
+            }],
+            &admits_everything,
+        )
+        .expect("the holder reads it");
+    assert!(
+        matches!(
+            refused.as_slice(),
+            [(_, Refusal::Undeclared(why))]
+                if why.contains("so.tilo.b") && why.contains("test.a.record")
+        ),
+        "app B writing app A's kind is refused, not {refused:?}"
+    );
+    assert_eq!(
+        holder.index().ids_of("test.a.record").count(),
+        0,
+        "nothing of the refused change is kept"
     );
 }

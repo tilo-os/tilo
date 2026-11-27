@@ -132,5 +132,6 @@ pub fn schema() -> Schema {
             })
             .collect(),
         readers: BTreeMap::new(),
+        owners: BTreeMap::new(),
     }
 }
