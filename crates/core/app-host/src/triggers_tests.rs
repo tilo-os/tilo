@@ -1420,8 +1420,14 @@ async fn a_shortcut_saved_by_an_agent_acts_as_that_agent_and_one_saved_by_a_pers
     assert_eq!(
         firings[1].caller(),
         Caller::delegated_agent("scout", cert.user_public_key, grant.device_public_key)
+            .granting(tilo_action_policy::roles::certified_agent(
+                &workspace,
+                ("scout", &person),
+                &person,
+            ))
             .in_workspace(&workspace),
-        "the agent's shortcut acts as that agent for its person"
+        "the agent's shortcut acts as that agent for its person, with no more than its \
+         certificate delegates in the workspace"
     );
     host.shutdown().await;
 }
