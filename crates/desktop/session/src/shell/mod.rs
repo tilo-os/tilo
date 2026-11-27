@@ -1063,6 +1063,9 @@ impl Shell {
             // then carry the row filling the part.
             let aim = part
                 .bar_bounds(&name)
+                // A window a style draws without a frame the tree names: the control the name
+                // reaches is the only bar there is.
+                .or_else(|| part.control_bounds(&name))
                 .map(|(x, y, width, height)| (x + width / 2.0, y + height / 2.0))
                 .filter(|&(x, y)| part.accepts_pointer(x, y))
                 .or_else(|| part.row_pointer());

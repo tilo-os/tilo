@@ -1498,6 +1498,47 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::Affine;
 
+    tilo_test_env::scenario! {
+        fn bar_named_finds_the_bar_the_frame_laid_out;
+
+        phase the_window_is_found_by_the_name_a_person_reads;
+        {
+            let mut frame = Box::new(WindowFrame::from_props(
+                "w",
+                WindowFrameProps {
+                    key: "w".to_owned(),
+                    name: Some("Groceries".to_owned()),
+                    body: Some(Box::new(Spacer::new())),
+                    ..WindowFrameProps::default()
+                },
+            ));
+            let theme = Theme::dark();
+            let rect = Rect::new(0.0, 0.0, 480.0, 360.0);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut nodes = std::collections::HashMap::new();
+            let node = Widget::build_layout(frame.as_mut(), &mut taffy, &theme, &mut nodes);
+            if let Ok(mut style) = taffy.style(node).cloned() {
+                style.size = taffy::Size::from_lengths(480.0_f32, 360.0_f32);
+                let _ = taffy.set_style(node, style);
+            }
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(480.0),
+                        height: taffy::AvailableSpace::Definite(360.0),
+                    },
+                )
+                .expect("the window solves its layout");
+            Widget::apply_layout(frame.as_mut(), &taffy, node, rect.origin());
+            let bar = frame.bar;
+            assert!(bar.height() > 0.0, "the frame draws a bar: {bar:?}");
+            let found = bar_named(frame.as_ref(), "Groceries");
+            assert_eq!(found, Some(bar), "the window's own bar, where it stands");
+            assert_eq!(bar_named(frame.as_ref(), "Packing list"), None);
+        }
+    }
+
     /// A window's tabs, as the shell's strip hands them to its frame: two places, the first in
     /// front.
     fn two_places() -> Box<TabStrip> {
