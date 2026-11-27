@@ -351,12 +351,12 @@ tilo_test_env::scenario! {
         settle(&mut h, 220, 700);
         let doc = automerge::AutoCommit::new();
         h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-        let labels = at(&h.root::<NavShell>().test_headers(), Column::Content)
+        let labels = at(h.root::<NavShell>().test_headers(), Column::Content)
             .more
             .menu_labels();
         assert_eq!(labels.last().map(String::as_str), Some("Delete message"));
         let row = labels.len() - 1;
-        at_mut(&mut h.root_mut::<NavShell>().test_headers_mut(), Column::Content)
+        at_mut(h.root_mut::<NavShell>().test_headers_mut(), Column::Content)
             .more
             .choose(row);
         h.send(&tilo_ui_base::synthetic_input::cursor_moved(10.0, 300.0));
@@ -757,7 +757,7 @@ struct Filtered {
 
 impl Filterable for Filtered {
     fn set_filter(&mut self, query: &str) {
-        *self.query.borrow_mut() = query.to_owned();
+        self.query.replace(query.to_owned());
     }
 
     fn filter_count(&self) -> Option<FilterCount> {

@@ -1228,10 +1228,8 @@ fn rows_of(list: &NavList) -> Vec<std::sync::Arc<tilo_ui_base::a11y::AccessNode>
         .children
 }
 
-#[cfg(feature = "native")]
 struct Region;
 
-#[cfg(feature = "native")]
 impl tilo_ui::app::AppSurface for Region {
     fn scale_factor(&self) -> f64 {
         1.0
@@ -1244,7 +1242,6 @@ impl tilo_ui::app::AppSurface for Region {
 }
 
 /// One host frame: app frames until the app is at rest, then the walk.
-#[cfg(feature = "native")]
 fn host_frame(app: &mut tilo_ui::app::App, damage: &mut tilo_ui::app::SurfaceDamage) {
     let mut scene = vello::Scene::new();
     for _ in 0..3 {
@@ -1259,7 +1256,6 @@ fn host_frame(app: &mut tilo_ui::app::App, damage: &mut tilo_ui::app::SurfaceDam
 /// What the walk of a keystroke's frame costs in a field beside a list of
 /// `count` destinations: the nodes it built, and the subtrees it compared
 /// or built. Also the rows the list publishes.
-#[cfg(feature = "native")]
 fn keystroke_walk_beside(count: usize) -> (usize, usize, usize) {
     use tilo_ui_base::a11y::Role;
     let shell = tilo_ui::widget::NavShell::new()
@@ -1311,7 +1307,6 @@ fn keystroke_walk_beside(count: usize) -> (usize, usize, usize) {
 /// field changed: the list hands every row over as the very node it handed
 /// over before, so the walk builds and compares the same beside a list of
 /// three destinations as beside one of sixty.
-#[cfg(feature = "native")]
 #[test]
 fn a_keystroke_beside_a_navigation_list_walks_the_same_nodes_however_long_it_is() {
     let (few_built, few_compared, few_rows) = keystroke_walk_beside(3);

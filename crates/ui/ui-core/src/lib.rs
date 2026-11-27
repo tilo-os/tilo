@@ -184,6 +184,10 @@ pub mod element_pictures;
 pub mod files;
 pub mod floating_layer;
 pub mod floating_surface;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use cpu_raster::CpuCanvas;
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod frame_probe;
 /// Painting decoded video on the GPU: uploading a hardware decoder's planar output and converting YUV

@@ -292,7 +292,6 @@ fn back_lowers_or_puts_the_sheet_away_before_it_goes_anywhere() {
 
 /// The sheet's face is a level of its own, and its top edge parts it from the content above it,
 /// in the light theme and the dark.
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[test]
 fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
     let _settled = tilo_ui_base::motion::testing::settled();
@@ -304,9 +303,9 @@ fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
         settle(&mut h, W, H);
         h.root_mut::<NavShell>().open_inspector();
         settle(&mut h, W, H);
-        let mut canvas = crate::cpu_raster::CpuCanvas::new();
+        let mut canvas = tilo_ui::CpuCanvas::new();
         canvas
-            .rasterize(&crate::retained_raster::FrameContent {
+            .rasterize(&tilo_ui::retained_raster::FrameContent {
                 scene: h.scene(),
                 width: W,
                 height: H,

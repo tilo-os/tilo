@@ -1489,11 +1489,6 @@ impl NavList {
             tilo_ui_base::widget::layout::lay_out_detached(self, rect, &theme, text)
         });
     }
-
-    #[cfg(test)]
-    pub(crate) fn list(&self) -> &VirtualList<NavModel> {
-        &self.list
-    }
 }
 
 /// The person's hand and keys on the rows' own controls: the list engine

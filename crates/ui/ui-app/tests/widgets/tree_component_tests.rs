@@ -504,7 +504,7 @@ fn row_face<R>(tree: &DescribedTreeView, key: &str, read: impl FnOnce(&ListRow) 
         tree.rows(),
         key,
         tilo_ui_base::motion::Feel::Standard,
-        &tree.test_marks(),
+        tree.test_marks(),
         None,
         0.0,
     );

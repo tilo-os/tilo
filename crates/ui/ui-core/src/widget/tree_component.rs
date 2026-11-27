@@ -1326,6 +1326,10 @@ impl ListModel for TreeRows {
 
 /// The row of the node at `key`: its list row, indented to where it stands, with what its row
 /// part says of it.
+#[allow(
+    clippy::implicit_hasher,
+    reason = "the tree's own rows and their folds are the one set a caller holds"
+)]
 pub fn row_of(
     rows: &TreeRows,
     key: &str,

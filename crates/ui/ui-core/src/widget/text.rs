@@ -41,6 +41,11 @@ type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
 pub use tilo_ui_base::text_metrics::centered_text_top;
 
 #[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::panic,
+    clippy::float_cmp,
+    reason = "the helper is the assertion: a run off its line and the next run's line are the failure"
+)]
 pub fn assert_glyph_run_centred_in_band(
     scene: &vello::Scene,
     run_index: usize,

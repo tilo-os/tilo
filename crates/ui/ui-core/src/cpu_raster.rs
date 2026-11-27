@@ -7,7 +7,7 @@ use tilo_cpu_raster::{CANVAS_THREADS, CpuRasterizer, Options, Region, Target};
 use crate::retained_raster::FrameContent;
 use tilo_ui_base::damage::bounded_present_damage;
 
-pub(crate) struct CpuCanvas {
+pub struct CpuCanvas {
     rasterizer: CpuRasterizer,
     pixels: Vec<u8>,
     size: (u32, u32),
@@ -27,7 +27,11 @@ pub(crate) fn canvas(on_cpu: bool) -> Option<CpuCanvas> {
 }
 
 impl CpuCanvas {
-    pub(crate) fn new() -> Self {
+    #[allow(
+        clippy::new_without_default,
+        reason = "a canvas is made for one frame a test rasterizes, never defaulted"
+    )]
+    pub fn new() -> Self {
         Self {
             rasterizer: CpuRasterizer::new(Options {
                 threads: CANVAS_THREADS,
@@ -52,7 +56,7 @@ impl CpuCanvas {
         self.valid = false;
     }
 
-    pub(crate) fn rasterize(&mut self, frame: &FrameContent<'_>) -> Result<u64, String> {
+    pub fn rasterize(&mut self, frame: &FrameContent<'_>) -> Result<u64, String> {
         if frame.width == 0 || frame.height == 0 {
             return Err("CPU target dimensions must be nonzero".into());
         }
@@ -127,7 +131,7 @@ impl CpuCanvas {
 
     /// The canvas: premultiplied RGBA8, rows of `width * 4` bytes. What a
     /// presenter shows, and what a test reads back.
-    pub(crate) fn pixels(&self) -> &[u8] {
+    pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
 
