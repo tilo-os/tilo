@@ -214,7 +214,7 @@ impl TestHost {
     /// # Errors
     ///
     /// As [`Self::effect`].
-    #[cfg(feature = "destination")]
+    #[cfg(any(feature = "destination", feature = "installation"))]
     pub(crate) fn effect_on<E: Effect>(
         &mut self,
         row: &str,
