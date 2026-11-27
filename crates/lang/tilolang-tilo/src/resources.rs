@@ -319,8 +319,9 @@ struct Inner {
     /// Whether the store held everything written here when the outermost of the runs and trial
     /// runs open began: then what they wrote is all that is unsent.
     held_all: StdCell<bool>,
-    /// The listings read, by query, with the pages they are read from.
-    listings: RefCell<HashMap<String, Read>>,
+    /// The listings read, by query, with the pages they are read from. In key order, which is
+    /// kind first: a write reaches the listings of the kinds it wrote, and no others.
+    listings: RefCell<BTreeMap<String, Read>>,
     /// What whole queries listed, every page of each, by the query: asked of the store once and
     /// again only after a write or a moved record, so a loop that asks what effects wait or what
     /// notices there are costs nothing while nothing changed.
@@ -2974,12 +2975,26 @@ impl ResourceStore {
     ) {
         let frozen: Vec<(String, Rc<Pages>)> = {
             let mut listings = self.inner.listings.borrow_mut();
-            let keys: Vec<String> = listings
-                .iter()
-                .filter(|(key, (_, pages))| {
-                    written.keys().any(|kind| listing_of(key, kind)) && which(key, pages)
+            // A listing's key leads with its kind, so the listings of the kinds written are the
+            // run of keys from each kind: a write that names one kind never looks at a listing of
+            // another, however many kinds the store has read.
+            let mut keys: Vec<&str> = Vec::new();
+            for kind in written.keys() {
+                for key in listings.range(kind.clone()..).map(|(key, _)| key.as_str()) {
+                    if !listing_of(key, kind) {
+                        break;
+                    }
+                    keys.push(key);
+                }
+            }
+            let keys: Vec<String> = keys
+                .into_iter()
+                .filter(|key| {
+                    listings
+                        .get(*key)
+                        .is_some_and(|(_, pages)| which(key, pages))
                 })
-                .map(|(key, _)| key.clone())
+                .map(str::to_owned)
                 .collect();
             keys.into_iter()
                 .filter_map(|key| listings.remove(&key).map(|(_, pages)| (key, pages)))
