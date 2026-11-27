@@ -2750,3 +2750,89 @@ async fn a_shortcuts_run_reads_the_vault_only_within_its_saved_rules() {
     }
     server.shutdown().await;
 }
+
+/// A Shortcut's call kept while it waits for her yes goes on within the rules she saved with it:
+/// restored, a run whose rules name another app is kept from the vault, and one kept before its
+/// rules were kept with it is held to none, so it reaches nothing.
+#[tokio::test]
+async fn a_restored_shortcut_run_keeps_its_saved_rules() {
+    use tilo_action_policy::{Answer, Level, Rule, TreePath};
+    use tilo_actions::remote::KeptCaller;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = &crate::PersonServices::of(server.workspaces());
+    let (workspace, workspace_id, service) = hosted(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        workspace_vault::ADD,
+        a_login("https://example.com"),
+    )
+    .await
+    .expect("Ada keeps a login");
+    let kept = |app: &str| {
+        serde_json::to_value(
+            as_ada
+                .clone()
+                .running_shortcut("reminder")
+                .within_shortcut(vec![Rule::new(
+                    TreePath::root().any(Level::Workspace).app(app),
+                    tilo_action_types::KindSet::ALL,
+                    Answer::Allow,
+                )])
+                .kept(),
+        )
+        .unwrap()
+    };
+    let restored = |record: Value| {
+        serde_json::from_value::<KeptCaller>(record)
+            .expect("a kept caller decodes")
+            .restored()
+    };
+    let list = |asking: tilo_actions::remote::Caller| {
+        let service = &service;
+        let ada = &ada;
+        async move {
+            ask(
+                service,
+                workspace_id,
+                (ada, &asking),
+                workspace_vault::LIST,
+                json!({}),
+            )
+            .await
+        }
+    };
+
+    list(restored(kept(tilo_app_id::apps::PASSWORDS)))
+        .await
+        .expect("a restored run whose rules name the vault reads it");
+    let refused = |who: &str, refused: Result<Value, ActionCallError>| {
+        assert!(
+            matches!(
+                refused,
+                Err(ActionCallError::NotPermitted | ActionCallError::UnknownAction)
+            ),
+            "a restored run, {who}: {refused:?}"
+        );
+    };
+    refused(
+        "rules naming another app",
+        list(restored(kept("so.tilo.notes"))).await,
+    );
+    let mut from_before = kept(tilo_app_id::apps::PASSWORDS);
+    from_before
+        .as_object_mut()
+        .unwrap()
+        .remove("shortcut_grant")
+        .expect("a run's rules are kept with it");
+    refused(
+        "a record kept with no rules",
+        list(restored(from_before)).await,
+    );
+    server.shutdown().await;
+}

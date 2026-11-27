@@ -1158,6 +1158,7 @@ impl Caller {
                 agent_name: None,
                 asked: None,
                 system: false,
+                shortcut_grant: None,
             };
         }
         KeptCaller {
@@ -1174,6 +1175,7 @@ impl Caller {
             agent_name: self.agent_name.clone(),
             asked: self.asked.clone(),
             system: self.system,
+            shortcut_grant: self.shortcut_grant.clone(),
         }
     }
 }
@@ -1199,6 +1201,10 @@ pub struct KeptCaller {
     agent_name: Option<String>,
     asked: Option<String>,
     system: bool,
+    /// The rules a Shortcut's run is held to ([`Caller::within_shortcut`]). A record kept before
+    /// they were kept with it holds none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shortcut_grant: Option<Vec<tilo_action_policy::Rule>>,
 }
 
 impl KeptCaller {
@@ -1212,6 +1218,11 @@ impl KeptCaller {
     /// The caller this was kept from, with no execution of its own.
     #[must_use]
     pub fn restored(self) -> Caller {
+        // A run is held to the rules kept with it, and one kept with none (a record from before
+        // they were kept) to no rules at all: it reaches nothing, never all its person may.
+        let shortcut_grant = self
+            .shortcut_grant
+            .or_else(|| self.acting.is_automation().then(Vec::new));
         Caller {
             acting: self.acting,
             user_public_key: self.user_public_key,
@@ -1247,9 +1258,7 @@ impl KeptCaller {
             placed: None,
             // A kept call is asked again for what it was made for.
             consented: false,
-            // What a waiting call goes on with is admitted again for itself, never as a step of a
-            // Shortcut's run the runner bounds.
-            shortcut_grant: None,
+            shortcut_grant,
         }
     }
 }
