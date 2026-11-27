@@ -1067,7 +1067,7 @@ impl PackageCache {
                 .installed_package(workspace, &release.app)
                 .await
             {
-                self.install_named(&release, &bytes, &lists, &registries);
+                self.install_named_aside(release, bytes, &lists, &registries);
                 continue;
             }
             let Some(content) = workspaces.record_content_service() else {
@@ -1078,7 +1078,7 @@ impl PackageCache {
                 workspace.to_owned(),
             );
             if let Some(bytes) = content.kept(&route, &file) {
-                self.install_named(&release, &bytes, &lists, &registries);
+                self.install_named_aside(release, bytes, &lists, &registries);
                 continue;
             }
             // Asked of the workspace; installed when its bytes arrive.
@@ -1337,6 +1337,23 @@ impl PackageCache {
         package_store::Catalog::at(&self.writer.root, package_store::SystemStore::from_env())
             .find_package(id)
             .is_ok_and(|found| found.is_some())
+    }
+
+    /// [`Self::install_named`] off the reactor: installing fetches the runtime and engines the
+    /// app needs from the registries over blocking HTTP, which must never run on an async task.
+    fn install_named_aside(
+        self: &Arc<Self>,
+        release: tilo_peer_state::workspace_membership::AppRelease,
+        bytes: Vec<u8>,
+        lists: &TrustLists,
+        registries: &Arc<app_cli::config::RegistriesFile>,
+    ) {
+        let cache = Arc::clone(self);
+        let lists = lists.clone();
+        let registries = Arc::clone(registries);
+        tilo_rt::app().spawn_blocking(move || {
+            cache.install_named(&release, &bytes, &lists, &registries);
+        });
     }
 
     /// Install `bytes`, the package file the workspace keeps of `release`, bound to the package
