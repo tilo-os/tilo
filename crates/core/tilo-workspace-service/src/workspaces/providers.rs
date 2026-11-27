@@ -970,8 +970,8 @@ impl Providers {
         }
     }
 
-    /// What the provider `query` names offers another device's `caller`; `None` when no provider
-    /// reaching devices is registered under it.
+    /// What the provider `query` names offers `caller`; `None` when no provider reaching devices
+    /// is registered under it.
     #[must_use]
     pub fn query(
         &self,
@@ -980,6 +980,63 @@ impl Providers {
     ) -> Option<Pending<Result<CataloguePage, ActionCallError>>> {
         let registered = self.for_devices(query.provider.as_deref()?)?;
         Some(registered.answers.query(caller, query))
+    }
+
+    /// [`Self::query`] for another device's `caller`, as the workspace's grants decide each of its
+    /// actions for that device ([`permits`]), as its call would be: an action the call would be
+    /// refused is not offered, and one its person would be asked about is.
+    pub(super) fn device_query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+        work: &Arc<super::device_actions::DeviceWork>,
+    ) -> Option<Pending<Result<CataloguePage, ActionCallError>>> {
+        let registered = self.for_devices(query.provider.as_deref()?)?;
+        let listed = registered.answers.query(caller, query);
+        // Only a call the workspace's grants decide is decided here, as `device_call` does.
+        let (Some(device), Some(workspace)) = (
+            caller.device_public_key().copied(),
+            caller.workspace().map(str::to_owned),
+        ) else {
+            return Some(listed);
+        };
+        if caller.placed_records().is_some() || self.0.placing_host.get() == Some(&device) {
+            return Some(listed);
+        }
+        let (app, work) = (Arc::clone(&registered.app), Arc::clone(work));
+        let (completer, answer) = tilo_actions::remote::pending();
+        work.runtime().clone().spawn(async move {
+            let page = match listed.await {
+                Some(Ok(page)) => page,
+                other => {
+                    return completer.complete(other.unwrap_or(Err(ActionCallError::Unanswered)));
+                }
+            };
+            let compacted = page.rows.iter().any(|row| row.offered.is_some());
+            let mut rows = Vec::new();
+            for row in tilo_actions::remote::expand(page.rows) {
+                if let Some(action) = &row.action {
+                    let kind = Some(action.resource_kind.as_str()).filter(|kind| !kind.is_empty());
+                    let at = (
+                        action.address.resource.as_str(),
+                        action.address.action.as_str(),
+                    );
+                    let stores = (work.workspaces(), work.surfaces());
+                    let decided = permits(stores, Some(action), kind, device, &workspace, &app, at);
+                    if let Err(Asks::Refused(_)) = decided.await {
+                        continue;
+                    }
+                }
+                rows.push(row);
+            }
+            let rows = if compacted {
+                tilo_actions::remote::compact(rows)
+            } else {
+                rows
+            };
+            completer.complete(Ok(CataloguePage { rows, ..page }));
+        });
+        Some(answer)
     }
 
     /// Hand `request`, another device's call, to the provider it names, or the one that published

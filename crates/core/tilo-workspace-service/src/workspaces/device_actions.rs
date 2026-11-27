@@ -1231,7 +1231,7 @@ impl ActionProvider for Answers {
             return self
                 .work
                 .providers
-                .query(caller, query)
+                .device_query(caller, query, &self.work)
                 .unwrap_or_else(|| Pending::ready(Err(ActionCallError::UnknownAction)));
         }
         if let Some(served) = self.apps() {

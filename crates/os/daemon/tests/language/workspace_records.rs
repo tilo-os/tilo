@@ -370,56 +370,48 @@ fn a_commenter_comments_and_a_moderator_makes_a_channel() {
     });
 }
 
-/// A carrier names no edit its caller is then refused: Chat's listings name a new channel to a
-/// moderator and not to an editor, and an editor's call naming one anyway is refused.
+/// A carrier names no edit its caller is then refused: Chat's listings name a new channel to an
+/// editor and not to a viewer, and a viewer's call naming one anyway is refused.
 #[test]
 fn a_carrier_names_no_edit_its_caller_is_then_refused() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
         let owner_device = host.member("its owner's computer", &workspace).await;
+        installs(&owner_device, &workspace, "so.tilo.chat").await;
         let chat = workspace_record("so.tilo.chat");
-        let named = |listing: &[tilo_actions::ActionDescriptor]| {
+        let new_channel = |listing: &[tilo_actions::ActionDescriptor]| {
             listing
                 .iter()
-                .any(|offered| offered.address.action == "create-channel")
+                .find(|offered| offered.address.action == "new_channel")
+                .map(|offered| offered.address.clone())
         };
 
-        // A new channel is a moderator's: their listing names it, and their call is taken.
-        let moderator = guest(&host, &owner_device, "moderator", "Mo").await;
-        assert!(
-            named(&moderator.listed(&chat).await),
-            "a moderator is offered a new channel"
-        );
-        let made = moderator
-            .call(
-                &chat,
-                tilo_actions::ActionAddress::new("chat.channels", "create-channel"),
-                &json!({"name": "launch"}),
-            )
-            .await
-            .expect("a moderator's new channel answers");
-        assert!(
-            matches!(made, InvocationUpdate::Succeeded { .. }),
-            "a moderator's new channel is saved: {made:?}"
-        );
-
-        // An editor's listing does not, and an editor's call naming one anyway is refused.
+        // A new channel is an editor's: their listing names it, and their call is taken.
         let editor = guest(&host, &owner_device, "editor", "Ed").await;
-        assert!(
-            !named(&editor.listed(&chat).await),
-            "an editor is offered no new channel"
-        );
-        let refused = editor
-            .call(
-                &chat,
-                tilo_actions::ActionAddress::new("chat.channels", "create-channel"),
-                &json!({"name": "launch"}),
-            )
+        let at = new_channel(&editor.listed(&chat).await).expect("an editor is offered a channel");
+        let made = editor
+            .call(&chat, at.clone(), &json!({"name": "launch"}))
             .await;
         assert!(
+            matches!(made, Ok(InvocationUpdate::Succeeded { .. })),
+            "an editor's new channel is saved: {made:?}"
+        );
+
+        // A viewer's call naming one is refused, and a viewer's listing names none.
+        let viewer = guest(&host, &owner_device, "viewer", "Vi").await;
+        let refused = viewer.call(&chat, at, &json!({"name": "lurking"})).await;
+        assert!(
             matches!(refused, Ok(InvocationUpdate::Failed { .. }))
-                || matches!(refused, Err(ActionCallError::NotPermitted)),
-            "an editor makes no channel: {refused:?}"
+                || matches!(
+                    refused,
+                    Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
+                ),
+            "a viewer makes no channel: {refused:?}"
+        );
+        assert_eq!(
+            new_channel(&viewer.listed(&chat).await),
+            None,
+            "a viewer is offered no new channel"
         );
     });
 }
