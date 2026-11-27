@@ -847,6 +847,14 @@ def publication_order(ready: set[str], needs: dict[str, set[str]]) -> list[str]:
 # What crates.io answers when an account takes new names (or versions) faster than it allows.
 RATE_LIMITED = re.compile(r"try again after (.+? GMT)")
 
+# What Cargo says when crates.io could not be reached at all: the upload never arrived, so trying
+# it again is safe, where any other failure stops the run.
+UNREACHABLE = re.compile(r"Could not connect to server|Connection reset|Operation timed out|"
+                         r"\[(6|7|28|35|52|56)\] ")
+# How often a crate is tried again after crates.io could not be reached, and how long between.
+UNREACHABLE_TRIES = 5
+UNREACHABLE_WAIT = 30.0
+
 # When this run started: a publication's budget counts from here, as the job's timeout does.
 STARTED = time.monotonic()
 
@@ -866,6 +874,7 @@ def publish_each(tree: pathlib.Path, remaining: list[str], total: int, version: 
     packaging before counts too, as it does for the job's timeout), so a later run carries on."""
     done = total - len(remaining)
     for name in remaining:
+        unreachable = 0
         while True:
             command = ["cargo", "publish", "--allow-dirty", "--no-verify", "-p", name]
             result = subprocess.run(command, cwd=tree, check=False, text=True,
@@ -875,6 +884,14 @@ def publish_each(tree: pathlib.Path, remaining: list[str], total: int, version: 
                 print(f"published {name}@{version}: {done} of {total}", flush=True)
                 break
             until = retry_after(result.stdout)
+            lost = until is None and UNREACHABLE.search(result.stdout) is not None
+            if lost and unreachable < UNREACHABLE_TRIES:
+                unreachable += 1
+                print(f"crates.io could not be reached for {name}; trying again in "
+                      f"{UNREACHABLE_WAIT:.0f} s ({unreachable} of {UNREACHABLE_TRIES})",
+                      flush=True)
+                time.sleep(UNREACHABLE_WAIT)
+                continue
             if until is None:
                 print(result.stdout, end="", flush=True)
                 print(f"error: {name}@{version} was not published ({done} of {total} are)",

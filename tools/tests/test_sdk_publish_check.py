@@ -124,6 +124,32 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(check.retry_after(output), 1795565007.0)
         self.assertIsNone(check.retry_after("error: some other failure"))
 
+    def test_a_crate_is_tried_again_when_crates_io_cannot_be_reached(self):
+        unreachable = ("error: failed to publish a v0.4.1 to registry at https://crates.io\n\n"
+                       "Caused by:\n  [7] Could not connect to server (Failed to connect to "
+                       "crates.io port 443 after 10012 ms: Could not connect to server)")
+        calls = []
+
+        def cargo(command, **_):
+            calls.append(command[-1])
+            ok = len(calls) != 2
+            return check.subprocess.CompletedProcess(command, 0 if ok else 101,
+                                                     "" if ok else unreachable)
+
+        with (patch.object(check.subprocess, "run", side_effect=cargo),
+              patch.object(check.time, "sleep") as sleep):
+            self.assertEqual(check.publish_each(Path("."), ["a", "b", "c"], 3, "0.4.1", None), 0)
+        self.assertEqual(calls, ["a", "b", "b", "c"])
+        sleep.assert_called_once_with(check.UNREACHABLE_WAIT)
+
+        # A crate crates.io keeps refusing to be reached for stops the run after the last try.
+        calls.clear()
+        with (patch.object(check.subprocess, "run",
+                           return_value=check.subprocess.CompletedProcess([], 101, unreachable)),
+              patch.object(check.time, "sleep") as sleep):
+            self.assertEqual(check.publish_each(Path("."), ["a"], 1, "0.4.1", None), 1)
+        self.assertEqual(sleep.call_count, check.UNREACHABLE_TRIES)
+
     def test_a_run_waits_out_the_limit_and_stops_at_its_budget(self):
         limited = ("the remote server responded with an error (status 429 Too Many Requests): "
                    "Please try again after Tue, 25 Nov 2026 00:03:27 GMT and see")
