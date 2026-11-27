@@ -1202,8 +1202,9 @@ pub struct KeptCaller {
     asked: Option<String>,
     system: bool,
     /// The rules a Shortcut's run is held to ([`Caller::within_shortcut`]). A record kept before
-    /// they were kept with it holds none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// they were kept with it holds none. Always written: the shell's link carries a kept caller
+    /// as postcard, which names no fields, so one left out would leave its reader a field short.
+    #[serde(default)]
     shortcut_grant: Option<Vec<tilo_action_policy::Rule>>,
 }
 
@@ -1296,6 +1297,24 @@ mod tests {
             wait_ms: None,
             appearance: None,
             signed: None,
+        }
+    }
+
+    /// A kept caller reads back whole from the postcard the shell's link carries it in, with
+    /// and without a Shortcut's rules: a field one side leaves out would end the link.
+    #[test]
+    fn a_kept_caller_reads_back_from_the_links_postcard() {
+        let ada = hex::encode([1; 32]);
+        for caller in [
+            Caller::own_person(ada.as_str()),
+            Caller::own_person(ada.as_str()).running_shortcut("reminder"),
+        ] {
+            let kept = caller.kept();
+            let wire = postcard::to_allocvec(&kept).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<super::KeptCaller>(&wire).unwrap(),
+                kept
+            );
         }
     }
 
