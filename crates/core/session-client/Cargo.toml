@@ -89,7 +89,7 @@ uuid.workspace = true
 tilo-identity = { path = "../tilo-identity" }
 # The endpoint every device dials: presence names a publisher and where it is reached with it.
 iroh-base.workspace = true
-tokio = { workspace = true, features = ["sync", "macros", "time"] }
+tokio = { workspace = true, features = ["sync", "macros", "time", "io-util"] }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true

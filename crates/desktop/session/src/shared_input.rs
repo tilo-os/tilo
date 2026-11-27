@@ -1560,30 +1560,6 @@ mod tests {
         }
     }
 
-    impl crate::platform::fabric::PeerLink for Recorded {
-        fn online_device_ids(&self) -> BTreeSet<DeviceId> {
-            BTreeSet::new()
-        }
-
-        fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
-            Some((self.local.clone(), "Laptop".to_owned()))
-        }
-
-        fn try_send_personal_fabric_action(
-            &self,
-            _: &DeviceId,
-            _: crate::platform::fabric::PersonalFabricAction,
-        ) -> Result<[u8; 16], crate::platform::fabric::PersonalFabricSendError> {
-            Err(crate::platform::fabric::PersonalFabricSendError::Rejected(
-                "the laptop's input crosses on the live link".to_owned(),
-            ))
-        }
-
-        fn require_media(&self) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
     impl tilo_speaker_service::devices::Record for Recorded {
         fn record(
             &self,
@@ -1607,6 +1583,28 @@ mod tests {
     }
 
     impl tilo_speaker_service::devices::Speakers for Recorded {
+        fn online_device_ids(&self) -> BTreeSet<DeviceId> {
+            BTreeSet::new()
+        }
+
+        fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
+            Some((self.local.clone(), "Laptop".to_owned()))
+        }
+
+        fn try_send_personal_fabric_action(
+            &self,
+            _: &DeviceId,
+            _: crate::platform::fabric::PersonalFabricAction,
+        ) -> Result<[u8; 16], crate::platform::fabric::PersonalFabricSendError> {
+            Err(crate::platform::fabric::PersonalFabricSendError::Rejected(
+                "the laptop's input crosses on the live link".to_owned(),
+            ))
+        }
+
+        fn require_media(&self) -> Result<(), String> {
+            Ok(())
+        }
+
         fn known(&self) -> tilo_speaker_service::devices::Listing {
             tilo_speaker_service::devices::Listing::default()
         }

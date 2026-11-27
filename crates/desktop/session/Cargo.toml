@@ -59,7 +59,8 @@ dev-overrides = ["tilo-identity/throwaway-test-identity"]
 # Starts a test's session in the test's own process as the daemon's shell
 # (`shell_session::start_in_process`), on a link the daemon made for it. A
 # production session never builds it: the daemon starts its shell itself.
-test-support = ["tilo-runtime/test-support"]
+# A device's daemon in the tests' own process, which the integration tests reach through it.
+test-support = ["tilo-runtime/test-support", "dep:tilo-test-env"]
 # The session holds no copy of any workspace, serves no workspace endpoint and
 # reaches its workspaces only through its device's daemon: what the tests that
 # land with the deletion of the session's own copy prove. Off until that copy
@@ -492,6 +493,9 @@ libc.workspace = true
 # The certificate a device was approved with, kept where the identity helper
 # reads it once and taken away after.
 tempfile.workspace = true
+# A test's person and home: the identity files a fixture's daemon serves, and the environment
+# the session it starts reads them from.
+tilo-test-env = { path = "../../../tools/test-env", optional = true }
 # A joined workspace's records are untrusted bytes: a worker process of this
 # executable decodes them, and `main` serves that worker.
 tilo-automerge-isolate.workspace = true
@@ -580,7 +584,6 @@ tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 # enrolling a machine in one process.
 iroh-relay = { version = "1.0.3", features = ["server"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }
-tilo-test-env = { path = "../../../tools/test-env" }
 # The log a test's people write while it runs.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # A site's entry and directory served over loopback, for what joins list.

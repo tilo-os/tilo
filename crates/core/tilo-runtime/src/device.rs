@@ -104,7 +104,9 @@ mod mcp_server;
 pub(crate) mod migrate;
 /// The workspace's model providers, read by the apps attached here as `models`.
 mod models;
+pub mod lan;
 pub mod nearby;
+pub mod speakers;
 mod offload_place;
 pub mod online;
 mod own_device;

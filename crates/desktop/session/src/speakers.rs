@@ -109,10 +109,10 @@ impl Service for Served {
 mod tests {
     use super::*;
     use crate::platform::fabric::{
-        DeviceAbout, DeviceId, DeviceKind, EndpointSelector, FabricCapabilities, PeerLink,
+        DeviceAbout, DeviceId, DeviceKind, EndpointSelector, FabricCapabilities,
         PersonalFabricAction, PersonalFabricSendError,
     };
-    use tilo_speaker_service::devices::Record;
+    use tilo_speaker_service::devices::{Record, Speakers};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
     use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
     use tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint;
@@ -190,7 +190,21 @@ mod tests {
         }
     }
 
-    impl crate::platform::fabric::PeerLink for Fabric {
+    impl Record for Fabric {
+        fn record(&self) -> Option<Devices> {
+            Some(self.record.clone())
+        }
+
+        fn apply(&self, _: tilo_resource::Invoke<Devices>) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn person(&self) -> [u8; 32] {
+            self.person
+        }
+    }
+
+    impl Speakers for Fabric {
         fn online_device_ids(&self) -> std::collections::BTreeSet<DeviceId> {
             std::collections::BTreeSet::from([self.local.clone()])
         }
@@ -210,23 +224,7 @@ mod tests {
         fn require_media(&self) -> Result<(), String> {
             Ok(())
         }
-    }
 
-    impl Record for Fabric {
-        fn record(&self) -> Option<Devices> {
-            Some(self.record.clone())
-        }
-
-        fn apply(&self, _: tilo_resource::Invoke<Devices>) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn person(&self) -> [u8; 32] {
-            self.person
-        }
-    }
-
-    impl tilo_speaker_service::devices::Speakers for Fabric {
         fn known(&self) -> tilo_speaker_service::devices::Listing {
             let online = self.online_device_ids();
             tilo_speaker_service::devices::known_from(

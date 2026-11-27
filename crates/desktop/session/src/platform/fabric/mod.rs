@@ -21,8 +21,6 @@ pub use tilo_network_actor::fabric::{DeviceId, FabricStamp, nonzero};
 pub(crate) const ABOUT: &str = tilo_network_actor::fabric::ABOUT_FACT;
 
 pub use tilo_network_actor::fabric::clock;
-pub use tilo_network_actor::fabric::link::FabricLink as PeerLink;
-pub use tilo_network_actor::fabric::link::PersonalFabricSendError;
 pub use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector,
 };
@@ -31,8 +29,9 @@ pub use tilo_network_actor::fabric::{
     MediaSourceLocator, PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
     REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
 };
+pub use tilo_speaker_service::devices::PersonalFabricSendError;
 pub use tilo_speaker_service::devices::SharedLink;
-pub use tilo_speaker_service::devices::Speakers as FabricLink;
+pub use tilo_speaker_service::devices::Speakers;
 
 /// What the person lets of this device continue on their other devices: each
 /// facet's switch of their `continuity` settings, under the master switch,

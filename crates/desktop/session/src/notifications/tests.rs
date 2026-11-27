@@ -1300,7 +1300,9 @@ impl TwoDevices {
 
     /// The notifications the record of the person's devices shows now.
     fn in_record(&self) -> usize {
-        self.record.read_now();
+        self.record
+            .read_now()
+            .expect("the daemon answers the record it follows");
         self.record.get().notices.len()
     }
 }

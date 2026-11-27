@@ -24,6 +24,8 @@ use crate::{Shared, devices};
 pub(crate) struct Devices {
     /// The sound of this device's that a press on a device would send, as the reading carries it.
     pub(crate) chosen: Rc<RefCell<Option<u64>>>,
+    /// Why the last press that had to reach another device did not, as the reading shows it.
+    pub(crate) refused: std::sync::Arc<std::sync::Mutex<String>>,
     /// The presses the published verb took, carried out by the loop.
     pub(crate) pressed: Rc<RefCell<Vec<devices::Press>>>,
     /// The accessories the person asked to move to another device, carried out by the loop.
@@ -68,6 +70,11 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
         answered(fabric, id, part);
         return;
     }
+    device(shared, fabric, row, part);
+}
+
+/// A device row's press: what it asked of the device, with what plays here or what it offers.
+fn device(shared: &Shared, fabric: &SharedLink, row: &str, part: RowPart) {
     // A device row's press is its body; the action named beside it is the same send, said in words.
     // The pointer row opens where driving a device is arranged, which is that device's settings.
     if !matches!(part, RowPart::Row | RowPart::Action | RowPart::Control) {
@@ -135,23 +142,63 @@ pub(crate) fn press(shared: &Shared, row: &str, part: RowPart) {
         crate::quick_settings::open_settings(shared, device.settings_link());
         return;
     };
+    send(shared, fabric, row, device, &target, source);
+}
+
+/// Send `source`, what plays here, to `target`: the action names the workspace the person works
+/// in, since an envelope that names none is one no device takes, and a send that does not leave
+/// is said on the reading the panel shows.
+fn send(
+    shared: &Shared,
+    fabric: &SharedLink,
+    row: &str,
+    device: crate::hosted::PersonalDevice,
+    target: &DeviceId,
+    source: crate::platform::readings::Handover,
+) {
+    // What plays belongs to the workspace the person works in, and an envelope that names none
+    // is one no device takes.
+    let workspace_id = shared
+        .handle
+        .read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        })
+        .unwrap_or_default();
+    if workspace_id.is_empty() {
+        *shared.devices.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            crate::i18n::t("devices-refused-no-workspace");
+        return;
+    }
     let action = PersonalFabricAction::ResumeMedia {
         session_id: source.session_id,
         app_id: source.app_id,
-        workspace_id: String::new(),
+        workspace_id,
         title: source.title,
         locator: MediaSourceLocator::RemoteStream { url: source.url },
         position_ms: source.position_ms,
         resume_playing: source.playing,
         has_video: false,
     };
-    if let Err(error) = fabric.try_send_personal_fabric_action(&target, action) {
-        // The card already shows what plays here, and the device that takes
-        // it shows the offer: a send that did not leave changes neither.
-        tilo_failure::ignored!(
-            "the card already shows what plays here, and a send that did not leave changes neither",
-            tracing::debug!(%error, device = row, "what plays here did not reach the device")
-        );
+    // A press is the person's own click: what it sends reaches the device they pressed, and one
+    // that does not is said on the reading their panel shows.
+    match fabric.try_send_personal_fabric_action(target, action) {
+        Ok(_) => {
+            shared
+                .devices
+                .refused
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+        Err(error) => {
+            tracing::warn!(%error, device = row, "what plays here did not reach the device");
+            *shared.devices.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                crate::i18n::t_args(
+                    "devices-refused-send",
+                    &[("device", device.label.into())],
+                );
+        }
     }
 }
 

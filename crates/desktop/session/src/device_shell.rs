@@ -66,7 +66,7 @@ impl ShellAsks for Asks {
 /// when this computer has no identity to be a person's shell with.
 /// What a view asks the daemon on `client`: its actions, carried out by the daemon's dispatch as
 /// the person.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn asks(client: ShellClient) -> Arc<dyn ShellAsks> {
     asks_of(&Arc::new(Daemon { client }))
 }

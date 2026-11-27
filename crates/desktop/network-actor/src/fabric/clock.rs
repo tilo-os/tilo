@@ -36,7 +36,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::fabric::DeviceId;
 use crate::fabric::PersonalFabricAction;
-use crate::fabric::link::FabricLink;
 
 /// Probe cadence toward a peer while something holds its clock in sync.
 pub const CLOCK_SYNC_PROBE_INTERVAL: Duration = Duration::from_millis(250);
@@ -748,7 +747,12 @@ fn arrived_us(now_us: u64, received: Instant) -> u64 {
 /// [`CLOCK_SYNC_PROBE_INTERVAL`], while Media continuity is on. The session's
 /// loop calls this every pass: nothing else starts the fabric clock, and with
 /// Media continuity off every estimate is forgotten.
-pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
+pub fn pump(
+    media_enabled: bool,
+    local: Option<&DeviceId>,
+    online: &std::collections::BTreeSet<DeviceId>,
+    send: &dyn Fn(&DeviceId, PersonalFabricAction) -> Result<(), ()>,
+) {
     let now = Instant::now();
     let now_us = fabric_monotonic_us();
     let waiting = with_fabric_clock(|core| {
@@ -756,17 +760,13 @@ pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
         media_enabled && !core.held.is_empty()
     });
     // Nothing holds a peer, or Media continuity is off: the pass costs the
-    // clock one lock and the fabric nothing.
+    // clock one lock and the link nothing.
     if !waiting {
         return;
     }
-    let local = network
-        .local_device_fabric_identity()
-        .map(|(device, _)| device);
-    let online = network.online_device_ids();
     let probes = with_fabric_clock(|core| {
         core.due_probes(
-            |peer| local.as_ref() != Some(peer) && online.contains(peer),
+            |peer| local != Some(peer) && online.contains(peer),
             now,
             now_us,
             crate::fabric::nonzero::<16>,
@@ -777,10 +777,7 @@ pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
             continue;
         };
         let nonce = *nonce;
-        if network
-            .try_send_personal_fabric_action(&peer, probe)
-            .is_err()
-        {
+        if send(&peer, probe).is_err() {
             with_fabric_clock(|core| core.abandon(&peer, nonce));
         }
     }
@@ -790,20 +787,30 @@ pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
 /// a probe with this device's clock, or feed a report into the estimate of
 /// `peer`. Returns whether `action` was the clock's.
 pub fn arrived(
-    network: &dyn FabricLink,
     peer: &DeviceId,
     action: &PersonalFabricAction,
     received: Instant,
+    send: &dyn Fn(&DeviceId, PersonalFabricAction) -> Result<(), ()>,
 ) -> bool {
     let now_us = fabric_monotonic_us();
-    let received_us = arrived_us(now_us, received);
+    arrived_at(peer, action, arrived_us(now_us, received), send)
+}
+
+/// [`arrived`] for a frame whose receipt time `received_us`, on [`fabric_monotonic_us`], the
+/// transport stamped where the frame landed.
+pub fn arrived_at(
+    peer: &DeviceId,
+    action: &PersonalFabricAction,
+    received_us: u64,
+    send: &dyn Fn(&DeviceId, PersonalFabricAction) -> Result<(), ()>,
+) -> bool {
     match action {
         PersonalFabricAction::FabricClockProbe { nonce, sent_us } => {
             let reply = with_fabric_clock(|core| {
                 core.answer(*nonce, *sent_us, received_us, fabric_monotonic_us())
             });
             if let Some(reply) = reply {
-                let _ = network.try_send_personal_fabric_action(peer, reply);
+                let _ = send(peer, reply);
             }
             true
         }

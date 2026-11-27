@@ -1811,7 +1811,8 @@ mod tests {
                 .list
                 .as_ref()
                 .expect("the list is followed")
-                .read_now();
+                .read_now()
+                .expect("the daemon answers the list it follows");
             let list = personal.read().expect("the person's list reads");
             if let Some(passed) = personal.reconcile(session, list, Vec::new()) {
                 break passed;
@@ -1838,12 +1839,14 @@ mod tests {
             .list
             .as_ref()
             .expect("the list is followed")
-            .read_now();
+            .read_now()
+            .expect("the daemon answers the list it follows");
         personal
             .devices
             .as_ref()
             .expect("the devices are followed")
-            .read_now();
+            .read_now()
+            .expect("the daemon answers the record it follows");
     }
 
     /// What `personal`'s list names: each workspace by id, with its name and host, in order.
@@ -1852,7 +1855,8 @@ mod tests {
             .list
             .as_ref()
             .expect("the list is followed")
-            .read_now();
+            .read_now()
+            .expect("the daemon answers the list it follows");
         personal
             .read()
             .expect("the person's list reads")

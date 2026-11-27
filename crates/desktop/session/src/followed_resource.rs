@@ -418,9 +418,9 @@ impl<P: Resource> FollowedResource<P> {
     }
 
     /// Read it again now and wait for the answer: what a test reads its next step against.
-    #[cfg(test)]
-    pub(crate) fn read_now(&self) {
-        self.shared.core.read_now();
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn read_now(&self) -> Result<(), String> {
+        self.shared.core.read_now()
     }
 
     fn run(
@@ -638,14 +638,21 @@ impl Core {
         });
     }
 
-    /// Read it again now and wait for the answer.
-    #[cfg(test)]
-    fn read_now(&self) {
+    /// Read it again now and wait for the answer: what failed, so a test that waits on the
+    /// daemon fails saying which reading never came instead of timing out later.
+    #[cfg(any(test, feature = "test-support"))]
+    fn read_now(&self) -> Result<(), String> {
         let answer = self
             .daemon
             .read_blocking(read_of(&self.workspace, self.app, &self.id, None))
-            .expect("the resource reads");
+            .map_err(|error| {
+                format!(
+                    "the daemon answered no reading of {} in {}: {error}",
+                    self.id, self.workspace
+                )
+            })?;
         self.readings.take(&answer);
+        Ok(())
     }
 }
 

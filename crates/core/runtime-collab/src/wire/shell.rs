@@ -106,6 +106,11 @@ pub enum HandedTo {
     /// daemon carries on this device's endpoint, where only it dials as the device. It is the
     /// shell's own, so it carries no [`VouchedApp`].
     DeviceVpn,
+    /// The person's speakers and the audio routes between their devices: the connection is one
+    /// link of the shell's (`tilo_session_client::speakers`), which the daemon carries on this
+    /// device's endpoint, handing each envelope to the device it is for. It is the shell's own,
+    /// so it carries no [`VouchedApp`].
+    Speakers,
 }
 
 /// The app a [`Vouch`] admits its connection as.

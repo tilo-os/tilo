@@ -36,7 +36,7 @@ use media::sync_playout::{
 };
 use rand_core::Rng;
 
-use crate::devices::Speakers;
+use crate::devices::{PersonalFabricSendError, Speakers};
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::PhysicalGamepadBinding;
@@ -44,7 +44,6 @@ use tilo_network_actor::fabric::clock::{ClockSyncFailure, ClockSyncState, PeerPl
 use tilo_network_actor::fabric::clock::{
     FabricClockSync, fabric_peer_clock, hold_fabric_clock_sync,
 };
-use tilo_network_actor::fabric::link::PersonalFabricSendError;
 use tilo_network_actor::fabric::{
     MAX_REMOTE_AUDIO_FRAME_BYTES, MAX_REMOTE_AUDIO_SESSIONS, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
@@ -2092,7 +2091,6 @@ impl PcmCapture {
 mod tests {
     use super::*;
     use tilo_network_actor::fabric::clock::{fabric_monotonic_us, with_fabric_clock};
-    use tilo_network_actor::fabric::link::FabricLink;
 
     fn binding(session: &str) -> PhysicalGamepadBinding {
         PhysicalGamepadBinding {
@@ -2184,9 +2182,6 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             crate::devices::Listing::default()
         }
-    }
-
-    impl FabricLink for CountingLink {
         fn online_device_ids(&self) -> BTreeSet<DeviceId> {
             self.borrowed
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2983,10 +2978,10 @@ mod tests {
         })
         .expect("a probe is answered while Media continuity is on");
         assert!(tilo_network_actor::fabric::clock::arrived(
-            &CountingLink::default(),
             &source,
             &reply,
             Instant::now(),
+            &|_, _| Ok(()),
         ));
 
         assert_eq!(phase(&state), RemoteAudioPhase::Streaming);

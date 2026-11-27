@@ -2,7 +2,6 @@
 //! that name one exchange, and where its screens are: the display facts the actor carries.
 
 pub mod clock;
-pub mod link;
 mod model;
 pub mod speaker_group;
 
@@ -18,7 +17,6 @@ pub const ABOUT_FACT: &str = "about";
 
 /// The largest frame between two of the person's devices: what a device says of itself and the
 /// copies it offers, never media data.
-pub const MAX_FABRIC_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
 const MAX_DEVICE_ID_BYTES: usize = 128;
 

@@ -50,6 +50,7 @@ mod customer_workspaces;
 mod daemon_flows;
 mod desktop_page;
 mod device_carry;
+mod device_speakers;
 mod device_key;
 mod device_vpn_tunnel;
 mod device_writes;

@@ -887,6 +887,42 @@ impl Session {
         self.shared.clipboard.sync_continuity();
         if let Some(fabric) = &self.shared.fabric {
             let media_enabled = fabric.require_media().is_ok();
+            // What the person's other devices sent this one since the last pass: the clocks that
+            // keep their audio in time, and the routes, consents and calibrations they are for.
+            let send = |peer: &crate::platform::fabric::DeviceId,
+                        action: tilo_network_actor::fabric::PersonalFabricAction| {
+                fabric
+                    .try_send_personal_fabric_action(peer, action)
+                    .map(|_| ())
+                    .map_err(|_| ())
+            };
+            for (peer, envelope, received_us) in fabric.take_heard() {
+                if tilo_network_actor::fabric::clock::arrived_at(
+                    &peer,
+                    &envelope.action,
+                    received_us,
+                    &send,
+                ) {
+                    continue;
+                }
+                let handled =
+                    tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), &envelope)
+                        || tilo_speaker_service::groups::handle_action(fabric.as_ref(), &envelope);
+                if !handled {
+                    tracing::debug!(
+                        device = %peer.as_str(),
+                        "an action the person's other device sent is none this session serves"
+                    );
+                }
+            }
+            // The clocks of the devices something here plays in time with, probed through the
+            // same link.
+            tilo_network_actor::fabric::clock::pump(
+                media_enabled,
+                fabric.local_device_fabric_identity().map(|(device, _)| device).as_ref(),
+                &fabric.online_device_ids(),
+                &send,
+            );
             // The person's speaker groups, remote audio and the view Settings asks of them move on
             // the same fabric, on the same pass: a device arriving, a group being created or a
             // calibration progressing is what the next snapshot shows.

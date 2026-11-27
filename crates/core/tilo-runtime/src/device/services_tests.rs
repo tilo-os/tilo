@@ -1121,7 +1121,7 @@ fn a_configured_port_is_the_one_the_endpoint_binds() {
     );
 
     let key = SigningKey::from_bytes(&[0x37; 32]);
-    let endpoint = listen_endpoint(&key, port, None).unwrap();
+    let endpoint = listen_endpoint(&key, port, None, None).unwrap();
     let bound: Vec<_> = endpoint
         .bound_sockets()
         .into_iter()

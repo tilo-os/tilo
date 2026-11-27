@@ -8,22 +8,195 @@
 //! keeps a second copy of either.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::fabric::DeviceId;
-use tilo_network_actor::fabric::PersonalFabricAction;
-use tilo_network_actor::fabric::link::PersonalFabricSendError;
+use tilo_network_actor::fabric::{
+    PersonalFabricAction, PersonalFabricActionEnvelope, nonzero,
+};
+use tilo_session_client::speakers::{self, Frame};
 use tilo_resource::Invoke;
-use tilo_speaker_service::devices::{Listing, Record, Speakers, known_from};
+use tilo_speaker_service::devices::{
+    Listing, PersonalFabricSendError, Record, Speakers, known_from,
+};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspaces::person_workspace::devices::{Devices, OnlineDevices};
+use tilo_workspace_service::workspaces::person_workspace::devices::{
+    Devices, NearbyDevices, OnlineDevices,
+};
 
 use crate::followed_resource::SharedFollow;
-use crate::platform::fabric::{Continuity, PeerLink};
+use crate::platform::fabric::Continuity;
 
 /// How long a follow waits before asking a daemon that did not answer again.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// An envelope another of the person's devices sent this one: the device that sent it, the
+/// envelope, and when it landed on this device's monotonic clock.
+type Heard = (DeviceId, PersonalFabricActionEnvelope, u64);
+
+/// The session's link to its daemon for the person's speakers and audio routes: what the
+/// session asks the daemon to carry, and what the daemon hands it that the other devices sent.
+pub(crate) struct SpeakersLink {
+    asks: tokio::sync::mpsc::Sender<Frame>,
+    heard: Arc<Mutex<Vec<Heard>>>,
+    attached: Arc<AtomicBool>,
+}
+
+impl SpeakersLink {
+    /// Open the session's link to `daemon` and keep it: a daemon that is not up yet is asked
+    /// again, and a link that ends is opened again.
+    pub(crate) fn attach(
+        daemon: &tilo_session_client::daemon_documents::DaemonShell,
+        local: Option<DeviceId>,
+    ) -> Self {
+        let (asks, mut queue) = tokio::sync::mpsc::channel(64);
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let attached = Arc::new(AtomicBool::new(false));
+        let daemon = daemon.clone();
+        let flag = Arc::clone(&attached);
+        let inbound = Arc::clone(&heard);
+        daemon.runtime().clone().spawn(async move {
+            loop {
+                let shell = match daemon.link() {
+                    Ok(shell) => shell,
+                    Err(error) => {
+                        tracing::debug!(%error, "the daemon's link is not up yet for the speakers");
+                        tokio::time::sleep(ASK_AGAIN).await;
+                        continue;
+                    }
+                };
+                let stream = match shell.speakers().await {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        tracing::debug!(%error, "the daemon serves no speakers link");
+                        tokio::time::sleep(ASK_AGAIN).await;
+                        continue;
+                    }
+                };
+                flag.store(true, Ordering::Relaxed);
+                serve(stream, &mut queue, &inbound, local.clone()).await;
+                flag.store(false, Ordering::Relaxed);
+                tokio::time::sleep(ASK_AGAIN).await;
+            }
+        });
+        Self {
+            asks,
+            heard,
+            attached,
+        }
+    }
+
+    /// Ask the daemon to hand `action` to `target`, from this device `local`.
+    fn send(
+        &self,
+        local: &DeviceId,
+        target: &DeviceId,
+        action: PersonalFabricAction,
+    ) -> Result<[u8; 16], PersonalFabricSendError> {
+        if !self.attached.load(Ordering::Relaxed) {
+            return Err(PersonalFabricSendError::Rejected(
+                "this session's daemon link for the speakers is not up".to_owned(),
+            ));
+        }
+        let now = tilo_clock::unix_now_ms();
+        let request_id = nonzero::<16>();
+        let envelope = PersonalFabricActionEnvelope {
+            request_id,
+            source: local.clone(),
+            target: target.clone(),
+            issued_unix_ms: now,
+            action,
+        };
+        if envelope.validate_at(local, target, now).is_err() {
+            return Err(PersonalFabricSendError::Rejected(
+                "that is not an action one device may send another".to_owned(),
+            ));
+        }
+        let peer = hex::decode(target.as_str())
+            .ok()
+            .and_then(|key| <[u8; 32]>::try_from(key).ok())
+            .ok_or_else(|| {
+                PersonalFabricSendError::Rejected("that is not a device key".to_owned())
+            })?;
+        let envelope = postcard::to_allocvec(&envelope).map_err(|error| {
+            PersonalFabricSendError::Rejected(format!("the action does not encode: {error}"))
+        })?;
+        match self.asks.try_send(Frame::Send { peer, envelope }) {
+            Ok(()) => Ok(request_id),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                Err(PersonalFabricSendError::Backpressure)
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(PersonalFabricSendError::Rejected(
+                    "this session's daemon link for the speakers ended".to_owned(),
+                ))
+            }
+        }
+    }
+
+    /// The envelopes the daemon handed this session since the last call.
+    fn take(&self) -> Vec<Heard> {
+        std::mem::take(&mut *self.heard.lock_recover())
+    }
+}
+
+/// Serve `stream`, the session's end of its speakers link, until either half ends.
+async fn serve(
+    stream: tokio::net::UnixStream,
+    queue: &mut tokio::sync::mpsc::Receiver<Frame>,
+    heard: &Arc<Mutex<Vec<Heard>>>,
+    local: Option<DeviceId>,
+) {
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let sending = async {
+        while let Some(frame) = queue.recv().await {
+            if speakers::write(&mut writer, &frame).await.is_err() {
+                return;
+            }
+        }
+    };
+    let hearing = async {
+        loop {
+            match speakers::read(&mut reader).await {
+                Ok(Frame::Heard {
+                    peer,
+                    envelope,
+                    received_us,
+                }) => {
+                    let Some(local) = local.as_ref() else {
+                        continue;
+                    };
+                    let Some((source, envelope)) = read_heard(peer, &envelope, local) else {
+                        continue;
+                    };
+                    heard.lock_recover().push((source, envelope, received_us));
+                }
+                Ok(Frame::Send { .. }) => {}
+                Err(_) => return,
+            }
+        }
+    };
+    tokio::select! {
+        () = sending => {}
+        () = hearing => {}
+    }
+}
+
+/// `envelope`, read as one `source` sent this device `local`: `None` when it is not.
+fn read_heard(
+    peer: [u8; 32],
+    envelope: &[u8],
+    local: &DeviceId,
+) -> Option<(DeviceId, PersonalFabricActionEnvelope)> {
+    let source = DeviceId::new(hex::encode(peer)).ok()?;
+    let envelope: PersonalFabricActionEnvelope = postcard::from_bytes(envelope).ok()?;
+    envelope
+        .validate_at(&source, local, tilo_clock::unix_now_ms())
+        .ok()?;
+    Some((source, envelope))
+}
 
 /// One resource the device's daemon publishes of its own, followed over the shell link: the
 /// reading it last answered, and the task that asks for the next.
@@ -134,6 +307,9 @@ fn reading_value<T: serde::de::DeserializeOwned + Default>(
 pub(crate) struct DaemonFabric {
     record: SharedFollow<Devices>,
     online: DaemonReading<OnlineDevices>,
+    /// The person's other devices the daemon hears on this device's local network.
+    nearby: DaemonReading<NearbyDevices>,
+    speakers: SpeakersLink,
     cert: DeviceCert,
     local: Option<(DeviceId, String)>,
     continuity: Continuity,
@@ -145,6 +321,8 @@ impl DaemonFabric {
     pub(crate) fn new(
         record: SharedFollow<Devices>,
         online: DaemonReading<OnlineDevices>,
+        nearby: DaemonReading<NearbyDevices>,
+        speakers: SpeakersLink,
         cert: DeviceCert,
         continuity: Continuity,
     ) -> Self {
@@ -154,6 +332,8 @@ impl DaemonFabric {
         Self {
             record,
             online,
+            nearby,
+            speakers,
             cert,
             local,
             continuity,
@@ -185,25 +365,43 @@ impl Record for DaemonFabric {
     }
 }
 
-impl PeerLink for DaemonFabric {
+impl Speakers for DaemonFabric {
+    fn take_heard(&self) -> Vec<(DeviceId, PersonalFabricActionEnvelope, u64)> {
+        self.speakers.take()
+    }
+
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
         self.online_ids()
+    }
+
+    /// The person's other devices this daemon hears on this device's local network now, so
+    /// reachable here without a server.
+    fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
+        self.nearby
+            .get()
+            .devices
+            .into_iter()
+            .filter_map(|device| DeviceId::new(device).ok())
+            .collect()
     }
 
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
         self.local.clone()
     }
 
-    /// A session holds no transport of its own to the person's other devices: their daemons are
-    /// the ones that reach each other.
+    /// A session holds no endpoint of its own: the daemon carries what it sends to another of
+    /// the person's devices, and what they send here comes back as heard.
     fn try_send_personal_fabric_action(
         &self,
-        _: &DeviceId,
-        _: PersonalFabricAction,
+        target: &DeviceId,
+        action: PersonalFabricAction,
     ) -> Result<[u8; 16], PersonalFabricSendError> {
-        Err(PersonalFabricSendError::Rejected(
-            "this session reaches the person's other devices through their daemon only".to_owned(),
-        ))
+        let Some((local, _)) = &self.local else {
+            return Err(PersonalFabricSendError::Rejected(
+                "this device's key is not one a session sends from".to_owned(),
+            ));
+        };
+        self.speakers.send(local, target, action)
     }
 
     fn require_media(&self) -> Result<(), String> {
@@ -212,9 +410,7 @@ impl PeerLink for DaemonFabric {
             .then_some(())
             .ok_or_else(|| "media continuity is turned off in this device's settings".to_owned())
     }
-}
 
-impl Speakers for DaemonFabric {
     fn known(&self) -> Listing {
         known_from(
             &self.record.get(),
@@ -286,9 +482,19 @@ mod tests {
             tilo_workspace_service::workspaces::person_workspace::devices::ONLINE,
             wake,
         );
+        let local = DeviceId::new(hex::encode(daemon.certificate().device_public_key))
+            .expect("a device id");
+        let nearby = DaemonReading::follow(
+            &daemon.shell(),
+            &workspace,
+            tilo_workspace_service::workspaces::person_workspace::devices::NEARBY,
+            std::sync::Arc::new(|| {}),
+        );
         let fabric = DaemonFabric::new(
             record.shared(),
             online,
+            nearby,
+            SpeakersLink::attach(&daemon.shell(), Some(local)),
             daemon.certificate(),
             Continuity::default(),
         );

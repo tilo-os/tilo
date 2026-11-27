@@ -99,6 +99,7 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-network-actor = { path = "../../desktop/network-actor" }
 # The runtime's own seams for a test that serves a connector's connection as the app it runs, and
 # the developer overrides a debug build honours anyway: the timed tests run an optimized build,
 # whose daemon finds the launcher the run built where `TILO_LAUNCHER_BIN` names it.

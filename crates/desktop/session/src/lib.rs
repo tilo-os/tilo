@@ -46,7 +46,11 @@ pub(crate) use assembly::Shared;
 
 mod activity_provider;
 mod continuations;
-mod daemon_fixture;
+/// A device's daemon in a test's own process: its workspaces on a real workspace service, the
+/// shell link a session reaches it on, and the readings it publishes — so a test proves what a
+/// session shows against the daemon that answers, not a stand-in.
+#[cfg(any(test, feature = "test-support"))]
+pub mod daemon_fixture;
 /// The heap by allocation site, for the compositor's memory report: a development build's
 /// (`dev-overrides`), and only while `TILO_ALLOC_SITES` asks.
 #[cfg(all(target_os = "linux", feature = "dev-overrides"))]

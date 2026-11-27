@@ -12,8 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use tilo_network_actor::fabric::link::FabricLink;
 use tilo_network_actor::fabric::{ABOUT_FACT, DeviceAbout, DeviceId};
+use tilo_network_actor::fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
 use tilo_resource::Invoke;
 use tilo_workspace_service::workspaces::person_workspace::devices::{Devices, KeyKind};
 
@@ -30,11 +30,64 @@ pub trait Record {
     fn person(&self) -> [u8; 32];
 }
 
-/// The person's devices as the speaker service reaches them: the transport between them and the
-/// record of them.
-pub trait Speakers: FabricLink + Record + Send + Sync {
+/// Why a personal fabric action did not reach the transport.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PersonalFabricSendError {
+    /// The transport command queue is momentarily full. The action was not
+    /// sent, but the same call can succeed once the actor drains the queue.
+    Backpressure,
+    /// Identity, enrollment, wire validation or a closed transport refused
+    /// the action; retrying it unchanged cannot succeed.
+    Rejected(String),
+}
+
+impl std::fmt::Display for PersonalFabricSendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Backpressure => formatter.write_str("personal fabric transport is busy"),
+            Self::Rejected(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
+/// The person's devices as the speaker service reaches them: the record of them and the transport
+/// between them, which the device's daemon carries.
+pub trait Speakers: Record + Send + Sync {
     /// The person's devices as this link knows them now: the record read with who is online.
     fn known(&self) -> Listing;
+
+    /// The envelopes the person's other devices sent this one since the last call, each with the
+    /// device that sent it: what the clocks and the routes read.
+    fn take_heard(&self) -> Vec<(DeviceId, PersonalFabricActionEnvelope, u64)> {
+        Vec::new()
+    }
+
+    /// The devices with a live session right now.
+    fn online_device_ids(&self) -> BTreeSet<DeviceId>;
+
+    /// The person's other devices heard on this device's local network now, so reachable without
+    /// a server. Empty where the transport does not say.
+    fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
+        BTreeSet::new()
+    }
+
+    /// This device's fabric id and label, once it has a certified identity.
+    fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)>;
+
+    /// Send `action` to `target`, telling a full queue apart from a refusal.
+    /// # Errors
+    /// [`PersonalFabricSendError::Backpressure`] while the queue is full, otherwise why the
+    /// transport refused the action.
+    fn try_send_personal_fabric_action(
+        &self,
+        target: &DeviceId,
+        action: PersonalFabricAction,
+    ) -> Result<[u8; 16], PersonalFabricSendError>;
+
+    /// Whether the person lets media move between their devices.
+    /// # Errors
+    /// Why media continuity is off.
+    fn require_media(&self) -> Result<(), String>;
 }
 
 /// A link a service keeps beyond one call, for work it finishes later.
@@ -58,6 +111,34 @@ impl<T: Speakers + ?Sized> Speakers for Arc<T> {
     fn known(&self) -> Listing {
         (**self).known()
     }
+
+    fn take_heard(&self) -> Vec<(DeviceId, PersonalFabricActionEnvelope, u64)> {
+        (**self).take_heard()
+    }
+
+    fn online_device_ids(&self) -> BTreeSet<DeviceId> {
+        (**self).online_device_ids()
+    }
+
+    fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
+        (**self).nearby_device_ids()
+    }
+
+    fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
+        (**self).local_device_fabric_identity()
+    }
+
+    fn try_send_personal_fabric_action(
+        &self,
+        target: &DeviceId,
+        action: PersonalFabricAction,
+    ) -> Result<[u8; 16], PersonalFabricSendError> {
+        (**self).try_send_personal_fabric_action(target, action)
+    }
+
+    fn require_media(&self) -> Result<(), String> {
+        (**self).require_media()
+    }
 }
 
 /// One of the person's devices, as this one knows it.
@@ -70,19 +151,6 @@ pub struct ListedDevice {
     pub online: bool,
     /// When it last said anything of itself in the record.
     pub last_seen_unix_ms: u64,
-}
-
-impl ListedDevice {
-    /// `device`, as it says it is, before anything else is known of it.
-    #[must_use]
-    pub fn new(device: DeviceId, about: DeviceAbout) -> Self {
-        Self {
-            device,
-            about,
-            online: false,
-            last_seen_unix_ms: 0,
-        }
-    }
 }
 
 /// The person's devices as this one knows them, derived from the record and who is online now.
@@ -122,23 +190,6 @@ impl Listing {
         self.devices.contains_key(device)
     }
 
-    pub fn online_devices(&self) -> impl Iterator<Item = &ListedDevice> {
-        self.devices.values().filter(|device| device.online)
-    }
-}
-
-/// The devices `network` knows now: the record their daemon keeps, and the devices online on its
-/// transport.
-#[must_use]
-pub fn known_from_network(network: &dyn Speakers) -> Listing {
-    let Some(record) = network.record() else {
-        return Listing::default();
-    };
-    let local = network
-        .local_device_fabric_identity()
-        .map(|(device, _)| device);
-    let online = network.online_device_ids();
-    known_from(&record, &network.person(), local.as_ref(), &online)
 }
 
 /// The devices `record` lists for `person`, `local` this one and `online` those on a session with

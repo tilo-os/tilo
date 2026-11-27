@@ -44,6 +44,7 @@ pub mod network;
 pub mod presence;
 /// This session's presence tracks, as a member's client says on them.
 pub mod saying;
+pub mod speakers;
 pub mod session;
 pub mod states;
 pub mod surfaces;

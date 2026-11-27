@@ -165,9 +165,6 @@ pub struct Options {
     /// presence a workspace would have carried ([`sync::Client::untethered`]), which says nothing
     /// on a network.
     pub sync: Option<Rc<sync::Client>>,
-    /// The person's device fabric, when this session runs on one: what was copied here is shared
-    /// with their other devices through it, and what they copied there joins the clipboard here.
-    pub fabric: Option<crate::platform::fabric::SharedLink>,
     /// The device VPN, when this session runs on a machine with the helper: a VPN profile set to
     /// connect and not connected blocks traffic while its kill switch is on, and this device routes
     /// through another of the person's devices while they choose one. Without one, nothing does.
@@ -393,7 +390,6 @@ impl Default for Options {
             records: None,
             record_changes: None,
             collab: true,
-            fabric: None,
             vpn: None,
             app_socket: AppSocket::default(),
             mcp_server: None,

@@ -100,6 +100,18 @@ pub struct OnlineDevices {
     pub devices: Vec<String>,
 }
 
+/// The resource under which a device's daemon publishes the person's other devices it hears on its
+/// local network now: what a device row says is nearby, so reachable without a server.
+pub const NEARBY: &str = "so.tilo.device/nearby-devices";
+
+/// The reading at [`NEARBY`]: the keys (lowercase hex) of the person's devices heard on this
+/// device's local network now, its own aside.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NearbyDevices {
+    #[serde(default)]
+    pub devices: Vec<String>,
+}
+
 /// The person's devices, by device key (lowercase hex), their Wi-Fi and their answers to boots.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Devices {

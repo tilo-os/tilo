@@ -16718,6 +16718,7 @@ dependencies = [
  "tilo-migrate",
  "tilo-model-gateway",
  "tilo-neighbour-wire",
+ "tilo-network-actor",
  "tilo-package-store",
  "tilo-paths",
  "tilo-peer-state",
@@ -18646,7 +18647,6 @@ name = "tilo-network-actor"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "fnv",
  "getrandom 0.4.3",
  "hex",
  "iroh",
@@ -19920,6 +19920,7 @@ dependencies = [
  "tilo-migrate",
  "tilo-neighbour-wire",
  "tilo-net",
+ "tilo-network-actor",
  "tilo-os-search",
  "tilo-package-store",
  "tilo-paths",

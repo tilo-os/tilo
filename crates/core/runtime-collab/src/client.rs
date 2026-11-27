@@ -1672,6 +1672,24 @@ impl ShellClient {
         Ok(tokio::net::UnixStream::from_std(ours)?)
     }
 
+    /// A connection the daemon carries as one link of the person's speakers and remote audio
+    /// ([`tilo_session_client::speakers`]): one end of a pair made here, the other handed over on
+    /// this link.
+    ///
+    /// # Errors
+    /// The link carries no descriptors, or the daemon serves no speakers link.
+    pub async fn speakers(&self) -> Result<tokio::net::UnixStream, NotAvailable> {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        self.hand(
+            crate::wire::shell::HandedTo::Speakers,
+            std::os::fd::OwnedFd::from(theirs),
+            None,
+        )
+        .await?;
+        ours.set_nonblocking(true)?;
+        Ok(tokio::net::UnixStream::from_std(ours)?)
+    }
+
     async fn hand(
         &self,
         to: crate::wire::shell::HandedTo,

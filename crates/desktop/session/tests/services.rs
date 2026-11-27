@@ -28,15 +28,9 @@ use tilo_connectivity_service::Connectivity;
 use tilo_connectivity_service::device::{Change, Device, Readings};
 use tilo_service::lines::{self, Remote};
 use tilo_session::platform::fabric::EndpointSelector;
-use tilo_session::platform::fabric::{
-    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonalFabricAction,
-};
-use tilo_session::platform::fabric::{PeerLink, PersonalFabricSendError};
+use tilo_session::platform::fabric::{DeviceAbout, DeviceId, DeviceKind, FabricCapabilities};
 use tilo_session::{Options, Service, Session};
-use tilo_speaker_service::devices::{Listing, Record, Speakers, known_from};
 use tilo_ui_base::host_operation::ResourceOperationStart;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert};
-use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 use tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint;
 
 /// A laptop's radios in memory.
@@ -225,43 +219,55 @@ fn owner_id(device: &str) -> [u8; 32] {
     raw
 }
 
-/// The 32 bytes in hex that name `device` in the record of the person's devices.
-fn key(device: &str) -> String {
-    let mut raw = [0; 32];
-    raw[..device.len()].copy_from_slice(device.as_bytes());
-    hex::encode(raw)
-}
-
-/// The person's devices as a stand-in transport keeps them: which of their devices are on it, each
-/// offering one output speaker groups can be made of.
-#[derive(Clone)]
+/// The person's devices as their daemon here keeps them: the record in their own workspace, its
+/// readings of which devices are online and which it hears on this machine's local network, and
+/// the link that carries a route to another device.
 struct Fabric {
-    record: Arc<Mutex<automerge::AutoCommit>>,
-    local: DeviceId,
-    root: Arc<ed25519_dalek::SigningKey>,
-    online: Arc<Mutex<std::collections::BTreeSet<DeviceId>>>,
+    daemon: tilo_session::daemon_fixture::TestDaemon,
+    /// The home whose identity the daemon serves: the session reads its own device from it.
+    _home: tilo_test_env::TestHome,
+    /// This device's key, the one its daemon runs under.
+    local: [u8; 32],
+    /// The person's devices online now, as their daemon says them.
+    online: Mutex<std::collections::BTreeSet<[u8; 32]>>,
 }
 
 impl Fabric {
     /// This laptop, alone among the person's devices.
     fn laptop() -> Self {
+        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let daemon = tilo_session::daemon_fixture::TestDaemon::start();
+        daemon.serve_identity(&mut home);
+        daemon.found_person_workspace();
+        let local = daemon.certificate().device_public_key;
         let fabric = Self {
-            record: Arc::new(Mutex::new(
-                tilo_workspace_service::workspaces::person_workspace::genesis::<Devices>("")
-                    .expect("the record's first state"),
-            )),
-            local: DeviceId::new(key("this-laptop")).expect("a device id"),
-            root: Arc::new(ed25519_dalek::SigningKey::from_bytes(&[21; 32])),
-            online: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            daemon,
+            _home: home,
+            local,
+            online: Mutex::default(),
         };
         fabric.publish("this-laptop", "This laptop");
         fabric
     }
 
+    /// The key `device` is named by in the record: this laptop is this daemon's own device.
+    fn key(&self, device: &str) -> String {
+        hex::encode(self.id(device))
+    }
+
+    /// The bytes `device` is named by in the record.
+    fn id(&self, device: &str) -> [u8; 32] {
+        if device == "this-laptop" {
+            self.local
+        } else {
+            owner_id(device)
+        }
+    }
+
     /// The output `device` offers, as it publishes it.
-    fn output(device: &str) -> EndpointSelector {
+    fn output(&self, device: &str) -> EndpointSelector {
         EndpointSelector::mint(
-            &DeviceId::new(key(device)).expect("a device id"),
+            &DeviceId::new(self.key(device)).expect("a device id"),
             "alsa_output.analog-stereo",
         )
     }
@@ -269,63 +275,51 @@ impl Fabric {
     /// Offer `device` among the person's devices as it stands now, online: what it says of
     /// itself goes into the record, which is the only copy.
     fn publish(&self, device: &str, label: &str) {
-        let owner = DeviceId::new(key(device)).expect("a device id");
-        let mut cert = DeviceCert {
-            user_public_key: self.root.verifying_key().to_bytes(),
-            device_public_key: owner_id(device),
-            device_label: label.into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, self.root.as_ref())
-            .expect("the certificate signs");
-        apply_record(
-            &self.record,
-            Devices::keeping(&cert).expect("the device certificate encodes"),
-        )
-        .expect("the device is kept");
-        let about = DeviceAbout {
-            label: label.into(),
-            kind: DeviceKind::Laptop,
-            capabilities: FabricCapabilities {
-                audio_output: true,
-                audio_group: true,
-                ..FabricCapabilities::default()
+        let cert = self.daemon.certifying(self.id(device), label);
+        self.daemon.keeping(
+            &cert,
+            &DeviceAbout {
+                label: label.into(),
+                kind: DeviceKind::Laptop,
+                capabilities: FabricCapabilities {
+                    audio_output: true,
+                    audio_group: true,
+                    ..FabricCapabilities::default()
+                },
             },
-        };
-        apply_record(
-            &self.record,
-            Devices::KEEP_FACT.with((
-                key(device),
-                hex::encode(postcard::to_allocvec(&cert).expect("the certificate encodes")),
-                tilo_network_actor::fabric::ABOUT_FACT.to_owned(),
-                hex::encode(postcard::to_allocvec(&about).expect("what it is encodes")),
-            )),
-        )
-        .expect("the device says what it is");
-        let endpoints = vec![SpeakerEndpoint {
-            selector: Self::output(device).to_hex(),
-            microphone: false,
-            label: "Speakers".into(),
-            is_default: true,
-        }];
-        apply_record(
-            &self.record,
-            Devices::SAY_SPEAKER_ENDPOINTS.with((
-                key(device),
-                hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
-            )),
-        )
-        .expect("the device offers its output");
-        self.online.lock().unwrap().insert(owner);
+            &[SpeakerEndpoint {
+                selector: self.output(device).to_hex(),
+                microphone: false,
+                label: "Speakers".into(),
+                is_default: true,
+            }],
+        );
+        self.online.lock().unwrap().insert(self.local);
+        self.online.lock().unwrap().insert(self.id(device));
+        self.daemon
+            .set_online(self.online.lock().unwrap().iter().copied());
     }
 
     /// Another of the person's devices joins the fabric, online.
     fn arrives(&self, device: &str, label: &str) {
         self.publish(device, label);
+        let _ = self.snapshot();
+    }
+
+    /// The snapshot Settings takes now, once the daemon's reading of the person's devices has
+    /// reached this test's link: a follower reads the daemon's publishes a moment after them.
+    fn snapshot(&self) -> runtime_collab::SpeakerSnapshot {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let reply = tilo_speaker_service::settings::handle(&self.link(), SpeakerCommand::Snapshot);
+            let SpeakerReply::Snapshot { snapshot } = reply else {
+                panic!("Settings asks for a snapshot: {reply:?}");
+            };
+            if !snapshot.devices.is_empty() || std::time::Instant::now() > deadline {
+                return snapshot;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     /// The sets Settings' snapshot shows, by name.
@@ -342,15 +336,12 @@ impl Fabric {
     }
 
     fn link(&self) -> tilo_session::platform::fabric::SharedLink {
-        Arc::new(self.clone())
+        self.daemon.fabric()
     }
 
     /// Which devices Settings' snapshot shows, as they stand.
     fn settings_sees(&self) -> Vec<String> {
-        let reply = tilo_speaker_service::settings::handle(&self.link(), SpeakerCommand::Snapshot);
-        let SpeakerReply::Snapshot { snapshot } = reply else {
-            panic!("Settings asks for a snapshot: {reply:?}");
-        };
+        let snapshot = self.snapshot();
         let mut labels = snapshot
             .devices
             .into_iter()
@@ -361,83 +352,14 @@ impl Fabric {
     }
 }
 
-impl PeerLink for Fabric {
-    fn online_device_ids(&self) -> std::collections::BTreeSet<DeviceId> {
-        self.online.lock().unwrap().clone()
-    }
-
-    fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
-        Some((self.local.clone(), "This laptop".into()))
-    }
-
-    fn try_send_personal_fabric_action(
-        &self,
-        _: &DeviceId,
-        _: PersonalFabricAction,
-    ) -> Result<[u8; 16], PersonalFabricSendError> {
-        Err(PersonalFabricSendError::Rejected("no transport".into()))
-    }
-
-    fn require_media(&self) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-impl Record for Fabric {
-    fn record(&self) -> Option<Devices> {
-        read_record(&self.record)
-    }
-
-    fn apply(&self, action: tilo_resource::Invoke<Devices>) -> Result<(), String> {
-        apply_record(&self.record, action)
-    }
-
-    fn person(&self) -> [u8; 32] {
-        self.root.verifying_key().to_bytes()
-    }
-}
-
-impl Speakers for Fabric {
-    fn known(&self) -> Listing {
-        known_from(
-            &read_record(&self.record).unwrap_or_default(),
-            &self.person(),
-            Some(&self.local),
-            &self.online_device_ids(),
-        )
-    }
-}
-
-/// Apply one typed action to the record document `record`.
-fn apply_record(
-    record: &Arc<Mutex<automerge::AutoCommit>>,
-    action: tilo_resource::Invoke<Devices>,
-) -> Result<(), String> {
-    let mut held = record.lock().unwrap();
-    let current = std::mem::replace(&mut *held, automerge::AutoCommit::new());
-    let mut replica = tilo_resource::Replica::<Devices>::from_doc(current).in_app(
-        tilo_workspace_service::workspaces::person_workspace::devices::DEVICES.0,
-        "Devices",
-    );
-    replica.apply(action).map_err(|error| error.to_string())?;
-    *held = std::mem::replace(replica.doc_mut(), automerge::AutoCommit::new());
-    Ok(())
-}
-
-/// The record `record` holds, as the person's devices read it.
-fn read_record(record: &Arc<Mutex<automerge::AutoCommit>>) -> Option<Devices> {
-    tilo_resource::Replica::<Devices>::from_doc(record.lock().unwrap().clone())
-        .in_app("so.tilo.model", "Model")
-        .state()
-        .ok()
-}
-
 fn fabric_session(fabric: &Fabric) -> Session {
     crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
             collab: false,
-            fabric: Some(fabric.link()),
+            person: hex::encode(fabric.daemon.certificate().user_public_key),
+            state: Some(fabric._home.state().to_path_buf()),
+            shell_link: Some(fabric.daemon.shell_link()),
             ..Options::default()
         },
     )
@@ -486,7 +408,9 @@ fn when_settings_hears(session: &mut Session, wait: &mut Wait) -> u64 {
 /// page is open.
 #[test]
 fn a_device_arriving_on_the_fabric_reaches_the_next_settings_snapshot() {
-    let _turn = SPEAKER_SERVICE.lock().unwrap();
+    let _turn = SPEAKER_SERVICE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fabric = Fabric::laptop();
     let mut session = fabric_session(&fabric);
     assert_eq!(fabric.settings_sees(), ["This laptop"]);
@@ -515,7 +439,9 @@ fn a_device_arriving_on_the_fabric_reaches_the_next_settings_snapshot() {
 /// it publishes is what Settings lists it from.
 #[test]
 fn a_speaker_set_saved_in_settings_is_read_back_from_the_session() {
-    let _turn = SPEAKER_SERVICE.lock().unwrap();
+    let _turn = SPEAKER_SERVICE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let fabric = Fabric::laptop();
     let mut session = fabric_session(&fabric);
     assert!(fabric.groups().is_empty());
@@ -525,8 +451,8 @@ fn a_speaker_set_saved_in_settings_is_read_back_from_the_session() {
         SpeakerCommand::Create {
             name: "Living room".into(),
             members: vec![SpeakerMemberSpec {
-                device: key("this-laptop"),
-                output: Fabric::output("this-laptop").to_hex(),
+                device: fabric.key("this-laptop"),
+                output: fabric.output("this-laptop").to_hex(),
                 role: SpeakerRoleSpec::Room {
                     x_mm: 0,
                     y_mm: 600,

@@ -317,6 +317,11 @@ pub struct ShellServices {
     /// which holds this device's endpoint and its key. `None` where the daemon serves none, and
     /// a link is refused.
     pub vpn: Option<DeviceVpnLinks>,
+    /// What carries a link of the person's speakers and remote audio
+    /// ([`tilo_session_client::speakers`]), handed over as a connection the shell made for it
+    /// (`HandedTo::Speakers`): the daemon, which holds this device's endpoint and its key.
+    /// `None` where the daemon serves none, and a link is refused.
+    pub speakers: Option<SpeakersLinks>,
     /// The device's one word in each workspace's live session, which the shell tells what the
     /// person says of themselves and which call they are in. `None` where the device runs no
     /// live session, and the shell's word is refused.
@@ -363,6 +368,11 @@ pub type ShellApi =
 
 /// What carries one device-VPN link of a shell's until it ends.
 pub type DeviceVpnLinks = Arc<
+    dyn Fn(tilo_socket::tokio::Stream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;
+
+/// What carries a link of the person's speakers and remote audio until it ends.
+pub type SpeakersLinks = Arc<
     dyn Fn(tilo_socket::tokio::Stream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
 >;
 

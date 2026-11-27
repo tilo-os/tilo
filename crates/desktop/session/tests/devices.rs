@@ -16,9 +16,7 @@
 )]
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tilo_actions::ApiError;
@@ -31,162 +29,30 @@ use tilo_session::platform::fabric::{
     PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
     REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
 };
-use tilo_session::platform::fabric::{FabricLink, PeerLink, PersonalFabricSendError, SharedLink};
+use tilo_session::daemon_fixture::TestDaemon;
 use tilo_session::surfaces::Surface;
 use tilo_session::{AppActions, AppLists, Lists, Options, Session};
-use tilo_speaker_service::devices::{ListedDevice, Listing, Record, Speakers};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 
-/// This device's fabric id.
-fn this_device() -> DeviceId {
-    DeviceId::new("this-pc").expect("a device id")
+/// The 32 bytes that name `device` in the record of the person's devices.
+fn owner_id(device: &str) -> [u8; 32] {
+    let mut raw = [0; 32];
+    raw[..device.len()].copy_from_slice(device.as_bytes());
+    raw
+}
+
+/// The key `device` is named by in the record of the person's devices.
+fn key_of(device: &str) -> String {
+    hex::encode(owner_id(device))
 }
 
 /// The other of the person's devices, online with this one.
 fn laptop() -> DeviceId {
-    DeviceId::new("laptop").expect("a device id")
-}
-
-/// A device of the person's asleep off the network.
-fn sleeping() -> DeviceId {
-    DeviceId::new("session").expect("a device id")
-}
-
-/// The person's devices as a stand-in transport keeps them, and what the session sent through it.
-#[derive(Default)]
-struct Fabric {
-    converged: Listing,
-    sent: Vec<(DeviceId, PersonalFabricAction)>,
-}
-
-#[derive(Clone, Default)]
-struct FakeLink {
-    fabric: Arc<Mutex<Fabric>>,
-    identity: Arc<Mutex<Option<DeviceId>>>,
-    /// Whether the person lets media move between their devices.
-    media: Arc<Mutex<bool>>,
-    /// The person's devices this session has a live session with.
-    online: Arc<Mutex<BTreeSet<DeviceId>>>,
-    /// The person's devices heard on this machine's local network.
-    nearby: Arc<Mutex<BTreeSet<DeviceId>>>,
-}
-
-impl FakeLink {
-    /// A link on a fabric this device has joined, with `laptop` online too and showing (a monitor,
-    /// when `display` ).
-    fn joined(display: bool) -> Self {
-        let link = Self::default();
-        *link.identity.lock().expect("the identity") = Some(this_device());
-        *link.media.lock().expect("the media switch") = true;
-        link.joined_device(this_device(), "This computer", true, true);
-        link.joined_device(laptop(), "Laptop", true, display);
-        link
-    }
-
-    /// A device of the person's, as it said of itself.
-    fn joined_device(&self, device: DeviceId, label: &str, online: bool, display: bool) {
-        if online {
-            self.online
-                .lock()
-                .expect("the online devices")
-                .insert(device.clone());
-        }
-        let mut known = ListedDevice::new(
-            device,
-            DeviceAbout {
-                label: label.to_owned(),
-                kind: DeviceKind::Laptop,
-                capabilities: FabricCapabilities {
-                    display,
-                    audio_output: true,
-                    ..FabricCapabilities::default()
-                },
-            },
-        );
-        known.online = online;
-        self.fabric
-            .lock()
-            .expect("the fabric")
-            .converged
-            .insert(known);
-    }
-
-    /// What the session sent through the fabric.
-    fn sent(&self) -> Vec<(DeviceId, PersonalFabricAction)> {
-        self.fabric.lock().expect("the fabric").sent.clone()
-    }
-
-    fn set_media(&self, on: bool) {
-        *self.media.lock().expect("the media switch") = on;
-    }
-}
-
-impl PeerLink for FakeLink {
-    fn online_device_ids(&self) -> BTreeSet<DeviceId> {
-        self.online.lock().expect("the online devices").clone()
-    }
-
-    fn nearby_device_ids(&self) -> BTreeSet<DeviceId> {
-        self.nearby.lock().expect("the nearby devices").clone()
-    }
-
-    fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
-        self.identity
-            .lock()
-            .expect("the identity")
-            .clone()
-            .map(|device| (device, "this computer".to_owned()))
-    }
-
-    fn try_send_personal_fabric_action(
-        &self,
-        target: &DeviceId,
-        action: PersonalFabricAction,
-    ) -> Result<[u8; 16], PersonalFabricSendError> {
-        self.fabric
-            .lock()
-            .expect("the fabric")
-            .sent
-            .push((target.clone(), action));
-        Ok([0; 16])
-    }
-
-    fn require_media(&self) -> Result<(), String> {
-        (*self.media.lock().expect("the media switch"))
-            .then_some(())
-            .ok_or_else(|| "media continuity is off".to_owned())
-    }
-}
-
-impl Record for FakeLink {
-    fn record(
-        &self,
-    ) -> Option<tilo_workspace_service::workspaces::person_workspace::devices::Devices> {
-        None
-    }
-
-    fn apply(
-        &self,
-        _: tilo_resource::Invoke<
-            tilo_workspace_service::workspaces::person_workspace::devices::Devices,
-        >,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn person(&self) -> [u8; 32] {
-        [0; 32]
-    }
-}
-
-impl Speakers for FakeLink {
-    fn known(&self) -> Listing {
-        self.fabric.lock().expect("the fabric").converged.clone()
-    }
+    DeviceId::new(key_of("laptop")).expect("a device id")
 }
 
 /// A password the session can check, so it locks when the person's other devices do.
@@ -244,8 +110,6 @@ impl tilo_session::Service for Player {
         action: &str,
         _arguments: &Arguments,
     ) -> Result<tilo_service::Started, ApiError> {
-        // It offers no actions: the tests move what plays between devices through the fabric, never
-        // through its own transport.
         Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
             resource, action,
         )))
@@ -256,17 +120,80 @@ impl tilo_session::Service for Player {
     }
 }
 
-/// The session and the device host behind its panel, which the test hands what plays.
+/// The session and the device daemon behind its panel, which the test hands what plays.
 struct Harness {
     session: Session,
+    /// The daemon this session runs on, and whose readings it follows.
+    daemon: TestDaemon,
+    /// The home whose identity the daemon serves: the session reads its own device from it.
+    _home: tilo_test_env::TestHome,
+    /// This device's key, the one its daemon runs under.
+    local: [u8; 32],
     /// What the player publishes, as the fixture hands it what plays.
     playing: Rc<RefCell<Option<serde_json::Value>>>,
     /// Whether that moved since the session read it.
     moved: Rc<Cell<bool>>,
 }
 
-fn session(link: &FakeLink, host: Rc<Host>) -> Harness {
-    let fabric: SharedLink = Arc::new(link.clone());
+/// Keep `device` in the person's record, saying it shows when `display`.
+fn keep(daemon: &TestDaemon, device: [u8; 32], label: &str, display: bool) {
+    let cert = daemon.certifying(device, label);
+    daemon.keeping(
+        &cert,
+        &DeviceAbout {
+            label: label.into(),
+            kind: DeviceKind::Laptop,
+            capabilities: FabricCapabilities {
+                display,
+                audio_output: true,
+                ..FabricCapabilities::default()
+            },
+        },
+        &[],
+    );
+}
+
+/// A session on a daemon holding the person's own workspace, with this computer and `devices` in
+/// their record: each a name, a label, whether it is online and whether it shows.
+fn session(devices: &[(&str, &str, bool, bool)], host: Rc<Host>) -> Harness {
+    session_with(devices, host, true, &[])
+}
+
+/// [`session`], with media continuity on or off as the person set it on this device, and the
+/// devices its daemon hears on this machine's network.
+fn session_with(
+    devices: &[(&str, &str, bool, bool)],
+    host: Rc<Host>,
+    media: bool,
+    nearby: &[&str],
+) -> Harness {
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let daemon = TestDaemon::start();
+    daemon.serve_identity(&mut home);
+    daemon.found_person_workspace();
+    let local = daemon.certificate().device_public_key;
+    let mut online = vec![local];
+    keep(&daemon, local, "This computer", true);
+    for (device, label, on, display) in devices {
+        let device = owner_id(device);
+        keep(&daemon, device, label, *display);
+        if *on {
+            online.push(device);
+        }
+    }
+    daemon.set_online(online);
+    daemon.set_nearby(nearby.iter().map(|device| owner_id(device)));
+    if !media {
+        settings_store::update_section(
+            "continuity",
+            serde_json::json!({ "enabled": false })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        )
+        .expect("the device's settings are written");
+    }
+    let person = daemon.certificate().user_public_key;
     let playing: Rc<RefCell<Option<serde_json::Value>>> = Rc::default();
     let moved: Rc<Cell<bool>> = Rc::default();
     let session = crate::common::headless_on(
@@ -285,7 +212,9 @@ fn session(link: &FakeLink, host: Rc<Host>) -> Harness {
                 ..AppLists::default()
             }),
             apps: Some(host),
-            fabric: Some(fabric),
+            person: hex::encode(person),
+            state: Some(home.state().to_path_buf()),
+            shell_link: Some(daemon.shell_link()),
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
             surfaces: vec![
@@ -298,11 +227,25 @@ fn session(link: &FakeLink, host: Rc<Host>) -> Harness {
             ..Options::default()
         },
     );
-    Harness {
+    let mut harness = Harness {
         session,
+        daemon,
+        _home: home,
+        local,
         playing,
         moved,
+    };
+    // The send a press makes goes over the link the session asks its daemon for as it starts.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !harness.daemon.speakers_attached() {
+        assert!(
+            Instant::now() < deadline,
+            "the session never took its daemon's speakers link"
+        );
+        harness.step();
+        std::thread::sleep(Duration::from_millis(5));
     }
+    harness
 }
 
 impl Harness {
@@ -349,13 +292,61 @@ impl Harness {
             self.step();
         }
     }
+
+    /// What the session asked its daemon to hand the person's devices, each envelope with the
+    /// device it is for, once the daemon took the first.
+    fn sent(&mut self) -> Vec<(DeviceId, PersonalFabricAction)> {
+        self.sent_until(1)
+    }
+
+    /// [`Self::sent`], once the daemon took `n` of them: a press that adds to an envelope already
+    /// sent waits for its own, and a send that never comes fails the test with what it saw.
+    fn sent_until(&mut self, n: usize) -> Vec<(DeviceId, PersonalFabricAction)> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let sent: Vec<(DeviceId, PersonalFabricAction)> = self
+                .daemon
+                .sent_speakers()
+                .into_iter()
+                .filter_map(|(peer, envelope)| {
+                    let envelope: PersonalFabricActionEnvelope =
+                        postcard::from_bytes(&envelope).ok()?;
+                    Some((DeviceId::new(hex::encode(peer)).ok()?, envelope.action))
+                })
+                .collect();
+            if sent.len() >= n || Instant::now() > deadline {
+                return sent;
+            }
+            self.step();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Another of the person's devices says `envelope` here, as its session hands it to the link.
+    fn hearing(&mut self, envelope: &PersonalFabricActionEnvelope) {
+        let peer: [u8; 32] = hex::decode(envelope.source.as_str())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .expect("the sender's key");
+        self.daemon
+            .hearing(tilo_session_client::speakers::Frame::Heard {
+                peer,
+                envelope: postcard::to_allocvec(envelope).expect("the envelope encodes"),
+                received_us: 0,
+            });
+        for _ in 0..4 {
+            self.step();
+        }
+    }
 }
 
 #[test]
 fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(true);
-    let mut harness = session(&link, Rc::new(Host::default()));
+    let mut harness = session(
+        &[("laptop", "Laptop", true, true)],
+        Rc::new(Host::default()),
+    );
     harness.playing();
     for _ in 0..40 {
         harness.step();
@@ -364,7 +355,7 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
         if harness
             .rows()
             .iter()
-            .any(|row| row.key == "laptop" && row.actions != HostedActions::None)
+            .any(|row| row.key == key_of("laptop") && row.actions != HostedActions::None)
         {
             break;
         }
@@ -376,9 +367,9 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
     assert_eq!(
         rows.iter()
             .skip(1)
-            .map(|row| (row.key.as_str(), row.title.as_str(), row.detail.as_str()))
+            .map(|row| (row.key.clone(), row.title.clone(), row.detail.clone()))
             .collect::<Vec<_>>(),
-        [("laptop", "Laptop", "Online")],
+        [(key_of("laptop"), "Laptop".to_owned(), "Online".to_owned())],
         "one row per device other than this one, under the sound it can take"
     );
     assert!(
@@ -398,7 +389,10 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
             .iter()
             .map(|target| (target.id.as_str(), target.online, target.local))
             .collect::<Vec<_>>(),
-        [("this-pc", true, true), ("laptop", true, false)],
+        [
+            (hex::encode(harness.local).as_str(), true, true),
+            (key_of("laptop").as_str(), true, false),
+        ],
         "this device is listed too, and says it is this one"
     );
 }
@@ -408,17 +402,29 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
 #[test]
 fn a_device_on_the_local_network_is_listed_as_nearby() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(false);
-    link.nearby
-        .lock()
-        .expect("the nearby devices")
-        .insert(laptop());
-    let mut harness = session(&link, Rc::new(Host::default()));
-    for _ in 0..40 {
+    let mut harness = session_with(
+        &[("laptop", "Laptop", true, false)],
+        Rc::new(Host::default()),
+        true,
+        &["laptop"],
+    );
+    // The reading the session follows moves when the daemon says so again.
+    harness.daemon.set_nearby([owner_id("laptop")]);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
         harness.step();
-        if harness.rows().iter().any(|row| row.key == "laptop") {
+        if harness
+            .rows()
+            .iter()
+            .any(|row| row.key == key_of("laptop") && row.detail == "Nearby")
+        {
             break;
         }
+        assert!(
+            Instant::now() < deadline,
+            "the laptop's row says it is on this network: {:?}",
+            harness.rows()
+        );
     }
     let reading = harness
         .reading()
@@ -428,9 +434,9 @@ fn a_device_on_the_local_network_is_listed_as_nearby() {
             .rows()
             .iter()
             .filter(|row| !row.key.starts_with(SOUND_KEY))
-            .map(|row| (row.key.as_str(), row.detail.as_str()))
+            .map(|row| (row.key.clone(), row.detail.clone()))
             .collect::<Vec<_>>(),
-        [("laptop", "Nearby")],
+        [(key_of("laptop"), "Nearby".to_owned())],
         "the laptop's row says it is on this network"
     );
 }
@@ -455,15 +461,37 @@ fn until(harness: &mut Harness, mut done: impl FnMut(&mut Harness) -> bool) {
 #[test]
 fn pressing_another_device_sends_it_what_plays_here() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(true);
-    let mut harness = session(&link, Rc::new(Host::default()));
+    let mut harness = session(
+        &[("laptop", "Laptop", true, true)],
+        Rc::new(Host::default()),
+    );
     harness.playing();
-    for _ in 0..4 {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
         harness.step();
+        if row(&harness, &key_of("laptop")).actions
+            == HostedActions::Select("Play Clair de lune here".into())
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the laptop's row offers what plays here: {:#?}",
+            row(&harness, &key_of("laptop"))
+        );
     }
-    harness.press("laptop", RowPart::Action);
-
-    let sent = link.sent();
+    let started = Instant::now();
+    harness.press(&key_of("laptop"), RowPart::Action);
+    let pressed = started.elapsed();
+    let sent = harness.sent();
+    let took = started.elapsed();
+    println!(
+        "the press was carried out in {pressed:?}, and its frame reached the daemon in {took:?}"
+    );
+    assert!(
+        took < Duration::from_secs(1),
+        "a person's press reaches the daemon well under a second, and took {took:?}"
+    );
     assert_eq!(sent.len(), 1, "one action, not two: {sent:?}");
     let (target, action) = sent.first().expect("the hand-over");
     assert_eq!(target, &laptop(), "the device pressed");
@@ -504,14 +532,16 @@ fn pressing_another_device_sends_it_what_plays_here() {
 fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let host = Rc::new(Host::default());
-    let link = FakeLink::joined(false);
-    let mut harness = session(&link, Rc::clone(&host));
+    let mut harness = session(
+        &[("laptop", "Laptop", true, false)],
+        Rc::clone(&host),
+    );
     for _ in 0..4 {
         harness.step();
     }
-    harness.press("laptop", RowPart::Row);
+    harness.press(&key_of("laptop"), RowPart::Row);
 
-    assert!(link.sent().is_empty(), "nothing plays: nothing is sent");
+    assert!(harness.sent().is_empty(), "nothing plays: nothing is sent");
     let workspace = harness.session.handle().read(|tree| {
         tree.active_workspace()
             .map(|workspace| workspace.id().to_string())
@@ -523,10 +553,10 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
             application_action_target(
                 &workspace,
                 "so.tilo.settings",
-                "settings.section:devices_sync",
-                "open-pane"
+                "tl:so.tilo.settings",
+                "open_pane"
             ),
-            serde_json::Map::default()
+            serde_json::Map::from_iter([("pane".to_owned(), serde_json::json!("devices_sync"))])
         )),
         "a device without a screen is managed on the devices page, through the page's own row"
     );
@@ -534,29 +564,27 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     // With media continuity turned off, what plays here stays here: the press opens the device's
     // settings instead.
     let host = Rc::new(Host::default());
-    let link = FakeLink::joined(false);
-    link.set_media(false);
-    let mut harness = session(&link, Rc::clone(&host));
+    let mut harness =
+        session_with(&[("laptop", "Laptop", true, false)], Rc::clone(&host), false, &[]);
     harness.playing();
     for _ in 0..4 {
         harness.step();
     }
-    harness.press("laptop", RowPart::Action);
-    assert!(link.sent().is_empty(), "media continuity is off");
+    harness.press(&key_of("laptop"), RowPart::Action);
+    assert!(harness.sent().is_empty(), "media continuity is off");
     assert!(
         !host.invoked.borrow().is_empty(),
         "its settings page opens instead"
     );
 
     // A device that shows has its display placed beside this one's, so its press opens that page.
-    let link = FakeLink::joined(true);
     let host = Rc::new(Host::default());
-    let mut harness = session(&link, Rc::clone(&host));
+    let mut harness = session(&[("laptop", "Laptop", true, true)], Rc::clone(&host));
     for _ in 0..2 {
         harness.step();
     }
-    harness.press("laptop", RowPart::Row);
-    assert!(link.sent().is_empty(), "nothing plays: nothing is sent");
+    harness.press(&key_of("laptop"), RowPart::Row);
+    assert!(harness.sent().is_empty(), "nothing plays: nothing is sent");
     let workspace = harness.session.handle().read(|tree| {
         tree.active_workspace()
             .map(|workspace| workspace.id().to_string())
@@ -565,14 +593,16 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     let displays = application_action_target(
         &workspace,
         "so.tilo.settings",
-        "settings.section:displays",
-        "open-pane",
+        "tl:so.tilo.settings",
+        "open_pane",
     );
     assert!(
         host.invoked
             .borrow()
             .iter()
-            .any(|(target, _)| *target == displays),
+            .any(|(target, arguments)| {
+                *target == displays && arguments.get("pane") == Some(&serde_json::json!("displays"))
+            }),
         "a device that shows opens the displays page, through the page's own row: {:?}",
         host.invoked.borrow()
     );
@@ -584,15 +614,15 @@ fn this_device_s_row_does_nothing() {
     // The steps this test takes change nothing, the bar's own clock included: a minute turning over
     // on it is not the frame it checks.
     let _clock = tilo_test_env::held_wall_clock();
-    let link = FakeLink::joined(true);
     let host = Rc::new(Host::default());
-    let mut harness = session(&link, Rc::clone(&host));
+    let mut harness = session(&[("laptop", "Laptop", true, true)], Rc::clone(&host));
     harness.playing();
     for _ in 0..4 {
         harness.step();
     }
-    harness.press("this-pc", RowPart::Row);
-    assert!(link.sent().is_empty());
+    let this_pc = hex::encode(harness.local);
+    harness.press(&this_pc, RowPart::Row);
+    assert!(harness.sent().is_empty());
     assert!(host.invoked.borrow().is_empty());
 }
 
@@ -601,35 +631,38 @@ fn a_row_a_device_left_behind_is_a_press_on_nothing() {
     let _settled = tilo_ui_base::motion::testing::settled();
     // As above: the bar's clock keeps still while the frames are compared.
     let _clock = tilo_test_env::held_wall_clock();
-    let link = FakeLink::joined(true);
     let host = Rc::new(Host::default());
-    let mut harness = session(&link, Rc::clone(&host));
+    let mut harness = session(&[("laptop", "Laptop", true, true)], Rc::clone(&host));
     harness.playing();
     for _ in 0..4 {
         harness.step();
     }
     harness.press("phone", RowPart::Row);
-    assert!(link.sent().is_empty());
+    assert!(harness.sent().is_empty());
     assert!(host.invoked.borrow().is_empty());
 }
 
 #[test]
 fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(false);
-    link.joined_device(sleeping(), "Session", false, false);
     let host = Rc::new(Host::default());
-    let mut harness = session(&link, Rc::clone(&host));
+    let mut harness = session(
+        &[
+            ("laptop", "Laptop", true, false),
+            ("session", "Session", false, false),
+        ],
+        Rc::clone(&host),
+    );
     for _ in 0..40 {
         harness.step();
-        if harness.rows().iter().any(|row| row.key == "session") {
+        if harness.rows().iter().any(|row| row.key == key_of("session")) {
             break;
         }
     }
     let rows = harness.rows();
     let row = rows
         .iter()
-        .find(|row| row.key == "session")
+        .find(|row| row.key == key_of("session"))
         .expect("the sleeping device's row");
     assert_eq!(
         row.actions,
@@ -637,8 +670,8 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
         "nothing says it wakes: nothing to offer"
     );
 
-    harness.press("session", RowPart::Row);
-    assert!(link.sent().is_empty());
+    harness.press(&key_of("session"), RowPart::Row);
+    assert!(harness.sent().is_empty());
     assert!(
         !host.invoked.borrow().is_empty(),
         "its settings open instead"
@@ -680,7 +713,7 @@ fn the_row(harness: &Harness, prefix: &str) -> tilo_session::hosted::HostedRow {
 
 /// Pick the sound this device plays and send it to the laptop, answering the offers the route and
 /// the ask need. Returns the route's session.
-fn sent_our_sound(harness: &mut Harness, link: &FakeLink) -> String {
+fn sent_our_sound(harness: &mut Harness) -> String {
     harness.playing();
     open_devices(harness);
     let sound = the_row(harness, SOUND_KEY);
@@ -689,24 +722,26 @@ fn sent_our_sound(harness: &mut Harness, link: &FakeLink) -> String {
     assert!(!sound.selected, "nothing is picked to begin with");
     harness.press(&sound.key, RowPart::Row);
     assert!(the_row(harness, SOUND_KEY).selected, "the press picks it");
-    assert!(link.sent().is_empty(), "picking a sound sends nothing");
+    assert!(harness.sent().is_empty(), "picking a sound sends nothing");
     assert_eq!(
-        row(harness, "laptop").actions,
+        row(harness, &key_of("laptop")).actions,
         HostedActions::Select("Send".into()),
         "the device row says what a press does now"
     );
-    harness.press("laptop", RowPart::Action);
+    harness.press(&key_of("laptop"), RowPart::Action);
     the_row(harness, ROUTE_KEY).key
 }
 
 #[test]
 fn the_sound_of_this_device_travels_to_another_and_its_route_is_listed() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(true);
-    let mut harness = session(&link, Rc::new(Host::default()));
-    let route = sent_our_sound(&mut harness, &link);
+    let mut harness = session(
+        &[("laptop", "Laptop", true, true)],
+        Rc::new(Host::default()),
+    );
+    let route = sent_our_sound(&mut harness);
 
-    let sent = link.sent();
+    let sent = harness.sent();
     assert_eq!(sent.len(), 1, "one offer, not two: {sent:?}");
     let (target, action) = sent.first().expect("the offer");
     assert_eq!(target, &laptop(), "the device pressed");
@@ -743,7 +778,7 @@ fn the_sound_of_this_device_travels_to_another_and_its_route_is_listed() {
         "no sound is picked after sending one"
     );
     assert_eq!(
-        row(&harness, "laptop").actions,
+        row(&harness, &key_of("laptop")).actions,
         HostedActions::Select("Play Clair de lune here".into()),
         "with no sound picked, a press plays what plays here again"
     );
@@ -752,12 +787,14 @@ fn the_sound_of_this_device_travels_to_another_and_its_route_is_listed() {
 #[test]
 fn a_route_is_stopped_from_its_row() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(true);
-    let mut harness = session(&link, Rc::new(Host::default()));
-    let route = sent_our_sound(&mut harness, &link);
+    let mut harness = session(
+        &[("laptop", "Laptop", true, true)],
+        Rc::new(Host::default()),
+    );
+    let route = sent_our_sound(&mut harness);
     harness.press(&route, RowPart::Action);
 
-    let sent = link.sent();
+    let sent = harness.sent_until(2);
     assert_eq!(sent.len(), 2, "the offer and its cancellation: {sent:?}");
     let (target, action) = sent.last().expect("the cancellation");
     assert_eq!(target, &laptop());
@@ -774,8 +811,10 @@ fn a_route_is_stopped_from_its_row() {
 #[test]
 fn a_device_asking_for_this_sound_is_declined_from_its_row() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(true);
-    let mut harness = session(&link, Rc::new(Host::default()));
+    let mut harness = session(
+        &[("laptop", "Laptop", true, true)],
+        Rc::new(Host::default()),
+    );
     open_devices(&mut harness);
 
     // The laptop asks to play what plays here.
@@ -783,7 +822,7 @@ fn a_device_asking_for_this_sound_is_declined_from_its_row() {
     let offer = PersonalFabricActionEnvelope {
         request_id: [0x11; 16],
         source: laptop(),
-        target: this_device(),
+        target: DeviceId::new(hex::encode(harness.local)).expect("a device id"),
         issued_unix_ms: ui::time::unix_now_ms(),
         action: PersonalFabricAction::RemoteAudioOffer {
             session_id,
@@ -794,13 +833,7 @@ fn a_device_asking_for_this_sound_is_declined_from_its_row() {
             frame_samples: REMOTE_AUDIO_FRAME_SAMPLES,
         },
     };
-    let as_link: &dyn FabricLink = &link;
-    assert!(tilo_speaker_service::remote_audio::handle_action(
-        as_link, &offer
-    ));
-    for _ in 0..4 {
-        harness.step();
-    }
+    harness.hearing(&offer);
 
     let ask = the_row(&harness, ASK_KEY);
     assert_eq!(ask.title, "Play All system audio here");
@@ -820,7 +853,7 @@ fn a_device_asking_for_this_sound_is_declined_from_its_row() {
         "the person allows it once or declines it"
     );
     harness.press(&ask.key, RowPart::Decline);
-    let sent = link.sent();
+    let sent = harness.sent();
     assert_eq!(sent.len(), 1, "one answer: {sent:?}");
     let (target, action) = sent.first().expect("the answer");
     assert_eq!(target, &laptop());
@@ -876,8 +909,10 @@ fn what_plays() -> tilo_audio_service::media::Media {
 #[test]
 fn what_plays_reaches_the_shell_with_the_panel_closed() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(true);
-    let mut harness = session(&link, Rc::new(Host::default()));
+    let mut harness = session(
+        &[("laptop", "Laptop", true, true)],
+        Rc::new(Host::default()),
+    );
     for _ in 0..4 {
         harness.step();
     }
@@ -890,7 +925,7 @@ fn what_plays_reaches_the_shell_with_the_panel_closed() {
             .session
             .accessible_labels()
             .iter()
-            .any(|label| label == "Open Music"),
+            .any(|label| label == "Clair de lune"),
         "nothing plays: the session shows no song"
     );
 
@@ -907,7 +942,7 @@ fn what_plays_reaches_the_shell_with_the_panel_closed() {
             .session
             .accessible_labels()
             .iter()
-            .any(|label| label == "Open Music"),
+            .any(|label| label == "Clair de lune"),
         "the session shows what plays: {:?}",
         harness.session.accessible_labels()
     );
@@ -919,8 +954,10 @@ fn what_plays_reaches_the_shell_with_the_panel_closed() {
 #[test]
 fn a_view_reads_the_login_and_the_layouts_workspaces() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(true);
-    let mut harness = session(&link, Rc::new(Host::default()));
+    let mut harness = session(
+        &[("laptop", "Laptop", true, true)],
+        Rc::new(Host::default()),
+    );
     for _ in 0..4 {
         harness.step();
     }
@@ -986,8 +1023,10 @@ fn a_view_reads_the_login_and_the_layouts_workspaces() {
 #[test]
 fn a_revocation_that_reaches_no_daemon_fails_and_says_so() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let link = FakeLink::joined(true);
-    let mut harness = session(&link, Rc::new(Host::default()));
+    let mut harness = session(
+        &[("laptop", "Laptop", true, true)],
+        Rc::new(Host::default()),
+    );
     for _ in 0..4 {
         harness.step();
     }

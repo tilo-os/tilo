@@ -806,11 +806,14 @@ impl Session {
             tilo_workspace_service::workspaces::sync::RESOURCE,
             options.wake.handle(),
         );
-        // The person's devices as their daemon knows them — the record of them it follows, and
-        // which of them hold a session with it now — or the stand-in a test hands its options.
-        let fabric: Option<crate::platform::fabric::SharedLink> =
-            options.fabric.clone().or_else(|| {
+        // The person's devices as their daemon knows them: the record of them it follows, which of
+        // them hold a session with it now, and which it hears on this machine's network.
+        let fabric: Option<crate::platform::fabric::SharedLink> = (|| {
                 let identity = crate::sync::device_identity()?;
+                let local = crate::platform::fabric::DeviceId::new(hex::encode(
+                    identity.device_cert.device_public_key,
+                ))
+                .ok();
                 let (record, _) = owner_devices.as_ref()?.record();
                 Some(std::sync::Arc::new(crate::person_store::DaemonFabric::new(
                     record.shared(),
@@ -820,10 +823,17 @@ impl Session {
                         tilo_workspace_service::workspaces::person_workspace::devices::ONLINE,
                         options.wake.handle(),
                     ),
+                    crate::person_store::DaemonReading::follow(
+                        &daemon,
+                        &own_workspace,
+                        tilo_workspace_service::workspaces::person_workspace::devices::NEARBY,
+                        options.wake.handle(),
+                    ),
+                    crate::person_store::SpeakersLink::attach(&daemon, local),
                     identity.device_cert,
                     continuity.clone(),
                 )) as crate::platform::fabric::SharedLink)
-            });
+            })();
         if let Some(devices) = &owner_devices {
             // Notifications continue on the person's other devices, through the record of them.
             let (record, _) = devices.record();
@@ -2093,7 +2103,7 @@ impl Session {
                         handoff: Rc::clone(&shared.handoff),
                         pressed: Rc::clone(&shared.devices.pressed),
                         handed: Rc::clone(&shared.devices.handed),
-                        refused: std::sync::Arc::new(std::sync::Mutex::default()),
+                        refused: std::sync::Arc::clone(&shared.devices.refused),
                         tools: backup_tools,
                     },
                 )));
@@ -2738,12 +2748,16 @@ impl Session {
     ) -> Result<ResourceOperationStart, ApiError> {
         let empty = serde_json::Map::new();
         let arguments = arguments.as_object().unwrap_or(&empty);
-        self.shared.published.invoke_as(
+        let answer = self.shared.published.invoke_as(
             actor,
             &ActionAddress::new(resource, action),
             arguments,
             &mut crate::look::look(&mut self.compositor, Some(&self.content)),
-        )
+        );
+        // A press on the person's devices is carried out before the caller is answered: what it
+        // sends leaves now, never on a later pass of the loop.
+        self.shared.carry_out_presses();
+        answer
     }
 
     /// Invoke `action` of `resource` as `actor` taking a step of the turn the message `message` of

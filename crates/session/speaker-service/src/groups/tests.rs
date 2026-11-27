@@ -79,9 +79,9 @@ impl World {
                 hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
             )))
             .expect("the device offers its endpoints");
-        let mut known = ListedDevice::new(
-            local,
-            DeviceAbout {
+        let known = ListedDevice {
+            device: local,
+            about: DeviceAbout {
                 label: device.into(),
                 kind: DeviceKind::Speaker,
                 capabilities: FabricCapabilities {
@@ -90,9 +90,9 @@ impl World {
                     ..FabricCapabilities::default()
                 },
             },
-        );
-        known.online = true;
-        known.last_seen_unix_ms = 1;
+            online: true,
+            last_seen_unix_ms: 1,
+        };
         self.fabric.insert(known);
     }
 

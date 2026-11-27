@@ -145,6 +145,9 @@ pub struct Daemon {
     /// The endpoint's router, held so the workspace host, the device actions, the work this
     /// device takes and a ticket's certify call answer for as long as this runtime runs.
     _endpoint_router: iroh::protocol::Router,
+    /// The person's other devices heard on this device's local network, published for their shell:
+    /// after the router the endpoint that hears them.
+    _lan: Arc<super::lan::Lan>,
     /// What this device keeps as a server, when its machine is one. After the router that
     /// answers for it.
     _kept: Option<super::keep::Kept>,
@@ -2350,6 +2353,10 @@ impl Daemon {
         // that takes work at all; a server keeps the workspaces placed on it and takes none.
         let member = joined && keeping.is_none() && take_work::TAKES_WORK;
         let port = configured_port()?.or_else(|| member.then_some(take_work::PORT));
+        // The person's other devices heard on this device's local network, which this endpoint
+        // asks for and answers: what their shell shows as a device nearby, and how two of their
+        // devices on one network meet without a relay.
+        let lan = super::lan::Lan::new(identity.cert.clone());
         // The endpoint the part that ended bound is handed to the part that starts next, so
         // its socket is the port this device is reached at and is never bound a second time,
         // whatever the part that ended still has to let go of.
@@ -2368,7 +2375,12 @@ impl Daemon {
             }
             (Some(endpoint), None) => (endpoint, None),
             (None, None) => (
-                listen_endpoint(&identity.key, port, login_relay(&identity.place))?,
+                listen_endpoint(
+                    &identity.key,
+                    port,
+                    login_relay(&identity.place),
+                    Some(&lan),
+                )?,
                 None,
             ),
         };
@@ -2726,6 +2738,15 @@ impl Daemon {
             let _entered = tilo_rt::app().handle().enter();
             super::workspace_sync::WorkspaceSync::new(workspaces.copies())
         };
+        // The person's speakers and remote audio: the daemon holds the endpoint, so it is the one
+        // that carries a route's envelopes to the device they are for, and answers the person's
+        // other devices' routes on this one.
+        let speakers = super::speakers::Speakers::new(
+            workspaces.endpoint(),
+            identity.cert.device_public_key,
+            identity.cert.user_public_key,
+            workspaces.copies().clone(),
+        );
         // The person's devices that hold a session with this one now, published for their shell:
         // what is theirs lasts in the record, and being reachable is this.
         let online = {
@@ -2763,6 +2784,7 @@ impl Daemon {
             terminals: terminals.into_iter().chain(live.protocols()).collect(),
             unlock: unlocking,
             vpn,
+            speakers: &speakers,
         });
         // A founding call that asked for the person's first tickets is answered them from here
         // on: the tickets, the endpoint they name and what serves it are up, and nothing the
@@ -2772,6 +2794,9 @@ impl Daemon {
         if let Some(founding) = founding {
             founding.serving(identity.cert.user_public_key, Arc::clone(&tickets));
         }
+        // Only the devices that record still certifies are heard, and a device the person takes
+        // back leaves the local network's answer at once.
+        lan.admitting(person_devices.clone());
         // The Wi-Fi passphrases the person's devices share are kept there too, sealed to each of
         // them: the desktop session shares and joins with them through the device's dispatch.
         super::wifi::Wifi::new(
@@ -2928,12 +2953,14 @@ impl Daemon {
                 nearby: Arc::clone(&nearby),
                 clipboard: Arc::clone(&clipboard),
                 online: Arc::clone(&online),
+                lan: Arc::clone(&lan),
                 workspace_sync: Arc::clone(&workspace_sync),
                 shell_links: &shell_links,
                 shell_dispatch: &shell_dispatch,
                 identity: identity_broker.handover(),
                 live: &live,
                 vpn: vpn_links,
+                speakers: &speakers,
                 fanout: &fanout,
             },
             brokers,
@@ -3247,6 +3274,7 @@ impl Daemon {
             replicas,
             _media: media,
             _endpoint_router: endpoint_router,
+            _lan: lan,
             home,
             first,
             _kept: kept,
@@ -3672,6 +3700,8 @@ struct BrokerParts<'a> {
     clipboard: Arc<super::clipboard::Clipboard>,
     /// The person's devices that hold a session with this one now, which their shell reads.
     online: Arc<super::online::Online>,
+    /// The person's other devices heard on this device's local network, which their shell reads.
+    lan: Arc<super::lan::Lan>,
     /// Where this device's member workspaces stand, which their shell reads for the apps in them.
     workspace_sync: Arc<super::workspace_sync::WorkspaceSync>,
     /// The links of the shells this daemon starts.
@@ -3690,9 +3720,22 @@ struct BrokerParts<'a> {
     live: &'a Arc<super::live_relay::Live>,
     /// What carries those shells' device-VPN links.
     vpn: Option<tilo_app_host::shell::DeviceVpnLinks>,
+    /// The person's speakers, which carries those shells' links to the person's other devices.
+    speakers: &'a Arc<super::speakers::Speakers>,
     /// The broker's fanout, which serves the broker the windows connect to: what the daemon
     /// publishes what those windows hold of.
     fanout: &'a Arc<FanoutState>,
+}
+
+/// What carries a shell's speakers links: the person's speakers, for as long as each link lasts.
+fn speaker_links(
+    speakers: &Arc<super::speakers::Speakers>,
+) -> tilo_app_host::shell::SpeakersLinks {
+    let speakers = Arc::clone(speakers);
+    Arc::new(move |stream| {
+        let speakers = Arc::clone(&speakers);
+        Box::pin(async move { speakers.serve_link(stream).await })
+    })
 }
 
 /// What carries a shell's live links: `live`, for as long as each link lasts.
@@ -3791,6 +3834,8 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
     // The person's devices that hold a session with this one now, read by their shell: what says
     // which of their devices it reaches at this moment.
     let online: Arc<dyn PublishedResources> = Arc::new(parts.online.published());
+    // The person's other devices heard on this device's local network now, read by their shell.
+    let lan: Arc<dyn PublishedResources> = Arc::new(parts.lan.published());
     // Where this device's member workspaces stand, read by their shell for the apps in them.
     let workspace_sync: Arc<dyn PublishedResources> = Arc::new(parts.workspace_sync.published());
     // What is live in the workspaces this device keeps, which the desktop shows.
@@ -3832,6 +3877,10 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
         .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
         .serving(&[super::clipboard::RESOURCE], Arc::clone(&clipboard))
         .serving(&[super::online::RESOURCE], Arc::clone(&online))
+        .serving(
+            &[tilo_workspace_service::workspaces::person_workspace::devices::NEARBY],
+            Arc::clone(&lan),
+        )
         .serving(
             &[tilo_workspace_service::workspaces::sync::RESOURCE],
             Arc::clone(&workspace_sync),
@@ -4044,6 +4093,7 @@ fn shell_services(
             identity: Arc::clone(&parts.identity),
             live: Some(live_links(parts.live)),
             vpn: parts.vpn.clone(),
+            speakers: Some(speaker_links(parts.speakers)),
             speaking: Arc::clone(parts.live) as Arc<dyn tilo_app_host::shell::ShellSpeaking>,
         },
     )));
@@ -7898,6 +7948,8 @@ struct EndpointServing<'a> {
     unlock: Option<Arc<super::unlock::Unlock>>,
     /// The device VPN, which answers the person's other devices on the endpoint.
     vpn: Option<super::capabilities::VpnServing>,
+    /// The person's speakers, which carries their routes to their other devices on the endpoint.
+    speakers: &'a Arc<super::speakers::Speakers>,
 }
 
 /// Serve what this runtime answers on the endpoint its workspaces run, from one router: the
@@ -7913,6 +7965,7 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
         terminals,
         unlock,
         vpn,
+        speakers,
     } = serving;
     let runtime = tilo_rt::app().handle();
     let _entered = runtime.enter();
@@ -7937,6 +7990,7 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
     for (alpn, handler) in terminals
         .into_iter()
         .chain(vpn.into_iter().flat_map(|vpn| vpn.protocols))
+        .chain(speakers.protocols())
     {
         router = router.accept(alpn, handler);
     }
@@ -8589,6 +8643,7 @@ pub(super) fn listen_endpoint(
     key: &SigningKey,
     listen: Option<u16>,
     relay: Option<iroh::RelayUrl>,
+    lan: Option<&std::sync::Arc<super::lan::Lan>>,
 ) -> io::Result<iroh::Endpoint> {
     let person = tilo_endpoint_reachability::relays();
     let (relay_mode, portmapper, n0_dns) = endpoint_reach(relay, &person);
@@ -8600,6 +8655,11 @@ pub(super) fn listen_endpoint(
         builder = builder
             .address_lookup(tilo_endpoint_reachability::collaborating())
             .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
+    }
+    // The local network answers for the keys this device dials, so two devices on one network
+    // meet without a relay, and it answers only the devices the person's record admits.
+    if let Some(lan) = lan {
+        builder = builder.address_lookup(lan.lookup());
     }
     if let Some(port) = listen {
         // One program on a computer takes its workspaces' work on this port: a second runtime of a

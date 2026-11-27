@@ -4,7 +4,7 @@
 //! writes its workspaces' documents there, and the daemon signs and seals each write as the device.
 
 // A fixture only tests compile.
-#![cfg(all(test, target_os = "linux"))]
+#![cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
 #![allow(
     clippy::expect_used,
     reason = "a daemon that cannot start is its test's failure"
@@ -30,6 +30,7 @@ use tilo_workspace_service::workspaces::fixtures::{
 };
 use tilo_workspace_service::workspaces::person_workspace::devices::OnlineDevices;
 
+#[cfg(test)]
 use crate::layout::Layouts;
 use crate::workspace_view::WorkspaceView;
 
@@ -49,15 +50,122 @@ impl tilo_app_host::certificate_authority::CertificateAuthority for ThisDevice {
     }
 }
 
+/// Read `record` until it holds what `done` asks for, and fail saying so when it does not, so a
+/// test that waits on the daemon fails fast instead of hanging.
+fn settle<F>(record: &crate::followed_resource::FollowedResource<
+    tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+>, done: F)
+where
+    F: Fn(&tilo_workspace_service::workspaces::person_workspace::devices::Devices) -> bool,
+{
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(20))
+        .unwrap_or_else(std::time::Instant::now);
+    loop {
+        let read = record.read_now();
+        assert!(
+            read.is_ok(),
+            "a test waits on the daemon, which answers: {:?}",
+            read.err()
+        );
+        if done(&record.get()) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon's record of the person's devices never had what the test wrote"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// The speakers frames a session's link asked this daemon to carry, in order: what the person's
+/// other devices were sent, as the session wrote it.
+#[derive(Default)]
+pub struct SpeakersSaid {
+    frames: std::sync::Mutex<Vec<tilo_session_client::speakers::Frame>>,
+    /// Whether a session holds the link now.
+    attached: std::sync::atomic::AtomicBool,
+    /// The link a session holds, while it holds one: where what its person's other devices said
+    /// here is written.
+    hearing: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<tilo_session_client::speakers::Frame>>>,
+}
+
+impl SpeakersSaid {
+    fn keep(&self, frame: tilo_session_client::speakers::Frame) {
+        self.frames.lock().expect("the speakers frames").push(frame);
+    }
+
+    /// Whether a session holds this daemon's speakers link now: what a test waits for before it
+    /// presses a row that sends.
+    #[must_use]
+    pub fn attached(&self) -> bool {
+        self.attached.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Every frame the link carried so far, in order.
+    #[must_use]
+    pub fn frames(&self) -> Vec<tilo_session_client::speakers::Frame> {
+        self.frames.lock().expect("the speakers frames").clone()
+    }
+
+    /// Write `frame` to the session's link, as another of the person's devices said it here.
+    pub fn hearing(&self, frame: tilo_session_client::speakers::Frame) {
+        if let Some(link) = self
+            .hearing
+            .lock()
+            .expect("the speakers link")
+            .as_ref()
+        {
+            let _ = link.send(frame);
+        }
+    }
+}
+
+/// What carries a session's speakers link for as long as it lasts: the frames it writes, kept.
+fn speakers_links(said: &Arc<SpeakersSaid>) -> tilo_app_host::shell::SpeakersLinks {
+    let said = Arc::clone(said);
+    Arc::new(move |stream| {
+        let said = Arc::clone(&said);
+        Box::pin(async move {
+            said.attached
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let (mut reader, mut writer) = tokio::io::split(stream);
+            let (hearing, mut to_hear) = tokio::sync::mpsc::unbounded_channel();
+            *said.hearing.lock().expect("the speakers link") = Some(hearing);
+            loop {
+                tokio::select! {
+                    frame = tilo_session_client::speakers::read(&mut reader) => {
+                        let Ok(frame) = frame else {
+                            return;
+                        };
+                        said.keep(frame);
+                    }
+                    Some(frame) = to_hear.recv() => {
+                        if tilo_session_client::speakers::write(&mut writer, &frame)
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    })
+}
+
 /// The device's daemon, holding its workspaces on a real workspace service, and the shell link it
 /// answers the session on.
-pub(crate) struct TestDaemon {
+pub struct TestDaemon {
     host: TestHost,
     _dispatch: tilo_app_host::collab_broker::BrokerHandle,
     key: ed25519_dalek::SigningKey,
     cert: DeviceCert,
     reads: Arc<dyn DeviceDocuments>,
     writes: Arc<dyn DeviceWrites>,
+    /// What the workspaces' writes reach this daemon as, for the roles a session attaches to them.
+    #[cfg(test)]
     feed: tilo_session_client::daemon_documents::DaemonWritesFeed,
     shell: tilo_session_client::daemon_documents::DaemonShell,
     view: Arc<WorkspaceView>,
@@ -69,6 +177,10 @@ pub(crate) struct TestDaemon {
     changes: crate::platform::records::Changes,
     /// The person's devices this daemon says are online now: the reading the session follows.
     online: Arc<Online>,
+    /// The person's other devices this daemon hears on this machine's local network.
+    nearby: Arc<Online>,
+    /// What a session's speakers link asked this daemon to carry for it.
+    speakers: Arc<SpeakersSaid>,
     /// The device key this process took as the daemon's, where a session in this process reads
     /// its identity from: held for the daemon's life, as the one writer of the key.
     identity: std::sync::OnceLock<tilo_device_identity::persist::DeviceKeyLock>,
@@ -77,21 +189,21 @@ pub(crate) struct TestDaemon {
 
 impl TestDaemon {
     /// Start the daemon, and open the session's link to it.
-    pub(crate) fn start() -> Self {
+    pub fn start() -> Self {
         Self::launching(None)
     }
 
     /// Start the daemon, admitting an app's connection as the launch `launcher` recorded, and
     /// open the session's link to it. The daemon carries out the shell's window steps on the
     /// apps it admits, as a device's daemon does.
-    pub(crate) fn launching(launcher: Option<Arc<dyn LauncherServices>>) -> Self {
+    pub fn launching(launcher: Option<Arc<dyn LauncherServices>>) -> Self {
         Self::start_as(hosting_device(), None, launcher)
     }
 
     /// The person's two devices, each with its daemon: the first founds `workspace` as `name`
     /// and holds it, and the second, a further device of the same person, joined it from the
     /// first, so the two daemons carry each other's writes to it. Both hold the workspace's keys.
-    pub(crate) fn two_devices(workspace: WorkspaceId, name: &str) -> (Self, Self) {
+    pub fn two_devices(workspace: WorkspaceId, name: &str) -> (Self, Self) {
         let keys = Arc::new(TestGroupKeys::default());
         let first = Self::start_as(hosting_device(), Some(Arc::clone(&keys)), None);
         first.found(workspace, name);
@@ -189,7 +301,13 @@ impl TestDaemon {
         let actions = Arc::new(Governance {
             workspaces: workspaces.clone(),
         });
-        let online = Online::new();
+        let online = Online::new(
+            tilo_workspace_service::workspaces::person_workspace::devices::ONLINE,
+        );
+        let nearby = Online::new(
+            tilo_workspace_service::workspaces::person_workspace::devices::NEARBY,
+        );
+        let speakers = Arc::new(SpeakersSaid::default());
         let services = ProcessServices {
             shell: Some(Arc::new(ShellServices {
                 links: Arc::clone(&links),
@@ -203,16 +321,22 @@ impl TestDaemon {
                 actions,
                 standing,
                 published: Some(Arc::new(
-                    tilo_runtime::device::published::Published::new().serving(
-                        &[tilo_workspace_service::workspaces::person_workspace::devices::ONLINE],
-                        Arc::clone(&online) as Arc<dyn PublishedResources>,
-                    ),
+                    tilo_runtime::device::published::Published::new()
+                        .serving(
+                            &[tilo_workspace_service::workspaces::person_workspace::devices::ONLINE],
+                            Arc::clone(&online) as Arc<dyn PublishedResources>,
+                        )
+                        .serving(
+                            &[tilo_workspace_service::workspaces::person_workspace::devices::NEARBY],
+                            Arc::clone(&nearby) as Arc<dyn PublishedResources>,
+                        ),
                 )),
                 workspaces: workspaces.clone(),
                 identity: None,
                 api: None,
                 live: None,
                 vpn: None,
+                speakers: Some(speakers_links(&speakers)),
                 speaking: None,
             })),
             // The providers registered on the device, the seat a shell serves among them.
@@ -263,6 +387,7 @@ impl TestDaemon {
             cert,
             reads,
             writes,
+            #[cfg(test)]
             feed: tilo_session_client::daemon_documents::DaemonWritesFeed::start(&shell),
             shell,
             view,
@@ -270,6 +395,8 @@ impl TestDaemon {
             links,
             changes: crate::platform::records::Changes::default(),
             online,
+            nearby,
+            speakers,
             identity: std::sync::OnceLock::new(),
             _dir: dir,
         }
@@ -278,7 +405,7 @@ impl TestDaemon {
     /// Keep this daemon's device identity where a session in this process reads its own: its
     /// key and certificate, in `home`'s identity directory, and the file secret store a test's
     /// identity keeps its keys in.
-    pub(crate) fn serve_identity(&self, home: &mut tilo_test_env::TestHome) {
+    pub fn serve_identity(&self, home: &mut tilo_test_env::TestHome) {
         let root = home.root().join("identity");
         home.env()
             .set("TILO_IDENTITY_ROOT", &root)
@@ -309,25 +436,175 @@ impl TestDaemon {
         let _ = self.identity.set(lock);
     }
 
+    /// Say these devices of the person's are heard on this machine's local network, as this
+    /// daemon's own reading does.
+    pub fn set_nearby(&self, devices: impl IntoIterator<Item = [u8; 32]>) {
+        self.nearby.set(devices);
+    }
+
+    /// Found the person's own workspace here, as the device that first sets their identity up
+    /// does: where the record of their devices is kept.
+    pub fn found_person_workspace(&self) {
+        let workspaces = self.workspaces().clone();
+        let founded = tilo_rt::app()
+            .block_on(async move {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    tilo_workspace_service::workspaces::person_workspace::found(&workspaces),
+                )
+                .await
+            })
+            .expect("the runtime runs")
+            .expect("founding the person's own workspace answers in time")
+            .expect("the daemon holds the person's own workspace");
+        let _ = founded;
+    }
+
+    /// The person's record of their devices, read and changed through this daemon as their shell
+    /// does.
+    pub(crate) fn person_devices(
+        &self,
+    ) -> crate::followed_resource::FollowedResource<
+        tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+    > {
+        use tilo_workspace_service::workspaces::person_workspace::devices::DEVICES;
+        let person = self.cert.user_public_key;
+        let member = tilo_member_types::PersonId::from_root(person);
+        crate::followed_resource::FollowedResource::follow(
+            &self.shell(),
+            (
+                &tilo_server_protocol::servers::person_workspace_id(&person),
+                DEVICES.0,
+                DEVICES.1,
+            ),
+            member.as_str(),
+            None,
+            std::sync::Arc::new(|| {}),
+        )
+    }
+
+    /// The certificate of `device`, one of `label`'s, as this fixture's person certifies it.
+    pub fn certifying(&self, device: [u8; 32], label: &str) -> DeviceCert {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: self.cert.user_public_key,
+            device_public_key: device,
+            device_label: label.into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root)
+            .expect("the fixture's person signs the device");
+        cert
+    }
+
+    /// Keep `cert` in the person's record of their devices, saying what the device is and the
+    /// outputs it offers, as that device writes it of itself.
+    pub fn keeping(
+        &self,
+        cert: &DeviceCert,
+        about: &crate::platform::fabric::DeviceAbout,
+        endpoints: &[tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint],
+    ) {
+        use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
+        let record = self.person_devices();
+        record
+            .invoke(&Devices::keeping(cert).expect("the device certificate encodes"))
+            .expect("the record keeps the device");
+        record
+            .invoke(&Devices::KEEP_FACT.with((
+                hex::encode(cert.device_public_key),
+                hex::encode(postcard::to_allocvec(cert).expect("the certificate encodes")),
+                tilo_network_actor::fabric::ABOUT_FACT.to_owned(),
+                hex::encode(postcard::to_allocvec(about).expect("what it is encodes")),
+            )))
+            .expect("the device says what it is");
+        record
+            .invoke(&Devices::SAY_SPEAKER_ENDPOINTS.with((
+                hex::encode(cert.device_public_key),
+                hex::encode(postcard::to_allocvec(endpoints).expect("endpoints encode")),
+            )))
+            .expect("the device offers its output");
+        let key = tilo_resource::Id::from_raw(hex::encode(cert.device_public_key));
+        settle(&record, |record| record.devices.get(&key).is_some());
+    }
+
+    /// The person's devices as this daemon's shell reads them: their record and its readings of
+    /// which devices are online and which are heard here, and the link that carries a route to
+    /// another device.
+    pub fn fabric(&self) -> crate::platform::fabric::SharedLink {
+        use tilo_workspace_service::workspaces::person_workspace::devices::{NEARBY, ONLINE};
+        let person = self.cert.user_public_key;
+        let workspace = tilo_server_protocol::servers::person_workspace_id(&person);
+        let wake = std::sync::Arc::new(|| {});
+        let record = self.person_devices();
+        // Nothing else drives this follow here, as the person's session does in product: read the
+        // record until it holds what this daemon keeps, so what a test published is what its
+        // fabric reads, and fail the test rather than wait forever when it never does.
+        settle(&record, |record| !record.devices.is_empty());
+        let online =
+            crate::person_store::DaemonReading::follow(&self.shell(), &workspace, ONLINE, wake.clone());
+        let nearby = crate::person_store::DaemonReading::follow(&self.shell(), &workspace, NEARBY, wake);
+        let local =
+            crate::platform::fabric::DeviceId::new(hex::encode(self.cert.device_public_key)).ok();
+        // Continuity as this device has it: a switch nobody turned off is on.
+        let continuity = crate::platform::fabric::Continuity::default();
+        continuity.read(&serde_json::Map::new());
+        std::sync::Arc::new(crate::person_store::DaemonFabric::new(
+            record.shared(),
+            online,
+            nearby,
+            crate::person_store::SpeakersLink::attach(&self.shell(), local),
+            self.cert.clone(),
+            continuity,
+        ))
+    }
+
+    /// Write `frame` to the session's link, as another of the person's devices said it here.
+    pub fn hearing(&self, frame: tilo_session_client::speakers::Frame) {
+        self.speakers.hearing(frame);
+    }
+
+    /// Whether a session holds this daemon's speakers link now.
+    #[must_use]
+    pub fn speakers_attached(&self) -> bool {
+        self.speakers.attached()
+    }
+
+    /// What this daemon's shell was asked to hand another of the person's devices, as the session
+    /// wrote it: each envelope with the device it is for.
+    pub fn sent_speakers(&self) -> Vec<([u8; 32], Vec<u8>)> {
+        let mut sent = Vec::new();
+        for frame in self.speakers.frames() {
+            if let tilo_session_client::speakers::Frame::Send { peer, envelope } = frame {
+                sent.push((peer, envelope));
+            }
+        }
+        sent
+    }
+
     /// Say these devices of the person's are online now, as this daemon's own reading does.
-    pub(crate) fn set_online(&self, devices: impl IntoIterator<Item = [u8; 32]>) {
+    pub fn set_online(&self, devices: impl IntoIterator<Item = [u8; 32]>) {
         self.online.set(devices);
     }
 
     /// The session's one stream of record changes, as its roles reach the workspaces here.
-    pub(crate) fn changes(&self) -> crate::platform::records::Changes {
+    pub fn changes(&self) -> crate::platform::records::Changes {
         self.changes.clone()
     }
 
     /// A daemon holding each of `workspaces` whose person's shell writes their stores, as a
     /// device's own daemon does: it acts as the device it runs on, and holds each workspace's
     /// keys, as the device that founded it does.
-    pub(crate) fn writing(workspaces: &[&str]) -> Self {
+    pub fn writing(workspaces: &[&str]) -> Self {
         Self::writing_launched(workspaces, None)
     }
 
     /// [`Self::writing`], admitting an app's connection as the launch `launcher` recorded.
-    pub(crate) fn writing_launched(
+    pub fn writing_launched(
         workspaces: &[&str],
         launcher: Option<Arc<dyn LauncherServices>>,
     ) -> Self {
@@ -337,7 +614,7 @@ impl TestDaemon {
     /// [`Self::writing_launched`] with the workspace `elsewhere` names founded for `owner`
     /// instead of this person: this device stays one of its administrators, as in a workspace
     /// another person made.
-    pub(crate) fn writing_launched_for(
+    pub fn writing_launched_for(
         workspaces: &[&str],
         elsewhere: Option<(&str, [u8; 32])>,
         launcher: Option<Arc<dyn LauncherServices>>,
@@ -365,7 +642,7 @@ impl TestDaemon {
     }
 
     /// A daemon holding each of `workspaces`.
-    pub(crate) fn holding(workspaces: &[&str]) -> Self {
+    pub fn holding(workspaces: &[&str]) -> Self {
         Self::holding_launched_for(workspaces, None, None)
     }
 
@@ -391,6 +668,7 @@ impl TestDaemon {
 
     /// The workspaces the daemon holds, as the session reads and writes a record of theirs
     /// itself.
+    #[cfg(test)]
     pub(crate) fn device_workspaces(&self) -> crate::device_workspaces::DeviceWorkspaces {
         crate::device_workspaces::DeviceWorkspaces::new(
             self.view(),
@@ -402,7 +680,7 @@ impl TestDaemon {
 
     /// Found `workspace` as `name` here, as the person's shell asks the daemon to, and have the
     /// session's view read how it stands, as the daemon publishes it.
-    pub(crate) fn found(&self, workspace: WorkspaceId, name: &str) {
+    pub fn found(&self, workspace: WorkspaceId, name: &str) {
         self.found_for(workspace, name, None);
     }
 
@@ -424,7 +702,7 @@ impl TestDaemon {
     }
 
     /// The daemon's copy of `workspace`: the one it hosts, or the one it has as a member.
-    pub(crate) fn copy(&self, workspace: WorkspaceId) -> tilo_peer_state::StatePeer {
+    pub fn copy(&self, workspace: WorkspaceId) -> tilo_peer_state::StatePeer {
         let workspaces = self.host.workspaces().clone();
         tilo_rt::app()
             .block_on(async move {
@@ -439,7 +717,7 @@ impl TestDaemon {
     }
 
     /// Have the session's view read how `workspace` stands here, as the daemon publishes it.
-    pub(crate) fn read_standing(&self, workspace: WorkspaceId) {
+    pub fn read_standing(&self, workspace: WorkspaceId) {
         let peer = self.copy(workspace);
         let reader = tilo_workspace_service::workspaces::standing::Reader {
             person: self.cert.user_public_key,
@@ -463,42 +741,42 @@ impl TestDaemon {
     }
 
     /// Where the daemon answers the apps it admits, and the person's shell.
-    pub(crate) fn socket(&self) -> &std::path::Path {
+    pub fn socket(&self) -> &std::path::Path {
         &self.socket
     }
 
     /// The workspaces the daemon holds, as its own roles reach them.
-    pub(crate) fn workspaces(&self) -> &Workspaces {
+    pub fn workspaces(&self) -> &Workspaces {
         self.host.workspaces()
     }
 
     /// The device's key, which the daemon signs its writes with.
-    pub(crate) fn key(&self) -> ed25519_dalek::SigningKey {
+    pub fn key(&self) -> ed25519_dalek::SigningKey {
         self.key.clone()
     }
 
     /// The device's certificate: whose key the daemon signs its writes with.
-    pub(crate) fn certificate(&self) -> DeviceCert {
+    pub fn certificate(&self) -> DeviceCert {
         self.cert.clone()
     }
 
     /// The session's reads of the documents of the workspaces the daemon holds, on its link.
-    pub(crate) fn reads(&self) -> Arc<dyn DeviceDocuments> {
+    pub fn reads(&self) -> Arc<dyn DeviceDocuments> {
         Arc::clone(&self.reads)
     }
 
     /// The session's writes of those documents, on its link: the daemon signs and seals them.
-    pub(crate) fn writes(&self) -> Arc<dyn DeviceWrites> {
+    pub fn writes(&self) -> Arc<dyn DeviceWrites> {
         Arc::clone(&self.writes)
     }
 
     /// A shell link of the daemon's person, opened: what a session serves its seat on.
-    pub(crate) fn shell_client(&self) -> runtime_collab::ShellClient {
+    pub fn shell_client(&self) -> runtime_collab::ShellClient {
         link(&self.socket, &self.links, &self.cert)
     }
 
     /// The seat as the daemon's broker reaches it, while a shell serves it.
-    pub(crate) fn seat(&self) -> tilo_app_host::seat::Seat {
+    pub fn seat(&self) -> tilo_app_host::seat::Seat {
         tilo_app_host::seat::Seat::new(
             self.workspaces().providers(),
             tilo_rt::app().handle().clone(),
@@ -506,18 +784,19 @@ impl TestDaemon {
     }
 
     /// The session's link to the daemon: where its reads are followed and its actions run.
-    pub(crate) fn shell(&self) -> tilo_session_client::daemon_documents::DaemonShell {
+    pub fn shell(&self) -> tilo_session_client::daemon_documents::DaemonShell {
         self.shell.clone()
     }
 
     /// How the person's workspaces stand, as the session's view reads them: each workspace
     /// founded here, held by the daemon.
-    pub(crate) fn view(&self) -> Arc<WorkspaceView> {
+    pub fn view(&self) -> Arc<WorkspaceView> {
         Arc::clone(&self.view)
     }
 
     /// Have `layouts` read and write the workspaces through the daemon, through `reads` and
     /// `writes`, and read a record again whenever the daemon tells of a write to it.
+    #[cfg(test)]
     pub(crate) fn attach_as(
         &self,
         layouts: &Layouts,
@@ -529,6 +808,7 @@ impl TestDaemon {
     }
 
     /// Have `layouts` read and write the workspaces through the daemon.
+    #[cfg(test)]
     pub(crate) fn attach(&self, layouts: &Layouts) {
         self.attach_as(layouts, &self.reads(), &self.writes());
     }
@@ -536,7 +816,7 @@ impl TestDaemon {
     /// The shell link the daemon made for the session, opened and handed over, as
     /// [`crate::Options::shell_link`] takes it for a session in this process: the daemon's
     /// workspace resources, people and settings are then the session's own.
-    pub(crate) fn shell_link(&self) -> std::os::fd::OwnedFd {
+    pub fn shell_link(&self) -> std::os::fd::OwnedFd {
         use std::io::Write as _;
         let mut link = std::os::unix::net::UnixStream::connect(&self.socket)
             .expect("the daemon answers on its socket");
@@ -774,7 +1054,9 @@ impl tilo_actions::remote::ActionProvider for GovernanceCall {
 
 /// The person's devices this daemon says are online now, as the daemon's own reading publishes
 /// them: what the session follows over the shell link.
-pub(crate) struct Online {
+pub struct Online {
+    /// The resource this reading is published under.
+    resource: &'static str,
     listed: std::sync::Mutex<OnlineDevices>,
     revision: std::sync::atomic::AtomicU64,
     changed: tokio::sync::watch::Sender<u64>,
@@ -785,9 +1067,10 @@ pub(crate) struct Online {
 }
 
 impl Online {
-    /// The reading, with no device online yet.
-    pub(crate) fn new() -> Arc<Self> {
+    /// The reading `resource`, with no device in it yet.
+    pub fn new(resource: &'static str) -> Arc<Self> {
         let online = Arc::new(Self {
+            resource,
             listed: std::sync::Mutex::default(),
             revision: std::sync::atomic::AtomicU64::default(),
             changed: tokio::sync::watch::channel(0).0,
@@ -800,7 +1083,7 @@ impl Online {
     }
 
     /// Say `devices` are online now.
-    pub(crate) fn set(&self, devices: impl IntoIterator<Item = [u8; 32]>) {
+    pub fn set(&self, devices: impl IntoIterator<Item = [u8; 32]>) {
         let mut online = self.listed.lock().expect("the online reading");
         online.devices = devices.into_iter().map(hex::encode).collect();
         drop(online);
@@ -827,9 +1110,7 @@ impl PublishedResources for Online {
         resource: &str,
     ) -> tokio::sync::oneshot::Receiver<Result<Reading, String>> {
         let (answer, answered) = tokio::sync::oneshot::channel();
-        let reading = (resource
-            == tilo_workspace_service::workspaces::person_workspace::devices::ONLINE)
-            .then(|| self.reading());
+        let reading = (resource == self.resource).then(|| self.reading());
         let _ = answer.send(Ok(reading.unwrap_or((0, None))));
         answered
     }
@@ -840,7 +1121,7 @@ impl PublishedResources for Online {
         resource: &str,
         sink: tokio::sync::mpsc::UnboundedSender<runtime_collab::wire::Event>,
     ) -> Result<ResourceWatch, String> {
-        if resource != tilo_workspace_service::workspaces::person_workspace::devices::ONLINE {
+        if resource != self.resource {
             return Err(format!("this daemon publishes no `{resource}` resource"));
         }
         let id = self

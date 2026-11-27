@@ -63,6 +63,7 @@ async fn shell_on_a_joined_workspace(
                 api: None,
                 live: None,
                 vpn: None,
+                speakers: None,
                 speaking: None,
             })),
             ..crate::services::ProcessServices::default()

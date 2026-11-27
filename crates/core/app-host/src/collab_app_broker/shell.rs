@@ -250,6 +250,20 @@ fn vouch_for(
         tokio::spawn(vpn(stream));
         return Ok(ShellReply::Vouched);
     }
+    if to == runtime_collab::wire::shell::HandedTo::Speakers {
+        if app.is_some() {
+            return Err("a speakers link is vouched for by no launch".to_owned());
+        }
+        let speakers = shell
+            .services
+            .speakers
+            .clone()
+            .ok_or("this device serves no speakers link")?;
+        let stream = tilo_socket::tokio::from_std(handed_stream(connection)?)
+            .map_err(|error| format!("a speakers link cannot be carried: {error}"))?;
+        tokio::spawn(speakers(stream));
+        return Ok(ShellReply::Vouched);
+    }
     if to == runtime_collab::wire::shell::HandedTo::Api {
         if app.is_some() {
             return Err("a program's API connection is vouched for by no launch".to_owned());

@@ -36,7 +36,6 @@ workspace-hack = { version = "0.1" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 
 [dev-dependencies]
-fnv.workspace = true
 
 [lints]
 workspace = true

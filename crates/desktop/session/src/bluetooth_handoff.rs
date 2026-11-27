@@ -21,7 +21,7 @@ use tilo_workspace_service::workspaces::person_workspace::devices::{
 use crate::Shared;
 use crate::followed_resource::Sending;
 use crate::i18n::{t, t_args};
-use crate::platform::fabric::{DeviceId, FabricLink, SharedLink};
+use crate::platform::fabric::{DeviceId, Speakers, SharedLink};
 use crate::platform::notice::Notice;
 
 /// What a worker found.
