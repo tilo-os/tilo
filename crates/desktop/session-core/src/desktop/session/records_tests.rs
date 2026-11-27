@@ -284,7 +284,8 @@ pub fn a_desktop_that_answers_no_reads_says_so_at_once() {
 #[test]
 pub fn a_reader_that_takes_records_itself_is_refused_not_left_waiting() {
     use std::future::Future as _;
-    use tilo_actions::remote::{ResourceAsk, read_resources};
+    use tilo_action_calls::read_resources;
+    use tilo_actions::remote::ResourceAsk;
     let (session, openings) = super::serve(WORKSPACE, Arc::default());
     let _answers = openings.answer_records();
     let reads = session.resource_reads().expect("the desktop answers reads");

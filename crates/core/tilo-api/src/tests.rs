@@ -1613,14 +1613,32 @@ fn a_persons_keys_kept_without_being_issued_here_are_bounded() {
 /// read answers for it is the resource the command pages, its invocations its fields' items.
 #[tokio::test]
 async fn the_workspaces_invocations_read_as_the_resource_the_cli_pages() {
+    use tilo_action_calls::answered;
     use tilo_action_services::workspace_invocations::{Invocation, InvocationStatus, PROVIDER};
     use tilo_actions::remote::{
         Caller, ReadAnswer, ReadsAnswer, ResourceAddress, ResourceCopy, ResourceReadRequest,
-        ResourceReads, ResourceWake, answered,
+        ResourceReads, ResourceWake,
     };
     /// The workspace's invocations, as the device's reader answers their record.
     struct Invocations(Value);
     impl ResourceReads for Invocations {
+        fn answer_read(
+            self: std::sync::Arc<Self>,
+            caller: &Caller,
+            correlation: u64,
+            read: tilo_actions::remote::ResourceReadRequest,
+        ) -> tilo_actions::remote::ReadingAnswer
+        where
+            Self: 'static,
+        {
+            Box::pin(tilo_action_calls::answer_read(
+                self,
+                caller.clone(),
+                correlation,
+                read,
+            ))
+        }
+
         fn read<'a>(
             &'a self,
             _: &'a Caller,

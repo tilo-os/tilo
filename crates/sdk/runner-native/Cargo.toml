@@ -29,7 +29,7 @@ tilo-automerge-isolate.workspace = true
 tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # What answers a window's calls to a provider in this process, installed into the toolkit.
-tilo-action-calls = { version = "0.1.0", path = "../../core/action-calls" }
+tilo-action-calls = { version = "0.1.0", path = "../../core/action-calls", features = ["answer-reads"] }
 media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 serde_json.workspace = true

@@ -17,10 +17,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use tilo_action_calls::readings_of;
 use tilo_actions::remote::{
     ActionCallError, Caller, Completer, MAX_REMOTE_WAIT, Pending, ReadingAnswer, ReadsAnswer,
     RemoteActionMessage, ResourceAddress, ResourceAsk, ResourceCopy, ResourceReadRequest,
-    ResourceReads, WatchScope, pending, readings_of,
+    ResourceReads, WatchScope, pending,
 };
 use tilo_lock::MutexRecover as _;
 use ui::time::{Duration, Instant};
@@ -133,7 +134,7 @@ impl Reads {
 impl ResourceReads for Reads {
     /// Only the desktop's thread holds the records: a read is asked of it
     /// ([`Self::answer_read`]), never taken here. Refused, not unavailable: a reader that takes
-    /// records itself ([`tilo_actions::remote::read_resources`]) reads an unavailable record as
+    /// records itself (`tilo_action_calls::read_resources`) reads an unavailable record as
     /// one still arriving, and would answer with a record that never comes.
     fn read<'a>(&'a self, _: &'a Caller, _: &'a ResourceAddress) -> ReadsAnswer<'a, ResourceCopy> {
         Box::pin(std::future::ready(Err(ActionCallError::Refused {

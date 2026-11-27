@@ -125,9 +125,9 @@ pub use resource_read::{
     DEVICE_JOBS, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, Decided, HeldCopies, ListedResource,
     RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
     RESOURCE_WRITE_REFUSED, ReadingAnswer, ReadsAnswer, ResourceAddress, ResourceAsk, ResourceCopy,
-    ResourceReadings, ResourceReads, ResourceWake, answer_read, answered, device_job_address,
-    device_job_path, device_record_address, device_record_space, parse_device_record_space,
-    parse_job_path, read_resources, readings_from, readings_of, reads_answer,
+    ResourceReadings, ResourceReads, ResourceWake, device_job_address, device_job_path,
+    device_record_address, device_record_space, parse_device_record_space, parse_job_path,
+    reads_answer, unanswered,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use test_provider::TestProvider;
@@ -2177,33 +2177,6 @@ impl RemoteActionFrame {
         serde_json::from_slice(bytes)
             .map_err(|error| RemoteFrameError::Malformed(error.to_string()))
     }
-}
-
-/// A resource read, answered by the provider's own reader through its trait object: what a
-/// reading is made of loads with the code that reads records, not with every provider's API.
-#[cfg(all(feature = "answer-reads", not(tilo_no_js)))]
-pub fn read_answered<H: ActionProvider>(
-    provider: &H,
-    caller: &Caller,
-    correlation: u64,
-    read: ResourceReadRequest,
-) -> Pending<RemoteActionMessage> {
-    provider.resource_reads().map_or_else(
-        || resource_read::unanswered(correlation),
-        |reads| resource_read::answered_where_it_ends(reads.answer_read(caller, correlation, read)),
-    )
-}
-
-/// A build with no runtime to answer on (a model module, or one that reads no records) answers
-/// every posted read as a provider that reads no records does.
-#[cfg(not(all(feature = "answer-reads", not(tilo_no_js))))]
-pub fn read_answered<H: ActionProvider>(
-    _provider: &H,
-    _caller: &Caller,
-    correlation: u64,
-    _read: ResourceReadRequest,
-) -> Pending<RemoteActionMessage> {
-    resource_read::unanswered(correlation)
 }
 
 /// The answer that refuses request `message` with `error` — for a provider that

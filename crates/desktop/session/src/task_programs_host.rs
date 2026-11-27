@@ -361,6 +361,23 @@ impl TurnRecords {
 }
 
 impl tilo_actions::remote::ResourceReads for TurnRecords {
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &tilo_actions::remote::Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> tilo_actions::remote::ReadingAnswer
+    where
+        Self: 'static,
+    {
+        Box::pin(tilo_action_calls::answer_read(
+            self,
+            caller.clone(),
+            correlation,
+            read,
+        ))
+    }
+
     /// Every app's resources are in the workspace's one store, the apps the session keeps
     /// included: the run's api answers.
     fn store_read<'a>(

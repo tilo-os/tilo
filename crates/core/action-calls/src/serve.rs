@@ -5,10 +5,11 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, CHANGE_FEED_UNAVAILABLE, CHANGED_UNAVAILABLE,
     CONTENT_GETS_UNAVAILABLE, CONTENT_LINKS_UNAVAILABLE, CONTENT_PUTS_UNAVAILABLE, Caller,
     InvocationReceipt, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    STORE_COMMANDS_UNAVAILABLE, WatchScope, confirmation_unanswered, pending, read_answered,
-    refuse, updated, wait_deadline,
+    STORE_COMMANDS_UNAVAILABLE, WatchScope, confirmation_unanswered, pending, refuse, updated,
+    wait_deadline,
 };
 
+use crate::read_answered;
 use crate::wait;
 use crate::wait::settle_with;
 

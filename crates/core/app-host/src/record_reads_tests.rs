@@ -859,6 +859,23 @@ async fn a_grant_that_reads_a_record_alone_changes_nothing_of_it() {
 struct Settings;
 
 impl ResourceReads for Settings {
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> tilo_actions::remote::ReadingAnswer
+    where
+        Self: 'static,
+    {
+        Box::pin(tilo_action_calls::answer_read(
+            self,
+            caller.clone(),
+            correlation,
+            read,
+        ))
+    }
+
     fn read<'a>(
         &'a self,
         _: &'a Caller,

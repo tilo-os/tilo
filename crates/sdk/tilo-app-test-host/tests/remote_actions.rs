@@ -164,7 +164,7 @@ impl Records {
             },
             joined: false,
         }];
-        tilo_actions::remote::readings_of(&asks, |_| Ok(self.copied())).and_then(|readings| {
+        tilo_action_calls::readings_of(&asks, |_| Ok(self.copied())).and_then(|readings| {
             readings
                 .readable()
                 .map_err(|reason| ActionCallError::Refused { reason })

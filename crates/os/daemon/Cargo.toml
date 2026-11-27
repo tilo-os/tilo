@@ -114,6 +114,7 @@ tilo-workspace-service = { path = "../../core/tilo-workspace-service", features 
 tilo-workspace-records = { path = "../../core/workspace-records" }
 tilo-person-services = { path = "../../core/person-services", features = ["test-support", "agents"] }
 tilo-app-host = { path = "../../core/app-host", features = ["test-support", "agents"] }
+tilo-action-calls = { path = "../../core/action-calls" }
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 tilo-remote-actions = { path = "../../core/remote-actions" }
 # The catalogue an installed app's manifest is read from, as a connector's is.

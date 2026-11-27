@@ -404,19 +404,18 @@ async fn flow_every_device_manages_every_other() {
         .expect("the phone holds the person's devices");
     let mut held = tilo_actions::remote::HeldCopies::default();
     held.0.insert(devices::DEVICES.1.to_owned(), record);
-    let read = held
-        .readable(
-            &tilo_actions::remote::Caller::local_system(),
-            &[tilo_actions::remote::ResourceAsk {
-                address: tilo_actions::remote::ResourceAddress {
-                    workspace: person_workspace::workspace_id(phone.own.copies()),
-                    app: devices::DEVICES.0.to_owned(),
-                    record: devices::DEVICES.1.to_owned(),
-                },
-                joined: false,
-            }],
-        )
-        .expect("the record reads as every reader is answered");
+    let read = tilo_action_calls::copies_readable(
+        &held,
+        &[tilo_actions::remote::ResourceAsk {
+            address: tilo_actions::remote::ResourceAddress {
+                workspace: person_workspace::workspace_id(phone.own.copies()),
+                app: devices::DEVICES.0.to_owned(),
+                record: devices::DEVICES.1.to_owned(),
+            },
+            joined: false,
+        }],
+    )
+    .expect("the record reads as every reader is answered");
     let here = [tilo_actions::remote::Here {
         who: hex::encode(phone_cert.user_public_key),
         name: "Ada".into(),

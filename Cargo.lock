@@ -14706,12 +14706,16 @@ dependencies = [
 name = "tilo-action-calls"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "postcard",
  "serde",
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-lock",
+ "tilo-rt",
  "tilo-test-env",
  "uuid",
  "workspace-hack",
@@ -16619,6 +16623,7 @@ dependencies = [
  "tempfile",
  "test-server",
  "tilo-accounts",
+ "tilo-action-calls",
  "tilo-action-line",
  "tilo-action-policy",
  "tilo-action-services",
@@ -18116,6 +18121,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "tilo-action-calls",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",

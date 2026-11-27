@@ -227,7 +227,8 @@ fn a_pass_that_moves_the_readings_wakes_the_follows() {
 )]
 fn a_live_reading_that_changes_reaches_its_follower() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use tilo_actions::remote::{ResourceAddress, ResourceAsk, ResourceCopy, read_resources};
+    use tilo_action_calls::read_resources;
+    use tilo_actions::remote::{ResourceAddress, ResourceAsk, ResourceCopy};
 
     /// A device list whose reading the test moves, as its device would on its own pass.
     struct LiveStyles {

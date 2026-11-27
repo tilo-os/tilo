@@ -745,6 +745,23 @@ struct RunsRead {
 }
 
 impl tilo_actions::remote::ResourceReads for RunsRead {
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> tilo_actions::remote::ReadingAnswer
+    where
+        Self: 'static,
+    {
+        Box::pin(tilo_action_calls::answer_read(
+            self,
+            caller.clone(),
+            correlation,
+            read,
+        ))
+    }
+
     // Each call is kept as it is taken, so the next read sees it without a wake.
     fn watch<'a>(
         &'a self,

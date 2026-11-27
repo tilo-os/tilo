@@ -1318,6 +1318,23 @@ impl link::Calls for Live {
 struct TurnedAwayReads(Arc<Shared>);
 
 impl ResourceReads for TurnedAwayReads {
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> tilo_actions::remote::ReadingAnswer
+    where
+        Self: 'static,
+    {
+        Box::pin(tilo_action_calls::answer_read(
+            self,
+            caller.clone(),
+            correlation,
+            read,
+        ))
+    }
+
     fn read<'a>(
         &'a self,
         _caller: &'a Caller,
@@ -1378,6 +1395,23 @@ impl SessionReads {
 }
 
 impl ResourceReads for SessionReads {
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> tilo_actions::remote::ReadingAnswer
+    where
+        Self: 'static,
+    {
+        Box::pin(tilo_action_calls::answer_read(
+            self,
+            caller.clone(),
+            correlation,
+            read,
+        ))
+    }
+
     fn read<'a>(
         &'a self,
         _caller: &'a Caller,

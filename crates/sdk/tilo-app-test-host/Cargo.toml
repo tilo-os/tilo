@@ -16,7 +16,7 @@ tilo-desktop-model = { path = "../../desktop/desktop-model" }
 settings-sections = { path = "../../desktop/settings-sections", features = ["test-support"] }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 # What answers a window's calls to a provider a test serves it, as the runner installs it for an app.
-tilo-action-calls = { version = "0.1.0", path = "../../core/action-calls" }
+tilo-action-calls = { version = "0.1.0", path = "../../core/action-calls", features = ["answer-reads"] }
 
 [dev-dependencies]
 tilo-app = { path = "../tilo-app", features = ["test-support"] }

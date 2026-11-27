@@ -7,7 +7,8 @@
 //! same reads a person's app or an agent makes through the device's dispatch.
 
 use serde_json::{Value, json};
-use tilo_actions::remote::{ActionProvider as _, ResourceAddress, ResourceAsk, read_resources};
+use tilo_action_calls::read_resources;
+use tilo_actions::remote::{ActionProvider as _, ResourceAddress, ResourceAsk};
 
 use crate::language::host;
 
