@@ -274,10 +274,11 @@ impl Window {
             if body.contains(words) {
                 return body;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the window never shows {words:?}: {body}"
-            );
+            if std::time::Instant::now() >= deadline {
+                // What the workspace ran on the way says why the window did not change.
+                let ran = listed(&self.host).await;
+                panic!("the window never shows {words:?}: {body}\nthe workspace ran: {ran:#?}");
+            }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }

@@ -385,16 +385,19 @@ action refused(g: Migration, why: Text) {
 /// Lists every source this device can bring things in from, each as a migration nobody looked at
 /// yet: what a person picks from to start one. The device's engine lists them, and the app puts
 /// what it answered in its own records.
-primary action find_sources(m: Migrations) (
+primary action find_sources(m: Migrations) -> Result<Int, Text> (
     icon: .plus,
     label: "Bring something in",
     did: "looked for sources",
 ) {
     match json.decode<OfferedSources>(engine.sources()) {
-        .ok(found) => { offer(m, found.device, found.sources) }
+        .ok(found) => {
+            offer(m, found.device, found.sources)
+            return .ok(found.sources.len())
+        }
         // The engine answers these itself, in the shape this app reads: an answer that is not
-        // one leaves the list as it is rather than showing rows of nothing.
-        .err(_) => {}
+        // one is the device's fault, said as it is, and the list stays as it was.
+        .err(why) => .err("the device answered sources this app cannot read: {why}"),
     }
 }
 
