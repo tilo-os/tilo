@@ -2132,26 +2132,7 @@ mod store {
             ]),
         )
         .unwrap();
-        // What each document's readers receive: its changes, uncompressed.
-        let received = |readers: &str| {
-            let mut doc = automerge::Automerge::new();
-            doc.apply_changes(
-                written
-                    .iter()
-                    .filter(|write| write.readers == readers)
-                    .map(|write| write.change.clone()),
-            )
-            .unwrap();
-            doc.save_nocompress()
-        };
-        let holds = |bytes: &[u8], text: &str| {
-            bytes
-                .windows(text.len())
-                .any(|window| window == text.as_bytes())
-        };
-        let (everyone, ada) = (received(MEMBERS), received("ada-only"));
-        assert!(holds(&everyone, shared) && !holds(&everyone, private));
-        assert!(holds(&ada, private) && !holds(&ada, shared));
+        apart(&written, shared, private);
         for write in &written {
             let stamp = Stamp::of(&write.change).unwrap();
             let parts = stamp.parts.as_ref().expect("each change keeps its parts");
@@ -2189,6 +2170,74 @@ mod store {
         assert_eq!(there.index().ids_of(ISSUE).count(), 2);
 
         forgeries_are_refused(&written, shared);
+    }
+
+    /// What the shared document's readers receive of `written`, uncompressed, holds `shared`
+    /// and not `private`, in any byte; what only Ada reads, the other way around.
+    fn apart(written: &[Written], shared: &str, private: &str) {
+        let received = |readers: &str| {
+            let mut doc = automerge::Automerge::new();
+            doc.apply_changes(
+                written
+                    .iter()
+                    .filter(|write| write.readers == readers)
+                    .map(|write| write.change.clone()),
+            )
+            .unwrap();
+            doc.save_nocompress()
+        };
+        let holds = |bytes: &[u8], text: &str| {
+            bytes
+                .windows(text.len())
+                .any(|window| window == text.as_bytes())
+        };
+        let (everyone, ada) = (received(MEMBERS), received("ada-only"));
+        assert!(holds(&everyone, shared) && !holds(&everyone, private));
+        assert!(holds(&ada, private) && !holds(&ada, shared));
+    }
+
+    /// One call no one signed writes a record its whole workspace reads and one only its caller
+    /// reads, its arguments recorded beside it: each document keeps of them only what it holds
+    /// once written, every other value null, so the shared document's readers never receive the
+    /// private one.
+    #[test]
+    fn an_unsigned_call_writing_a_shared_and_a_private_record_keeps_in_each_only_its_own_args() {
+        use collab_types::store::wire::Command;
+        let (shared, private) = ("Plan the offsite SHARED-2d8", "Ada's diagnosis PRIVATE-c40");
+        let call = Stamp {
+            args: vec![serde_json::json!(shared), serde_json::json!(private)],
+            ..stamp("make", "i1")
+        };
+        let written = tilo_resource_store::wire::draft(
+            &mut issues(),
+            Command::Batch(vec![
+                Command::Put {
+                    kind: ISSUE.to_owned(),
+                    id: "s".to_owned(),
+                    resource: resource("board", "a0", shared, "open"),
+                    stamp: call.clone(),
+                },
+                Command::Put {
+                    kind: ISSUE.to_owned(),
+                    id: "p".to_owned(),
+                    resource: read_by("ada-only", "board", "a1", private, "open"),
+                    stamp: call,
+                },
+            ]),
+        )
+        .unwrap();
+        apart(&written, shared, private);
+        for write in &written {
+            let args = Stamp::of(&write.change).unwrap().args;
+            if write.readers == MEMBERS {
+                assert_eq!(args, [serde_json::json!(shared), serde_json::Value::Null]);
+            } else {
+                assert_eq!(args, [serde_json::Value::Null, serde_json::json!(private)]);
+            }
+        }
+        let mut there = issues();
+        assert!(deliver(&written, &mut there, &|_: &Proposal<'_>| true).is_empty());
+        assert_eq!(there.index().ids_of(ISSUE).count(), 2);
     }
 
     /// A part changed, a proof changed, or the private part under the shared one's proof, of the

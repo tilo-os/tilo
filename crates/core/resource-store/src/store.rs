@@ -1389,7 +1389,8 @@ impl Store {
         let mut written = Vec::new();
         for doc_id in docs {
             let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
-            let called = self.stamp_for(&doc_id, stamp, &Kept::nothing());
+            // A step through history says what it takes back in arguments of its own.
+            let called = self.stamp_for(&doc_id, stamp, &Kept::mark());
             let Some(doc) = self.existing(&doc_id)? else {
                 continue;
             };
@@ -1680,9 +1681,9 @@ impl Store {
         ) -> Result<R, automerge::AutomergeError>,
     ) -> Result<(R, Option<Written>), StoreError> {
         let (doc_id, readers) = self.content_of(kind, id)?;
-        // A call whose caller signed its argument's parts is stamped once the edit is made, by what
-        // the content holds then; any other before.
-        let (early, called_before) = if stamp.in_flight() {
+        // A stamp whose arguments the change keeps by what it holds is stamped once the edit is
+        // made, by what the content holds then; any other before.
+        let (early, called_before) = if stamp.keeps_by_held() {
             (None, self.called.clone())
         } else {
             (Some(self.stamp_for(&doc_id, stamp, &Kept::nothing())), None)

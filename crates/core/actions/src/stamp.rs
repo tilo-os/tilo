@@ -226,10 +226,14 @@ impl Stamp {
     }
 
     /// This stamp as a change that holds `held` once written keeps it, where its call signs its
-    /// argument's parts: the call without its argument, the parts of the argument the change
-    /// holds with their proof ([`Self::parts`]), and the recorded arguments with every value
-    /// the change does not hold made null; a mark keeps the arguments that say what it marks
-    /// ([`crate::remote::argument_parts::Held::mark`]). Any other stamp as it is.
+    /// argument's parts: the call without its argument, and the parts of the argument the change
+    /// holds with their proof ([`Self::parts`]). Of any stamp but one whose call is signed over
+    /// its argument whole (which keeps both whole), the recorded arguments with every value the
+    /// change does not hold made null, by the same rule
+    /// ([`crate::remote::argument_parts::Held::redact`]): a call that writes several documents
+    /// leaves in each only what that document's readers read there anyway. A mark keeps the
+    /// arguments that say what it marks ([`crate::remote::argument_parts::Held::mark`]), and the
+    /// platform's own verbs theirs.
     #[must_use]
     pub fn for_change(&self, held: &crate::remote::argument_parts::Held) -> Self {
         let mut stamp = self.clone();
@@ -238,15 +242,36 @@ impl Stamp {
         {
             *call = call.kept();
         }
-        let Some(call) = self.signed.as_deref().filter(|call| call.in_flight()) else {
-            return stamp;
-        };
-        stamp.parts = call.kept_parts(held);
-        stamp.signed = Some(Box::new(call.kept()));
-        if !held.is_mark() {
+        match self.signed.as_deref() {
+            Some(call) if call.in_flight() => {
+                stamp.parts = call.kept_parts(held);
+                stamp.signed = Some(Box::new(call.kept()));
+            }
+            // A call signed over its argument whole keeps it whole, and the arguments beside it.
+            Some(_) => return stamp,
+            None => {}
+        }
+        if !held.is_mark() && !self.platform_verb() {
             stamp.args = self.args.iter().map(|arg| held.redact(arg)).collect();
         }
         stamp
+    }
+
+    /// Whether what a change holds once written decides what it keeps of this stamp
+    /// ([`Self::for_change`]): a call on its way to its changes, or arguments recorded for a
+    /// call no one signed whole.
+    #[must_use]
+    pub fn keeps_by_held(&self) -> bool {
+        match self.signed.as_deref() {
+            Some(call) => call.in_flight(),
+            None => !self.args.is_empty() && !self.platform_verb(),
+        }
+    }
+
+    /// Whether its verb is the platform's own (`$`), whose arguments say what the platform did
+    /// rather than what a caller asked.
+    fn platform_verb(&self) -> bool {
+        self.verb.starts_with('$')
     }
 
     /// The verb of a change that edits a record's content with no finer action naming it (a
