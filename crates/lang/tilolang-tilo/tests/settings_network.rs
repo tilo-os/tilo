@@ -10,11 +10,13 @@
 
 use std::path::Path;
 
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
+
+use crate::invoker::{Answered as _, Sent};
 
 /// This device's `network` reading: two radios, a network it keeps that asks for no password,
 /// and whether it asks before joining one.
@@ -71,38 +73,6 @@ const TETHERING: &str =
 
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
-}
-
-/// What the pane asked of the device.
-#[derive(Clone, Default)]
-struct Sent(std::rc::Rc<std::cell::RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    /// The arguments of the last `name` asked, by name, as the device's action API takes them:
-    /// the resource it is asked on and the options it leaves out are not among them.
-    fn asked(&self, name: &str) -> serde_json::Map<String, serde_json::Value> {
-        self.0
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    app, name: asked, ..
-                } if asked == name => {
-                    assert_eq!(app.as_str(), "so.tilo.device", "the device's own verb");
-                    Some(invocation.api_arguments())
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the pane asks `{name}`"))
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 struct Pane {
@@ -251,10 +221,11 @@ fn the_pane_asks_before_joining_an_open_network() {
             .map(ResourceRef::id_string)
             .collect::<Vec<_>>()
     );
-    view.press(&button(view.tree(), "Join by itself"))
+    view.press_answering(&pane.host, &me(), &button(view.tree(), "Join by itself"))
         .expect("the switch is pressed");
     assert_eq!(
-        pane.sent.asked("set-ask-before-open-networks")["on"],
+        pane.sent
+            .api_arguments("so.tilo.device", "set-ask-before-open-networks")["on"],
         serde_json::json!(true),
         "the pane asks the device to ask first"
     );
@@ -401,9 +372,11 @@ fn a_kept_work_network_is_edited_with_its_identity_and_certificate() {
         .clone();
     view.edit(&field, &Value::text("ada@lab.example"))
         .expect("the identity typed");
-    view.press(&button(view.tree(), "Apply identity"))
+    view.press_answering(&pane.host, &me(), &button(view.tree(), "Apply identity"))
         .expect("the identity is applied");
-    let asked = pane.sent.asked("set-enterprise-identity");
+    let asked = pane
+        .sent
+        .api_arguments("so.tilo.device", "set-enterprise-identity");
     assert_eq!(asked["profile"], serde_json::json!("uuid-home"));
     assert_eq!(asked["identity"], serde_json::json!("ada@lab.example"));
     assert_eq!(
@@ -429,9 +402,9 @@ fn a_kept_wifi_network_shares_its_password_with_the_persons_devices() {
         "a network kept with a password can be shared: {:?}",
         shown(&view)
     );
-    view.press(&button(view.tree(), "Share"))
+    view.press_answering(&pane.host, &me(), &button(view.tree(), "Share"))
         .expect("the network is shared");
-    let sent = pane.sent.0.borrow();
+    let sent = pane.sent.all();
     let Invocation::Action {
         app, name, target, ..
     } = sent.last().expect("the pane asks the device to share it")

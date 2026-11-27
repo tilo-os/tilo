@@ -8,15 +8,15 @@
     reason = "test assertions"
 )]
 
-use std::cell::RefCell;
 use std::path::Path;
-use std::rc::Rc;
 
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
+
+use crate::invoker::{Answered as _, Sent};
 
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
@@ -165,56 +165,6 @@ fn menu_item(view: &ViewInstance, row: &str, label: &str) -> String {
         )
 }
 
-/// One invocation as it was sent, with its arguments by name.
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    /// The last invocation that ran `name` on the storage resource, its arguments by name.
-    fn asked(&self, name: &str) -> Vec<(String, Value)> {
-        self.0
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked,
-                    args,
-                    target,
-                    ..
-                } if asked == name => {
-                    let target = target
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("{name} names the resource it acts on"));
-                    assert_eq!(
-                        target.id_string(),
-                        storage().id_string(),
-                        "{name} acts on the storage reading"
-                    );
-                    Some(args.clone())
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`: {:?}", self.0.borrow()))
-    }
-
-    /// The value of the argument `wanted`.
-    fn argument(&self, name: &str, wanted: &str) -> Value {
-        self.asked(name)
-            .into_iter()
-            .find(|(named, _)| named == wanted)
-            .unwrap_or_else(|| panic!("{name} is given `{wanted}`"))
-            .1
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
-
 /// What the device publishes: one workspace kept here with files only here and fetched files,
 /// and one whose files this device holds none of, how it fetches and keeps fetched files, and the
 /// synced files whose copy here can be freed.
@@ -352,9 +302,9 @@ fn a_workspace_is_kept_here_or_its_fetched_files_freed_on_the_storage_resource()
     host.runtime().set_invoker(sent.clone());
 
     let free = menu_item(&view, "studio", "Free 3 KB");
-    view.fire(&free, "choose")
+    view.fire_answering(&host, &me(), &free, "choose")
         .expect("freeing the fetched files");
-    let asked = sent.asked("free-workspace-cache");
+    let asked = sent.last_args_acting_on("free-workspace-cache", &storage());
     assert_eq!(
         asked
             .iter()
@@ -364,26 +314,34 @@ fn a_workspace_is_kept_here_or_its_fetched_files_freed_on_the_storage_resource()
         "{asked:?}"
     );
     assert_eq!(
-        sent.argument("free-workspace-cache", "workspace"),
+        sent.last_argument_acting_on("free-workspace-cache", "workspace", &storage()),
         Value::text("studio")
     );
 
     // A workspace kept here is offered the end of keeping it, and the other the start.
     let stop = menu_item(&view, "studio", "Stop keeping here");
-    view.fire(&stop, "choose").expect("stopping keeping it");
+    view.fire_answering(&host, &me(), &stop, "choose")
+        .expect("stopping keeping it");
     assert_eq!(
-        sent.argument("keep-here", "workspace"),
+        sent.last_argument_acting_on("keep-here", "workspace", &storage()),
         Value::text("studio")
     );
-    assert_eq!(sent.argument("keep-here", "keep"), Value::Bool(false));
+    assert_eq!(
+        sent.last_argument_acting_on("keep-here", "keep", &storage()),
+        Value::Bool(false)
+    );
 
     let keep = menu_item(&view, "archive", "Keep here");
-    view.fire(&keep, "choose").expect("keeping it");
+    view.fire_answering(&host, &me(), &keep, "choose")
+        .expect("keeping it");
     assert_eq!(
-        sent.argument("keep-here", "workspace"),
+        sent.last_argument_acting_on("keep-here", "workspace", &storage()),
         Value::text("archive")
     );
-    assert_eq!(sent.argument("keep-here", "keep"), Value::Bool(true));
+    assert_eq!(
+        sent.last_argument_acting_on("keep-here", "keep", &storage()),
+        Value::Bool(true)
+    );
 
     // Nothing fetched is offered for freeing: the archive holds no cache, so its menu has no
     // free entry, while the studio's has one.
@@ -478,7 +436,7 @@ fn fetched_files_are_fetched_ahead_or_held_to_a_space_the_person_chooses() {
     view.fire_with(&prefetch.key, "check", Some(&Value::Bool(false)))
         .expect("prefetching is turned off");
     assert_eq!(
-        sent.argument("set-prefetch", "on"),
+        sent.last_argument_acting_on("set-prefetch", "on", &storage()),
         Value::some(Value::Bool(false)),
         "the switch's own answer reaches the resource"
     );
@@ -493,7 +451,7 @@ fn fetched_files_are_fetched_ahead_or_held_to_a_space_the_person_chooses() {
     view.fire_with(&space, "change", Some(&Value::text("25 GB")))
         .expect("the space is chosen");
     assert_eq!(
-        sent.argument("set-cache-size", "size"),
+        sent.last_argument_acting_on("set-cache-size", "size", &storage()),
         Value::text("25 GB")
     );
 
@@ -546,19 +504,21 @@ fn the_fetched_files_that_can_be_freed_are_freed_one_by_one_or_all_at_once() {
     assert!(contains(&view, "studio - 1 KB"), "{:?}", shown(&view));
 
     let one = row_button(&view, "/films/rough-cut.mov", "Free");
-    view.fire(&one, "press").expect("the file is freed");
+    view.fire_answering(&host, &me(), &one, "press")
+        .expect("the file is freed");
     assert_eq!(
-        sent.argument("free-file", "workspace"),
+        sent.last_argument_acting_on("free-file", "workspace", &storage()),
         Value::text("studio")
     );
     assert_eq!(
-        sent.argument("free-file", "path"),
+        sent.last_argument_acting_on("free-file", "path", &storage()),
         Value::text("/films/rough-cut.mov")
     );
 
     let all = row_button(&view, "Free fetched files", "Free 3 KB");
-    view.fire(&all, "press").expect("every file is freed");
-    let freeing_all = sent.asked("free-synced-files");
+    view.fire_answering(&host, &me(), &all, "press")
+        .expect("every file is freed");
+    let freeing_all = sent.last_args_acting_on("free-synced-files", &storage());
     assert!(
         freeing_all.iter().all(|(_, value)| matches!(
             value,
@@ -604,13 +564,14 @@ fn the_pane_opens_disks_and_backups_through_the_session() {
     let view = open_storage_pane(&host);
 
     let disks = button(&view, "Open Disks");
-    view.press(&disks).expect("the Disks row opens Disks");
+    view.press_answering(&host, &me(), &disks)
+        .expect("the Disks row opens Disks");
     let backups = button(&view, "Open Backups");
-    view.press(&backups).expect("the Backups row opens Backups");
+    view.press_answering(&host, &me(), &backups)
+        .expect("the Backups row opens Backups");
 
     let opened: Vec<String> = sent
-        .0
-        .borrow()
+        .all()
         .iter()
         .filter_map(|invocation| match invocation {
             Invocation::Action { name, args, .. } if name == "open-app" => {
@@ -626,7 +587,7 @@ fn the_pane_opens_disks_and_backups_through_the_session() {
         opened,
         ["so.tilo.disks", "so.tilo.backups"],
         "each row asks the session to open its app: {:?}",
-        sent.0.borrow()
+        sent.all()
     );
 
     for expected in [

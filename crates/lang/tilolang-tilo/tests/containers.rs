@@ -5,11 +5,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilolang::IdsLock;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::files::{Entry, FileTarget, FilesHost, TrashEntry};
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{ActionRef, Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
+
+use crate::invoker::{Sent, invoke_confirmed};
 
 const SOURCE: &str = include_str!("../../../../apps/tl/containers/app.tl");
 const APP: &str = "so.tilo.containers";
@@ -99,36 +100,6 @@ fn me() -> Actor {
 
 fn reading() -> ResourceRef {
     ResourceRef::parse_id("containers", "so.tilo.device#Containers").expect("a resource id")
-}
-
-/// What the app asked of the device's verbs.
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn all(&self) -> Vec<Invocation> {
-        self.0.borrow().clone()
-    }
-
-    /// The verb `name` was asked on the reading, with its arguments after the resource.
-    fn asked(&self, name: &str) -> Vec<Value> {
-        self.all()
-            .into_iter()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == name => Some(args.into_iter().map(|(_, value)| value).collect()),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`"))
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 /// What the app opened as a shell.
@@ -305,10 +276,7 @@ impl Installed {
             .iter()
             .find(|(asked, _)| asked == name)
             .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
-        match self
-            .host
-            .runtime()
-            .invoke_action(&me(), (id.as_str(), args))
+        match invoke_confirmed(&self.host, &me(), (id.as_str(), args))
             .unwrap_or_else(|why| panic!("{name} runs: {why}"))
         {
             tilolang_runtime::InvokeOutcome::Done(value) => value,
@@ -363,10 +331,7 @@ impl Installed {
             .runtime()
             .job_call(&kept, record)
             .expect("the handler's call");
-        self.host
-            .runtime()
-            .invoke_action(&me(), call)
-            .expect("the handler runs");
+        invoke_confirmed(&self.host, &me(), call).expect("the handler runs");
     }
 }
 
@@ -561,7 +526,7 @@ fn the_draft_is_filled_a_field_at_a_time_and_creates_the_container() {
         );
     }
     app.call("create_container", vec![app.root_value()]);
-    let asked = app.sent.asked("create");
+    let asked = app.sent.asked_values("create");
     let Value::Ref(on) = &asked[0] else {
         panic!("the verb is called on a resource: {asked:?}")
     };
@@ -607,12 +572,18 @@ fn the_draft_is_filled_a_field_at_a_time_and_creates_the_container() {
 fn a_volume_is_made_and_removed_by_its_verbs() {
     let app = Installed::new(READING);
     app.call("make_volume", vec![app.root_value(), Value::text("cache")]);
-    assert_eq!(app.sent.asked("create-volume")[1], Value::text("cache"));
+    assert_eq!(
+        app.sent.asked_values("create-volume")[1],
+        Value::text("cache")
+    );
     app.call(
         "prompt_run",
         vec![Value::text("remove-volume:cache"), Value::text("")],
     );
-    assert_eq!(app.sent.asked("remove-volume")[1], Value::text("cache"));
+    assert_eq!(
+        app.sent.asked_values("remove-volume")[1],
+        Value::text("cache")
+    );
 }
 
 #[test]
@@ -626,7 +597,7 @@ fn an_image_is_tagged_and_removed_by_its_verbs() {
             Value::text("web:edge"),
         ],
     );
-    let tagged = app.sent.asked("tag");
+    let tagged = app.sent.asked_values("tag");
     assert_eq!(tagged[1], Value::text("nginx:alpine"));
     assert_eq!(tagged[2], Value::text("web:edge"));
     app.call(
@@ -634,7 +605,7 @@ fn an_image_is_tagged_and_removed_by_its_verbs() {
         vec![Value::text("remove-image:nginx:alpine"), Value::text("")],
     );
     assert_eq!(
-        app.sent.asked("remove-image")[1],
+        app.sent.asked_values("remove-image")[1],
         Value::text("nginx:alpine")
     );
 }
@@ -647,7 +618,7 @@ fn a_container_is_removed_only_after_the_confirmation() {
         vec![Value::text("container:9f3c1a7be4d2c0118af26b5d4e9f01a2")],
     );
     assert_eq!(
-        app.sent.asked("remove")[1],
+        app.sent.asked_values("remove")[1],
         Value::text("9f3c1a7be4d2c0118af26b5d4e9f01a2")
     );
 }

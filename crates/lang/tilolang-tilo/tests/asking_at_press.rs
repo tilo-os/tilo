@@ -338,8 +338,7 @@ fn answers(called: &Called) -> Vec<String> {
 /// [`answers`] of the record `record`, as the scenario stages its id.
 fn answers_of(called: &Called, record: &str) -> Vec<String> {
     called
-        .0
-        .borrow()
+        .all()
         .iter()
         .map(|call| {
             let Invocation::Action {

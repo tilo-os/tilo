@@ -7,10 +7,12 @@ use std::rc::Rc;
 
 use tilolang::IdsLock;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
+
+use crate::invoker::{Answered as _, Sent};
 
 const SOURCE: &str = include_str!("../../../../apps/tl/print-centre/app.tl");
 
@@ -103,31 +105,6 @@ const SCANNERS: &str = r#"{
   "pending": [],
   "problem": null
 }"#;
-
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn asked(&self, name: &str) -> Vec<Value> {
-        self.0
-            .borrow()
-            .iter()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == name => Some(args.iter().map(|(_, value)| value.clone()).collect()),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`"))
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
 
 /// The engine: what it was asked, the answers it gives, and what a job's start named as it moves
 /// and ends.
@@ -454,8 +431,10 @@ fn found_printers_are_offered_to_add() {
         )
         .map(|button| button.key.clone())
         .expect("the found printer's Add button");
-    window.press(&add).expect("the button adds the printer");
-    let asked = app.sent.asked("add");
+    window
+        .press_answering(&app.host, &me(), &add)
+        .expect("the button adds the printer");
+    let asked = app.sent.asked_values("add");
     assert!(
         asked.iter().any(
             |value| matches!(value, Value::Text(text) if text == "ipp://studio.local/printer")
@@ -827,7 +806,9 @@ fn printers_their_paper_queue_and_failures_are_kept_in_one_place() {
             || panic!("the studio printer offers Letter: {:?}", shown(&window)),
             |chip| chip.key.clone(),
         );
-    window.press(&letter).expect("the chip sets the paper");
+    window
+        .press_answering(&app.host, &me(), &letter)
+        .expect("the chip sets the paper");
     let asked = printers_asked(&app, "set_media");
     assert!(
         asked
@@ -846,7 +827,9 @@ fn printers_their_paper_queue_and_failures_are_kept_in_one_place() {
         || panic!("the printing job can be cancelled: {:?}", shown(&window)),
         |button| button.key.clone(),
     );
-    window.press(&cancel).expect("the button cancels the job");
+    window
+        .press_answering(&app.host, &me(), &cancel)
+        .expect("the button cancels the job");
     let asked = printers_asked(&app, "cancel_job");
     assert!(
         asked

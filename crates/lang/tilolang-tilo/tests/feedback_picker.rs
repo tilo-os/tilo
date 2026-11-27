@@ -1,29 +1,12 @@
 //! Reporting a problem: the shell's picker chooses the window a report is about, and the report
 //! opens about that window. Cancel leaves with nothing attached.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use serde_json::json;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::host::Host;
 
-/// What the shell asks the session, in order.
-struct Asked(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Asked {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
-
-impl Clone for Asked {
-    fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-}
+use crate::invoker::Sent as Asked;
 
 /// The shell's package, over a host that runs it, with two windows of one workspace published
 /// and nothing asked of the session yet.
@@ -56,7 +39,7 @@ fn shell() -> (Host, Asked, ResourceRef) {
     host.runtime()
         .set_reading(&windows(), &windows_reading())
         .unwrap();
-    let asked = Asked(Rc::default());
+    let asked = Asked::default();
     host.runtime().set_foreign_invoker(asked.clone());
     let root = root_of_type(&host, "Shell");
     // The person's layout is the session's to write; a shell whose layout says nothing offers
@@ -139,12 +122,8 @@ fn action(host: &Host, name: &str) -> String {
 fn invoke(host: &Host, root: &ResourceRef, name: &str, args: Vec<Value>) -> Value {
     let mut all = vec![Value::resource(root)];
     all.extend(args);
-    match host
-        .runtime()
-        .invoke_action(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
-            (action(host, name).as_str(), all),
-        )
+    let person = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));
+    match crate::invoker::invoke_confirmed(host, &person, (action(host, name).as_str(), all))
         .unwrap_or_else(|why| panic!("{name}: {why}"))
     {
         tilolang_runtime::InvokeOutcome::Done(value) => value,
@@ -155,8 +134,7 @@ fn invoke(host: &Host, root: &ResourceRef, name: &str, args: Vec<Value>) -> Valu
 /// What the shell asked the session, by the app and action of each invocation.
 fn invoked(asked: &Asked) -> Vec<(String, String)> {
     asked
-        .0
-        .borrow()
+        .all()
         .iter()
         .map(|invocation| match invocation {
             // By the declaration's name: the session's surface names its actions by its own
@@ -169,7 +147,7 @@ fn invoked(asked: &Asked) -> Vec<(String, String)> {
 
 /// The window the shell asked the session to bring forward and open a report about, by its tab.
 fn window_reporting(asked: &Asked) -> Option<String> {
-    let invocations = asked.0.borrow();
+    let invocations = asked.all();
     invocations.iter().find_map(|invocation| match invocation {
         Invocation::Action {
             name, args, target, ..

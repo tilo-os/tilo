@@ -12,13 +12,14 @@ use std::rc::Rc;
 
 use serde_json::json;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 use crate::fixtures::{drawn, set_reading};
+use crate::invoker::{Sent, press, press_confirmed};
 
 const APP: &str = "so.tilo.messages";
 const CHAT: &str = "so.tilo.chat";
@@ -226,41 +227,9 @@ struct Window {
     host: Host,
     root: ResourceRef,
     device: Device,
-    asked: Asked,
+    /// What Messages asked of the platform's packages: the directory's verbs, the session's.
+    asked: Sent,
     kept: Kept,
-}
-
-/// What Messages asked of the platform's packages: the directory's verbs, the session's.
-#[derive(Clone, Default)]
-struct Asked(Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Asked {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        // A call the system asks the person about first is no verb of the platform's: it waits for
-        // their yes, which the test answers as the dispatch delivers it.
-        if matches!(invocation, Invocation::Action { asks: true, .. }) {
-            return Invoked::Pending(format!("asked-{}", self.0.borrow().len()));
-        }
-        Invoked::Done(Value::Unit)
-    }
-}
-
-impl Asked {
-    /// The arguments of the verb `name` the app asked last.
-    fn verb(&self, name: &str) -> Vec<(String, Value)> {
-        self.0
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    name: asked, args, ..
-                } if asked == name => Some(args.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the app asks `{name}`: {:?}", self.0.borrow()))
-    }
 }
 
 /// The account Ada's Signal messages go from, and her `WhatsApp` account.
@@ -339,7 +308,7 @@ impl Window {
             &json!({"accounts": [account(SIGNAL, "signal", "Ada's Signal"), account(WHATSAPP, "whatsapp", "Ada's WhatsApp")], "connected": []}),
         );
         let root = host.root_of(APP).expect("the app's root");
-        let asked = Asked::default();
+        let asked = Sent::default();
         host.runtime().set_foreign_invoker(asked.clone());
         let window = Self {
             host,
@@ -566,85 +535,6 @@ fn nodes_of<'a>(node: &'a UiNode, kind: &str, into: &mut Vec<&'a UiNode>) {
     into.extend(node.of_kind(&format!("ui.{kind}")));
 }
 
-/// The control of `kind` labelled `label` in `window`: its key and the event a person's press of
-/// it fires.
-fn control(window: &ViewInstance, kind: &str, label: &str) -> (String, &'static str) {
-    let mut found = Vec::new();
-    nodes_of(window.tree(), kind, &mut found);
-    let labelled = |node: &&&UiNode| {
-        ["label", "title"].iter().any(
-            |prop| matches!(node.props.get(*prop), Some(Value::Text(text)) if plain(text) == label),
-        )
-    };
-    // The control the page shows, before the same action's row in the window's "…".
-    let in_menu = |node: &&&UiNode| node.props.get("in_menu") == Some(&Value::Bool(true));
-    let node = found
-        .iter()
-        .filter(labelled)
-        .find(|node| !in_menu(node))
-        .or_else(|| found.iter().find(labelled))
-        .unwrap_or_else(|| panic!("a {kind} {label:?}:\n{}", drawn(window.tree())));
-    let event = match kind {
-        "Button" => "press",
-        "NavItem" => "select",
-        _ => "activate",
-    };
-    (node.key.clone(), event)
-}
-
-/// Press the control of `kind` labelled `label` (a button's press, a row's or a place's
-/// activation), as a person does.
-fn press(window: &ViewInstance, kind: &str, label: &str) {
-    let (key, event) = control(window, kind, label);
-    let outcome = window.fire(&key, event).expect("the control acts");
-    assert!(
-        matches!(outcome, InvokeOutcome::Done(_)),
-        "{label}: {outcome:?}"
-    );
-}
-
-/// Press the control of `kind` labelled `label` where the system confirms it first, because what
-/// it does leaves the system, and answer the system's confirm as the person does: the asked call
-/// runs as the dispatch delivers their yes. What the action answered.
-fn try_press_confirmed(
-    host: &Host,
-    window: &ViewInstance,
-    kind: &str,
-    label: &str,
-) -> Result<InvokeOutcome, String> {
-    let (key, event) = control(window, kind, label);
-    let asked = match window
-        .fire(&key, event)
-        .map_err(|why| format!("{label}: {why}"))?
-    {
-        InvokeOutcome::Asked(asked) => asked,
-        other => {
-            return Err(format!(
-                "{label} waits for the person's yes first: {other:?}"
-            ));
-        }
-    };
-    if asked.is_empty() {
-        return Err(format!("{label} names no call the person is asked about"));
-    }
-    let action = window
-        .event_action(&key, event)
-        .ok_or_else(|| format!("{label} names the action it presses"))?;
-    host.runtime()
-        .invoke_approved_through(&person(ADA), None, action, None)
-        .map_err(|why| why.to_string())
-}
-
-/// [`try_press_confirmed`] of a press the action takes: the person pressed and said yes.
-fn press_confirmed(host: &Host, window: &ViewInstance, kind: &str, label: &str) {
-    let outcome = try_press_confirmed(host, window, kind, label)
-        .unwrap_or_else(|why| panic!("{label}: {why}"));
-    assert!(
-        matches!(outcome, InvokeOutcome::Done(_)),
-        "{label}: {outcome:?}"
-    );
-}
-
 /// Type `words` into the window's composer, as a person does.
 fn type_in(window: &ViewInstance, words: &str) {
     let input = window
@@ -710,7 +600,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
     assert_shows(&shown, "Add people in Contacts to start a conversation.");
     assert_shows(&shown, "Open Contacts");
     window.call("open_contacts", vec![window.root()]);
-    let opened = window.asked.verb("open-app");
+    let opened = window.asked.last_args("open-app");
     assert!(
         opened
             .iter()
@@ -867,7 +757,7 @@ fn a_press_sends_one_operation(window: &Window) -> (String, String) {
     type_in(&shown, "On my way");
     let shown = window.window();
     assert_shows(&shown, "Draft: On my way");
-    press_confirmed(&window.host, &shown, "Button", "Send");
+    press_confirmed(&window.host, &shown, &person(ADA), "Button", "Send");
     let (sending, asked) = window.device.last("send");
     assert_eq!(asked["text"], "On my way", "{asked}");
     assert_eq!(asked["route"]["recipient"], BO_SIGNAL, "{asked}");
@@ -903,7 +793,7 @@ fn an_uncertain_send_keeps_the_words(window: &Window, sending: &str) {
 /// A send that lands empties the draft and reads the conversation again.
 fn a_send_lands_once_and_reads_again(window: &Window, operation: &str) {
     let shown = window.window();
-    press_confirmed(&window.host, &shown, "Button", "Send");
+    press_confirmed(&window.host, &shown, &person(ADA), "Button", "Send");
     let (sending, asked) = window.device.last("send");
     assert_ne!(
         asked["operation"], operation,
@@ -1070,7 +960,7 @@ fn an_address_reaches_its_one_confirmed_owner_and_nothing_is_substituted() {
         "confirm_account",
         vec![window.root(), Value::text("bo"), Value::text(&route)],
     );
-    let confirmed = window.asked.verb("confirm-account");
+    let confirmed = window.asked.last_args("confirm-account");
     for (name, wanted) in [
         ("person", "bo"),
         ("endpoint", "bo-signal"),
@@ -1118,7 +1008,7 @@ fn a_member_is_written_to_through_chat() {
     let shown = window.window();
     type_in(&shown, "Lunch at one?");
     let shown = window.window();
-    press_confirmed(&window.host, &shown, "Button", "Send");
+    press_confirmed(&window.host, &shown, &person(ADA), "Button", "Send");
     assert!(
         window.device.started("send").is_empty(),
         "a member is written to through Chat"
@@ -1414,7 +1304,13 @@ fn private_groups_are_listed_opened_written_to_and_changed() {
         "Add Bo Diaz using WhatsApp from Ada's WhatsApp to 4915550100@s.whatsapp.net",
     );
 
-    press_confirmed(&window.host, &shown, "Button", "Remove cy@s.whatsapp.net");
+    press_confirmed(
+        &window.host,
+        &shown,
+        &person(ADA),
+        "Button",
+        "Remove cy@s.whatsapp.net",
+    );
     let (_, asked) = window.device.last("group_change");
     assert_eq!(asked["change"], "remove", "{asked}");
     assert_eq!(asked["member"], "cy@s.whatsapp.net", "{asked}");
@@ -1427,6 +1323,7 @@ fn private_groups_are_listed_opened_written_to_and_changed() {
     press_confirmed(
         &window.host,
         &shown,
+        &person(ADA),
         "Button",
         "Add Bo Diaz using WhatsApp from Ada's WhatsApp to 4915550100@s.whatsapp.net",
     );
@@ -1441,13 +1338,19 @@ fn private_groups_are_listed_opened_written_to_and_changed() {
     press(&window.window(), "Button", "Write a message");
     type_in(&window.window(), "See you there");
     let shown = window.window();
-    press_confirmed(&window.host, &shown, "Button", "Send");
+    press_confirmed(&window.host, &shown, &person(ADA), "Button", "Send");
     let (_, asked) = window.device.last("group_send");
     assert_eq!(asked["text"], "See you there", "{asked}");
     assert_eq!(asked["review"], "review-1", "{asked}");
 
     let shown = window.window();
-    press_confirmed(&window.host, &shown, "Button", "Leave this group");
+    press_confirmed(
+        &window.host,
+        &shown,
+        &person(ADA),
+        "Button",
+        "Leave this group",
+    );
     let (_, asked) = window.device.last("group_change");
     assert_eq!(asked["change"], "leave", "{asked}");
 }

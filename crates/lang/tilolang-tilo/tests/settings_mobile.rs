@@ -10,11 +10,12 @@
 
 use std::path::Path;
 
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
+
+use crate::invoker::{Answered as _, Sent};
 
 const TETHERING: &str = r#"{"available": false, "hotspot": false, "name": null, "band": "automatic", "clients": [], "pending": [], "problem": null}"#;
 
@@ -28,38 +29,6 @@ fn me() -> Actor {
 
 fn reading(resource: &str, name: &str) -> ResourceRef {
     ResourceRef::parse_id(resource, format!("so.tilo.device#{name}")).expect("a resource id")
-}
-
-/// What the pane asked of the device.
-#[derive(Clone, Default)]
-struct Sent(std::rc::Rc<std::cell::RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    /// The arguments of the last `name` asked, by name, as the device's action API takes them:
-    /// the resource it is asked on and the options it leaves out are not among them.
-    fn asked(&self, name: &str) -> serde_json::Map<String, serde_json::Value> {
-        self.0
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|invocation| match invocation {
-                Invocation::Action {
-                    app, name: asked, ..
-                } if asked == name => {
-                    assert_eq!(app.as_str(), "so.tilo.device", "the device's own verb");
-                    Some(invocation.api_arguments())
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("the pane asks `{name}`"))
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 struct Pane {
@@ -285,10 +254,10 @@ fn the_mobile_pane_lists_the_operators_and_chooses_one() {
         );
     }
     let feldnetz = row(view.tree(), "Feldnetz");
-    view.fire(&feldnetz, "activate")
+    view.fire_answering(&pane.host, &me(), &feldnetz, "activate")
         .expect("the operator is chosen by its row");
     assert_eq!(
-        pane.sent.asked("select-operator"),
+        pane.sent.api_arguments("so.tilo.device", "select-operator"),
         serde_json::json!({"modem": "/mm/modem0", "operator": "26202"})
             .as_object()
             .expect("an object")
@@ -296,10 +265,14 @@ fn the_mobile_pane_lists_the_operators_and_chooses_one() {
         "the modem stands on the operator whose row was pressed"
     );
 
-    view.press(&button(view.tree(), "Choose automatically"))
-        .expect("the rest is chosen for it");
+    view.press_answering(
+        &pane.host,
+        &me(),
+        &button(view.tree(), "Choose automatically"),
+    )
+    .expect("the rest is chosen for it");
     assert_eq!(
-        pane.sent.asked("select-operator"),
+        pane.sent.api_arguments("so.tilo.device", "select-operator"),
         serde_json::json!({"modem": "/mm/modem0"})
             .as_object()
             .expect("an object")
@@ -307,10 +280,14 @@ fn the_mobile_pane_lists_the_operators_and_chooses_one() {
         "and the modem chooses when no operator is named"
     );
 
-    view.press(&button(view.tree(), "Look for operators"))
-        .expect("the operators are looked for again");
+    view.press_answering(
+        &pane.host,
+        &me(),
+        &button(view.tree(), "Look for operators"),
+    )
+    .expect("the operators are looked for again");
     assert_eq!(
-        pane.sent.asked("scan-operators"),
+        pane.sent.api_arguments("so.tilo.device", "scan-operators"),
         serde_json::json!({"modem": "/mm/modem0"})
             .as_object()
             .expect("an object")
@@ -326,10 +303,10 @@ fn the_mobile_pane_sends_a_code_and_shows_what_the_network_answers() {
     let mut view = pane.open();
     view.edit(&code_field(&view), &Value::text("*100#"))
         .expect("the code is typed");
-    view.press(&button(view.tree(), "Send the code"))
+    view.press_answering(&pane.host, &me(), &button(view.tree(), "Send the code"))
         .expect("the code is sent");
     assert_eq!(
-        pane.sent.asked("send-code"),
+        pane.sent.api_arguments("so.tilo.device", "send-code"),
         serde_json::json!({"modem": "/mm/modem0", "code": "*100#"})
             .as_object()
             .expect("an object")
@@ -354,20 +331,20 @@ fn the_mobile_pane_sends_a_code_and_shows_what_the_network_answers() {
         .clone();
     view.edit(&answer, &Value::text("2"))
         .expect("the answer is typed");
-    view.press(&button(view.tree(), "Send the answer"))
+    view.press_answering(&pane.host, &me(), &button(view.tree(), "Send the answer"))
         .expect("the answer is sent");
     assert_eq!(
-        pane.sent.asked("answer-code"),
+        pane.sent.api_arguments("so.tilo.device", "answer-code"),
         serde_json::json!({"modem": "/mm/modem0", "answer": "2"})
             .as_object()
             .expect("an object")
             .clone()
     );
 
-    view.press(&button(view.tree(), "End the session"))
+    view.press_answering(&pane.host, &me(), &button(view.tree(), "End the session"))
         .expect("the session ends");
     assert_eq!(
-        pane.sent.asked("cancel-code"),
+        pane.sent.api_arguments("so.tilo.device", "cancel-code"),
         serde_json::json!({"modem": "/mm/modem0"})
             .as_object()
             .expect("an object")

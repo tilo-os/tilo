@@ -12,11 +12,12 @@ use std::rc::Rc;
 
 use tilolang::IdsLock;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::files::{DocumentApp, Entry, FileTarget, FilesHost, TrashEntry};
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
+
+use crate::invoker::{Answered as _, Sent};
 
 const SOURCE: &str = concat!(
     include_str!("../../../../apps/tl/files/app.tl"),
@@ -444,25 +445,6 @@ impl BlobHost for Store {
     }
 }
 
-/// What the app asked of an app that is not its own, such as the session's `open_app`.
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Asked>>>);
-
-/// One call the app made: the action's name and its arguments.
-type Asked = (String, Vec<Value>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        if let Invocation::Action { name, args, .. } = invocation {
-            self.0.borrow_mut().push((
-                name.clone(),
-                args.iter().map(|(_, value)| value.clone()).collect(),
-            ));
-        }
-        Invoked::Done(Value::Unit)
-    }
-}
-
 /// Where a device publishes a reading of its own: the resource the session publishes it as, and
 /// the type the view reads it by.
 fn reading(kind: &str) -> ResourceRef {
@@ -628,10 +610,7 @@ impl Files {
             .iter()
             .find(|(asked, _)| asked == name)
             .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
-        match self
-            .host
-            .runtime()
-            .invoke_action(&me(), (id.as_str(), args))
+        match crate::invoker::invoke_confirmed(&self.host, &me(), (id.as_str(), args))
             .unwrap_or_else(|why| panic!("{name} runs: {why}"))
         {
             InvokeOutcome::Done(value) => value,
@@ -1002,16 +981,20 @@ fn a_mounted_workspace_a_drive_and_the_apps_are_places_the_sidebar_offers() {
     let fired = window
         .event_action(&row.key, "activate")
         .expect("the row opens its app");
-    let ran = app
-        .host
-        .runtime()
-        .invoke_action(&me(), (fired.action.as_str(), fired.args.clone()))
-        .expect("opening the app runs");
+    // Opening an app leaves the system, so the person is asked first, and their yes runs it.
+    let ran = crate::invoker::invoke_confirmed(
+        &app.host,
+        &me(),
+        (fired.action.as_str(), fired.args.clone()),
+    )
+    .expect("opening the app runs");
     assert!(matches!(ran, InvokeOutcome::Done(_)), "{ran:?}");
-    let opened = app.sent.0.borrow().clone();
+    let opened = app.sent.calls();
     assert!(
         opened.iter().any(|(name, args)| name == "open-app"
-            && args.first() == Some(&Value::text("so.tilo.notes"))),
+            && args
+                .iter()
+                .any(|(_, value)| value == &Value::text("so.tilo.notes"))),
         "the session opens Notes: {opened:?}"
     );
 }
@@ -1299,7 +1282,9 @@ fn a_move_says_how_far_it_got_and_stops_when_asked() {
         .find(|button| button.props.get("label") == Some(&Value::Text("Stop".into())))
         .expect("a Stop button")
         .key;
-    window.fire(&stop, "press").expect("the stop runs");
+    window
+        .fire_answering(&app.host, &me(), &stop, "press")
+        .expect("the stop runs");
     assert_eq!(
         *app.transfers.stopped.borrow(),
         vec!["devices/ab/jobs/transfer-1".to_owned()]

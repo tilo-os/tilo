@@ -9,14 +9,13 @@
     reason = "test assertions"
 )]
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
+
+use crate::invoker::{Answered as _, Sent};
 
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
@@ -111,23 +110,6 @@ fn sound_pane(host: &Host) -> ViewInstance {
     view
 }
 
-/// One invocation as it was sent, with its arguments by name.
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn all(&self) -> Vec<Invocation> {
-        self.0.borrow().clone()
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
-
 /// The rows the pane drew, each with its title.
 fn row<'a>(tree: &'a UiNode, title: &str) -> &'a UiNode {
     tree.of_kind("ui.ListRow")
@@ -157,9 +139,11 @@ fn choosing_an_output_or_input_plays_it_and_keeps_it() {
     host.runtime().set_invoker(sent.clone());
 
     let headphones = row(view.tree(), "Headphones").key.clone();
-    view.fire(&headphones, "activate").expect("the row chooses");
+    view.fire_answering(&host, &me(), &headphones, "activate")
+        .expect("the row chooses");
     let microphone = row(view.tree(), "Built-in Microphone").key.clone();
-    view.fire(&microphone, "activate").expect("the row chooses");
+    view.fire_answering(&host, &me(), &microphone, "activate")
+        .expect("the row chooses");
 
     let sent = sent.all();
     assert_eq!(sent.len(), 4, "two changes for each choice: {sent:?}");
@@ -240,7 +224,7 @@ fn the_sound_theme_and_each_event_are_chosen_in_the_pane() {
         "nothing chosen follows the freedesktop theme"
     );
     let picker = picker.key.clone();
-    view.fire_with(&picker, "change", Some(&Value::text("Ocean")))
+    view.fire_with_answering(&host, &me(), &picker, "change", Some(&Value::text("Ocean")))
         .expect("a theme is chosen");
     // Each event's switch is bound to that event's own choice, in the record
     // the section keeps: the one left off is new messages.
@@ -303,7 +287,8 @@ fn each_output_plays_a_test_sound_of_its_own() {
                     == Some(&Value::text(format!("Play a test sound on {title}")))
             })
             .unwrap_or_else(|| panic!("{title} plays a test sound"));
-        view.press(&test.key.clone()).expect("the tone plays");
+        view.press_answering(&host, &me(), &test.key.clone())
+            .expect("the tone plays");
     }
     for side in ["Left", "Right"] {
         let button = view
@@ -312,7 +297,8 @@ fn each_output_plays_a_test_sound_of_its_own() {
             .into_iter()
             .find(|button| button.props.get("label") == Some(&Value::text(side)))
             .unwrap_or_else(|| panic!("the speaker test's {side}"));
-        view.press(&button.key.clone()).expect("the side plays");
+        view.press_answering(&host, &me(), &button.key.clone())
+            .expect("the side plays");
     }
 
     let asked: Vec<(String, Vec<(String, Value)>)> = sent

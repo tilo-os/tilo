@@ -885,73 +885,8 @@ pub fn stage_people(host: &Host, policy: &tilo_action_policy::WorkspacePolicy) {
     }
 }
 
-/// What a window sent to other apps, in order: the invocations the shell would carry out, each
-/// answered with nothing.
-#[derive(Clone, Default)]
-pub struct Sent(pub Rc<std::cell::RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn matching(&self, action: &str) -> Vec<(String, Vec<(String, Value)>)> {
-        self.0
-            .borrow()
-            .iter()
-            .filter_map(|invocation| match invocation {
-                Invocation::Action { name, args, .. }
-                    if name == action || name == &action.replace('_', "-") =>
-                {
-                    Some((name.clone(), args.clone()))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// The arguments (after the resource) of the first `action` asked.
-    pub fn asked(&self, action: &str) -> Vec<Value> {
-        let (_, args) = self
-            .matching(action)
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| panic!("the app asks `{action}`; it asked {:?}", self.names()));
-        args.into_iter().map(|(_, value)| value).collect()
-    }
-
-    /// The arguments (after the resource) of the last `action` asked.
-    pub fn last_asked(&self, action: &str) -> Vec<Value> {
-        let (_, args) = self
-            .matching(action)
-            .pop()
-            .unwrap_or_else(|| panic!("the app asks `{action}`; it asked {:?}", self.names()));
-        args.into_iter().map(|(_, value)| value).collect()
-    }
-
-    /// One argument of the first `action` asked, by its parameter name.
-    pub fn arg(&self, action: &str, name: &str) -> Option<Value> {
-        let (_, args) = self.matching(action).into_iter().next()?;
-        args.into_iter()
-            .find(|(arg, _)| arg == name)
-            .map(|(_, value)| value)
-    }
-
-    /// The names of the actions asked, in order.
-    pub fn names(&self) -> Vec<String> {
-        self.0
-            .borrow()
-            .iter()
-            .filter_map(|invocation| match invocation {
-                Invocation::Action { name, .. } => Some(name.clone()),
-                Invocation::Edit { .. } => None,
-            })
-            .collect()
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
+/// What a window sent to other apps, in order: the invocations the shell would carry out.
+pub use crate::invoker::Sent;
 
 /// An app that shows a window over what the device reads, on a host of its own: the platform
 /// packages it `use`s loaded, its `window` view found, and what it asks of other apps recorded.

@@ -3,26 +3,16 @@
 //! shell a session runs leaves its scenarios out (`tilolang_tilo::shell::compile`), so a test of
 //! one builds the package from its directory.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-use tilolang_runtime::{Actor, Value};
+use tilolang_runtime::Actor;
 use tilolang_tilo::host::Host;
 
 pub(crate) const SHELL: &str = "so.tilo.shell";
 
 /// What the shell's views called, in order.
-#[derive(Clone, Default)]
-pub(crate) struct Called(pub(crate) Rc<RefCell<Vec<Invocation>>>);
-
-impl Invoker for Called {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
+pub(crate) use crate::invoker::Sent as Called;
 
 pub(crate) fn ada() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))

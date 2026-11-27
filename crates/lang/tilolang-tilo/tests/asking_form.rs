@@ -38,7 +38,7 @@ fn labelled<'a>(tree: &'a UiNode, kind: &str, label: &str) -> &'a UiNode {
 
 /// The arguments of the record's `resolve` the shell called, by name.
 fn resolved(called: &Called) -> Vec<(String, Value)> {
-    let calls = called.0.borrow();
+    let calls = called.all();
     let Some(Invocation::Action { action, args, .. }) = calls.last() else {
         panic!("the card answered the record: {calls:?}");
     };

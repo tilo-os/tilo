@@ -684,15 +684,7 @@ fn an_empty_book_says_so_and_the_entry_makes_the_first_card() {
 /// Calendar and Messages can reach it.
 #[test]
 fn a_card_the_apps_do_not_know_is_shared_as_a_person_of_its_own() {
-    use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-
-    struct Sent(Rc<RefCell<Vec<Invocation>>>);
-    impl Invoker for Sent {
-        fn invoke(&self, invocation: &Invocation) -> Invoked {
-            self.0.borrow_mut().push(invocation.clone());
-            Invoked::Done(Value::Unit)
-        }
-    }
+    use tilolang_runtime::delegate::Invocation;
 
     let device = Device::default();
     let (ada, root, _) = book(&device);
@@ -708,8 +700,8 @@ fn a_card_the_apps_do_not_know_is_shared_as_a_person_of_its_own() {
         .runtime()
         .set_reading(&directory, r#"{"people": []}"#)
         .expect("the directory reads as empty");
-    let sent = Rc::new(RefCell::new(Vec::new()));
-    ada.host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    let sent = crate::invoker::Sent::default();
+    ada.host.runtime().set_invoker(sent.clone());
 
     call(
         &ada,
@@ -723,7 +715,7 @@ fn a_card_the_apps_do_not_know_is_shared_as_a_person_of_its_own() {
         !person.is_empty(),
         "the card keeps the person it was shared as"
     );
-    let sent = sent.borrow();
+    let sent = sent.all();
     let project = sent
         .iter()
         .find_map(|invocation| match invocation {

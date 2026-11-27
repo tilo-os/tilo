@@ -103,8 +103,7 @@ fn press_field(shell: &mut StagedWindow, name: &str) {
 fn asked(shell: &StagedWindow, name: &str) -> serde_json::Map<String, serde_json::Value> {
     shell
         .called
-        .0
-        .borrow()
+        .all()
         .iter()
         .rev()
         .find_map(|invocation| match invocation {
@@ -119,8 +118,7 @@ fn asked(shell: &StagedWindow, name: &str) -> serde_json::Map<String, serde_json
         .unwrap_or_else(|| {
             let called: Vec<String> = shell
                 .called
-                .0
-                .borrow()
+                .all()
                 .iter()
                 .map(|invocation| match invocation {
                     Invocation::Action { app, name, .. } => format!("{app}/{name}"),

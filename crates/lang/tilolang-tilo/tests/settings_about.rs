@@ -9,16 +9,18 @@
     reason = "test assertions"
 )]
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
 
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
+
 use crate::fixtures::settings_host as settings;
+use crate::invoker::{Answered as _, Sent};
 
 /// The resource `doc` of `ty`, as a view of a platform package reads it.
 fn resource(doc: &str, ty: &str) -> ResourceRef {
@@ -80,49 +82,6 @@ fn named<'a>(tree: &'a UiNode, kind: &str, prop: &str, word: &str) -> &'a UiNode
 /// The control of `kind` labelled `label`, by the key the window gives it.
 fn labelled(tree: &UiNode, kind: &str, label: &str) -> String {
     named(tree, kind, "label", label).key.clone()
-}
-
-/// One invocation as it was sent, with its arguments by name.
-#[derive(Clone)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn new() -> Self {
-        Self(Rc::default())
-    }
-
-    fn last(&self) -> Invocation {
-        self.0
-            .borrow()
-            .last()
-            .cloned()
-            .unwrap_or_else(|| panic!("the pane sends a verb"))
-    }
-
-    /// The app and action of the last invocation.
-    fn called(&self) -> (String, String) {
-        let Invocation::Action { app, name, .. } = self.last() else {
-            panic!("the pane sends an action: {:?}", self.last());
-        };
-        (app.to_string(), name)
-    }
-
-    fn argument(&self, named: &str) -> Value {
-        let Invocation::Action { args, .. } = self.last() else {
-            panic!("the pane sends an action: {:?}", self.last());
-        };
-        args.iter().find(|(name, _)| name == named).map_or_else(
-            || panic!("the verb takes `{named}`: {args:?}"),
-            |(_, value)| value.clone(),
-        )
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 const STOPPED: &str = "2026-10-25-081400-3f9a0c1d2e4b5a69-stopped.log";
@@ -195,7 +154,7 @@ fn send_the_opened_problem(host: &Host, view: &ViewInstance) -> Sent {
     let sent = Sent::new();
     host.runtime().set_foreign_invoker(sent.clone());
     let send_button = labelled(view.tree(), "ui.Button", "Send a report");
-    view.press(&send_button)
+    view.press_answering(host, &me(), &send_button)
         .expect("the person sends the report");
     assert_eq!(
         sent.called(),
@@ -250,7 +209,7 @@ fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
 
     // The row opens the report's own page, with what happened and the record itself.
     let row = named(view.tree(), "ui.ListRow", "title", "The computer stopped");
-    view.fire(&row.key, "activate")
+    view.fire_answering(&host, &me(), &row.key, "activate")
         .expect("the person opens the problem");
     view.poll_patches().expect("its page draws");
     let page = texts(&view);
@@ -274,7 +233,8 @@ fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
 
     // Removing it takes the record off this computer, through the reports' own verb.
     let remove = labelled(view.tree(), "ui.Button", "Remove it from this computer");
-    view.press(&remove).expect("the person removes the record");
+    view.press_answering(&host, &me(), &remove)
+        .expect("the person removes the record");
     assert_eq!(
         sent.called(),
         ("tilo.crash-reports".to_owned(), "remove".to_owned())
@@ -284,7 +244,8 @@ fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
     let back = named(view.tree(), "ui.ListRow", "title", "Back")
         .key
         .clone();
-    view.fire(&back, "activate").expect("the person goes back");
+    view.fire_answering(&host, &me(), &back, "activate")
+        .expect("the person goes back");
     view.poll_patches().expect("the list draws");
     assert!(
         texts(&view)

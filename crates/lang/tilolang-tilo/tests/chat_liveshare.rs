@@ -4,14 +4,11 @@
 //! whose shell shows the share. The sharer switches what the others may do and stops the share
 //! from the message, which then says the window is no longer shared, for everyone.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use serde_json::json;
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, Workspace, target};
+use crate::invoker::{Answered as _, Sent};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
@@ -21,28 +18,6 @@ const APP: &str = "so.tilo.chat";
 const WINDOW: &str = "7";
 /// Where Ben's shell shows Ada's window: a place of its own.
 const BENS_PLACE: &str = "41";
-
-/// One verb Chat asked of the shell and the arguments it gave.
-type Asked = (String, Vec<(String, Value)>);
-
-/// What Chat asked of the shell, each verb by name with its arguments.
-#[derive(Clone, Default)]
-struct Sent(Rc<RefCell<Vec<Asked>>>);
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        if let Invocation::Action { name, args, .. } = invocation {
-            self.0.borrow_mut().push((name.clone(), args.clone()));
-        }
-        Invoked::Done(Value::Unit)
-    }
-}
-
-impl Sent {
-    fn take(&self) -> Vec<Asked> {
-        std::mem::take(&mut *self.0.borrow_mut())
-    }
-}
 
 fn windows() -> ResourceRef {
     ResourceRef::parse_id("session:windows", "so.tilo.device#Windows").expect("a windows root")
@@ -170,17 +145,14 @@ fn labelled(node: &UiNode, kind: &str, label: &str) -> Option<String> {
         .map(|n| n.key.clone())
 }
 
-/// Run what the control `key` of `view` does on `event`, as the person.
+/// Run what the control `key` of `view` does on `event`, as the person does, answering the
+/// system's confirm where what it does leaves the system.
 fn run(r: &Replica, view: &ViewInstance, key: &str, event: &str) {
-    let action = view
-        .event_action(key, event)
-        .unwrap_or_else(|| panic!("{key} does nothing on {event}"));
-    let outcome = r
-        .host
-        .runtime()
-        .invoke_action(&person(r), (action.action.as_str(), action.args.clone()));
+    let outcome = view
+        .fire_answering(&r.host, &person(r), key, event)
+        .unwrap_or_else(|why| panic!("{key} on {event}: {why}"));
     assert!(
-        matches!(outcome, Ok(InvokeOutcome::Done(_))),
+        matches!(outcome, InvokeOutcome::Done(_)),
         "{event}: {outcome:?}"
     );
     r.commit();
@@ -232,7 +204,7 @@ fn a_window_shared_into_a_channel_shows_live_and_says_when_it_ended() {
     let share = labelled(ada_design.tree(), "ui.MenuItem", "Share Budget")
         .expect("the composer offers the open window");
     run(&ada, &ada_design, &share, "choose");
-    let asked = sent.take();
+    let asked = sent.take_calls();
     let names: Vec<&str> = asked.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["share", "allow-remote-input"], "{asked:?}");
     assert_eq!(arg(&asked[0].1, "tab"), Some(Value::text(WINDOW)));
@@ -267,7 +239,7 @@ fn a_window_shared_into_a_channel_shows_live_and_says_when_it_ended() {
     assert!(pictured(&row).is_empty(), "{:?}", texts(&row));
     let show = labelled(&row, "ui.Button", "Show it live").expect("a way to see it");
     run(&ben, &ben_design, &show, "press");
-    let asked = ben_sent.take();
+    let asked = ben_sent.take_calls();
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert_eq!(asked[0].0, "watch");
     assert_eq!(arg(&asked[0].1, "tab"), Some(Value::text(WINDOW)));
@@ -288,7 +260,7 @@ fn a_window_shared_into_a_channel_shows_live_and_says_when_it_ended() {
     let row = rows(&mut ada_design).pop().unwrap();
     let edit = labelled(&row, "ui.Segment", "Can edit").expect("the sharer's access switch");
     run(&ada, &ada_design, &edit, "press");
-    let asked = sent.take();
+    let asked = sent.take_calls();
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert_eq!(asked[0].0, "allow-remote-input");
     assert_eq!(arg(&asked[0].1, "on").map(truth), Some(true));
@@ -305,7 +277,7 @@ fn a_window_shared_into_a_channel_shows_live_and_says_when_it_ended() {
     let row = rows(&mut ada_design).pop().unwrap();
     let stop = labelled(&row, "ui.Button", "Stop sharing").unwrap();
     run(&ada, &ada_design, &stop, "press");
-    let asked = sent.take();
+    let asked = sent.take_calls();
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert_eq!(asked[0].0, "stop");
     assert_eq!(arg(&asked[0].1, "tab"), Some(Value::text(WINDOW)));

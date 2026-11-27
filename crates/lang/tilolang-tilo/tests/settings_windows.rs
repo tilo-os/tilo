@@ -9,14 +9,17 @@
     reason = "test assertions"
 )]
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
+
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
+
+use crate::invoker::{Answered as _, Sent};
 
 use crate::fixtures::settings_host as settings;
 
@@ -92,39 +95,6 @@ fn named<'a>(tree: &'a UiNode, kind: &str, prop: &str, word: &str) -> &'a UiNode
 /// The control of `kind` labelled `label`, by the key the window gives it.
 fn labelled(tree: &UiNode, kind: &str, label: &str) -> String {
     named(tree, kind, "label", label).key.clone()
-}
-
-/// One invocation as it was sent, with its arguments by name.
-#[derive(Clone)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn new() -> Self {
-        Self(Rc::default())
-    }
-
-    fn last(&self) -> Invocation {
-        self.0
-            .borrow()
-            .last()
-            .cloned()
-            .unwrap_or_else(|| panic!("the pane sends a verb"))
-    }
-
-    /// The app and action of the last invocation.
-    fn called(&self) -> (String, String) {
-        let Invocation::Action { app, name, .. } = self.last() else {
-            panic!("the pane sends an action: {:?}", self.last());
-        };
-        (app.to_string(), name)
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
 }
 
 /// The widgets' choices as the person's settings keep them, each on the shell and shown after a
@@ -291,7 +261,8 @@ fn the_windows_card_offers_the_install_the_retry_and_the_removal() {
             let sent = Sent::new();
             host.runtime().set_invoker(sent.clone());
             let install = labelled(view.tree(), "ui.Button", "Install");
-            view.press(&install).expect("the person installs it");
+            view.press_answering(&host, &me(), &install)
+                .expect("the person installs it");
             assert_eq!(
                 sent.called(),
                 ("so.tilo.device".to_owned(), "install".to_owned())

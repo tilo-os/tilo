@@ -9,15 +9,20 @@
     reason = "test assertions"
 )]
 
-use std::cell::RefCell;
 use std::path::Path;
-use std::rc::Rc;
 
-use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
+
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
+
+use crate::invoker::{Answered as _, Sent};
 
 /// The app as it ships, with the platform's packages it reads through loaded, as a window's
 /// process loads them.
@@ -113,49 +118,6 @@ fn shows(node: &UiNode) -> bool {
     }
 }
 
-/// One invocation as it was sent, with its arguments by name.
-#[derive(Clone)]
-struct Sent(Rc<RefCell<Vec<Invocation>>>);
-
-impl Sent {
-    fn new() -> Self {
-        Self(Rc::default())
-    }
-
-    fn last(&self) -> Invocation {
-        self.0
-            .borrow()
-            .last()
-            .cloned()
-            .unwrap_or_else(|| panic!("the pane sends a verb"))
-    }
-
-    /// The app and action of the last invocation.
-    fn called(&self) -> (String, String) {
-        let Invocation::Action { app, name, .. } = self.last() else {
-            panic!("the pane sends an action: {:?}", self.last());
-        };
-        (app.to_string(), name)
-    }
-
-    fn argument(&self, named: &str) -> Value {
-        let Invocation::Action { args, .. } = self.last() else {
-            panic!("the pane sends an action: {:?}", self.last());
-        };
-        args.iter().find(|(name, _)| name == named).map_or_else(
-            || panic!("the verb takes `{named}`: {args:?}"),
-            |(_, value)| value.clone(),
-        )
-    }
-}
-
-impl Invoker for Sent {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
-        self.0.borrow_mut().push(invocation.clone());
-        Invoked::Done(Value::Unit)
-    }
-}
-
 fn widgets(enabled: &[(&str, bool)]) -> serde_json::Value {
     let widget = |on: bool| {
         serde_json::json!({
@@ -235,8 +197,14 @@ fn the_widgets_section_keeps_and_shapes_the_shell_widgets() {
 
     let sent = Sent::new();
     host.runtime().set_invoker(sent.clone());
-    view.fire_with(&keep_music, "check", Some(&Value::Bool(false)))
-        .expect("the person takes Music off the shell");
+    view.fire_with_answering(
+        &host,
+        &me(),
+        &keep_music,
+        "check",
+        Some(&Value::Bool(false)),
+    )
+    .expect("the person takes Music off the shell");
     let Invocation::Action { app, name, .. } = sent.last() else {
         panic!("a verb of the settings: {:?}", sent.last());
     };
@@ -252,7 +220,7 @@ fn the_widgets_section_keeps_and_shapes_the_shell_widgets() {
 
     // When it shows is the settings' choice too: always, after a pause, or only when asked.
     let always = labelled(view.tree(), "ui.Segment", "Always");
-    view.press(&always)
+    view.press_answering(&host, &me(), &always)
         .expect("the person has Music show always");
     assert_eq!(sent.argument("widget"), Value::text("music"));
     assert_eq!(sent.argument("show"), Value::text("always"));
@@ -290,7 +258,7 @@ fn the_shell_pane_binds_and_resets_the_view_of_a_part() {
     // The bar's own page: what draws it, and where the person names the app and view instead.
     let bar = named(view.tree(), "ui.ListRow", "title", "The bar");
     let change = labelled(bar, "ui.Button", "Change");
-    view.press(&change)
+    view.press_answering(&host, &me(), &change)
         .expect("the person opens the bar's page");
     view.poll_patches().expect("the page draws");
     let page = texts(&view);
@@ -319,7 +287,8 @@ fn the_shell_pane_binds_and_resets_the_view_of_a_part() {
     let sent = Sent::new();
     host.runtime().set_invoker(sent.clone());
     let bind = labelled(view.tree(), "ui.Button", "Bind");
-    view.press(&bind).expect("the person binds the part");
+    view.press_answering(&host, &me(), &bind)
+        .expect("the person binds the part");
     let Invocation::Action { app, name, .. } = sent.last() else {
         panic!("a verb of the settings: {:?}", sent.last());
     };
@@ -338,7 +307,7 @@ fn the_shell_pane_binds_and_resets_the_view_of_a_part() {
 
     // The shell's own view comes back by the settings' reset.
     let reset = labelled(view.tree(), "ui.Button", "Show the shell's own view again");
-    view.press(&reset)
+    view.press_answering(&host, &me(), &reset)
         .expect("the person shows the shell's own again");
     assert_eq!(
         sent.called(),
