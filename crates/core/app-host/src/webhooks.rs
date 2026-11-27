@@ -17,9 +17,9 @@
 //! The device that keeps the workspace signs with its own key: a webhook's receiver is told that
 //! key when the webhook is made, and no secret of the person's is written into a shared
 //! workspace to sign with. A `2xx` within
-//! [`ANSWER_WITHIN`](tilo_workspace_service::workspaces::webhooks::ANSWER_WITHIN) delivers it; anything else is tried
-//! again by the shortcut's step policy, and a URL that never takes it leaves a failed
-//! invocation record.
+//! [`ANSWER_WITHIN`](tilo_workspace_service::workspaces::webhooks::ANSWER_WITHIN) delivers it;
+//! anything else is tried again by this provider, as often as the delivery allows, and a URL
+//! that never takes it leaves a failed invocation record.
 //!
 //! Whoever holds a key names the URL, so a delivery goes only where this machine's own network
 //! is not: over `https` to the public internet, a name judged in the connection's own look-up,
@@ -33,6 +33,7 @@ use std::time::Duration;
 
 use collab_types::signer::DeviceSigner;
 use serde_json::{Value, json};
+use tilo_action_policy::Actor;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
@@ -48,7 +49,9 @@ use tilo_invocations::Invocations;
 use tilo_server_protocol::WorkspaceId;
 
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::webhooks::{ANSWER_WITHIN, ATTEMPTS, refusal};
+use tilo_workspace_service::workspaces::webhooks::{
+    ANSWER_WITHIN, ATTEMPTS, BACKOFF_MS, SavedWebhook, refusal, saved_in,
+};
 
 /// This computer's own name.
 const LOCALHOST: &str = "localhost";
@@ -186,8 +189,9 @@ impl Poster {
     }
 }
 
-/// The catalogue row a shortcut's save reads for the delivery action.
-fn row() -> CatalogueRow {
+/// The catalogue row a shortcut's save reads for one webhook's delivery action: the webhook is
+/// the resource the action stands on, so a shortcut grants its own delivery alone.
+fn row(webhook: &SavedWebhook) -> CatalogueRow {
     CatalogueRow::for_action(
         WEBHOOK_PROVIDER,
         WEBHOOK_PROVIDER,
@@ -195,9 +199,9 @@ fn row() -> CatalogueRow {
             did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
-            address: ActionAddress::new(WEBHOOK_RESOURCE, WEBHOOK_POST),
+            address: ActionAddress::new(webhook.id.clone(), WEBHOOK_POST),
             resource_kind: WEBHOOK_RESOURCE.to_owned(),
-            resource_label: "Webhooks".to_owned(),
+            resource_label: format!("Webhook {}", webhook.url),
             action_label: "Post a webhook delivery".to_owned(),
             keywords: Vec::new(),
             icon: None,
@@ -247,7 +251,20 @@ impl ActionProvider for Poster {
         let Some(workspace) = caller.workspace() else {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         };
-        let mut page = CataloguePage::from_rows("tilo.webhooks:1".into(), vec![row()], &query);
+        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        };
+        // One row per webhook the workspace holds, read from the copy kept here without waiting
+        // on the workspace's lock: what a save checks its step against, and what a delivery names.
+        let rows: Vec<CatalogueRow> = self
+            .workspaces
+            .copy_now(workspace_id)
+            .map(|copy| saved_in(&copy.peer.workspace().workspace_shortcuts(), workspace))
+            .unwrap_or_default()
+            .iter()
+            .map(row)
+            .collect();
+        let mut page = CataloguePage::from_rows("tilo.webhooks:1".into(), rows, &query);
         page.providers.push(CatalogueProvider {
             provider: WEBHOOK_PROVIDER.to_owned(),
             app_id: WEBHOOK_PROVIDER.to_owned(),
@@ -275,13 +292,6 @@ impl ActionProvider for Poster {
         let attempts = Arc::clone(&self.attempts);
         let caller = caller.clone();
         tokio::spawn(async move {
-            let workspace = match governs(&workspaces, &caller).await {
-                Ok(workspace) => workspace,
-                Err(error) => {
-                    completer.complete(Err(error));
-                    return;
-                }
-            };
             let args = match &request.argument {
                 InvokeArgument::Json(args) => Value::Object(args.clone()),
                 _ => json!({}),
@@ -294,6 +304,13 @@ impl ActionProvider for Poster {
                     "`url`, `webhook` and `event` are required",
                 )));
                 return;
+            };
+            let workspace = match governs(&workspaces, &caller, url, webhook).await {
+                Ok(workspace) => workspace,
+                Err(error) => {
+                    completer.complete(Err(error));
+                    return;
+                }
             };
             let body = match serde_json::to_vec(event) {
                 Ok(body) => body,
@@ -339,7 +356,20 @@ impl ActionProvider for Poster {
                     (route, caller.clone()),
                 );
             }
-            let answered = posting.post(url, webhook, &delivery, &body).await;
+            // A delivery's tries are the provider's own: a caller that asks again under the same
+            // invocation is answered from the record this provider left, never posted again, so
+            // the retries belong here.
+            let mut tried = attempt;
+            let answered = loop {
+                let answered = posting.post(url, webhook, &delivery, &body).await;
+                let delivered = matches!(&answered, Ok(code) if (200..300).contains(code));
+                if delivered || tried >= budget {
+                    break (answered, tried);
+                }
+                tried = tried.saturating_add(1);
+                tokio::time::sleep(Duration::from_millis(BACKOFF_MS)).await;
+            };
+            let (answered, attempt) = answered;
             let (code, update) = match answered {
                 Ok(code) if (200..300).contains(&code) => {
                     let output = ActionOutput {
@@ -454,8 +484,14 @@ fn failure(why: String, attempt: u32, attempts: u32) -> ActionCallError {
 }
 
 /// Why a delivery may not be posted from `workspaces`: only the device that keeps the workspace
-/// posts its webhooks.
-async fn governs(workspaces: &Workspaces, caller: &Caller) -> Result<String, ActionCallError> {
+/// posts its webhooks, a webhook posts only to the URL it was saved with, and its delivery runs
+/// as the webhook's own shortcut or as its person, never as an agent or app of theirs.
+async fn governs(
+    workspaces: &Workspaces,
+    caller: &Caller,
+    url: &str,
+    webhook: &str,
+) -> Result<String, ActionCallError> {
     let workspace = caller.workspace().ok_or(ActionCallError::NotPermitted)?;
     let id = WorkspaceId::parse(workspace).ok_or(ActionCallError::NotPermitted)?;
     if !workspaces.hosts_here(id).await {
@@ -463,12 +499,77 @@ async fn governs(workspaces: &Workspaces, caller: &Caller) -> Result<String, Act
             reason: "a webhook is posted by the device that keeps its workspace".into(),
         });
     }
-    // Its deliveries are the workspace's person's: a member reaches no URL through it.
-    let person = workspaces.device_cert().user_public_key;
-    let own = caller.user_public_key() == Some(&person)
-        || caller.acting().person_id() == Some(hex::encode(person).as_str());
-    if !own {
+    // The webhook the call names, as the workspace saved it: a call reaches no URL but its
+    // webhook's own.
+    let saved = saved_in(
+        &workspaces
+            .copy_now(id)
+            .ok_or(ActionCallError::NotPermitted)?
+            .peer
+            .workspace()
+            .workspace_shortcuts(),
+        workspace,
+    )
+    .into_iter()
+    .find(|saved| saved.id == webhook)
+    .ok_or(ActionCallError::NotPermitted)?;
+    if saved.url != url {
         return Err(ActionCallError::NotPermitted);
     }
-    Ok(workspace.to_owned())
+    let person = workspaces.device_cert().user_public_key;
+    if may_post(caller, person, &saved) {
+        Ok(workspace.to_owned())
+    } else {
+        Err(ActionCallError::NotPermitted)
+    }
+}
+
+/// Whether `caller` may post `webhook`'s delivery: the device's person's own act (their test of a
+/// receiver), or the run of the shortcut the webhook was saved as, acting for that person. An
+/// agent or app of theirs is neither, and reaches no URL through the webhook.
+fn may_post(caller: &Caller, person: [u8; 32], webhook: &SavedWebhook) -> bool {
+    let person = hex::encode(person);
+    let shortcut_this_webhook = matches!(&caller.acting().by, Actor::Automation(id) if id.as_str() == webhook.id.as_str())
+        && caller.acting().acted_for_person() == Some(person.as_str());
+    caller.acting().person_id() == Some(person.as_str()) || shortcut_this_webhook
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn webhook() -> SavedWebhook {
+        SavedWebhook {
+            id: "wh_1".to_owned(),
+            workspace: "a workspace".to_owned(),
+            url: "http://127.0.0.1:9/hook".to_owned(),
+            events: vec!["invocation".to_owned()],
+            path: None,
+            owner: "a key".to_owned(),
+        }
+    }
+
+    /// A delivery runs as the webhook's own shortcut, acting for the workspace's person, or as
+    /// that person's own test. An agent of the person, and another shortcut's run, reach no URL
+    /// through the webhook.
+    #[test]
+    fn a_webhooks_delivery_is_its_own_shortcut_run_or_its_person_alone() {
+        let person = [7_u8; 32];
+        let webhook = webhook();
+        let theirs = Caller::local_person(hex::encode(person));
+        assert!(may_post(&theirs, person, &webhook), "the person's own test");
+        assert!(
+            may_post(&theirs.clone().running_shortcut("wh_1"), person, &webhook),
+            "the webhook's own shortcut run acts for its person"
+        );
+        assert!(
+            !may_post(&theirs.clone().running_shortcut("wh_2"), person, &webhook),
+            "another shortcut's run posts no delivery of this webhook"
+        );
+        let agent = Caller::delegated_agent("an agent", person, [9_u8; 32]);
+        assert!(
+            !may_post(&agent, person, &webhook),
+            "an agent of the person posts no delivery of theirs"
+        );
+    }
 }

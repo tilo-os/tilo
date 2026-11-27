@@ -1,7 +1,8 @@
 //! Account webhooks as a workspace holds them: each a saved shortcut whose one trigger is
 //! [`TriggerSpec::Webhook`] and whose one step posts the event, owned by the key that registered
-//! it. The workspace's governance actions register, list and remove them; the device that keeps
-//! the workspace posts them (the app host's webhooks).
+//! it. Each webhook is a resource of the provider ([`SavedWebhook::id`]), so a webhook's saved
+//! grant reaches its own delivery alone. The workspace's governance actions register, list and
+//! remove them; the device that keeps the workspace posts them (the app host's webhooks).
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -9,14 +10,14 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tilo_actions::{ActionParam, ParamType};
 use tilo_automation::{
-    Binding, EVENT_INPUT, Selector, Shortcut, StepKind, StepPolicy, TriggerSpec, WEBHOOK_POST,
+    Binding, EVENT_INPUT, Selector, Shortcut, StepKind, TriggerSpec, WEBHOOK_POST,
     WEBHOOK_PROVIDER, WEBHOOK_RESOURCE,
 };
 use tilo_desktop_model::Workspace;
 
 /// How long a URL has to answer one delivery.
 pub const ANSWER_WITHIN: Duration = Duration::from_secs(10);
-/// How often the step tries a URL before its invocation is failed.
+/// How often one delivery is posted before its invocation is failed.
 pub const ATTEMPTS: u32 = 3;
 /// The wait before each retry of a delivery.
 pub const BACKOFF_MS: u64 = 50;
@@ -63,7 +64,17 @@ impl SavedWebhook {
 /// Every webhook saved in `workspace`, as its shortcuts carry them.
 #[must_use]
 pub fn saved(workspace: &Workspace, workspace_id: &str) -> Vec<SavedWebhook> {
-    tilo_automation::decode_saved(&workspace.shortcuts)
+    saved_in(&workspace.shortcuts, workspace_id)
+}
+
+/// [`saved`], read from `shortcuts` rather than a described workspace: what a device that keeps
+/// the workspace reads without waiting on its lock.
+#[must_use]
+pub fn saved_in(
+    shortcuts: &[tilo_automation::SavedShortcut],
+    workspace_id: &str,
+) -> Vec<SavedWebhook> {
+    tilo_automation::decode_saved(shortcuts)
         .into_iter()
         .filter_map(|shortcut| {
             shortcut.triggers.iter().find_map(|trigger| {
@@ -91,7 +102,8 @@ pub fn saved(workspace: &Workspace, workspace_id: &str) -> Vec<SavedWebhook> {
 }
 
 /// The shortcut that is webhook `id`, owned by `owner`: its one trigger posts `events` of the
-/// workspace to `url`, and its one step is the delivery.
+/// workspace to `url`, and its one step is the delivery on the webhook's own resource (`id`),
+/// which its grant reaches and no other webhook's does.
 #[must_use]
 pub fn shortcut(
     id: &str,
@@ -113,15 +125,13 @@ pub fn shortcut(
         "post",
         StepKind::Invoke {
             action: tilo_actions::ActionKey::new(WEBHOOK_PROVIDER, WEBHOOK_RESOURCE, WEBHOOK_POST),
-            resource: Selector::FirstOfKind(WEBHOOK_RESOURCE.to_owned()),
+            // The delivery is this webhook's own resource's, so its saved grant reaches it and
+            // no other webhook's.
+            resource: Selector::Fixed(id.to_owned()),
             args,
             appearance: None,
         },
-    )
-    .with_policy(StepPolicy::Retry {
-        attempts: ATTEMPTS,
-        backoff_ms: BACKOFF_MS,
-    });
+    );
     Shortcut {
         id: id.to_owned(),
         name: format!("Webhook {url}"),
@@ -133,7 +143,16 @@ pub fn shortcut(
         steps: vec![post],
         step_timeout_secs: Some(ANSWER_WITHIN.as_secs()),
         output: None,
-        grant: Vec::new(),
+        // Registering the webhook is the person's consent to the one step it runs: an outside
+        // effect posted from the device that keeps the workspace, to this webhook alone. Without
+        // it the trigger fires and its run is refused, a delivery nothing posts.
+        grant: tilo_automation::grant::rules(&[tilo_automation::grant::Permission {
+            app_id: WEBHOOK_PROVIDER.to_owned(),
+            reach: tilo_automation::grant::Reach::Resource(id.to_owned()),
+            action: WEBHOOK_POST.to_owned(),
+            kind: tilo_actions::ActionKind::Outside,
+            label: format!("Post a webhook delivery in {WEBHOOK_RESOURCE}"),
+        }]),
         triggers: vec![TriggerSpec::Webhook {
             url: url.to_owned(),
             events: events.to_vec(),
@@ -144,5 +163,50 @@ pub fn shortcut(
         saved_by: None,
         saved_proof: None,
         paused: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shortcut a webhook is saved as grants the one step its trigger runs on that webhook's
+    /// own resource: registering it is the person's consent to that delivery, and to no other
+    /// webhook's in the workspace.
+    #[test]
+    fn a_webhooks_shortcut_grants_its_own_delivery_and_no_other() {
+        let shortcut = shortcut(
+            "wh_its_own",
+            "http://127.0.0.1:9/hook",
+            &["invocation".to_owned()],
+            None,
+            "owner",
+            0,
+        );
+        let node = |webhook: &str| {
+            tilo_automation::grant::step_node(
+                None,
+                WEBHOOK_PROVIDER,
+                WEBHOOK_RESOURCE,
+                &tilo_actions::api::ActionAddress::new(webhook, WEBHOOK_POST),
+            )
+        };
+        let granted = tilo_automation::grant::grant_answer(
+            &shortcut.grant,
+            &node("wh_its_own"),
+            tilo_actions::ActionKind::Outside,
+        );
+        assert_eq!(granted.answer, tilo_action_policy::Answer::Allow);
+        assert!(granted.names_action, "the grant names the delivery itself");
+        let other = tilo_automation::grant::grant_answer(
+            &shortcut.grant,
+            &node("wh_another"),
+            tilo_actions::ActionKind::Outside,
+        );
+        assert_eq!(
+            other.answer,
+            tilo_action_policy::Answer::Deny,
+            "one webhook's grant reaches no other webhook's delivery"
+        );
     }
 }

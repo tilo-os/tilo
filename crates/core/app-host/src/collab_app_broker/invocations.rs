@@ -169,7 +169,8 @@ impl AppBrokerState {
         if !self.may_read(caller, workspace, addressed) {
             return None;
         }
-        Some(described(recorded, addressed))
+        let action = described_action(self.services.providers.as_ref(), recorded);
+        Some(described(recorded, action))
     }
 
     /// Whether `caller`'s grants let them read what a call addressed now: the record `app` and
@@ -240,10 +241,28 @@ impl AppBrokerState {
     }
 }
 
+/// What a recorded call asked for, as the listing names it: the app that publishes it and its
+/// action (`notes#rename`), which for a record provider is the app that record belongs to and
+/// for a provider registered on this device is the app it registered under. A call outside any
+/// app's tree names the resource it reached (`workspace/invitations#invite`).
+fn described_action(
+    providers: Option<&tilo_workspace_service::workspaces::providers::Providers>,
+    recorded: &Recorded,
+) -> String {
+    let target = &recorded.request.target;
+    let action = target.address.action.as_str();
+    if let Some((app, _)) = resource_parts(&target.provider) {
+        return format!("{}#{action}", app_path(app));
+    }
+    if let Some(registered) = providers.and_then(|providers| providers.get(&target.provider)) {
+        return format!("{}#{action}", registered.app);
+    }
+    format!("{}#{action}", target.address.resource)
+}
+
 /// One recorded invocation as the listing states it.
-fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation {
+fn described(recorded: &Recorded, action: String) -> Invocation {
     let request = &recorded.request;
-    let target = &request.target;
     Invocation {
         id: Some(recorded.request.invocation.0.to_string()),
         calls: vec![recorded.request.invocation.0.to_string()],
@@ -277,10 +296,7 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
         ended_ms: recorded
             .ended_ms
             .map(|ended| i64::try_from(ended).unwrap_or(i64::MAX)),
-        action: Some(match addressed {
-            Some((app, _)) => format!("{}#{}", app_path(app), target.address.action),
-            None => format!("{}#{}", target.address.resource, target.address.action),
-        }),
+        action: Some(action),
         summary: None,
         output: recorded
             .state
