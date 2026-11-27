@@ -208,13 +208,16 @@ impl Flatpak {
         ];
         let mut cached = args.to_vec();
         cached.insert(1, "--cached");
-        match self.run(&cached) {
-            Ok(rows) => Ok(rows),
+        let rows = match self.run(&cached) {
+            Ok(rows) => rows,
             // A remote configured a moment ago may have no cached summary yet: reading it
             // fetches and verifies one with the remote's configured GPG policy.
-            Err(error) if error.contains("No cached summary") => self.run(&args),
-            Err(error) => Err(error),
-        }
+            Err(error) if error.contains("No cached summary") => self.run(&args)?,
+            Err(error) => return Err(error),
+        };
+        // Flatpak ends its last row with a newline, which the rows do not include: a caller
+        // that splits them reads one row per application, never an empty one after them.
+        Ok(rows.trim_end_matches(['\n', '\r']).to_owned())
     }
 
     /// Install `reference` (`app/org.example.App/x86_64/stable`) into the system installation.
@@ -530,10 +533,15 @@ esac
         assert_eq!(status.remotes.len(), 1);
         assert_eq!(status.remotes[0].name, "flathub");
         assert!(!status.remotes[0].disabled);
+        // Every read names the system installation; the availability probe (`--version`) has
+        // no installation to name and is not one of them.
+        let calls = calls(dir.path());
         assert!(
-            calls(dir.path())
+            calls
                 .iter()
-                .all(|call| call.contains("--system"))
+                .filter(|call| *call != "--version")
+                .all(|call| call.contains("--system")),
+            "{calls:?}"
         );
     }
 
