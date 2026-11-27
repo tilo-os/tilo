@@ -56,6 +56,15 @@ impl Drop for Showing {
                         "the workspace did not unmount cleanly"
                     );
                 }
+                // A file written into the folder now would land underneath the next mount: the
+                // folder refuses it until the workspace is shown there again.
+                if let Err(error) = set_mode(&self.at, WHILE_NOT_SHOWN) {
+                    tracing::warn!(
+                        %error,
+                        at = %self.at.display(),
+                        "the folder takes writes while the workspace is not shown there"
+                    );
+                }
             }
             #[cfg(not(target_os = "linux"))]
             View::Folder(_) => {}
@@ -148,11 +157,14 @@ fn off_the_worker<T: Send>(step: impl FnOnce() -> T + Send) -> T {
 pub(crate) fn show(
     make: impl Fn() -> std::io::Result<QuickFS>,
     at: &Path,
-    _state: &Path,
+    state: &Path,
 ) -> std::io::Result<Showing> {
     // A mount a peer that ended left behind answers ENOTCONN, which no mount can be made at.
     tilo_fs::fuse_session::clear_stale_mount(at)?;
     std::fs::create_dir_all(at)?;
+    // Mounting needs the folder underneath writable; while nothing is mounted it refuses writes
+    // ([`Showing`]'s drop).
+    set_mode(at, WHILE_SHOWN)?;
     if !tilo_fs::fuse_session::mountable(
         Path::new("/dev/fuse"),
         std::env::var_os("PATH").as_deref(),
@@ -164,6 +176,12 @@ pub(crate) fn show(
         ));
     }
     let fs = make()?;
+    // What was written into the folder while nothing was mounted there is the person's: it goes
+    // into the workspace before the mount covers it, never hidden underneath.
+    let taken = off_the_worker(|| tilo_fs::underneath::take_in(&fs, at, &state.join("taking-in")))?;
+    if taken > 0 {
+        tracing::info!(taken, at = %at.display(), "the files written into the folder while it was not shown are the workspace's now");
+    }
     let activity = fs.activity();
     let session = mounted(fs, at)?;
     Ok(Showing {
@@ -195,6 +213,25 @@ pub(crate) fn show(
         activity,
         view: View::Folder(watch),
     })
+}
+
+/// The folder underneath a mount while the workspace is shown there: fusermount mounts only over
+/// a folder its user may write.
+#[cfg(target_os = "linux")]
+const WHILE_SHOWN: u32 = 0o755;
+/// The folder underneath while the workspace is not shown there: a write is refused rather than
+/// landing where the next mount would hide it.
+#[cfg(target_os = "linux")]
+const WHILE_NOT_SHOWN: u32 = 0o555;
+
+#[cfg(target_os = "linux")]
+fn set_mode(at: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    // Never through a mount still there: a stat of one whose daemon ended waits for nothing.
+    if tilo_fs::fuse_session::is_mounted(at) {
+        return Ok(());
+    }
+    std::fs::set_permissions(at, std::fs::Permissions::from_mode(mode))
 }
 
 #[cfg(target_os = "linux")]

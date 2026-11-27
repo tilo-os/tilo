@@ -381,8 +381,28 @@ async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
     let (dir, home) = (state.path().join("laptop"), state.path().join("home"));
     let folder = folder_at(&dir, &home, &workspace);
     let keys = (&laptop_key, &laptop_cert);
+    // The person writes into the folder before the workspace is ever shown there.
+    std::fs::create_dir_all(folder.join("drafts")).unwrap();
+    std::fs::write(folder.join("before.txt"), b"Written before the mount\n").unwrap();
+    std::fs::write(folder.join("drafts/outline.txt"), b"1. Intro\n").unwrap();
 
     let computer = Computer::start(&dir, &home, keys, &login).await;
+    // What was there is in the workspace, through the mount and on the server, never hidden
+    // underneath it.
+    holds(
+        &folder.join("drafts/outline.txt"),
+        b"1. Intro\n",
+        "a file written into a folder of it before the mount is in the mounted folder",
+    )
+    .await;
+    reaches_server(
+        &server,
+        &workspace,
+        "before.txt",
+        b"Written before the mount\n",
+        "a file written before the mount reaches the server",
+    )
+    .await;
     // Server to folder.
     holds(
         &folder.join("contract.txt"),
@@ -426,6 +446,13 @@ async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
     })
     .await;
     computer.stop().await;
+    // While the workspace is not shown, the folder refuses a write rather than keeping it where
+    // the next mount would hide it. Root writes whatever a folder's mode says.
+    if rustix::process::geteuid().as_raw() != 0 {
+        let refused = std::fs::write(folder.join("unmounted.txt"), b"lost?\n")
+            .expect_err("the folder refuses a write while the workspace is not shown");
+        assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+    }
 
     let computer = Computer::start(&dir, &home, keys, &login).await;
     reaches_server(
@@ -467,7 +494,15 @@ async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
     assert_eq!(
         names,
         BTreeSet::from(
-            ["agenda.txt", "contract.txt", "late.txt", "minutes.txt"].map(str::to_owned)
+            [
+                "agenda.txt",
+                "before.txt",
+                "contract.txt",
+                "drafts",
+                "late.txt",
+                "minutes.txt"
+            ]
+            .map(str::to_owned)
         ),
         "one tree, holding every file once"
     );

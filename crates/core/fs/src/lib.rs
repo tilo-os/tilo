@@ -81,6 +81,9 @@ pub mod thumbs;
 /// Keeping a namespace of that tree converged with a peer's records of it.
 #[cfg(feature = "tree-sync")]
 pub mod tree_sync;
+/// The plain directory a workspace's folder is mounted over, and what was written into it.
+#[cfg(all(feature = "filesystem", target_os = "linux"))]
+pub mod underneath;
 #[cfg(feature = "filesystem")]
 pub mod unsaved;
 #[cfg(feature = "filesystem")]

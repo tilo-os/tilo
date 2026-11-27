@@ -194,6 +194,13 @@ pub fn clear_stale_mount(at: &Path) -> io::Result<()> {
     }
 }
 
+/// Whether a FUSE mount is at `at`, found in `/proc/self/mounts` without touching it.
+#[must_use]
+pub fn is_mounted(at: &Path) -> bool {
+    std::fs::read_to_string("/proc/self/mounts")
+        .is_ok_and(|mounts| fuse_mount_at(&mounts, at).is_some())
+}
+
 /// The FUSE mount point `mounts` (as `/proc/self/mounts` reads) lists for `at`.
 ///
 /// The kernel lists a mount by its real path, with a space, tab, newline or backslash as an
