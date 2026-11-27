@@ -6,8 +6,8 @@
 //!
 //! The call is made where an app's goes — the device's dispatch, naming `tilo.environment` and
 //! `environment#...` — and the supervisor at the other end is the shell runtime's own, serving
-//! a store of this test's under the workspace the call is made in. The view is a tilolang
-//! package compiled against `tilo.environment`, followed from the device's own reading.
+//! a store of this test's under the workspace the call is made in. What a view of the reading
+//! makes of it is the language's own to prove: `tilolang-tilo`'s environments reading test.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,7 +21,7 @@
 
 use std::io::{BufRead as _, Write as _};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use collab_types::store::wire::Command;
@@ -31,13 +31,10 @@ use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
 };
-use tilo_app_host::services::{Caller as AppCaller, PublishedResources, ResourceWatch};
+use tilo_app_host::services::{Caller as AppCaller, PublishedResources};
 use tilo_environment::{DEFAULT_RECORD, Environment, PackageId, host_arch};
 use tilo_test_env::hang_bound;
 use tilo_workspace_service::workspaces::Workspaces;
-use tilolang_tilo::platform;
-use tilolang_tilo::platform_apps::{self, PublishedSource, Reading as Followed, Roots};
-use tilolang_tilo::runtime::{Actor, ResourceRef, UiNode, Value as Lang};
 
 use super::environment_directory;
 use super::environment_readings::Readings;
@@ -50,23 +47,6 @@ const TEST: &str =
 
 /// The kind of Terminal's records an environment is one of.
 const ENVIRONMENT: &str = "environment";
-
-/// The tilolang package a view of the environments is: it reads the root the platform package
-/// publishes, so its fields are the types `tilo.environment` declares.
-const VIEWING: &str = r#"app so.tilo.test.environments "Environments"
-
-use tilo.environment as environment
-
-/// What the window shows: every environment of the workspace, by name.
-view panel() {
-    let all = environment.environments
-    page {
-        for entry in all.environments {
-            text("{entry.name}, {entry.runtime}") as entry_name
-        }
-    }
-}
-"#;
 
 #[test]
 #[expect(
@@ -252,89 +232,6 @@ fn an_app_makes_changes_and_lists_environments() {
             .as_array()
             .is_some_and(Vec::is_empty),
         "another workspace's caller reads nothing of this one's"
-    );
-
-    // A tilolang view compiles against `tilo.environment` and follows the same reading: what the
-    // app made is what it shows, and a further change reaches it live.
-    let platforms = platform::platform_packages().expect("the platform's packages read");
-    let compiled = tilolang::compile_package(VIEWING, &tilolang::IdsLock::new(), &platforms)
-        .unwrap_or_else(|diagnostics| {
-            panic!(
-                "{}",
-                diagnostics
-                    .iter()
-                    .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        });
-    let person = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));
-    let host = tilolang_tilo::host::Host::new(person.clone(), || None).expect("a host");
-    host.load_compiled(&compiled).expect("the package loads");
-    let serving = Serving::new(Arc::new(Readings::of(daemon.workspaces().clone())), app);
-    platform_apps::install(Box::new(serving));
-    let wake = tilo_rt::wake::WakeHandle::default();
-    let mut roots = Roots::default();
-    roots.load(&host, &compiled.meta.uses, &wake);
-    settle(&host, &mut roots);
-
-    let root = ResourceRef::parse_id(
-        environment_commands::ENVIRONMENTS,
-        "tilo.environment#Environments",
-    )
-    .expect("the environments' root");
-    let shown = names(&host, &root);
-    assert!(
-        shown.contains(&"Prose".to_owned()) && shown.contains(&"Live prose".to_owned()),
-        "the view reads what the workspace holds: {shown:?}"
-    );
-    // The view's fields are typed by the package: the entry's tools, grants, home and runtime.
-    let entry = entries(&host, &root)
-        .into_iter()
-        .find(|entry| field(&host, entry, "name") == Lang::text("Prose"))
-        .expect("the made environment");
-    assert!(matches!(field(&host, &entry, "tools"), Lang::List(_)));
-    assert!(matches!(field(&host, &entry, "grants"), Lang::List(_)));
-    assert!(matches!(field(&host, &entry, "runtime"), Lang::Text(_)));
-    assert!(matches!(field(&host, &entry, "home"), Lang::Enum(_)));
-    let view = host
-        .package("so.tilo.test.environments")
-        .expect("the package is loaded")
-        .meta
-        .views
-        .iter()
-        .find(|view| view.name == "panel")
-        .expect("the window")
-        .id
-        .clone();
-    let window = host
-        .runtime()
-        .open_view(&person, &view, Vec::new())
-        .expect("the window opens over the environments");
-    assert!(
-        drawn(window.tree()).contains("Prose"),
-        "the window shows the environment: {}",
-        drawn(window.tree())
-    );
-
-    // One more, made after the window opened, reaches it: the reading is followed, not read once.
-    let later =
-        call(&tree, &caller, "create", json!({"name": "Later"})).expect("the call is admitted");
-    let later_key = later["created"]
-        .as_str()
-        .expect("the made record")
-        .to_owned();
-    settle(&host, &mut roots);
-    let shown = names(&host, &root);
-    assert!(
-        shown.contains(&"Later".to_owned()),
-        "a change made after the window opened reaches it: {shown:?}"
-    );
-    assert!(
-        entries(&host, &root)
-            .iter()
-            .any(|entry| field(&host, entry, "record") == Lang::text(later_key.clone())),
-        "the entry's record key is the record's key"
     );
 }
 
@@ -585,150 +482,4 @@ fn next_reading_until(
         }
     }
     panic!("a reading the change made");
-}
-
-/// Hand the host every reading its source published since the last call, waiting for the one a
-/// change made: `settle` returns once the reading moved.
-fn settle(host: &tilolang_tilo::host::Host, roots: &mut Roots) {
-    let deadline = Instant::now() + hang_bound();
-    while Instant::now() < deadline {
-        if roots.read(host, |_| true) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    panic!("the environment reading moved");
-}
-
-/// The environments the view of `root` reads, each a reference to its entry.
-fn entries(host: &tilolang_tilo::host::Host, root: &ResourceRef) -> Vec<ResourceRef> {
-    match host
-        .runtime()
-        .read(root, "environments")
-        .expect("the environments are read")
-    {
-        Lang::List(items) => items
-            .into_iter()
-            .map(|item| match item {
-                Lang::Ref(entry) => (*entry.target).clone(),
-                other => panic!("an entry, not {other:?}"),
-            })
-            .collect(),
-        Lang::Opt(None) | Lang::Unit => Vec::new(),
-        other => panic!("a list, not {other:?}"),
-    }
-}
-
-/// What the entry `at` reads of its field `name`.
-fn field(host: &tilolang_tilo::host::Host, at: &ResourceRef, name: &str) -> Lang {
-    host.runtime()
-        .read(at, name)
-        .unwrap_or_else(|why| panic!("`{name}`: {why}"))
-}
-
-/// The names of the environments the view of `root` reads.
-fn names(host: &tilolang_tilo::host::Host, root: &ResourceRef) -> Vec<String> {
-    entries(host, root)
-        .iter()
-        .filter_map(|entry| match field(host, entry, "name") {
-            Lang::Text(name) => Some(name),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Every text under `node`, for a failing assertion to read.
-fn drawn(node: &UiNode) -> String {
-    fn walk(node: &UiNode, texts: &mut Vec<String>) {
-        if node.kind == "ui.Text"
-            && let Some(Lang::Text(text)) = node.props.get("value")
-        {
-            texts.push(text.clone());
-        }
-        for child in &node.children {
-            walk(child, texts);
-        }
-    }
-    let mut texts = Vec::new();
-    walk(node, &mut texts);
-    texts.join("\n")
-}
-
-/// The platform's `environments` reading, as the session's services answer an app: the device's
-/// provider, followed through the same interface a window's host follows it.
-struct Serving {
-    provider: Arc<dyn PublishedResources>,
-    caller: AppCaller,
-    /// The newest reading, waiting for the host to take it.
-    newest: Arc<Mutex<Option<Result<String, String>>>>,
-    /// The provider's watches, held for as long as this source serves.
-    watches: Mutex<Vec<ResourceWatch>>,
-}
-
-impl Serving {
-    fn new(provider: Arc<dyn PublishedResources>, caller: AppCaller) -> Self {
-        Self {
-            provider,
-            caller,
-            newest: Arc::default(),
-            watches: Mutex::default(),
-        }
-    }
-}
-
-impl PublishedSource for Serving {
-    fn follow(
-        &self,
-        resource: &str,
-        wake: tilo_rt::wake::WakeHandle,
-    ) -> Result<Box<dyn Followed>, String> {
-        let (sink, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let watch = self.provider.watch(&self.caller, resource, sink)?;
-        self.watches.lock().expect("the watches").push(watch);
-        let newest = Arc::clone(&self.newest);
-        tilo_rt::app().handle().spawn(async move {
-            while let Some(event) = events.recv().await {
-                let runtime_collab::wire::Event::Reading { reading, .. } = event else {
-                    continue;
-                };
-                let reading = reading
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                    .ok_or_else(|| "the environments are not published".to_owned());
-                *newest.lock().expect("the newest reading") = Some(reading);
-                wake.wake();
-            }
-        });
-        Ok(Box::new(Arrived {
-            newest: Arc::clone(&self.newest),
-        }))
-    }
-
-    fn invoke(
-        &self,
-        resource: &str,
-        action: &str,
-        arguments: &serde_json::Map<String, Value>,
-    ) -> Result<(), String> {
-        let arguments = serde_json::to_vec(arguments).map_err(|error| error.to_string())?;
-        let receipt = self
-            .provider
-            .invoke(&self.caller, resource, action, arguments)
-            .blocking_recv()
-            .map_err(|_| "the provider did not answer".to_owned())?;
-        match receipt {
-            runtime_collab::wire::Receipt::Refused { message, .. } => Err(message),
-            _ => Ok(()),
-        }
-    }
-}
-
-/// The readings [`Serving`] hands its host.
-struct Arrived {
-    newest: Arc<Mutex<Option<Result<String, String>>>>,
-}
-
-impl Followed for Arrived {
-    fn latest(&self) -> Option<Result<String, String>> {
-        self.newest.lock().expect("the newest reading").take()
-    }
 }

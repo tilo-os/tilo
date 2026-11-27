@@ -55,6 +55,7 @@ mod document_search;
 mod done_days;
 mod effects;
 mod engines;
+mod environments_reading;
 #[path = "support/export_probe.rs"]
 mod export_probe;
 mod feedback_picker;
