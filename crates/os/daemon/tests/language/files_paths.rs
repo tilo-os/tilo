@@ -806,12 +806,9 @@ fn workspace_tree_requests_naming_another_workspace_are_refused() {
         )
         .await
         .unwrap();
-        let writer_record = opened_writer["record"].as_str().unwrap();
-        assert!(!writer_record.is_empty(), "{opened_writer}");
-        assert_eq!(
-            opened_writer["provider"],
-            format!("record:so.tilo.word-processor:{writer_record}"),
-            "{opened_writer}",
+        assert!(
+            opened_writer.is_null(),
+            "a tilolang app runs in this device's process, so its open names no instance: {opened_writer}",
         );
 
         // Tree reads naming another workspace are refused with UnknownAction, even with a stale
