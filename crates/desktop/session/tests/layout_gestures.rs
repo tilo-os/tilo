@@ -93,7 +93,8 @@ fn three_fingers_up_and_down_step_the_strips() {
     });
 }
 
-/// Four fingers sideways: the workspace beside the one in front, and back.
+/// Four fingers up or down: the workspace above or below the one in front, and back. The
+/// compositor switches workspaces on vertical four-finger swipes and leaves sideways ones alone.
 #[test]
 fn four_fingers_switch_the_workspace() {
     let _settled = tilo_ui_base::motion::testing::settled();
@@ -112,8 +113,8 @@ fn four_fingers_switch_the_workspace() {
     settle(&mut session);
     assert_eq!(workspace(&session), home);
 
-    for dx in [-400.0, 400.0] {
-        swipe(&mut session, 4, dx, 0.0);
+    for dy in [-400.0, 400.0] {
+        swipe(&mut session, 4, 0.0, dy);
         if workspace(&session) != home {
             break;
         }
@@ -124,8 +125,8 @@ fn four_fingers_switch_the_workspace() {
         |session| workspace(session) != home,
     );
     let there = workspace(&session);
-    for dx in [400.0, -400.0] {
-        swipe(&mut session, 4, dx, 0.0);
+    for dy in [400.0, -400.0] {
+        swipe(&mut session, 4, 0.0, dy);
         if workspace(&session) != there {
             break;
         }
