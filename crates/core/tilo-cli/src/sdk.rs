@@ -812,13 +812,20 @@ fn distinct(fields: &[Member]) -> Vec<(&Member, bool)> {
 
 // -- Python -----------------------------------------------------------------
 
-/// The Python types of `apps`: a module per app, and the package that holds them.
 /// The API's description (`openapi.json`), its `runAction` typed per action of `apps`.
 ///
 /// # Errors
 ///
 /// An app's surface is not one.
 pub fn openapi_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
+    let mut text = serde_json::to_string_pretty(&described(apps)?)?;
+    text.push('\n');
+    Ok(vec![(PathBuf::from(OPENAPI_FILE), text)])
+}
+
+/// The API's description with the actions of `apps`: what `openapi.json` is, and what the
+/// TypeScript client is written from.
+fn described(apps: &[App]) -> Result<serde_json::Value> {
     let apps: Vec<tilo_api::v1::openapi::App> = apps
         .iter()
         .map(|app| tilo_api::v1::openapi::App {
@@ -827,12 +834,10 @@ pub fn openapi_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
             surface: app.surface.clone(),
         })
         .collect();
-    let described = tilo_api::v1::openapi::document(&apps).map_err(|error| anyhow!(error))?;
-    let mut text = serde_json::to_string_pretty(&described)?;
-    text.push('\n');
-    Ok(vec![(PathBuf::from(OPENAPI_FILE), text)])
+    tilo_api::v1::openapi::document(&apps).map_err(|error| anyhow!(error))
 }
 
+/// The Python types of `apps`: a module per app, and their package.
 pub fn python_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
     let mut files = Vec::new();
     let modules = module_names(apps);
@@ -1378,6 +1383,10 @@ pub fn typescript_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
         modules.push(module);
     }
     files.push((PathBuf::from("index.ts"), typescript_package(&modules)));
+    files.push((
+        PathBuf::from(TS_CLIENT),
+        typescript_client(&described(apps)?),
+    ));
     Ok(files)
 }
 
@@ -1441,8 +1450,8 @@ fn typescript_module(app: &App, types: &Types) -> String {
         ),
         "(read-only ones `readonly`) and its methods are the app's actions, named in camel"
             .to_owned(),
-        "case and taking the arguments the wire takes them under. An action that takes".to_owned(),
-        "longer answers an `Invocation`. A record is the object the wire carries, and an enum whose"
+        "case and taking the arguments the wire takes them under, each answering what the".to_owned(),
+        "action produced once it finished. A record is the object the wire carries, and an enum whose"
             .to_owned(),
         "cases carry fields is an object whose tag the app's schema names. An action whose"
             .to_owned(),
@@ -1858,6 +1867,458 @@ fn typescript_result(action: &Action) -> String {
         .as_ref()
         .map_or_else(|| "void".to_owned(), typescript_type)
 }
+// -- The TypeScript client of `/v1` ----------------------------------------
+
+/// The module the TypeScript client is written to. No app's module can be named so: an app's
+/// is written with underscores alone ([`module_name`]).
+const TS_CLIENT: &str = "api-v1.ts";
+/// The schema each event of a stream is read as, as the description names it.
+const STREAM_EVENT: &str = "Event";
+
+/// One operation of the description, as the client calls it.
+struct Operation<'a> {
+    id: &'a str,
+    method: String,
+    path: &'a str,
+    summary: &'a str,
+    /// Its path parameters, then its query parameters, each with whether it is required.
+    params: Vec<(&'a str, bool)>,
+    query: Vec<&'a str>,
+    /// What it takes: JSON of a type, or bytes (`None` for nothing).
+    body: Option<Body>,
+    /// What it answers on success.
+    answer: Answer,
+    mutating: bool,
+}
+
+enum Body {
+    Json(String),
+    Bytes,
+}
+
+enum Answer {
+    Json(String),
+    Events,
+    Bytes,
+}
+
+/// The TypeScript client of `described`, the API's description: its schemas as types, and an
+/// operation each as a method, in two classes: the account's operations, and a workspace's,
+/// which name it themselves. The SDK's own `Tilo` and `Workspace` are those classes, carried by
+/// the transport the SDK was given.
+fn typescript_client(described: &serde_json::Value) -> String {
+    let mut out = String::new();
+    comment_block(
+        &mut out,
+        &[
+            "The client of Tilo's API, `/v1`, written by `tilo sdk gen` from the API's",
+            "description: its schemas as types, and each of its operations as a method. Write it",
+            "again rather than editing it.",
+        ],
+    );
+    out.push('\n');
+    let empty = serde_json::Map::new();
+    let schemas = at(described, "/components/schemas")
+        .as_object()
+        .unwrap_or(&empty);
+    for (name, schema) in schemas {
+        // An app action's own schema (`notes.notebook.rename.Arguments`): its app's module
+        // types it.
+        if name.contains('.') {
+            continue;
+        }
+        // Every type the client exports says what it is, the description's words or its name.
+        if at(schema, "/description")
+            .as_str()
+            .is_none_or(|said| said.trim().is_empty())
+        {
+            let _ = writeln!(
+                out,
+                "/** A `{name}`, as the API's requests and answers carry one. */"
+            );
+        } else {
+            typescript_doc(&mut out, schema, "");
+        }
+        match schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            Some(_) => {
+                let _ = writeln!(out, "export interface {name} {{");
+                for line in object_fields(schema, "  ") {
+                    let _ = writeln!(out, "{line}");
+                }
+                out.push_str("}\n\n");
+            }
+            None => {
+                let _ = writeln!(out, "export type {name} = {};\n", ts_of(schema));
+            }
+        }
+    }
+    let operations = operations_of(described);
+    typescript_operations(&mut out, &operations);
+    for (class, doc, workspace) in [
+        (
+            "AccountOperations",
+            "The operations of the API outside every workspace: the API itself, and the key's account.",
+            false,
+        ),
+        (
+            "WorkspaceOperations",
+            "The operations of one workspace, which names it in each request itself.",
+            true,
+        ),
+    ] {
+        let _ = writeln!(out, "/** {doc} */\nexport abstract class {class} {{");
+        out.push_str(
+            "  /** @internal One request for `operation`, its answer read as the operation answers. */\n\
+             \x20 protected abstract send(\n\
+             \x20   operation: Operation,\n\
+             \x20   params: Record<string, string | undefined>,\n\
+             \x20   body: unknown,\n\
+             \x20   headers: Record<string, string>,\n\
+             \x20 ): Promise<unknown>;\n\
+             \x20 /** @internal One request for `operation`, its answer's events as they come. */\n\
+             \x20 protected abstract stream(\n\
+             \x20   operation: Operation,\n\
+             \x20   params: Record<string, string | undefined>,\n\
+             \x20   body: unknown,\n\
+             \x20   headers: Record<string, string>,\n\
+             \x20 ): AsyncIterableIterator<",
+        );
+        let _ = writeln!(out, "{STREAM_EVENT}>;\n");
+        for operation in operations
+            .iter()
+            .filter(|operation| operation.path.starts_with(WORKSPACE_PATH) == workspace)
+        {
+            typescript_method(&mut out, operation, workspace);
+        }
+        out.pop();
+        out.push_str("}\n\n");
+    }
+    out
+}
+
+/// What each of `operations` is, as `OPERATIONS` tells the client: how a request for it is
+/// written, and what it answers.
+fn typescript_operations(out: &mut String, operations: &[Operation<'_>]) {
+    out.push_str(
+        "/** One operation of the API: how a request for it is written, and what it answers. */\n\
+         export interface Operation {\n\
+         \x20 readonly method: string;\n\
+         \x20 /** Its path, its parameters in braces. */\n\
+         \x20 readonly path: string;\n\
+         \x20 /** The query parameters it reads. */\n\
+         \x20 readonly query: readonly string[];\n\
+         \x20 readonly body: \"json\" | \"bytes\" | null;\n\
+         \x20 readonly answer: \"json\" | \"events\" | \"bytes\";\n\
+         \x20 /** Whether it changes something, so it takes an `Idempotency-Key`. */\n\
+         \x20 readonly mutating: boolean;\n\
+         }\n\n\
+         /** The API's operations, by their `operationId`. */\n\
+         export const OPERATIONS = {\n",
+    );
+    for operation in operations {
+        let query: Vec<String> = operation
+            .query
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect();
+        let _ = writeln!(
+            out,
+            "  {}: {{ method: \"{}\", path: \"{}\", query: [{}], body: {}, answer: \"{}\", mutating: {} }},",
+            operation.id,
+            operation.method,
+            operation.path,
+            query.join(", "),
+            match operation.body {
+                None => "null",
+                Some(Body::Json(_)) => "\"json\"",
+                Some(Body::Bytes) => "\"bytes\"",
+            },
+            match operation.answer {
+                Answer::Json(_) => "json",
+                Answer::Events => "events",
+                Answer::Bytes => "bytes",
+            },
+            operation.mutating
+        );
+    }
+    out.push_str("} as const satisfies Record<string, Operation>;\n\n");
+}
+
+/// What `pointer` names in `value`, `null` where nothing is.
+fn at<'a>(value: &'a serde_json::Value, pointer: &str) -> &'a serde_json::Value {
+    static NULL: serde_json::Value = serde_json::Value::Null;
+    value.pointer(pointer).unwrap_or(&NULL)
+}
+
+/// Where a workspace's operations are: it names the workspace itself.
+const WORKSPACE_PATH: &str = "/v1/workspaces/{workspace}";
+
+fn typescript_method(out: &mut String, operation: &Operation<'_>, workspace: bool) {
+    let params: Vec<String> = operation
+        .params
+        .iter()
+        .filter(|(name, _)| !(workspace && *name == "workspace"))
+        .map(|(name, required)| format!("{}{}: string", name, if *required { "" } else { "?" }))
+        .chain(
+            operation
+                .query
+                .iter()
+                .map(|name| format!("{name}?: string")),
+        )
+        .collect();
+    // A default stands only where every argument after it has one too.
+    let required = operation
+        .params
+        .iter()
+        .any(|(name, required)| *required && !(workspace && *name == "workspace"))
+        || match &operation.body {
+            Some(Body::Json(ty)) => ty != "Record<string, unknown>",
+            Some(Body::Bytes) => true,
+            None => false,
+        };
+    let mut arguments = if params.is_empty() {
+        "params: Record<string, never>".to_owned()
+    } else {
+        format!("params: {{ {} }}", params.join("; "))
+    };
+    if !required {
+        arguments.push_str(" = {}");
+    }
+    let body = match &operation.body {
+        None => "undefined",
+        Some(Body::Json(ty)) => {
+            let _ = write!(arguments, ", body: {ty}");
+            if ty == "Record<string, unknown>" {
+                arguments.push_str(" = {}");
+            }
+            "body"
+        }
+        Some(Body::Bytes) => {
+            arguments.push_str(", body: Uint8Array");
+            "body"
+        }
+    };
+    arguments.push_str(", headers: Record<string, string> = {}");
+    let _ = writeln!(out, "  /** {} */", one_line(operation.summary));
+    let call = format!("(OPERATIONS.{}, params, {body}, headers)", operation.id);
+    let ty = match &operation.answer {
+        Answer::Events => {
+            let _ = writeln!(
+                out,
+                "  {}({arguments}): AsyncIterableIterator<{STREAM_EVENT}> {{\n    return this.stream{call};\n  }}\n",
+                operation.id
+            );
+            return;
+        }
+        Answer::Json(ty) => ty.as_str(),
+        Answer::Bytes => "Uint8Array",
+    };
+    let _ = writeln!(
+        out,
+        "  {}({arguments}): Promise<{ty}> {{\n    return this.send{call} as Promise<{ty}>;\n  }}\n",
+        operation.id
+    );
+}
+
+/// Every operation `described` lists, in its order.
+fn operations_of(described: &serde_json::Value) -> Vec<Operation<'_>> {
+    let mut operations = Vec::new();
+    let Some(paths) = at(described, "/paths").as_object() else {
+        return operations;
+    };
+    for (path, methods) in paths {
+        let Some(methods) = methods.as_object() else {
+            continue;
+        };
+        for (method, operation) in methods {
+            let parameters = at(operation, "/parameters")
+                .as_array()
+                .map_or(&[][..], Vec::as_slice);
+            let named = |place: &str| -> Vec<(&str, bool)> {
+                parameters
+                    .iter()
+                    .filter(|parameter| at(parameter, "/in").as_str() == Some(place))
+                    .filter_map(|parameter| {
+                        Some((
+                            at(parameter, "/name").as_str()?,
+                            at(parameter, "/required").as_bool() == Some(true),
+                        ))
+                    })
+                    .collect()
+            };
+            let body = at(operation, "/requestBody/content")
+                .as_object()
+                .and_then(|content| {
+                    content.get("application/json").map_or_else(
+                        || (!content.is_empty()).then_some(Body::Bytes),
+                        |json| Some(Body::Json(ts_of(at(json, "/schema")))),
+                    )
+                });
+            let mut answers: Vec<String> = Vec::new();
+            let mut answer = None;
+            for (status, response) in at(operation, "/responses")
+                .as_object()
+                .into_iter()
+                .flatten()
+            {
+                if !status.starts_with('2') {
+                    continue;
+                }
+                let content = at(response, "/content").as_object();
+                if let Some(json) = content.and_then(|content| content.get("application/json")) {
+                    let ty = ts_of(at(json, "/schema"));
+                    if !answers.contains(&ty) {
+                        answers.push(ty);
+                    }
+                } else if content.is_some_and(|content| content.contains_key("text/event-stream")) {
+                    answer = Some(Answer::Events);
+                } else {
+                    answer = Some(Answer::Bytes);
+                }
+            }
+            operations.push(Operation {
+                id: at(operation, "/operationId").as_str().unwrap_or_default(),
+                method: method.to_uppercase(),
+                path,
+                summary: at(operation, "/summary").as_str().unwrap_or_default(),
+                params: named("path"),
+                query: named("query").into_iter().map(|(name, _)| name).collect(),
+                body,
+                answer: answer.unwrap_or_else(|| Answer::Json(union_of(answers))),
+                mutating: parameters.iter().any(|parameter| {
+                    at(parameter, "/$ref")
+                        .as_str()
+                        .is_some_and(|reference| reference.ends_with("/IdempotencyKey"))
+                }),
+            });
+        }
+    }
+    operations
+}
+
+/// The TypeScript type of a JSON schema of the description.
+fn ts_of(schema: &serde_json::Value) -> String {
+    use serde_json::Value;
+    let Some(map) = schema.as_object() else {
+        return "unknown".to_owned();
+    };
+    if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
+        let name = reference.rsplit('/').next().unwrap_or_default();
+        // An app action's own schema is its app module's to type.
+        return if name.contains('.') { "unknown" } else { name }.to_owned();
+    }
+    if let Some(value) = map.get("const") {
+        return value.to_string();
+    }
+    if let Some(values) = map.get("enum").and_then(Value::as_array) {
+        return union_of(values.iter().map(Value::to_string).collect());
+    }
+    for cases in ["anyOf", "oneOf"] {
+        if let Some(cases) = map.get(cases).and_then(Value::as_array) {
+            return union_of(cases.iter().map(ts_of).collect());
+        }
+    }
+    match map.get("type") {
+        Some(Value::Array(types)) => union_of(
+            types
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|ty| ts_of_type(ty, schema))
+                .collect(),
+        ),
+        Some(Value::String(ty)) => ts_of_type(ty, schema),
+        _ if map.contains_key("properties") => ts_of_type("object", schema),
+        _ => "unknown".to_owned(),
+    }
+}
+
+fn ts_of_type(ty: &str, schema: &serde_json::Value) -> String {
+    match ty {
+        "string" => "string".to_owned(),
+        "integer" | "number" => "number".to_owned(),
+        "boolean" => "boolean".to_owned(),
+        "null" => "null".to_owned(),
+        "array" => {
+            if let Some(items) = at(schema, "/prefixItems").as_array() {
+                let items: Vec<String> = items.iter().map(ts_of).collect();
+                format!("[{}]", items.join(", "))
+            } else {
+                let item = ts_of(at(schema, "/items"));
+                if item.contains(' ') {
+                    format!("Array<{item}>")
+                } else {
+                    format!("{item}[]")
+                }
+            }
+        }
+        "object" if at(schema, "/properties").is_object() => {
+            format!("{{ {} }}", object_fields(schema, "").join(" "))
+        }
+        "object" if at(schema, "/additionalProperties").is_object() => {
+            format!(
+                "Record<string, {}>",
+                ts_of(at(schema, "/additionalProperties"))
+            )
+        }
+        "object" => "Record<string, unknown>".to_owned(),
+        _ => "unknown".to_owned(),
+    }
+}
+
+/// `types` as one: each once, `unknown` for none.
+fn union_of(types: Vec<String>) -> String {
+    let mut once: Vec<String> = Vec::new();
+    for ty in types {
+        if !once.contains(&ty) {
+            once.push(ty);
+        }
+    }
+    if once.is_empty() {
+        return "unknown".to_owned();
+    }
+    once.join(" | ")
+}
+
+/// An object schema's properties as an interface's fields, each with what it is.
+fn object_fields(schema: &serde_json::Value, indent: &str) -> Vec<String> {
+    let required: Vec<&str> = at(schema, "/required")
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let mut lines = Vec::new();
+    for (name, property) in at(schema, "/properties").as_object().into_iter().flatten() {
+        if !indent.is_empty() {
+            let mut said = String::new();
+            typescript_doc(&mut said, property, indent);
+            lines.extend(said.lines().map(str::to_owned));
+        }
+        lines.push(format!(
+            "{indent}{}{}: {};",
+            typescript_name(name),
+            if required.contains(&name.as_str()) {
+                ""
+            } else {
+                "?"
+            },
+            ts_of(property)
+        ));
+    }
+    lines
+}
+
+/// What `schema` says it is, as a doc comment at `indent`.
+fn typescript_doc(out: &mut String, schema: &serde_json::Value, indent: &str) {
+    let text = one_line(at(schema, "/description").as_str().unwrap_or_default());
+    if !text.is_empty() {
+        let _ = writeln!(out, "{indent}/** {text} */");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1880,6 +2341,43 @@ mod tests {
         assert_eq!(names[&long.id], "lang_notes");
         let names = module_names(std::slice::from_ref(&long));
         assert_eq!(names[&long.id], "notes");
+    }
+
+    /// The TypeScript client is the API's description in TypeScript: a method for each of its
+    /// operations, in the class of the account's or of a workspace's, which binds the workspace
+    /// itself; its answers are the description's schemas, and an app action's own schema is
+    /// left to the app's module.
+    #[test]
+    fn the_typescript_client_has_a_method_per_operation() {
+        let notes = fleet()
+            .expect("the fleet's surfaces read")
+            .into_iter()
+            .find(|app| app.id == "so.tilo.notes")
+            .expect("the fleet ships notes");
+        let files = typescript_files(std::slice::from_ref(&notes)).expect("ts generates");
+        let client = &files
+            .iter()
+            .find(|(name, _)| name == Path::new(TS_CLIENT))
+            .expect("the client is written")
+            .1;
+        for operation in tilo_api::v1::operations::OPERATIONS.iter() {
+            assert!(
+                client.contains(&format!("\n  {}(params", operation.id)),
+                "{} has no method:\n{client}",
+                operation.id
+            );
+        }
+        for written in [
+            "export interface ActionAnswer {",
+            "runAction(params: { path: string; action: string }, body: Record<string, unknown> = {}, headers: Record<string, string> = {}): Promise<ActionAnswer>",
+            "putContent(params: { hash: string }, body: Uint8Array, headers: Record<string, string> = {}): Promise<PutContent>",
+            "events(params: { path?: string } = {}, headers: Record<string, string> = {}): AsyncIterableIterator<Event>",
+            "getContent(params: { hash: string }, headers: Record<string, string> = {}): Promise<Uint8Array>",
+            "listAccountResources(params: { path?: string; cursor?: string; limit?: string; kind?: string } = {}",
+        ] {
+            assert!(client.contains(written), "{written}:\n{client}");
+        }
+        assert!(!client.contains(".Arguments"), "{client}");
     }
 
     /// The kinds and verbs the platform publishes on every app's surface are no part of the app's

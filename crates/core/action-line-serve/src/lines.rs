@@ -213,18 +213,42 @@ fn before_the_provider<H, W>(
     lanes: Option<&dyn CallLanes>,
     input: &mut impl BufRead,
 ) -> Before {
+    // An API request's body follows it whoever answers it, so it is read off the connection
+    // even where it is refused or nothing carries the API.
+    let api_body = match message {
+        RemoteActionMessage::ApiRequest { request, .. } => Some(request.body as usize),
+        _ => None,
+    };
+    if api_body.is_some_and(|length| length > tilo_actions::remote::api::MAX_API_BODY) {
+        return Before::Ended;
+    }
+    let skip_body = |input: &mut dyn BufRead| {
+        api_body.is_none_or(|length| {
+            std::io::copy(
+                &mut std::io::Read::take(input, length as u64),
+                &mut std::io::sink(),
+            )
+            .is_ok_and(|read| read == length as u64)
+        })
+    };
     if let Some(why) = ending.and_then(Ending::ending)
         && !connection.follows(message)
     {
+        if !skip_body(input) {
+            return Before::Ended;
+        }
         return Before::Answered(Some(refuse(message, why).map_or_else(
             || line_refusal("unavailable", "this connection takes no new call"),
             frame_line,
         )));
     }
     let Some(lanes) = lanes else {
+        if !skip_body(input) {
+            return Before::Ended;
+        }
         return Before::Provider;
     };
-    let taken = match lanes.body_len(message) {
+    let taken = match api_body.or_else(|| lanes.body_len(message)) {
         Some(length) => {
             let mut body = vec![0_u8; length];
             if std::io::Read::read_exact(input, &mut body).is_err() {

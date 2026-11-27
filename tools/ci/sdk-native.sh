@@ -158,6 +158,8 @@ run_tests() {
     | tar -C "$work" -xf -
   ln -s "$binaries"/python/tilo/* "$work/python/src/tilo/"
   ln -s "$binaries"/typescript/* "$work/typescript/native/"
+  # The TypeScript SDK's client is generated, never committed: the sdk-gen check's, put in place.
+  bash "$root/tools/ci/sdk-gen.sh" place "$work"
   if [[ -d /opt/tilo-sdk/bun-cache ]]; then
     export BUN_INSTALL_CACHE_DIR=/opt/tilo-sdk/bun-cache
     (cd "$work/typescript" && bun install --frozen-lockfile --offline)

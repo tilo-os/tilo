@@ -38,36 +38,18 @@ const ALIASES: Record<string, string> = { ts: "typescript", js: "typescript", ba
 // The order a reader meets the SDK in: an export no group holds is an error,
 // so a new one cannot reach the page without a place to sit.
 const GROUPS: [string, string[]][] = [
-  ["Client", ["Tilo", "TiloOptions", "Workspaces", "Keys", "urlFrom", "keyFrom", "DEFAULT_URL", "RETRY_DEADLINE_MS"]],
-  ["Workspaces", ["Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport"]],
-  ["Account", ["Usage", "WorkspaceUsage"]],
+  ["Client", ["Tilo", "TiloOptions", "Workspace", "run", "urlFrom", "keyFrom", "DEFAULT_URL", "RETRY_DEADLINE_MS"]],
+  ["Invocations", ["InvocationGroup"]],
   ["Resources", [
-    "Resource", "Step", "Surface", "Entry", "resourceProxy", "kebab", "segments", "made",
-    "Listing", "Row", "Action", "Param",
+    "Resource", "Step", "Surface", "Entry", "resourceProxy", "kebab", "segments", "made", "rows",
+    "exported", "Exported",
   ]],
-  ["Invocations", [
-    "Invocation", "InvocationGroup", "withinInvocation", "ActionAnswer",
-    "InvocationList", "InvocationInfo", "Event", "EventWhat", "ChangeEvent", "StreamEvent",
-    "OtherEvent", "ProgramAnswer",
-  ]],
-  ["Files", ["Files", "FileBytes"]],
   ["Vault", [
     "Vault", "VaultAsk", "VaultFind", "WebCallOptions", "WebCallContent", "WebCallPart", "WebCallAnswer",
   ]],
-  ["Keys", ["WorkspaceKeys", "Key", "MintedKey"]],
-  ["Members", ["Members", "Member", "Invitation", "Person"]],
-  ["Connection", [
-    "Transport", "DaemonTransport", "KeyTransport", "Group", "FetchLike", "Endpoint",
-    "NATIVE_PACKAGE", "VERSION",
-  ]],
-  ["Calls", [
-    "CallLane", "CarriedCall", "CallAsk", "CallTaken", "CallFrame", "CallReport", "CallLink", "CallPerson",
-  ]],
-  ["Errors", [
-    "Refused", "AskPending", "ProtocolError",
-    "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "Unreachable",
-    "NOT_OFFERED", "UNKNOWN_ACTION",
-  ]],
+  ["Connection", ["Daemon", "DaemonConnection", "Send", "FetchLike", "NATIVE_PACKAGE", "VERSION"]],
+  ["Calls", ["CallLane", "CarriedCall", "CallAsk", "CallFrame", "CallReport", "CallLink", "CallPerson"]],
+  ["Errors", ["Refused"]],
 ];
 
 class ReferenceError extends Error {}
@@ -141,7 +123,7 @@ function main(): void {
     ),
     code("sh", "bun add tilo-sdk"),
   ];
-  for (const [title, names] of GROUPS) {
+  for (const [title, names] of [...GROUPS, ["API", generatedNames(items)] as [string, string[]]]) {
     sections.push(heading(2, title));
     for (const name of names) {
       const item = items.get(name);
@@ -228,7 +210,15 @@ function checkMembers(items: Map<string, Item>, checker: import("typescript").Ty
   }
 }
 
-function checkPlaced(items: Map<string, Item>): void {  const placed = new Set(GROUPS.flatMap(([, names]) => names));
+/** What the client generated from the API's description exports: its operations and schemas. */
+function generatedNames(items: Map<string, Item>): string[] {
+  return [...items.values()]
+    .filter((item) => item.node.getSourceFile().fileName.includes("/src/types/"))
+    .map((item) => item.name);
+}
+
+function checkPlaced(items: Map<string, Item>): void {
+  const placed = new Set([...GROUPS.flatMap(([, names]) => names), ...generatedNames(items)]);
   const unplaced = [...items.keys()].filter((name) => !placed.has(name)).sort();
   if (unplaced.length > 0) fail(`no group holds: ${unplaced.join(", ")}`);
 }

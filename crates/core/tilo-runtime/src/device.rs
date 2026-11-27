@@ -67,6 +67,8 @@ pub mod environments;
 /// provider of the daemon asks it through.
 pub(crate) mod shell_runtime;
 // The device's content, and on Tilo OS the steps that change it; elsewhere a device offers no steps.
+/// Tilo's HTTP API on a connection to the daemon.
+mod api_lane;
 pub(crate) mod confined;
 pub mod control;
 mod files_tree;

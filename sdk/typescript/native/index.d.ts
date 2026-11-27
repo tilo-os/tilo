@@ -1,18 +1,10 @@
-/** The invocation group a call is a step of: what History lists it under. */
-export interface Group {
-  id: string;
-  title: string;
-}
-
-/** The refusal body a call may answer instead of a result. */
+/** The refusal body a vault or call lane call may answer instead of a result. */
 export interface Refusal {
   error: {
     code?: string;
     message?: string;
     next_steps?: string[];
     retry_after_ms?: number;
-    revoked_at_ms?: number;
-    expired_at_ms?: number;
     action?: unknown;
   };
 }
@@ -20,20 +12,33 @@ export interface Refusal {
 /** One call's answer: what it answered, or the refusal it was. */
 export type CallAnswer = { answer: unknown } | { refused: Refusal };
 
+/** What the daemon's API answered one request with. */
+export interface Reply {
+  readonly status: number;
+  /** Each header as `[name, value]`. */
+  readonly headers: [string, string][];
+  /** The next piece of the body; `null` once it ended. Rejects when the connection closed first. */
+  next(): Promise<Buffer | null>;
+}
+
 /** A connection to this computer's daemon. */
 export interface Daemon {
   /** The workspace this connection acts in when a call names none. */
   readonly workspace: string | null;
-  /** Call `tool` with `args` in `workspace` (`null`: the one the daemon serves), in `group`. */
-  call(
-    workspace: string | null,
-    tool: string,
-    args: object,
-    group: Group | null,
-  ): Promise<CallAnswer>;
+  /**
+   * Have the daemon answer `method` on `target` (a `/v1` path with its query) with `headers` and
+   * `body`, as its API answers this connection: an app with its own grants, never its person's.
+   * Rejects when the daemon did not answer at all; a refusal is a reply with its status.
+   */
+  request(
+    method: string,
+    target: string,
+    headers: [string, string][],
+    body: Buffer | null,
+  ): Promise<Reply>;
   /**
    * Make the web call `args` names with the key of the vault item it names, in `workspace`
-   * (`null`: the one the daemon serves): `{answer}`, or the refusal. An app's held connection
+   * (`null`: the one the daemon serves): `{answer}`, or the refusal. An app's own connection
    * has the vault add the key to the request; the secret never reaches the app.
    */
   webCall(workspace: string | null, args: Record<string, unknown>): Promise<CallAnswer>;

@@ -1,7 +1,7 @@
 /**
  * A workspace per customer, at a backend's real scale: hundreds at once.
  *
- * The backend holds one server key (`TILO_API_KEY`, reaching all its
+ * The backend keeps one server key (`TILO_API_KEY`, reaching all its
  * workspaces) at an API server (`TILO_API_URL`). For each of its customers it
  *
  * 1. makes a workspace labelled with its own id for the customer
@@ -35,7 +35,38 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 
-import { Refused, Tilo, type MintedKey, type WorkspaceInfo } from "tilo-sdk";
+import { Refused, Tilo, exported, run, type Workspace } from "tilo-sdk";
+
+/** A workspace as `account/workspaces` answers it. */
+interface WorkspaceInfo {
+  id: string;
+  name: string;
+  labels: Record<string, string>;
+}
+
+/** A key `account/keys#mint` made for one workspace. */
+interface MintedKey {
+  grant: string;
+  token: string;
+  mcp_url: string;
+}
+
+/** Run the action `address` names (`app/resource#action`) until it finished: what it produced. */
+async function act<T = unknown>(
+  where: Tilo | Workspace,
+  address: string,
+  args: Record<string, unknown> = {},
+  headers: Record<string, string> = {},
+): Promise<T> {
+  const at = address.lastIndexOf("#");
+  return (await run(where, { path: address.slice(0, at), action: address.slice(at + 1) }, args, headers)).result as T;
+}
+
+/** The workspaces `client`'s key reaches; with `labels`, those labelled with every one. */
+async function workspacesOf(client: Tilo, labels?: Record<string, string>): Promise<WorkspaceInfo[]> {
+  const args = labels === undefined ? {} : { labels };
+  return (await act<{ workspaces: WorkspaceInfo[] }>(client, "account/workspaces#list", args)).workspaces;
+}
 
 const CUSTOMERS = Number(process.env.CUSTOMERS ?? "300");
 const REVOKE_EVERY = Number(process.env.REVOKE_EVERY ?? "3");
@@ -415,7 +446,7 @@ async function works(customer: Customer): Promise<void> {
 async function isolated(customer: Customer, other: Customer, url: string): Promise<void> {
   const what = `${customer.id}'s token, at ${other.id}'s workspace`;
   // Its MCP URL: the token does not reach that workspace.
-  const there = new Agent(other.key.mcpUrl, customer.key.token);
+  const there = new Agent(other.key.mcp_url, customer.key.token);
   const opened = await there.initialize();
   check(opened.status === 403 && there.session === null, `${what}: MCP initialize answered ${opened.status}`);
   // The server's own MCP endpoint, naming the other workspace in each tool.
@@ -442,19 +473,19 @@ async function isolated(customer: Customer, other: Customer, url: string): Promi
   );
   // The SDK, as the customer's token: the same tools over MCP.
   const api = new Tilo({ url, key: customer.key.token, retryDeadlineMs: 0 });
-  const visible = await api.workspaces.list();
+  const visible = await workspacesOf(api);
   check(
-    visible.workspaces.length === 1 && visible.workspaces[0]?.id === customer.workspace.id,
-    `${what}: it lists ${visible.workspaces.map((ws) => ws.id).join(", ")}`,
+    visible.length === 1 && visible[0]?.id === customer.workspace.id,
+    `${what}: it lists ${visible.map((ws) => ws.id).join(", ")}`,
   );
   const elsewhere = api.workspace(other.workspace.id);
   for (const [route, attempt] of [
-    ["list", () => elsewhere.ls("notes")],
-    ["read", () => elsewhere.read("notes")],
-    ["action", () => elsewhere.do("notes#create-page", { title: "x", markdown: "x" })],
-    ["upload", () => elsewhere.files.upload(new Blob(["x"]))],
-    ["delete", () => api.workspaces.delete(other.workspace.id)],
-    ["mint", () => api.keys.mint(other.workspace.id)],
+    ["list", () => elsewhere.listResources({ path: "notes" })],
+    ["read", () => elsewhere.readResource({ path: "notes" })],
+    ["action", () => act(elsewhere, "notes#create-page", { title: "x", markdown: "x" })],
+    ["upload", () => elsewhere.upload(new Blob(["x"]))],
+    ["delete", () => act(api, "account/workspaces#delete", { workspace: other.workspace.id })],
+    ["mint", () => act(api, "account/keys#mint", { workspace: other.workspace.id })],
   ] as [string, () => Promise<unknown>][]) {
     const answer = await attempt().then(
       () => "ran",
@@ -476,38 +507,42 @@ async function main(): Promise<void> {
   const ids = Array.from({ length: CUSTOMERS }, (_, index) => `cus_${RUN}_${index}`);
 
   say("making", `${CUSTOMERS} workspaces at once, each labelled with its customer's id`);
-  const made = await timed(ids, (id) =>
-    backend.workspaces.create(`Applicant ${id}`, {
-      labels: { customer_id: id, batch: RUN },
-      idempotencyKey: `workspace-for-${id}`,
-    }),
-  );
+  const create = async (id: string): Promise<WorkspaceInfo> =>
+    (
+      await act<{ workspace: WorkspaceInfo }>(
+        backend,
+        "account/workspaces#create",
+        { name: `Applicant ${id}`, labels: { customer_id: id, batch: RUN } },
+        { "idempotency-key": `workspace-for-${id}` },
+      )
+    ).workspace;
+  const made = await timed(ids, create);
   timings.create = report("made", made);
   check(new Set(made.results.map((ws) => ws.id)).size === CUSTOMERS, "every customer has its own workspace");
   check(made.results.every((ws, index) => ws.labels.customer_id === ids[index]), "each is labelled with its customer");
 
-  const again = await backend.workspaces.create(`Applicant ${ids[0]}`, {
-    labels: { customer_id: ids[0] ?? "", batch: RUN },
-    idempotencyKey: `workspace-for-${ids[0]}`,
-  });
+  const again = await create(ids[0] ?? "");
   check(again.id === made.results[0]?.id, "creating a customer's workspace again answers the one made");
 
-  const listing = await timed([0], () => backend.workspaces.list({ labels: { batch: RUN } }));
+  const listing = await timed([0], () => workspacesOf(backend, { batch: RUN }));
   timings.list = report("listed this run's", listing);
   check(listing.results[0]?.length === CUSTOMERS, `the batch lists ${CUSTOMERS}: ${listing.results[0]?.length}`);
-  const found = await timed(ids, (id) => backend.workspaces.find({ customer_id: id }));
+  const found = await timed(ids, (id) => workspacesOf(backend, { customer_id: id }));
   timings.find = report("found each by its customer id", found);
-  check(found.results.every((ws, index) => ws?.id === made.results[index]?.id), "each customer id finds its workspace");
+  check(
+    found.results.every((each, index) => each.length === 1 && each[0]?.id === made.results[index]?.id),
+    "each customer id finds its workspace",
+  );
 
   say("minting", "a key per workspace, reaching it alone");
   const minted = await timed(made.results, (ws, index) =>
-    backend.keys.mint(ws.id, `Agent for ${ids[index]}`, 3600),
+    act<MintedKey>(backend, "account/keys#mint", { workspace: ws.id, name: `Agent for ${ids[index]}`, expires_in: 3600 }),
   );
   timings.mint = report("minted", minted);
   const customers: Customer[] = made.results.map((workspace, index) => {
     const key = minted.results[index] as MintedKey;
-    check(key.mcpUrl.endsWith(`/w/${workspace.id}/mcp`), `the key's MCP URL is its workspace's: ${key.mcpUrl}`);
-    return { index, id: ids[index] ?? "", workspace, key, agent: new Agent(key.mcpUrl, key.token) };
+    check(key.mcp_url.endsWith(`/w/${workspace.id}/mcp`), `the key's MCP URL is its workspace's: ${key.mcp_url}`);
+    return { index, id: ids[index] ?? "", workspace, key, agent: new Agent(key.mcp_url, key.token) };
   });
 
   say("working", "every customer's agent at once, over MCP with its own token");
@@ -527,7 +562,9 @@ async function main(): Promise<void> {
 
   const revoking = active.filter((customer) => customer.index % REVOKE_EVERY === 0);
   say("revoking", `${revoking.length} customers' keys`);
-  const revoked = await timed(revoking, (customer) => attempt(() => backend.keys.revoke(customer.key.grant)));
+  const revoked = await timed(revoking, (customer) =>
+    attempt(() => act(backend, `account/keys/${customer.key.grant}#revoke`)),
+  );
   timings.revoke = report("revoked", revoked);
   timings.revoke_failed = failures("revoke", revoked.results);
   const stopped = await timed(revoking, (customer) => attempt(async () => {
@@ -538,8 +575,7 @@ async function main(): Promise<void> {
       reopened.status === 401 && reopened.body?.error?.code === "key_revoked",
       `${customer.id}: a revoked key opens a session: ${reopened.status} ${JSON.stringify(reopened.body)}`,
     );
-    const rest = await new Tilo({ url, key: customer.key.token, retryDeadlineMs: 0 })
-      .workspaces.list()
+    const rest = await workspacesOf(new Tilo({ url, key: customer.key.token, retryDeadlineMs: 0 }))
       .then(
         () => "ran",
         (error: { code?: unknown }) => String(error?.code ?? error),
@@ -557,24 +593,26 @@ async function main(): Promise<void> {
   timings.kept_work_failed = failures("unrevoked keys", still.results);
 
   say("exporting", "each workspace before it goes");
-  const exported = await timed(customers, (customer, index) => attempt(async () => {
-    const bundle = await backend.workspace(customer.workspace.id).export();
-    check(bundle.workspace.labels.customer_id === ids[index], `${customer.id}: its export carries its labels`);
+  const exports = await timed(customers, (customer, index) => attempt(async () => {
+    const bundle = await exported(backend.workspace(customer.workspace.id));
+    check(bundle.unread.length === 0, `${customer.id}: every resource of it reads: ${JSON.stringify(bundle.unread).slice(0, 300)}`);
     check(
       working.results[index] !== null || JSON.stringify(bundle.resources).includes(`Visa checklist for ${ids[index]}`),
-      `${customer.id}: its export holds the page its agent wrote`,
+      `${customer.id}: its export has the page its agent wrote`,
     );
   }));
-  timings.export = report("exported", exported);
-  timings.export_failed = failures("export", exported.results);
+  timings.export = report("exported", exports);
+  timings.export_failed = failures("export", exports.results);
 
   say("deleting", `all ${CUSTOMERS} at once`);
-  const deleted = await timed(customers, (customer) => attempt(() => backend.workspaces.delete(customer.workspace.id)));
+  const deleted = await timed(customers, (customer) =>
+    attempt(() => act(backend, "account/workspaces#delete", { workspace: customer.workspace.id })),
+  );
   timings.delete = report("deleted", deleted);
   timings.delete_failed = failures("delete", deleted.results);
-  const left = await backend.workspaces.list({ labels: { batch: RUN } });
+  const left = await workspacesOf(backend, { batch: RUN });
   timings.left = left.length;
-  failures("left after deleting", left.workspaces.map((ws) => `${ws.id} is still there`));
+  failures("left after deleting", left.map((ws) => `${ws.id} is still there`));
   const gone = await timed(kept, (customer) => attempt(async () => {
     const reopened = await customer.agent.initialize();
     check(reopened.status === 401, `${customer.id}: its key outlived its workspace: ${reopened.status}`);

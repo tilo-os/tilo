@@ -1,100 +1,70 @@
 /**
- * Drive Tilo workspaces from JavaScript and TypeScript.
+ * Drive Tilo workspaces from JavaScript and TypeScript, through Tilo's API, `/v1`.
  *
  * ```ts
- * import { Tilo } from "tilo-sdk";
+ * import { Tilo, run } from "tilo-sdk";
  *
- * const tilo = new Tilo();                    // this computer's daemon
- * const ws = tilo.workspace();                // the workspace the daemon serves
- * const page = await ws.read("notes/Todo");
- * page.title = "Done";                        // a field edit
+ * const tilo = new Tilo();                     // this computer's daemon
+ * const ws = tilo.workspace();                 // the workspace it serves
+ * const page = await ws.resource("notes/Todo").load();
+ * page.title = "Done";                         // a field edit
  * await page.flush();
+ * await run(ws, { path: "notes", action: "new-note" }, { title: "Next" });
  * ```
  *
- * Every call is one tool of Tilo's agent surface (`tilo_ls`, `tilo_read`,
- * `tilo_do`, …), carried by this computer's daemon through the native addon,
- * or by a key to the hosted server (`new Tilo({ key })`).
+ * `Tilo` and `Workspace` are the API's operations, written from its description by
+ * `tilo sdk gen`: `ws.listResources`, `ws.runAction`, `ws.events`, `ws.putContent`, … Each
+ * goes through this computer's daemon (the `tilo-sdk-native` addon), which answers `/v1` as
+ * whoever connected, or by URL with a key (`new Tilo({ key })`).
  */
 
+export * from "./types/api-v1.ts";
 export {
   DEFAULT_URL,
+  InvocationGroup,
   RETRY_DEADLINE_MS,
-  Keys,
   Tilo,
   type TiloOptions,
-  Workspaces,
+  Workspace,
   keyFrom,
+  run,
   urlFrom,
 } from "./client.ts";
+export { Refused } from "./errors.ts";
 export {
-  Workspace,
+  exported,
+  type Exported,
+  kebab,
+  made,
+  resourceProxy,
+  rows,
+  segments,
+  type Entry,
+  type Resource,
+  type Step,
+  type Surface,
+} from "./resource.ts";
+export {
+  Daemon,
+  NATIVE_PACKAGE,
+  VERSION,
+  type CallAsk,
+  type CallFrame,
+  type CallLink,
+  type CallPerson,
+  type CallReport,
+  type CarriedCall,
+  type DaemonConnection,
+  type FetchLike,
+  type Send,
+} from "./transport.ts";
+export {
   CallLane,
-  Files,
-  Members,
   Vault,
-  WorkspaceKeys,
-  type FileBytes,
   type VaultAsk,
   type VaultFind,
   type WebCallAnswer,
   type WebCallContent,
   type WebCallOptions,
   type WebCallPart,
-} from "./workspace.ts";
-export { resourceProxy, kebab, made, segments } from "./resource.ts";
-export type { Resource, Step, Surface, Entry } from "./resource.ts";
-export { Invocation } from "./invocation.ts";
-export { Endpoint, InvocationGroup, withinInvocation } from "./endpoint.ts";
-export {
-  DaemonTransport,
-  KeyTransport,
-  NATIVE_PACKAGE,
-  VERSION,
-  type Transport,
-  type CallAsk,
-  type CallFrame,
-  type CallLink,
-  type CallPerson,
-  type CallReport,
-  type CallTaken,
-  type CarriedCall,
-  type FetchLike,
-  type Group,
-} from "./transport.ts";
-export {
-  AskPending,
-  KeyExpired,
-  KeyRefused,
-  KeyRevoked,
-  NOT_OFFERED,
-  ProtocolError,
-  Refused,
-  SurfaceChanged,
-  UNKNOWN_ACTION,
-  Unreachable,
-} from "./errors.ts";
-export {
-  type Action,
-  type ActionAnswer,
-  type ChangeEvent,
-  type Event,
-  type EventWhat,
-  type Invitation,
-  type Key,
-  Listing,
-  type Member,
-  type MintedKey,
-  type OtherEvent,
-  type Param,
-  type Person,
-  type ProgramAnswer,
-  type Row,
-  type StreamEvent,
-  type InvocationInfo,
-  InvocationList,
-  type Usage,
-  type WorkspaceInfo,
-  type WorkspaceUsage,
-  WorkspaceList,
-  type WorkspaceExport,
-} from "./models.ts";
+} from "./vault.ts";

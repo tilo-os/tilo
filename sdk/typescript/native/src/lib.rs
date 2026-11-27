@@ -1,23 +1,23 @@
 //! `tilo-sdk-native`: the TypeScript SDK's way into Tilo, the device daemon's native endpoint.
 //!
 //! A program connects to this computer's daemon as `tilo`'s workspace commands do
-//! ([`tilo_api::calls::Calls`]): action frames ([`tilo_actions::remote::RemoteActionFrame`]),
-//! one per line, carried by the line wire's one client, walked as the agent surface's tools in
-//! this process. The daemon admits the connection as whoever makes it: the person's own
-//! account, or an app process the daemon started, in the one workspace it was started in.
+//! ([`tilo_api::calls::Calls`]), over the line wire's one client. The daemon admits the
+//! connection as whoever makes it: the person's own account, or an app process the daemon
+//! started, in the one workspace it was started in. Every request of the API (`/v1`) on it is
+//! answered by the daemon as that connection is admitted ([`Daemon::request`]); the vault and the
+//! call lane are the app's connection's own.
 //!
-//! Every call settles a promise on napi's tokio runtime with `{answer}` or `{refused}`, the
-//! refusal's body as the SDK raises its typed errors from. The Automerge bytes a call reads are
-//! decoded in sandboxed workers, started as the `tilo-automerge-worker` program beside the addon.
+//! The Automerge bytes the vault's calls read are decoded in sandboxed workers, started as the
+//! `tilo-automerge-worker` program beside the addon.
 
-// The calls' futures nest deeply enough (the MCP walk among them) that proving them `Send`
-// passes the default limit of 128.
+// The vault's futures nest deeply enough that proving them `Send` passes the default limit of
+// 128.
 #![recursion_limit = "256"]
 
 use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 use std::sync::Arc;
-use tilo_api::calls::Calls;
+use tilo_api::calls::{ApiAnswer, Calls};
 
 /// Start the client's Automerge workers as `program`, the `tilo-automerge-worker` program the
 /// platform package carries beside the addon: Node cannot be started again as one. `index.js`
@@ -55,25 +55,44 @@ impl Daemon {
         self.calls.served_workspace().map(str::to_owned)
     }
 
-    /// Call `tool` with `args` in `workspace` (`null`: the account's own tree), as a step of
-    /// `group` (`{id, title}`) when one is named: `{answer}`, or `{refused: {error: {...}}}`.
+    /// Have the daemon answer `method` on `target` (a `/v1` path with its query) with `headers`
+    /// and `body`, as its API answers this connection: an app with its own grants, never its
+    /// person's. Throws when the daemon did not answer at all; a refusal is an answer, with its
+    /// status.
     #[napi]
-    pub async fn call(
+    pub async fn request(
         &self,
-        workspace: Option<String>,
-        tool: String,
-        args: serde_json::Value,
-        group: Option<serde_json::Value>,
-    ) -> serde_json::Value {
+        method: String,
+        target: String,
+        headers: Vec<Vec<String>>,
+        body: Option<Buffer>,
+    ) -> napi::Result<Reply> {
+        let headers = headers
+            .into_iter()
+            .filter_map(|pair| match <[String; 2]>::try_from(pair) {
+                Ok([name, value]) => Some((name, value)),
+                Err(_) => None,
+            })
+            .collect();
+        let body = body.map(|body| body.to_vec()).unwrap_or_default();
         let calls = Arc::clone(&self.calls);
-        match calls.call(workspace.as_deref(), &tool, args, group).await {
-            Ok(answer) => serde_json::json!({ "answer": answer }),
-            Err(refused) => serde_json::json!({ "refused": refused }),
-        }
+        let answer = calls
+            .request(&method, &target, headers, body)
+            .await
+            .map_err(napi::Error::from_reason)?;
+        Ok(Reply {
+            status: answer.status,
+            headers: answer
+                .headers
+                .iter()
+                .map(|(name, value)| vec![name.clone(), value.clone()])
+                .collect(),
+            body: Arc::new(answer),
+        })
     }
 
     /// Make the web call `args` names with the key of the vault item it names, in `workspace`
-    /// (`null`: the one this connection acts in): `{answer}` or `{refused}`. An app's held
+    /// (`null`: the one this connection acts in): `{answer}` or `{refused}`. An app's own
     /// connection has the vault add the key to the request; the secret never reaches the app.
     #[napi]
     pub async fn web_call(
@@ -178,6 +197,38 @@ impl Daemon {
                 .collect(),
             asked: said.asked.map(|(call, status)| CallAsk { call, status }),
         })
+    }
+}
+
+/// What the daemon's API answered: its status and headers, and its body as it comes.
+#[napi]
+pub struct Reply {
+    status: u16,
+    headers: Vec<Vec<String>>,
+    body: Arc<ApiAnswer>,
+}
+
+#[napi]
+impl Reply {
+    #[napi(getter)]
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Each header as `[name, value]`.
+    #[napi(getter)]
+    pub fn headers(&self) -> Vec<Vec<String>> {
+        self.headers.clone()
+    }
+
+    /// The next piece of the body; `null` once it ended. Throws when the connection closed first.
+    #[napi]
+    pub async fn next(&self) -> napi::Result<Option<Buffer>> {
+        let body = Arc::clone(&self.body);
+        let piece = body.next().await;
+        piece
+            .map(|piece| piece.map(Buffer::from))
+            .map_err(napi::Error::from_reason)
     }
 }
 

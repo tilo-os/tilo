@@ -31,6 +31,8 @@ use serde::{Deserialize, Serialize};
 pub use window_actions::{activation_requested, link_scheme, render_anchor};
 
 pub mod admitted;
+/// Tilo's HTTP API, asked on a connection to the device's daemon.
+pub mod api;
 pub use admitted::{Admits, Admitted, LiveRead, LiveView, Outcome, ReportsProgress, Serving};
 mod application;
 pub mod asked;
@@ -1952,6 +1954,22 @@ pub enum RemoteActionMessage {
     /// How one of the app's shells ended: the last the device says of it. Sent by the device,
     /// never asked for.
     ShellEnded(shell::ShellEnded),
+    /// Ask the device to answer one request of its API (`/v1`) as this connection is admitted
+    /// ([`api`]), its body following the frame.
+    ApiRequest {
+        correlation: u64,
+        request: api::ApiRequest,
+    },
+    /// Answer to [`Self::ApiRequest`], same correlation: its status and headers, its body to
+    /// follow as `ApiBody` pieces and last `ApiEnd`.
+    ApiResponse {
+        correlation: u64,
+        result: Result<api::ApiHead, ActionCallError>,
+    },
+    /// One piece of an answer's body. Sent by the device, never asked for.
+    ApiBody(api::ApiBytes),
+    /// An answer's body ended. Sent by the device, never asked for.
+    ApiEnd { correlation: u64 },
 }
 
 /// One record a reader asks for over the action API: alone, or `joined`
@@ -2284,6 +2302,10 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::ApiRequest { correlation, .. } => RemoteActionMessage::ApiResponse {
+            correlation: *correlation,
+            result: Err(error),
+        },
         // Every other message answers a request: there is nothing to refuse.
         _ => return None,
     })

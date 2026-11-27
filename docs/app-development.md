@@ -280,8 +280,9 @@ any public internet address, through the same proxy and only while a call of the
 app is live. Its TCP stays what `hosts` names.
 
 `$TILO_SVC_NATIVE_FD` is a socket to the device daemon that the launcher
-already connected. It carries action frames, one JSON line each, and the daemon
-admits every call on it as this app in `$TILO_WORKSPACE_ID`. A tilolang action
+already connected. It carries action frames, one JSON line each, and the API's
+`/v1` requests, and the daemon admits every call on it as this app in
+`$TILO_WORKSPACE_ID`, with the app's own grants. A tilolang action
 reads the app through `invoker.app()`, so it can admit one app's program and
 refuse everything else:
 

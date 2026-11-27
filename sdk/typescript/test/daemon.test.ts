@@ -16,14 +16,7 @@ import { blake3 } from "@noble/hashes/blake3.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 
-import {
-  type ChangeEvent,
-  Refused,
-  Tilo,
-  type Listing,
-  type Row,
-  type Workspace,
-} from "../src/index.ts";
+import { type Event, Refused, Tilo, type Workspace, rows, run } from "../src/index.ts";
 
 const PROFILE = process.env.TILO_RUNTIME_PROFILE;
 const suite = PROFILE ? describe : describe.skip;
@@ -45,37 +38,33 @@ afterAll(() => {
   tilo.close();
 });
 
-/** Every row of a listing, every page of it. */
-async function rows(listing: Listing): Promise<Row[]> {
-  const all: Row[] = [];
-  for await (const row of listing) {
-    all.push(row);
-  }
-  return all;
+/** Run the action `address` names (`app/resource#action`) until it finished: what it produced. */
+async function act(workspace: Workspace, address: string, args: Record<string, unknown> = {}): Promise<unknown> {
+  const at = address.lastIndexOf("#");
+  return (await run(workspace, { path: address.slice(0, at), action: address.slice(at + 1) }, args)).result;
 }
 
 /** The Tasks app's action that makes a task, and the task list it adds it to. */
 const NEW_TASK = "so.tilo.tasks#new_task";
 const TASK_LIST = "so.tilo.tasks/Tasks";
 
-/** The id a call that made something names it by: its result's reference, or the resources of
- * the answer it kept. */
-function made(answer: unknown): string {
-  if (typeof answer === "string") {
-    return answer;
+/** The id a call that made something names it by: its result's reference, or what its answer
+ * says it made. */
+async function made(workspace: Workspace, address: string, args: Record<string, unknown>): Promise<string> {
+  const at = address.lastIndexOf("#");
+  const answer = await run(workspace, { path: address.slice(0, at), action: address.slice(at + 1) }, args);
+  const result = answer.result as { id?: unknown } | string | null | undefined;
+  if (typeof result === "string") {
+    return result;
   }
-  const raw = answer as Record<string, unknown> | null;
-  if (typeof raw?.id === "string") {
-    return raw.id;
+  if (typeof result?.id === "string") {
+    return result.id;
   }
-  const found = raw?.resources;
-  if (!Array.isArray(found) || found.length === 0) {
+  const first = answer.made?.[0]?.id ?? answer.resources?.[0];
+  if (first === undefined) {
     throw new Error(`the call names what it made: ${JSON.stringify(answer)}`);
   }
-  const first = found[0];
-  return typeof first === "string"
-    ? first
-    : String((first as Record<string, unknown>).id);
+  return first;
 }
 
 suite("a daemon", () => {
@@ -85,11 +74,13 @@ suite("a daemon", () => {
     const id = await workspace.id();
 
     expect(id).not.toBe("");
-    expect((await workspace.info()).id).toBe(id);
   });
 
   test("lists its apps", async () => {
-    const apps = await rows(await tilo.workspace().ls());
+    const apps = [];
+    for await (const row of rows(tilo.workspace())) {
+      apps.push(row);
+    }
 
     expect(apps.length).toBeGreaterThan(0);
     expect(apps.some((row) => row.path !== "")).toBe(true);
@@ -99,18 +90,18 @@ suite("a daemon", () => {
     const workspace = tilo.workspace();
     const title = `task ${once}`;
 
-    await workspace.do(NEW_TASK, { title });
-    const tasks = await workspace.read(TASK_LIST);
+    await act(workspace, NEW_TASK, { title });
+    const tasks = await workspace.resource(TASK_LIST).load();
 
     expect(JSON.stringify(tasks.fields)).toContain(title);
   });
 
   test("follows a change with a watch", async () => {
     const workspace = tilo.workspace();
-    const events = workspace.watch();
+    const events = workspace.events();
     const seen = (async () => {
       for await (const event of events) {
-        if (event.kind === "change") {
+        if (event.type === "change") {
           return event;
         }
       }
@@ -119,7 +110,7 @@ suite("a daemon", () => {
 
     // The daemon reads the watch from now: a change before it is registered is not one it saw.
     await new Promise((resolve) => setTimeout(resolve, 500));
-    await workspace.do(NEW_TASK, { title: `watched ${once}` });
+    await act(workspace, NEW_TASK, { title: `watched ${once}` });
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<null>((resolve) => {
@@ -127,20 +118,20 @@ suite("a daemon", () => {
     });
     const event = await Promise.race([seen, late]);
     clearTimeout(timeout);
-    await events.return(undefined);
+    await events.return?.();
 
     expect(event).not.toBeNull();
-    expect(event?.kind).toBe("change");
+    expect(event?.type).toBe("change");
   });
 
   test("says a new message was created and its edit was edited", async () => {
     const workspace = tilo.workspace();
-    const channel = made(await workspace.do("so.tilo.chat#new_channel", { name: `sdk-watch-${once}` }));
-    const events = workspace.watch();
-    const seen: ChangeEvent[] = [];
+    const channel = await made(workspace, "so.tilo.chat#new_channel", { name: `sdk-watch-${once}` });
+    const events = workspace.events();
+    const seen: Event[] = [];
     const watching = (async () => {
       for await (const event of events) {
-        if (event.kind === "change") {
+        if (event.type === "change") {
           seen.push(event);
         }
       }
@@ -148,22 +139,21 @@ suite("a daemon", () => {
 
     // The daemon reads the watch from now: a change before it is registered is not one it saw.
     await new Promise((resolve) => setTimeout(resolve, 1_000));
-    const message = made(await workspace.do(`so.tilo.chat/${channel}#send`, { body: "first words" }));
-    await workspace.do(`so.tilo.chat/${message}#edit`, { body: "second words" });
+    const message = await made(workspace, `so.tilo.chat/${channel}#send`, { body: "first words" });
+    await act(workspace, `so.tilo.chat/${message}#edit`, { body: "second words" });
 
-    const told = (): ChangeEvent[] =>
-      seen.filter((event) => JSON.stringify(event.raw).includes(message));
+    const told = (): Event[] => seen.filter((event) => JSON.stringify(event.data).includes(message));
     const deadline = Date.now() + 30_000;
     while (told().length < 2 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    await events.return(undefined);
+    await events.return?.();
     await watching;
 
     const found = told();
     expect(found.length).toBeGreaterThanOrEqual(2);
-    const sent = found[0];
-    const edited = found[found.length - 1];
+    const sent = found[0]?.data as { what?: string; change?: string } | undefined;
+    const edited = found[found.length - 1]?.data as { what?: string; change?: string } | undefined;
     // The store says what a change did to its record, next to `change`: the new message reads
     // created and its edit reads edited, in the event's own `what`.
     expect(sent?.what).toBe("created");
@@ -174,7 +164,7 @@ suite("a daemon", () => {
   test("throws a refusal with its code", async () => {
     const workspace = tilo.workspace();
 
-    const failure = await workspace.do("nosuchapp/x#nothing").catch((error: unknown) => error);
+    const failure = await act(workspace, "nosuchapp/x#nothing").catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(Refused);
     expect((failure as Refused).code).toBe("unknown_app");
@@ -182,19 +172,21 @@ suite("a daemon", () => {
 
   test("puts a file and gets the same bytes back", async () => {
     const workspace = tilo.workspace();
-    // Past one append, so more than one piece goes up.
-    const bytes = new Uint8Array(384 * 1024 + 17);
+    // Past one request's piece, so more than one piece goes up.
+    const bytes = new Uint8Array(16 * 1024 * 1024 + 17);
     for (let index = 0; index < bytes.length; index += 1) {
       bytes[index] = (index * 7) & 0xff;
     }
 
-    const content = await workspace.files.upload(bytes);
-    const back = await workspace.files.download(content);
+    const content = await workspace.upload(bytes);
+    const back = await workspace.download(content);
 
     expect(content.startsWith("tilo.content:")).toBe(true);
     expect(back.length).toBe(bytes.length);
     expect(Buffer.from(back).equals(Buffer.from(bytes))).toBe(true);
-  });
+    // The workspace reads the whole stored file for each piece it answers, so a download of
+    // this size takes over a minute.
+  }, 180_000);
 });
 
 /**
@@ -216,7 +208,7 @@ const UPLOAD_PIECE = 256 * 1024;
 const SAID_WAIT_MS = 120_000;
 
 /** `program args`, run to its end: what it printed, or the failure with what it said. */
-function run(program: string, args: string[]): string {
+function output(program: string, args: string[]): string {
   const ran = Bun.spawnSync([program, ...args], { stdout: "pipe", stderr: "pipe" });
   const out = ran.stdout.toString();
   if (ran.exitCode !== 0) {
@@ -287,7 +279,7 @@ connection = true
   );
   const packer = join(kit, "tilo-app-package");
   const tapp = join(dir, "app.tapp");
-  run(packer, [
+  output(packer, [
     "pack",
     "--manifest",
     manifest,
@@ -299,7 +291,7 @@ connection = true
     join(kit, "publisher.json"),
     "--local-build",
   ]);
-  const inspected = run(packer, ["inspect", tapp]);
+  const inspected = output(packer, ["inspect", tapp]);
   const field = (name: string, prefix: string): string => {
     const line = inspected.split("\n").find((each) => each.startsWith(`${name}: ${prefix}`));
     if (line === undefined) {
@@ -326,14 +318,14 @@ async function install(
   const hash = bytesToHex(blake3(app.bytes));
   for (let offset = 0; offset < app.bytes.length; offset += UPLOAD_PIECE) {
     const piece = app.bytes.subarray(offset, offset + UPLOAD_PIECE);
-    await workspace.do("workspace/apps#upload", {
+    await act(workspace, "workspace/apps#upload", {
       file: hash,
       offset,
       total: app.bytes.length,
       data: Buffer.from(piece).toString("hex"),
     });
   }
-  await workspace.do("workspace/apps#install", {
+  await act(workspace, "workspace/apps#install", {
     app: app.id,
     version: APP_VERSION,
     package: app.package,
@@ -374,7 +366,7 @@ async function said(prefix: string): Promise<string> {
 
 /** The questions the workspace waits on its person with about the item that belongs to `place`. */
 async function asksAbout(workspace: Workspace, place: string): Promise<string[]> {
-  const read = await workspace.readRaw("record:tilo.invocations:");
+  const read = await workspace.readResource({ path: "record:tilo.invocations:" });
   const fields = (read.fields ?? {}) as { items?: { asked?: { record?: { record?: string } } }[] };
   return (fields.items ?? [])
     .map((item) => item.asked)
@@ -401,7 +393,7 @@ async function askedAbout(workspace: Workspace, place: string): Promise<string> 
 
 /** A key the person keeps in the vault for `place`: its reference. */
 async function kept(workspace: Workspace, place: string, secret: string): Promise<string> {
-  const added = (await workspace.do("workspace/vault#add", {
+  const added = (await act(workspace, "workspace/vault#add", {
     kind: "key",
     belongsTo: [place],
     secret,
@@ -449,7 +441,7 @@ suite("an app the daemon launches", () => {
       const record = await askedAbout(workspace, FIRST_PLACE);
 
       // The person approves and grants it; the app's next call is released exactly the secret.
-      await workspace.do(`invocations/workspace/${record}#resolve`, {
+      await act(workspace, `invocations/workspace/${record}#resolve`, {
         resolution: "approve_and_grant",
       });
       expect(await said("first released ")).toBe(sha256(firstSecret));
@@ -460,7 +452,7 @@ suite("an app the daemon launches", () => {
       expect(again).toContain(ASKED_FIRST);
       await askedAbout(workspace, SECOND_PLACE);
 
-      // A plain SDK script, holding no app's connection, is refused even the granted item.
+      // A plain SDK script, on no app's connection, is refused even the granted item.
       let plain: unknown = null;
       try {
         await workspace.vault.release(first);
@@ -518,7 +510,7 @@ suite("an app the daemon launches", () => {
 
         // Their approve and grant lets the app call that service with that item: the request
         // reaches the service with the key, and the app is answered what the service said.
-        await workspace.do(`invocations/workspace/${record}#resolve`, {
+        await act(workspace, `invocations/workspace/${record}#resolve`, {
           resolution: "approve_and_grant",
         });
         expect(await said("webcall first answered ")).toBe("200 hello from the app");

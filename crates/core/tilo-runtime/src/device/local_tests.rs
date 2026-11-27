@@ -1024,6 +1024,127 @@ fn a_process_an_app_started_is_judged_as_that_app_and_never_its_person() {
         .status_locked();
 }
 
+const API_TEST: &str = "device::local::tests::an_apps_api_requests_are_decided_with_its_own_grants_and_never_its_persons";
+
+/// What `client` asks of the API on its connection to the daemon: the answer's status and its
+/// body as JSON.
+fn api(client: &tilo_action_line::LineClient, method: &str, target: &str) -> (u16, Value) {
+    let (status, bytes) = api_bytes(client, method, target, Vec::new(), b"{}");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// What `client` asks of the API with `headers` and `body`: the answer's status and its bytes.
+fn api_bytes(
+    client: &tilo_action_line::LineClient,
+    method: &str,
+    target: &str,
+    headers: Vec<(String, String)>,
+    body: &[u8],
+) -> (u16, Vec<u8>) {
+    let (head, answer) = client
+        .api_request(method, target, headers, body)
+        .expect("the daemon answered");
+    let mut bytes = Vec::new();
+    loop {
+        match answer.recv_timeout(tilo_test_env::hang_bound()) {
+            Ok(tilo_action_line::ApiHeard::Piece(piece)) => bytes.extend(piece),
+            Ok(tilo_action_line::ApiHeard::End) => break,
+            Err(error) => panic!("the answer's body did not end: {error}"),
+        }
+    }
+    (head.status, bytes)
+}
+
+/// The API (`/v1`) on the daemon's native endpoint is answered as the connection is admitted. The
+/// person's own process runs an action through it; a process an app started, asking the same of
+/// the same workspace, is the app, which has no grant for that action: it is refused as such,
+/// nothing runs, and the person's account is out of its reach.
+#[test]
+fn an_apps_api_requests_are_decided_with_its_own_grants_and_never_its_persons() {
+    let Some(root) = isolated_root(API_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let probe = probe(tilo_actions::ConfirmationPolicy::default());
+    daemon.provide(ASKS, Arc::clone(&probe) as _);
+    let socket = native_endpoint(&daemon, &root);
+    let publish = format!("/v1/workspaces/{workspace}/resources/probe/actions/publish");
+
+    let person = line_client(&socket, OWN);
+    let (status, answer) = api(&person, "POST", &publish);
+    assert_eq!(status, 200, "the person's call runs: {answer}");
+    assert_eq!(probe.asked().len(), 1);
+
+    // A file larger than one request goes up in two pieces and comes back whole.
+    let file: Vec<u8> = (0..tilo_actions::remote::api::MAX_API_BODY + 17)
+        .map(|index| u8::try_from(index % 251).expect("below 251"))
+        .collect();
+    let contents = format!(
+        "/v1/workspaces/{workspace}/contents/{}",
+        blake3::hash(&file)
+    );
+    let range = |from: usize, to: usize| {
+        vec![(
+            "content-range".to_owned(),
+            format!("bytes {from}-{}/{}", to - 1, file.len()),
+        )]
+    };
+    let split = tilo_actions::remote::api::MAX_API_BODY;
+    let (status, _) = api_bytes(&person, "PUT", &contents, range(0, split), &file[..split]);
+    assert_eq!(status, 200, "the first piece is kept");
+    let (status, put) = api_bytes(
+        &person,
+        "PUT",
+        &contents,
+        range(split, file.len()),
+        &file[split..],
+    );
+    assert_eq!(
+        status,
+        201,
+        "the last piece finishes it: {}",
+        String::from_utf8_lossy(&put)
+    );
+    let (status, back) = api_bytes(&person, "GET", &contents, Vec::new(), &[]);
+    assert_eq!(status, 200);
+    assert!(
+        back == file,
+        "the same bytes come back: {} of {}",
+        back.len(),
+        file.len()
+    );
+
+    let mut app = std::process::Command::new("/bin/sleep")
+        .arg("60")
+        .spawn_locked()
+        .unwrap();
+    daemon.apps().record_started(app.id(), APP, &workspace);
+    PEER.store(OWN, Ordering::SeqCst);
+    PEER_PID.store(app.id(), Ordering::SeqCst);
+    let apps =
+        tilo_action_line::LineClient::of_stream(UnixStream::connect(&socket).unwrap()).unwrap();
+    let (status, refusal) = api(&apps, "POST", &publish);
+    assert_eq!(status, 403, "the app is refused the action: {refusal}");
+    assert_eq!(
+        refusal.pointer("/error/code").and_then(Value::as_str),
+        Some("not_permitted"),
+        "{refusal}"
+    );
+    assert_eq!(probe.asked().len(), 1, "nothing ran for the app");
+    let (status, keys) = api(&apps, "GET", "/v1/resources/account/keys");
+    assert!(
+        status >= 400,
+        "the person's keys are out of the app's reach: {status} {keys}"
+    );
+
+    app.kill().unwrap();
+    app.wait().unwrap();
+}
+
 const SHELL_TEST: &str = "device::local::tests::a_shell_the_runtime_tells_of_acts_as_terminal_and_a_forged_record_is_refused";
 
 /// What the daemon answers the shell runtime's record `record`, told on a connection from `pid`

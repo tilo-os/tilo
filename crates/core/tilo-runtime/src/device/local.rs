@@ -65,6 +65,8 @@ pub(crate) struct Frames {
     /// Whether a connection may be carried to another of the person's devices
     /// ([`super::carry`]): the person's own alone.
     carrying: super::carry::Carrying,
+    /// Whose API answers the connection's requests of `/v1` ([`super::api_lane`]).
+    api: super::api_lane::Answering,
 }
 
 impl Frames {
@@ -82,7 +84,15 @@ impl Frames {
             app_presence: None,
             shells: None,
             carrying: super::carry::Carrying::Refused(super::carry::NOT_THE_PERSON),
+            api: super::api_lane::Answering::None,
         }
+    }
+
+    /// These frames, their connection's requests of `/v1` answered by an API of its own over
+    /// the same trees, named `label` in History.
+    fn answering_as(mut self, daemon: &Arc<Daemon>, label: &str) -> Self {
+        self.api = super::api_lane::Answering::Own(Arc::downgrade(daemon), label.to_owned());
+        self
     }
 
     /// The device's own actions alone ([`DeviceOnly`]): what an account the daemon serves no
@@ -100,6 +110,7 @@ impl Frames {
     /// of the daemon's socket, in each workspace a frame names.
     pub(crate) fn of_the_person(daemon: &Arc<Daemon>) -> Self {
         let carrying = super::carry::Carrying::of(daemon);
+        let login = super::api_lane::Answering::Person(Arc::downgrade(daemon));
         let daemon = Arc::downgrade(daemon);
         let mut frames = Self::new(move |workspace| {
             let daemon = daemon
@@ -108,6 +119,7 @@ impl Frames {
             daemon.connection_tree_in(workspace)
         });
         frames.carrying = carrying;
+        frames.api = login;
         frames
     }
 
@@ -129,13 +141,14 @@ impl Frames {
     /// ([`Daemon::tenant_tree_in`]): the person's unnamed agent, never the person, so an asked
     /// action still asks.
     pub(crate) fn of_the_tenant(daemon: &Arc<Daemon>) -> Self {
-        let daemon = Arc::downgrade(daemon);
+        let weak = Arc::downgrade(daemon);
         Self::new(move |workspace| {
-            let daemon = daemon
+            let daemon = weak
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
             daemon.tenant_tree_in(workspace)
         })
+        .answering_as(daemon, "A workspace VM")
     }
 
     /// An app the daemon started, in `workspace`: the workspace's broker decides its calls with
@@ -177,19 +190,19 @@ impl Frames {
                 })
             }) as RunsHere
         };
-        let (daemon, app, workspace) =
-            (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());
+        let (weak, app, workspace) = (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());
         let mut frames = Self::new(move |named| {
             if named.is_some_and(|named| named != workspace) {
                 return Err(io::Error::other(format!(
                     "{app} was started in another workspace and acts only there"
                 )));
             }
-            let daemon = daemon
+            let daemon = weak
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
             daemon.app_tree(&app, &workspace)
-        });
+        })
+        .answering_as(daemon, &at.app);
         frames.own_process = Some((Arc::new(own) as Tree, caller));
         frames.lane = Some(lane);
         frames.audio = audio;
@@ -206,14 +219,16 @@ impl Frames {
         key: ed25519_dalek::SigningKey,
         cert: tilo_user_identity::DeviceCert,
     ) -> Self {
-        let daemon = Arc::downgrade(daemon);
+        let label = cert.device_label.clone();
+        let weak = Arc::downgrade(daemon);
         Self::new(move |workspace| {
-            let daemon = daemon
+            let daemon = weak
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
             let (tree, caller) = daemon.key_tree(&key, &cert, workspace)?;
             Ok((Arc::new(tree) as Tree, caller))
         })
+        .answering_as(daemon, &label)
     }
 
     /// Carry `stream`, which asked for `carry` on its first line, to the device it names, reading
@@ -294,23 +309,22 @@ impl Frames {
                 }),
             }
         };
-        // An app's connection carries the call lane of the workspace's live session, its
-        // presence and its shells; any other connection carries none of them.
-        let out = (self.lane.is_some()
-            || self.media.is_some()
-            || self.app_presence.is_some()
-            || self.shells.is_some())
-        .then(|| {
-            stream.try_clone().ok().map(|writer| {
-                let writer = Arc::new(std::sync::Mutex::new(writer));
-                Arc::new(move |line: String| {
-                    if let Ok(mut writer) = writer.lock() {
-                        let _ = writeln!(writer, "{line}");
-                    }
-                }) as tilo_live::app_call::Out
-            })
+        // Every connection carries the API; an app's also carries the call lane of the
+        // workspace's live session, its presence and its shells, which no other connection does.
+        // The lanes and the action wire write whole lines to the one connection, never into
+        // each other's.
+        let writer = Arc::new(std::sync::Mutex::new(stream));
+        let out = Some({
+            let writer = Arc::clone(&writer);
+            Arc::new(move |line: String| {
+                if let Ok(mut writer) = writer.lock() {
+                    let _ = writer.write_all(format!("{line}\n").as_bytes());
+                }
+            }) as tilo_live::app_call::Out
         });
-        let out = out.flatten();
+        let api = out.as_ref().map(|out| {
+            super::api_lane::ApiLane::new(self.api.clone(), Arc::clone(&self.tree), Arc::clone(out))
+        });
         let call_media = match (&self.media, &out) {
             (Some(media), Some(out)) => Some(super::call_media::CallMediaLane::new(
                 media.clone(),
@@ -341,35 +355,57 @@ impl Frames {
             }
             _ => None,
         };
-        let lanes = (call.is_some()
-            || self.audio.is_some()
-            || call_media.is_some()
-            || presence.is_some()
-            || shells.is_some())
-        .then(|| Lanes {
+        let lanes = Lanes {
+            api,
             call,
             audio: self.audio.as_deref(),
             media: call_media.as_ref(),
             presence: presence.as_ref(),
             shells,
-        });
+        };
         tilo_action_line_serve::serve_lines_with(
             in_workspace,
             &self.uploads,
             Some(first.to_vec()),
             input,
-            stream,
+            Lines {
+                writer,
+                pending: Vec::new(),
+            },
             ending,
-            lanes
-                .as_ref()
-                .map(|lanes| lanes as &dyn tilo_action_line_serve::CallLanes),
+            Some(&lanes as &dyn tilo_action_line_serve::CallLanes),
         );
     }
 }
 
-/// The lanes an app's connection carries beside the action wire: its outside calls, its sound
-/// output, the call its views take part in, and its shells.
+/// The action wire's side of a connection whose lanes write to it too: each line it writes goes
+/// out whole, once it is flushed.
+struct Lines {
+    writer: Arc<std::sync::Mutex<Stream>>,
+    pending: Vec<u8>,
+}
+
+impl io::Write for Lines {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.pending.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("the connection's writer failed"))?;
+        writer.write_all(&self.pending)?;
+        self.pending.clear();
+        writer.flush()
+    }
+}
+
+/// The lanes a connection carries beside the action wire: the API, and on an app's its outside
+/// calls, its sound output, the call its views take part in, and its shells.
 struct Lanes<'a> {
+    api: Option<super::api_lane::ApiLane>,
     call: Option<Arc<tilo_live::app_call::AppLane>>,
     audio: Option<&'a super::audio_output::AudioLane>,
     media: Option<&'a super::call_media::CallMediaLane>,
@@ -379,6 +415,12 @@ struct Lanes<'a> {
 
 impl tilo_action_line_serve::CallLanes for Lanes<'_> {
     fn take(&self, message: &RemoteActionMessage) -> tilo_action_line_serve::Take {
+        if let Some(api) = &self.api {
+            match tilo_action_line_serve::CallLanes::take(api, message) {
+                tilo_action_line_serve::Take::NotCall => {}
+                taken => return taken,
+            }
+        }
         if let Some(presence) = self.presence {
             match tilo_action_line_serve::CallLanes::take(presence, message) {
                 tilo_action_line_serve::Take::NotCall => {}
@@ -420,6 +462,9 @@ impl tilo_action_line_serve::CallLanes for Lanes<'_> {
         message: &RemoteActionMessage,
         body: &[u8],
     ) -> tilo_action_line_serve::Take {
+        if let (Some(api), RemoteActionMessage::ApiRequest { .. }) = (&self.api, message) {
+            return tilo_action_line_serve::CallLanes::take_body(api, message, body);
+        }
         self.audio
             .map_or(tilo_action_line_serve::Take::NotCall, |audio| {
                 tilo_action_line_serve::CallLanes::take_body(audio, message, body)

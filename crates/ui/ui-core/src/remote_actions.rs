@@ -949,7 +949,11 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::ShellResize { .. }
         | RemoteActionMessage::ShellClose { .. }
         | RemoteActionMessage::ShellOutput(_)
-        | RemoteActionMessage::ShellEnded(_) => None,
+        | RemoteActionMessage::ShellEnded(_)
+        | RemoteActionMessage::ApiRequest { .. }
+        | RemoteActionMessage::ApiResponse { .. }
+        | RemoteActionMessage::ApiBody(_)
+        | RemoteActionMessage::ApiEnd { .. } => None,
     }
 }
 

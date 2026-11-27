@@ -1,7 +1,7 @@
 /**
  * A visa startup's backend, one agent per applicant, end to end.
  *
- * The backend holds one server key (`TILO_API_KEY`, all workspaces, no
+ * The backend keeps one server key (`TILO_API_KEY`, all workspaces, no
  * expiry) at a server (`TILO_API_URL`). It makes a workspace per
  * applicant, puts an applicant's passport and application form into theirs
  * and mints a key that reaches that workspace alone. The applicant's agent,
@@ -25,7 +25,7 @@
 import { deflateSync } from "node:zlib";
 import { createInterface } from "node:readline/promises";
 
-import { ProtocolError, Refused, Tilo, urlFrom, type Workspace, type WorkspaceInfo } from "tilo-sdk";
+import { Refused, Tilo, run, urlFrom, type Workspace } from "tilo-sdk";
 
 const APPLICANTS = Number(process.env.VISA_APPLICANTS ?? "3");
 const INVOCATION_TITLE = "Fill Jane Doe's visa application";
@@ -167,6 +167,23 @@ function applicationPdf(): Uint8Array {
 
 // -- reading answers ---------------------------------------------------------
 
+/** A workspace as `account/workspaces` lists it. */
+interface WorkspaceInfo {
+  id: string;
+  name: string;
+  role?: string;
+}
+
+/** Run the action `address` names (`app/resource#action`) until it finished: what it produced. */
+async function act<T = unknown>(where: Tilo | Workspace, address: string, args: Record<string, unknown> = {}): Promise<T> {
+  const at = address.lastIndexOf("#");
+  return (await run(where, { path: address.slice(0, at), action: address.slice(at + 1) }, args)).result as T;
+}
+
+async function workspacesOf(client: Tilo): Promise<WorkspaceInfo[]> {
+  return (await act<{ workspaces: WorkspaceInfo[] }>(client, "account/workspaces#list")).workspaces;
+}
+
 interface FormField {
   name: string;
   kind: string;
@@ -179,20 +196,17 @@ function valuesOf(fields: FormField[]): Record<string, unknown> {
 }
 
 async function fieldsOf(workspace: Workspace): Promise<FormField[]> {
-  const read = (await workspace.do(`${FORM}#read-form-fields`)) as { fields: FormField[] };
+  const read = await act<{ fields: FormField[] }>(workspace, `${FORM}#read-form-fields`);
   return read.fields;
 }
 
-/** How the host refused `call`: a refusal's code, or the words it broke with. */
+/** How the host refused `call`: the refusal's code, or `allowed`. */
 async function refused(call: Promise<unknown>): Promise<string> {
   try {
     await call;
   } catch (error) {
-    if (error instanceof ProtocolError) {
-      return String(error.code ?? error.message);
-    }
     if (error instanceof Refused) {
-      return `${error.code}: ${error.message}`;
+      return error.code;
     }
     throw error;
   }
@@ -233,13 +247,13 @@ async function makeWorkspaces(backend: Tilo): Promise<WorkspaceInfo[]> {
   for (let index = 0; index < APPLICANTS; index += 1) {
     const name = `Applicant: ${FIRST[index % 10]} ${LAST[Math.floor(index / 10) % 10]}`;
     const began = performance.now();
-    made.push(await backend.workspaces.create(name));
+    made.push((await act<{ workspace: WorkspaceInfo }>(backend, "account/workspaces#create", { name })).workspace);
     timings.push(performance.now() - began);
   }
   const listingBegan = performance.now();
-  const listing = await backend.workspaces.list();
+  const listing = await workspacesOf(backend);
   const listed = (performance.now() - listingBegan) / 1000;
-  const ids = new Set(listing.workspaces.map((workspace) => workspace.id));
+  const ids = new Set(listing.map((workspace) => workspace.id));
   const p50 = quantile(timings, 0.5);
   const p95 = quantile(timings, 0.95);
   say(
@@ -266,11 +280,15 @@ async function main(): Promise<number> {
   const workspace = backend.workspace(jane.id);
   const passportBytes = passportPng();
   const formBytes = applicationPdf();
-  const passport = await workspace.files.upload(passportBytes);
-  const application = await workspace.files.upload(formBytes);
+  const passport = await workspace.upload(passportBytes);
+  const application = await workspace.upload(formBytes);
   say("   uploaded", `passport.png ${passport}, application.pdf ${application}`);
   check(passport.startsWith("tilo.content:") && application.startsWith("tilo.content:"), "both are content");
-  const minted = await workspace.keys.mint("Jane Doe's agent");
+  const minted = await act<{ grant: string; name: string; token: string; workspace: string }>(
+    backend,
+    "account/keys#mint",
+    { workspace: jane.id, name: "Jane Doe's agent" },
+  );
   say("   minted", `${JSON.stringify(minted.name)} for ${minted.workspace}`);
   check(minted.workspace === jane.id, "the key names Jane's workspace");
   check(minted.token !== "" && minted.token !== process.env.TILO_API_KEY, "it is a key of its own");
@@ -278,15 +296,15 @@ async function main(): Promise<number> {
   say("3. Jane's agent, with only the minted key, fills the form and writes the letter");
   const agent = new Tilo({ key: minted.token });
   const agentWorkspace = agent.workspace(jane.id);
-  const downloaded = await agentWorkspace.files.download(passport);
+  const downloaded = await agentWorkspace.download(passport);
   check(
     downloaded.length === passportBytes.length && downloaded.every((byte, index) => byte === passportBytes[index]),
     "the agent reads the passport the backend put there",
   );
 
   const group = await agentWorkspace.invocation(INVOCATION_TITLE, async (invocation) => {
-    await agentWorkspace.do("pdf-viewer#open");
-    const imported = await agentWorkspace.do("pdf-viewer#import-pdf-content", {
+    await act(agentWorkspace, "pdf-viewer#open");
+    const imported = await act(agentWorkspace, "pdf-viewer#import-pdf-content", {
       content: application,
       name: "application.pdf",
     });
@@ -299,7 +317,7 @@ async function main(): Promise<number> {
     );
     for (const field of before) {
       if (field.name in FILLED) {
-        await agentWorkspace.do(`${FORM}#field-edit`, {
+        await act(agentWorkspace, `${FORM}#field-edit`, {
           edit: { path: field.path, op: "set", value: FILLED[field.name] },
         });
       }
@@ -308,14 +326,14 @@ async function main(): Promise<number> {
     say("   filled", JSON.stringify(filled));
     check(
       Object.entries(FILLED).every(([name, value]) => JSON.stringify(filled[name]) === JSON.stringify(value)),
-      "every field holds what the agent set",
+      "every field has what the agent set",
     );
 
-    await agentWorkspace.do("word-processor#open");
+    await act(agentWorkspace, "word-processor#open");
     for (const paragraph of LETTER) {
-      await agentWorkspace.do("word-processor#append_paragraph", { text: paragraph });
+      await act(agentWorkspace, "word-processor#append_paragraph", { text: paragraph });
     }
-    const exported = await agentWorkspace.do("word-processor#export_document", { format: "docx" });
+    const exported = await act(agentWorkspace, "word-processor#export_document", { format: "docx" });
     check(
       typeof exported === "string" && exported.startsWith("tilo.content:"),
       `Writer exports the letter as content (${String(exported)})`,
@@ -324,40 +342,40 @@ async function main(): Promise<number> {
   });
   check(group.invocations.length > 0, `the invocation grouped the agent's ${group.invocations.length} calls`);
 
-  const formLink = await agentWorkspace.link(FORM);
+  const formLink = (await act<{ url: string }>(agentWorkspace, `${FORM}#share-link`)).url;
   say("   links", group.links.join(", "));
   check(group.links.includes(formLink), `the invocation hands over the link to the form it filled (${formLink})`);
 
-  const exportRef = (await agentWorkspace.do("word-processor#export_document", { format: "docx" })) as string;
-  const letter = await workspace.files.download(exportRef);
+  const exportRef = await act<string>(agentWorkspace, "word-processor#export_document", { format: "docx" });
+  const letter = await workspace.download(exportRef);
   check(letter[0] === 0x50 && letter[1] === 0x4b, `the backend downloads a Word file (${letter.length} bytes)`);
   const body = new TextDecoder("latin1").decode(letter);
-  check(body.includes("word/document.xml"), "the Word file holds its document part");
+  check(body.includes("word/document.xml"), "the Word file has its document part");
 
   say("4a. Scope: the minted key reaches Jane's workspace and nothing else");
   const other = made[1] as WorkspaceInfo;
-  const elsewhere = await refused(agent.workspace(other.id).ls());
+  const elsewhere = await refused(agent.workspace(other.id).listResources());
   check(elsewhere !== "allowed", `another applicant's workspace refuses it (${elsewhere})`);
-  const uploadElsewhere = await refused(agent.workspace(other.id).files.upload(new Uint8Array([1])));
+  const uploadElsewhere = await refused(agent.workspace(other.id).upload(new Uint8Array([1])));
   check(uploadElsewhere !== "allowed", `it puts nothing into another applicant's workspace (${uploadElsewhere})`);
-  const listing = await agent.workspaces.list();
+  const listing = await workspacesOf(agent);
   check(
-    listing.workspaces.length === 1 && listing.workspaces[0]?.id === jane.id,
+    listing.length === 1 && listing[0]?.id === jane.id,
     "the account lists the one workspace its key reaches, and no other",
   );
-  const creating = await refused(agent.workspaces.create("Applicant: Mallory"));
+  const creating = await refused(act(agent, "account/workspaces#create", { name: "Applicant: Mallory" }));
   check(creating.startsWith("not_permitted"), `the account refuses it: no new workspace (${creating})`);
-  const minting = await refused(agent.keys.mint(jane.id, "escalated"));
+  const minting = await refused(act(agent, "account/keys#mint", { workspace: jane.id, name: "escalated" }));
   check(minting.startsWith("not_permitted"), `it mints no keys (${minting})`);
 
   say("4b. The backend invites its ops person, another person, as Jane's reviewer");
-  const invitation = await workspace.members.invite({ role: "editor", email: REVIEWER_EMAIL });
-  say(
-    "   invited",
-    `${invitation.role} via ${invitation.link.slice(0, 60)}… sent=${invitation.sent} (${invitation.next})`,
-  );
+  const invitation = await act<{ link: string; role: string; sent?: boolean }>(workspace, "workspace/invitations#invite", {
+    role: "editor",
+    invitee_name: REVIEWER_EMAIL,
+  });
+  say("   invited", `${invitation.role} via ${invitation.link.slice(0, 60)}…, for ${REVIEWER_EMAIL} to be handed`);
   check(invitation.link.startsWith("http"), "the invitation is a link to hand over");
-  check(invitation.email === REVIEWER_EMAIL && !invitation.sent, "it names their address and says no mail went");
+  check(invitation.sent !== true, "Tilo sends no mail: the link is handed over");
   say("   for review", `the form: ${formLink}`);
   const accepted = await reviewerAccepts(invitation.link);
   say("   accepted", JSON.stringify(accepted.joined));
@@ -366,7 +384,7 @@ async function main(): Promise<number> {
     "the link lands them in Jane's workspace as an editor",
   );
   const reviewerPerson = accepted.person as string | null;
-  const members = await workspace.members.list();
+  const members = await act<{ person: string; role: string; name?: string | null }[]>(workspace, "workspace/members#list");
   say("   members", members.map((member) => `${member.name ?? member.person.slice(0, 8)} (${member.role})`).join(", "));
   check(
     reviewerPerson === null ||
@@ -380,12 +398,11 @@ async function main(): Promise<number> {
   const reviewer = new Tilo({ key: accepted.key as string });
 
   say("4c. The reviewer, with their own key, finds Jane's workspace by name and reads the filled form and who filled it");
-  const listed = await reviewer.workspaces.list();
-  const found = listed.named(jane.name);
+  const found = (await workspacesOf(reviewer)).find((each) => each.name === jane.name);
   check(found !== undefined && found.id === jane.id, `the reviewer's account lists ${JSON.stringify(jane.name)}`);
-  check(found?.role === "editor", `with the role they hold there (${found?.role})`);
+  check(found?.role === "editor", `with the role they have there (${found?.role})`);
   const reviewing = reviewer.workspace(jane.name);
-  const seen = await reviewing.read(FORM);
+  const seen = await reviewing.resource(FORM).load();
   say("   read", `${seen.kind}: ${Object.keys(seen.fields).sort().join(", ")}`);
   const reviewed = valuesOf(await fieldsOf(reviewing));
   check(
@@ -393,9 +410,7 @@ async function main(): Promise<number> {
     `the reviewer sees the filled values: ${JSON.stringify(reviewed)}`,
   );
 
-  const history = (await reviewing.do(`${FORM}#history`, { last: 50 })) as {
-    versions?: Record<string, unknown>[];
-  };
+  const history = await act<{ versions?: Record<string, unknown>[] }>(reviewing, `${FORM}#history`, { last: 50 });
   const versions = (history.versions ?? []).filter(
     (version): version is Record<string, unknown> => version !== null && typeof version === "object",
   );
@@ -421,7 +436,7 @@ async function main(): Promise<number> {
 
   say("4d. The reviewer undoes the agent's invocation");
   const groupId = [...groups.keys()][0];
-  await reviewing.do(`${FORM}#undo`, { invocation: groupId });
+  await act(reviewing, `${FORM}#undo`, { invocation: groupId });
   const back = valuesOf(await fieldsOf(reviewing));
   say("   after undo", JSON.stringify(back));
   check(
@@ -434,22 +449,24 @@ async function main(): Promise<number> {
   );
 
   say("4e. No VM ran for any of it");
-  const usage = await backend.usage();
-  say(
-    "   usage",
-    `host ${JSON.stringify(usage.host)}, plan ${JSON.stringify(usage.plan)}, ${usage.workspaces.length} workspaces`,
-  );
-  check(usage.vmSeconds === 0 && usage.running.length === 0, `0 VM seconds across ${usage.workspaces.length} workspaces`);
+  const usage = (await backend.readAccountResource({ path: "account/usage" })).fields as {
+    host?: string;
+    subscription?: { plan?: string; usage?: { workspaces?: { vm_seconds?: number; running?: boolean }[] } };
+  };
+  const used = usage.subscription?.usage?.workspaces ?? [];
+  say("   usage", `host ${JSON.stringify(usage.host)}, plan ${JSON.stringify(usage.subscription?.plan)}, ${used.length} workspaces`);
+  const vmSeconds = used.reduce((total, row) => total + (row.vm_seconds ?? 0), 0);
+  check(vmSeconds === 0 && used.every((row) => row.running !== true), `0 VM seconds across ${used.length} workspaces`);
 
   say("4f. Revoking ends what it reached");
-  await backend.keys.revoke(minted.grant);
-  const gone = await refused(agentWorkspace.ls());
+  await act(backend, `account/keys/${minted.grant}#revoke`);
+  const gone = await refused(agentWorkspace.listResources());
   check(gone === "key_revoked", `the agent's next call is refused (${gone})`);
 
   agent.close();
   reviewer.close();
   backend.close();
-  say("All of it held");
+  say("All of it worked");
   return 0;
 }
 

@@ -15,7 +15,8 @@ is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribut
 | | Who uses it | What it sends | What comes back |
 |---|---|---|---|
 | MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo`) | agents | paths and arguments | compact text, priced per token |
-| SDK (Python, TypeScript) | your code and apps | the same tool calls, in action frames to the daemon | typed values |
+| SDK (TypeScript) | your code and apps | the API's `/v1` requests, through a client generated from its OpenAPI description | typed values |
+| SDK (Python) | your code and apps | the same tool calls, in action frames to the daemon | typed values |
 | tilolang (`tilo` tool, `tilo run`) | agents and scripts | programs | values, pasteable as input |
 | CLI (`tilo do`, `tilo ls`, `tilo files`) | shells | the API's `/v1` routes | text, or `--json` |
 
@@ -167,17 +168,19 @@ the caller's. Revoking a key ends every key minted from it.
 ## Wire
 
 A program on a computer that runs Tilo connects to that computer's daemon, the way `tilo`'s
-workspace commands do: action frames (`RemoteActionFrame`), one per line, on the daemon's native
-endpoint. The SDK's native part (`tilo._native`, the npm package `tilo-sdk-native`) is the line
-wire's one Rust client, and a call is one of the tools an agent calls (`tilo_ls`, `tilo_read`,
-`tilo_do`, `tilo_status`, `tilo_watch`, `tilo_put_*`, `tilo_get`, `tilo`), walked in the program's
-process. The daemon admits the connection as whoever makes it: the person whose program it is,
-or an app the daemon started, which the launcher hands an open connection
-(`TILO_SVC_NATIVE_FD`) and its workspace (`TILO_WORKSPACE_ID`). An app's calls are decided by its
-own grants, in that one workspace.
+workspace commands do, on the daemon's native endpoint. The SDK's native part (`tilo._native`, the
+npm package `tilo-sdk-native`) is the line wire's one Rust client. The TypeScript SDK sends the
+API's own requests on it (`/v1`, as [api.md](api.md) describes them), each one frame with its body
+after it, and the daemon answers each with its in-process API, its body in pieces, as a stream of
+events goes on. The daemon admits the connection as whoever makes it: the person whose program it
+is, or an app the daemon started, which the launcher hands an open connection
+(`TILO_SVC_NATIVE_FD`) and its workspace (`TILO_WORKSPACE_ID`). An app's requests are decided by
+its own grants, in that one workspace, exactly as its action frames are; none reaches its person's
+account. The Python SDK still sends the tools an agent calls (`tilo_ls`, `tilo_read`, `tilo_do`,
+…), walked in the program's process.
 
-A program with no daemon beside it holds a key instead (`TILO_API_KEY`) and sends the same tool
-calls to the API server's MCP endpoint (`TILO_API_URL`, `https://api.tilo.sh` by default). Every
+A program with no daemon beside it uses a key instead (`TILO_API_KEY`) and sends the same `/v1`
+requests over HTTP to the API server (`TILO_API_URL`, `https://api.tilo.sh` by default). Every
 action is invoked under an id of its own, so a call asked again runs nothing twice, and a group's
 calls name the group they are steps of.
 

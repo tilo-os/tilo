@@ -1,478 +1,501 @@
-/** The client: the account's workspaces and keys, and where every call goes. */
+/**
+ * The client: Tilo's API, `/v1`, as the generated operations (`types/api-v1.ts`) describe it,
+ * carried by this computer's daemon or by a key. What is written here is how a request goes out
+ * and comes back, what names an invocation group, and the two things an operation alone does
+ * not do: following an action to its end, and putting a file up in pieces.
+ */
 
-import { sha256 } from "@noble/hashes/sha2.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+import { blake3 } from "@noble/hashes/blake3.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
-import { DaemonTransport, KeyTransport, type Transport, type FetchLike } from "./transport.ts";
-import { Endpoint } from "./endpoint.ts";
-import { AskPending, ProtocolError, Refused } from "./errors.ts";
-import { Invocation } from "./invocation.ts";
+import { Refused, refusalOf } from "./errors.ts";
+import { resourceProxy, type Resource, type Surface } from "./resource.ts";
+import { Daemon, type DaemonConnection, type FetchLike, keySend, type Send } from "./transport.ts";
 import {
-  type Key,
-  keyGranted,
-  keyOf,
-  type MintedKey,
-  mintedKeyOf,
-  arrayOf,
-  recordOf,
-  type Usage,
-  usageOf,
-  type WorkspaceInfo,
-  WorkspaceList,
-  workspaceOf,
-} from "./models.ts";
-import { Workspace } from "./workspace.ts";
+  AccountOperations,
+  type ActionAnswer,
+  type Event,
+  type Operation,
+  WorkspaceOperations,
+} from "./types/api-v1.ts";
+import { CallLane, Vault } from "./vault.ts";
 
-/** The hosted server a key reaches when none is named. */
+/** The server a key reaches when none is named. */
 export const DEFAULT_URL = "https://api.tilo.sh";
-/** How long a key's call keeps asking again while the server is busy, in ms. */
+/** How long a request keeps asking again while the API is briefly unavailable, in ms. */
 export const RETRY_DEADLINE_MS = 60_000;
-
-/**
- * The keys a workspace admitted, each a record of its own: listing it names the grants this key
- * may read, and each is read as every record is. No action lists them.
- */
-const KEYS_RECORD = "record:tilo.grants";
+/** The most one request of an upload carries; a larger file goes up in pieces. */
+const PIECE = 16 * 1024 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** How a client is made: how it reaches Tilo, and how long it retries. */
+/** How a client is made: how it reaches Tilo, and how long it asks again. */
 export interface TiloOptions {
-  /** A key: `TILO_API_KEY` when not given. With one, calls go to the hosted server. */
+  /** A key: `TILO_API_KEY` when not given. With one, requests go by URL. */
   key?: string | null;
-  /** The hosted server: `TILO_API_URL` when not given, else `https://api.tilo.sh`. */
+  /** Where a key's requests go: `TILO_API_URL` when not given, else `https://api.tilo.sh`. */
   url?: string | null;
   /** The daemon's native socket: this computer's daemon when not given. */
   socket?: string | null;
   /** The workspace an app's connection acts in, when the daemon serves more than one. */
   workspace?: string | null;
-  /** The boundary under the SDK: the daemon, or a key's server, unless you bring one. */
-  transport?: Transport;
-  /** How the key transport reaches the server: `fetch` unless you bring your own. */
+  /** A daemon connection of your own instead of the addon's. */
+  daemon?: DaemonConnection;
+  /** How a key's requests are made: `fetch` unless you bring your own. */
   fetch?: FetchLike;
-  /**
-   * How long a key's call keeps asking again while the server is briefly
-   * unavailable or unreachable, in ms (60 000 by default; 0 throws its
-   * refusal at once).
-   */
+  /** How long a request keeps asking again while the API answers `503`, in ms (0: never). */
   retryDeadlineMs?: number;
 }
 
-/** The hosted server a call goes to: the one named, else `TILO_API_URL`, else the default. */
+/** Where a key's requests go: the URL named, else `TILO_API_URL`, else the default. */
 export function urlFrom(url?: string | null): string {
   return (url ?? process.env.TILO_API_URL ?? DEFAULT_URL).replace(/\/+$/, "");
 }
 
-/** The key a call goes with: the one named, else `TILO_API_KEY`. */
+/** The key requests go with: the one named, else `TILO_API_KEY`. */
 export function keyFrom(key?: string | null): string | null {
   return key ?? process.env.TILO_API_KEY ?? null;
 }
 
-/** The person's workspaces: list them, make one, delete one. */
-export class Workspaces {
-  readonly client: Tilo;
+const groups = new AsyncLocalStorage<InvocationGroup>();
 
-  constructor(client: Tilo) {
-    this.client = client;
-  }
-
-  /**
-   * Every workspace this key reaches, wherever it is hosted; with `labels`,
-   * only those labelled with every one of them.
-   *
-   * ```ts
-   * const theirs = await tilo.workspaces.list({ labels: { customer_id: "cus_8121" } });
-   * ```
-   */
-  list(options: { labels?: Record<string, string> } = {}): Promise<WorkspaceList> {
-    const labels = options.labels ?? {};
-    return Object.keys(labels).length === 0
-      ? this.client.workspaceList(true)
-      : this.client.labelledWorkspaces(labels);
-  }
-
-  /**
-   * Create a workspace by name, labelled for your programs to find it by
-   * (`{ customer_id: "cus_8121" }`: at most 16, read by your keys alone).
-   * The same `idempotencyKey` (your customer's id, say) answers the
-   * workspace the first create with it made, however often it is asked
-   * again, so a backend that crashed mid-create never makes two.
-   */
-  create(
-    name: string,
-    options: { labels?: Record<string, string>; idempotencyKey?: string } = {},
-  ): Promise<WorkspaceInfo> {
-    return this.client.createWorkspace(name, options.labels ?? {}, options.idempotencyKey ?? null);
-  }
-
-  /**
-   * Branch `source`, a workspace of the person's own, into a new one named
-   * `name`. The branch starts with everything `source` holds, its records
-   * with their history and its files, and goes on apart from it: nothing
-   * merges back. Its chat, its members and each person's own places stay
-   * behind; the person is the branch's only member. `source` is an id, a
-   * name, a `Workspace` or what `create` answered. `labels` and
-   * `idempotencyKey` are as `create` takes them; the source's labels do not
-   * come along.
-   *
-   * ```ts
-   * const acme = await tilo.workspaces.branch(template, "Acme", { labels: { customer_id: "cus_8121" } });
-   * ```
-   */
-  branch(
-    source: string | Workspace | WorkspaceInfo,
-    name: string,
-    options: { labels?: Record<string, string>; idempotencyKey?: string } = {},
-  ): Promise<WorkspaceInfo> {
-    return this.client.branchWorkspace(
-      source,
-      name,
-      options.labels ?? {},
-      options.idempotencyKey ?? null,
-    );
-  }
-
-  /**
-   * The one workspace labelled with every one of `labels`, or `undefined`
-   * when none is; `Refused("conflict")` when more than one is.
-   */
-  async find(labels: Record<string, string>): Promise<WorkspaceInfo | undefined> {
-    const found = (await this.client.labelledWorkspaces(labels)).workspaces;
-    if (found.length > 1) {
-      throw new Refused("conflict", `${found.length} workspaces are labelled so`, [
-        "await tilo.workspaces.list({ labels }) names them",
-      ]);
-    }
-    return found[0];
-  }
-
-  /**
-   * Delete a workspace of the person's own, and everything in it: final.
-   * Its records, files and history go from the host; anyone in it is told it
-   * was deleted, and every key minted for it is revoked. Answers
-   * `{deleted, revoked_keys}`. Only a key reaching all the person's
-   * workspaces deletes; a workspace they were invited into is `not_found`, as
-   * is one already deleted. The call is the confirmation: nothing asks again.
-   */
-  delete(workspace: string | Workspace): Promise<Record<string, unknown>> {
-    return this.client.deleteWorkspace(workspace);
-  }
-
-  /** The workspace an id or name names, from the last listing. */
-  named(idOrName: string): WorkspaceInfo | undefined {
-    return this.client.catalog?.named(idOrName);
-  }
+/** @internal The invocation group the current call is made in, when one is open. */
+export function currentGroup(): InvocationGroup | null {
+  return groups.getStore() ?? null;
 }
 
-/** The account's keys: this key, the keys it minted, and new ones. */
-export class Keys {
-  readonly client: Tilo;
+/**
+ * An invocation group: every request made inside `ws.invocation(title, …)` names it in
+ * `Tilo-Invocation` and `Tilo-Invocation-Title`, so the apps record one undo step and History
+ * shows the title. `links` are the records its calls changed, each once; `link` is the one when
+ * they changed one.
+ */
+export class InvocationGroup {
+  /** What every request of the group names it by. */
+  readonly id: string;
+  /** What History calls it. */
+  readonly title: string;
+  /** The workspace its calls are in. */
+  readonly workspace: Workspace;
+  /** The invocations its calls answered, in order. */
+  readonly invocations: string[] = [];
+  /** The links to the records its calls changed, each once. */
+  readonly links: string[] = [];
 
-  constructor(client: Tilo) {
-    this.client = client;
+  constructor(workspace: Workspace, title: string, id: string) {
+    this.workspace = workspace;
+    this.title = title;
+    this.id = id;
   }
 
-  /** This key and the keys it minted. */
-  list(): Promise<Key[]> {
-    return this.client.keysList();
+  /** The link to the one record its calls changed, or `null`. */
+  get link(): string | null {
+    return this.links.length === 1 ? (this.links[0] ?? null) : null;
   }
 
-  /**
-   * Ask the person for a new key.
-   *
-   * A key reaching all their workspaces lasts until revoked unless
-   * `expiresIn` (seconds) says when it expires; one reaching a single
-   * workspace lasts at most 89 days. `browserPages` (on unless you say no)
-   * lets the key operate web pages in its workspace's Browser — navigating,
-   * filling in, selecting and clicking — without asking the person each
-   * time; submitting a page still asks them. Throws `AskPending` while they
-   * have not decided; `await ask.wait()` answers the `Key` once they do.
-   */
-  async create(
-    name: string,
-    workspace: string | Workspace | null = null,
-    expiresIn: number | null = null,
-    browserPages = true,
-  ): Promise<Key> {
-    return this.client.keyCreate(name, workspace, expiresIn, browserPages);
+  /** Take back what its calls changed, in every record. */
+  async undo(): Promise<ActionAnswer> {
+    const last = this.invocations.at(-1);
+    if (last === undefined) {
+      throw new Refused({ code: "not_found", message: "the invocation group made no call to take back" });
+    }
+    return this.workspace.undoInvocation({ invocation: last });
   }
 
-  /** A key for one workspace, for an agent there; narrower than your own. */
-  mint(
-    workspace: string | Workspace,
-    name: string | null = null,
-    expiresIn: number | null = null,
-  ): Promise<MintedKey> {
-    return this.client.mintKey(workspace, name, expiresIn);
-  }
-
-  /** Revoke a key and every key minted from it. */
-  revoke(grant: string): Promise<Record<string, unknown>> {
-    return this.client.revokeKey(grant);
+  /** @internal What one of its calls answered. */
+  note(answer: unknown): void {
+    const said = (answer ?? {}) as Partial<ActionAnswer>;
+    if (typeof said.invocation === "string" && !this.invocations.includes(said.invocation)) {
+      this.invocations.push(said.invocation);
+    }
+    for (const link of [said.link, ...(said.links ?? [])]) {
+      if (typeof link === "string" && link !== "" && !this.links.includes(link)) {
+        this.links.push(link);
+      }
+    }
   }
 }
 
 /**
- * The account: `await tilo.workspaces.list()`, `await ws.do(...)`.
- *
- * Every call is one tool of Tilo's agent surface, carried by this computer's
- * daemon through the native addon, or by a key to the hosted server
- * (`new Tilo({ key })`). Nothing speaks `/v1`.
+ * The account, and where every request goes: `new Tilo()` reaches this computer's daemon through
+ * the `tilo-sdk-native` addon, `new Tilo({ key })` reaches `/v1` by URL. Its methods are the
+ * API's account operations; `workspace(…)` names one workspace.
  */
-export class Tilo {
-  readonly transport: Transport;
-  readonly workspaces: Workspaces;
-  readonly keys: Keys;
+export class Tilo extends AccountOperations {
+  /** This computer's daemon, unless the client goes by key. */
+  readonly daemon: Daemon | null;
+  /** How long a request keeps asking again while the API answers `503`, in ms. */
   readonly retryDeadlineMs: number;
-  /** The surfaces this client has checked, by `${workspace}:${app}`. */
-  readonly surfaces = new Map<string, string>();
-  catalog: WorkspaceList | null = null;
+  readonly #send: Send;
   readonly #streams = new AbortController();
 
   constructor(options: TiloOptions = {}) {
+    super();
     this.retryDeadlineMs = options.retryDeadlineMs ?? RETRY_DEADLINE_MS;
     const key = keyFrom(options.key);
-    this.transport =
-      options.transport ??
-      (key !== null
-        ? new KeyTransport(urlFrom(options.url), key, {
-            fetch: options.fetch ?? globalThis.fetch,
-            retryDeadlineMs: this.retryDeadlineMs,
-            signal: this.#streams.signal,
-          })
-        : new DaemonTransport(options.socket ?? null, options.workspace ?? null));
-    this.workspaces = new Workspaces(this);
-    this.keys = new Keys(this);
+    const own = options.daemon;
+    this.daemon =
+      own !== undefined
+        ? new Daemon(async () => own)
+        : key === null
+          ? Daemon.native(options.socket ?? null, options.workspace ?? null)
+          : null;
+    this.#send =
+      this.daemon?.send ??
+      keySend(urlFrom(options.url), key ?? "", options.fetch ?? globalThis.fetch, this.#streams.signal);
   }
 
-  /**
-   * One workspace, by its id or by its name; with none, the one the
-   * daemon's connection acts in, which is how an app finds its workspace.
-   */
+  /** One workspace, by its id or its name; with none, the one the daemon's connection acts in. */
   workspace(ref: string | null = null): Workspace {
     return new Workspace(this, ref);
   }
 
-  /** @internal The account's calls, or one workspace's. */
-  account(): Endpoint {
-    return new Endpoint(this.transport, null, this.surfaces, this.#streams.signal);
-  }
-
-  /** @internal One workspace's calls. */
-  at(workspace: string): Endpoint {
-    return new Endpoint(this.transport, workspace, this.surfaces, this.#streams.signal);
-  }
-
-  /** The person's plan, and per workspace what it keeps and the VM time it ran. */
-  async usage(): Promise<Usage> {
-    const read = await this.account().read("account/usage");
-    return usageOf(recordOf(read.fields));
-  }
-
-  /** End the watches this client opened; the calls it made are done already. */
+  /** End the requests and streams of a key's client still open. */
   close(): void {
     this.#streams.abort();
   }
 
   /** @internal */
-  async workspaceList(force = false): Promise<WorkspaceList> {
-    if (!force && this.catalog !== null) {
-      return this.catalog;
-    }
-    this.catalog = new WorkspaceList(await this.accountAction("account/workspaces#list"));
-    return this.catalog;
+  protected send(operation: Operation, params: Record<string, string | undefined>, body: unknown, headers: Record<string, string>): Promise<unknown> {
+    return this.request(operation, params, body, headers).then((response) => answerOf(response, operation, null));
+  }
+
+  /** @internal */
+  protected stream(operation: Operation, params: Record<string, string | undefined>, body: unknown, headers: Record<string, string>): AsyncIterableIterator<Event> {
+    return streamOf(async () => ({ response: await this.request(operation, params, body, headers), workspace: "" }));
   }
 
   /**
-   * @internal An action of the account (`account/workspaces#create`), as every action is run:
-   * what it answered. `idempotencyKey` names the invocation, so a retry with the same one runs
-   * once.
+   * @internal One request for `operation`: its answer, or the refusal it was thrown. A request
+   * names the invocation group it is made in, and a mutating one an `Idempotency-Key`, so asking
+   * again while the API is briefly unavailable runs it once.
    */
-  async accountAction(
-    path: string,
-    json: Record<string, unknown> = {},
-    idempotencyKey: string | null = null,
-  ): Promise<Record<string, unknown>> {
-    const invocationId = idempotencyKey === null ? null : invocationIdOf(idempotencyKey);
-    const result = await this.account().action(path, json, null, invocationId);
-    const settled = result instanceof Invocation ? await result.result() : result;
-    return recordOf(settled);
-  }
-
-  /** @internal The workspace an action of the account answered. */
-  private static made(answer: Record<string, unknown>): WorkspaceInfo {
-    return workspaceOf(recordOf(answer.workspace));
-  }
-
-  /**
-   * @internal The workspace `ref` names: one the daemon serves, a workspace's id, or a name the
-   * account lists.
-   */
-  async workspaceInfo(ref: string | null): Promise<WorkspaceInfo> {
-    // An id needs no listing — and an app may not list the account's workspaces.
-    if (ref !== null && UUID.test(ref)) {
-      return blank(ref);
+  async request(
+    operation: Operation,
+    params: Record<string, string | undefined>,
+    body: unknown,
+    headers: Record<string, string>,
+  ): Promise<Response> {
+    const sent = new Map<string, string>();
+    sent.set("accept", { json: "application/json", events: "text/event-stream", bytes: "*/*" }[operation.answer]);
+    const group = groups.getStore();
+    if (group !== undefined) {
+      sent.set("tilo-invocation", group.id);
+      sent.set("tilo-invocation-title", group.title);
     }
-    const served = await this.transport.workspace();
-    if (ref === null) {
-      if (served === null) {
-        throw new ProtocolError("name a workspace: this client's transport serves none");
+    if (operation.mutating) {
+      sent.set("idempotency-key", crypto.randomUUID());
+    }
+    let bytes: Uint8Array | null = null;
+    if (operation.body === "json") {
+      bytes = new TextEncoder().encode(JSON.stringify(body ?? {}));
+      sent.set("content-type", "application/json");
+    } else if (operation.body === "bytes") {
+      bytes = body as Uint8Array;
+      sent.set("content-type", "application/octet-stream");
+    }
+    for (const [name, value] of Object.entries(headers)) {
+      sent.set(name.toLowerCase(), value);
+    }
+    const target = targetOf(operation, params);
+    const deadline = Date.now() + this.retryDeadlineMs;
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await this.#send(operation.method, target, [...sent], bytes);
+      if (response.ok) {
+        return response;
       }
-      return blank(served);
-    }
-    if (ref === served) {
-      return blank(ref);
-    }
-    const found = (await this.workspaceList()).named(ref);
-    if (found === undefined) {
-      throw new Refused("not_found", `no workspace ${ref}`, [
-        "await tilo.workspaces.list() names them",
-      ]);
-    }
-    return found;
-  }
-
-  /** The id of a workspace named by it, by its name, or as a `Workspace`. */
-  async workspaceId(workspace: string | Workspace): Promise<string> {
-    if (typeof workspace === "string") {
-      return UUID.test(workspace) ? workspace : (await this.workspaceInfo(workspace)).id;
-    }
-    return workspace.id();
-  }
-
-  /** @internal The workspaces labelled with every one of `labels`. */
-  async labelledWorkspaces(labels: Record<string, string>): Promise<WorkspaceList> {
-    return new WorkspaceList(await this.accountAction("account/workspaces#list", { labels }));
-  }
-
-  /** @internal */
-  async createWorkspace(
-    name: string,
-    labels: Record<string, string> = {},
-    idempotencyKey: string | null = null,
-  ): Promise<WorkspaceInfo> {
-    this.catalog = null;
-    const json: Record<string, unknown> = { name };
-    if (Object.keys(labels).length > 0) {
-      json.labels = labels;
-    }
-    return Tilo.made(await this.accountAction("account/workspaces#create", json, idempotencyKey));
-  }
-
-  /** @internal */
-  async branchWorkspace(
-    source: string | Workspace | WorkspaceInfo,
-    name: string,
-    labels: Record<string, string> = {},
-    idempotencyKey: string | null = null,
-  ): Promise<WorkspaceInfo> {
-    const id =
-      typeof source === "string" || source instanceof Workspace
-        ? await this.workspaceId(source)
-        : source.id;
-    this.catalog = null;
-    const json: Record<string, unknown> = { workspace: id, name };
-    if (Object.keys(labels).length > 0) {
-      json.labels = labels;
-    }
-    return Tilo.made(await this.accountAction("account/workspaces#branch", json, idempotencyKey));
-  }
-
-  /** @internal */
-  async deleteWorkspace(workspace: string | Workspace): Promise<Record<string, unknown>> {
-    const id = await this.workspaceId(workspace);
-    this.catalog = null;
-    return this.accountAction("account/workspaces#delete", { workspace: id });
-  }
-
-  /**
-   * @internal The keys each workspace admitted: its listing names the ones this key may read,
-   * each followed to its grant. A key reaching every workspace is in each of them.
-   */
-  async keysList(): Promise<Key[]> {
-    const keys = new Map<string, Key>();
-    const seen = new Set<string>();
-    for (const workspace of (await this.workspaceList(true)).workspaces) {
-      const endpoint = this.at(workspace.id);
-      const listed = await endpoint.call("tilo_ls", { path: KEYS_RECORD });
-      for (const row of arrayOf(listed.rows)) {
-        const path = String(row.path ?? "");
-        // A record is named by its grant: one read in another workspace is read already.
-        if (path === "" || seen.has(path)) {
-          continue;
-        }
-        seen.add(path);
-        const grant = recordOf((await endpoint.read(path)).fields);
-        if (grant.revoked_ms == null && Object.keys(grant).length > 0) {
-          const key = keyGranted(grant);
-          keys.set(key.grant, key);
-        }
+      const refusal = await refusalOfResponse(response);
+      const asked = Number(response.headers.get("retry-after") ?? "0") * 1000;
+      const wait = Math.max(asked, refusal.error.retry_after_ms ?? 0, Math.min(50 * 2 ** attempt, 2_000));
+      if (response.status !== 503 || Date.now() + wait > deadline) {
+        throw refusal;
       }
+      await new Promise((resolve) => setTimeout(resolve, wait));
     }
-    return [...keys.values()];
   }
-
-  /** @internal */
-  async mintKey(
-    workspace: string | Workspace,
-    name: string | null,
-    expiresIn: number | null,
-  ): Promise<MintedKey> {
-    const json: Record<string, unknown> = { workspace: await this.workspaceId(workspace) };
-    if (name !== null) {
-      json.name = name;
-    }
-    if (expiresIn !== null) {
-      json.expires_in = expiresIn;
-    }
-    return mintedKeyOf(await this.accountAction("account/keys#mint", json));
-  }
-
-  /** @internal */
-  async revokeKey(grant: string): Promise<Record<string, unknown>> {
-    return this.accountAction(`account/keys/${grant}#revoke`);
-  }
-
-  /** @internal A key the person approves on their own device: `AskPending` until they do. */
-  async keyCreate(
-    name: string,
-    workspace: string | Workspace | null,
-    expiresIn: number | null = null,
-    browserPages = true,
-  ): Promise<Key> {
-    const json: Record<string, unknown> = { name, browser_pages: browserPages };
-    if (workspace !== null) {
-      json.workspace = await this.workspaceId(workspace);
-    }
-    if (expiresIn !== null) {
-      json.expires_in = expiresIn;
-    }
-    const result = await this.account().action("account/keys#create", json);
-    // The person approves a new key on a device of their own: a call still
-    // pending is one waiting for them, not a key.
-    if (result instanceof Invocation) {
-      throw new AskPending(null, result.invocationId, {}, async () => {
-        const key = keyOf(recordOf(await result.result()));
-        return key as unknown as Record<string, unknown>;
-      });
-    }
-    return keyOf(recordOf(result));
-  }
-}
-
-/** A workspace named by its id alone: its name and host are not read. */
-function blank(id: string): WorkspaceInfo {
-  return { id, name: "", host: "", role: "", labels: {}, unattended: false };
 }
 
 /**
- * The invocation a caller's idempotency key names: the same key is the same
- * invocation, so a retry runs once. A key already written as a UUID is one;
- * any other is hashed into the UUID the tools name an invocation by.
+ * One workspace, named by its id or its name; named by neither, the one the daemon's connection
+ * acts in. Its methods are the API's workspace operations, each naming this workspace.
  */
-function invocationIdOf(idempotencyKey: string): string {
-  if (UUID.test(idempotencyKey)) {
-    return idempotencyKey;
+export class Workspace extends WorkspaceOperations {
+  /** The client its requests go through. */
+  readonly client: Tilo;
+  /** What it was named by: an id, a name, or `null` for the daemon's own. */
+  readonly ref: string | null;
+  /** The person's vault, as this workspace's calls reach it. */
+  readonly vault: Vault;
+  /** The call lane of an app's own connection. */
+  readonly callLane: CallLane;
+  #id: Promise<string> | null = null;
+
+  constructor(client: Tilo, ref: string | null) {
+    super();
+    this.client = client;
+    this.ref = ref;
+    this.vault = new Vault(this);
+    this.callLane = new CallLane(this);
   }
-  const hex = bytesToHex(sha256(new TextEncoder().encode(`tilo-sdk/${idempotencyKey}`))).slice(0, 32);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+
+  /** Its id: the one it was named by, the daemon's own, or the one the account lists by its name. */
+  id(): Promise<string> {
+    this.#id ??= this.#resolve().catch((error: unknown) => {
+      this.#id = null;
+      throw error;
+    });
+    return this.#id;
+  }
+
+  async #resolve(): Promise<string> {
+    if (this.ref !== null && UUID.test(this.ref)) {
+      return this.ref;
+    }
+    const served = (await this.client.daemon?.opened())?.workspace ?? null;
+    if (this.ref === null || this.ref === served) {
+      if (served === null) {
+        throw new Refused({ code: "invalid_request", message: "name a workspace: a key's client serves none" });
+      }
+      return served;
+    }
+    const listed = await run(this.client, { path: "account/workspaces", action: "list" });
+    const named = (listed.result as { workspaces?: { id: string; name: string }[] } | undefined)?.workspaces;
+    const found = named?.find((workspace) => workspace.name === this.ref);
+    if (found === undefined) {
+      throw new Refused({
+        code: "not_found",
+        message: `no workspace ${this.ref}`,
+        next_steps: ["account/workspaces#list names them"],
+      });
+    }
+    return found.id;
+  }
+
+  /** @internal */
+  protected async send(operation: Operation, params: Record<string, string | undefined>, body: unknown, headers: Record<string, string>): Promise<unknown> {
+    const response = await this.client.request(operation, { ...params, workspace: await this.id() }, body, headers);
+    const group = groups.getStore();
+    return answerOf(response, operation, group?.workspace === this ? group : null);
+  }
+
+  /** @internal */
+  protected stream(operation: Operation, params: Record<string, string | undefined>, body: unknown, headers: Record<string, string>): AsyncIterableIterator<Event> {
+    return streamOf(async () => {
+      const workspace = await this.id();
+      return { response: await this.client.request(operation, { ...params, workspace }, body, headers), workspace };
+    });
+  }
+
+  /**
+   * A resource as a typed object: its fields, its actions and its edits. `surface` is the app's
+   * version generated types were made from, which every call through it names.
+   */
+  resource(path: string, surface: Surface = null): Resource {
+    return resourceProxy(this, path, surface);
+  }
+
+  /**
+   * Run `body` as one invocation group: every call inside names it, so the apps record one undo
+   * step and History shows `title`.
+   */
+  invocation<T>(title: string, body: (group: InvocationGroup) => Promise<T>): Promise<T> {
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const group = new InvocationGroup(this, title, `sdk:${slug || "invocation"}:${crypto.randomUUID().slice(0, 8)}`);
+    return groups.run(group, () => body(group));
+  }
+
+  /**
+   * Put a file's bytes into the workspace: the `tilo.content:` reference an action takes it by.
+   * The bytes are addressed by their BLAKE3 hash, so a file goes up once whatever it is called;
+   * one larger than a request carries goes up in pieces, each continuing where the put stands.
+   */
+  async upload(data: Uint8Array | ArrayBuffer | Blob): Promise<string> {
+    const bytes =
+      data instanceof Uint8Array ? data : new Uint8Array(data instanceof ArrayBuffer ? data : await data.arrayBuffer());
+    const hash = bytesToHex(blake3(bytes));
+    let offset = 0;
+    for (;;) {
+      const end = Math.min(offset + PIECE, bytes.length);
+      const range: Record<string, string> =
+        offset === 0 && end === bytes.length ? {} : { "content-range": `bytes ${offset}-${end - 1}/${bytes.length}` };
+      const put = await this.putContent({ hash }, bytes.subarray(offset, end), range);
+      if (put.content !== undefined && put.content !== null) {
+        return put.content;
+      }
+      if (put.offset <= offset) {
+        throw new Refused({ code: "upload_failed", message: `the put stands at ${put.offset} after a piece from ${offset}` });
+      }
+      offset = put.offset;
+    }
+  }
+
+  /** The bytes a `tilo.content:` reference names. */
+  download(reference: string): Promise<Uint8Array> {
+    return this.getContent({ hash: reference.replace(/^tilo\.content:/, "") });
+  }
+}
+
+/**
+ * Run `action` on the resource `path` until it is no longer pending: its answer, `result` what
+ * the action produced. A refusal throws. In a workspace a pending action is followed by its
+ * invocation; the account's is asked again with the same `Idempotency-Key`, which asks about the
+ * same invocation.
+ */
+export async function run(
+  where: Tilo | Workspace,
+  params: { path: string; action: string },
+  args: Record<string, unknown> = {},
+  headers: Record<string, string> = {},
+): Promise<ActionAnswer> {
+  if (where instanceof Workspace) {
+    let answer = await where.runAction(params, args, headers);
+    while (answer.status === "pending" && typeof answer.invocation === "string") {
+      answer = await where.getInvocation({ invocation: answer.invocation, wait: "60" });
+    }
+    return answer;
+  }
+  const again: Record<string, string> = { prefer: "wait=60", "idempotency-key": crypto.randomUUID() };
+  for (const [name, value] of Object.entries(headers)) {
+    again[name.toLowerCase()] = value;
+  }
+  for (;;) {
+    const answer = await where.runAccountAction(params, args, again);
+    if (answer.status !== "pending") {
+      return answer;
+    }
+  }
+}
+
+/** `operation`'s path with `params` in its braces, each segment percent-encoded, and its query. */
+function targetOf(operation: Operation, params: Record<string, string | undefined>): string {
+  const path = operation.path.replace(/\{(\w+)\}/g, (_, name: string) => {
+    const value = params[name];
+    if (value === undefined) {
+      throw new TypeError(`${operation.path} names {${name}}, and the call gave none`);
+    }
+    return value.split("/").map(encodeURIComponent).join("/");
+  });
+  const query = new URLSearchParams();
+  for (const name of operation.query) {
+    const value = params[name];
+    if (value !== undefined) {
+      query.set(name, value);
+    }
+  }
+  const said = query.toString();
+  return said === "" ? path : `${path}?${said}`;
+}
+
+/** What a successful answer carries, as `operation` answers it. */
+async function answerOf(response: Response, operation: Operation, group: InvocationGroup | null): Promise<unknown> {
+  if (operation.answer === "bytes") {
+    return new Uint8Array(await response.arrayBuffer());
+  }
+  const text = await response.text();
+  const answer: unknown = text === "" ? {} : JSON.parse(text);
+  group?.note(answer);
+  return answer;
+}
+
+/** The refusal an answer that is not a success is: its body's, else its status. */
+async function refusalOfResponse(response: Response): Promise<Refused> {
+  const text = await response.text().catch(() => "");
+  try {
+    const body = JSON.parse(text) as { error?: unknown };
+    if (body.error !== undefined) {
+      return refusalOf(body, response.status);
+    }
+  } catch {
+    // Not the API's refusal: its status says what it was.
+  }
+  return new Refused(
+    { code: response.status === 503 ? "unavailable" : "failed", message: `the API answered ${response.status}: ${text.slice(0, 200)}` },
+    response.status,
+  );
+}
+
+/**
+ * The server-sent events of an answer `open` makes, each an `Event`, the cursor it resumes after
+ * as its `id`. An `error` event throws its refusal. `return()` ends it at once, even while it
+ * waits on a quiet stream.
+ */
+function streamOf(open: () => Promise<{ response: Response; workspace: string }>): AsyncIterableIterator<Event> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let workspace = "";
+  let ended = false;
+  let buffer = "";
+  const queue: Event[] = [];
+  const decoder = new TextDecoder();
+  const iterator: AsyncIterableIterator<Event> = {
+    async next() {
+      while (queue.length === 0 && !ended) {
+        if (reader === null) {
+          const opened = await open();
+          workspace = opened.workspace;
+          reader = opened.response.body?.getReader() ?? null;
+          if (reader === null || ended) {
+            ended = true;
+            await reader?.cancel().catch(() => {});
+            break;
+          }
+        }
+        const { value, done } = await reader.read();
+        if (done) {
+          ended = true;
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        for (let at = buffer.indexOf("\n\n"); at >= 0; at = buffer.indexOf("\n\n")) {
+          const event = eventOf(buffer.slice(0, at), workspace);
+          buffer = buffer.slice(at + 2);
+          if (event !== null) {
+            queue.push(event);
+          }
+        }
+      }
+      const value = queue.shift();
+      return value === undefined ? { done: true, value: undefined } : { done: false, value };
+    },
+    async return() {
+      ended = true;
+      queue.length = 0;
+      await reader?.cancel().catch(() => {});
+      return { done: true, value: undefined };
+    },
+    [Symbol.asyncIterator]() {
+      return iterator;
+    },
+  };
+  return iterator;
+}
+
+/** One server-sent event's frame as an `Event`; `null` for a comment that keeps it alive. */
+function eventOf(frame: string, workspace: string): Event | null {
+  let id = "";
+  let type = "message";
+  const data: string[] = [];
+  for (const line of frame.split(/\r?\n/)) {
+    if (line === "" || line.startsWith(":")) {
+      continue;
+    }
+    const at = line.indexOf(":");
+    const field = at < 0 ? line : line.slice(0, at);
+    const value = at < 0 ? "" : line.slice(at + 1).replace(/^ /, "");
+    if (field === "id") {
+      id = value;
+    } else if (field === "event") {
+      type = value;
+    } else if (field === "data") {
+      data.push(value);
+    }
+  }
+  if (data.length === 0) {
+    return null;
+  }
+  const parsed: unknown = JSON.parse(data.join("\n"));
+  if (type === "error") {
+    throw refusalOf(parsed);
+  }
+  return { id, type, workspace, data: parsed };
 }

@@ -91,6 +91,17 @@ fn no_shell(correlation: u64) -> RemoteActionMessage {
     }
 }
 
+/// The answer to an API request asked of a provider's connection, which carries none: the API
+/// is the device's own, on a connection to its daemon.
+fn no_api(correlation: u64) -> RemoteActionMessage {
+    RemoteActionMessage::ApiResponse {
+        correlation,
+        result: Err(ActionCallError::Unavailable {
+            reason: "this connection carries no API".into(),
+        }),
+    }
+}
+
 /// A presence lane is its own host's, never a provider's: one asked here says it carries none.
 fn no_presence_lane() -> ActionCallError {
     ActionCallError::Unavailable {
@@ -240,6 +251,7 @@ fn unprovided(message: &RemoteActionMessage) -> Option<RemoteActionMessage> {
             }
         }
         RemoteActionMessage::ShellOpenRequest { correlation, .. } => no_shell(correlation),
+        RemoteActionMessage::ApiRequest { correlation, .. } => no_api(correlation),
         _ => return None,
     })
 }

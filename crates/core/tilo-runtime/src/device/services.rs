@@ -1732,6 +1732,22 @@ impl Daemon {
         Ok(Arc::clone(self.api.get_or_init(|| api)))
     }
 
+    /// Tilo's API as this daemon's device, entering every workspace as `here` does: what a
+    /// connection that is not the person's own is answered by ([`super::api_lane`]), named
+    /// `label` in History.
+    ///
+    /// # Errors
+    /// The API server cannot be built.
+    pub(crate) fn api_as(
+        &self,
+        here: Arc<dyn tilo_api::session::Here>,
+        label: &str,
+    ) -> io::Result<Arc<tilo_api::direct::Direct>> {
+        tilo_api::direct::Direct::here(here, self.key.clone(), self.cert.clone(), label)
+            .map(Arc::new)
+            .map_err(io::Error::other)
+    }
+
     /// The tree the person reaches in `workspace`, one this device is a member of, and the
     /// caller they are there.
     ///

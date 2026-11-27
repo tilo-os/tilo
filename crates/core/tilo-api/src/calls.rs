@@ -178,6 +178,23 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
+/// What the daemon's API answered one request with: its status and headers, and its body.
+pub struct ApiAnswer {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    body: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<Option<Vec<u8>>, String>>>,
+}
+
+impl ApiAnswer {
+    /// The next piece of the body; `None` once it ended.
+    ///
+    /// # Errors
+    /// The connection closed before the body ended.
+    pub async fn next(&self) -> Result<Option<Vec<u8>>, String> {
+        self.body.lock().await.recv().await.unwrap_or(Ok(None))
+    }
+}
+
 /// Tilo's actions, as one caller reaches them.
 pub struct Calls {
     at: At,
@@ -659,6 +676,54 @@ impl Calls {
         Ok(CallSaid {
             frames: line.said_call(),
             asked: line.asked_call().map(|asked| (asked.call, asked.status)),
+        })
+    }
+
+    /// Have this computer's daemon answer `method` on `target` (a `/v1` path with its query) with
+    /// `headers` and `body`, as its API answers whoever this connection is: an app with its own
+    /// grants, the person as their login's programs are. Its status and headers, and its body as
+    /// it comes, which a stream of events goes on sending.
+    ///
+    /// # Errors
+    /// These calls name a key, which reaches the API over HTTP, or the daemon did not answer.
+    pub async fn request(
+        &self,
+        method: &str,
+        target: &str,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    ) -> Result<ApiAnswer, String> {
+        let At::Daemon { line, .. } = &self.at else {
+            return Err("a key reaches the API over HTTP, at its host".to_owned());
+        };
+        let (line, method, target) = (Arc::clone(line), method.to_owned(), target.to_owned());
+        let (head, hearing) =
+            tokio::task::spawn_blocking(move || line.api_request(&method, &target, headers, &body))
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+        // The body arrives on the line's reader; a thread of its own hands it to async readers.
+        let (pieces, body) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::Builder::new()
+            .name("tilo-api-answer".into())
+            .spawn(move || {
+                loop {
+                    let piece = match hearing.recv() {
+                        Ok(tilo_action_line::ApiHeard::Piece(bytes)) => Ok(Some(bytes)),
+                        Ok(tilo_action_line::ApiHeard::End) => Ok(None),
+                        Err(_) => Err("the connection to the daemon closed".to_owned()),
+                    };
+                    let last = !matches!(piece, Ok(Some(_)));
+                    if pieces.send(piece).is_err() || last {
+                        return;
+                    }
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(ApiAnswer {
+            status: head.status,
+            headers: head.headers,
+            body: tokio::sync::Mutex::new(body),
         })
     }
 

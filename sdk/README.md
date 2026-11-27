@@ -13,26 +13,17 @@ uv add tilo-sdk          # Python:        from tilo import Tilo
 bun add tilo-sdk         # TypeScript:    import { Tilo } from "tilo-sdk"
 ```
 
-Both call the tools an agent calls (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_watch`, ...),
-answered typed. On a computer that runs Tilo they reach its daemon through their native part
-(`python/native`, `typescript/native`): the line wire's Rust client, the one `tilo` uses, carrying
-action frames on the daemon's native endpoint, admitted as the person, or as the app the daemon
-started the program as. Without a daemon, a key (`TILO_API_KEY`) sends the same calls to the API
-server's MCP endpoint (`TILO_API_URL`, `https://api.tilo.sh` by default).
-
-Both answer the same surface, `snake_case` in Python and `camelCase` in
-TypeScript: `workspaces.list/create/delete`, `keys.list/create/mint/revoke`,
-`ws.ls/read/find/do/link/program/status/watch`, `ws.files.upload`,
-`ws.keys.mint`, `ws.vault.web_call/ask`, `ws.run(title)` for one undo step per app, `ws.resource(path)`
-as a typed object over a read and `field-edit`, `res.many(action, items)` for several
-actions as one step per call, `Refused`, `AskPending` and
-`ProtocolError`, `SurfaceChanged` when an app's surface moved past the
-generated types, `Unreachable` when Tilo cannot be reached, and for a key
-that is turned away `KeyRevoked`, `KeyExpired` or `KeyRefused`.
+The TypeScript SDK is a client of Tilo's HTTP API, `/v1` (`docs/developers/api.md`): `tilo sdk
+gen` writes its `Tilo` and `Workspace`, one method per operation, from the API's description. The
+Python SDK still calls the tools an agent calls (`tilo_ls`, `tilo_read`, `tilo_do`, ...). On a
+computer that runs Tilo both reach its daemon through their native part (`python/native`,
+`typescript/native`), admitted as the person, or as the app the daemon started the program as.
+Without a daemon, a key (`TILO_API_KEY`) reaches the API server (`TILO_API_URL`,
+`https://api.tilo.sh` by default): `/v1` for TypeScript, its MCP endpoint for Python.
 
 `tilo sdk gen` writes per-app types into
-`python/src/tilo/types/` and `typescript/src/types/` when a package is built or
-tested; they are not committed. `bun run types` in `typescript/` writes both
+`python/src/tilo/types/` and `typescript/src/types/` (with the TypeScript client) when a package
+is built or tested; they are not committed. `bun run types` in `typescript/` writes both
 from this checkout (`tools/ci/sdk-gen.sh`). Both packages ship the types and
 the proxies they stand on.
 

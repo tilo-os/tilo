@@ -13,6 +13,7 @@ use tilo_lock::MutexRecover as _;
 
 use super::frame_line_in;
 use tilo_actions::outcome::InvocationId;
+use tilo_actions::remote::api::{ApiBytes, ApiHead, ApiRequest, MAX_API_BODY};
 use tilo_actions::remote::audio_output::{
     self, Request as AudioOutputRequest, Snapshot as AudioSnapshot,
 };
@@ -92,7 +93,21 @@ struct Waiting {
     /// The output of a shell the device just opened, until its opener takes it: kept from the
     /// answer on, so nothing the shell printed before is lost.
     opened: HashMap<u64, std::sync::mpsc::Receiver<ShellHeard>>,
+    /// Where the body of each API answer still coming goes, by its request's correlation.
+    api: HashMap<u64, std::sync::mpsc::Sender<ApiHeard>>,
 }
+
+/// What came of an API answer's body after its head: a piece, and last its end. A receiver that
+/// finds its sender gone without the end lost the connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApiHeard {
+    Piece(Vec<u8>),
+    End,
+}
+
+/// How long an API answer's head is waited for: the API itself answers a call it waited on for
+/// two minutes as unanswered, which this leaves room to hear.
+const API_ANSWER_WAIT: Duration = Duration::from_secs(150);
 
 /// What one of the app's shells said: output, and last how it ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -414,6 +429,8 @@ fn end(shared: &Shared, why: &ActionCallError) {
     for (_, shell) in waiting.shells.drain() {
         let _ = shell.send(ShellHeard::Ended(lost.clone()));
     }
+    // An answer whose body was still coming ends without its end: its reader hears it was lost.
+    waiting.api.clear();
     drop(waiting);
     for asked in all {
         asked.complete(Err(why.clone()));
@@ -517,6 +534,9 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
             }
             None
         }
+        RemoteActionMessage::ApiBody(_)
+        | RemoteActionMessage::ApiEnd { .. }
+        | RemoteActionMessage::ApiResponse { .. } => api_answered(&mut waiting, &message),
         RemoteActionMessage::ShellOpenResponse {
             correlation,
             result,
@@ -554,6 +574,34 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
     drop(waiting);
     if let Some(asked) = asked {
         asked.complete(Ok(message));
+    }
+}
+
+/// Hand an API answer's head to whoever asked, or a piece of its body to whoever reads it.
+fn api_answered(waiting: &mut Waiting, message: &RemoteActionMessage) -> Option<Asked> {
+    match message {
+        RemoteActionMessage::ApiBody(ApiBytes { correlation, bytes }) => {
+            if let Some(heard) = waiting.api.get(correlation) {
+                let _ = heard.send(ApiHeard::Piece(bytes.clone()));
+            }
+            None
+        }
+        RemoteActionMessage::ApiEnd { correlation } => {
+            if let Some(heard) = waiting.api.remove(correlation) {
+                let _ = heard.send(ApiHeard::End);
+            }
+            None
+        }
+        RemoteActionMessage::ApiResponse {
+            correlation,
+            result,
+        } => {
+            if result.is_err() {
+                waiting.api.remove(correlation);
+            }
+            waiting.by_correlation.remove(correlation)
+        }
+        _ => None,
     }
 }
 
@@ -1160,6 +1208,64 @@ impl LineClient {
     pub fn close_shell(&self, shell: u64) -> Answered<()> {
         self.0.waiting.lock_recover().shells.remove(&shell);
         self.say(RemoteActionMessage::ShellClose { shell })
+    }
+
+    /// Have the other end answer `method` on `target` (a `/v1` path with its query) with
+    /// `headers` and `body`, as its API answers whoever this connection is: the answer's status
+    /// and headers, and where its body arrives, piece by piece and last its end.
+    ///
+    /// # Errors
+    /// The body is over one request's bound, the other end carries no API, the connection
+    /// ended, or no answer came in time.
+    pub fn api_request(
+        &self,
+        method: &str,
+        target: &str,
+        headers: Vec<(String, String)>,
+        body: &[u8],
+    ) -> Answered<(ApiHead, std::sync::mpsc::Receiver<ApiHeard>)> {
+        let size = u32::try_from(body.len())
+            .ok()
+            .filter(|size| *size as usize <= MAX_API_BODY)
+            .ok_or_else(|| ActionCallError::InvalidRequest {
+                reason: format!(
+                    "a request carries at most {MAX_API_BODY} bytes; put a larger file in pieces"
+                ),
+            })?;
+        let correlation = self.correlation();
+        let (heard, hearing) = std::sync::mpsc::channel();
+        self.0.waiting.lock_recover().api.insert(correlation, heard);
+        let request = ApiRequest {
+            method: method.to_owned(),
+            target: target.to_owned(),
+            headers,
+            body: size,
+        };
+        let answer = self
+            .ask_with_body_in(
+                Key::Correlation(correlation),
+                RemoteActionMessage::ApiRequest {
+                    correlation,
+                    request,
+                },
+                None,
+                body,
+            )
+            .wait_timeout(API_ANSWER_WAIT)
+            .ok()
+            .flatten()
+            .unwrap_or(Err(ActionCallError::Unanswered));
+        match answer {
+            Ok(RemoteActionMessage::ApiResponse { result, .. }) => Ok((result?, hearing)),
+            Ok(other) => {
+                self.0.waiting.lock_recover().api.remove(&correlation);
+                Err(unexpected(&other))
+            }
+            Err(error) => {
+                self.0.waiting.lock_recover().api.remove(&correlation);
+                Err(error)
+            }
+        }
     }
 
     /// Send `message`, which nothing answers.

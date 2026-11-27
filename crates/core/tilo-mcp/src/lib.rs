@@ -568,8 +568,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The host has already bound this exact authenticated run to its action
     /// server. This constructor does not mint or replace the execution identity.
     /// The run is a person's, or an agent's acting for one: a key's own run is
-    /// the agent its certificate names.
+    /// the agent its certificate names. Or it is what this device's daemon admitted one of its
+    /// connections as: an app it launched and attests the process of ([`Caller::launched`]),
+    /// decided by the app's own grants, or the person on their own connection
+    /// ([`Caller::own_person`]).
     pub fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
+        if caller.launched_app().is_some() || caller.is_own_connection() {
+            let workspace = caller
+                .workspace()
+                .ok_or_else(|| std::io::Error::other("MCP workspace unavailable"))?
+                .to_owned();
+            return Ok(Self::from_caller(host, workspace, caller));
+        }
         if caller.acting().person_id().is_none() && caller.acting().acted_for_person().is_none() {
             return Err(std::io::Error::other(
                 "MCP requires an admitted person execution",

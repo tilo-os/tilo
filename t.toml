@@ -837,6 +837,7 @@ default = false
 name = "docs-reference-sdk"
 on = ["idle", "stable"]
 run = "bash tools/ci/docs-reference-sdk.sh"
+needs = ["sdk-gen"]
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 outputs = ["/target/docs/generated/typescript-sdk.md"]
@@ -1390,7 +1391,7 @@ name = "sdk-native"
 on = ["idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/sdk-native.sh test /target/sdk-native"
-needs = ["sdk-native-build"]
+needs = ["sdk-native-build", "sdk-gen"]
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 isolation = "vm"

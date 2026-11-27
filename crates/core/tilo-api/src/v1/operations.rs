@@ -177,9 +177,9 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
             "getInvocation",
             Method::GET,
             "/v1/workspaces/{workspace}/invocations/{invocation}",
-            "An invocation, held until it is no longer pending for `wait` seconds",
+            "An invocation, answered once it is no longer pending or `wait` seconds passed",
         )
-        .query(&[("wait", "Seconds to hold while it is pending, at most 60")])
+        .query(&[("wait", "Seconds to wait while it is pending, at most 60")])
         .answers(Answer::Action),
         op(
             "cancelInvocation",

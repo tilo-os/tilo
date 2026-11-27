@@ -7,16 +7,13 @@
  * publishes. `form.formValues.surname = "Doe"` is the same edit one level
  * down.
  *
- * A resource made through generated types names its app's surface, and every
- * call it makes checks it: a workspace whose app publishes another surface
- * refuses the call (`SurfaceChanged`) instead of running it.
+ * A resource made through generated types names its app's surface in every
+ * call (`Tilo-Surface`): a workspace whose app publishes another surface
+ * refuses the call (`surface_changed`) instead of running it.
  */
 
-import { currentGroup } from "./endpoint.ts";
-import type { Invocation } from "./invocation.ts";
-import type { ActionAnswer, Event } from "./models.ts";
-import { ProtocolError } from "./errors.ts";
-import type { Workspace } from "./workspace.ts";
+import { currentGroup, run, type Workspace } from "./client.ts";
+import type { ActionAnswer, Event, Resource as Read, Row } from "./types/api-v1.ts";
 
 /** The suffix a generated bulk call's method carries: `createMany`. */
 const MANY_SUFFIX = "Many";
@@ -48,8 +45,9 @@ export interface Resource {
   /** The app's surface the types were made from, `<app>@<digest>`, when they were. */
   readonly surface: string | null;
   readonly fields: Record<string, unknown>;
-  readonly children: unknown[];
-  readonly raw: Record<string, unknown>;
+  readonly children: NonNullable<Read["children"]>;
+  /** The resource as the API answered its read. */
+  readonly raw: Read | null;
   load(): Promise<Resource>;
   refresh(): Promise<Resource>;
   flush(): Promise<void>;
@@ -58,7 +56,7 @@ export interface Resource {
   many(action: string, items: Record<string, unknown>[]): Promise<ActionAnswer[]>;
   edit(steps: Step[], value: unknown, op?: string): Promise<unknown>;
   remove(...steps: Step[]): Promise<unknown>;
-  watch(): AsyncGenerator<Event>;
+  watch(): AsyncIterableIterator<Event>;
   [name: string]: unknown;
 }
 
@@ -104,22 +102,10 @@ export function kebab(name: string): string {
   return out;
 }
 
-/** Whether a call's answer is an invocation to follow rather than a result:
- * the `Invocation` is recognised by what it is, since the module that defines
- * it loads through this one. */
-function isInvocation(value: unknown): value is Invocation {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as Invocation).invocationId === "string" &&
-    typeof (value as Invocation).result === "function"
-  );
-}
-
 /** A field path as the field-edit action takes it. */
 export function segments(steps: Step[]): Record<string, unknown>[] {
   if (steps.length === 0) {
-    throw new ProtocolError("a field edit names a field");
+    throw new TypeError("a field edit names a field");
   }
   return steps.map((step, index) => {
     if (typeof step === "string") {
@@ -128,7 +114,7 @@ export function segments(steps: Step[]): Record<string, unknown>[] {
     if (step && typeof step === "object") {
       return { ...step };
     }
-    throw new ProtocolError(`a field path step is a name or a mapping, not ${String(step)}`);
+    throw new TypeError(`a field path step is a name or a mapping, not ${String(step)}`);
   });
 }
 
@@ -227,7 +213,7 @@ class ResourceImpl {
   readonly #actions: Set<string>;
   /** Each field is written by its own setter, `set-<field>`, not by a field edit. */
   readonly #setters: boolean;
-  #answer: Record<string, unknown> | null = null;
+  #answer: Read | null = null;
   /** The proxy that fronts this implementation, which reads answer. */
   self: unknown = null;
 
@@ -249,13 +235,12 @@ class ResourceImpl {
     return String(this.#answer?.kind ?? "");
   }
 
-  get raw(): Record<string, unknown> {
-    return this.#answer ?? {};
+  get raw(): Read | null {
+    return this.#answer;
   }
 
-  get children(): unknown[] {
-    const children = this.#answer?.children;
-    return Array.isArray(children) ? children : [];
+  get children(): NonNullable<Read["children"]> {
+    return this.#answer?.children ?? [];
   }
 
   get fields(): Record<string, unknown> {
@@ -288,7 +273,7 @@ class ResourceImpl {
 
   async load(): Promise<unknown> {
     await this.flush();
-    this.#answer = await this.workspace.readRaw(this.path, { surface: this.surface });
+    this.#answer = await this.workspace.readResource({ path: this.path }, this.#named());
     return this.self ?? this;
   }
 
@@ -304,18 +289,18 @@ class ResourceImpl {
     }
   }
 
+  /** What every call of a typed resource names: the surface its types were made from. */
+  #named(): Record<string, string> {
+    return this.surface === null ? {} : { "tilo-surface": this.surface };
+  }
+
+  /** Run `action` here: what it produced, once it finished. */
+  async #run(action: string, args: Record<string, unknown>): Promise<unknown> {
+    return (await run(this.workspace, { path: this.path, action }, args, this.#named())).result;
+  }
+
   async action(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    const answer = await this.workspace.call(
-      `${this.path}#${kebab(name)}`,
-      args,
-      this.surface,
-    );
-    // A typed call answers what the action produced, waiting for a run still
-    // under way rather than handing the caller one to follow.
-    if (isInvocation(answer)) {
-      return await answer.result();
-    }
-    return answer;
+    return this.#run(kebab(name), args);
   }
 
   /**
@@ -340,14 +325,14 @@ class ResourceImpl {
       const answers: ActionAnswer[] = [];
       for (const chunk of chunksOf(members)) {
         answers.push(
-          await (await this.workspace.endpoint()).group(this.path, chunk, this.surface),
+          await run(this.workspace, { path: this.path, action: "group" }, { actions: chunk }, this.#named()),
         );
       }
       return answers;
     };
     // The chunks are one invocation group, as `ws.invocation(...)` would make
     // them one; calls already inside a group join that one instead.
-    if (currentGroup() !== null) {
+    if (currentGroup()?.workspace === this.workspace) {
       return send();
     }
     return this.workspace.invocation(`${action} (${members.length})`, send);
@@ -362,17 +347,9 @@ class ResourceImpl {
         steps.length === 1 && op === "set"
           ? { value }
           : { edit: { path: segments(steps).slice(1), op, value } };
-      return this.workspace.call(
-        `${this.path}#set-${field.replaceAll("_", "-")}`,
-        args,
-        this.surface,
-      );
+      return this.#run(`set-${field.replaceAll("_", "-")}`, args);
     }
-    return this.workspace.call(
-      `${this.path}#field-edit`,
-      { edit: { path: segments(steps), op, value } },
-      this.surface,
-    );
+    return this.#run("field-edit", { edit: { path: segments(steps), op, value } });
   }
 
   async remove(...steps: Step[]): Promise<unknown> {
@@ -395,25 +372,25 @@ class ResourceImpl {
       fields[field] = value;
       return;
     }
-    let held = fields[field];
+    let node = fields[field];
     for (const step of steps.slice(1, -1)) {
-      if (held === null || typeof held !== "object") {
+      if (node === null || typeof node !== "object") {
         return;
       }
-      held = (held as Record<string, unknown>)[String(step)];
+      node = (node as Record<string, unknown>)[String(step)];
     }
     const last = steps[steps.length - 1];
-    if (held !== null && typeof held === "object" && typeof last === "string") {
+    if (node !== null && typeof node === "object" && typeof last === "string") {
       if (op === "remove-key") {
-        delete (held as Record<string, unknown>)[last];
+        delete (node as Record<string, unknown>)[last];
       } else {
-        (held as Record<string, unknown>)[last] = value;
+        (node as Record<string, unknown>)[last] = value;
       }
     }
   }
 
-  watch(): AsyncGenerator<Event> {
-    return this.workspace.watch(this.path);
+  watch(): AsyncIterableIterator<Event> {
+    return this.workspace.events({ path: this.path });
   }
 
   /** What an unknown name is: an action, by its name in the app's words. */
@@ -478,7 +455,7 @@ export function resourceProxy(
       return Reflect.has(target, property);
     },
     ownKeys(target) {
-      const fields = target.raw.fields;
+      const fields = target.raw?.fields;
       const names = fields && typeof fields === "object" ? Object.keys(fields) : [];
       return [...new Set([...Reflect.ownKeys(target), ...names])];
     },
@@ -491,4 +468,76 @@ export function resourceProxy(
   }) as unknown as Resource;
   impl.self = proxy;
   return proxy;
+}
+
+/** Every row under `path` (the apps without one), page after page: `listResources` with its
+ * `next_cursor` followed. */
+export async function* rows(
+  workspace: Workspace,
+  params: { path?: string; kind?: string; limit?: string } = {},
+): AsyncGenerator<Row> {
+  let cursor: string | undefined;
+  do {
+    const page = await workspace.listResources({ ...params, cursor });
+    yield* page.rows;
+    cursor = page.next_cursor ?? undefined;
+  } while (cursor !== undefined);
+}
+
+/** What `exported` answers: every resource read whole, and the ones that did not read, with why. */
+export interface Exported {
+  resources: Read[];
+  unread: { path: string; error: string }[];
+}
+
+/**
+ * Everything in the workspace, read whole: every resource of every app, found by walking the
+ * listings from its apps, each read with every page of what it lists. The files the resources
+ * name (`tilo.content:` references) download with `workspace.download`. Take one before
+ * deleting a customer's workspace.
+ */
+export async function exported(workspace: Workspace): Promise<Exported> {
+  const found: Exported = { resources: [], unread: [] };
+  const why = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+  const seen = new Set<string>();
+  const walk: (string | undefined)[] = [undefined];
+  while (walk.length > 0) {
+    const path = walk.shift();
+    try {
+      for await (const row of rows(workspace, path === undefined ? {} : { path })) {
+        if (seen.has(row.path)) {
+          continue;
+        }
+        seen.add(row.path);
+        if (row.reads !== false) {
+          await readWhole(workspace, row.path).then(
+            (read) => found.resources.push(read),
+            (error: unknown) => found.unread.push({ path: row.path, error: why(error) }),
+          );
+        }
+        if (row.has_children === true) {
+          walk.push(row.path);
+        }
+      }
+    } catch (error) {
+      found.unread.push({ path: path ?? "", error: why(error) });
+    }
+  }
+  return found;
+}
+
+/** `path` read with every page of what it lists. */
+async function readWhole(workspace: Workspace, path: string): Promise<Read> {
+  let page = await workspace.readResource({ path });
+  const whole: Read = { ...page, children: [...(page.children ?? [])] };
+  while (typeof page.cursor === "string" && page.cursor !== "") {
+    const cursor = page.cursor;
+    page = await workspace.readResource({ path, cursor });
+    whole.children?.push(...(page.children ?? []));
+    if (page.cursor === cursor) {
+      break;
+    }
+  }
+  delete whole.cursor;
+  return whole;
 }
