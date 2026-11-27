@@ -567,8 +567,9 @@ impl Seats {
             }
         };
         let mut admitted = self.admission.admit(peer.uid);
-        // A process the daemon started is the app it runs, with that app's grants and no more:
-        // never the account it runs as. Any other process of the account is that account alone.
+        // A process the daemon started, or one descending from it, is the app it runs, with that
+        // app's grants and no more: never the account it runs as. Any other process of the
+        // account is that account alone.
         let app = peer
             .pid
             .and_then(|pid| {

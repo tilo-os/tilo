@@ -1483,8 +1483,8 @@ tilo_test_env::scenario! {
 
     phase a_process_the_daemon_started_is_the_app_it_runs_and_no_other_process_is;
     // What the daemon starts for a tilolang app — an instance, a connector, a task's host — is
-    // recorded by its pid, so a connection from it is admitted as that app. Only that process
-    // is: a process it did not start, below a recorded one included, is no app.
+    // recorded by its pid, so a connection from it is admitted as that app. A process it did not
+    // start, and that descends from none it did, is no app.
     {
         let root = std::env::temp_dir();
         let apps = Apps::new(
@@ -1523,8 +1523,7 @@ tilo_test_env::scenario! {
             ),
             "the process of the app's own instances is told apart"
         );
-        // A helper below the app is a process of its own: nothing an app starts inherits what
-        // the daemon gave the app.
+        // A process beside the app, started by this test and not by it, is a process of its own.
         let mut below = std::process::Command::new("/bin/sleep")
             .arg("30")
             .spawn_locked()

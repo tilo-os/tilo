@@ -18,6 +18,9 @@ const STRANGER: u32 = 4243;
 /// The account a test's next connection comes from, as the daemon reads it.
 static PEER: AtomicU32 = AtomicU32::new(OWN);
 
+/// The process a test's next connection comes from, as the daemon reads it: none when 0.
+static PEER_PID: AtomicU32 = AtomicU32::new(0);
+
 #[expect(
     clippy::unnecessary_wraps,
     reason = "it stands in for the kernel's answer, which can fail"
@@ -25,7 +28,7 @@ static PEER: AtomicU32 = AtomicU32::new(OWN);
 fn test_peer(_: &UnixStream) -> io::Result<crate::seats::Peer> {
     Ok(crate::seats::Peer {
         uid: PEER.load(Ordering::SeqCst),
-        pid: None,
+        pid: Some(PEER_PID.load(Ordering::SeqCst)).filter(|pid| *pid != 0),
     })
 }
 
@@ -53,6 +56,7 @@ pub(crate) fn native_endpoint(daemon: &Arc<Daemon>, root: &Path) -> PathBuf {
 /// A client of the daemon's frames on a connection of its own, as `uid`.
 pub(crate) fn line_client(socket: &Path, uid: u32) -> Arc<tilo_action_services::LineClient> {
     PEER.store(uid, Ordering::SeqCst);
+    PEER_PID.store(0, Ordering::SeqCst);
     let stream = UnixStream::connect(socket).unwrap();
     let client = Arc::new(tilo_action_services::LineClient::of_stream(stream).unwrap());
     // The daemon reads the account as it takes the connection: a catalogue answered says it did.
@@ -859,6 +863,7 @@ const APP: &str = "so.tilo.chat";
 fn launched(socket: &Path, app: &str, workspace: &str) -> Value {
     use std::io::{BufRead as _, Write as _};
     PEER.store(OWN, Ordering::SeqCst);
+    PEER_PID.store(0, Ordering::SeqCst);
     let mut stream = UnixStream::connect(socket).unwrap();
     let request = runtime_portal::native::LaunchRequest::new(app, workspace, false);
     writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
@@ -920,6 +925,90 @@ fn an_app_starts_in_any_workspace_the_computer_holds_and_no_other() {
         refusal.contains(&format!("holds no workspace {elsewhere}")),
         "a workspace the computer does not hold is refused, named: {answer}"
     );
+}
+
+const DESCENDANT_TEST: &str =
+    "device::local::tests::a_process_an_app_started_is_judged_as_that_app_and_never_its_person";
+
+/// A process an app started (the shell in a terminal, a helper it runs) connects to the daemon as
+/// a process of the person's account, and is judged as the app it descends from: an action the
+/// person may run is refused it as that app's, which holds no grant for it. The person's own
+/// process beside it is answered.
+#[test]
+fn a_process_an_app_started_is_judged_as_that_app_and_never_its_person() {
+    use std::io::BufRead as _;
+    use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionTarget};
+    let Some(root) = isolated_root(DESCENDANT_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let probe = probe(tilo_actions::ConfirmationPolicy::default());
+    daemon.provide(ASKS, Arc::clone(&probe) as _);
+    let socket = native_endpoint(&daemon, &root);
+    let publish = || {
+        InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: ASKS.into(),
+                address: tilo_actions::ActionAddress::new("probe", "publish"),
+            },
+            serde_json::Map::new(),
+        )
+    };
+    let in_workspace = Caller::local_person("").in_workspace(workspace.clone());
+
+    // The app the daemon started, and a helper the app started in turn.
+    let mut app = std::process::Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & echo $!; wait"])
+        .stdout(std::process::Stdio::piped())
+        .spawn_locked()
+        .unwrap();
+    let mut said = String::new();
+    BufReader::new(app.stdout.take().unwrap())
+        .read_line(&mut said)
+        .unwrap();
+    let helper: u32 = said.trim().parse().unwrap();
+    daemon.apps().record_started(app.id(), APP, &workspace);
+    assert_eq!(
+        daemon.apps().attested(helper),
+        Some((APP.to_owned(), workspace.clone())),
+        "the helper runs as the app it descends from"
+    );
+
+    // The person's own process runs the action.
+    let person = line_client(&socket, OWN);
+    let receipt = answered(person.invoke(&in_workspace, publish())).expect("the person's call");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "the person's call runs: {receipt:?}"
+    );
+    assert_eq!(probe.asked().len(), 1);
+
+    // The helper's call is the app's, which holds no grant for it: nothing runs.
+    PEER.store(OWN, Ordering::SeqCst);
+    PEER_PID.store(helper, Ordering::SeqCst);
+    let stream = UnixStream::connect(&socket).unwrap();
+    let helpers = tilo_action_services::LineClient::of_stream(stream).unwrap();
+    let refusal = match answered(helpers.invoke(&in_workspace, publish())) {
+        Err(error)
+        | Ok(tilo_actions::remote::InvocationReceipt {
+            status: ReceiptStatus::Rejected { error },
+            ..
+        }) => error,
+        Ok(receipt) => panic!("the app's helper acts on its person's authority: {receipt:?}"),
+    };
+    assert!(
+        matches!(refusal, tilo_actions::remote::ActionCallError::NotPermitted),
+        "the helper is refused as the app it descends from, which holds no grant: {refusal}"
+    );
+    assert_eq!(probe.asked().len(), 1, "nothing ran for the helper");
+
+    app.kill().unwrap();
+    app.wait().unwrap();
+    // The helper outlives the shell that started it; it is ended by its pid.
+    let _ = std::process::Command::new("kill")
+        .arg(helper.to_string())
+        .status();
 }
 
 const OWN_LINE_TEST: &str =

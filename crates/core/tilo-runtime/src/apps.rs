@@ -11,7 +11,9 @@
 //! still the same process, is attested to the broker, and the endpoints the
 //! runtime serves from its own process: the Files app of each workspace whose
 //! files it holds, with no window, as the desktop session attests its files
-//! daemon.
+//! daemon. A process that descends from a launch (a terminal's shell, a helper
+//! an app started) is judged as the app it descends from, never as the person
+//! whose account it runs as: it holds that app's grants and no more.
 
 use crate::daemon::Sockets;
 
@@ -721,10 +723,10 @@ impl Apps {
         }
     }
 
-    /// The app, and the workspace it runs in, that process `pid` is: exactly the process this
-    /// runtime recorded when it started it, while its start time still matches. `None` for a
-    /// process no launch here started, for one it started that runs no app, and for any process
-    /// below a recorded one: an app's helpers inherit nothing of it.
+    /// The app, and the workspace it runs in, that process `pid` is: the process this runtime
+    /// recorded when it started it, while its start time still matches, or a process descending
+    /// from one, which runs as that app and is judged by its grants. `None` for a process that
+    /// descends from no launch here.
     pub(crate) fn attested(&self, pid: u32) -> Option<(String, String)> {
         self.launched.of(pid)
     }
@@ -740,7 +742,8 @@ impl Apps {
     }
 
     /// What process of an app `pid` is, as [`Self::attested`] knows it: a sandboxed launch of the
-    /// app's own package (and whether it is its held connection), or a tilolang process.
+    /// app's own package (and whether it is its held connection), or a tilolang process. A process
+    /// below one is that app's, but never its held connection or its own tilolang process.
     pub(crate) fn process_of(&self, pid: u32) -> Option<ProcessOf> {
         self.launched.process_of(pid)
     }
@@ -1833,61 +1836,114 @@ impl Launched {
     }
 
     /// What process `pid` is, while it is still that process: one this runtime launched in the
-    /// app's sandbox, or one it started for a tilolang app.
+    /// app's sandbox, or one it started for a tilolang app. A process descending from one is a
+    /// process of that app with none of the standing of the one recorded: not its held
+    /// connection, and not the tilolang process of its own instances.
     pub(crate) fn process_of(&self, pid: u32) -> Option<ProcessOf> {
+        let (at, process) = self.recorded_above(pid)?;
+        Some(if at == pid {
+            process
+        } else {
+            match process {
+                ProcessOf::Launched { app, workspace, .. } => ProcessOf::Launched {
+                    app,
+                    workspace,
+                    connection: false,
+                },
+                ProcessOf::Started { app, workspace, .. } => ProcessOf::Started {
+                    app,
+                    workspace,
+                    own: false,
+                },
+            }
+        })
+    }
+
+    /// The app and workspace `pid` runs as, while the launch it descends from is still that
+    /// process: one this runtime launched, or one it started for a tilolang app.
+    fn of(&self, pid: u32) -> Option<(String, String)> {
+        self.recorded_above(pid).map(|(_, process)| match process {
+            ProcessOf::Launched { app, workspace, .. }
+            | ProcessOf::Started { app, workspace, .. } => (app, workspace),
+        })
+    }
+
+    /// The nearest process at or above `pid` that this runtime recorded, while it is still the
+    /// process recorded, and what it is. Every parent up to the root is looked at: a process that
+    /// starts a process that starts another stays below the launch however deep it goes.
+    fn recorded_above(&self, pid: u32) -> Option<(u32, ProcessOf)> {
+        let mut current = pid;
+        // A process tree has no cycle, but a pid reused while it is read could make one; no tree
+        // is this deep.
+        for _ in 0..MAX_ANCESTRY {
+            if let Some(process) = self.recorded(current) {
+                return Some((current, process));
+            }
+            current = parent_of(current).filter(|parent| *parent > 1 && *parent != current)?;
+        }
+        None
+    }
+
+    /// What `pid` exactly is, recorded here, while its start time still matches the record.
+    fn recorded(&self, pid: u32) -> Option<ProcessOf> {
         let started = self.2.lock_recover().get(&pid).map(|record| {
             (
                 record.start_time,
-                record.app.clone(),
-                record.workspace.clone(),
-                record.own,
-            )
-        });
-        if let Some((recorded, app, workspace, own)) = started {
-            return (process_start_time(pid) == Some(recorded)).then_some(ProcessOf::Started {
-                app,
-                workspace,
-                own,
-            });
-        }
-        let launched = self.0.lock_recover().get(&pid).map(|record| {
-            (
-                record.start_time,
-                ProcessOf::Launched {
+                ProcessOf::Started {
                     app: record.app.clone(),
                     workspace: record.workspace.clone(),
-                    connection: record.connection,
+                    own: record.own,
                 },
             )
         });
-        let (recorded, launched) = launched?;
-        (process_start_time(pid) == Some(recorded)).then_some(launched)
+        let recorded = started.or_else(|| {
+            self.0.lock_recover().get(&pid).map(|record| {
+                (
+                    record.start_time,
+                    ProcessOf::Launched {
+                        app: record.app.clone(),
+                        workspace: record.workspace.clone(),
+                        connection: record.connection,
+                    },
+                )
+            })
+        });
+        let (start_time, process) = recorded?;
+        (process_start_time(pid) == Some(start_time)).then_some(process)
     }
+}
 
-    /// The app and workspace `pid` is the process of, while it is still that process: one this
-    /// runtime launched, or one it started for a tilolang app.
-    fn of(&self, pid: u32) -> Option<(String, String)> {
-        let started = self.2.lock_recover().get(&pid).map(|record| {
-            (
-                record.start_time,
-                record.app.clone(),
-                record.workspace.clone(),
-            )
-        });
-        if let Some((recorded, app, workspace)) = started
-            && process_start_time(pid) == Some(recorded)
-        {
-            return Some((app, workspace));
-        }
-        let launched = self.0.lock_recover().get(&pid).map(|record| {
-            (
-                record.start_time,
-                record.app.clone(),
-                record.workspace.clone(),
-            )
-        });
-        let (recorded, app, workspace) = launched?;
-        (process_start_time(pid) == Some(recorded)).then_some((app, workspace))
+/// How many parents [`Launched::recorded_above`] reads at most.
+const MAX_ANCESTRY: usize = 4096;
+
+/// The process that started `pid`, as the kernel reads it now: `None` for a process that does not
+/// exist, or on a platform where its parent cannot be read.
+pub(crate) fn parent_of(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // The fields after the parenthesised command name start with the state; the parent is
+        // the second.
+        let (_, rest) = stat.rsplit_once(')')?;
+        rest.split_whitespace().nth(1)?.parse().ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let pid = libc::c_int::try_from(pid).ok()?;
+        // SAFETY: an all-zero proc_bsdinfo is a valid value for this plain C
+        // struct; proc_pidinfo writes at most `size` bytes into it.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+        // SAFETY: `info` is a writable buffer of exactly `size` bytes.
+        let written = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
+        (written == size).then_some(info.pbi_ppid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
     }
 }
 
