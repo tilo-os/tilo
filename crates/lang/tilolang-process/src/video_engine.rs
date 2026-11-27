@@ -83,7 +83,7 @@ impl Provider for Engine {
             return stop_play(job);
         };
         render.store(true, Ordering::Relaxed);
-        running().end(job, State::Cancelled, json!({ "url": "", "error": "" }));
+        running().end(job, State::Cancelled, json!({ "url": "", "why": "" }));
         true
     }
 }
@@ -384,7 +384,7 @@ fn render(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Resul
     let cancel = Arc::new(AtomicBool::new(false));
     moved.moved(
         State::Running,
-        json!({ "done": 0, "total": 0, "url": "", "error": "" }),
+        json!({ "done": 0, "total": 0, "url": "", "why": "" }),
     );
     running().keep(job, Arc::clone(&cancel), moved.clone());
     let (named, store) = (job.to_owned(), store.clone());
@@ -402,7 +402,7 @@ fn render(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Resul
                     counted.store(of, Ordering::Relaxed);
                     moved.moved(
                         State::Running,
-                        json!({ "done": done, "total": of, "url": "", "error": "" }),
+                        json!({ "done": done, "total": of, "url": "", "why": "" }),
                     );
                 },
             );
@@ -420,13 +420,13 @@ fn render(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Resul
                         "done": total,
                         "total": total,
                         "url": format!("tilo-blob://{}", kept.hash),
-                        "error": "",
+                        "why": "",
                     }),
                 ),
                 Err(error) => running().end(
                     &named,
                     State::Failed,
-                    json!({ "done": 0, "total": total, "url": "", "error": error }),
+                    json!({ "done": 0, "total": total, "url": "", "why": error }),
                 ),
             }
         });

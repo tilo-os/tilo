@@ -102,7 +102,7 @@ impl Engine {
         Ok(serde_json::json!({
             "id": path,
             "state": "done",
-            "detail": {"state": "done", "result": result, "error": ""},
+            "detail": {"state": "done", "result": result, "why": ""},
         }))
     }
 }

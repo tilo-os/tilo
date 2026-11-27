@@ -198,7 +198,7 @@ mod cases {
                 Ok(serde_json::json!({
                     "state": state,
                     "answer": answer,
-                    "error": error,
+                    "why": error,
                 })
                 .to_string())
             };

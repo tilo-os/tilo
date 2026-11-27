@@ -714,7 +714,7 @@ mod cases {
             );
             b.job_stands(
                 "browser-1",
-                json!({"state": "failed", "error": "example.org no longer has this file (404)"}),
+                json!({"state": "failed", "why": "example.org no longer has this file (404)"}),
             );
             let view = b.page_view();
             assert_eq!(

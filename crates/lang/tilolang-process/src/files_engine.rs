@@ -300,7 +300,7 @@ fn said(job: &Job) -> (State, serde_json::Value) {
             "items": job.items.load(Ordering::Relaxed),
             "count": job.count,
             "current": current,
-            "error": error,
+            "why": error,
         }),
     )
 }

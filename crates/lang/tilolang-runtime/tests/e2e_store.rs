@@ -265,12 +265,12 @@ action open_app(app_name: Text) {
                 }
                 if *self.done.borrow() {
                     Ok(
-                        r#"{"state":"done","done":1,"total":1,"error":"","status":"Done."}"#
+                        r#"{"state":"done","done":1,"total":1,"why":"","status":"Done."}"#
                             .to_owned(),
                     )
                 } else {
                     Ok(
-                        r#"{"state":"running","done":0,"total":1,"error":"","status":"Working."}"#
+                        r#"{"state":"running","done":0,"total":1,"why":"","status":"Working."}"#
                             .to_owned(),
                     )
                 }
@@ -527,7 +527,7 @@ action open_app(app_name: Text) {
 
     /// The engine's word when a job ends: what it came to, in the line the app keeps.
     fn done_words() -> serde_json::Value {
-        serde_json::json!({"state": "done", "done": 1, "total": 1, "error": "", "status": "Done."})
+        serde_json::json!({"state": "done", "done": 1, "total": 1, "why": "", "status": "Done."})
     }
 
     tilo_test_env::scenario! {
@@ -545,7 +545,7 @@ action open_app(app_name: Text) {
                 m.engine.ops()
             );
             m.moved(&serde_json::json!({
-                "state": "running", "done": 0, "total": 1, "error": "", "status": "Working.",
+                "state": "running", "done": 0, "total": 1, "why": "", "status": "Working.",
             }));
             assert_eq!(
                 m.text(&m.root, "status"),
@@ -1155,7 +1155,7 @@ action open_app(app_name: Text) {
             m.read();
             let notes = m.app("so.tilo.notes");
             m.call("get", vec![Value::resource(&notes)]);
-            m.ended("failed", &serde_json::json!({ "error": "The download stopped." }));
+            m.ended("failed", &serde_json::json!({ "why": "The download stopped." }));
             assert_eq!(m.text(&notes, "failed"), "The download stopped.");
             assert_eq!(
                 m.text(&m.root, "trouble"),

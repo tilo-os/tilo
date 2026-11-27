@@ -276,10 +276,7 @@ pub fn job_value(record: &serde_json::Value) -> Value {
             )
         })
         .unwrap_or("failed");
-    let error = detail
-        .and_then(|d| d.get("why").or_else(|| d.get("error")))
-        .or_else(|| record.get("why"))
-        .or_else(|| record.get("error"));
+    let error = detail.and_then(|d| d.get("why"));
     Value::Tuple(vec![
         text(record.get("id")),
         text(record.get("op")),

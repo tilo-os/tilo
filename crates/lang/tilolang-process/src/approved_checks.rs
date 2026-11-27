@@ -477,12 +477,12 @@ fn status_of(heard: &Heard) -> serde_json::Value {
             }
             Err(error) => {
                 set("state", "failed".into());
-                set("error", format!("the receipt did not read: {error}").into());
+                set("why", format!("the receipt did not read: {error}").into());
             }
         },
         Some(End::Failed(why)) => {
             set("state", "failed".into());
-            set("error", why.clone().into());
+            set("why", why.clone().into());
         }
         Some(End::Cancelled) => set("state", "cancelled".into()),
     }

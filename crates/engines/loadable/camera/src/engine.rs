@@ -153,16 +153,14 @@ fn status(_device: &Device, job: &str) -> Result<String, String> {
         return Err(format!("no job `{job}` runs on this device"));
     };
     if state.stopped.load(Ordering::Relaxed) {
-        return Ok(serde_json::json!({ "state": "cancelled", "url": "", "error": "" }).to_string());
+        return Ok(serde_json::json!({ "state": "cancelled", "url": "", "why": "" }).to_string());
     }
     if let Some(error) = state.error.lock().ok().and_then(|error| error.clone()) {
-        return Ok(serde_json::json!({ "state": "failed", "url": "", "error": error }).to_string());
+        return Ok(serde_json::json!({ "state": "failed", "url": "", "why": error }).to_string());
     }
     match state.url.lock().ok().and_then(|url| url.clone()) {
-        Some(url) => {
-            Ok(serde_json::json!({ "state": "done", "url": url, "error": "" }).to_string())
-        }
-        None => Ok(serde_json::json!({ "state": "running", "url": "", "error": "" }).to_string()),
+        Some(url) => Ok(serde_json::json!({ "state": "done", "url": url, "why": "" }).to_string()),
+        None => Ok(serde_json::json!({ "state": "running", "url": "", "why": "" }).to_string()),
     }
 }
 
@@ -249,7 +247,7 @@ impl Job {
             *slot = Some(error.clone());
         }
         self.finished.store(true, Ordering::Relaxed);
-        self.end("failed", &serde_json::json!({ "error": error }));
+        self.end("failed", &serde_json::json!({ "why": error }));
     }
 
     /// Tell the job's last move, unless one was told already.

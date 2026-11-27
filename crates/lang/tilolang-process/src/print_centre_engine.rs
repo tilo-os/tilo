@@ -66,7 +66,7 @@ impl Provider for Engine {
         if running().get(job).is_none() {
             return false;
         }
-        running().end(job, State::Cancelled, json!({ "url": "", "error": "" }));
+        running().end(job, State::Cancelled, json!({ "url": "", "why": "" }));
         true
     }
 }
@@ -80,8 +80,8 @@ fn running() -> &'static Running<()> {
 /// The job `job` ended: done with the file it made at `url` (empty for a print), or failed.
 fn end(job: &str, made: Result<String, String>) {
     match made {
-        Ok(url) => running().end(job, State::Done, json!({ "url": url, "error": "" })),
-        Err(error) => running().end(job, State::Failed, json!({ "url": "", "error": error })),
+        Ok(url) => running().end(job, State::Done, json!({ "url": url, "why": "" })),
+        Err(error) => running().end(job, State::Failed, json!({ "url": "", "why": error })),
     }
 }
 
@@ -93,7 +93,7 @@ fn run(
     name: &str,
     work: impl FnOnce() -> Result<String, String> + Send + 'static,
 ) -> Result<(), String> {
-    moved.moved(State::Running, json!({ "url": "", "error": "" }));
+    moved.moved(State::Running, json!({ "url": "", "why": "" }));
     running().keep(job, Arc::new(()), moved);
     let named = job.to_owned();
     std::thread::Builder::new()

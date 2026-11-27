@@ -549,7 +549,7 @@ mod clipper {
                             .to_string(),
                     ),
                     Err(why) => {
-                        moved.moved("failed", &serde_json::json!({ "error": why }).to_string());
+                        moved.moved("failed", &serde_json::json!({ "why": why }).to_string());
                     }
                 }
             })

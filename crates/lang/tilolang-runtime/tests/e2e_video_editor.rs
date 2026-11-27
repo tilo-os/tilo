@@ -165,11 +165,11 @@ mod cases {
                 }
                 if *self.ready.borrow() {
                     Ok(format!(
-                        r#"{{"state":"done","done":300,"total":300,"url":"{FILM}","error":""}}"#
+                        r#"{{"state":"done","done":300,"total":300,"url":"{FILM}","why":""}}"#
                     ))
                 } else {
                     Ok(
-                        r#"{"state":"running","done":120,"total":300,"url":"","error":""}"#
+                        r#"{"state":"running","done":120,"total":300,"url":"","why":""}"#
                             .to_owned(),
                     )
                 }
@@ -620,7 +620,7 @@ mod cases {
                 |handlers| handlers.progress.clone(),
                 &serde_json::json!({
                     "id": "job-1", "op": "render", "state": "running",
-                    "detail": {"state": "running", "done": 120, "total": 300, "url": "", "error": ""},
+                    "detail": {"state": "running", "done": 120, "total": 300, "url": "", "why": ""},
                 }),
             );
             assert!((s.number(&p, "job_done") - 120.0).abs() < f64::EPSILON, "how far it has got");
@@ -628,7 +628,7 @@ mod cases {
                 |handlers| handlers.done.clone(),
                 &serde_json::json!({
                     "id": "job-1", "op": "render", "state": "done",
-                    "detail": {"state": "done", "done": 300, "total": 300, "url": FILM, "error": ""},
+                    "detail": {"state": "done", "done": 300, "total": 300, "url": FILM, "why": ""},
                 }),
             );
             assert_eq!(s.text(&p, "exported"), FILM);

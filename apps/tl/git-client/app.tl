@@ -439,7 +439,7 @@ type CheckStatus {
     phase: Text = ""
     completed: Option<Int> = .none
     total: Option<Int> = .none
-    error: Text = ""
+    why: Text = ""
     outcome: Text = ""
     exit_code: Option<Int> = .none
     elapsed_ms: Int = 0
@@ -1127,7 +1127,7 @@ action poll_check(g: Repository) {
                 } else if status.state == "failed" {
                     g.check.job = ""
                     g.check.state = .refused
-                    g.check.refusal = status.error
+                    g.check.refusal = status.why
                 } else if status.state == "cancelled" {
                     g.check.job = ""
                     g.check.state = .stopped

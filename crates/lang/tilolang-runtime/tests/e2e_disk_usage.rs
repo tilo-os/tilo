@@ -14,9 +14,9 @@ mod cases {
     use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, UiNode, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/disk-usage/app.tl");
-    const RUNNING: &str = r#"{"state":"running","path":"/home/you","bytes":42000000000,"files":1430,"total":0,"unreadable":0,"error":""}"#;
-    const DONE: &str = r#"{"state":"done","path":"/home/you","bytes":210300000000,"files":92127,"total":210300000000,"unreadable":3,"error":""}"#;
-    const CANCELLED: &str = r#"{"state":"cancelled","path":"/home/you","bytes":42000000000,"files":1430,"total":0,"unreadable":0,"error":""}"#;
+    const RUNNING: &str = r#"{"state":"running","path":"/home/you","bytes":42000000000,"files":1430,"total":0,"unreadable":0,"why":""}"#;
+    const DONE: &str = r#"{"state":"done","path":"/home/you","bytes":210300000000,"files":92127,"total":210300000000,"unreadable":3,"why":""}"#;
+    const CANCELLED: &str = r#"{"state":"cancelled","path":"/home/you","bytes":42000000000,"files":1430,"total":0,"unreadable":0,"why":""}"#;
 
     /// The device's engine: what it was asked, how the scan it runs stands now, the folders a
     /// finished scan lists, and the actions the start named as the scan moves and ends.
@@ -349,7 +349,7 @@ mod cases {
         {
             let t = Usage::new();
             *t.engine.state.borrow_mut() =
-                r#"{"state":"failed","path":"/secret","bytes":0,"files":0,"total":0,"unreadable":1,"error":"it is not granted"}"#.to_owned();
+                r#"{"state":"failed","path":"/secret","bytes":0,"files":0,"total":0,"unreadable":1,"why":"it is not granted"}"#.to_owned();
             t.act("analyze", vec![
                 Value::resource(&t.root),
                 Value::text("/secret"),

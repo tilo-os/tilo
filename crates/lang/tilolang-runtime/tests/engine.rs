@@ -332,7 +332,7 @@ action refused(p: Page) {
                 |h| h.done.clone(),
                 &record(
                     "failed",
-                    &serde_json::json!({"error": "the printer is out of paper"}),
+                    &serde_json::json!({"why": "the printer is out of paper"}),
                 ),
             );
             assert_eq!(

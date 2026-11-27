@@ -59,15 +59,15 @@ fn status(_device: &Device, job: &str) -> Result<String, String> {
         return Err(format!("no job `{job}` runs on this device"));
     };
     if running.cancel.load(Ordering::Relaxed) {
-        return Ok(r#"{"state":"cancelled","error":""}"#.to_owned());
+        return Ok(r#"{"state":"cancelled","why":""}"#.to_owned());
     }
     if let Some(error) = running.error.lock().ok().and_then(|error| error.clone()) {
-        return Ok(serde_json::json!({ "state": "failed", "error": error }).to_string());
+        return Ok(serde_json::json!({ "state": "failed", "why": error }).to_string());
     }
     if running.finished.load(Ordering::Relaxed) {
-        return Ok(r#"{"state":"done","error":""}"#.to_owned());
+        return Ok(r#"{"state":"done","why":""}"#.to_owned());
     }
-    Ok(r#"{"state":"running","error":""}"#.to_owned())
+    Ok(r#"{"state":"running","why":""}"#.to_owned())
 }
 
 /// Stop a transfer: false when it is not this device's or it had finished.
@@ -140,7 +140,7 @@ fn begin(job: &str, op: &str, ask: TransferAsk, moved: JobSink) -> Result<(), St
             match result {
                 _ if worker.cancel.load(Ordering::Relaxed) => moved.moved("cancelled", "{}"),
                 Ok(()) => moved.moved("done", "{}"),
-                Err(why) => moved.moved("failed", &serde_json::json!({ "error": why }).to_string()),
+                Err(why) => moved.moved("failed", &serde_json::json!({ "why": why }).to_string()),
             }
         })
         .map_err(|error| error.to_string())?;

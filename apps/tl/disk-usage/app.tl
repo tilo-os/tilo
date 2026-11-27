@@ -251,7 +251,7 @@ action scan_ended(a: Analyzer, j: host.Job) uses time {
                 a.total = state.total
                 a.files = state.files
                 a.unreadable = state.unreadable
-                a.trouble = state.error
+                a.trouble = state.why
                 for m in a.entries {
                     a.entries.remove(m)
                 }
@@ -542,7 +542,7 @@ type ScanState {
     files: Int = 0
     total: Int = 0
     unreadable: Int = 0
-    error: Text = ""
+    why: Text = ""
 }
 
 /// What asks the engine which folders a finished measuring found.

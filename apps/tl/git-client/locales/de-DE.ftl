@@ -1234,7 +1234,7 @@ d-pl44hgyv = Erledigt
 
 d-5qgxxmf2 = Gesamt
 
-d-jdbite5b = Fehler
+d-5lrqnob6 = Grund
 
 d-lseynsql = Ergebnis
 

@@ -255,7 +255,7 @@ pub fn rendering_answer(job: &str, done: u64, total: u64) -> Value {
 /// The answer of a render that failed or was cancelled.
 #[must_use]
 pub fn failed_answer(job: &str, error: &str) -> Value {
-    json!({ "state": "failed", "job": job, "error": error })
+    json!({ "state": "failed", "job": job, "why": error })
 }
 
 /// The sources `project` places on its timeline: imported media (not

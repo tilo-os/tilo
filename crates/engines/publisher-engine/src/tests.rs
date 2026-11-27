@@ -370,7 +370,7 @@ fn an_unreachable_registry_fails_the_job_with_its_address() {
     let ended = outcome(&started);
     assert_eq!(ended["state"], "failed", "{ended}");
     assert!(
-        ended["error"]
+        ended["why"]
             .as_str()
             .is_some_and(|why| why.contains("127.0.0.1:9")),
         "{ended}"

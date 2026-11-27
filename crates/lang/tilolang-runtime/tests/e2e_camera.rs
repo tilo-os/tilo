@@ -85,7 +85,7 @@ mod cases {
                 "id": job,
                 "op": "record",
                 "state": "running",
-                "detail": {"state": "running", "url": "", "error": ""},
+                "detail": {"state": "running", "url": "", "why": ""},
             })))
         }
 

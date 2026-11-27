@@ -388,7 +388,7 @@ fn tell(job: &Job) {
     };
     (job.moved)(
         state,
-        serde_json::json!({ "progress": progress, "answer": answer, "error": error }),
+        serde_json::json!({ "progress": progress, "answer": answer, "why": error }),
     );
 }
 

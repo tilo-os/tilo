@@ -162,7 +162,7 @@ impl Provider for DiskUsage {
         );
         moved.moved(
             State::Running,
-            json!({ "path": asked, "bytes": 0, "files": 0, "total": 0, "unreadable": 0, "error": "" }),
+            json!({ "path": asked, "bytes": 0, "files": 0, "total": 0, "unreadable": 0, "why": "" }),
         );
         std::thread::Builder::new()
             .name(format!("disk-usage-{job}"))
@@ -180,7 +180,7 @@ impl Provider for DiskUsage {
                             "files": files,
                             "total": 0,
                             "unreadable": 0,
-                            "error": "",
+                            "why": "",
                         }),
                     );
                 });
@@ -202,7 +202,7 @@ impl Provider for DiskUsage {
                     "files": seen.files,
                     "total": result.total,
                     "unreadable": result.unreadable,
-                    "error": seen.failure.clone().unwrap_or_default(),
+                    "why": seen.failure.clone().unwrap_or_default(),
                 });
                 seen.result = Some(result);
                 drop(seen);
@@ -276,9 +276,7 @@ mod tests {
         };
         assert_eq!(state, State::Failed);
         assert!(
-            answer["error"]
-                .as_str()
-                .is_some_and(|said| !said.is_empty()),
+            answer["why"].as_str().is_some_and(|said| !said.is_empty()),
             "a folder that is not there says why: {answer}"
         );
     }

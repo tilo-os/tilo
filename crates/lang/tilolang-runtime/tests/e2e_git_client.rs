@@ -1522,7 +1522,7 @@ mod cases {
             s.open(REPO);
             s.engine.host.borrow_mut().statuses.push_back(serde_json::json!({
                 "state": "failed",
-                "error": "The project's host does not approve `deploy`",
+                "why": "The project's host does not approve `deploy`",
             }));
             s.run_check("deploy").unwrap();
             s.call("poll_check", vec![Value::resource(&s.root)]);

@@ -47,7 +47,7 @@ impl Pull {
             .map(|lines| lines.clone())
             .unwrap_or_default();
         self.moved
-            .moved(state, serde_json::json!({ "lines": lines, "error": error }));
+            .moved(state, serde_json::json!({ "lines": lines, "why": error }));
     }
 }
 

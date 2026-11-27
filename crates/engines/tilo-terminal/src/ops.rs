@@ -288,10 +288,7 @@ fn begin_run(job: &str, live: std::sync::Arc<Live>, command: String, agent: bool
             let job = handle_job;
             let (_, cursor) = live.events(0);
             if let Err(error) = live.run_as(&command, agent) {
-                set_job(
-                    &job,
-                    json!({"state": "failed", "error": error.to_string()}),
-                );
+                set_job(&job, json!({"state": "failed", "why": error.to_string()}));
                 return;
             }
             let started = std::time::Instant::now();
@@ -301,16 +298,13 @@ fn begin_run(job: &str, live: std::sync::Arc<Live>, command: String, agent: bool
                 cursor = next;
                 for event in events {
                     if let Event::Finished(run) = event {
-                        set_job(
-                            &job,
-                            json!({"state": "done", "run": finished_value(&run)}),
-                        );
+                        set_job(&job, json!({"state": "done", "run": finished_value(&run)}));
                         return;
                     }
                     if let Event::Exit(_) | Event::Lost(_) = event {
                         set_job(
                             &job,
-                            json!({"state": "failed", "error": "the shell ended before the run did"}),
+                            json!({"state": "failed", "why": "the shell ended before the run did"}),
                         );
                         return;
                     }
@@ -318,14 +312,14 @@ fn begin_run(job: &str, live: std::sync::Arc<Live>, command: String, agent: bool
                 if started.elapsed() > RUN_PATIENCE {
                     set_job(
                         &job,
-                        json!({"state": "failed", "error": "the run did not finish in time"}),
+                        json!({"state": "failed", "why": "the run did not finish in time"}),
                     );
                     return;
                 }
                 if live.ended() {
                     set_job(
                         &job,
-                        json!({"state": "failed", "error": "the shell ended before the run did"}),
+                        json!({"state": "failed", "why": "the shell ended before the run did"}),
                     );
                     return;
                 }
@@ -335,7 +329,7 @@ fn begin_run(job: &str, live: std::sync::Arc<Live>, command: String, agent: bool
     if spawned.is_err() {
         set_job(
             job.as_str(),
-            json!({"state": "failed", "error": "the run's reader did not start"}),
+            json!({"state": "failed", "why": "the run's reader did not start"}),
         );
     }
 }

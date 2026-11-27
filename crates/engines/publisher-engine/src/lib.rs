@@ -253,7 +253,7 @@ mod jobs {
         let state = Arc::new(Job {
             stopped: AtomicBool::new(false),
         });
-        moved.moved(State::Running, json!({ "summary": "", "error": "" }));
+        moved.moved(State::Running, json!({ "summary": "", "why": "" }));
         running().keep(job, Arc::clone(&state), moved);
         let named = job.to_owned();
         std::thread::Builder::new()
@@ -262,10 +262,10 @@ mod jobs {
                 let outcome = work();
                 let (ended, detail) = match outcome {
                     _ if state.stopped.load(Ordering::Relaxed) => {
-                        (State::Cancelled, json!({ "summary": "", "error": "" }))
+                        (State::Cancelled, json!({ "summary": "", "why": "" }))
                     }
-                    Ok(summary) => (State::Done, json!({ "summary": summary, "error": "" })),
-                    Err(error) => (State::Failed, json!({ "summary": "", "error": error })),
+                    Ok(summary) => (State::Done, json!({ "summary": summary, "why": "" })),
+                    Err(error) => (State::Failed, json!({ "summary": "", "why": error })),
                 };
                 running().end(&named, ended, detail);
             })
@@ -273,7 +273,7 @@ mod jobs {
                 running().end(
                     job,
                     State::Failed,
-                    json!({ "summary": "", "error": error.to_string() }),
+                    json!({ "summary": "", "why": error.to_string() }),
                 );
                 format!("the registry call did not start: {error}")
             })?;
@@ -288,7 +288,7 @@ mod jobs {
             return false;
         };
         state.stopped.store(true, Ordering::Relaxed);
-        running().end(job, State::Cancelled, json!({ "summary": "", "error": "" }));
+        running().end(job, State::Cancelled, json!({ "summary": "", "why": "" }));
         true
     }
 }

@@ -43,7 +43,7 @@ mod cases {
                 "state": state,
                 "progress": "1430 of 9218 files, 42.0 GB",
                 "answer": answer,
-                "error": error,
+                "why": error,
             })
             .to_string()
         }

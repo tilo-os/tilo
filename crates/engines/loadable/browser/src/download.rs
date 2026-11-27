@@ -123,7 +123,7 @@ impl Move {
             Self::Done { path, name } => {
                 serde_json::json!({ "path": path.to_string_lossy(), "name": name })
             }
-            Self::Failed { error } => serde_json::json!({ "error": error }),
+            Self::Failed { error } => serde_json::json!({ "why": error }),
             Self::Cancelled => serde_json::json!({}),
         }
         .to_string()

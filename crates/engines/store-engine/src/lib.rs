@@ -1435,7 +1435,7 @@ impl JobState {
             "state": self.state,
             "done": self.done,
             "total": self.total,
-            "error": self.error,
+            "why": self.error,
             "status": self.status,
         })
     }
@@ -1506,7 +1506,7 @@ mod jobs {
                 table().end(&named, ended, state.json());
             })
             .map_err(|error| {
-                table().end(id, State::Failed, json!({ "error": error.to_string() }));
+                table().end(id, State::Failed, json!({ "why": error.to_string() }));
                 error.to_string()
             })?;
         Ok(())

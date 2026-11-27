@@ -89,7 +89,7 @@ impl Job {
     fn tell(&self) {
         (self.moved)(
             self.state.key(),
-            serde_json::json!({ "result": self.answer, "error": self.error }),
+            serde_json::json!({ "result": self.answer, "why": self.error }),
         );
     }
 }
