@@ -1,14 +1,24 @@
 //! An app's records are kept by the workspace service the app reaches over its own connection:
-//! its store reads and writes them with the record commands on the route the app joined, the session's broker hands them to the device's one store, and that store answers from
-//! the workspace it holds. Nothing here stands in for the service: the session is a person's own,
-//! with its identity, its workspace service and the app wire its apps connect on, and the app's
-//! processes are this test's, admitted as the launches the session recorded.
+//! its store reads and writes them with the record commands on the route the app joined, the
+//! session's broker hands them to the device's one store, and that store answers from the
+//! workspace it holds. Nothing here stands in for the service: the session is the shell of a
+//! device daemon of the test's own ([`crate::common::on_its_daemon_with`]), which holds the
+//! person's own workspace and serves the app wire its apps connect on, and the app's processes are
+//! this test's, admitted as the launches the session recorded.
+//!
+//! The app is installed in the device, and in each workspace as its person installs it there: the
+//! kinds its new records may be of are the ones its installed manifest declares, and keeping its
+//! records is the grant installing it in the workspace gives it. Its surface, which this process
+//! registers as the app's, declares the kind its records are of and the content edit the
+//! framework writes them with: a record whose fields keep no container founds with the same
+//! change on every device, which is what the store admits.
 //!
 //! The device is offline throughout: its only relay never answers, so every read and write is
 //! answered by the device's own service.
 
 #![cfg(target_os = "linux")]
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -17,56 +27,214 @@ use collaboration::resource::{
     ConnectionDocuments, DocumentAsk, DocumentCheckout, DocumentId, DocumentPort, DocumentRead,
     ResourceOwners, ResourceSaveStatus, ResourceType, conformance,
 };
+use tilo_actions::remote::RemoteActionTarget;
+use tilo_compositor::OutputConfig;
 use tilo_session::{AppSocket, Launches, Options, Session};
+use tilo_session_client::daemon_documents::{DaemonShell, inherited_link};
 use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 
-use crate::common::{PERSON, reached, until, wait_for};
+use crate::common::{reached, until, wait_for};
 
-/// The app whose processes the test runs.
-const APP: &str = "so.tilo.lang.tasks";
+/// The app whose processes the test runs: one of the test's own, whose records are its own kind.
+const APP: &str = "so.tilo.test-documents";
 
-/// A person's own session in `home`, with its identity, its workspace service and its app wire in
-/// `root`. Answers the session once it holds the workspace
-/// it founds, and that workspace.
-fn offline_session(
-    home: &mut tilo_test_env::TestHome,
-    root: &std::path::Path,
-    launches: Arc<Launches>,
-) -> (Session, String) {
-    // The account's own store below the identity directory, where every reader looks, and the
-    // person's devices a certificate is checked against before anything signs with it.
-    tilo_identity::sources::test_trust::install();
-    let identity = tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
-    std::fs::create_dir_all(&identity).expect("the identity's directory");
-    let system = home.root().join("system");
-    let secrets = home.root().join("secrets");
-    std::fs::create_dir_all(&secrets).expect("the secret store's directory");
-    home.env()
-        .set("TILO_IDENTITY_ROOT", &system)
-        .set("TILO_SECRETS_DIR", &secrets);
-    // This process stands in for the machine's daemon: it takes the device key first, so the
-    // identity is sealed with it.
-    crate::common::take_device_key(&tilo_identity::provisioning::collaboration_identity_paths());
-    tilo_identity::provisioning::ensure_throwaway_test_identity(
-        &identity,
-        &tilo_identity::provisioning::collaboration_identity_paths(),
-        tilo_identity::provisioning::IdentityStorage::Files,
+/// The kind the app's records are of: the scenarios write documents of it, under the id each
+/// mints. It is the app's, as its surface and its installed manifest declare.
+const KIND: &str = "note";
+
+/// The app's surface, compiled: the record its processes write, whose fields are the ones the
+/// scenarios write, and the content edit the framework writes a record with on every kind. A
+/// record whose fields keep no container founds with a change every holder derives alike.
+const SURFACE: &str = r#"{"reads":[],"resources":[{"fields":[{"path":"body","type":"text"},{"path":"first","type":"text"},{"path":"second","type":"text"}],"kind":"note","label":"Note","verbs":[{"id":"type","kind":"undoable","label":"Edit"}],"version":0}]}"#;
+
+/// The app, as this process knows it: its surface registered ([`collab_types::app_surface`]), so
+/// the store declares the kind its records are of, and the hash its installed version names.
+fn register_app() -> String {
+    let surface = collab_types::surface::canonical(
+        &serde_json::from_str(SURFACE).expect("the app's surface is JSON"),
+    );
+    let bytes = surface.into_bytes();
+    let hash = *blake3::hash(&bytes).as_bytes();
+    collab_types::app_surface::Surfaces::process().register_package(APP, &bytes);
+    hex::encode(hash)
+}
+
+/// Install `app` in the device's store, as a device has it: a package whose signed manifest
+/// declares `kind` among the kinds its records are of, which is what the device reads before an
+/// app founds a record of one.
+fn install_on_device(store: &std::path::Path, app: &str, kind: &str) {
+    let payload = store.join("payload").join(app);
+    std::fs::create_dir_all(payload.join("bin")).expect("the app's payload");
+    // A program the launcher may run: a package the device has installed is started when its
+    // record is read, and this one runs nothing.
+    let program = payload.join("bin/app");
+    std::fs::write(&program, "#!/bin/sh\nexit 0\n").expect("the app's program");
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .expect("the app's program runs");
+    }
+    let manifest = payload.join("manifest.toml");
+    std::fs::write(
+        &manifest,
+        format!(
+            "[package]\n\
+             id = \"{app}\"\n\
+             version = \"1.0.0\"\n\
+             kind = \"app\"\n\
+             name = \"Documents\"\n\
+             \n\
+             [publisher]\n\
+             identity = \"ed25519:{key}\"\n\
+             signature = \"\"\n\
+             \n\
+             [sandbox]\n\
+             namespaces = [\"user\"]\n\
+             seccomp = \"tilo-default\"\n\
+             landlock = \"strict\"\n\
+             \n\
+             [sandbox.net]\n\
+             mode = \"off\"\n\
+             \n\
+             [entrypoint]\n\
+             bin = \"bin/app\"\n\
+             type = \"gui\"\n\
+             \n\
+             [resources]\n\
+             kinds = [\"{kind}\"]\n\
+             \n\
+             [providers]\n\
+             schemes = [\"documents\"]\n",
+            key = "11".repeat(32),
+        ),
     )
-    .expect("the throwaway identity");
-    let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        collab: true,
-        state: Some(home.state().to_path_buf()),
-        app_socket: AppSocket::At(root.join("app_wire.sock")),
-        launches,
-        ..Options::default()
-    });
+    .expect("the app's manifest");
+    // The app's row goes beside the rows of the apps installed before it.
+    let registry = store.join("registry.toml");
+    let rows = std::fs::read_to_string(&registry).unwrap_or_default();
+    std::fs::write(
+        &registry,
+        format!(
+            "{rows}[[entry]]\nid = \"{app}\"\nversion = \"1.0.0\"\n\
+             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
+            payload = payload.display(),
+            manifest = manifest.display(),
+        ),
+    )
+    .expect("the app's row");
+}
+
+/// A session as a computer starts one: the shell of a device daemon of its own
+/// ([`crate::common::on_its_daemon_with`]), which holds the person's own workspace and the keys
+/// its records are sealed with. The app is installed in the daemon's store, as a device has the
+/// apps its person installed there. Answers the session once the shell shows the workspace it
+/// holds, that workspace, and the person's own link to their daemon: the link an install in a
+/// workspace goes over.
+fn session(root: &std::path::Path, launches: Arc<Launches>) -> (Session, String, DaemonShell) {
+    let link = RefCell::new(None);
+    let mut session = crate::common::on_its_daemon_with(
+        &[OutputConfig::new(
+            "HEADLESS-1",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )],
+        |device| {
+            // The apps this computer installed: a new record is of a kind its installed manifest
+            // declares, and the daemon reads the store a person's apps are installed in.
+            install_on_device(&device.store(), APP, KIND);
+            // The person's own link to their daemon: what installs the app in a workspace, as
+            // their own install does.
+            link.replace(Some(
+                device
+                    .daemon
+                    .link_person(tilo_test_env::hang_bound())
+                    .expect("the daemon makes the person's link"),
+            ));
+            Options {
+                collab: true,
+                state: Some(root.join("state")),
+                asks: Some(tilo_service::asks::channel()),
+                app_socket: AppSocket::At(root.join("app_wire.sock")),
+                mcp_server: Some(root.join("agent.sock")),
+                launches,
+                ..Options::default()
+            }
+        },
+    );
     let workspace = wait_for(
         &mut session,
         "the workspace the shell shows",
         front_workspace,
     );
-    (session, workspace)
+    // The daemon holds the workspace once it says so: until then it answers no call in it, an
+    // install's included.
+    crate::common::kept_in_workspace(&mut session);
+    let runtime = tilo_rt::app().handle().clone();
+    let shell = DaemonShell::new(
+        inherited_link(
+            Some(link.into_inner().expect("the person's link")),
+            &runtime,
+        )
+        .map(|(link, _)| link),
+        runtime,
+    );
+    (session, workspace, shell)
+}
+
+/// Ask `verb` of the workspace's own actions, as the person does over their own link to their
+/// daemon: what the workspace answers.
+fn ask_the_workspace(
+    session: &mut Session,
+    shell: &DaemonShell,
+    workspace: &str,
+    verb: &str,
+    arguments: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let request = crate::common::invocation(
+        &RemoteActionTarget::workspace_governance(workspace, verb),
+        arguments,
+        None,
+        None,
+    );
+    let (answered, answer) = mpsc::sync_channel(1);
+    let (shell, workspace) = (shell.clone(), workspace.to_owned());
+    let runtime = shell.runtime().clone();
+    let _task = runtime.spawn(async move {
+        let settled = match shell.link() {
+            Ok(link) => link.dispatch().settled(Some(workspace), request).await,
+            Err(error) => Err(error),
+        };
+        let _ = answered.send(settled);
+    });
+    wait_for(session, "the workspace's answer", |_| {
+        answer.try_recv().ok()
+    })
+}
+
+/// Install `app`, whose installed version names the surface `surface`, in `workspace` through the
+/// workspace's own install action, as its person does: what lets the app keep its records there.
+fn install_in_workspace(
+    session: &mut Session,
+    shell: &DaemonShell,
+    workspace: &str,
+    app: &str,
+    surface: &str,
+) {
+    ask_the_workspace(
+        session,
+        shell,
+        workspace,
+        "install-app",
+        &serde_json::json!({
+            "app": app,
+            "version": "1.0.0",
+            "surface": surface,
+            "package": "00".repeat(32),
+            "publisher": "00".repeat(32),
+            "dev": true,
+        }),
+    )
+    .unwrap_or_else(|error| panic!("the person installs {app} in the workspace: {error}"));
 }
 
 /// The workspace the shell shows.
@@ -109,15 +277,17 @@ fn connect(
         .map_err(|error| format!("the app's route is joined: {error:?}"))
     };
     // A workspace, and its founding membership, reach the identity service a few turns after the
-    // shell shows the workspace: until then a join is refused, as an app started that early would
-    // be, and it joins again.
+    // shell shows the workspace, and the daemon's holder takes the workspace a moment after it
+    // starts: until then a join is refused, as an app started that early would be, and it joins
+    // again.
     let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
     loop {
         match join() {
             Ok(manager) => return manager,
             Err(why)
                 if (why.contains("not a member")
-                    || why.contains("not available on this device"))
+                    || why.contains("not available on this device")
+                    || why.contains("no identity to sign in with"))
                     && std::time::Instant::now() < deadline =>
             {
                 std::thread::park_timeout(std::time::Duration::from_millis(100));
@@ -259,7 +429,11 @@ fn a_record_the_service_answers_late_opens_without_waiting(
         store.with(&note.id, |doc| {
             automerge::transaction::Transactable::put(doc, automerge::ROOT, "body", "kept")
                 .expect("a text puts");
-            doc.commit();
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default().with_message(
+                    tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(app)),
+                ),
+            );
         });
         store.flush().expect("the workspace took the record");
     }
@@ -329,18 +503,22 @@ fn a_record_the_service_answers_late_opens_without_waiting(
 }
 
 /// The scenarios every port answers alike run against the workspace service, over the app's
-/// connection, in two workspaces the device holds while it is offline. Then a write the
-/// workspace refuses, and one made after the service stopped, are each said, and nothing claims
-/// them saved.
+/// connection, in two workspaces the device holds while it is offline. Then a write the workspace
+/// refuses, and one made after the service stopped, are each said, and nothing claims them saved.
 #[test]
 fn an_apps_records_are_kept_by_the_workspace_service_over_its_connection() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
     let launches = Arc::new(Launches::default());
-    let (mut session, first) = offline_session(&mut home, root.path(), Arc::clone(&launches));
+    // The app's surface, before the device starts: what the store declares the kind its records
+    // are of by, and the hash its installed version names.
+    let surface = register_app();
+    let (mut session, first, shell) = session(root.path(), Arc::clone(&launches));
     let socket = root.path().join("app_wire.sock");
-    let tasks = format!("tl.{APP}.Tasks");
+    let kind = KIND;
+    // The person installs the app in the workspace they show, through the workspace's own install
+    // action: the grant that lets the app keep its records there.
+    install_in_workspace(&mut session, &shell, &first, APP, &surface);
 
     // The app says when it is in the first workspace and when it holds a saved record; it hears
     // which the second workspace is, and when the service under it stopped.
@@ -350,9 +528,9 @@ fn an_apps_records_are_kept_by_the_workspace_service_over_its_connection() {
     let (stopped, stop) = mpsc::channel::<()>();
     std::thread::scope(|scope| {
         // The app's thread owns its ends of the channels; the rest it borrows.
-        let (socket, launches, tasks, first) = (&socket, &launches, &tasks, &first);
+        let (socket, launches, kind, first) = (&socket, &launches, &kind, &first);
         let app = scope.spawn(move || {
-            let mut start = |workspace: &str| started(socket, launches, (APP, tasks), workspace);
+            let mut start = |workspace: &str| started(socket, launches, (APP, kind), workspace);
             drop(start(first));
             joined.send(()).expect("the test waits");
             let second = second.recv().expect("the second workspace");
@@ -360,7 +538,7 @@ fn an_apps_records_are_kept_by_the_workspace_service_over_its_connection() {
             a_record_the_service_answers_late_opens_without_waiting(
                 socket,
                 launches,
-                (APP, tasks),
+                (APP, kind),
                 first,
             );
 
@@ -438,6 +616,16 @@ fn an_apps_records_are_kept_by_the_workspace_service_over_its_connection() {
                 |session| front_workspace(session).is_some_and(|front| front != *first),
             );
             let second = front_workspace(&mut session).expect("the second workspace");
+            // The daemon holds the second workspace once it says so: until then it answers no
+            // call in it, an install's included.
+            until(
+                &mut session,
+                "the device holds the second workspace",
+                |session| session.held_workspaces().iter().any(|held| held == &second),
+            );
+            // The app is installed in the second workspace too, as it is in the first: the
+            // workspace keeps its records only where its person installed it.
+            install_in_workspace(&mut session, &shell, &second, APP, &surface);
             made.send(second).expect("the app waits for it");
             assert!(
                 reached(&mut session, |_| held.try_recv().is_ok()

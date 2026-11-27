@@ -929,6 +929,13 @@ pub fn on_its_daemon_with(
 }
 
 impl Device {
+    /// The app store this device's daemon reads its installed packages from: where a person's
+    /// apps are installed on this computer.
+    #[must_use]
+    pub fn store(&self) -> std::path::PathBuf {
+        self.home.data().join("tilo-apps")
+    }
+
     /// A headless session on this device, its own services keeping their files in `state`: the
     /// device started again.
     ///
