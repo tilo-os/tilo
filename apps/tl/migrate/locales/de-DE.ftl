@@ -388,3 +388,16 @@ d-jkquvjej-url = Adresse
 d-jkquvjej-login = Anmeldename
 
 d-jkquvjej-secret = Passwort oder Schlüssel
+
+d-t4fgrtbj = Angebotene Quellen
+    .doc = Was die `sources`-Antwort der Engine sagt: das Gerät, das sie gelesen hat, und jede Quelle, wie die Liste sie zeigt.
+    .noun = { $count ->
+        [one] angebotene Quelle
+       *[other] angebotene Quellen
+    }
+
+d-7s5jgygk = Gerät
+    .doc = Der Schlüssel des Geräts, das die Daten hält.
+
+d-r4262ghz = Quellen
+    .doc = Jede Quelle, die das Gerät liest, wie die Liste sie anbietet.
