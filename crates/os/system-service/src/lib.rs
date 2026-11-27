@@ -91,7 +91,6 @@ enum Part {
     Printers,
     Users,
     Drives,
-    Storage,
     DiskUnlock,
     HostInfo,
     Scanners,
@@ -211,7 +210,7 @@ enum Landed {
     Storage {
         action: String,
         result: Result<(), String>,
-        storage: tilo_system_resources::storage::Storage,
+        storage: Box<tilo_system_resources::storage::Storage>,
     },
 }
 
@@ -639,7 +638,6 @@ impl SystemService {
             ),
             Part::Users => (&mut readings.users.pending, &mut readings.users.problem),
             Part::Drives => (&mut readings.drives.pending, &mut readings.drives.problem),
-            Part::Storage => (&mut readings.storage.pending, &mut readings.storage.problem),
             Part::DiskUnlock => (
                 &mut readings.disk_unlock.pending,
                 &mut readings.disk_unlock.problem,
@@ -902,7 +900,7 @@ impl SystemService {
                 action,
                 result,
                 storage,
-            } => self.land_storage(&action, result, storage),
+            } => self.land_storage(&action, result, *storage),
         }
     }
 
@@ -1015,7 +1013,7 @@ impl SystemService {
             Landed::Storage {
                 action,
                 result,
-                storage: system.scan_storage(),
+                storage: Box::new(system.scan_storage()),
             }
         });
         Started::Accepted
