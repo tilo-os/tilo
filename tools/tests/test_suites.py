@@ -396,9 +396,9 @@ class CargoReaderTests(unittest.TestCase):
                 "tilo-ui",
                 suites.select_package_scopes(manifest, ["apps/moderation-model/src/lib.rs"]),
             )
-            # The vendored quit request is compiled into tilo-ui's library.
+            # The vendored quit request is compiled into the app runner's library.
             self.assertIsNone(suites.select_package_scopes(
-                manifest, ["vendor/winit/src/platform_impl/quit_request.rs"])["tilo-ui"])
+                manifest, ["vendor/winit/src/platform_impl/quit_request.rs"])["tilo-ui-app"])
         with self.subTest(phase='declared inputs select the reading package'):
             manifest = suites.parse(READER_MANIFEST)
             self.assertEqual(suites.select_packages(manifest, ["apps/calc/src/main.rs"]), ["ui"])
