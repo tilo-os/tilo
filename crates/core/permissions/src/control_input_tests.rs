@@ -8,7 +8,7 @@ use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
 
 #[test]
 fn a_buttons_own_effect_keeps_its_ask_while_the_screens_value_verb_needs_only_reading() {
-    let person = crate::permissions::MemberId::person("ad".repeat(32));
+    let person = crate::MemberId::person("ad".repeat(32));
     let editor = PermissionContext::member(&person, Role::Editor);
     let app = "so.tilo.notes";
 

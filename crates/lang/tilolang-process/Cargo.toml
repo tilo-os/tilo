@@ -59,6 +59,7 @@ thin = ["app-launch", "dep:runtime-dylib"]
 test-support = []
 
 [dependencies]
+tilo-permissions.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 # The app a device's development build is a build of: its engines are the app's own, and a build
 # asks for them by the id it runs under.

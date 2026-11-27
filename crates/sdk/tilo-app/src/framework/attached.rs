@@ -25,10 +25,10 @@ use std::rc::Rc;
 
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::{ActionEnvelope, ActionOutput, ActionTransport};
+use tilo_permissions::PermissionContext;
+use tilo_permissions::SharedPermissions;
 use tilo_ui_base::collaboration::DocumentMutation;
-use tilo_ui_base::{
-    permissions::MemberId, permissions::PermissionContext, permissions::SharedPermissions,
-};
+use tilo_ui_base::permissions::MemberId;
 use ui_core::application::{
     ApplicationDefinition, ComponentRunnerInputs, LaunchTarget, ProcessContextInputs, RestoreInput,
 };
@@ -614,7 +614,7 @@ impl AttachedView {
                 .unwrap_or_default(),
             input: tilo_ui_base::input_generation::generation(),
             frames: self.frame_as_is().frames(),
-            permissions: tilo_ui_base::permissions::shared_revision(),
+            permissions: tilo_permissions::shared_revision(),
         }
     }
 

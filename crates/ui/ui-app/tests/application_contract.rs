@@ -58,9 +58,9 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         let mut definition = definition(probe_factory);
         definition.required.push(denied_scope());
         let authority = permissions();
-        authority.set(tilo_ui_base::permissions::PermissionContext::granted(
+        authority.set(tilo_permissions::PermissionContext::granted(
             &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            &tilo_ui_base::permissions::TreePath::root(),
+            &tilo_permissions::TreePath::root(),
             tilo_action_types::KindSet::ALL,
             None,
         ));
@@ -872,9 +872,9 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let authority = permissions();
         if case == "revoked" {
             definition.required.push(denied_scope());
-            authority.set(tilo_ui_base::permissions::PermissionContext::granted(
+            authority.set(tilo_permissions::PermissionContext::granted(
                 &tilo_ui_base::permissions::MemberId::person("probe-author"),
-                &tilo_ui_base::permissions::TreePath::root(),
+                &tilo_permissions::TreePath::root(),
                 tilo_action_types::KindSet::ALL,
                 None,
             ));
@@ -943,9 +943,9 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert!(records.durability_error(&record.id).is_some());
         assert_eq!(calls(), 1);
         definition.app_id = APP.into();
-        authority.set(tilo_ui_base::permissions::PermissionContext::granted(
+        authority.set(tilo_permissions::PermissionContext::granted(
             &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            &tilo_ui_base::permissions::TreePath::root(),
+            &tilo_permissions::TreePath::root(),
             tilo_action_types::KindSet::ALL,
             None,
         ));

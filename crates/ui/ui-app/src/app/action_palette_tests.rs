@@ -471,7 +471,7 @@ tilo_test_env::scenario! {
             assert_eq!(app.collect_local_resources().len(), 1);
             app.actions.permission_generation.set(u64::MAX);
 
-            app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+            app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
                 &tilo_ui_base::permissions::MemberId::person("restricted"),
             ));
 
@@ -485,7 +485,7 @@ tilo_test_env::scenario! {
         {
             let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-            app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+            app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
                 &tilo_ui_base::permissions::MemberId::person("restricted"),
             ));
             app.open_action_palette();

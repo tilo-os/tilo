@@ -163,7 +163,7 @@ pub(crate) struct Hosted {
     pub(crate) records: Option<(
         ui_core::resource::ResourceStore,
         tilo_resource::MemberId,
-        Option<tilo_ui_base::permissions::LivePermissions>,
+        Option<tilo_permissions::LivePermissions>,
     )>,
     /// The records every app of the workspace opens, and the window's wake
     /// scope, against which the workspace's emoji are registered.

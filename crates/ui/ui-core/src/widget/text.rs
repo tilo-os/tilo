@@ -1,9 +1,9 @@
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
+#[cfg(feature = "model")]
+use tilo_permissions::PermissionScope;
 use tilo_ui_base::i18n::ArgValue;
 use tilo_ui_base::i18n::widget_text;
-#[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionScope;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;

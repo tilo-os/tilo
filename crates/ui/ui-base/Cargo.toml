@@ -28,7 +28,7 @@ default = ["native", "broker-transport"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "dep:tilo-reference", "settings-model/model", "tilo-actions/document-read"]
+model = ["dep:tilo-permissions", "dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "dep:tilo-reference", "settings-model/model", "tilo-actions/document-read"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
@@ -94,6 +94,7 @@ dmabuf-import = ["dep:ash"]
 gpu-video = ["dmabuf-import"]
 
 [dependencies]
+tilo-permissions = { workspace = true, optional = true }
 tilo-member-types.workspace = true
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Sorts without a copy of std's sort per call site, which kept the web

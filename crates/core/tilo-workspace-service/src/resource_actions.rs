@@ -297,7 +297,7 @@ struct Asked<'a> {
     arguments: &'a Map<String, serde_json::Value>,
     workspace_policy: &'a tilo_desktop_model::Workspace,
     decider: &'a tilo_broker_core::BrokerActor,
-    permissions: &'a collaboration::permissions::PermissionContext,
+    permissions: &'a tilo_permissions::PermissionContext,
     unix_time: u64,
     ambient: &'a tilo_actions::ActionContext,
     actor: &'a [u8],
@@ -329,12 +329,12 @@ impl Asked<'_> {
             self.permissions
                 .invocation_answer(app, resource, action, Some(self.arguments), None);
         match verdict.min(device) {
-            collaboration::permissions::Answer::Deny => {
+            tilo_permissions::Answer::Deny => {
                 return Err(Box::new(rejected(ActionCallError::NotPermitted)));
             }
             // Only the person's approve of the asked record this call was kept as answers an ask:
             // a confirmation the call writes itself is none.
-            collaboration::permissions::Answer::Ask if self.request.approval().is_none() => {
+            tilo_permissions::Answer::Ask if self.request.approval().is_none() => {
                 return Err(Box::new(rejected(ActionCallError::confirmation_required())));
             }
             _ => {}
@@ -430,8 +430,8 @@ impl ResourceActions {
         let workspace_policy = under_policy(&workspace, &policy.access.policy)
             .ok_or_else(|| invalid("that is not a workspace"))?;
         // What this device itself may do here bounds every call it carries.
-        let permissions = collaboration::permissions::PermissionContext::new(
-            collaboration::permissions::Acting::person(person),
+        let permissions = tilo_permissions::PermissionContext::new(
+            tilo_permissions::Acting::person(person),
             policy.sandbox.clone(),
             policy.access.clone(),
         )

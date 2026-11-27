@@ -91,14 +91,14 @@ use std::collections::HashMap;
 use std::rc::Rc;
 #[cfg(all(feature = "model", feature = "native"))]
 use taffy::NodeId;
+use tilo_permissions::PermissionContext;
+use tilo_permissions::SharedPermissions;
+#[cfg(feature = "model")]
+use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 #[cfg(feature = "model")]
 use tilo_ui_base::widget::component_walk::has_separate_document_owner;
-#[cfg(feature = "model")]
-use tilo_ui_base::{
-    permissions::MemberId, permissions::PermissionContext, permissions::SharedPermissions,
-};
 
 #[cfg(feature = "model")]
 mod action_part;
@@ -395,7 +395,7 @@ impl ControlAvailability {
     fn derive(
         binding: &CallbackBinding,
         forest: &Rc<[SharedResource]>,
-        permissions: tilo_ui_base::permissions::DirectoryPermissionObservation,
+        permissions: tilo_permissions::DirectoryPermissionObservation,
         addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> Self {
         let mut derived = Self {
@@ -842,7 +842,7 @@ impl BoundResourceSnapshot {
 #[cfg(feature = "model")]
 pub struct ControlAvailability {
     forest: Rc<[SharedResource]>,
-    permissions: tilo_ui_base::permissions::DirectoryPermissionObservation,
+    permissions: tilo_permissions::DirectoryPermissionObservation,
     addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     /// How many available, permitted actions of `forest` have each address.
     counts: HashMap<tilo_actions::ActionAddress, usize>,
@@ -1408,7 +1408,7 @@ pub fn activate_bound_search(
     if !binding
         .permissions
         .borrow()
-        .check(&tilo_ui_base::permissions::PermissionScope::app(
+        .check(&tilo_permissions::PermissionScope::app(
             &binding.app_id,
             tilo_ui_base::permissions::ActionKind::Read,
         ))
@@ -1446,7 +1446,7 @@ pub fn activate_bound_search(
 pub struct BoundDirectoryObservation {
     owner: uuid::Uuid,
     pub generation: Option<u64>,
-    permissions: tilo_ui_base::permissions::DirectoryPermissionObservation,
+    permissions: tilo_permissions::DirectoryPermissionObservation,
     revisions: Vec<Option<String>>,
     domains: Vec<tilo_ui_base::widget::ActionDirectoryInvocationDomain>,
 }
@@ -1569,8 +1569,7 @@ pub struct BoundOwnerMark {
 #[cfg(feature = "model")]
 #[derive(PartialEq)]
 pub(crate) struct OwnerInputs {
-    pub(crate) permissions:
-        Result<tilo_ui_base::permissions::DirectoryPermissionObservation, String>,
+    pub(crate) permissions: Result<tilo_permissions::DirectoryPermissionObservation, String>,
     pub(crate) save: Result<crate::resource::ResourceSaveStatus, String>,
 }
 
@@ -1667,7 +1666,7 @@ struct CachedBoundResources {
     /// ([`tilo_ui_base::component_inputs`]); the host's frame count for an owner without one.
     local: LocalInputs,
     locale: u64,
-    permissions: tilo_ui_base::permissions::DirectoryPermissionObservation,
+    permissions: tilo_permissions::DirectoryPermissionObservation,
     revisions: Vec<Option<String>>,
     filter_token: u64,
 }
@@ -1933,12 +1932,12 @@ pub fn admit_local_action(
     argument: Option<&str>,
 ) -> Result<(), tilo_actions::ApiError> {
     let answer = permissions.invocation_admission(app_id, resource, action, typed, argument);
-    tilo_ui_base::permissions::admit_in_window(answer, action, permissions.asker()).map_err(
-        |refused| match permissions.shown_refusal(resource, action) {
-            Some(held) if answer.answer == tilo_ui_base::permissions::Answer::Deny => held,
+    tilo_permissions::admit_in_window(answer, action, permissions.asker()).map_err(|refused| {
+        match permissions.shown_refusal(resource, action) {
+            Some(held) if answer.answer == tilo_permissions::Answer::Deny => held,
             _ => refused,
-        },
-    )
+        }
+    })
 }
 
 /// Whether the person's own call of `spec` with these arguments waits for their yes:
@@ -2058,7 +2057,7 @@ fn internal_refusal(code: &str) -> Option<&'static str> {
 }
 
 #[cfg(feature = "model")]
-pub(crate) use ::collaboration::permissions::denied;
+pub(crate) use tilo_permissions::denied;
 
 /// The one resource `binding` publishes for the document's `request`ed history action, and that
 /// action's name: a keyboard undo or redo reaches a document that declares its history through the
@@ -3168,13 +3167,13 @@ fn perform_resource_action(
                             argument,
                         );
                         let asker = binding.permissions.borrow().asker();
-                        match tilo_ui_base::permissions::admit_in_window(answer, spec, asker) {
+                        match tilo_permissions::admit_in_window(answer, spec, asker) {
                             Err(tilo_actions::ApiError::ConfirmationRequired)
                                 if approval.is_some() => {}
                             admitted => admitted.map_err(|refused| {
                                 match binding.permissions.borrow().shown_refusal(resource, spec) {
                                     Some(held)
-                                        if answer.answer == tilo_ui_base::permissions::Answer::Deny =>
+                                        if answer.answer == tilo_permissions::Answer::Deny =>
                                     {
                                         held
                                     }

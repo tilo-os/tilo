@@ -5,7 +5,7 @@
 
 use taffy::{NodeId, TaffyTree};
 #[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionScope;
+use tilo_permissions::PermissionScope;
 use tilo_ui_base::presence::PathSegment;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;
@@ -769,10 +769,7 @@ macro_rules! flow_builders {
         /// Check this layout behind a permission scope.
         #[must_use]
         #[cfg(feature = "model")]
-        pub fn with_permission_scope(
-            mut self,
-            scope: tilo_ui_base::permissions::PermissionScope,
-        ) -> Self {
+        pub fn with_permission_scope(mut self, scope: tilo_permissions::PermissionScope) -> Self {
             self.flow.permission_scope = Some(scope);
             self
         }
@@ -964,7 +961,7 @@ macro_rules! flow_capabilities {
 
         #[cfg(feature = "model")]
         impl ::tilo_ui_base::widget::permission::PermissionGuarded for $ty {
-            fn permission_scope(&self) -> Option<tilo_ui_base::permissions::PermissionScope> {
+            fn permission_scope(&self) -> Option<tilo_permissions::PermissionScope> {
                 self.flow.permission_scope.clone()
             }
         }

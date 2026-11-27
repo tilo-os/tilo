@@ -85,7 +85,7 @@ fn draw_frame_content_owning(
         app.root_widget.release_scene_cache();
         #[cfg(feature = "model")]
         {
-            app.painted_permissions = tilo_ui_base::permissions::shared_revision();
+            app.painted_permissions = tilo_permissions::shared_revision();
         }
     }
     // Every motion this frame reads is read at this instant or later.
@@ -1239,7 +1239,7 @@ mod rebuild_focus_tests;
 /// Mutating events should route through this so denied interactions
 /// short-circuit before the widget ever observes them.
 pub fn dispatch_guarded_event<W: tilo_ui_base::widget::Widget + ?Sized>(
-    ctx: &tilo_ui_base::permissions::PermissionContext,
+    ctx: &tilo_permissions::PermissionContext,
     widget: &W,
     dispatch: impl FnOnce(),
 ) -> bool {

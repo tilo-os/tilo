@@ -166,7 +166,7 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     /// whenever grants change one. They decide how the window shows its controls only; the host
     /// admits each invocation itself when it is called.
     ActionVerdicts {
-        verdicts: Vec<crate::shown_actions::ActionDecision>,
+        verdicts: Vec<tilo_permissions::shown_actions::ActionDecision>,
     },
 }
 

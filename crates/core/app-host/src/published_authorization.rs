@@ -133,7 +133,7 @@ mod tests {
                     w.policy.add_member(member, role);
                 }
                 let person = if role == Role::Owner { OWNER } else { member };
-                let window = collaboration::permissions::PermissionContext::from_access(
+                let window = tilo_permissions::PermissionContext::from_access(
                     tilo_action_policy::MemberAccess::person(w.policy.clone(), person),
                 )
                 .at_unix_time(10);
@@ -163,7 +163,7 @@ mod tests {
                     .with_contract(contract.clone());
                     let answer = window.invocation_admission(WRITER, &resource, &spec, None, None);
                     let windowed =
-                        match collaboration::permissions::admit_in_window(answer, &spec, window.asker()) {
+                        match tilo_permissions::admit_in_window(answer, &spec, window.asker()) {
                             Ok(()) => Answered::Runs,
                             Err(ApiError::ConfirmationRequired) => Answered::AsksFirst,
                             Err(_) => Answered::Refused,

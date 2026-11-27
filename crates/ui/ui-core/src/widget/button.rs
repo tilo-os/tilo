@@ -2,12 +2,12 @@ use crate::widget::ControlSize;
 use crate::widget::Interaction;
 use crate::widget::badge::{BadgeMetrics, CountBadge};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+#[cfg(feature = "model")]
+use tilo_permissions::PermissionScope;
 use tilo_ui_base::component::Person;
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::paint::PaintCtx;
-#[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionScope;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
 use tilo_ui_base::widget::ActionEmitter;

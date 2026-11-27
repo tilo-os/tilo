@@ -6,12 +6,12 @@
 
 use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, Chained, definition};
-use tilo_app::permissions::PermissionContext;
 use tilo_app::prelude::*;
 use tilo_app::resource::{DocumentCheckout, DocumentId, chain_resource_id};
 use tilo_app::tilo_resource::Collection;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app_test_host::TestApp;
+use tilo_permissions::PermissionContext;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {

@@ -15,13 +15,13 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
+use tilo_permissions::LivePermissions;
+use tilo_permissions::PermissionScope;
+use tilo_permissions::TreePath;
 use tilo_resource::{Invoke, Resource};
 use tilo_ui_base::LocalState;
 use tilo_ui_base::workspace_sync::RecordNotHere;
 use tilo_ui_base::{arriving::Arriving, arriving::Source};
-use tilo_ui_base::{
-    permissions::LivePermissions, permissions::PermissionScope, permissions::TreePath,
-};
 use ui_core::history_mode::HistoryOwner;
 use ui_core::resource::StoredResource;
 use ui_core::resource::workspace::WorkspaceResources;

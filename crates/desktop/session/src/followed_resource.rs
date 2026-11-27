@@ -12,11 +12,11 @@ use tilo_actions::remote::{
     ResourceReadRequest,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_permissions::PermissionContext;
+use tilo_permissions::PermissionScope;
+use tilo_permissions::TreePath;
 use tilo_resource::{Invoke, Resource};
 use tilo_session_client::daemon_documents::DaemonShell;
-use tilo_ui_base::{
-    permissions::PermissionContext, permissions::PermissionScope, permissions::TreePath,
-};
 
 /// How long a change asked of the daemon is waited for: a linked daemon answers at once, and one
 /// that does not is not waited on forever.

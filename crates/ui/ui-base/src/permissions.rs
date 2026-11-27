@@ -1,5 +1,5 @@
 //! Who may do what in a workspace: the permission context lives with the collaboration model
-//! (`collaboration::permissions`), where a server checks it without the toolkit; the toolkit adds
+//! (`tilo_permissions`), where a server checks it without the toolkit; the toolkit adds
 //! the capability widgets and wakes its loops when an outside authority changes.
 //!
 //! The toolkit itself asks one question of whatever authority a drawing answers to, through
@@ -11,9 +11,6 @@
 pub use tilo_action_types::ActionKind;
 pub use tilo_member_types::{Acting, MemberId};
 
-#[cfg(feature = "model")]
-pub use ::collaboration::permissions::*;
-
 /// The authority a drawing answers to, as the toolkit asks it: whether the person the drawing is
 /// for may act on what `widget` guards. A widget the authority refuses is drawn behind the
 /// denied-permission scrim. The workspace's permission context answers from the scope the
@@ -23,7 +20,7 @@ pub trait WidgetAuthority {
 }
 
 #[cfg(feature = "model")]
-impl WidgetAuthority for PermissionContext {
+impl WidgetAuthority for tilo_permissions::PermissionContext {
     fn permits_widget(&self, widget: &dyn crate::widget::Widget) -> bool {
         crate::widget::permission::permission_scope(widget).is_none_or(|scope| self.check(&scope))
     }
@@ -33,7 +30,7 @@ impl WidgetAuthority for PermissionContext {
 /// is open.
 #[cfg(all(feature = "native", feature = "model"))]
 pub fn wake_loop_on_outside_change(wake: crate::wake::WakeHandle) {
-    ::collaboration::permissions::wake_on_outside_change(move || {
+    tilo_permissions::wake_on_outside_change(move || {
         if !wake.is_active() {
             return false;
         }

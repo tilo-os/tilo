@@ -1176,7 +1176,7 @@ mod presence_origin_tests {
         );
         let origin = CrdtRoute::record("so.tilo.chat", "workspace", "derived:main");
         fanout.said(
-            &collaboration::permissions::MemberId::person("peer@1"),
+            &tilo_permissions::MemberId::person("peer@1"),
             collab_types::presence::PresenceKey::pointer_default(),
             collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
             0,

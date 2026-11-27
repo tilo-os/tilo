@@ -426,8 +426,8 @@ impl JoinedChannel {
     /// admitted for would run them: now, and again on each change.
     pub(super) fn shown_actions(
         &self,
-        actions: Vec<runtime_collab::shown_actions::ShownAction>,
-    ) -> Result<super::wire::Feed<Vec<runtime_collab::shown_actions::ActionDecision>>, BrokerError>
+        actions: Vec<tilo_permissions::shown_actions::ShownAction>,
+    ) -> Result<super::wire::Feed<Vec<tilo_permissions::shown_actions::ActionDecision>>, BrokerError>
     {
         let route = self.route();
         let current = self

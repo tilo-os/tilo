@@ -9,7 +9,8 @@
 //! Nothing here is reached from an app binary's own modes: those use
 //! [`super::headless`], so a release app carries none of this module.
 
-use tilo_ui_base::{permissions::MemberId, permissions::Role};
+use tilo_permissions::Role;
+use tilo_ui_base::permissions::MemberId;
 use ui_core::application::{ApplicationOwner, ComponentRunnerInputs};
 use ui_core::headless::Driver;
 use ui_core::launch::LaunchError;

@@ -201,6 +201,9 @@ pub use tilo_workspace_emoji;
 /// names them without a dependency of its own.
 pub use tilo_reference;
 
+/// The role a member holds in a workspace, which an app's tests open it as.
+pub use tilo_permissions::Role;
+
 /// The package registry's vocabulary (entries, artifacts, moderation cases)
 /// that the SDK's moderation and package APIs speak, re-exported so an app
 /// names those types without a dependency of its own.

@@ -781,7 +781,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
 
     {
         let mut app = lazy_app(lazy_resource("test.lazy"));
-        app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+        app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
             &tilo_ui_base::permissions::MemberId::person("restricted"),
         ));
 
@@ -901,7 +901,7 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
         let pointer = app.layout.node_map[&node];
         assert!(unsafe { (*pointer).is_enabled() });
 
-        app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+        app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
             &tilo_ui_base::permissions::MemberId::person("restricted"),
         ));
         assert!(!unsafe { (*pointer).is_enabled() });
@@ -1437,7 +1437,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             observed.enqueue("run");
             binding
                 .permissions
-                .set(tilo_ui_base::permissions::PermissionContext::member(
+                .set(tilo_permissions::PermissionContext::member(
                     &tilo_ui_base::permissions::MemberId::person("reader"),
                     collab_types::role::Role::Viewer,
                 ));
@@ -1539,7 +1539,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
                 host.collaboration.manager =
                     CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
             }
-            let readonly = tilo_ui_base::permissions::PermissionContext::member(
+            let readonly = tilo_permissions::PermissionContext::member(
                 &tilo_ui_base::permissions::MemberId::person("reader"),
                 collab_types::role::Role::Viewer,
             );

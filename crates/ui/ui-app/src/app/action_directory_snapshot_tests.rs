@@ -1012,7 +1012,7 @@ tilo_test_env::scenario! {
                 "discovery must not close the undo transaction"
             );
             app.actions.permission_generation.set(u64::MAX);
-            app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+            app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
                 &tilo_ui_base::permissions::MemberId::person("restricted"),
             ));
             assert_ne!(app.action_directory_revision(), revision);

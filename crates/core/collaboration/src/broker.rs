@@ -5231,9 +5231,9 @@ async fn dispatch_sdk_request(
                     let reason = format!("The host couldn't be asked about this: {error}");
                     let verdicts = actions
                         .into_iter()
-                        .map(|action| runtime_collab::shown_actions::ActionDecision {
+                        .map(|action| tilo_permissions::shown_actions::ActionDecision {
                             action,
-                            verdict: runtime_collab::shown_actions::ActionVerdict::Refused(
+                            verdict: tilo_permissions::shown_actions::ActionVerdict::Refused(
                                 reason.clone(),
                             ),
                         })

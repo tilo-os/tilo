@@ -13,8 +13,8 @@
 use tilo_app::framework::testing::{HeadlessApp, Host};
 use tilo_app::framework::{ResourceApp, testing::check_scenarios_reach_every_action};
 use tilo_app::headless::Driver;
-use tilo_app::shown_actions::ActionDecision;
 use tilo_app::tilo_actions::policy::{WorkspacePolicy, roles::workspace_of_person};
+use tilo_permissions::shown_actions::ActionDecision;
 
 /// A framework app opened on a fresh profile, hosted as the person's device hosts it
 /// ([`Broker`]).
@@ -55,7 +55,7 @@ impl Host for Broker {
                             action,
                             now,
                         ),
-                        None => tilo_app::shown_actions::ActionVerdict::Refused(
+                        None => tilo_permissions::shown_actions::ActionVerdict::Refused(
                             "only a member or their agent acts here".into(),
                         ),
                     },

@@ -138,7 +138,7 @@ fn another_apps_action_is_refused() {
 
 #[test]
 fn a_member_who_may_not_make_the_change_has_the_app_make_nothing() {
-    let mut app = TestApp::<LedgerApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    let mut app = TestApp::<LedgerApp>::with_role(tilo_permissions::Role::Viewer).unwrap();
     assert!(app.effect(&connect("ada@example")).is_err());
     app.settle();
     assert!(app.state().bound.is_empty());

@@ -1,16 +1,30 @@
 //! Explicit process-host services shared by standalone application runners. Apps supply their
 //! definition and migration; this owner supplies storage, identity, authority and local presentation.
-use super::{
-    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, DocumentCheckout,
-    DocumentId, InstanceId, InstanceViewStore, LaunchError, LaunchTarget, MemberId,
-    PermissionContext, PreparedComponentInputs, ProcessContext, ProcessContextInputs,
-    ResourceOpenError, ResourceStore, RestoreInput, SavedInstanceView, View, validate_identity,
-};
+use super::ApplicationDefinition;
+use super::ApplicationLocalView;
+use super::ComponentRunnerInputs;
+use super::DocumentCheckout;
+use super::DocumentId;
+use super::InstanceId;
+use super::InstanceViewStore;
+use super::LaunchError;
+use super::LaunchTarget;
+use super::MemberId;
+use super::PreparedComponentInputs;
+use super::ProcessContext;
+use super::ProcessContextInputs;
+use super::ResourceOpenError;
+use super::ResourceStore;
+use super::RestoreInput;
+use super::SavedInstanceView;
+use super::View;
+use super::validate_identity;
 use crate::resource::ResourceOwners;
 use std::cell::RefCell;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use tilo_permissions::PermissionContext;
 
 /// The workspace a launch outside every workspace keeps its records in: this
 /// device's own. A workspace is named by an id, so the records kept in it have
@@ -74,7 +88,7 @@ impl NativeProcess {
         let launcher_instance = environment.continuity_instance.is_some();
         let launched_workspace = environment.workspace_id.clone();
         let resolved = environment.resolve(definition.app_id(), &author)?;
-        let permissions = tilo_ui_base::permissions::SharedPermissions::new(resolved.permissions);
+        let permissions = tilo_permissions::SharedPermissions::new(resolved.permissions);
         if resolved.workspace_scoped {
             tilo_ui_base::workspace_sync::follow_participation(&permissions);
         }
@@ -584,10 +598,10 @@ fn permissions_for_participation(
     participation: Option<&str>,
 ) -> Result<PermissionContext, LaunchError> {
     let role = match participation {
-        Some("read-only") => tilo_ui_base::permissions::Role::Viewer,
-        Some("author") => tilo_ui_base::permissions::Role::Editor,
-        None if workspace_scoped => tilo_ui_base::permissions::Role::Viewer,
-        None => tilo_ui_base::permissions::Role::Owner,
+        Some("read-only") => tilo_permissions::Role::Viewer,
+        Some("author") => tilo_permissions::Role::Editor,
+        None if workspace_scoped => tilo_permissions::Role::Viewer,
+        None => tilo_permissions::Role::Owner,
         Some(_) => {
             return Err(LaunchError::Operation(
                 "invalid launcher participation mode".into(),
@@ -661,7 +675,7 @@ impl FollowedAuthority {
         let watch = (authority.watch)(Box::new(move || {
             if let Some(state) = changed.upgrade() {
                 state.read();
-                tilo_ui_base::permissions::outside_changed();
+                tilo_permissions::outside_changed();
             }
         }))
         .map_err(
@@ -849,7 +863,7 @@ pub struct ApplicationOwner {
     owners: ResourceOwners,
     views: Rc<InstanceViewStore>,
     device_id: String,
-    permissions: tilo_ui_base::permissions::SharedPermissions,
+    permissions: tilo_permissions::SharedPermissions,
     author: MemberId,
     action_context: tilo_actions::ActionContext,
 }
@@ -882,7 +896,7 @@ impl ApplicationOwner {
 
     /// The member's permissions, as the host follows them.
     #[must_use]
-    pub fn permissions(&self) -> &tilo_ui_base::permissions::SharedPermissions {
+    pub fn permissions(&self) -> &tilo_permissions::SharedPermissions {
         &self.permissions
     }
 
@@ -896,7 +910,7 @@ impl ApplicationOwner {
     pub fn beside(
         &self,
         author: MemberId,
-        permissions: tilo_ui_base::permissions::SharedPermissions,
+        permissions: tilo_permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
         let views = self
@@ -925,7 +939,7 @@ impl ApplicationOwner {
         device_id: String,
         workspace_id: &str,
         author: MemberId,
-        permissions: tilo_ui_base::permissions::SharedPermissions,
+        permissions: tilo_permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
         Self::with_port(
@@ -951,7 +965,7 @@ impl ApplicationOwner {
         device_id: String,
         workspace_id: &str,
         author: MemberId,
-        permissions: tilo_ui_base::permissions::SharedPermissions,
+        permissions: tilo_permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
         validate_identity(author.id()).map_err(LaunchError::Restore)?;
@@ -2214,7 +2228,9 @@ mod native_process_tests {
 
         phase native_host_action_authority_is_current_and_scoped_to_the_app;
         {
-            use tilo_ui_base::{permissions::ActionKind, permissions::Answer, permissions::TreePath};
+            use tilo_ui_base::permissions::ActionKind;
+            use tilo_permissions::Answer;
+            use tilo_permissions::TreePath;
             use collab_types::action_authority::AppActionAuthorityProjection;
             use std::sync::{Arc, Mutex};
             let temp = tempfile::tempdir().unwrap();
@@ -2249,7 +2265,7 @@ mod native_process_tests {
             let resolved = environment.resolve(app, &author).unwrap();
             let permissions = resolved.permissions;
             let own = TreePath::root().app(app).action("buy");
-            assert_eq!(permissions.role(), Some(tilo_ui_base::permissions::Role::Viewer));
+            assert_eq!(permissions.role(), Some(tilo_permissions::Role::Viewer));
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
             assert_eq!(
                 permissions.answer(
@@ -2294,7 +2310,9 @@ mod native_process_tests {
 
         phase a_host_authority_whose_changes_cannot_be_heard_is_read_at_each_decision;
         {
-            use tilo_ui_base::{permissions::ActionKind, permissions::Answer, permissions::TreePath};
+            use tilo_ui_base::permissions::ActionKind;
+            use tilo_permissions::Answer;
+            use tilo_permissions::TreePath;
             use collab_types::action_authority::AppActionAuthorityProjection;
             use std::sync::{Arc, Mutex};
             let temp = tempfile::tempdir().unwrap();
@@ -2356,7 +2374,7 @@ mod native_process_tests {
                 assert_eq!(first.host.views.workspace_id(), PERSONAL_WORKSPACE);
                 assert_eq!(
                     first.host.permissions.borrow().role(),
-                    Some(tilo_ui_base::permissions::Role::Owner)
+                    Some(tilo_permissions::Role::Owner)
                 );
                 assert_eq!(first.host.permissions.borrow().user(), &author);
                 drop(first);
@@ -2390,9 +2408,9 @@ mod native_process_tests {
                     ..NativeProcessEnvironment::default()
                 };
                 for (mode, role) in [
-                    (Some("read-only"), tilo_ui_base::permissions::Role::Viewer),
-                    (Some("author"), tilo_ui_base::permissions::Role::Editor),
-                    (None, tilo_ui_base::permissions::Role::Viewer),
+                    (Some("read-only"), tilo_permissions::Role::Viewer),
+                    (Some("author"), tilo_permissions::Role::Editor),
+                    (None, tilo_permissions::Role::Viewer),
                 ] {
                     let resolved = make(mode)
                         .resolve("so.tilo.notes", &MemberId::person("person-a"))

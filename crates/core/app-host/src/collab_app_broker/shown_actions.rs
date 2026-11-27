@@ -1,13 +1,15 @@
 //! What this host says of the actions a window shows, for the person at the window.
 //!
 //! The window decides no permission itself. It names the actions of the records it shows
-//! ([`runtime_collab::shown_actions::ShownAction`]); the broker decides each with the actor's
+//! ([`tilo_permissions::shown_actions::ShownAction`]); the broker decides each with the actor's
 //! ordinary answer in the workspace holding the record (the window's, or another: a person's
 //! profile record is held in their own workspace), and decides again on every policy change,
 //! sending the decisions when they differ. They say how the window shows its controls; an
 //! invocation is admitted on its own when it is called.
 
-use runtime_collab::shown_actions::{ActionDecision, ActionVerdict, ShownAction};
+use tilo_permissions::shown_actions::ActionDecision;
+use tilo_permissions::shown_actions::ActionVerdict;
+use tilo_permissions::shown_actions::ShownAction;
 use tokio::sync::mpsc;
 
 use super::wire::Feed;

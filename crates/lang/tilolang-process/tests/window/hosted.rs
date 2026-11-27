@@ -633,7 +633,7 @@ fn approval_of(
 ) -> ui::tilo_actions::remote::asked::Approval {
     ui::tilo_actions::remote::asked::Approval::new(
         ui::tilo_actions::remote::asked::RecordRef {
-            workspace: ui::permissions::LOCAL_WORKSPACE.to_owned(),
+            workspace: tilo_permissions::LOCAL_WORKSPACE.to_owned(),
             record: format!("tilo.invocations/{}", call.invocation.0),
             device: None,
         },
@@ -830,7 +830,9 @@ impl Session {
     /// Bo at a window of `app` in Ada's workspace, made its editor: an editor asks before what
     /// leaves the workspace.
     fn bo_editing(app: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
-        use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
+        use tilo_permissions::policy::MemberAccess;
+        use tilo_permissions::policy::Role;
+        use tilo_permissions::policy::WorkspacePolicy;
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let mut policy = WorkspacePolicy::new(route.cluster_id.to_string(), "ada");
         policy.members.insert("bo".to_owned(), Role::Editor);
@@ -852,7 +854,8 @@ impl Session {
 
     /// [`Self::member`] on `bus`, which says when the workspace's members' record arrives.
     fn member_on(bus: &Rc<tilolang_process::testing::Bus>, app: &str, person: &str) -> Self {
-        use ui::permissions::policy::{MemberAccess, WorkspacePolicy};
+        use tilo_permissions::policy::MemberAccess;
+        use tilo_permissions::policy::WorkspacePolicy;
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let policy = WorkspacePolicy::new(route.cluster_id.to_string(), person);
         let spec = Spec::new(app, route.cluster_id.to_string(), 1, person)

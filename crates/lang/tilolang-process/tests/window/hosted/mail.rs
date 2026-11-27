@@ -1421,10 +1421,13 @@ fn a_reply_goes_out_as_far_as_the_workspace_lets_mail_send() {
     use collaboration::RouteSpec;
     use tilo_action_policy::roles::outside_capability_denial;
     use tilo_action_types::KindSet;
+    use tilo_permissions::policy::Answer;
+    use tilo_permissions::policy::Grant;
+    use tilo_permissions::policy::Grantee;
+    use tilo_permissions::policy::MemberAccess;
+    use tilo_permissions::policy::TreePath;
+    use tilo_permissions::policy::WorkspacePolicy;
     use tilolang_process::hosted::Spec;
-    use ui::permissions::policy::{
-        Answer, Grant, Grantee, MemberAccess, TreePath, WorkspacePolicy,
-    };
 
     type Denials = fn(&str) -> Vec<Grant>;
     let cases: [(&str, Denials, bool); 4] = [

@@ -1,9 +1,10 @@
-//! What a host says of an action a window shows ([`runtime_collab::shown_actions`]): every host
+//! What a host says of an action a window shows ([`tilo_permissions::shown_actions`]): every host
 //! decides it this way, with the actor's ordinary answer in the workspace holding the record.
 
-use runtime_collab::shown_actions::{ActionVerdict, ShownAction};
 use tilo_action_policy::Answer;
 use tilo_desktop_model::Workspace;
+use tilo_permissions::shown_actions::ActionVerdict;
+use tilo_permissions::shown_actions::ShownAction;
 
 use crate::BrokerActor;
 

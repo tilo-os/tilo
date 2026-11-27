@@ -385,7 +385,7 @@ pub enum Topic {
     WorkspaceControl { target_device: [u8; 32] },
     /// What the host says of these actions a window shows, as the person at this endpoint would
     /// run them: all of them, then all again whenever one changes.
-    ShownActions(Vec<crate::shown_actions::ShownAction>),
+    ShownActions(Vec<tilo_permissions::shown_actions::ShownAction>),
 }
 
 /// The host's answer to a call that succeeded.
@@ -463,7 +463,7 @@ pub enum Event {
         reading: Option<Vec<u8>>,
     },
     /// What the host says of the actions a [`Topic::ShownActions`] names.
-    ShownActions(Vec<crate::shown_actions::ActionDecision>),
+    ShownActions(Vec<tilo_permissions::shown_actions::ActionDecision>),
 }
 
 /// One change of a record's context.

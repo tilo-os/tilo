@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use tilo_permissions::LivePermissions;
+use tilo_permissions::PermissionScope;
 use tilo_resource::{Invoke, Reader, Resource};
 use tilo_ui_base::i18n::EmbeddedCatalog;
+use tilo_ui_base::permissions::ActionKind;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::widget::Element;
-use tilo_ui_base::{
-    permissions::ActionKind, permissions::LivePermissions, permissions::PermissionScope,
-};
 use ui_core::application::{
     AppComponent, ApplicationDefinition, ComponentBehaviour, ComponentFactory, LaunchTarget,
     ProcessContext, RestoreInput,
@@ -24,15 +24,17 @@ use ui_core::widget::IconDescriptor;
 // Launching (live windows, captures, headless drives, test hosts) discovers
 // native presentation and profiles; a browser host prepares components itself.
 #[cfg(not(target_arch = "wasm32"))]
-use {
-    tilo_ui_base::permissions::{PermissionContext, Role},
-    ui_core::application::{
-        ApplicationOwner, Capture, ComponentRunnerInputs, NativeProcess, PreparedComponentInputs,
-    },
-    ui_core::headless::Driver,
-    ui_core::launch::{LaunchArgs, LaunchSpec},
-    ui_core::resource::DocumentCheckout,
-};
+use tilo_permissions::PermissionContext;
+use tilo_permissions::Role;
+use ui_core::application::ApplicationOwner;
+use ui_core::application::Capture;
+use ui_core::application::ComponentRunnerInputs;
+use ui_core::application::NativeProcess;
+use ui_core::application::PreparedComponentInputs;
+use ui_core::headless::Driver;
+use ui_core::launch::LaunchArgs;
+use ui_core::launch::LaunchSpec;
+use ui_core::resource::DocumentCheckout;
 
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
@@ -1733,8 +1735,8 @@ pub(crate) fn role_permissions(
     workspace: &str,
     author: &str,
     role: Role,
-) -> tilo_ui_base::permissions::SharedPermissions {
-    tilo_ui_base::permissions::SharedPermissions::new(PermissionContext::member_of(
+) -> tilo_permissions::SharedPermissions {
+    tilo_permissions::SharedPermissions::new(PermissionContext::member_of(
         workspace,
         &tilo_ui_base::permissions::MemberId::person(author),
         role,

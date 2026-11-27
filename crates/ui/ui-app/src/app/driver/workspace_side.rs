@@ -214,9 +214,9 @@ impl Served {
     /// Whether the shown actions are owed a decision: permissions changed since they were
     /// decided, or a host was given after the window asked.
     pub(super) fn owes_decision(&self) -> bool {
-        self.shown.as_ref().is_some_and(|(_, _, _, decided)| {
-            *decided != Some(tilo_ui_base::permissions::shared_revision())
-        })
+        self.shown
+            .as_ref()
+            .is_some_and(|(_, _, _, decided)| *decided != Some(tilo_permissions::shared_revision()))
     }
 
     /// The verdicts a decision owed now gives.
@@ -230,7 +230,7 @@ impl Served {
 
     fn decide_shown(&mut self) -> Option<CollabEvent> {
         let (host, person, shown, decided) = self.shown.as_mut()?;
-        *decided = Some(tilo_ui_base::permissions::shared_revision());
+        *decided = Some(tilo_permissions::shared_revision());
         if shown.is_empty() {
             return None;
         }

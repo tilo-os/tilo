@@ -1,13 +1,13 @@
 //! What the host says of the actions a window shows.
 //!
 //! The window decides none of them. Its host decides each with the ordinary check in the
-//! workspace holding the record and pushes the verdicts here ([`runtime_collab::shown_actions`]);
+//! workspace holding the record and pushes the verdicts here ([`crate::shown_actions`]);
 //! they only say how the window shows its controls. Running one is admitted by the host when it
 //! is called.
 
 use std::collections::BTreeMap;
 
-use runtime_collab::shown_actions::{ActionDecision, ActionVerdict, ShownAction};
+use crate::shown_actions::{ActionDecision, ActionVerdict, ShownAction};
 use tilo_action_policy::Answer;
 
 /// What a person reads at a control while its verdict is on its way.
@@ -99,7 +99,7 @@ impl ShownVerdicts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
+    use crate::{MemberId, PermissionContext, Role, SharedPermissions};
     use tilo_actions::{ActionKind, ActionSpec, OperationKind, ResourceSpec};
 
     /// A viewer's window shows an action as its host says once it asked about it, refused while

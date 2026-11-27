@@ -514,14 +514,14 @@ struct InProcess {
     /// The person's access in the workspace as the window's host keeps it, read each turn,
     /// and what the instance was last told of it: it offers and invokes by that.
     access: Option<AccessSource>,
-    told_access: Option<ui::permissions::MemberAccess>,
+    told_access: Option<tilo_permissions::MemberAccess>,
     /// The identity connection the instance signs on, when it joined its workspace: it outlives
     /// the host, which is dropped first.
     _identity: Option<runtime_portal::process_link::Descriptor>,
 }
 
 /// Where a window running its instance in this process reads the person's access from.
-type AccessSource = Box<dyn Fn() -> Option<ui::permissions::MemberAccess>>;
+type AccessSource = Box<dyn Fn() -> Option<tilo_permissions::MemberAccess>>;
 
 impl InProcess {
     /// The host's turns until it has nothing more to take in now. Whether anything changed.
@@ -857,7 +857,7 @@ impl HostedWindow {
     /// window on its launch and whenever the workspace's policy changes.
     pub fn follow_access(
         &mut self,
-        source: impl Fn() -> Option<ui::permissions::MemberAccess> + 'static,
+        source: impl Fn() -> Option<tilo_permissions::MemberAccess> + 'static,
     ) {
         if let Some(running) = &mut self.in_process {
             running.access = Some(Box::new(source));

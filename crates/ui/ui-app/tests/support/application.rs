@@ -2,6 +2,9 @@
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use tilo_permissions::PermissionContext;
+use tilo_permissions::PermissionScope;
+use tilo_permissions::SharedPermissions;
 use tilo_ui::application::{
     AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
     RestoreInput,
@@ -17,10 +20,8 @@ use tilo_ui::wake::WakeHandle;
 use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 use tilo_ui_base::TextRole;
 use tilo_ui_base::local_state::LocalState;
-use tilo_ui_base::{
-    permissions::ActionKind, permissions::MemberId, permissions::PermissionContext,
-    permissions::PermissionScope, permissions::SharedPermissions,
-};
+use tilo_ui_base::permissions::ActionKind;
+use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use tilo_ui_base::{widget::NativeViewLifecycle, widget::Widget};
 
@@ -245,7 +246,7 @@ pub fn owner_permissions() -> SharedPermissions {
     SharedPermissions::new(
         PermissionContext::member(
             &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            tilo_ui_base::permissions::Role::Owner,
+            tilo_permissions::Role::Owner,
         )
         .at_unix_time(100),
     )
@@ -255,7 +256,7 @@ pub fn editor_permissions() -> SharedPermissions {
     SharedPermissions::new(
         PermissionContext::member(
             &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            tilo_ui_base::permissions::Role::Editor,
+            tilo_permissions::Role::Editor,
         )
         .at_unix_time(100),
     )
@@ -297,7 +298,7 @@ pub fn runner_permissions() -> SharedPermissions {
     SharedPermissions::new(
         PermissionContext::member(
             &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            tilo_ui_base::permissions::Role::Owner,
+            tilo_permissions::Role::Owner,
         )
         .at_unix_time(100),
     )

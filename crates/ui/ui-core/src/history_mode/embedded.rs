@@ -284,7 +284,7 @@ pub fn has_review(root: &dyn Widget) -> bool {
 pub fn service_reviews(
     root: &mut dyn Widget,
     state: &mut crate::State,
-    authority: &tilo_ui_base::permissions::PermissionContext,
+    authority: &tilo_permissions::PermissionContext,
     author: &tilo_ui_base::permissions::MemberId,
 ) -> Vec<HistorySourceRegistration> {
     let mut restored = vec![];

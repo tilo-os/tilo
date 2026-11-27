@@ -44,6 +44,7 @@ portal = ["native", "tilo-ui/portal"]
 host-portals = ["tilo-ui/host-portals"]
 
 [dependencies]
+tilo-permissions.workspace = true
 tilo-action-types.workspace = true
 tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }

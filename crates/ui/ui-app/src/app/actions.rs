@@ -3489,7 +3489,7 @@ impl App {
 /// window without Tilo's model follows no shared permissions, so it never moves.
 fn shared_permissions_revision() -> u64 {
     #[cfg(feature = "model")]
-    let revision = tilo_ui_base::permissions::shared_revision();
+    let revision = tilo_permissions::shared_revision();
     #[cfg(not(feature = "model"))]
     let revision = 0;
     revision

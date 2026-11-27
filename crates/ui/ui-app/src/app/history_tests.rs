@@ -818,8 +818,8 @@ impl RoutedPrimary {
                 views,
                 device_id: "D".into(),
                 instance_id: 70,
-                permissions: tilo_ui_base::permissions::SharedPermissions::new(
-                    tilo_ui_base::permissions::PermissionContext::permissive(),
+                permissions: tilo_permissions::SharedPermissions::new(
+                    tilo_permissions::PermissionContext::permissive(),
                 ),
                 author: tilo_ui_base::permissions::MemberId::person("primary-author"),
                 action_context: tilo_actions::ActionContext::default(),
@@ -3323,8 +3323,8 @@ fn component_control_root(
             local_person: tilo_ui_base::permissions::MemberId::person("component-control-author"),
             records: records.clone(),
             checkout,
-            permissions: tilo_ui_base::permissions::SharedPermissions::new(
-                tilo_ui_base::permissions::PermissionContext::permissive(),
+            permissions: tilo_permissions::SharedPermissions::new(
+                tilo_permissions::PermissionContext::permissive(),
             ),
             author: tilo_ui_base::permissions::MemberId::person("component-control-author"),
             operation_context: Rc::default(),

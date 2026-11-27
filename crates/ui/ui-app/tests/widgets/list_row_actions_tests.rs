@@ -408,9 +408,9 @@ fn a_refused_check_says_why_and_keeps_its_mark() {
     let mut driver =
         Driver::new_with_theme(tilo_ui_app::State::new(), root, (600, 400), Theme::dark());
     driver.connect_peer();
-    driver.set_permission_ctx(::collaboration::permissions::PermissionContext::member(
-        &::collaboration::permissions::MemberId::person("ada"),
-        ::collaboration::permissions::Role::Viewer,
+    driver.set_permission_ctx(tilo_permissions::PermissionContext::member(
+        &tilo_permissions::MemberId::person("ada"),
+        tilo_permissions::Role::Viewer,
     ));
     driver.relayout();
     let the_check = |driver: &Driver| {

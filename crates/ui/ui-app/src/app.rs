@@ -266,9 +266,9 @@ use crate::state::State;
 use crate::time::Duration;
 use crate::time::Instant;
 use taffy::{NodeId, TaffyTree};
-use tilo_ui_base::ime::ImeWindowState;
 #[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionContext;
+use tilo_permissions::PermissionContext;
+use tilo_ui_base::ime::ImeWindowState;
 use tilo_ui_base::presence::PresenceCtx;
 #[cfg(feature = "model")]
 use tilo_ui_base::presence::PresenceKey;
@@ -599,7 +599,7 @@ pub struct App {
     #[cfg(feature = "model")]
     pub permission_ctx: PermissionContext,
     #[cfg(feature = "model")]
-    /// [`tilo_ui_base::permissions::shared_revision`] as the last frame painted with it: what widgets paint
+    /// [`tilo_permissions::shared_revision`] as the last frame painted with it: what widgets paint
     /// follows permissions that can change with nothing in the tree marking it, so a frame draws again
     /// from cleared drawings after it moves.
     painted_permissions: u64,
@@ -1503,7 +1503,7 @@ impl App {
 
     pub(crate) fn permissions_moved(&self) -> bool {
         #[cfg(feature = "model")]
-        let moved = self.painted_permissions != tilo_ui_base::permissions::shared_revision();
+        let moved = self.painted_permissions != tilo_permissions::shared_revision();
         // Without the model nothing grants or takes away a permission while the window runs.
         #[cfg(not(feature = "model"))]
         let moved = false;

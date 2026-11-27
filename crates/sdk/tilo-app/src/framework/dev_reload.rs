@@ -1,8 +1,9 @@
 //! The symbols a `thin` app library exports so `tilolang dev` can run new
 //! code inside the windows the process already has.
 
+use tilo_permissions::LivePermissions;
+use tilo_permissions::Role;
 use tilo_resource::{Doc, Reader};
-use tilo_ui_base::{permissions::LivePermissions, permissions::Role};
 use ui_core::widget::AppWidget;
 
 use super::app::{Editing, ResourceApp, action_registry, build_root, role_permissions};

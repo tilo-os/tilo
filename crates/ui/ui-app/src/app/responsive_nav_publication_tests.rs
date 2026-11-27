@@ -169,7 +169,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
         "replacing the navigation tree must not withdraw the native publication"
     );
     owner.permissions.set(
-        tilo_ui_base::permissions::PermissionContext::stranger(
+        tilo_permissions::PermissionContext::stranger(
             &tilo_ui_base::permissions::MemberId::person("probe-author"),
         )
         .at_unix_time(100),

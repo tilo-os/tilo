@@ -2,9 +2,9 @@
 //! (`collab_types::WORKSPACE_DOCUMENTS`): one record in the workspace for
 //! every member, not one per person.
 
-use tilo_app::Role;
 use tilo_app::prelude::*;
 use tilo_app_test_host::TestApp;
+use tilo_permissions::Role;
 
 /// The app keeping the record: Browser, whose bookmarks the workspace keeps.
 const BROWSER: &str = "so.tilo.browser";
@@ -366,7 +366,7 @@ fn page_of_reads_once() -> tilo_app::framework::AttachedView {
         ),
         app.read_document(|doc| doc.clone().save()),
         &MemberId::person("ada"),
-        tilo_app::permissions::PermissionContext::permissive(),
+        tilo_permissions::PermissionContext::permissive(),
         false,
     )
     .unwrap()

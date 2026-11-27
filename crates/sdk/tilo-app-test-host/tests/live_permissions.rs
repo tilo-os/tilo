@@ -7,8 +7,11 @@ use tilo_app::widget::TaffyTreeExt;
 use tilo_app_test_host::TestApp;
 
 use tilo_app::framework::testing::TEST_WORKSPACE;
-use tilo_app::permissions::{KindSet, PermissionContext, TreePath, policy};
 use tilo_app::prelude::*;
+use tilo_permissions::KindSet;
+use tilo_permissions::PermissionContext;
+use tilo_permissions::TreePath;
+use tilo_permissions::policy;
 
 use tilo_app::advanced::{NodeId, TaffyTree};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -124,7 +127,7 @@ tilo_test_env::scenario! {
         );
         let unchanged = app.state();
 
-        app.set_role(tilo_app::Role::Editor);
+        app.set_role(tilo_permissions::Role::Editor);
         assert!(!dispatcher.read_only(), "writing remains allowed");
         assert!(!admin.get(), "admin access is separately revoked");
         assert!(comment.get());
@@ -144,16 +147,16 @@ tilo_test_env::scenario! {
             "a role change never edits the resource"
         );
 
-        app.set_role(tilo_app::Role::Viewer);
+        app.set_role(tilo_permissions::Role::Viewer);
         assert!(!comment.get());
         assert!(app.invoke(Memo::CONFIGURE.with("Denied")).is_err());
-        app.set_role(tilo_app::Role::Commenter);
+        app.set_role(tilo_permissions::Role::Commenter);
         assert!(
             comment.get(),
             "comment access updates while writing remains denied"
         );
         assert!(!admin.get());
-        app.set_role(tilo_app::Role::Owner);
+        app.set_role(tilo_permissions::Role::Owner);
         assert!(admin.get());
         assert!(
             app.harness()
@@ -166,7 +169,7 @@ tilo_test_env::scenario! {
 
     phase an_unprivileged_first_frame_never_presents_the_owner_pane;
     {
-        let mut app = TestApp::<MemoApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        let mut app = TestApp::<MemoApp>::with_role(tilo_permissions::Role::Viewer).unwrap();
         assert!(
             app.harness()
                 .semantic_owner_instance("owner-panel")
@@ -177,7 +180,7 @@ tilo_test_env::scenario! {
                 .semantic_owner_instance("no-owner-panel")
                 .is_some()
         );
-        app.set_role(tilo_app::Role::Owner);
+        app.set_role(tilo_permissions::Role::Owner);
         assert!(
             app.harness()
                 .semantic_owner_instance("owner-panel")
@@ -217,7 +220,7 @@ tilo_test_env::scenario! {
         assert!(app.harness().inspection_json().unwrap().contains("Editing"));
 
         // The owner makes this member a viewer while the app is open.
-        app.set_role(tilo_app::Role::Viewer);
+        app.set_role(tilo_permissions::Role::Viewer);
         assert!(
             app.harness()
                 .inspection_json()
@@ -232,7 +235,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().lines.len(), 1);
 
         // And back: editing works again without reopening the app.
-        app.set_role(tilo_app::Role::Editor);
+        app.set_role(tilo_permissions::Role::Editor);
         assert!(app.harness().inspection_json().unwrap().contains("Editing"));
         assert_eq!(*changes.borrow(), [true, false]);
         app.invoke(Memo::ADD_LINE.with("eggs")).unwrap();
@@ -248,7 +251,7 @@ tilo_test_env::scenario! {
         let dispatcher = PROBE_DISPATCHER
             .with(|probe| probe.borrow().clone())
             .unwrap();
-        app.set_role(tilo_app::Role::Commenter);
+        app.set_role(tilo_permissions::Role::Commenter);
         assert!(dispatcher.read_only(), "a commenter may not write");
 
         app.invoke(Memo::REMARK.with("looks good"))
@@ -270,7 +273,7 @@ tilo_test_env::scenario! {
         assert!(!dispatcher.may(&ActionNeed::of(ActionKind::Undoable)));
 
         // A viewer may do neither.
-        app.set_role(tilo_app::Role::Viewer);
+        app.set_role(tilo_permissions::Role::Viewer);
         assert!(app.invoke(Memo::REMARK.with("no")).is_err());
         assert!(!dispatcher.may_apply(&remark));
     }
@@ -280,7 +283,7 @@ tilo_test_env::scenario! {
         // Through the window's API: a commenter's typed remark is admitted,
         // and the typed line only a fuller role reaches is refused.
         let mut app = TestApp::<MemoApp>::new().unwrap();
-        app.set_role(tilo_app::Role::Commenter);
+        app.set_role(tilo_permissions::Role::Commenter);
         app.invoke(Memo::REMARK.with("typed remark"))
             .expect("a commenter's typed remark is admitted");
         assert!(

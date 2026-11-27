@@ -719,8 +719,8 @@ fn bound_components_keep_child_binding() {
                 views,
                 device_id: "D".into(),
                 instance_id: 1,
-                permissions: tilo_ui_base::permissions::SharedPermissions::new(
-                    tilo_ui_base::permissions::PermissionContext::permissive(),
+                permissions: tilo_permissions::SharedPermissions::new(
+                    tilo_permissions::PermissionContext::permissive(),
                 ),
                 author: tilo_ui_base::permissions::MemberId::person("probe-author"),
                 action_context: tilo_actions::ActionContext::default(),
@@ -862,7 +862,7 @@ struct ActionFixture {
     app: App,
     records: crate::resource::ResourceStore,
     bindings: Vec<crate::bound_dispatch::CallbackBinding>,
-    permissions: tilo_ui_base::permissions::SharedPermissions,
+    permissions: tilo_permissions::SharedPermissions,
 }
 
 impl ActionFixture {
@@ -915,10 +915,10 @@ impl ActionFixture {
             )
             .unwrap(),
         );
-        let permissions = tilo_ui_base::permissions::SharedPermissions::new(
-            tilo_ui_base::permissions::PermissionContext::granted(
+        let permissions = tilo_permissions::SharedPermissions::new(
+            tilo_permissions::PermissionContext::granted(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-                &tilo_ui_base::permissions::TreePath::root(),
+                &tilo_permissions::TreePath::root(),
                 tilo_action_types::KindSet::ALL,
                 Some(110),
             )
@@ -959,9 +959,7 @@ impl ActionFixture {
                     device_id: "D".into(),
                     instance_id: instance,
                     permissions: if separate && instance == 12 {
-                        tilo_ui_base::permissions::SharedPermissions::new(
-                            permissions.borrow().clone(),
-                        )
+                        tilo_permissions::SharedPermissions::new(permissions.borrow().clone())
                     } else {
                         permissions.clone()
                     },
@@ -1360,7 +1358,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         let alias = second.rows[0].resource.clone();
         let previous_permissions = fixture.permissions.borrow().clone();
         fixture.permissions.set(
-            tilo_ui_base::permissions::PermissionContext::stranger(
+            tilo_permissions::PermissionContext::stranger(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
             )
             .at_unix_time(100),
@@ -1511,7 +1509,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             vec![(false, true), (true, true)]
         );
         fixture.permissions.set(
-            tilo_ui_base::permissions::PermissionContext::stranger(
+            tilo_permissions::PermissionContext::stranger(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
             )
             .at_unix_time(100),
@@ -1553,10 +1551,10 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     let mut fixture = ActionFixture::new();
     fixture.permissions.set(
         crate::application::follow_process_authority(
-            tilo_ui_base::permissions::PermissionContext::member_of(
+            tilo_permissions::PermissionContext::member_of(
                 WORKSPACE,
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-                tilo_ui_base::permissions::Role::Viewer,
+                tilo_permissions::Role::Viewer,
             ),
             read,
             watch,
@@ -1591,10 +1589,10 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     let mut revoked = owner.clone();
     revoked.policy.owner = None;
     *held.lock().unwrap() = serde_json::to_vec(&revoked).unwrap();
-    let revision = tilo_ui_base::permissions::shared_revision();
+    let revision = tilo_permissions::shared_revision();
     changed();
     assert_eq!(reads.load(Ordering::SeqCst), 2);
-    assert_ne!(tilo_ui_base::permissions::shared_revision(), revision);
+    assert_ne!(tilo_permissions::shared_revision(), revision);
     fixture.app.refresh_control_action_availability();
     assert_eq!(
         CONTROL_AUTHORITY.with_borrow(Clone::clone),
@@ -1966,7 +1964,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
     {
         for initially_allowed in [false, true] {
             let mut fixture = ActionFixture::with_authority(false, true);
-            let denied = tilo_ui_base::permissions::PermissionContext::stranger(
+            let denied = tilo_permissions::PermissionContext::stranger(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
             )
             .at_unix_time(100);
@@ -2124,7 +2122,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             assert!(ticks < 5, "the first owner must participate in this pass");
         }
         fixture.permissions.set(
-            tilo_ui_base::permissions::PermissionContext::stranger(
+            tilo_permissions::PermissionContext::stranger(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
             )
             .at_unix_time(100),
@@ -2798,8 +2796,8 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 21,
-                permissions: tilo_ui_base::permissions::SharedPermissions::new(
-                    tilo_ui_base::permissions::PermissionContext::permissive(),
+                permissions: tilo_permissions::SharedPermissions::new(
+                    tilo_permissions::PermissionContext::permissive(),
                 ),
                 author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),

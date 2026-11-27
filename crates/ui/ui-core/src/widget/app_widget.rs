@@ -304,7 +304,7 @@ fn lent_permissions<'a>(
     let permissions = binding.permissions.borrow().clone();
     let mut inner = env.clone();
     inner.permissions = Some(std::rc::Rc::new(permissions));
-    inner.paint_permissions = tilo_ui_base::permissions::shared_revision();
+    inner.paint_permissions = tilo_permissions::shared_revision();
     inner
 }
 
@@ -2019,7 +2019,7 @@ mod component_adapter {
 
     #[cfg(feature = "model")]
     impl tilo_ui_base::widget::permission::PermissionGuarded for BoundAppWidget {
-        fn permission_scope(&self) -> Option<tilo_ui_base::permissions::PermissionScope> {
+        fn permission_scope(&self) -> Option<tilo_permissions::PermissionScope> {
             self.in_root(|root| tilo_ui_base::widget::permission::permission_scope(root))
                 .flatten()
         }

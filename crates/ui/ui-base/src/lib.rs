@@ -102,8 +102,6 @@ pub mod clock;
 #[cfg(feature = "model")]
 pub mod collaboration;
 #[cfg(feature = "model")]
-pub use runtime_collab::shown_actions;
-#[cfg(feature = "model")]
 pub use tilo_actions::remote::native_media;
 pub mod collection_transition;
 pub use {tilo_ui_paint::color, tilo_ui_paint::color_compat};
@@ -367,12 +365,6 @@ pub use collaboration::PresencePayload;
 #[cfg(feature = "model")]
 pub use widget::ViewPresence;
 pub use {gesture::DragSelect, gesture::Granularity};
-#[cfg(feature = "model")]
-pub use {
-    permissions::Access, permissions::CapDecision, permissions::CapOverride, permissions::Grantee,
-    permissions::PermissionContext, permissions::PermissionScope, permissions::ResourceRef,
-    permissions::Role, permissions::Scope as CapScope,
-};
 pub use {permissions::Acting, permissions::ActionKind, permissions::MemberId};
 pub use {
     presence::PathSegment, presence::PresenceCtx, presence::PresenceKey, presence::SelectionRange,

@@ -70,9 +70,9 @@ tilo_test_env::scenario! {
                     definition.app_id(),
                     "device".into(),
                     "workspace",
-                    tilo_ui_base::permissions::MemberId::person(tilo_ui_base::permissions::LOCAL_USER),
-                    tilo_ui_base::permissions::SharedPermissions::new(
-                        tilo_ui_base::permissions::PermissionContext::permissive(),
+                    tilo_ui_base::permissions::MemberId::person(tilo_permissions::LOCAL_USER),
+                    tilo_permissions::SharedPermissions::new(
+                        tilo_permissions::PermissionContext::permissive(),
                     ),
                     tilo_actions::ActionContext::default(),
                 )?;

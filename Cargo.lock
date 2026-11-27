@@ -15024,6 +15024,7 @@ dependencies = [
  "tilo-lock",
  "tilo-member-types",
  "tilo-paths",
+ "tilo-permissions",
  "tilo-reference",
  "tilo-registry-types",
  "tilo-resource",
@@ -15172,6 +15173,7 @@ dependencies = [
  "tilo-notify",
  "tilo-peer-facts",
  "tilo-peer-state",
+ "tilo-permissions",
  "tilo-person-services",
  "tilo-recurrence",
  "tilo-reference",
@@ -15405,6 +15407,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-history",
  "tilo-member-types",
+ "tilo-permissions",
  "tilo-reference",
  "tilo-runtime-collab",
  "tilo-settings-store",
@@ -15431,6 +15434,7 @@ dependencies = [
  "tilo-formats",
  "tilo-media",
  "tilo-page-engine",
+ "tilo-permissions",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-rich-edit",
@@ -15792,6 +15796,7 @@ dependencies = [
  "tilo-member-types",
  "tilo-paths",
  "tilo-peer-state",
+ "tilo-permissions",
  "tilo-runtime-collab",
  "tilo-runtime-portal",
  "tilo-settings-store",
@@ -16346,6 +16351,7 @@ dependencies = [
  "tilo-local-identity",
  "tilo-lock",
  "tilo-member-types",
+ "tilo-permissions",
  "tilo-process",
  "tilo-registry-types",
  "tilo-resource",
@@ -19137,6 +19143,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-permissions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-action-types",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-collab-types",
+ "tilo-member-types",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-person-services"
 version = "0.1.0"
 dependencies = [
@@ -20023,6 +20045,7 @@ dependencies = [
  "tilo-collab-types",
  "tilo-content",
  "tilo-lock",
+ "tilo-permissions",
  "tilo-registry-types",
  "tilo-runtime-portal",
  "tilo-settings-store",
@@ -20515,6 +20538,7 @@ dependencies = [
  "tilo-paths",
  "tilo-peer-facts",
  "tilo-peer-state",
+ "tilo-permissions",
  "tilo-person-services",
  "tilo-polkit-agent",
  "tilo-portal",
@@ -21441,6 +21465,7 @@ dependencies = [
  "tilo-paint-stream",
  "tilo-paint-strokes",
  "tilo-paths",
+ "tilo-permissions",
  "tilo-platform-caps",
  "tilo-presence",
  "tilo-presentation",
@@ -21534,6 +21559,7 @@ dependencies = [
  "tilo-lock",
  "tilo-media",
  "tilo-member-types",
+ "tilo-permissions",
  "tilo-presentation",
  "tilo-process",
  "tilo-process-services",
@@ -21643,6 +21669,7 @@ dependencies = [
  "tilo-mime",
  "tilo-notify",
  "tilo-paths",
+ "tilo-permissions",
  "tilo-platform-caps",
  "tilo-presence",
  "tilo-presentation",
@@ -22473,6 +22500,7 @@ dependencies = [
  "tilo-package-store",
  "tilo-paths",
  "tilo-peer-state",
+ "tilo-permissions",
  "tilo-reference",
  "tilo-remote-actions",
  "tilo-resource",
@@ -22788,6 +22816,7 @@ dependencies = [
  "tilo-ocr",
  "tilo-paths",
  "tilo-pdf-reader",
+ "tilo-permissions",
  "tilo-printing",
  "tilo-recurrence",
  "tilo-remote-actions",

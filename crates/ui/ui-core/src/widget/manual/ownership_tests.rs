@@ -5,7 +5,6 @@ use crate::application_view::InstanceViewStore;
 use crate::bound_dispatch::CallbackBinding;
 use crate::resource::{ResourceOwners, ResourceType};
 use crate::widget::{IconDescriptor, Text};
-use ::collaboration::permissions::{MemberId, PermissionContext};
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,6 +14,8 @@ use taffy::NodeId;
 use taffy::Size;
 use taffy::Style;
 use taffy::TaffyTree;
+use tilo_permissions::MemberId;
+use tilo_permissions::PermissionContext;
 use tilo_ui_base::Theme;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
@@ -88,7 +89,7 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
                 views: views.clone(),
                 device_id: "D".into(),
                 instance_id: instance,
-                permissions: ::collaboration::permissions::SharedPermissions::new(
+                permissions: tilo_permissions::SharedPermissions::new(
                     PermissionContext::permissive(),
                 ),
                 author: MemberId::person("tester"),

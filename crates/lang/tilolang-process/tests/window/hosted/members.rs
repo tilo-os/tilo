@@ -3,9 +3,11 @@
 
 use super::*;
 use crate::interaction::{composer, send_button};
+use tilo_permissions::policy;
+use tilo_permissions::policy::Grantee;
+use tilo_permissions::policy::Role;
 use tilolang_process::testing::Bus;
 use ui::headless::Driver;
-use ui::permissions::policy::{self, Grantee, Role};
 use ui::tilo_actions::MemberId;
 
 const INTERACTION: &str = "so.tilo.lang.interaction";

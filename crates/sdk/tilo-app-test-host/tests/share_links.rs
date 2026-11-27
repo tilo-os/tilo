@@ -5,9 +5,9 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ResourceViewLocator,
 };
-use tilo_app::permissions::Role;
 use tilo_app::prelude::*;
 use tilo_app::{RemoteActions, RemoteActionsGuard};
+use tilo_permissions::Role;
 use tilo_reference::link::{
     AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, ResourceAddress, ResourceSegment,
     Scope, WebEntries, WebEntry,

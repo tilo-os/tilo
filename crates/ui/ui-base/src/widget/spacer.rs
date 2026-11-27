@@ -1,11 +1,11 @@
-#[cfg(feature = "model")]
-use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::theme::Theme;
 use crate::tokens::SpacingStep;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{NodeId, Style, TaffyTree};
+#[cfg(feature = "model")]
+use tilo_permissions::PermissionScope;
 use vello::kurbo::{Point, Rect};
 
 /// How a [`Spacer`] takes its size.

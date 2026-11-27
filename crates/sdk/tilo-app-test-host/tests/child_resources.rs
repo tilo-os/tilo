@@ -5,11 +5,11 @@
 //! palette, agents and scripts address the child like any resource.
 
 use tilo_actions::{Action, ActionError};
-use tilo_app::Role;
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_app::prelude::*;
 use tilo_app_test_host::TestApp;
+use tilo_permissions::Role;
 use tilo_resource::{Doc, Invoke, ModelError, child_resource_id};
 
 const ACTION_TYPE: &str = "child-resources.query";

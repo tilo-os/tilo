@@ -28,8 +28,8 @@ fn hosted_pump_timing() -> bool {
 /// value is identical.
 #[derive(PartialEq, Eq)]
 struct HostedAuthorityObservation {
-    app: tilo_ui_base::permissions::DirectoryPermissionObservation,
-    owner: Option<tilo_ui_base::permissions::DirectoryPermissionObservation>,
+    app: tilo_permissions::DirectoryPermissionObservation,
+    owner: Option<tilo_permissions::DirectoryPermissionObservation>,
 }
 
 #[cfg(feature = "model")]

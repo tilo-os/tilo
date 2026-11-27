@@ -150,6 +150,7 @@ members = [
 
     # Collab
     "crates/core/action-policy",
+    "crates/core/permissions",
     "crates/core/actions",
     "crates/core/remote-actions",
     "crates/core/invocations",
@@ -652,6 +653,7 @@ browser-continuity-core = { package = "tilo-browser-continuity-core", path = "cr
 tilo-app-id = { path = "crates/core/tilo-app-id", version = "0.1.0" }
 tilo-action-types = { path = "crates/platform/action-types", version = "0.1.0" }
 tilo-member-types = { path = "crates/platform/member-types", version = "0.1.0" }
+tilo-permissions = { path = "crates/core/permissions", version = "0.1.0" }
 tilo-presence = { path = "crates/platform/tilo-presence", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------

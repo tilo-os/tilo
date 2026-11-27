@@ -12,11 +12,11 @@ use vello::kurbo::{Affine, Point};
 
 use crate::State;
 use crate::floating_surface::FloatingSurfaceWidgetExt;
+#[cfg(feature = "model")]
+use tilo_permissions::PermissionContext;
 use tilo_ui_base::Theme;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_ui_base::offscreen::OffscreenRenderer;
-#[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionContext;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::{widget::Widget, widget::WidgetLayoutError};

@@ -1,10 +1,19 @@
-use tilo_ui_base::{
-    permissions::Access, permissions::ActionKind, permissions::Answer, permissions::AppKind,
-    permissions::CapDecision, permissions::CapOverride, permissions::Denial, permissions::Grantee,
-    permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope,
-    permissions::ResourceRef, permissions::Role, permissions::Scope, permissions::TreePath,
-    permissions::policy,
-};
+use tilo_permissions::Access;
+use tilo_permissions::Answer;
+use tilo_permissions::AppKind;
+use tilo_permissions::CapDecision;
+use tilo_permissions::CapOverride;
+use tilo_permissions::Denial;
+use tilo_permissions::Grantee;
+use tilo_permissions::PermissionContext;
+use tilo_permissions::PermissionScope;
+use tilo_permissions::ResourceRef;
+use tilo_permissions::Role;
+use tilo_permissions::Scope;
+use tilo_permissions::TreePath;
+use tilo_permissions::policy;
+use tilo_ui_base::permissions::ActionKind;
+use tilo_ui_base::permissions::MemberId;
 
 /// A viewer in the workspace: role only, no individual capabilities.
 fn viewer_ctx(user: &str) -> PermissionContext {
@@ -214,7 +223,7 @@ tilo_test_env::scenario! {
             let ctx = PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("alice"), Role::Editor).with_grant(policy::Grant::new(
                 "terminal",
                 policy::Grantee::person("alice"),
-                TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE).join(&terminal),
+                TreePath::workspace(tilo_permissions::LOCAL_WORKSPACE).join(&terminal),
                 tilo_action_types::KindSet::ALL,
                 Answer::Allow,
                 policy::Grantee::person("owner"),
@@ -241,7 +250,7 @@ tilo_test_env::scenario! {
             let grant = policy::Grant::new(
                 "terminal",
                 policy::Grantee::person("alice"),
-                TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE).join(&terminal),
+                TreePath::workspace(tilo_permissions::LOCAL_WORKSPACE).join(&terminal),
                 tilo_action_types::KindSet::ALL,
                 Answer::Allow,
                 policy::Grantee::person("owner"),
@@ -326,7 +335,7 @@ impl tilo_ui_base::widget::Widget for NoOpWidget {
     }
 }
 
-use tilo_ui_base::permissions::PermissionScope as PS;
+use tilo_permissions::PermissionScope as PS;
 
 struct GuardedButton {
     clicked: bool,

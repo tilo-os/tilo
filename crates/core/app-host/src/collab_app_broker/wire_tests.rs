@@ -918,8 +918,8 @@ async fn an_app_publishes_its_action_surface_as_a_change() {
 }
 
 /// One action of a record a window shows, which `workspace` holds when it is not the window's.
-fn shown(workspace: Option<u128>) -> runtime_collab::shown_actions::ShownAction {
-    runtime_collab::shown_actions::ShownAction::new(
+fn shown(workspace: Option<u128>) -> tilo_permissions::shown_actions::ShownAction {
+    tilo_permissions::shown_actions::ShownAction::new(
         workspace
             .map(|id| crate::test_support::WorkspaceId::from_u128(id).to_string())
             .as_deref(),
@@ -931,7 +931,8 @@ fn shown(workspace: Option<u128>) -> runtime_collab::shown_actions::ShownAction 
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_shown_action_is_decided_by_the_workspace_holding_it_and_again_when_its_grants_change() {
-    use runtime_collab::shown_actions::{ActionDecision, ActionVerdict};
+    use tilo_permissions::shown_actions::ActionDecision;
+    use tilo_permissions::shown_actions::ActionVerdict;
     tokio::task::LocalSet::new()
         .run_until(async {
             let workspace = Workspace::new(&[21]);

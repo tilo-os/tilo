@@ -5,11 +5,13 @@
 use tilo_app::collaboration::DocumentMutation;
 use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, definition};
-use tilo_app::permissions::{KindSet, PermissionContext, TreePath};
 use tilo_app::prelude::*;
 use tilo_app::resource::DocumentCheckout;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app_test_host::TestApp;
+use tilo_permissions::KindSet;
+use tilo_permissions::PermissionContext;
+use tilo_permissions::TreePath;
 
 use crate::kinds::{Tally, TallyApp};
 
@@ -232,7 +234,7 @@ tilo_test_env::scenario! {
 
     phase a_grant_of_one_action_reaches_that_action_only;
     {
-        use tilo_app::permissions::policy::Level;
+        use tilo_permissions::policy::Level;
         let app = TestApp::<TallyApp>::new().unwrap();
         let only_bump = PermissionContext::agent_granted(
             AGENT,
@@ -348,7 +350,7 @@ tilo_test_env::scenario! {
 
     phase an_agent_granted_one_action_does_that_one_and_no_other;
     {
-        use tilo_app::permissions::policy::Level;
+        use tilo_permissions::policy::Level;
         let mut app = TestApp::<TallyApp>::new().unwrap();
         app.invoke(Tally::RENAME.with("visitors")).unwrap();
         let only_bump = PermissionContext::agent_granted(
@@ -379,7 +381,7 @@ tilo_test_env::scenario! {
         app.invoke(Tally::RENAME.with("visitors")).unwrap();
         // The view's member as a person of the workspace who only views.
         let viewer =
-            PermissionContext::member(&MemberId::person(AGENT), tilo_app::Role::Viewer);
+            PermissionContext::member(&MemberId::person(AGENT), tilo_permissions::Role::Viewer);
         let mut view = attached(&app, viewer);
         assert!(
             !view

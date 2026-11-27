@@ -1,5 +1,5 @@
 #[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionScope;
+use tilo_permissions::PermissionScope;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};

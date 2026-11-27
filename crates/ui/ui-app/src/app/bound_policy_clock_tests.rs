@@ -17,9 +17,9 @@ tilo_test_env::scenario! {
         let mut fixture = ActionFixture::new();
         let sampled = clock.clone();
         fixture.permissions.set(
-            tilo_ui_base::permissions::PermissionContext::granted(
+            tilo_permissions::PermissionContext::granted(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-                &tilo_ui_base::permissions::TreePath::root(),
+                &tilo_permissions::TreePath::root(),
                 tilo_action_types::KindSet::ALL,
                 Some(110),
             )
@@ -68,9 +68,9 @@ tilo_test_env::scenario! {
         let fixture = ActionFixture::scoped(crate::wake::WakeScope::new());
         let (sampled, read) = (clock.clone(), readable.clone());
         fixture.permissions.set(
-            tilo_ui_base::permissions::PermissionContext::granted(
+            tilo_permissions::PermissionContext::granted(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-                &tilo_ui_base::permissions::TreePath::root(),
+                &tilo_permissions::TreePath::root(),
                 tilo_action_types::KindSet::ALL,
                 Some(110),
             )
@@ -118,7 +118,7 @@ tilo_test_env::scenario! {
         assert_eq!(tile.next_wake_deadline(), None, "nothing to wake for");
 
         readable.store(true, Ordering::SeqCst);
-        tilo_ui_base::permissions::outside_changed();
+        tilo_permissions::outside_changed();
         CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
         with_monotonic_time(start, || {
             assert!(tile.update(&model, &ROOT), "the announcement wakes the app");

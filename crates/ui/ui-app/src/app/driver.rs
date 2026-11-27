@@ -50,9 +50,9 @@ use crate::state::State;
 pub use apps_a::{WindowBarNotice, WindowBarNoticeButton};
 #[cfg(feature = "model")]
 pub use palette::FollowedView;
-use tilo_ui_base::a11y::AccessNode;
 #[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionContext;
+use tilo_permissions::PermissionContext;
+use tilo_ui_base::a11y::AccessNode;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;

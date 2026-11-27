@@ -5,8 +5,8 @@
 
 use std::rc::Rc;
 
+use tilo_permissions::Role;
 use tilo_resource::Resource;
-use tilo_ui_base::permissions::Role;
 use ui_core::application::Capture;
 use ui_core::headless::Driver;
 

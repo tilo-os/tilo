@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
 
     phase a_viewer_cannot_edit;
     {
-        let mut app = TestApp::<ChecklistApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        let mut app = TestApp::<ChecklistApp>::with_role(tilo_permissions::Role::Viewer).unwrap();
         assert!(app.invoke(Checklist::ADD.with("sneaky")).is_err());
         assert!(app.state().items.is_empty());
     }
@@ -521,9 +521,13 @@ tilo_test_env::scenario! {
     {
         use std::sync::{Arc, Mutex};
         use tilo_action_types::{KindSet, Lifetime};
-        use tilo_app::permissions::policy::{Answer, Grant, GrantId, Grantee, TreePath};
+        use tilo_permissions::policy::Answer;
+        use tilo_permissions::policy::Grant;
+        use tilo_permissions::policy::GrantId;
+        use tilo_permissions::policy::Grantee;
+        use tilo_permissions::policy::TreePath;
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.set_role(tilo_app::permissions::Role::Viewer);
+        app.set_role(tilo_permissions::Role::Viewer);
         let viewer = app.permissions();
         let mut access = viewer.access().clone();
         let workspace = TreePath::workspace(&access.policy.workspace);

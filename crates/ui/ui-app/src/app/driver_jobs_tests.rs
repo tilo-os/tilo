@@ -582,7 +582,7 @@ fn controls_list_what_a_person_can_press_with_their_name_bounds_and_focus() {
     assert_eq!(focused.len(), 1, "Tab focuses one control: {focused:?}");
 }
 
-fn button_for(role: tilo_ui_base::permissions::Role) -> Driver {
+fn button_for(role: tilo_permissions::Role) -> Driver {
     // A press that reaches the workspace calls its typed action, which the workspace's grants
     // decide; a toolkit closure is never gated.
     let sends = crate::widget::effect_fixture::sends(|| {});
@@ -590,7 +590,7 @@ fn button_for(role: tilo_ui_base::permissions::Role) -> Driver {
     // The window's press reaches the workspace that grants its effects, as a window placed in
     // one does: without the stand-in for it, the effect would run at once and never be asked.
     driver.connect_peer();
-    driver.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::member(
+    driver.set_permission_ctx(tilo_permissions::PermissionContext::member(
         &tilo_ui_base::permissions::MemberId::person("ada"),
         role,
     ));
@@ -627,7 +627,7 @@ fn a_control_naming_nothing_the_window_has_is_refused_said_and_kept_among_the_fa
 
 #[test]
 fn a_press_the_workspace_s_grants_ask_about_waits_for_the_person() {
-    let mut driver = button_for(tilo_ui_base::permissions::Role::Editor);
+    let mut driver = button_for(tilo_permissions::Role::Editor);
     assert_eq!(driver.asking(), None, "nothing is asked before the press");
     driver.click_named("go").unwrap();
     driver.relayout();

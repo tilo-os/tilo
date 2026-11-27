@@ -4,10 +4,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// `member` as an Editor of the local workspace, with one extra grant of `answer`
 /// on the `fixture` app until Unix second 100.
 fn member_with(answer: Answer) -> PermissionContext {
-    let context = PermissionContext::member(
-        &crate::permissions::MemberId::person("member"),
-        Role::Viewer,
-    );
+    let context = PermissionContext::member(&crate::MemberId::person("member"), Role::Viewer);
     let mut access = context.access().clone();
     if answer == Answer::Deny {
         std::sync::Arc::make_mut(&mut access.policy)
@@ -40,7 +37,7 @@ tilo_test_env::scenario! {
             .with_policy_time_sampler(Arc::new(move || Ok(clock.load(Ordering::Acquire))));
         let scope = PermissionScope::app("fixture", ActionKind::Undoable);
         assert!(context.check(&scope));
-        let delayed = context.clone().at_unix_time(1);
+        let delayed = context.at_unix_time(1);
         time.store(100, Ordering::Release);
         assert!(
             !delayed.check(&scope),

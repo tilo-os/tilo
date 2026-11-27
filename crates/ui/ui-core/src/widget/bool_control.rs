@@ -3,7 +3,7 @@
 //! action broker.
 
 #[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionScope;
+use tilo_permissions::PermissionScope;
 use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use tilo_ui_base::{
     widget::ActionEmitter, widget::AppModel, widget::ControlBindingMetadata, widget::ModelPath,
@@ -409,10 +409,7 @@ macro_rules! bool_control_api {
 
         #[must_use]
         #[cfg(feature = "model")]
-        pub fn with_permission_scope(
-            mut self,
-            scope: tilo_ui_base::permissions::PermissionScope,
-        ) -> Self {
+        pub fn with_permission_scope(mut self, scope: tilo_permissions::PermissionScope) -> Self {
             self.control.permission_scope = Some(scope);
             self
         }
@@ -554,7 +551,7 @@ macro_rules! bool_control_capabilities {
 
         #[cfg(feature = "model")]
         impl tilo_ui_base::widget::permission::PermissionGuarded for $ty {
-            fn permission_scope(&self) -> Option<tilo_ui_base::permissions::PermissionScope> {
+            fn permission_scope(&self) -> Option<tilo_permissions::PermissionScope> {
                 self.control.permission_scope.clone()
             }
         }

@@ -395,9 +395,9 @@ tilo_test_env::scenario! {
         let mut fixture = HostedPumpFixture::new(1);
         let time = Arc::new(AtomicU64::new(100));
         let sample = time.clone();
-        fixture.app.permission_ctx = tilo_ui_base::permissions::PermissionContext::granted(
+        fixture.app.permission_ctx = tilo_permissions::PermissionContext::granted(
             &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-            &tilo_ui_base::permissions::TreePath::root(),
+            &tilo_permissions::TreePath::root(),
             tilo_action_types::KindSet::ALL,
             Some(110),
         )
@@ -445,8 +445,8 @@ tilo_test_env::scenario! {
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
-        let permissions = tilo_ui_base::permissions::SharedPermissions::new(
-            tilo_ui_base::permissions::PermissionContext::permissive(),
+        let permissions = tilo_permissions::SharedPermissions::new(
+            tilo_permissions::PermissionContext::permissive(),
         );
         let context = ProcessContext::prepare(
             &definition,
@@ -491,7 +491,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(app.actions.resource_generation.get(), generation);
         // What a host does with its recomputed authority before a pump.
-        permissions.set(tilo_ui_base::permissions::PermissionContext::stranger(
+        permissions.set(tilo_permissions::PermissionContext::stranger(
             &tilo_ui_base::permissions::MemberId::person("fixture-user"),
         ));
         let report = app.pump_hosted_model_as(false);
@@ -542,8 +542,8 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 83,
-                permissions: tilo_ui_base::permissions::SharedPermissions::new(
-                    tilo_ui_base::permissions::PermissionContext::permissive(),
+                permissions: tilo_permissions::SharedPermissions::new(
+                    tilo_permissions::PermissionContext::permissive(),
                 ),
                 author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
@@ -604,13 +604,14 @@ tilo_test_env::scenario! {
 
     phase hosted_pump_action_authority_revoke_refreshes_without_forced_sync;
     {
-        use tilo_ui_base::{permissions::PermissionContext, permissions::Role};
+        use tilo_permissions::PermissionContext;
+        use tilo_permissions::Role;
         use std::sync::{Arc, Mutex};
         let current = Arc::new(Mutex::new(Some(Role::Owner)));
         let sample = current.clone();
         let mut fixture = HostedPumpFixture::new(1);
         fixture.app.permission_ctx =
-            tilo_ui_base::permissions::PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), Role::Editor)
+            tilo_permissions::PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), Role::Editor)
                 .with_action_authority(
                     "test.directory".into(),
                     Arc::new(move || {

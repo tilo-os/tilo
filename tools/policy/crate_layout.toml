@@ -170,6 +170,7 @@ ui = [
     "tilo-ui -> tilo-paint-stream",
     "tilo-ui -> tilo-paint-strokes",
     "tilo-ui -> tilo-process-services",
+    "tilo-ui -> tilo-permissions",  # the one resource/action model: I/O-free types and pure evaluation over them
     "tilo-ui -> tilo-reference",
     "tilo-ui -> tilo-registry-types",
     "tilo-ui -> tilo-resource",
@@ -187,17 +188,19 @@ ui = [
     "tilo-ui-app -> tilo-doc",
     "tilo-ui-app -> tilo-host-search",
     "tilo-ui-app -> tilo-media",
-    "tilo-ui-app -> tilo-reference",  # the one resource/action model's types
+    "tilo-ui-app -> tilo-permissions",  # the one resource/action model: I/O-free types and pure evaluation over them
+    "tilo-ui-app -> tilo-reference",  # the one resource/action model: I/O-free types and pure evaluation over them
     "tilo-ui-app -> tilo-resource",
     "tilo-ui-app -> tilo-runtime-collab",
-    "tilo-ui-app -> tilo-settings-model",  # the one resource/action model's types
-    "tilo-ui-base -> tilo-actions",  # the one resource/action model's types
-    "tilo-ui-base -> tilo-collab-types",  # the one resource/action model's types
-    "tilo-ui-base -> tilo-history",  # the one resource/action model's types
-    "tilo-ui-base -> tilo-reference",  # the one resource/action model's types
-    "tilo-ui-base -> tilo-registry-types",  # the one resource/action model's types
-    "tilo-ui-base -> tilo-resource",  # the one resource/action model's types
-    "tilo-ui-base -> tilo-settings-model",  # the one resource/action model's types
+    "tilo-ui-app -> tilo-settings-model",  # the one resource/action model: I/O-free types and pure evaluation over them
+    "tilo-ui-base -> tilo-actions",  # the one resource/action model: I/O-free types and pure evaluation over them
+    "tilo-ui-base -> tilo-collab-types",  # the one resource/action model: I/O-free types and pure evaluation over them
+    "tilo-ui-base -> tilo-history",  # the one resource/action model: I/O-free types and pure evaluation over them
+    "tilo-ui-base -> tilo-permissions",  # the one resource/action model: I/O-free types and pure evaluation over them
+    "tilo-ui-base -> tilo-reference",  # the one resource/action model: I/O-free types and pure evaluation over them
+    "tilo-ui-base -> tilo-registry-types",  # the one resource/action model: I/O-free types and pure evaluation over them
+    "tilo-ui-base -> tilo-resource",  # the one resource/action model: I/O-free types and pure evaluation over them
+    "tilo-ui-base -> tilo-settings-model",  # the one resource/action model: I/O-free types and pure evaluation over them
     "tilo-ui-graph -> tilo-action-policy",
     "tilo-ui-kms -> tilo-settings-store",
 ]

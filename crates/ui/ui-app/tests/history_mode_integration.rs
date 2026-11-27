@@ -195,7 +195,7 @@ tilo_test_env::scenario! {
 
     phase actual_confirmation_rechecks_unchanged_grant_expiry_replacement_and_actor_mapping;
     {
-        use tilo_ui_base::permissions::*;
+        use tilo_permissions::*;
         for case in ["expiry", "replacement", "actor"] {
             let mut driver = review_driver();
             driver.set_permission_ctx(grant(LOCAL_USER, RESTORABLE.app_id, Some(150)));
@@ -204,7 +204,7 @@ tilo_test_env::scenario! {
             match case {
                 "expiry" => NOW.set(200),
                 "replacement" => driver.set_permission_ctx(
-                    tilo_ui_base::permissions::PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person(LOCAL_USER)),
+                    tilo_permissions::PermissionContext::stranger(&tilo_permissions::MemberId::person(LOCAL_USER)),
                 ),
                 _ => driver.set_permission_ctx(grant("another-person", RESTORABLE.app_id, None)),
             }
@@ -371,14 +371,10 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
     );
     assert!(!driver.poll_frame().unwrap());
 }
-fn grant(
-    actor: &str,
-    app: &str,
-    until: Option<u64>,
-) -> tilo_ui_base::permissions::PermissionContext {
-    use tilo_ui_base::permissions::*;
+fn grant(actor: &str, app: &str, until: Option<u64>) -> tilo_permissions::PermissionContext {
+    use tilo_permissions::*;
     PermissionContext::granted(
-        &tilo_ui_base::permissions::MemberId::person(actor),
+        &tilo_permissions::MemberId::person(actor),
         &TreePath::root().app(app),
         tilo_action_types::KindSet::ALL,
         until,

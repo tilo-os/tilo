@@ -104,7 +104,6 @@ pub use incoming::Incoming;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
-pub mod permissions;
 pub mod resource;
 pub mod state;
 
@@ -524,7 +523,7 @@ pub enum CollabRequest {
     /// before: answered with [`CollabEvent::ActionVerdicts`] now and again whenever grants change
     /// one. Empty asks nothing more.
     DecideShownActions {
-        actions: Vec<runtime_collab::shown_actions::ShownAction>,
+        actions: Vec<tilo_permissions::shown_actions::ShownAction>,
     },
 }
 

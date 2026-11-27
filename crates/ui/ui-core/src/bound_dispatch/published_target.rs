@@ -60,7 +60,7 @@ pub(super) fn shared_target(
                 .any(|action| action.id == address.action))
             || node.children().iter().any(|child| resolves(child, address))
     }
-    fn kept(decider: &tilo_ui_base::permissions::ActionDecider<'_>, node: &SharedResource) -> bool {
+    fn kept(decider: &tilo_permissions::ActionDecider<'_>, node: &SharedResource) -> bool {
         let head = node.head();
         head.actions
             .iter()
@@ -70,7 +70,7 @@ pub(super) fn shared_target(
     /// The first node with resource id `id` that filtering keeps (any, with no decider). A node
     /// filtering drops has no kept node beneath it.
     fn first<'a>(
-        decider: Option<&tilo_ui_base::permissions::ActionDecider<'_>>,
+        decider: Option<&tilo_permissions::ActionDecider<'_>>,
         node: &'a SharedResource,
         id: &str,
     ) -> Option<&'a SharedResource> {

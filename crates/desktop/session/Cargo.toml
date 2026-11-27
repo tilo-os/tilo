@@ -68,6 +68,7 @@ test-support = ["tilo-runtime/test-support", "dep:tilo-test-env"]
 no-workspace-copy = ["test-support"]
 
 [dependencies]
+tilo-permissions.workspace = true
 tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }

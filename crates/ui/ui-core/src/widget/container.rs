@@ -2,7 +2,7 @@ use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 #[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionScope;
+use tilo_permissions::PermissionScope;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::ModelPath;
 use tilo_ui_base::widget::TaffyTreeExt;

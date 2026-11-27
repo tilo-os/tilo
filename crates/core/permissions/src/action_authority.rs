@@ -71,7 +71,7 @@ impl PermissionContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::{ActionKind, Answer, Role};
+    use crate::{ActionKind, Answer, Role};
 
     #[test]
     fn host_action_authority_cannot_be_borrowed_by_agents_or_other_people() {
@@ -79,13 +79,13 @@ mod tests {
         let authority = || {
             PermissionContext::member_of(
                 "workspace-a",
-                &crate::permissions::MemberId::person("person-a"),
+                &crate::MemberId::person("person-a"),
                 Role::Owner,
             )
         };
         let agent = PermissionContext::member_of(
             "workspace-a",
-            &crate::permissions::MemberId::person("person-a"),
+            &crate::MemberId::person("person-a"),
             Role::Editor,
         );
         let bounded = agent.clone().with_access(agent.access().clone().acting_as(
@@ -98,7 +98,7 @@ mod tests {
             bounded,
             PermissionContext::member_of(
                 "workspace-a",
-                &crate::permissions::MemberId::person("person-b"),
+                &crate::MemberId::person("person-b"),
                 Role::Editor,
             ),
         ] {
@@ -109,7 +109,7 @@ mod tests {
         }
         let permissions = PermissionContext::member_of(
             "workspace-a",
-            &crate::permissions::MemberId::person("person-a"),
+            &crate::MemberId::person("person-a"),
             Role::Editor,
         )
         .with_action_authority("so.tilo.store".into(), Arc::new(move || Ok(authority())));

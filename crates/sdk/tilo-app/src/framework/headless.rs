@@ -12,11 +12,11 @@ use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 
 use tilo_lock::MutexRecover as _;
+use tilo_permissions::PermissionContext;
+use tilo_permissions::Role;
+use tilo_permissions::SharedPermissions;
 use tilo_resource::{Effect, Invoke, Resource};
-use tilo_ui_base::{
-    permissions::MemberId, permissions::PermissionContext, permissions::Role,
-    permissions::SharedPermissions,
-};
+use tilo_ui_base::permissions::MemberId;
 use ui_core::application::{
     ApplicationOwner, Capture, ComponentRunnerInputs, OpenFile, PlaybackHandoff,
     PreparedComponentInputs, ProcessContext,
@@ -623,7 +623,7 @@ fn answer_where_kept<A: ResourceApp>(
     let resources = served.borrow_mut().harness().resources();
     let (resource, spec) = tilo_actions::api::locate(&resources, invocation.address)
         .ok_or_else(|| tilo_actions::ApiError::Unknown(invocation.address.clone()))?;
-    invocation.admit(&ui_core::shown_actions::ShownAction::new(
+    invocation.admit(&tilo_permissions::shown_actions::ShownAction::new(
         Some(own),
         A::ID,
         (&resource.kind, resource.id.as_str(), &spec.id),

@@ -8,9 +8,9 @@ use super::{
 };
 use crate::application_view::InstanceViewStore;
 use crate::launch_error::LaunchError;
-use tilo_ui_base::{
-    permissions::MemberId, permissions::PermissionContext, permissions::SharedPermissions,
-};
+use tilo_permissions::PermissionContext;
+use tilo_permissions::SharedPermissions;
+use tilo_ui_base::permissions::MemberId;
 
 /// Prepare `definition` as one of the shell surface apps (the
 /// bar, the banners, Quick Settings, a sheet): as `person` on `device`, its
@@ -45,7 +45,7 @@ pub fn prepare_private_surface(
             instance_id: instance,
             permissions: SharedPermissions::new(PermissionContext::member(
                 &tilo_ui_base::permissions::MemberId::person(person),
-                tilo_ui_base::permissions::Role::Owner,
+                tilo_permissions::Role::Owner,
             )),
             author: MemberId::person(person),
             action_context: tilo_actions::ActionContext::default(),

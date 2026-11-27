@@ -413,7 +413,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         #[cfg(feature = "model")]
         permission_ctx,
         #[cfg(feature = "model")]
-        painted_permissions: tilo_ui_base::permissions::shared_revision(),
+        painted_permissions: tilo_permissions::shared_revision(),
         theme_epoch: 0,
         frame_theme_epoch: 0,
         #[cfg(feature = "model")]

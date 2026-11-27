@@ -229,7 +229,7 @@ thread_local! {
         const { RefCell::new(None) };
     static RETRY: Cell<bool> = const { Cell::new(false) };
     #[cfg(feature = "model")]
-    static FOLLOWERS: RefCell<Vec<crate::permissions::WeakPermissions>> =
+    static FOLLOWERS: RefCell<Vec<tilo_permissions::WeakPermissions>> =
         const { RefCell::new(Vec::new()) };
     /// The spinner step an empty state painted last, and where (scene pixels) a new pose
     /// was painted that no presented frame has damaged yet.
@@ -372,10 +372,10 @@ fn tell(sync: Option<WorkspaceSync>) -> bool {
 /// says the app may write the workspace now, or may not any more, they become an author's
 /// or a viewer's at once ([`WorkspaceSync::writable`]).
 #[cfg(feature = "model")]
-pub fn follow_participation(permissions: &crate::permissions::SharedPermissions) {
+pub fn follow_participation(permissions: &tilo_permissions::SharedPermissions) {
     FOLLOWERS.with(|followers| {
         let mut followers = followers.borrow_mut();
-        followers.retain(crate::permissions::WeakPermissions::is_shared);
+        followers.retain(tilo_permissions::WeakPermissions::is_shared);
         followers.push(permissions.downgrade());
     });
     if let Some(writable) = current().and_then(|sync| sync.writable) {
@@ -387,10 +387,10 @@ pub fn follow_participation(permissions: &crate::permissions::SharedPermissions)
 fn follow(writable: bool) {
     let live: Vec<_> = FOLLOWERS.with(|followers| {
         let mut followers = followers.borrow_mut();
-        followers.retain(crate::permissions::WeakPermissions::is_shared);
+        followers.retain(tilo_permissions::WeakPermissions::is_shared);
         followers
             .iter()
-            .filter_map(crate::permissions::WeakPermissions::upgrade)
+            .filter_map(tilo_permissions::WeakPermissions::upgrade)
             .collect()
     });
     for permissions in live {
@@ -399,7 +399,7 @@ fn follow(writable: bool) {
 }
 
 #[cfg(feature = "model")]
-fn rebase(permissions: &crate::permissions::SharedPermissions, writable: bool) {
+fn rebase(permissions: &tilo_permissions::SharedPermissions, writable: bool) {
     let next = permissions.borrow().with_participation(writable);
     if let Some(next) = next {
         permissions.set(next);
@@ -750,9 +750,11 @@ mod tests {
     #[cfg(feature = "model")]
     #[test]
     fn a_launch_opened_read_only_becomes_writable_when_its_authorship_arrives_and_back() {
-        use crate::permissions::{
-            ActionKind, PermissionContext, PermissionScope, Role, SharedPermissions,
-        };
+        use crate::permissions::ActionKind;
+        use tilo_permissions::PermissionContext;
+        use tilo_permissions::PermissionScope;
+        use tilo_permissions::Role;
+        use tilo_permissions::SharedPermissions;
         let workspace = "3f2b1c00-0000-4000-8000-000000000001";
         let writes = |permissions: &SharedPermissions| {
             permissions
@@ -760,12 +762,12 @@ mod tests {
                 .check(&PermissionScope::workspace(ActionKind::Undoable))
         };
         set(None);
-        let launch = crate::permissions::SharedPermissions::new(PermissionContext::member_of(
+        let launch = tilo_permissions::SharedPermissions::new(PermissionContext::member_of(
             workspace,
             &crate::permissions::MemberId::person("person-a"),
             Role::Viewer,
         ));
-        let own = crate::permissions::SharedPermissions::new(PermissionContext::member_of(
+        let own = tilo_permissions::SharedPermissions::new(PermissionContext::member_of(
             workspace,
             &crate::permissions::MemberId::person("person-a"),
             Role::Owner,

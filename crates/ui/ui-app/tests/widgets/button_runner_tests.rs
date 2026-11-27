@@ -80,7 +80,8 @@ fn glyph_origins(scene: &Scene) -> Vec<[f32; 2]> {
 
 #[test]
 fn own_device_effects_run_for_guests_and_refusals_are_said() {
-    use ::collaboration::permissions::{PermissionContext, Role};
+    use tilo_permissions::PermissionContext;
+    use tilo_permissions::Role;
     let click = |root: tilo_ui_base::widget::Element, role: Role| {
         let mut harness =
             Driver::new_with_theme(tilo_ui_app::State::new(), root, (600, 200), Theme::dark());

@@ -246,7 +246,7 @@ impl LayoutRuntime {
 /// rebuild or a remount, what the local actor may do with the permission
 /// generation, and what the components in the tree may do with the
 /// revision of the permissions their hosts share with them
-/// ([`tilo_ui_base::permissions::shared_revision`]). Equal generations are the
+/// ([`tilo_permissions::shared_revision`]). Equal generations are the
 /// same tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TreeGeneration {

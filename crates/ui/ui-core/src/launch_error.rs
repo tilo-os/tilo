@@ -10,7 +10,7 @@ pub enum LaunchError {
     DuplicateApplication(String),
     UnknownApplication(String),
     #[cfg(feature = "model")]
-    CapabilityDenied(tilo_ui_base::permissions::PermissionScope),
+    CapabilityDenied(tilo_permissions::PermissionScope),
     BindingMismatch,
     MissingComponentHost,
     /// Setup failed after the record became Ready: `recovery` holds its store (and any close reports)

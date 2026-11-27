@@ -141,7 +141,7 @@ pub fn insert_available_permitted(
 }
 
 fn insert_available(
-    decider: &tilo_ui_base::permissions::ActionDecider<'_>,
+    decider: &tilo_permissions::ActionDecider<'_>,
     resources: &[ResourceSpec],
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {

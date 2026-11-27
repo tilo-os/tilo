@@ -147,7 +147,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tilo_actions::{ActionDescriptor, ApiError};
-    use tilo_app::Role;
+    use tilo_permissions::Role;
 
     fn task_action(app: &mut TestApp<ChecklistApp>, action: &str) -> ActionDescriptor {
         app.actions()

@@ -10,13 +10,14 @@ use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use crate::runner::{with_native_presentations, with_view_operations};
 use collab_types::app_actions::{AppOpen, OPEN_APP_OPERATION, OPEN_OPERATION};
+use tilo_permissions::LivePermissions;
+use tilo_permissions::PermissionScope;
 use tilo_resource::Effect as _;
 use tilo_resource::{Resource, SearchEntry};
 use tilo_ui_base::PresencePayload;
 use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
 use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::{LocalState, Theme};
-use tilo_ui_base::{permissions::LivePermissions, permissions::PermissionScope};
 use tilo_ui_base::{widget::Element, widget::Widget};
 use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 use ui_core::application_view::{
@@ -104,7 +105,10 @@ pub(crate) struct ResourceRoot {
     permissions: Option<LivePermissions>,
     /// The records other workspaces hold that the window last asked its host about, and what the
     /// records it publishes beside its own were then ([`super::settings::ViewStorage::resources_key`]).
-    shown_asked: (Vec<(String, u64)>, Vec<ui_core::shown_actions::ShownAction>),
+    shown_asked: (
+        Vec<(String, u64)>,
+        Vec<tilo_permissions::shown_actions::ShownAction>,
+    ),
     write: Option<PermissionScope>,
     stages: Stages,
     /// The item a view operation showed and its host laid out, which the
@@ -1988,7 +1992,7 @@ impl ResourceRoot {
     /// holds (a person's profile record, held in their own workspace), when they changed since the
     /// window last asked its host about them: what it asks now. They are refused here until the
     /// host's verdicts arrive.
-    fn shown_to_ask(&mut self) -> Option<Vec<ui_core::shown_actions::ShownAction>> {
+    fn shown_to_ask(&mut self) -> Option<Vec<tilo_permissions::shown_actions::ShownAction>> {
         let permissions = self.permissions.as_ref()?;
         let key = self.storage.resources_key();
         if key == self.shown_asked.0 {
@@ -2013,11 +2017,11 @@ impl ResourceRoot {
 fn shown_actions_of(
     app: &str,
     resource: &ResourceSpec,
-    actions: &mut Vec<ui_core::shown_actions::ShownAction>,
+    actions: &mut Vec<tilo_permissions::shown_actions::ShownAction>,
 ) {
     if let Some(workspace) = &resource.workspace {
         actions.extend(resource.actions.iter().map(|action| {
-            ui_core::shown_actions::ShownAction::new(
+            tilo_permissions::shown_actions::ShownAction::new(
                 Some(workspace),
                 app,
                 (&resource.kind, resource.id.as_str(), &action.id),

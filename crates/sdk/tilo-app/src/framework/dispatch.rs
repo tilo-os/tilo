@@ -16,12 +16,13 @@ use tilo_actions::{
 };
 
 use super::controls::Actions;
+use tilo_permissions::LivePermissions;
+use tilo_permissions::PermissionScope;
+use tilo_permissions::TreePath;
+use tilo_permissions::policy;
 use tilo_resource::{Edit, Effect, Invoke, MemberId, Resource};
 use tilo_ui_base::LocalState;
-use tilo_ui_base::{
-    permissions::ActionKind, permissions::LivePermissions, permissions::PermissionScope,
-    permissions::TreePath, permissions::policy,
-};
+use tilo_ui_base::permissions::ActionKind;
 use ui_core::automerge::ChangeHash;
 
 /// What a view asks whether its member may do.
@@ -658,7 +659,7 @@ impl DispatchCore {
         self.permissions
             .borrow()
             .as_ref()
-            .is_some_and(tilo_ui_base::permissions::LivePermissions::workspace_has_others)
+            .is_some_and(tilo_permissions::LivePermissions::workspace_has_others)
     }
 
     /// React (or take a reaction back) at `path`, a [`Reactions`](tilo_resource::Reactions)

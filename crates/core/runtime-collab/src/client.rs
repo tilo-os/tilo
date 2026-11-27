@@ -570,7 +570,7 @@ impl RecordHandle {
     /// Returns [`NotAvailable`] when the host refuses or the connection fails.
     pub async fn shown_actions(
         &self,
-        actions: Vec<crate::shown_actions::ShownAction>,
+        actions: Vec<tilo_permissions::shown_actions::ShownAction>,
     ) -> Result<ActionVerdictFeed, NotAvailable> {
         Ok(ActionVerdictFeed(
             self.feed(Topic::ShownActions(actions)).await?,
@@ -1112,7 +1112,9 @@ pub struct ActionVerdictFeed(Feed);
 
 impl ActionVerdictFeed {
     /// The decisions as they are next.
-    pub async fn read(&self) -> Result<Vec<crate::shown_actions::ActionDecision>, NotAvailable> {
+    pub async fn read(
+        &self,
+    ) -> Result<Vec<tilo_permissions::shown_actions::ActionDecision>, NotAvailable> {
         match self.0.event().await? {
             Event::ShownActions(decisions) => Ok(decisions),
             other => Err(unexpected_event(&other)),

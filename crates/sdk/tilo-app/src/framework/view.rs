@@ -343,7 +343,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// called (who they are, the workspace's policy, what bounds them), for a
     /// runtime that decides its own invocations by the policy the API
     /// decides by. `None` outside a host.
-    pub fn access(&self) -> impl Fn() -> Option<tilo_ui_base::permissions::MemberAccess> + 'static {
+    pub fn access(&self) -> impl Fn() -> Option<tilo_permissions::MemberAccess> + 'static {
         self.dispatch.access_source()
     }
 

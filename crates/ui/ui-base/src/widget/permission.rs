@@ -5,7 +5,7 @@
 
 use super::Widget;
 use super::capability::capability;
-use crate::permissions::PermissionScope;
+use tilo_permissions::PermissionScope;
 
 /// A widget whose input and actions are guarded by a permission scope.
 pub trait PermissionGuarded: Widget {

@@ -5,7 +5,9 @@
 )]
 use super::*;
 use crate::{State, widget::ModalDialog};
-use tilo_ui_base::{i18n::I18nManager, permissions::MemberId, permissions::PermissionContext};
+use tilo_permissions::PermissionContext;
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::permissions::MemberId;
 
 #[derive(Clone, Copy)]
 pub(super) enum ReviewCommand {
@@ -424,7 +426,9 @@ fn check_restore_authority(
     app_id: &str,
     record: Option<&crate::resource::DocumentId>,
 ) -> Result<(), RestoreRefusal> {
-    use tilo_ui_base::{permissions::Access, permissions::ActionKind, permissions::MemberId};
+    use tilo_permissions::Access;
+    use tilo_ui_base::permissions::ActionKind;
+    use tilo_ui_base::permissions::MemberId;
     // The installed solo-workspace person is the runner's existing local-author mapping.
     // Other contexts must name the actual author.
     let acting = current.acting();
@@ -433,11 +437,11 @@ fn check_restore_authority(
         .into_iter()
         .filter_map(|node| node.by.member_id())
         .any(|member| match member {
-            MemberId::Person(id) => member == author || id == tilo_ui_base::permissions::LOCAL_USER,
+            MemberId::Person(id) => member == author || id == tilo_permissions::LOCAL_USER,
             MemberId::Agent { .. } | MemberId::Bot(_) => false,
         });
     if !mapped
-        || !current.check(&tilo_ui_base::permissions::PermissionScope::app(
+        || !current.check(&tilo_permissions::PermissionScope::app(
             app_id.to_owned(),
             ActionKind::Undoable,
         ))
@@ -445,7 +449,7 @@ fn check_restore_authority(
         return Err(RestoreRefusal::App);
     }
     if let Some(path) = record.and_then(crate::resource::DocumentId::file_path)
-        && !current.check(&tilo_ui_base::permissions::PermissionScope::path(
+        && !current.check(&tilo_permissions::PermissionScope::path(
             path.to_string_lossy().into_owned(),
             Access::Write,
         ))

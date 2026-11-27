@@ -229,7 +229,7 @@ fn the_keepers_window_offers_the_workspaces_emoji_to_callers_from_outside() {
 
     // A member the workspace lets only read is offered the read and no change, and a change
     // asked for all the same is refused and writes nothing.
-    let mut viewer = TestApp::<KeepingApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    let mut viewer = TestApp::<KeepingApp>::with_role(tilo_permissions::Role::Viewer).unwrap();
     let actions = offered(&mut viewer, emoji::KIND);
     assert!(actions.iter().any(|action| action == "read"), "{actions:?}");
     for change in ["add-emoji", "remove-emoji", "remove-any-emoji"] {
@@ -252,7 +252,7 @@ fn the_keepers_window_offers_the_workspaces_emoji_to_callers_from_outside() {
     );
 
     // An editor adds one; taking back someone else's is moderation, which is not theirs.
-    let mut editor = TestApp::<KeepingApp>::with_role(tilo_app::Role::Editor).unwrap();
+    let mut editor = TestApp::<KeepingApp>::with_role(tilo_permissions::Role::Editor).unwrap();
     let actions = offered(&mut editor, emoji::KIND);
     assert!(
         actions.iter().any(|action| action == "add-emoji"),
@@ -296,7 +296,7 @@ fn the_keepers_window_offers_the_workspaces_emoji_to_callers_from_outside() {
 
     // The workspace's grants on the owner's resource decide from any app: a viewer adds none
     // from Notes either, and an editor there adds and removes their own, not someone else's.
-    let mut notes = TestApp::<NotesApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    let mut notes = TestApp::<NotesApp>::with_role(tilo_permissions::Role::Viewer).unwrap();
     let record = notes
         .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
         .unwrap();
@@ -307,7 +307,7 @@ fn the_keepers_window_offers_the_workspaces_emoji_to_callers_from_outside() {
             .is_err()
     );
     assert!(names(&record).is_empty());
-    let mut notes = TestApp::<NotesApp>::with_role(tilo_app::Role::Editor).unwrap();
+    let mut notes = TestApp::<NotesApp>::with_role(tilo_permissions::Role::Editor).unwrap();
     let record = notes
         .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
         .unwrap();
@@ -355,7 +355,8 @@ fn the_workspaces_agents_are_offered_to_callers_and_changed_as_the_grants_say() 
         .expect("a read answers what is held");
     assert!(read.to_string().contains("Scout"), "{read}");
 
-    let mut editor = TestApp::<KeepingAgentsApp>::with_role(tilo_app::Role::Editor).unwrap();
+    let mut editor =
+        TestApp::<KeepingAgentsApp>::with_role(tilo_permissions::Role::Editor).unwrap();
     let agents = editor
         .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
         .unwrap();
@@ -425,7 +426,8 @@ fn the_workspaces_agents_are_offered_to_callers_and_changed_as_the_grants_say() 
     assert!(!agents.get().agents[0].is_active(), "the editor retired it");
 
     // A viewer reads the agents and changes none of them, nor makes one.
-    let mut viewer = TestApp::<KeepingAgentsApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    let mut viewer =
+        TestApp::<KeepingAgentsApp>::with_role(tilo_permissions::Role::Viewer).unwrap();
     assert_eq!(
         offered(&mut viewer, AGENTS),
         ["read"],
@@ -473,7 +475,7 @@ fn attached<A: ResourceApp<Resource = Note>>(
         ),
         app.read_document(|doc| doc.clone().save()),
         &MemberId::person("ada"),
-        tilo_app::permissions::PermissionContext::permissive(),
+        tilo_permissions::PermissionContext::permissive(),
         false,
     )
 }

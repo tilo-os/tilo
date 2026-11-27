@@ -38,7 +38,11 @@ const ME: &str = "test-author";
 
 #[test]
 fn a_record_in_a_workspace_with_other_members_offers_reactions_while_they_are_away() {
-    use tilo_app::permissions::{LOCAL_WORKSPACE, MemberAccess, PermissionContext, Role, policy};
+    use tilo_permissions::LOCAL_WORKSPACE;
+    use tilo_permissions::MemberAccess;
+    use tilo_permissions::PermissionContext;
+    use tilo_permissions::Role;
+    use tilo_permissions::policy;
     let mut app = TestApp::<PosterApp>::new().unwrap();
     app.settle();
     assert_eq!(

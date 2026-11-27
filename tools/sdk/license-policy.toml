@@ -112,6 +112,7 @@ client_side = [
     "tilo-lock",
     "tilo-member-types",       # who acts: a person, a member, an actor and the app one acts in
     "tilo-paths",
+    "tilo-permissions",        # who may do what, as a window asks it
     "tilo-platform-caps",
     "tilo-presence",           # who is where, their hue and their status, as plain values
     "tilo-resource",           # a resource's fields, as an app publishes them
@@ -198,6 +199,7 @@ toolkit_reaches = [
     "tilo-paint-stream",                # crates/engines/paint-stream
     "tilo-paint-strokes",               # crates/engines/paint-strokes
     "tilo-paths",                       # crates/platform/tilo-paths
+    "tilo-permissions",                 # crates/core/permissions
     "tilo-platform-caps",               # crates/platform/tilo-platform-caps
     "tilo-presence",                    # crates/platform/tilo-presence
     "tilo-presentation",                # crates/platform/tilo-presentation

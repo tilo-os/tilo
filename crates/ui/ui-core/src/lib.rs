@@ -164,9 +164,9 @@ pub mod auth_backdrop;
 pub mod call_pictures;
 pub mod charts;
 #[cfg(feature = "model")]
-pub use runtime_collab::shown_actions;
-#[cfg(feature = "model")]
 pub use tilo_actions::remote::native_media;
+#[cfg(feature = "model")]
+pub use tilo_permissions::shown_actions;
 pub use {tilo_ui_paint::color, tilo_ui_paint::color_compat};
 #[cfg(feature = "model")]
 pub mod activity_wire;

@@ -446,8 +446,8 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 81,
-                permissions: tilo_ui_base::permissions::SharedPermissions::new(
-                    tilo_ui_base::permissions::PermissionContext::permissive(),
+                permissions: tilo_permissions::SharedPermissions::new(
+                    tilo_permissions::PermissionContext::permissive(),
                 ),
                 author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
@@ -680,9 +680,9 @@ tilo_test_env::scenario! {
             let failed = Arc::new(AtomicBool::new(false));
             let sample_time = time.clone();
             let sample_failed = failed.clone();
-            app.permission_ctx = tilo_ui_base::permissions::PermissionContext::granted(
+            app.permission_ctx = tilo_permissions::PermissionContext::granted(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-                &tilo_ui_base::permissions::TreePath::root(),
+                &tilo_permissions::TreePath::root(),
                 tilo_action_types::KindSet::ALL,
                 Some(110),
             )

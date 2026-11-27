@@ -499,8 +499,8 @@ pub struct PresenceCtx {
     /// and read by guarded widgets through [`Self::permits`]. `None` checks
     /// nothing.
     #[cfg(feature = "model")]
-    permissions: std::cell::RefCell<Option<crate::permissions::PermissionContext>>,
-    /// [`crate::permissions::shared_revision`] as the drawing in progress
+    permissions: std::cell::RefCell<Option<tilo_permissions::PermissionContext>>,
+    /// [`tilo_permissions::shared_revision`] as the drawing in progress
     /// sees it. A retained drawing made under another revision is stale:
     /// what a guarded widget paints follows permissions that moved with
     /// nothing in the tree marking it.
@@ -584,20 +584,20 @@ impl PresenceCtx {
     #[cfg(feature = "model")]
     pub fn with_permissions<R>(
         &self,
-        permissions: crate::permissions::PermissionContext,
+        permissions: tilo_permissions::PermissionContext,
         draw: impl FnOnce() -> R,
     ) -> R {
         let outer = self.permissions.replace(Some(permissions));
         let outer_revision = self
             .paint_permissions
-            .replace(crate::permissions::shared_revision());
+            .replace(tilo_permissions::shared_revision());
         let out = draw();
         self.paint_permissions.set(outer_revision);
         self.permissions.replace(outer);
         out
     }
 
-    /// What [`crate::permissions::shared_revision`] was when the drawing in
+    /// What [`tilo_permissions::shared_revision`] was when the drawing in
     /// progress was lent its authority: a retained drawing from another
     /// generation paints what the permissions no longer allow, or not what
     /// they now do.
@@ -608,7 +608,7 @@ impl PresenceCtx {
     /// Whether the authority of the subtree being drawn covers `scope`.
     /// Outside any [`Self::with_permissions`] everything is allowed.
     #[cfg(feature = "model")]
-    pub fn permits(&self, scope: &crate::permissions::PermissionScope) -> bool {
+    pub fn permits(&self, scope: &tilo_permissions::PermissionScope) -> bool {
         self.permissions
             .borrow()
             .as_ref()
@@ -617,7 +617,7 @@ impl PresenceCtx {
 
     /// The authority of the subtree being drawn, if anyone scoped one.
     #[cfg(feature = "model")]
-    pub fn permission_context(&self) -> Option<crate::permissions::PermissionContext> {
+    pub fn permission_context(&self) -> Option<tilo_permissions::PermissionContext> {
         self.permissions.borrow().clone()
     }
 

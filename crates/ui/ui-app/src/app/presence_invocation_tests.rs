@@ -424,8 +424,8 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 1,
-                permissions: tilo_ui_base::permissions::SharedPermissions::new(
-                    tilo_ui_base::permissions::PermissionContext::permissive(),
+                permissions: tilo_permissions::SharedPermissions::new(
+                    tilo_permissions::PermissionContext::permissive(),
                 ),
                 author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),

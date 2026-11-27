@@ -442,7 +442,7 @@ pub(crate) static TEST_APPROVAL: std::sync::LazyLock<tilo_actions::remote::asked
     std::sync::LazyLock::new(|| {
         tilo_actions::remote::asked::Approval::new(
             tilo_actions::remote::asked::RecordRef {
-                workspace: tilo_ui_base::permissions::LOCAL_WORKSPACE.to_owned(),
+                workspace: tilo_permissions::LOCAL_WORKSPACE.to_owned(),
                 record: "invocations/allowed".to_owned(),
                 device: None,
             },

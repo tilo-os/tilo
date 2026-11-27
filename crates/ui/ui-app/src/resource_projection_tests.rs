@@ -24,7 +24,7 @@ fn control_availability_follows_permissions_and_reads_without_committing() {
         let (mut app, visible) = counted_control_app(false);
         app.refresh_control_action_availability();
         app.actions.permission_generation.set(u64::MAX);
-        app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+        app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
             &tilo_ui_base::permissions::MemberId::person("restricted"),
         ));
         assert!(!app.root_widget.children()[0].is_enabled());
@@ -206,7 +206,7 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
             app.refresh_control_action_availability();
             assert!(enabled.get(), "wrapper {wrapper}");
-            app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+            app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
                 &tilo_ui_base::permissions::MemberId::person("restricted"),
             ));
             assert!(

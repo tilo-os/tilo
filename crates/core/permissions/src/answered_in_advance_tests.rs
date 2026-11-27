@@ -44,6 +44,10 @@ fn answer_for(action: &str) -> policy::Grant {
 }
 
 /// What the window says of the agent's send, carrying `grants`.
+#[allow(
+    clippy::panic_in_result_fn,
+    reason = "the fixture checks that the send it builds is an outside action before the window decides it"
+)]
 fn sends(grants: Vec<policy::Grant>) -> Result<(), tilo_actions::ApiError> {
     let send =
         ActionSpec::operation("send", "Send", OperationKind::Effect, "notes.send", &()).unwrap();

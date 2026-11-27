@@ -386,10 +386,10 @@ impl HistoryOwner {
 
     pub(crate) fn with_restore_authority<T>(
         &self,
-        fallback_authority: &tilo_ui_base::permissions::PermissionContext,
+        fallback_authority: &tilo_permissions::PermissionContext,
         fallback_author: &tilo_ui_base::permissions::MemberId,
         operation: impl FnOnce(
-            &tilo_ui_base::permissions::PermissionContext,
+            &tilo_permissions::PermissionContext,
             &tilo_ui_base::permissions::MemberId,
         ) -> T,
     ) -> T {

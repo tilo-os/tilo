@@ -2,11 +2,11 @@
 fn directory_sampled_permission(
     time: std::sync::Arc<std::sync::atomic::AtomicU64>,
     fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> tilo_ui_base::permissions::PermissionContext {
+) -> tilo_permissions::PermissionContext {
     let now = time.load(std::sync::atomic::Ordering::Acquire);
-    tilo_ui_base::permissions::PermissionContext::granted(
+    tilo_permissions::PermissionContext::granted(
         &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-        &tilo_ui_base::permissions::TreePath::root(),
+        &tilo_permissions::TreePath::root(),
         tilo_action_types::KindSet::ALL,
         Some(110),
     )
@@ -70,7 +70,10 @@ tilo_test_env::scenario! {
 
     phase directory_permission_retained_clock_expiry_invalidates_actual_bound_revision;
     {
-        use tilo_ui_base::{permissions::Answer, permissions::KindSet, permissions::TreePath, permissions::policy};
+        use tilo_permissions::Answer;
+        use tilo_permissions::KindSet;
+        use tilo_permissions::TreePath;
+        use tilo_permissions::policy;
         use std::sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
@@ -82,7 +85,7 @@ tilo_test_env::scenario! {
             let grant = policy::Grant::new(
                 "other",
                 policy::Grantee::person("fixture-user"),
-                TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE).app("other"),
+                TreePath::workspace(tilo_permissions::LOCAL_WORKSPACE).app("other"),
                 KindSet::UNDOABLE,
                 if restrict {
                     Answer::Deny
@@ -166,7 +169,13 @@ tilo_test_env::scenario! {
 
     phase directory_permission_actor_and_capability_semantics_invalidate_revision;
     {
-        use tilo_ui_base::{permissions::Access, permissions::Acting, permissions::CapOverride, permissions::Grantee, permissions::PermissionContext, permissions::Scope, permissions::MemberAccess};
+        use tilo_permissions::Access;
+        use tilo_ui_base::permissions::Acting;
+        use tilo_permissions::CapOverride;
+        use tilo_permissions::Grantee;
+        use tilo_permissions::PermissionContext;
+        use tilo_permissions::Scope;
+        use tilo_permissions::MemberAccess;
         for actor_change in [false, true] {
             let mut fixture = ActionFixture::broker();
             let revision = capture_bound_directory(&mut fixture);
@@ -226,7 +235,10 @@ tilo_test_env::scenario! {
 
     phase directory_filtered_cache_expired_restriction_restores_republished_action;
     {
-        use tilo_ui_base::{permissions::Answer, permissions::KindSet, permissions::TreePath, permissions::policy};
+        use tilo_permissions::Answer;
+        use tilo_permissions::KindSet;
+        use tilo_permissions::TreePath;
+        use tilo_permissions::policy;
         use std::sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
@@ -235,7 +247,7 @@ tilo_test_env::scenario! {
         let restriction = policy::Grant::new(
             "restriction",
             policy::Grantee::person("fixture-user"),
-            TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE),
+            TreePath::workspace(tilo_permissions::LOCAL_WORKSPACE),
             KindSet::ALL,
             Answer::Deny,
             policy::Grantee::person("owner"),
@@ -327,13 +339,14 @@ tilo_test_env::scenario! {
 
     phase directory_permission_action_authority_revoke_invalidates_actual_bound_revision;
     {
-        use tilo_ui_base::{permissions::PermissionContext, permissions::Role};
+        use tilo_permissions::PermissionContext;
+        use tilo_permissions::Role;
         use std::sync::{Arc, Mutex};
         let current = Arc::new(Mutex::new(Some(Role::Owner)));
         let source = current.clone();
         let mut fixture = ActionFixture::broker();
         fixture.permissions.set(
-            tilo_ui_base::permissions::PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), Role::Editor)
+            tilo_permissions::PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), Role::Editor)
                 .with_action_authority(
                     "so.tilo.binding-probe".into(),
                     Arc::new(move || {

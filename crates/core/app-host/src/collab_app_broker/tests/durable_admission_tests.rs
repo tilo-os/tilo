@@ -404,7 +404,7 @@ async fn a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said() 
                 .insert(71, table);
 
             let actor = caller.admitted.broker_actor();
-            let record = runtime_collab::shown_actions::ShownAction::new(
+            let record = tilo_permissions::shown_actions::ShownAction::new(
                 Some(&holding.to_string()),
                 &fixture.route.app_id,
                 (&action.resource_kind, &action.resource, &action.action),
@@ -417,7 +417,7 @@ async fn a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said() 
             );
             assert_eq!(
                 verdicts.next().await.unwrap().unwrap()[0].verdict,
-                runtime_collab::shown_actions::ActionVerdict::Allowed,
+                tilo_permissions::shown_actions::ActionVerdict::Allowed,
                 "an editor of the holding workspace may run it, though they only read the board"
             );
             admit(&mut fixture, &caller);

@@ -16,10 +16,10 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use tilo_ui_base::{
-    permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope,
-    permissions::SharedPermissions,
-};
+use tilo_permissions::PermissionContext;
+use tilo_permissions::PermissionScope;
+use tilo_permissions::SharedPermissions;
+use tilo_ui_base::permissions::MemberId;
 
 mod component_inputs;
 mod open_file;
@@ -827,10 +827,10 @@ impl ProcessContext {
     /// share).
     pub fn restrict_to_reading(&mut self) {
         let reading = self.permissions.borrow().read_only();
-        self.permissions = tilo_ui_base::permissions::SharedPermissions::new(reading);
+        self.permissions = tilo_permissions::SharedPermissions::new(reading);
     }
-    pub fn live_permissions(&self) -> tilo_ui_base::permissions::LivePermissions {
-        tilo_ui_base::permissions::LivePermissions::shared(self.permissions.clone())
+    pub fn live_permissions(&self) -> tilo_permissions::LivePermissions {
+        tilo_permissions::LivePermissions::shared(self.permissions.clone())
     }
     pub fn action_context(&self) -> &tilo_actions::ActionContext {
         &self.action_context
@@ -2480,7 +2480,7 @@ mod bound_lifetime_tests {
                         views: views.clone(),
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                        permissions: tilo_permissions::SharedPermissions::new(
                             PermissionContext::permissive(),
                         ),
                         author: MemberId::person(&person),
@@ -2529,7 +2529,7 @@ mod bound_lifetime_tests {
                         views: views.clone(),
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                        permissions: tilo_permissions::SharedPermissions::new(
                             PermissionContext::permissive(),
                         ),
                         author: MemberId::person("probe-author"),
@@ -2591,7 +2591,7 @@ mod bound_lifetime_tests {
                             views: views.clone(),
                             device_id: "D".into(),
                             instance_id: 7,
-                            permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                            permissions: tilo_permissions::SharedPermissions::new(
                                 PermissionContext::permissive(),
                             ),
                             author: MemberId::person("probe-author"),
@@ -2679,7 +2679,7 @@ mod bound_lifetime_tests {
                         views,
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                        permissions: tilo_permissions::SharedPermissions::new(
                             PermissionContext::permissive(),
                         ),
                         author: MemberId::person("probe-author"),

@@ -5,11 +5,13 @@
 
 #![allow(clippy::unwrap_used, reason = "test: a failure is the assertion")]
 
-/// Where a press lands on the control a person finds by its name.
-use ::collaboration::permissions::{MemberId, PermissionContext, Role};
 use std::cell::Cell;
 use std::rc::Rc;
 use tilo_actions::ActionBinding;
+/// Where a press lands on the control a person finds by its name.
+use tilo_permissions::MemberId;
+use tilo_permissions::PermissionContext;
+use tilo_permissions::Role;
 use tilo_ui_app::app::driver::Driver;
 use tilo_ui_base::widget::Element;
 use vello::kurbo::{Point, Rect};

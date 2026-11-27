@@ -795,7 +795,7 @@ impl Widget for Root {
         )]
         let (scene, transform, renderer, theme, mut env) = ctx.parts();
         let guarded = tilo_ui_base::widget::Spacer::new().with_permission_scope(
-            tilo_ui_base::permissions::PermissionScope::workspace(
+            tilo_permissions::PermissionScope::workspace(
                 tilo_ui_base::permissions::ActionKind::Undoable,
             ),
         );
@@ -1313,7 +1313,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                         tilo_ui_base::TextRenderer::with_font_catalog(&catalog).unwrap();
                     let presence = tilo_ui_base::PresenceCtx::empty();
                     presence.with_permissions(
-                        tilo_ui_base::permissions::PermissionContext::permissive(),
+                        tilo_permissions::PermissionContext::permissive(),
                         || {
                             tile.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                                 &mut vello::Scene::new(),
@@ -1447,7 +1447,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
             "ordinary Driver paint did not reach the permission-aware root"
         );
-        permissions.set(tilo_ui_base::permissions::PermissionContext::permissive());
+        permissions.set(tilo_permissions::PermissionContext::permissive());
         EXPECTED_WRITE.set(true);
         CAPTURES.with_borrow_mut(Vec::clear);
         driver.relayout();
@@ -2076,11 +2076,12 @@ fn fill_factory(
 #[test]
 fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
     use crate::support::application::action_probe_factory;
-    use tilo_ui_base::{permissions::PermissionContext, permissions::Role};
+    use tilo_permissions::PermissionContext;
+    use tilo_permissions::Role;
     let host = ProbeHarness::new();
     let definition = definition(action_probe_factory);
     let driver = |instance, role| {
-        let permissions = tilo_ui_base::permissions::SharedPermissions::new(
+        let permissions = tilo_permissions::SharedPermissions::new(
             PermissionContext::member(
                 &tilo_ui_base::permissions::MemberId::person("probe-author"),
                 role,
@@ -2147,10 +2148,10 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         use crate::support::application::{action_probe_factory, existing, operation_observations};
         let host = ProbeHarness::new();
         let definition = definition(action_probe_factory);
-        let permissions = tilo_ui_base::permissions::SharedPermissions::new(
-            tilo_ui_base::permissions::PermissionContext::member(
+        let permissions = tilo_permissions::SharedPermissions::new(
+            tilo_permissions::PermissionContext::member(
                 &tilo_ui_base::permissions::MemberId::person("probe-author"),
-                tilo_ui_base::permissions::Role::Owner,
+                tilo_permissions::Role::Owner,
             )
             .at_unix_time(100),
         );
@@ -2241,14 +2242,14 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             let mut records = Vec::new();
             for instance in 11..13 {
                 let allowed = instance < 11_u64.saturating_add(authorized);
-                let permissions = tilo_ui_base::permissions::SharedPermissions::new(
+                let permissions = tilo_permissions::SharedPermissions::new(
                     if allowed {
-                        tilo_ui_base::permissions::PermissionContext::member(
+                        tilo_permissions::PermissionContext::member(
                             &tilo_ui_base::permissions::MemberId::person("probe-author"),
-                            tilo_ui_base::permissions::Role::Owner,
+                            tilo_permissions::Role::Owner,
                         )
                     } else {
-                        tilo_ui_base::permissions::PermissionContext::stranger(
+                        tilo_permissions::PermissionContext::stranger(
                             &tilo_ui_base::permissions::MemberId::person("probe-author"),
                         )
                     }

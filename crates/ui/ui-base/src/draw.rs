@@ -50,7 +50,7 @@ pub struct DrawEnv<'a> {
     pub viewport: Option<Rect>,
     /// The authority the subtree being drawn answers to; `None` checks nothing.
     pub permissions: Option<std::rc::Rc<dyn WidgetAuthority>>,
-    /// [`crate::permissions::shared_revision`] when that authority was lent: a
+    /// [`tilo_permissions::shared_revision`] when that authority was lent: a
     /// retained drawing made under another revision is stale.
     pub paint_permissions: u64,
     /// Whether a host-drawn mark on text is changing now, so a widget that

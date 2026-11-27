@@ -36,9 +36,12 @@ impl PartialEq for PolicyTimeSampler {
 
 impl Eq for PolicyTimeSampler {}
 
+/// The host's revocation of the grants an admission spent.
+type SpendGrants = Arc<dyn Fn(&[policy::GrantId]) -> Result<(), String> + Send + Sync>;
+
 /// The host's revocation of the `Once` grants an in-app admission spent.
 #[derive(Clone)]
-struct OnceSpender(Arc<dyn Fn(&[policy::GrantId]) -> Result<(), String> + Send + Sync>);
+struct OnceSpender(SpendGrants);
 
 impl std::fmt::Debug for OnceSpender {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -462,10 +465,7 @@ impl PermissionContext {
     /// Let an admission here rely on a `Once` grant, handing what it spent to
     /// `spend`, the host's revocation of it, as part of admitting the action.
     #[must_use]
-    pub fn with_once_spender(
-        mut self,
-        spend: Arc<dyn Fn(&[policy::GrantId]) -> Result<(), String> + Send + Sync>,
-    ) -> Self {
+    pub fn with_once_spender(mut self, spend: SpendGrants) -> Self {
         self.once_spender = Some(OnceSpender(spend));
         self
     }
@@ -519,7 +519,7 @@ impl PermissionContext {
         let mut access = (*self.access).clone();
         Arc::make_mut(&mut access.policy)
             .members
-            .insert(person.clone(), role);
+            .insert(person, role);
         let mut next = self.clone();
         next.access = Arc::new(access);
         Some(next)
@@ -572,7 +572,7 @@ impl PermissionContext {
             .into_iter()
             .flatten()
             .min()
-            .map(|at| std::time::Duration::from_secs(at - now))
+            .map(|at| std::time::Duration::from_secs(at.saturating_sub(now)))
     }
 
     /// Compare the current policy meaning, not callback allocation or elapsed
@@ -1172,7 +1172,7 @@ impl PublishedAnswers<'_> {
         action: &str,
         need: &tilo_actions::ActionNeed,
     ) -> Answer {
-        self.at_action(node, field, action, |node| {
+        Self::at_action(node, field, action, |node| {
             self.authority
                 .answer(node, need.kind, need.privileged, &self.cx)
         })
@@ -1188,7 +1188,7 @@ impl PublishedAnswers<'_> {
         action: &str,
         need: &tilo_actions::ActionNeed,
     ) -> WindowAnswer {
-        self.at_action(node, field, action, |node| {
+        Self::at_action(node, field, action, |node| {
             let answer = self
                 .authority
                 .answer(node, need.kind, need.privileged, &self.cx);
@@ -1209,7 +1209,6 @@ impl PublishedAnswers<'_> {
     /// What `read` says at the node of `action` (and `field`) on the resource `node` names, as
     /// [`tilo_actions::action_node`] places it; `node` is left as it was.
     fn at_action<R>(
-        &self,
         node: &mut TreePath,
         field: Option<&str>,
         action: &str,
@@ -1647,7 +1646,8 @@ impl std::fmt::Debug for LivePermissions {
 mod action_authority;
 use action_authority::ActionAuthoritySampler;
 pub mod shown;
-use runtime_collab::shown_actions::{ActionDecision, ShownAction};
+pub mod shown_actions;
+use crate::shown_actions::{ActionDecision, ShownAction};
 pub use shown::ShownVerdicts;
 
 /// Add to `held` the id of every resource in `resource` held in another workspace.
@@ -1773,7 +1773,7 @@ mod refused_listing_tests {
     /// discloses nothing.
     #[test]
     fn an_agent_is_listed_what_it_is_denied_as_not_allowed() {
-        let person = crate::permissions::MemberId::person("ad".repeat(32));
+        let person = crate::MemberId::person("ad".repeat(32));
         let mut read =
             ActionSpec::operation("read", "Read", OperationKind::View, "t.read", &()).unwrap();
         read.type_mut().contract.kind = ActionKind::Read;
@@ -1789,11 +1789,8 @@ mod refused_listing_tests {
             .expect("the viewer reads it");
         assert!(shown.actions.iter().all(|action| action.id != "edit"));
         // Its agent, which the person lets read and change: their own role still denies changes.
-        let agent = viewer.clone().acting_as(
-            tilo_member_types::Actor::Member(crate::permissions::MemberId::agent(
-                "scribe",
-                person.id(),
-            )),
+        let agent = viewer.acting_as(
+            tilo_member_types::Actor::Member(crate::MemberId::agent("scribe", person.id())),
             vec![policy::Grant::new(
                 "scribe-notes",
                 policy::Grantee::agent("scribe", person.id()),
@@ -1827,10 +1824,7 @@ mod refused_listing_tests {
         // person's setting, and where they change it.
         let editor = PermissionContext::member(&person, Role::Editor);
         let denied = editor.acting_as(
-            tilo_member_types::Actor::Member(crate::permissions::MemberId::agent(
-                "scribe",
-                person.id(),
-            )),
+            tilo_member_types::Actor::Member(crate::MemberId::agent("scribe", person.id())),
             [policy::Grant::new(
                 "scribe-all",
                 policy::Grantee::agent("scribe", person.id()),
@@ -1876,7 +1870,7 @@ mod refused_listing_tests {
     /// name it, and their agent, listed it as not allowed, is not named it there either.
     #[test]
     fn a_carrier_names_to_an_actor_only_what_they_may_take_by_name() {
-        let person = crate::permissions::MemberId::person("ad".repeat(32));
+        let person = crate::MemberId::person("ad".repeat(32));
         let edit = |id: &str| {
             let mut spec =
                 ActionSpec::operation(id, id, OperationKind::Effect, format!("t.{id}"), &())
@@ -1938,10 +1932,7 @@ mod refused_listing_tests {
         );
         assert_eq!(named(&shown), post_alone, "nor named it by the typed edit");
         let agent = editor.acting_as(
-            tilo_member_types::Actor::Member(crate::permissions::MemberId::agent(
-                "scribe",
-                person.id(),
-            )),
+            tilo_member_types::Actor::Member(crate::MemberId::agent("scribe", person.id())),
             vec![policy::Grant::new(
                 "scribe-chat",
                 policy::Grantee::agent("scribe", person.id()),
@@ -2015,7 +2006,7 @@ mod tests {
 
                 // The same owner, no capability: a workspace role confers no reach over
                 // paths.
-                let stripped = PermissionContext::member(&crate::permissions::MemberId::person(LOCAL_USER), Role::Owner);
+                let stripped = PermissionContext::member(&crate::MemberId::person(LOCAL_USER), Role::Owner);
                 assert!(!stripped.check(&PermissionScope::path(
                     "/var/workspace/secret.png",
                     Access::Read
@@ -2025,7 +2016,7 @@ mod tests {
             // phase: action_grant_is_narrow_while_app_grant_covers_every_action
             {
                 let agent = |grants: Vec<policy::Grant>| {
-                    let owner = PermissionContext::member(&crate::permissions::MemberId::person("owner"), Role::Owner);
+                    let owner = PermissionContext::member(&crate::MemberId::person("owner"), Role::Owner);
                     owner
                         .clone()
                         .with_access(owner.access().clone().acting_as(
@@ -2056,7 +2047,7 @@ mod tests {
 
                 let broad = agent(vec![grant(
                     policy::Grantee::agent("scribe", "owner"),
-                    workspace.clone().app("notes"),
+                    workspace.app("notes"),
                     tilo_action_types::KindSet::READ,
                 )]);
                 assert!(broad.check(&open("notes.page:2", "note.delete")));
@@ -2076,7 +2067,7 @@ mod tests {
                 .lasting(tilo_action_types::Lifetime::Until(1_000_000));
                 let scope = PermissionScope::path("/var/workspace/shared/notes.md", Access::Write);
                 let context =
-                    || PermissionContext::member(&crate::permissions::MemberId::person("u_guest"), Role::Viewer).granting(cap.clone());
+                    || PermissionContext::member(&crate::MemberId::person("u_guest"), Role::Viewer).granting(cap.clone());
                 assert!(
                     context().at_unix_time(999).check(&scope),
                     "before the deadline"
@@ -2101,7 +2092,7 @@ mod tests {
             let action =
                 ActionSpec::operation("edit", "Edit", OperationKind::Effect, "test.edit", &()).unwrap();
             assert_eq!(action.contract.kind, ActionKind::Outside);
-            let owner = PermissionContext::member(&crate::permissions::MemberId::person("owner"), Role::Owner);
+            let owner = PermissionContext::member(&crate::MemberId::person("owner"), Role::Owner);
             let node = TreePath::workspace(LOCAL_WORKSPACE).join(&action_node(
                 "notes",
                 "notes.page",
@@ -2135,7 +2126,7 @@ mod tests {
         {
             // phase: viewer_is_denied_changes
             {
-                let ctx = PermissionContext::member(&crate::permissions::MemberId::person("u_guest"), Role::Viewer);
+                let ctx = PermissionContext::member(&crate::MemberId::person("u_guest"), Role::Viewer);
                 let write = PermissionScope::app("notes", ActionKind::Undoable);
                 assert!(!ctx.check(&write), "a Viewer must not change the workspace");
                 assert!(matches!(
@@ -2146,7 +2137,7 @@ mod tests {
             }
             // phase: a_restriction_denies_inside_its_node
             {
-                let mut ctx = PermissionContext::member(&crate::permissions::MemberId::person("u_editor"), Role::Editor);
+                let mut ctx = PermissionContext::member(&crate::MemberId::person("u_editor"), Role::Editor);
                 let mut access = ctx.access().clone();
                 Arc::make_mut(&mut access.policy)
                     .grants
@@ -2170,7 +2161,7 @@ mod tests {
             }
             // phase: a_delegation_without_grants_is_denied_everything
             {
-                let owner = PermissionContext::member(&crate::permissions::MemberId::person("owner"), Role::Owner);
+                let owner = PermissionContext::member(&crate::MemberId::person("owner"), Role::Owner);
                 let app = owner
                     .clone()
                     .with_access(owner.access().clone().acting_as(
@@ -2210,10 +2201,7 @@ mod tests {
             tilo_actions::ResourceSpec::new("discord.guild", "discord.guild", "Discord server");
         resource.actions.push(connect);
 
-        let reader = PermissionContext::member(
-            &crate::permissions::MemberId::person("reader"),
-            Role::Viewer,
-        );
+        let reader = PermissionContext::member(&crate::MemberId::person("reader"), Role::Viewer);
         let kept = reader
             .permitted_resource("discord", resource)
             .expect("the reader keeps the member-own action");

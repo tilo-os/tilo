@@ -664,7 +664,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
                 })
                 .unwrap();
             permissions.set(
-                tilo_ui_base::permissions::PermissionContext::stranger(
+                tilo_permissions::PermissionContext::stranger(
                     &tilo_ui_base::permissions::MemberId::person("probe-author"),
                 )
                 .at_unix_time(100),

@@ -5,7 +5,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect};
 
 #[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionScope;
+use tilo_permissions::PermissionScope;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;

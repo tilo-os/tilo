@@ -221,7 +221,7 @@ impl Peer {
         resources: &[tilo_actions::ResourceSpec],
         request: tilo_actions::remote::InvokeRequest,
         actor: tilo_actions::Actor,
-        grants: Option<&tilo_ui_base::permissions::PermissionContext>,
+        grants: Option<&tilo_permissions::PermissionContext>,
     ) {
         use tilo_actions::ConfirmationPolicy;
         use tilo_actions::remote::{
@@ -672,7 +672,7 @@ impl Driver {
     pub fn approval_typing(&self, typed: Option<&str>) -> tilo_actions::remote::asked::Approval {
         let mut approval = tilo_actions::remote::asked::Approval::new(
             tilo_actions::remote::asked::RecordRef {
-                workspace: tilo_ui_base::permissions::LOCAL_WORKSPACE.to_owned(),
+                workspace: tilo_permissions::LOCAL_WORKSPACE.to_owned(),
                 record: format!("invocations/{}", tilo_actions::InvocationId::new().0),
                 device: None,
             },

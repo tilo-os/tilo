@@ -3937,9 +3937,9 @@ fn action_shell_declaring(kind: tilo_actions::ActionKind) -> Vec<ToUi> {
 #[test]
 fn an_editors_press_of_an_undoable_action_reaches_the_app() {
     let (mut app, mut harness) = drawn(&action_shell_declaring(tilo_actions::ActionKind::Undoable));
-    harness.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::member(
+    harness.set_permission_ctx(tilo_permissions::PermissionContext::member(
         &tilo_ui_base::permissions::MemberId::person("bo"),
-        tilo_ui_base::permissions::policy::Role::Editor,
+        tilo_permissions::policy::Role::Editor,
     ));
     harness.relayout();
     let _ = sent(&mut app);
