@@ -253,13 +253,16 @@ struct Request {
 ///   device signed an [`EndpointDelegation`] for, live now, which is how a page whose device key
 ///   cannot leave `WebCrypto` dials;
 /// * the certificate has not expired, and the workspace is one this device relays now
-///   (`relays`): one it hosts, or this device's own.
+///   (`relays`): one it hosts, or this device's own;
+/// * the device is one the workspace admits: a member's device the member list names, or a
+///   device `placed` says this host placed for the workspace's records, which no member list
+///   holds and whose certificate alone admits it ([`placed_here`]).
 fn bind(
     peer: Peer,
     grant: &grant::Native,
     scope: &Scope,
     devices: &[Device],
-    relays: bool,
+    (relays, placed): (bool, impl FnOnce(&DeviceCert) -> bool),
     now_ns: u64,
 ) -> Result<Request, Refusal> {
     let Peer(endpoint) = peer;
@@ -277,12 +280,16 @@ fn bind(
         return Err(Refusal::CertificateExpired);
     }
     let device = certificate.device_public_key;
-    let admitted = devices
-        .iter()
-        .find(|admitted| admitted.device == device)
-        .ok_or(Refusal::NotAMember)?;
-    if certificate != admitted.cert {
-        return Err(Refusal::CertificateDiffers);
+    match devices.iter().find(|admitted| admitted.device == device) {
+        Some(admitted) if certificate != admitted.cert => {
+            return Err(Refusal::CertificateDiffers);
+        }
+        Some(_) => {}
+        // A device this host placed for the workspace's records joins its live session as it
+        // joins the workspace: the certificate it was placed with is what admits it, the
+        // register saying only whether this host stopped it.
+        None if placed(&certificate) => {}
+        None => return Err(Refusal::NotAMember),
     }
     if endpoint != device {
         let delegation: EndpointDelegation =
@@ -384,6 +391,46 @@ fn members(
     Some((relays, Ok(devices)))
 }
 
+/// Whether `certificate` is one this host placed for `workspace`'s records, which works on the
+/// workspace's live session as on its state link
+/// ([`tilo_workspace_service::environment::placed_protocol`]): its certificate names the
+/// workspace and is the one the register holds, the register keeps it placed rather than
+/// stopped, and its person is a member here.
+fn placed_here(
+    workspaces: &Workspaces,
+    environments: &EnvironmentRegistry,
+    workspace: WorkspaceId,
+    certificate: &DeviceCert,
+) -> bool {
+    let Some(records) = &certificate.capabilities.records else {
+        return false;
+    };
+    if WorkspaceId::parse(&records.workspace_name()) != Some(workspace) {
+        return false;
+    }
+    let device = certificate.device_public_key;
+    if !matches!(
+        environment::environment_of(environments, &device),
+        Some(environment::Environment::Placed(_))
+    ) {
+        return false;
+    }
+    if environments.certificate(&device).as_ref() != Some(certificate) {
+        return false;
+    }
+    workspaces
+        .read_now(&workspace.to_string(), |peer| {
+            peer.governance()
+                .member_list_access(tilo_clock::wall())
+                .is_ok_and(|access| {
+                    access
+                        .member_user_roots
+                        .contains(&certificate.user_public_key)
+                })
+        })
+        .is_some_and(|(_, member)| member)
+}
+
 /// `person`'s own workspace.
 fn person_workspace(person: &[u8; 32]) -> WorkspaceId {
     WorkspaceId::from(collab_types::workspace_id::person_workspace(person))
@@ -435,7 +482,9 @@ impl Tracks {
         if name.workspace_id() != self.workspace || name.scope_id() != self.scope {
             return false;
         }
-        if !listed(self.device) || !listed(name.device()) {
+        // A browser environment's device is in no member list: its window's page is its own
+        // publication, and it is offered nobody's track, whoever asks.
+        if !self.environment && (!listed(self.device) || !listed(name.device())) {
             return false;
         }
         match direction {
@@ -891,7 +940,18 @@ impl Shared {
         devices: &[Device],
         now: u64,
     ) -> Result<Arc<Permit>, Refusal> {
-        let request = bind(peer, grant, scope, devices, relays, now)?;
+        let request = bind(
+            peer,
+            grant,
+            scope,
+            devices,
+            (relays, |certificate| {
+                WorkspaceId::parse(scope.workspace_id()).is_some_and(|workspace| {
+                    placed_here(&self.workspaces, &self.environments, workspace, certificate)
+                })
+            }),
+            now,
+        )?;
         // The host relays live media only for the keys it trusts: a device it revoked, blocked,
         // or whose environment it stopped joins no live session either. A key its connection
         // policy would turn away is admitted when the workspace's own roster holds it, as the
@@ -915,9 +975,11 @@ impl Shared {
         let admitted = devices
             .iter()
             .find(|admitted| admitted.device == request.device);
-        let person = admitted
-            .map(|admitted| hex::encode(admitted.cert.user_public_key))
-            .unwrap_or_default();
+        // A placed device is in no member list and acts as its certificate's person, whose part
+        // in the workspace admission already read.
+        let person = hex::encode(admitted.map_or(request.peer.user_public_key, |admitted| {
+            admitted.cert.user_public_key
+        }));
         // An environment's device joins the workspace and then takes part over this live
         // session: it publishes its window's page and hears nobody, and while its session lasts
         // its environment is not mistaken for one that stopped.
@@ -931,7 +993,9 @@ impl Shared {
             changed: self.changed.subscribe(),
             calls: Arc::clone(&self.calls),
             person,
-            user: admitted.map_or([0; 32], |admitted| admitted.cert.user_public_key),
+            user: admitted.map_or(request.peer.user_public_key, |admitted| {
+                admitted.cert.user_public_key
+            }),
             workspace: request.workspace,
             tracks: Tracks {
                 workspace: request.workspace.to_string(),

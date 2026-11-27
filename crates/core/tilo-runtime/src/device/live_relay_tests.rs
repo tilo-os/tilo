@@ -44,7 +44,7 @@ fn admits(peer: [u8; 32], grant: &grant::Native, devices: &[Device], now_ns: u64
         grant,
         &scope_of(workspace),
         devices,
-        true,
+        (true, |_: &DeviceCert| false),
         now_ns,
     )
     .is_ok()
@@ -59,9 +59,9 @@ tilo_test_env::scenario! {
         let other = cert([2; 32], None);
         let devices = vec![device([1; 32], None), Device { device: [2; 32], cert: other.clone() }];
         let scope = scope_of(workspace);
-        assert!(bind(Peer([2; 32]), &grant(workspace, &other), &scope, &devices, true, 10).is_ok());
+        assert!(bind(Peer([2; 32]), &grant(workspace, &other), &scope, &devices, (true, |_: &DeviceCert| false), 10).is_ok());
         assert_eq!(
-            bind(Peer([2; 32]), &grant(workspace, &other), &scope, &devices, false, 10)
+            bind(Peer([2; 32]), &grant(workspace, &other), &scope, &devices, (false, |_: &DeviceCert| false), 10)
                 .err()
                 .map(|why| why.word()),
             Some("not-relayed-here")
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
         let other = cert([2; 32], None);
         let devices = vec![device([1; 32], None), Device { device: [2; 32], cert: other.clone() }];
         let why = |peer: [u8; 32], grant: &grant::Native| {
-            bind(Peer(peer), grant, &scope_of(workspace), &devices, true, 10)
+            bind(Peer(peer), grant, &scope_of(workspace), &devices, (true, |_: &DeviceCert| false), 10)
                 .err()
                 .map(|refusal| refusal.word())
         };
@@ -149,6 +149,30 @@ tilo_test_env::scenario! {
         assert_eq!(why([2; 32], &grant(workspace, &expired)), Some("certificate-expired"));
     }
 
+    phase a_device_the_host_placed_is_admitted_by_its_certificate_alone;
+    // A workspace's browser environment is in no member list: the register that placed it is what
+    // admits its live session, and a device the register does not name stays a stranger.
+    {
+        let workspace = WorkspaceId::new();
+        let placed = cert([4; 32], None);
+        let devices = vec![device([1; 32], None)];
+        let scope = scope_of(workspace);
+        let why = |placed_here: bool| {
+            bind(
+                Peer([4; 32]),
+                &grant(workspace, &placed),
+                &scope,
+                &devices,
+                (true, move |_: &DeviceCert| placed_here),
+                10,
+            )
+            .err()
+            .map(|refusal| refusal.word())
+        };
+        assert_eq!(why(false), Some("not-a-member"));
+        assert_eq!(why(true), None);
+    }
+
     phase a_devices_own_scope_is_bound_like_a_workspaces_and_to_its_device;
     // The person's other device dials this one's own scope with the same grant, naming that
     // scope: it is bound to the handshake and the roster as a workspace's is, and a grant for one
@@ -160,10 +184,10 @@ tilo_test_env::scenario! {
         let here = Scope::device(workspace.to_string(), [1; 32]);
         let mut driving = grant(workspace, &other);
         driving.scope = here.id();
-        let bound = bind(Peer([2; 32]), &driving, &here, &devices, true, 10).ok().unwrap();
+        let bound = bind(Peer([2; 32]), &driving, &here, &devices, (true, |_: &DeviceCert| false), 10).ok().unwrap();
         assert_eq!((bound.scope, bound.device), (here.clone(), [2; 32]));
         let why = |scope: &Scope, grant: &grant::Native| {
-            bind(Peer([2; 32]), grant, scope, &devices, true, 10).err().map(|refusal| refusal.word())
+            bind(Peer([2; 32]), grant, scope, &devices, (true, |_: &DeviceCert| false), 10).err().map(|refusal| refusal.word())
         };
         let beside = Scope::device(workspace.to_string(), [3; 32]);
         assert_eq!(why(&beside, &driving), Some("scope-not-carried"));
