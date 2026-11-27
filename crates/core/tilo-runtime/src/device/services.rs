@@ -1744,7 +1744,7 @@ impl Daemon {
         let workspace = workspace.unwrap_or(&self.workspace);
         let time = self.policy_origin.capture().map_err(io::Error::other)?;
         let base = self.provider_for(workspace)?;
-        let (provider, _, _) = base.agent_session(workspace, &self.actor, &time, |person| {
+        let (provider, _, _, _) = base.agent_session(workspace, &self.actor, &time, |person| {
             (
                 device_agent_id(person, UNNAMED_AGENT),
                 UNNAMED_AGENT.to_owned(),
@@ -2032,12 +2032,13 @@ impl Daemon {
         let admission = host
             .admission()
             .ok_or_else(|| io::Error::other("this dispatch admitted no run to delegate"))?;
-        let (host, caller, _) = host.agent_session_of(admission, &policy_time, |person| {
-            (
-                tilo_actions::remote::device_agent_id(person, name),
-                name.to_owned(),
-            )
-        })?;
+        let (host, caller, _, agent) =
+            host.agent_session_of(admission, &policy_time, |person| {
+                (
+                    tilo_actions::remote::device_agent_id(person, name),
+                    name.to_owned(),
+                )
+            })?;
         // The apps of the workspace: what the agent's task programs compile against, run in this
         // daemon's processes.
         let tasks = self.task_hosts(host.clone(), caller.clone(), &self.actor);
@@ -2045,6 +2046,7 @@ impl Daemon {
         tilo_mcp::McpServer::admitted(host, caller).map(|server| {
             server
                 .with_agent_session(session)
+                .with_invoker(tilo_actions::ActionInvoker::admitted(agent.acting()))
                 .with_task_hosts(tasks)
                 .with_device_shell()
         })
@@ -4296,7 +4298,7 @@ impl PersonDispatch {
         let admission = person
             .admission()
             .ok_or_else(|| io::Error::other("this dispatch admitted no run to delegate"))?;
-        let (run, _, _) =
+        let (run, _, _, _) =
             person.agent_session_as(admission, &self.policy_time, |_| (id, name), Some(agent))?;
         Ok(run)
     }
@@ -6181,7 +6183,7 @@ impl RuntimeActionProvider {
             // the person's, and every call the client makes is signed by the agent's key. Each
             // connection is a run of its own, admitted for it: its end retires that run alone,
             // never the one the daemon's other connections go on as.
-            let (mut session_host, caller, agent_cert) =
+            let (mut session_host, caller, agent_cert, agent) =
                 provider.agent_session(&workspace, &actor, &policy_time, |person| {
                     (device_agent_id(person, MCP_CLIENT), MCP_CLIENT.to_owned())
                 })?;
@@ -6202,6 +6204,7 @@ impl RuntimeActionProvider {
             }
             Ok(tilo_mcp::McpServer::admitted(session_host, caller)?
                 .with_agent_session(session)
+                .with_invoker(tilo_actions::ActionInvoker::admitted(agent.acting()))
                 .with_device_shell())
         })
     }
@@ -6215,7 +6218,7 @@ impl RuntimeActionProvider {
         actor: &str,
         policy_time: &tilo_app_host::policy_clock::PolicyTime,
         agent: impl FnOnce(&[u8; 32]) -> (String, String),
-    ) -> io::Result<(Self, Caller, DeviceCert)> {
+    ) -> io::Result<(Self, Caller, DeviceCert, Caller)> {
         let workspaces = Arc::clone(&self.workspaces);
         let (workspace, actor) = (workspace.to_owned(), actor.to_owned());
         let admission =
@@ -6234,7 +6237,7 @@ impl RuntimeActionProvider {
         admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
         policy_time: &tilo_app_host::policy_clock::PolicyTime,
         agent: impl FnOnce(&[u8; 32]) -> (String, String),
-    ) -> io::Result<(Self, Caller, DeviceCert)> {
+    ) -> io::Result<(Self, Caller, DeviceCert, Caller)> {
         self.agent_session_as(admission, policy_time, agent, None)
     }
 
@@ -6248,7 +6251,7 @@ impl RuntimeActionProvider {
         policy_time: &tilo_app_host::policy_clock::PolicyTime,
         agent: impl FnOnce(&[u8; 32]) -> (String, String),
         carried: Option<&Caller>,
-    ) -> io::Result<(Self, Caller, DeviceCert)> {
+    ) -> io::Result<(Self, Caller, DeviceCert, Caller)> {
         let caller = admission.caller().clone();
         let (Some(person), Some(user), Some(workspace)) = (
             caller.acting().person_id(),
@@ -6331,12 +6334,14 @@ impl RuntimeActionProvider {
             policy_time: policy_time.clone(),
             provider: Arc::new(Signed::new(delegated, Some(signer))),
             admission,
-            agent: Some(agent),
+            agent: Some(agent.clone()),
             projection: None,
             pressed: None,
             own_shell: false,
         });
-        Ok((run, caller, cert))
+        // The admission stays the person's; the calls it carries are the agent's, whose key
+        // signs each and whose acting the changes they make name.
+        Ok((run, caller, cert, agent))
     }
 
     /// This device's runtime, answering as `session`: the agent's run keeps the device's

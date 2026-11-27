@@ -2095,7 +2095,7 @@ fn the_devices_agent(
                 name.to_owned(),
             )
         })
-        .map(|(run, caller, _)| (run, caller))
+        .map(|(run, caller, _, _)| (run, caller))
         .expect("the device makes its agent a key");
     let caller = run
         .session

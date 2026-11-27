@@ -110,6 +110,9 @@ pub struct McpServer<H> {
     workspace: String,
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
+    /// The invoker this session's calls name, when another key than the caller's signs them: an
+    /// agent's own key, whose changes name the agent while the admission stays its person's.
+    invoker: Option<tilo_actions::ActionInvoker>,
     /// Whose shell this session's `terminal#run` reaches ([`Shell`]).
     shell: Shell,
     /// The session every invocation of this connection is attributed to.
@@ -591,6 +594,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             watched: None,
             workspace,
             caller,
+            invoker: None,
             shell: Shell::App,
             agent_session: std::sync::Mutex::new(None),
             invoking: InFlight::default(),
@@ -1180,6 +1184,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .agent_session
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Session::Named(id.into()));
+        self
+    }
+    /// The invoker this connection's calls name, when another key than the caller's signs them:
+    /// an agent's own key, which the changes it makes name as their invoker.
+    #[must_use]
+    pub fn with_invoker(mut self, invoker: tilo_actions::ActionInvoker) -> Self {
+        self.invoker = Some(invoker);
         self
     }
     /// This connection's session, as it stands now, named as its caller is.
@@ -2489,9 +2500,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let watching = step::WATCH_READ.try_with(|()| ()).is_ok();
         Some(tilo_actions::ActionContext {
             group: (!watching).then_some(group),
-            // Who acts is the caller the session was admitted as: an agent for its person,
-            // or the person themselves. Its actor names an agent `agent:<id>`, never a person.
-            invoker: Some(tilo_actions::ActionInvoker::admitted(self.caller.acting())),
+            // Who acts is the caller the session was admitted as (an agent for its person, or
+            // the person themselves), or the agent whose key signs each call where it is
+            // another's. Its actor names an agent `agent:<id>`, never a person.
+            invoker: Some(
+                self.invoker
+                    .clone()
+                    .unwrap_or_else(|| tilo_actions::ActionInvoker::admitted(self.caller.acting())),
+            ),
             gesture: STEP.try_with(|step| *step).ok(),
             ..tilo_actions::ActionContext::default()
         })

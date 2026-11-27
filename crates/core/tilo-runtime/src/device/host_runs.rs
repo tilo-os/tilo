@@ -205,7 +205,7 @@ fn key_run(
                     key.device_label.clone(),
                 )
             })
-            .map(|(run, caller, _)| (run, caller)),
+            .map(|(run, caller, _, _)| (run, caller)),
         Whose::Member => provider.member_session(workspace, key, policy_time),
     }
     .map_err(|error| error.to_string())?;
