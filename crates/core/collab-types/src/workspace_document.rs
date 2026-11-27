@@ -125,7 +125,7 @@ mod tests {
         );
         let agents = workspace_document_id("tilo.workspace.agent");
         assert_eq!(
-            workspace_document("so.tilo.workspace", &agents).map(|document| document.kind),
+            workspace_document("tilo.workspace", &agents).map(|document| document.kind),
             Some("tilo.workspace.agent"),
             "the workspace keeps its agents for every app of the workspace"
         );

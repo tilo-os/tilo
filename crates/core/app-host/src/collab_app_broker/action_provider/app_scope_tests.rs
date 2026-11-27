@@ -62,7 +62,7 @@ fn row(app: &str, resource: &str, action: &str) -> CatalogueRow {
 struct Governance(AtomicUsize);
 impl WorkspaceGovernanceServices for Governance {
     fn app_id(&self) -> &'static str {
-        "so.tilo.workspace"
+        "tilo.workspace"
     }
     fn handles(&self, action: &str) -> bool {
         action == "inspect"

@@ -36,7 +36,7 @@ const EMOJI: Record = Record {
 };
 const AGENTS: Record = Record {
     // The workspace's own service keeps its agents (`tilo_workspace_agent::OWNER`).
-    app: "so.tilo.workspace",
+    app: "tilo.workspace",
     kind: "tilo.workspace.agent",
 };
 const CONTACTS: Record = Record {

@@ -627,7 +627,7 @@ mod tests {
         let mut ws = WorkspaceDefaults::default();
         ws.policy.insert(
             pdf.clone(),
-            WorkspaceDefaultPolicy::App("so.tilo.workspace".into()),
+            WorkspaceDefaultPolicy::App("so.tilo.pinned".into()),
         );
         ws.user_choices
             .entry("ada".into())
@@ -635,7 +635,7 @@ mod tests {
             .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
         let apps = [
             app("so.tilo.a", "A", "pdf"),
-            app("so.tilo.workspace", "Workspace", "pdf"),
+            app("so.tilo.pinned", "Workspace Pinned", "pdf"),
         ];
         assert_eq!(
             opens(

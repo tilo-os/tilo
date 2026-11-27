@@ -18,7 +18,7 @@ struct Governance {
 
 impl WorkspaceGovernanceServices for Governance {
     fn app_id(&self) -> &'static str {
-        "so.tilo.workspace"
+        "tilo.workspace"
     }
     fn handles(&self, action: &str) -> bool {
         action == ACTION
@@ -251,7 +251,7 @@ tilo_test_env::scenario! {
             // whose access comes from grants to exercise current policy, not owner override.
             let person = Caller::local_person("guest").in_workspace(owner.workspace().unwrap());
             let path = TreePath::root()
-                .app("so.tilo.workspace")
+                .app("tilo.workspace")
                 .any(tilo_action_policy::Level::Kind)
                 .resource(RESOURCE)
                 .action(ACTION);

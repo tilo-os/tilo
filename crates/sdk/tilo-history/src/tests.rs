@@ -786,7 +786,7 @@ fn a_record_the_reader_holds_itself_reads_in_its_declared_words() {
         [("create_agent", "Create agent", Some("added the agent"))],
     );
     let reader = Reader::new("en-US").with_labels(&labels);
-    for app in ["org.tilo.Tilo", "so.tilo.workspace", "so.tilo.chat"] {
+    for app in ["org.tilo.Tilo", "tilo.workspace", "so.tilo.chat"] {
         let made =
             ActionContext::for_resource("tilo.workspace.agent", "tilo.workspace.agent", "Agents")
                 .with_described(

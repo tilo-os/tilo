@@ -1,5 +1,5 @@
 //! A workspace's agents: each agent member is one item of the workspace's own
-//! record of agents, kept by the workspace itself (`so.tilo.workspace`).
+//! record of agents, kept by the workspace itself (`tilo.workspace`).
 //!
 //! The item is the agent's member row. Every app of the workspace opens it, so its
 //! name and model read the same in the settings that list it, in the chat it
@@ -44,7 +44,7 @@ mod tests;
 
 /// The app whose record this is, and whose surface decides its changes: the workspace's own
 /// service, which keeps the record for every app of the workspace.
-pub const OWNER: &str = "so.tilo.workspace";
+pub const OWNER: &str = "tilo.workspace";
 
 pub const KIND: &str = "tilo.workspace.agent";
 

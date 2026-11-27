@@ -286,7 +286,7 @@ fn keyboard_rechecks_live_policy_and_execution_after_ownership() {
 struct LostGovernance;
 impl WorkspaceGovernanceServices for LostGovernance {
     fn app_id(&self) -> &'static str {
-        "so.tilo.workspace"
+        "tilo.workspace"
     }
     fn handles(&self, action: &str) -> bool {
         action == "inspect"
@@ -456,7 +456,7 @@ tilo_test_env::scenario! {
 struct Governance(Mutex<Vec<(tilo_actions::InvocationId, bool)>>);
 impl WorkspaceGovernanceServices for Governance {
     fn app_id(&self) -> &'static str {
-        "so.tilo.workspace"
+        "tilo.workspace"
     }
     fn handles(&self, action: &str) -> bool {
         action == "inspect"

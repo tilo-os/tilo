@@ -28,7 +28,7 @@ chat-learned-forget = Forget a fact
 ## History
 ## A change names the app it was applied under, and an action on the agent record is
 ## applied under two: the action API's inferred app (org.tilo.Tilo) and the app that
-## keeps the record (so.tilo.workspace). The assistant's key stays for the changes
+## keeps the record (tilo.workspace). The assistant's key stays for the changes
 ## history holds from before the workspace kept the record. Every key says the one sentence.
 
 tilo-create-agent = Added the agent “{ $item }”

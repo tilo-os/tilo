@@ -286,7 +286,7 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
 struct NativeFacadeGovernance(Mutex<Vec<(bool, tilo_actions::InvocationId)>>);
 impl crate::services::WorkspaceGovernanceServices for NativeFacadeGovernance {
     fn app_id(&self) -> &'static str {
-        "so.tilo.workspace"
+        "tilo.workspace"
     }
     fn handles(&self, action: &str) -> bool {
         action == "inspect-native-origin"

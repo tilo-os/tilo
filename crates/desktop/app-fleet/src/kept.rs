@@ -92,7 +92,7 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     // The workspace's agents: their names, colours, models and who added them,
     // which the workspace settings sheet, the apps and their devices all
     // read (`tilo-workspace-agent`).
-    WorkspaceDocument::kept("so.tilo.workspace", "tilo.workspace.agent"),
+    WorkspaceDocument::kept("tilo.workspace", "tilo.workspace.agent"),
     // The reports and decisions Chat keeps for its workspace, decided as Chat's own record.
     WorkspaceDocument {
         readers: Readers::AppRecord,

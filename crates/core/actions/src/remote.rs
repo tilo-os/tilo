@@ -283,7 +283,7 @@ pub const WORKSPACE_AGENT_UPDATE: &str = "agent.update";
 /// did stays readable under its name.
 pub const WORKSPACE_AGENT_DELETE: &str = "agent.delete";
 /// The app that keeps a workspace's record of its agents: the workspace's own service.
-pub const WORKSPACE_AGENTS_APP: &str = "so.tilo.workspace";
+pub const WORKSPACE_AGENTS_APP: &str = "tilo.workspace";
 /// The kind of the workspace's record of its agents: what [`WORKSPACE_AGENT_CREATE`],
 /// [`WORKSPACE_AGENT_UPDATE`] and [`WORKSPACE_AGENT_DELETE`] write.
 pub const WORKSPACE_AGENTS_KIND: &str = "tilo.workspace.agent";
@@ -3143,6 +3143,22 @@ mod tests {
         ) -> Pending<Result<(), ActionCallError>> {
             Pending::ready(Err(ActionCallError::UnknownInvocation))
         }
+    }
+
+    /// The workspace's own app keeps its governance and its record of agents under one name: a
+    /// caller that writes `workspace` reaches it, instead of being asked which of two apps it
+    /// meant.
+    #[test]
+    fn the_workspaces_own_app_keeps_one_name() {
+        assert_eq!(
+            WORKSPACE_AGENTS_APP, WORKSPACE_GOVERNANCE_PROVIDER,
+            "a workspace's agents are the workspace's own app's record"
+        );
+        assert_eq!(
+            crate::tree::app_meant("workspace", &[(WORKSPACE_GOVERNANCE_PROVIDER, "Workspace")]),
+            Ok(Some(WORKSPACE_GOVERNANCE_PROVIDER.to_owned())),
+            "`workspace` names the workspace's own app"
+        );
     }
 
     /// A caller paging a catalogue larger than a frame, through the provider's
