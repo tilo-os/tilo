@@ -573,46 +573,11 @@ async fn a_ticket_logged_in_device_lists_the_persons_workspaces_before_it_holds_
         .await
         .expect("the laptop issues a ticket");
     let text = printed["ticket"].as_str().unwrap().to_owned();
-    let (desk_key, desk_cert) = enrol(&root, "the desk", DeviceCapabilities::member());
-    let desk_endpoint = endpoint(&desk_key).await;
-    let keys = tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys"));
-    let _desk_daemon = the_daemons_key(&keys, &desk_key);
-    let desk = Tickets::new(
-        (desk_key.clone(), desk_cert),
-        desk_endpoint.clone(),
-        None,
-        no_root(),
-        None,
-        None,
-        tilo_device_identity::login::Place::at(state.path().join("desk"), keys),
-        ActionService::new(desk_key.clone(), Arc::new(NoActions)),
-    );
-    ask_device(
-        &desk,
-        LOG_IN,
-        json!({"ticket": text, "agent": "Codex", "label": "Codex on desk"}),
-    )
-    .await
-    .unwrap_or_else(|why| panic!("the laptop certifies the desk: {why}"));
-    let desk_login = desk
-        .logged_in()
-        .borrow()
-        .clone()
-        .expect("the desk starts again as the device it became");
-    desk_endpoint.close().await;
-
+    let (desk_key, _) = enrol(&root, "the desk", DeviceCapabilities::member());
     // The desk's own list, asked as the account alone while it holds no workspace of the
     // person's: what a plain connection reaches before it entered one, never admitted into one.
-    let listing = super::workspaces::ServiceWorkspaces::open_for_test(
-        &state.path().join("desk-listing"),
-        &desk_key,
-        &desk_login.cert,
-        &tilo_api::daemon::enter::server_of(&desk_login)
-            .await
-            .unwrap(),
-    )
-    .await
-    .expect("the desk's service opens");
+    let (desk_login, listing, _desk_daemon) =
+        logged_in_computer(&text, &state.path().join("desk"), &desk_key).await;
     // The desk enters at its server, which lists it as a device of the person's, and holds the
     // workspace its login names: the person's own workspace, where their list of workspaces is,
     // is not held here yet, so nothing connects into it.
@@ -659,8 +624,8 @@ async fn a_ticket_logged_in_device_lists_the_persons_workspaces_before_it_holds_
     // redeemed the ticket.
     let entered =
         tilo_device_identity::login::filed_entry(&tilo_device_identity::login::Place::at(
-            state.path().join("desk"),
-            tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys")),
+            state.path().join("desk/login"),
+            tilo_device_identity::IdentityPaths::under(state.path().join("desk/login-keys")),
         ))
         .expect("a daemon that starts again enters from the entry the login wrote down");
     assert_eq!(entered.workspace, desk_login.workspace);
@@ -2872,7 +2837,8 @@ fn only_the_persons_root_signs_these_device_actions() {
 }
 
 /// Log the computer `key` in with `ticket`, on the profile below `dir`, and answer the device it
-/// became and the workspace service its daemon starts again running as it.
+/// became, the workspace service its daemon starts again running as it, and the key it files as
+/// the device with, which its device actions sign as while the lock lives.
 async fn logged_in_computer(
     ticket: &str,
     dir: &std::path::Path,
@@ -2880,6 +2846,7 @@ async fn logged_in_computer(
 ) -> (
     tilo_device_identity::login::Device,
     Arc<super::workspaces::ServiceWorkspaces>,
+    tilo_device_identity::persist::DeviceKeyLock,
 ) {
     let (_, placeholder) = enrol(
         &SigningKey::from_bytes(&[0x90; 32]),
@@ -2891,7 +2858,7 @@ async fn logged_in_computer(
         dir.join("login"),
         tilo_device_identity::IdentityPaths::under(dir.join("login-keys")),
     );
-    let _daemon = the_daemons_key(place.keys(), key);
+    let daemon = the_daemons_key(place.keys(), key);
     let tickets = Tickets::new(
         (key.clone(), placeholder),
         endpoint.clone(),
@@ -2925,7 +2892,7 @@ async fn logged_in_computer(
     )
     .await
     .expect("the computer's service opens");
-    (*login, service)
+    (*login, service, daemon)
 }
 
 /// Two computers log in with two tickets one device issued, and both join the person's own
@@ -2976,7 +2943,7 @@ async fn two_computers_logged_in_from_one_device_each_join_and_write() {
         let text = printed["ticket"].as_str().unwrap().to_owned();
         let key = SigningKey::from_bytes(&bytes);
         let dir = state.path().join(format!("computer-{n}"));
-        let (login, service) = logged_in_computer(&text, &dir, &key).await;
+        let (login, service, _daemon) = logged_in_computer(&text, &dir, &key).await;
         // The computer enters the person's own workspace the login names, and takes it in.
         let entered = tilo_test_env::within(
             "the computer enters the person's own workspace",
