@@ -369,12 +369,13 @@ impl RecordReads {
     /// whole or one by its id: the calls the dispatch here keeps a record of, each as the
     /// caller's grants let it read the call, with the calls that wait for a person's answer.
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-    fn invocations(
+    async fn invocations(
         &self,
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Result<ResourceCopy, ActionCallError> {
         self.may_read_invocations(caller, &address.workspace)?;
+        let broker = self.kept_invocations(&address.workspace).await;
         let asked = self
             .workspaces
             .as_ref()
@@ -382,11 +383,12 @@ impl RecordReads {
             .and_then(|workspaces| workspaces.asked_store())
             .map(|store| store.waiting_in(&address.workspace))
             .unwrap_or_default();
-        if let Some(broker) = self.broker() {
+        if let Some(broker) = broker {
             broker.read_invocations(caller, &address.workspace, &address.record, asked)
         } else {
-            // A host that runs no apps keeps no invocations of its own: what it reads is the
-            // calls that wait here for the caller's own person, and nobody else's.
+            // A host that runs no apps, or does not hold the workspace, keeps no invocations of
+            // it: what it reads is the calls that wait here for the caller's own person, and
+            // nobody else's.
             let person = caller.user_public_key().map(hex::encode);
             let asked = asked
                 .into_iter()
@@ -399,6 +401,25 @@ impl RecordReads {
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
     fn broker(&self) -> Option<Arc<dyn AppInvocations>> {
         self.broker.as_ref().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// What keeps `workspace`'s invocations here: the apps this reader serves, else the
+    /// device's own record of the calls it was asked for, which its registry of providers holds
+    /// (what the person's shell reads their runs through, a shortcut's that a trigger started
+    /// among them). None for a workspace the device does not hold: it was asked for none of its
+    /// calls and cannot decide a read of them by its grants.
+    #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+    async fn kept_invocations(&self, workspace: &str) -> Option<Arc<dyn AppInvocations>> {
+        let Some(workspaces) = self.workspaces.as_ref().and_then(WeakWorkspaces::upgrade) else {
+            return self.broker();
+        };
+        let broker = self.broker().or_else(|| {
+            workspaces
+                .providers()
+                .invocations()
+                .and_then(|apps| apps.upgrade())
+        })?;
+        workspaces.state(workspace).await.map(|_| broker)
     }
 
     /// What answers `address` when it is a resource this device publishes of its own
@@ -767,7 +788,7 @@ impl RecordReads {
         // workspace it may hold: read here, without asking that workspace's state where it goes.
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
         if address.app == tilo_action_services::workspace_invocations::PROVIDER
-            && self.broker().is_some()
+            && self.kept_invocations(&address.workspace).await.is_some()
         {
             return tilo_action_calls::answer_read(self, caller, correlation, read).await;
         }
@@ -950,7 +971,7 @@ impl RecordReads {
         }
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
         if address.app == tilo_action_services::workspace_invocations::PROVIDER {
-            return self.invocations(caller, address);
+            return self.invocations(caller, address).await;
         }
         let route = self.route(caller, address).await?;
         if address.app == PRESENCE {
@@ -1060,7 +1081,7 @@ impl RecordReads {
         #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
         if address.app == tilo_action_services::workspace_invocations::PROVIDER {
             self.may_read_invocations(caller, &address.workspace)?;
-            if let Some(broker) = self.broker() {
+            if let Some(broker) = self.kept_invocations(&address.workspace).await {
                 return broker.watch_invocations(caller, &address.workspace, wake);
             }
             // A reader that runs no apps keeps no invocation of its own: what it lists is the

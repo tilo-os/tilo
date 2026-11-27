@@ -33,9 +33,14 @@ use tilo_workspace_service::workspaces::app_invocations::with_questions;
 
 impl AppBrokerState {
     /// Share `records`, the device's record of the invocations it was asked for, with this
-    /// dispatch: what a listing of `workspace`'s invocations reads from now on.
+    /// dispatch: what a listing of `workspace`'s invocations reads from now on, through this
+    /// dispatch and through the device's own reader of its workspaces alike, which the person's
+    /// shell reads with.
     pub fn serve_invocations(&self, records: Arc<Invocations>) {
         let _ = self.invocations.set(records);
+        if let Some(providers) = self.services.providers.as_ref() {
+            providers.keep_invocations(self.itself.clone());
+        }
     }
 
     /// Read records outside their app through `reads`, the device's one record reader: what the
