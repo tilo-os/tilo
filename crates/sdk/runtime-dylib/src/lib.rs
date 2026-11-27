@@ -33,5 +33,3 @@ pub use tilo_ui_base;
 pub use tilo_user_identity;
 pub use tilo_webview;
 pub use ui;
-pub use vte;
-pub use xattr;

@@ -2276,6 +2276,7 @@ doc = false
 "tilo-doc" = { path = "../../crates/sdk/tilo-doc", default-features = false, features = ["bulk-instrumentation", "default", "model"] }
 "tilo-doc-codecs" = { path = "../../crates/engines/tilo-doc-codecs", default-features = false, features = ["book", "docx", "epub", "html", "markdown", "ods", "odt", "office", "rtf", "xlsx"] }
 "tilo-doc-pdf" = { path = "../../crates/engines/tilo-doc-pdf", default-features = false, features = [] }
+"tilo-environment" = { path = "../../crates/vm/environment", default-features = false, features = [] }
 "tilo-face" = { path = "../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../crates/platform/tilo-failure", default-features = false, features = [] }
 "tilo-files" = { path = "../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
@@ -2286,6 +2287,7 @@ doc = false
 "tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
 "tilo-key-group" = { path = "../../crates/core/key-group", default-features = false, features = [] }
 "tilo-lock" = { path = "../../crates/platform/tilo-lock", default-features = false, features = [] }
+"tilo-machine" = { path = "../../crates/platform/tilo-machine", default-features = false, features = [] }
 "tilo-mime" = { path = "../../crates/platform/tilo-mime", default-features = false, features = [] }
 "tilo-net" = { path = "../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-host", "system-status", "webtransport"] }
 "tilo-paths" = { path = "../../crates/platform/tilo-paths", default-features = false, features = [] }

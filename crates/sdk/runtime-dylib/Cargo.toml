@@ -81,9 +81,7 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Versioned format/network engines used by system apps. Keeping these in the
 # runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.
-vte = "0.15.0"
 roxmltree.workspace = true
-xattr = "1.6.1"
 # The SSH client's curve: Remote and Git Client verify P-384 host keys through
 # russh and ssh-key, so it is one copy here, with the primeorder and
 # crypto-bigint under it.
