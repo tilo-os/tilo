@@ -1864,6 +1864,8 @@ d-q7w2n4x9 = Gefragt beim Drücken
 
 d-i7735z6w = Gefragte Banner
 
+d-t8k3vq2m = Gefragt über der Shell
+
 d-x266v635 = Mehr gefragt
     .w-1-more-question = 1 weitere Frage
     .w-more-questions = { $more } weitere Fragen

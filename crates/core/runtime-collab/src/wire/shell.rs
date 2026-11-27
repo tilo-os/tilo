@@ -158,8 +158,7 @@ pub struct ShellPress {
     /// Always written: the link's encoding is positional.
     pub at: Option<tilo_actions::remote::asked::PressPoint>,
     /// The control the press answered, where the shell knew it: the question stands beside it,
-    /// never over it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// never over it. Always written: the link's encoding is positional.
     pub control: Option<tilo_actions::remote::asked::PressRect>,
 }
 
