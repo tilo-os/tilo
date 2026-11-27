@@ -44,12 +44,14 @@ struct Attach {
 /// connection to its device's dispatch, and reads for readers. A device that starts a connector
 /// waits for this, so a launch that fails before it comes up is answered with what it said
 /// instead of counting as started.
+#[cfg(any(unix, windows))]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Ready {
     /// The connector's own word for which start answered: what a later protocol makes of it.
     version: u8,
 }
 
+#[cfg(any(unix, windows))]
 impl crate::packet::Packet for Ready {}
 
 /// Tell the device behind `socket` that this connector is up ([`Ready`]).
