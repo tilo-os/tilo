@@ -1728,29 +1728,20 @@ impl AttachedView {
     }
 }
 
-/// Lay `frame` out, and take up what that frame asked for: the invocations
-/// it submitted, the replies it asked a worker for. One frame when it asked
-/// for nothing; when what it submitted changed the record, the frames that
-/// shows ([`Driver::settle_owed`]). Laid out as a still frame
-/// ([`tilo_ui_base::arriving::still_frames`]): a view no window shows has no later frame.
-///
-/// What a worker or an arrival woke the view's models for meanwhile is served
-/// first, as a live window's idle pass serves it before its next frame: served
-/// after the frame, it retired the layout that frame admitted, and the next
-/// action laid the whole view out again to admit it.
+/// Lay `frame` out, after taking up what the view left for this read: the
+/// invocations the changes it took submitted, the owner models a worker woke,
+/// the replies it is owed. Taken up before the frame, one frame shows all of
+/// it; taken up after, the change retired the layout that frame admitted and
+/// the read laid the whole view out again to admit it. Laid out as a still
+/// frame ([`tilo_ui_base::arriving::still_frames`]): a view no window shows has
+/// no later frame.
 fn lay_out(frame: &mut Driver) {
     let _still = tilo_ui_base::arriving::still_frames();
-    if frame.has_pending_owner_models()
-        && let Err(error) = frame.service_pending_owner_models()
-    {
-        // Kept queued: the frame below lays the view out as it stands, and the next
-        // read serves it again.
-        tracing::warn!(?error, "a woken model of an attached view was refused");
-    }
-    frame.relayout();
-    if frame.settle_if_owed() == (ui_core::headless::OwedSettle::Unframed { moved: true }) {
-        frame.settle_owed();
-    }
+    // One frame, its pump taking up what the changes it took left (the invocations they
+    // submitted, the owner models a worker woke) and showing all of it, as a live window's frame
+    // does. `relayout` would sync the model and then the frame's pump sync it again: two frame
+    // syncs for one read.
+    frame.settle();
 }
 
 /// What to publish next of `record` as `sync` stands: the record whole the
