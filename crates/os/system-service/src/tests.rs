@@ -60,6 +60,8 @@ struct Fake {
     storage_changes: Mutex<Vec<StorageChange>>,
     storage_refusal: Mutex<Option<String>>,
     disk_unlock: Mutex<DiskUnlock>,
+    /// What the last scan read, as the device keeps it: nothing until one runs.
+    disk_unlock_read: Mutex<Option<DiskUnlock>>,
     disk_unlock_changes: Mutex<Vec<DiskUnlockChange>>,
     disk_unlock_refusal: Mutex<Option<String>>,
     host_info: Mutex<HostInfo>,
@@ -149,6 +151,7 @@ impl Fake {
             storage_changes: Mutex::new(Vec::new()),
             storage_refusal: Mutex::new(None),
             disk_unlock: Mutex::new(DiskUnlock::default()),
+            disk_unlock_read: Mutex::new(None),
             disk_unlock_changes: Mutex::new(Vec::new()),
             disk_unlock_refusal: Mutex::new(None),
             host_info: Mutex::new(HostInfo::default()),
@@ -540,11 +543,17 @@ impl System for Fake {
     }
 
     fn disk_unlock(&self) -> DiskUnlock {
-        self.disk_unlock.lock().unwrap().clone()
+        self.disk_unlock_read
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default()
     }
 
     fn scan_disk_unlock(&self) -> DiskUnlock {
-        self.disk_unlock.lock().unwrap().clone()
+        let read = self.disk_unlock.lock().unwrap().clone();
+        *self.disk_unlock_read.lock().unwrap() = Some(read.clone());
+        read
     }
 
     fn change_disk_unlock(&self, change: &DiskUnlockChange) -> Result<(), String> {

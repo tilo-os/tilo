@@ -206,6 +206,13 @@ enum Landed {
         action: String,
         result: Result<(), String>,
     },
+    /// A storage scan or change landed: its reading of this device's files, and
+    /// how the action came out. Nothing else of the machine is read for it.
+    Storage {
+        action: String,
+        result: Result<(), String>,
+        storage: tilo_system_resources::storage::Storage,
+    },
 }
 
 /// One window's live follow of the journal, and the cursor its next read starts after.
@@ -891,7 +898,35 @@ impl SystemService {
                 cache.problem = result.err();
                 cache.by_workspace.clear();
             }
+            Landed::Storage {
+                action,
+                result,
+                storage,
+            } => self.land_storage(&action, result, storage),
         }
+    }
+
+    /// Land a storage scan: its reading replaces the last, while an action taken
+    /// and not answered yet, and the last one's problem, stay until they land.
+    fn land_storage(
+        &mut self,
+        action: &str,
+        result: Result<(), String>,
+        mut storage: tilo_system_resources::storage::Storage,
+    ) {
+        let old = &mut self.readings.storage;
+        old.pending.retain(|id| id != action);
+        if !storage.scanned {
+            storage.disk = old.disk.take();
+            storage.categories = std::mem::take(&mut old.categories);
+            storage.largest = std::mem::take(&mut old.largest);
+            storage.cache_bytes = old.cache_bytes;
+            storage.read_error = old.read_error.take();
+            storage.scanned = old.scanned;
+        }
+        storage.pending = std::mem::take(&mut old.pending);
+        storage.problem = result.err();
+        self.readings.storage = storage;
     }
 
     fn start(&mut self, part: Part, action: &str, change: Change) -> Started {
@@ -972,20 +1007,15 @@ impl SystemService {
     fn start_storage(&mut self, action: &str, change: Option<StorageChange>) -> Started {
         self.readings.storage.pending.push(action.to_owned());
         let action = action.to_owned();
-        let live_active = self.live_active_flag();
         self.worker.run(move |system| {
             let result = match change {
                 Some(change) => system.change_storage(&change),
                 None => Ok(()),
             };
-            let mut readings = read(system, is_live(live_active.as_ref()));
-            readings.storage = system.scan_storage();
-            Landed::Changed {
-                part: Part::Storage,
+            Landed::Storage {
                 action,
                 result,
-                readings: Box::new(readings),
-                live_power_mode: None,
+                storage: system.scan_storage(),
             }
         });
         Started::Accepted
