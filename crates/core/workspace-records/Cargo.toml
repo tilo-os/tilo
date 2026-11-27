@@ -30,6 +30,10 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# A vault entry's id is random, and a page draws its randomness from the browser.
+uuid = { workspace = true, features = ["js"] }
+
 [dev-dependencies]
 # Compiles the vault's surface for the test that holds `vault-surface.json` to it.
 tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }
