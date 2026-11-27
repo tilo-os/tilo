@@ -1,6 +1,6 @@
 //! What the policy reads of every app's committed catalogue entry (`fleet.json`, beside a native
 //! app's manifest or a tilolang package's `app.tl`): whose its windows are and which of its kinds
-//! of record are private or sealed. The rest of the entry is `fleet_catalogue`'s to read.
+//! of record are sealed. The rest of the entry is `fleet_catalogue`'s to read.
 
 use std::error::Error;
 use std::fmt::Write as _;
@@ -14,8 +14,6 @@ use serde::Deserialize;
 struct Entry {
     id: String,
     windows_personal: bool,
-    #[serde(default)]
-    private: Vec<String>,
     #[serde(default)]
     sealed: Vec<String>,
     /// Whether search and the Store offer it.
@@ -45,12 +43,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     out.push_str("pub(super) const OWN_WINDOWS: &[&str] = &[");
     for entry in listed.iter().filter(|entry| entry.windows_personal) {
         write!(out, "{:?}, ", entry.id)?;
-    }
-    out.push_str("];\npub(super) const PRIVATE_KINDS: &[(&str, &str)] = &[");
-    for entry in &listed {
-        for kind in &entry.private {
-            write!(out, "({:?}, {kind:?}), ", entry.id)?;
-        }
     }
     out.push_str("];\npub(super) const SEALED_KINDS: &[(&str, &str)] = &[");
     for entry in &entries {

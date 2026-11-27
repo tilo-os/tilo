@@ -674,7 +674,6 @@
   "commands": [],
   "windows_personal": false,
   "window_documents": false,
-  "private": [],
   "listed": true,
   "surface_file": "surface.json"
 }

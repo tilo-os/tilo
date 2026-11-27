@@ -347,8 +347,7 @@ impl Workspaces {
     /// no keys of, or with sealed writes that do not open or merge yet) is
     /// logged with why and listed in [`WholeDocuments::unread`], and the rest
     /// are read all the same: a caller that must see every reference checks
-    /// [`WholeDocuments::is_whole`]. A person's own record sealed for their
-    /// devices alone is listed in [`WholeDocuments::private`] instead.
+    /// [`WholeDocuments::is_whole`].
     ///
     /// # Errors
     ///
@@ -389,16 +388,6 @@ impl Workspaces {
                     read.revisions
                         .insert((app.clone(), record.clone()), revision);
                     read.documents.push(((app, record), document));
-                }
-                // A person's private record sealed for their devices alone
-                // (their drafts) is not the host's to read: it is named apart,
-                // not as unread.
-                Err(why)
-                    if tilo_action_policy::roles::is_private_record(&app, &record)
-                        && peer.publication().is_sealed_document(&app, &record) =>
-                {
-                    tracing::debug!(workspace, %app, %record, %why, "a person's own record is not the host's to read");
-                    read.private.push((app, record));
                 }
                 Err(why) => {
                     tracing::warn!(
@@ -1024,9 +1013,6 @@ pub struct WholeDocuments {
     pub documents: Vec<((String, String), Vec<u8>)>,
     /// Each record that did not read whole, by its app and id, with why.
     pub unread: Vec<((String, String), String)>,
-    /// People's own records sealed for their devices alone, by app and id:
-    /// not the host's to read, and no part of what it reads whole.
-    pub private: Vec<(String, String)>,
     revisions: BTreeMap<(String, String), [u8; 32]>,
 }
 
@@ -1040,8 +1026,7 @@ pub(super) type StoredDocument = (
 
 impl WholeDocuments {
     /// Every record the host is to read read whole: what they name is all the
-    /// workspace names that the host keeps for it. A person's own sealed
-    /// record is theirs, not one the host reads.
+    /// workspace names that the host keeps for it.
     #[must_use]
     pub fn is_whole(&self) -> bool {
         self.unread.is_empty()
@@ -1056,13 +1041,6 @@ impl WholeDocuments {
         });
         self.documents.extend(newer.documents);
         self.unread.extend(newer.unread);
-        self.private
-            .retain(|route| !newer.revisions.contains_key(route));
-        for route in newer.private {
-            if !self.private.contains(&route) {
-                self.private.push(route);
-            }
-        }
         self.revisions.extend(newer.revisions);
     }
 }

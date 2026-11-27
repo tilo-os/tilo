@@ -400,10 +400,6 @@ fn set_document_access(
     (who, app, document): (String, String, String),
     access: String,
 ) {
-    if tilo_action_policy::roles::is_private_record(&app, &document) {
-        refuse(state, fed, "this document belongs to a person");
-        return;
-    }
     govern(state, fed, move |ws, actor| {
         domain::set_document_access(ws, actor, (&who, &app, &document), &access)
     });
@@ -1214,13 +1210,12 @@ fn document_access(
     apps: &dyn domain::AppDirectory,
     view: Option<&WorkspaceView>,
 ) -> sheet::DocumentAccess {
-    // The workspace's records the device's daemon holds that this device reads: not its own
-    // documents, nor a person's private record, which only its person's grant reaches.
+    // The workspace's records the device's daemon holds that this device reads, not its own
+    // documents.
     let documents = view.map_or_else(Vec::new, |view| {
         let mut documents = view.readable(ws.id());
         documents.retain(|(app, document_id)| {
             collab_types::workspace_document(app, document_id).is_none()
-                && !tilo_action_policy::roles::is_private_record(app, document_id)
         });
         documents
     });

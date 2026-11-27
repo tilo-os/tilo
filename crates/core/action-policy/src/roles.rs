@@ -8,16 +8,6 @@ use crate::{
     Verdict,
 };
 
-/// Whether `app`'s records of `kind` are each one person's, as its manifest declares
-/// (`[resources] private`): what they are writing and have not sent. Every role is denied them
-/// ([`role_rules`]) and the workspace's ownership does not reach them; each person reads and
-/// changes their own ([`own_records`]), and an owner may give others more with a grant like any
-/// other.
-#[must_use]
-pub fn has_member_reader(app: &str, kind: &str) -> bool {
-    app_fleet::private_kinds(app).any(|declared| declared == kind)
-}
-
 /// The id of `person`'s record of `kind`: a version-8 uuid derived from both, the same on every
 /// device of theirs, naming neither. `None` when `person` is not a person id (the lowercase hex
 /// of their user root key).
@@ -64,43 +54,6 @@ pub fn workspace_of_person(person: &str) -> Option<String> {
     let mut root = [0; 32];
     hex::decode_to_slice(person, &mut root).ok()?;
     Some(person_workspace_id(&root))
-}
-
-/// The derived record `record` belongs to: itself, or the record a part, chunk or child of it
-/// names. Only [`member_record`] makes version-8 ids.
-fn derived_record_in(record: &str) -> Option<&str> {
-    record.match_indices("uuid:").find_map(|(at, _)| {
-        let id = record.get(at..)?.get(..41)?;
-        let uuid = uuid::Uuid::try_parse(id.strip_prefix("uuid:")?).ok()?;
-        (uuid.get_version_num() == 8).then_some(id)
-    })
-}
-
-/// Whether `app`'s `record` is one person's private record, or a part, chunk or child of one: only
-/// its person reaches it ([`own_records`]), or a grant, never the workspace's ownership.
-#[must_use]
-pub fn is_private_record(app: &str, record: &str) -> bool {
-    app_fleet::private_kinds(app).next().is_some() && derived_record_in(record).is_some()
-}
-
-/// Every private record kind of `workspace` ([`has_member_reader`]), which no role reads or changes.
-fn private_record_rules(workspace: &str) -> impl Iterator<Item = Rule> + '_ {
-    app_fleet::every_private_kind().map(move |(app, kind)| {
-        Rule::new(
-            TreePath::workspace(workspace).app(app).kind(kind),
-            KindSet::READ_UNDOABLE,
-            Answer::Deny,
-        )
-    })
-}
-
-/// Whether `node`, as [`decided_node`] reads it, is in one person's private record, which the
-/// workspace's ownership does not reach.
-pub(crate) fn in_private_record(node: &TreePath) -> bool {
-    node.id_at(Level::App)
-        .zip(node.id_at(Level::Kind))
-        .is_some_and(|(app, kind)| has_member_reader(app, kind))
-        && node.id_at(Level::Resource).is_some()
 }
 
 /// Whether `node` is a device's settings resource: the settings app's
@@ -524,9 +477,8 @@ fn persons_own(workspace: &str, person: &str) -> impl Iterator<Item = TreePath> 
 }
 
 /// `node` as a decision reads it: a node in a member's own record ([`each_persons`]) is of its
-/// kind, and a node in a person's private record is of its kind and in the record
-/// itself rather than a part of it ([`has_member_reader`]), whichever kind, if any, its caller
-/// named, so the rules on them decide it wherever it is asked from.
+/// kind, whichever kind, if any, its caller named, so the rules on it decide it wherever it is
+/// asked from.
 #[must_use]
 pub fn decided_node(node: &TreePath) -> std::borrow::Cow<'_, TreePath> {
     use crate::Segment;
@@ -542,21 +494,11 @@ pub fn decided_node(node: &TreePath) -> std::borrow::Cow<'_, TreePath> {
     let (Some(app), Some(record)) = (app, record) else {
         return std::borrow::Cow::Borrowed(node);
     };
-    let decided_as = if let Some((kept, _)) = app_fleet::person_record(app, record) {
-        Some((kept.kind, record))
-    } else {
-        let named = node.id_at(Level::Kind);
-        let mut kinds = app_fleet::private_kinds(app).peekable();
-        let first = kinds.peek().copied();
-        kinds
-            .find(|kind| Some(*kind) == named)
-            .or(first)
-            .zip(derived_record_in(record))
-    };
-    let Some((kind, as_record)) = decided_as else {
+    let Some((kept, _)) = app_fleet::person_record(app, record) else {
         return std::borrow::Cow::Borrowed(node);
     };
-    if node.id_at(Level::Kind) == Some(kind) && as_record == record {
+    let kind = kept.kind;
+    if node.id_at(Level::Kind) == Some(kind) {
         return std::borrow::Cow::Borrowed(node);
     }
     let mut decided = TreePath::default();
@@ -565,7 +507,7 @@ pub fn decided_node(node: &TreePath) -> std::borrow::Cow<'_, TreePath> {
             Segment::Name(Level::Kind, _) => {}
             Segment::Name(Level::Resource, _) => {
                 decided.push_name(Level::Kind, kind);
-                decided.push_name(Level::Resource, as_record);
+                decided.push_name(Level::Resource, record);
             }
             Segment::Name(level, id) => decided.push_name(*level, id.clone()),
             Segment::Any(level) => decided = decided.any(*level),
@@ -576,26 +518,16 @@ pub fn decided_node(node: &TreePath) -> std::borrow::Cow<'_, TreePath> {
 }
 
 /// What `person` may do in `workspace` because it is theirs alone: change their own records
-/// ([`each_persons`]), such as their view of its layout, and read and change their private records
-/// ([`has_member_reader`]). Decided for each of the workspace's people when they act
+/// ([`each_persons`]), such as their view of its layout. Decided for each of the workspace's
+/// people when they act
 /// ([`crate::Party::owning_records`]), rather than kept as a grant for each of them, so a policy is
 /// the size of its rules whatever its number of people; a ban or restriction, which no grant
 /// lifts, stops it too.
 #[must_use]
 pub fn own_records(workspace: &str, person: &str) -> Vec<(TreePath, KindSet)> {
-    let mut own: Vec<_> = persons_own(workspace, person)
+    persons_own(workspace, person)
         .map(|node| (node, KindSet::UNDOABLE))
-        .collect();
-    own.extend(app_fleet::every_private_kind().filter_map(|(app, kind)| {
-        Some((
-            TreePath::workspace(workspace)
-                .app(app)
-                .kind(kind)
-                .resource(member_record(kind, person)?),
-            KindSet::READ_UNDOABLE,
-        ))
-    }));
-    own
+        .collect()
 }
 
 /// The id of the grant that lets `app` keep its own records ([`app_records_grant`]).
@@ -869,7 +801,7 @@ impl Preset {
 #[must_use]
 pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {
     let mut rules = shown_role_rules(role, workspace);
-    rules.extend(private_record_rules(workspace));
+
     if !matches!(role, Role::Owner) {
         rules.extend(
             app_fleet::WORKSPACE_DOCUMENTS

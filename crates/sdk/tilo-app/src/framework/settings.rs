@@ -399,13 +399,6 @@ impl ViewStorage {
         self.workspace.as_ref()?.open_at::<P>(owner, id)
     }
 
-    pub(crate) fn own_workspace_resource<P: tilo_resource::Resource>(
-        &self,
-        owner: &'static str,
-    ) -> Option<super::workspace::WorkspaceResource<P>> {
-        self.workspace.as_ref()?.open_own::<P>(owner)
-    }
-
     /// The records other than the app's own the views opened — the
     /// person's records, settings sections — as published resources.
     /// What [`Self::resource_resources`] publishes depends on: each record's

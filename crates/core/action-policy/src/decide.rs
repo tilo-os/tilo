@@ -20,7 +20,7 @@ pub enum Basis<'g> {
     RootOnly(Cap),
     /// The party owns the workspace the node is in.
     Owner,
-    /// The node is the party's own: their view of the layout, a private record of theirs
+    /// The node is the party's own: their view of the layout
     /// ([`crate::roles::own_records`]), or their own device's settings
     /// ([`crate::roles::is_device_settings`]).
     OwnRecord,
@@ -350,13 +350,9 @@ impl<'g> Party<'g> {
             };
         }
         let device_settings = crate::roles::is_device_settings(node);
-        // A person's private record is theirs, not the workspace's owner's: only its person
-        // ([`crate::roles::own_records`]) or a grant reaches it. Nor does the workspace's
-        // ownership reach another person's device ([`crate::roles::is_device_settings`]).
-        if !device_settings
-            && !crate::roles::in_private_record(node)
-            && self.owns.iter().any(|owned| cx.covers(owned, node))
-        {
+        // The workspace's ownership does not reach another person's device
+        // ([`crate::roles::is_device_settings`]).
+        if !device_settings && self.owns.iter().any(|owned| cx.covers(owned, node)) {
             return Decision {
                 answer: Answer::Allow,
                 basis: Basis::Owner,
@@ -544,9 +540,6 @@ impl<'g> Authority<'g> {
                 .min()
                 .unwrap_or(Answer::Deny)
         };
-        if self.unowned_actor_reads_own_record(node, kind) {
-            answer = Answer::Deny;
-        }
         if let (Some(app), Some(kinds)) = (self.app, self.app_kinds)
             && node.id_at(Level::App) == Some(app.as_str())
             && match node.id_at(Level::Kind) {
@@ -588,14 +581,6 @@ impl Authority<'_> {
                 .any(|at| allows(&at))
     }
 
-    /// Whether no person acts here and `node` is in a person's private record, which only
-    /// its person reads.
-    fn unowned_actor_reads_own_record(&self, node: &TreePath, kind: ActionKind) -> bool {
-        kind == ActionKind::Read
-            && self.people == 0
-            && crate::roles::in_private_record(&crate::roles::decided_node(node))
-    }
-
     /// [`Self::decide`]'s answer alone, made [`Verdict::privileged`] when
     /// `privileged`, without keeping each party's decision: what a check
     /// that only needs the answer asks.
@@ -607,9 +592,6 @@ impl Authority<'_> {
         privileged: bool,
         cx: &Context<'_>,
     ) -> Answer {
-        if self.unowned_actor_reads_own_record(node, kind) {
-            return Answer::Deny;
-        }
         let person = self.person.decide(node, kind, cx).answer;
         if privileged && self.people <= 1 && person == Answer::Ask {
             return Answer::Deny;

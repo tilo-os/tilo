@@ -1267,7 +1267,6 @@ tilo_test_env::scenario! {
             describe(&editor, &Ids),
             "workspace r: reading and undoable changes allowed, outside effects ask first. \
          workspace r › so.tilo.browser-desktop › desktop.person-view: undoable changes not allowed. \
-         workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not allowed. \
          workspace r › so.tilo.ownership: everything not allowed. \
          workspace r › tilo.workspace: undoable changes and outside effects not allowed. \
          workspace r › anywhere › moderation: undoable changes and outside effects not allowed."
@@ -1324,8 +1323,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             sentences(&viewer, &Ids),
-            "workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not \
-         allowed. workspace r › so.tilo.ownership: everything not allowed. Tilo keeps it from them, \
+            "workspace r › so.tilo.ownership: everything not allowed. Tilo keeps it from them, \
          but it is not encrypted apart: their devices hold the workspace's keys, so only the \
          workspace itself keeps content from someone. workspace r: reading allowed."
         );
@@ -1335,11 +1333,7 @@ tilo_test_env::scenario! {
             &alice(),
             &Lifetime::UntilRevoked,
         );
-        assert_eq!(
-            sentences(&owner, &Ids),
-            "workspace r › so.tilo.messages › messages.drafts: reading and undoable changes not \
-         allowed. workspace r: everything allowed."
-        );
+        assert_eq!(sentences(&owner, &Ids), "workspace r: everything allowed.");
     }
 
     phase verdicts_explain_themselves;
@@ -2879,85 +2873,5 @@ fn each_person_changes_their_own_view_of_the_layout_and_no_one_elses() {
     assert_eq!(
         stored, workspace,
         "a stored policy loads with the same views"
-    );
-}
-
-/// A person's private record (what they watched, what they are writing and have not sent) is
-/// theirs as one of the workspace's people: no role reaches another's, and
-/// owning the workspace does not either, wherever the record is asked from.
-#[test]
-fn each_persons_private_record_is_theirs_alone() {
-    let (owner, editor) = ("aa".repeat(32), "bb".repeat(32));
-    let mut workspace = WorkspacePolicy::new("r", owner.clone());
-    let held = workspace.clone();
-    workspace
-        .apply(
-            &owner,
-            &held.person_on_device(&owner, false),
-            Change::AddMember {
-                person: editor.clone(),
-                role: Role::Editor,
-            },
-            &cx(),
-            false,
-        )
-        .expect("the owner admits a member");
-    let history =
-        |of: &str| roles::member_record("messages.drafts", of).expect("a person id names a record");
-    let answer = |workspace: &WorkspacePolicy, person: &str, node: &TreePath, kind| {
-        Authority::person(workspace.party(person))
-            .decide(node, kind, &cx())
-            .answer
-    };
-    for (person, other) in [(&owner, &editor), (&editor, &owner)] {
-        let theirs = TreePath::workspace("r")
-            .app("so.tilo.messages")
-            .resource(history(person));
-        for kind in [ActionKind::Read, ActionKind::Undoable] {
-            assert_eq!(
-                answer(&workspace, person, &theirs, kind),
-                Answer::Allow,
-                "{kind:?}"
-            );
-            assert_eq!(
-                answer(&workspace, other, &theirs, kind),
-                Answer::Deny,
-                "neither a role nor ownership reaches another's record: {kind:?}"
-            );
-        }
-    }
-    // A part of the record is decided as the record.
-    let part = TreePath::workspace("r")
-        .app("so.tilo.messages")
-        .kind("messages.drafts")
-        .resource(format!("derived:part@{}", history(&editor)));
-    assert_eq!(
-        answer(&workspace, &owner, &part, ActionKind::Read),
-        Answer::Deny
-    );
-    assert_eq!(
-        answer(&workspace, &editor, &part, ActionKind::Read),
-        Answer::Allow
-    );
-
-    let mut shared = workspace.clone();
-    shared.grants.push(Grant::new(
-        "share-history",
-        Grantee::person(owner.clone()),
-        TreePath::workspace("r")
-            .app("so.tilo.messages")
-            .kind("messages.drafts")
-            .resource(history(&editor)),
-        KindSet::READ,
-        Answer::Allow,
-        Grantee::person(editor.clone()),
-    ));
-    let editors = TreePath::workspace("r")
-        .app("so.tilo.messages")
-        .resource(history(&editor));
-    assert_eq!(
-        answer(&shared, &owner, &editors, ActionKind::Read),
-        Answer::Allow,
-        "a grant widens it like any other"
     );
 }

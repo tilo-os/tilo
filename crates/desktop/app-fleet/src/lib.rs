@@ -1,6 +1,6 @@
 //! What the policy reads of the Tilo fleet's signed manifests, compiled in: whose each app's
-//! windows are, which of its records each member keeps for themselves, which are sealed, and the
-//! records the system keeps for it ([`WORKSPACE_DOCUMENTS`]). Gathered at build time from the
+//! windows are, which of its records are sealed, and the records the system keeps for it
+//! ([`WORKSPACE_DOCUMENTS`]). Gathered at build time from the
 //! catalogue entry every app commits beside itself (`fleet.json`), reading only those fields; how
 //! people find and know an app (its names, keywords, offered actions, surface) is
 //! `fleet_catalogue`'s, so a change to how an app is listed rebuilds nothing that reads this.
@@ -28,21 +28,6 @@ pub fn windows_are_own(package_id: &str) -> bool {
         .any(|own| own.eq_ignore_ascii_case(&app))
 }
 
-/// The kinds of record `package_id`'s manifest declares each member of a workspace keeps one of
-/// that only they read and change (`[resources] private`).
-pub fn private_kinds(package_id: &str) -> impl Iterator<Item = &'static str> {
-    let app = tilo_app_id::fleet_id(package_id).into_owned();
-    generated::PRIVATE_KINDS
-        .iter()
-        .filter(move |(declared, _)| declared.eq_ignore_ascii_case(&app))
-        .map(|(_, kind)| *kind)
-}
-
-/// Every kind of record [`private_kinds`] names, by the app that declares it.
-pub fn every_private_kind() -> impl Iterator<Item = (&'static str, &'static str)> {
-    generated::PRIVATE_KINDS.iter().copied()
-}
-
 /// Whether records of `kind` are kept under keys of their own from their first write, as the
 /// app that declares the kind says (`[resources] sealed`, a tilolang root's `sealed: true`).
 #[must_use]
@@ -63,15 +48,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_and_private_records_read_per_app() {
+    fn windows_read_per_app() {
         // Settings shows what the person keeps for themselves, so its windows are theirs.
         assert!(windows_are_own("dev.tilo.settings"));
         assert!(!windows_are_own("so.tilo.chat"));
-        for (app, kind) in every_private_kind() {
-            assert!(
-                private_kinds(app).any(|declared| declared == kind),
-                "{app} names {kind}"
-            );
-        }
     }
 }

@@ -405,8 +405,6 @@ pub struct FleetFile {
     pub commands: Vec<FleetCommand>,
     pub windows_personal: bool,
     pub window_documents: bool,
-    /// The kinds of record each member of a workspace keeps one of (`[resources] private`).
-    pub private: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sealed: Vec<String>,
     /// Whether search and the Store offer the app; a service publishes a surface without it.
@@ -436,7 +434,6 @@ impl FleetFile {
             commands: entry.commands,
             windows_personal: entry.windows_personal,
             window_documents: entry.window_documents,
-            private: Vec::new(),
             sealed: entry.sealed,
             listed: true,
             surface: Some(entry.surface),
@@ -448,7 +445,6 @@ impl FleetFile {
     fn of_native(entry: NativeEntry) -> Self {
         Self {
             listed: entry.listed,
-            private: entry.private,
             surface: None,
             surface_file: Some(NATIVE_SURFACE_FILE.to_owned()),
             ..Self::of_package(entry.entry, entry.platforms)
@@ -651,7 +647,15 @@ fn native_fleet(dir: &Path) -> Result<Option<NativeEntry>, String> {
             .map(strings)
             .unwrap_or_default()
     };
-    let private = declared("private");
+    // A record only its author reads says so on its type (`#[resource(readers = "author")]`), and
+    // the workspace's store seals it to that person's devices; no manifest list keeps one apart.
+    if resources.is_some_and(|resources| resources.contains_key("private")) {
+        return Err(format!(
+            "{}: [resources] private keeps nothing apart; declare the type's readers instead \
+             (#[resource(readers = \"author\")])",
+            manifest_path.display()
+        ));
+    }
     let resource_types = document_types(dir, &manifest, &id, &name, &surface);
     let tagline = native_tagline(dir);
     Ok(Some(NativeEntry {
@@ -673,7 +677,6 @@ fn native_fleet(dir: &Path) -> Result<Option<NativeEntry>, String> {
             sealed: declared("sealed"),
             surface,
         },
-        private,
         listed: kind == "app" && entry_type == "gui",
     }))
 }
@@ -683,8 +686,6 @@ struct NativeEntry {
     entry: FleetEntry,
     /// Where the app runs, as its manifest declares.
     platforms: Vec<String>,
-    /// The kinds of record each member of a workspace keeps one of.
-    private: Vec<String>,
     listed: bool,
 }
 
@@ -1387,7 +1388,7 @@ mod tests {
             "[package]\nid = \"t.leaf\"\nname = \"Leaf\"\ncategory = \"Office\"\n\
              platforms = [\"linux\"]\n\n[package.names]\nen = \"Leaf\"\nde = \"Blatt\"\n\n\
              [providers]\next = [\"leaf\"]\n\n[resources]\nkinds = [\"leaf.note\", \"other.thing\", \"leaf.history\"]\n\
-             private = [\"leaf.history\"]\nsealed = [\"leaf.note\"]\n\n\
+             sealed = [\"leaf.note\"]\n\n\
              [[offers]]\nresource = \"leaf.note\"\naction = \"new\"\nlabel = \"New leaf\"\nasks = \"title\"\n\n\
              [[offers]]\nresource = \"leaf.note\"\naction = \"note\"\nlabel = \"Note it\"\n\
              asks = [{ name = \"words\", type = \"text\", description = \"What to write\" }]\n",
@@ -1432,7 +1433,6 @@ mod tests {
             entry.entry.resource_types,
             [("leaf.note".to_owned(), "Note".to_owned())]
         );
-        assert_eq!(entry.private, ["leaf.history"]);
         assert_eq!(entry.entry.sealed, ["leaf.note"]);
         assert!(entry.listed);
         assert!(entry.entry.window_documents);

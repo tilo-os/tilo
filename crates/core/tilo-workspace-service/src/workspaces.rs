@@ -2575,8 +2575,7 @@ impl Workspaces {
         Ok(routes)
     }
 
-    /// [`Self::document_routes`] but each person's private records
-    /// ([`tilo_action_policy::roles::is_private_record`]).
+    /// [`Self::document_routes`] and the records the workspace's store keeps.
     ///
     /// # Errors
     /// As [`Self::document_routes`].
@@ -2597,7 +2596,6 @@ impl Workspaces {
                 routes.extend(store.ids_of(&kind).map(|id| (app.clone(), id.to_owned())));
             }
         }
-        routes.retain(|(app, record)| !tilo_action_policy::roles::is_private_record(app, record));
         drop(hosted);
         Ok(routes)
     }

@@ -613,15 +613,9 @@ impl DispatchCore {
     /// shared to edit) lets it be changed here too; else the app's.
     fn node(&self) -> TreePath {
         let app = TreePath::root().app(self.app_id);
-        // A record of a kind each person keeps their own of is decided on that
-        // record, which the workspace grants its person.
+        // A sealed record is decided on that record.
         let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
         if collab_types::sealed_kind(self.app_id, &self.record).is_some() {
-            return app.kind(kind).resource(&*self.record);
-        }
-        if !self.record.is_empty()
-            && tilo_actions::policy::roles::has_member_reader(self.app_id, kind)
-        {
             return app.kind(kind).resource(&*self.record);
         }
         if self.applied_as.is_none() {

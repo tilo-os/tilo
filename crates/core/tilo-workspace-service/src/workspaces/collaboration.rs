@@ -822,9 +822,6 @@ impl Workspaces {
             workspace
                 .peer()
                 .check_document_read(caller.device_public_key, app, document, at)?;
-            if tilo_action_policy::roles::is_private_record(app, document) {
-                return Err(CollaborationError::new("this document belongs to a person"));
-            }
             document
         };
         let policy = workspace.peer().governance().member_policy()?;

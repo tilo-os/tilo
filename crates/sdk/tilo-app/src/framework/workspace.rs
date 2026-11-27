@@ -70,11 +70,6 @@ impl<P: Resource> ResourceOpener<P> {
     pub fn open(&self, id: &str) -> Option<WorkspaceResource<P>> {
         self.storage.shared_resource::<P>(self.owner, id)
     }
-
-    /// The current member's private record in this workspace.
-    pub fn open_own(&self) -> Option<WorkspaceResource<P>> {
-        self.storage.own_workspace_resource::<P>(self.owner)
-    }
 }
 
 impl<P: Resource> Clone for WorkspaceResource<P> {
@@ -309,11 +304,6 @@ impl Core {
     }
 
     fn may_read(&self) -> bool {
-        if self.permissions.is_none()
-            && tilo_actions::policy::roles::has_member_reader(self.owner, self.kind)
-        {
-            return false;
-        }
         let node = tilo_actions::resource_node(
             &TreePath::root(),
             self.owner,
@@ -350,10 +340,8 @@ impl Core {
     }
 
     fn independently_sealed(&self) -> bool {
-        use tilo_actions::policy::roles;
         let (app, route) = (self.owner, self.id().route());
         collab_types::sealed_kind(app, route).is_some()
-            || roles::has_member_reader(app, self.kind)
             || collab_types::decided_as_app_record(app, route)
     }
 
@@ -1454,19 +1442,6 @@ impl WorkspaceState {
                 self.wake.clone(),
             )
         })
-    }
-
-    /// A member's own live record, held beside the app's other records in the same store.
-    pub(crate) fn open_own<P: Resource>(
-        &self,
-        owner: &'static str,
-    ) -> Option<WorkspaceResource<P>> {
-        if !tilo_actions::policy::roles::has_member_reader(owner, P::KIND) {
-            return None;
-        }
-        let person = self.records.author().person_id()?;
-        let id = tilo_actions::policy::roles::member_record(P::KIND, person)?;
-        self.open_at::<P>(owner, &id)
     }
 
     /// The record `id` of `P` that `owner` keeps, opened on first use and

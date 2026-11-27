@@ -228,11 +228,9 @@ impl Workspaces {
             .into_iter()
             .filter_map(|(app, document)| {
                 let document = collab_types::document_access_target(&app, &document)?.to_owned();
-                (!tilo_action_policy::roles::is_private_record(&app, &document)
-                    && peer
-                        .check_document_read(device.device_public_key, &app, &document, at)
-                        .is_ok())
-                .then_some((app, document))
+                peer.check_document_read(device.device_public_key, &app, &document, at)
+                    .is_ok()
+                    .then_some((app, document))
             })
             .collect();
         drop(peer);

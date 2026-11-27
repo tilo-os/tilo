@@ -790,26 +790,10 @@ pub(crate) enum Editing {
     ReadOnly(Box<Run>),
 }
 
-/// The permission that makes the record `run` opened editable: writing the
-/// app's records of the workspace, or, for a record of a kind each person keeps
-/// their own of, writing that record, which the workspace grants its person.
-fn write_scope(app: &AppHooks, run: &Run) -> PermissionScope {
-    let own_kind = tilo_actions::policy::roles::has_member_reader(app.id(), app.kind);
-    match run
-        .launched
-        .record
-        .as_ref()
-        .map(ui_core::resource::DocumentId::route)
-    {
-        Some(record) if own_kind => PermissionScope::Action {
-            node: tilo_ui_base::permissions::TreePath::root()
-                .app(app.id())
-                .kind(app.kind)
-                .resource(record),
-            kind: ActionKind::Undoable,
-        },
-        _ => PermissionScope::app(app.id(), ActionKind::Undoable),
-    }
+/// The permission that makes the record an app opened editable: writing the app's records of
+/// the workspace.
+fn write_scope(app: &AppHooks) -> PermissionScope {
+    PermissionScope::app(app.id(), ActionKind::Undoable)
 }
 
 /// What a root is built with besides its resource type: who edits it and
@@ -839,7 +823,7 @@ impl RootShell {
             } => (Some(permissions), false, Some(me), *run),
             Editing::ReadOnly(run) => (None, true, None, *run),
         };
-        let scope = write_scope(app, &run);
+        let scope = write_scope(app);
         let read_only = read_only
             || permissions
                 .as_ref()

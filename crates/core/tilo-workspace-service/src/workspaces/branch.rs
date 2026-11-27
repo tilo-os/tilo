@@ -246,10 +246,7 @@ mod copy {
             let (mut documents, mut kinds) = (Vec::new(), BTreeMap::new());
             for ((app, record), kind, read) in stored {
                 // A record whose app this device knows nothing of stays behind with it.
-                if app.is_empty()
-                    || tilo_desktop_model::branch::stays(&app, &record)
-                    || tilo_action_policy::roles::is_private_record(&app, &record)
-                {
+                if app.is_empty() || tilo_desktop_model::branch::stays(&app, &record) {
                     continue;
                 }
                 let (_, bytes) = read.map_err(|why| {

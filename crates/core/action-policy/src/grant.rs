@@ -407,17 +407,10 @@ impl Grant {
     /// Whether this grant refuses reading something inside a workspace rather than the workspace
     /// itself: a rule every Tilo read path enforces, never a seal. Its grantee's devices hold the
     /// workspace's keys like every member's, so whoever sets one is told so ([`Answer::Deny`]).
-    /// A person's private records are sealed for that person's devices apart
-    /// ([`crate::roles::has_member_reader`]), so refusing them is no such rule.
     #[must_use]
     pub fn denies_reading_within_workspace(&self) -> bool {
         self.answer == Answer::Deny
             && self.kinds.contains(crate::ActionKind::Read)
-            && !self
-                .node
-                .id_at(crate::Level::App)
-                .zip(self.node.id_at(crate::Level::Kind))
-                .is_some_and(|(app, kind)| crate::roles::has_member_reader(app, kind))
             && self.node.segments().iter().any(|segment| {
                 segment
                     .level()

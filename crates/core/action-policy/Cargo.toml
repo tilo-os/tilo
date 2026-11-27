@@ -28,7 +28,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 # A member says who wears its presence colour.
 tilo-presence = { version = "0.1.0", path = "../../platform/tilo-presence" }
-# The record kinds the apps' manifests declare private (`[resources] private`).
+# The records the apps' manifests keep apart: each person's own, the app's own, the sealed ones.
 app-fleet = { package = "tilo-app-fleet", version = "0.1.0", path = "../../desktop/app-fleet" }
 uuid.workspace = true
 
