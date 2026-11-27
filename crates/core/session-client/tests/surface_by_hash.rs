@@ -30,7 +30,7 @@ use tilo_workspace_service::workspaces::WorkspaceContent;
 use crate::native::NativeDevice;
 use crate::support::{
     WORKSPACE, commit_change, commit_edit, enrol, ready, start_host, start_peer, wait_for,
-    workspace,
+    wait_keyed, workspace,
 };
 
 /// The surface the laptop's write names: an app's own compiled surface, a version of it this
@@ -263,7 +263,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     );
     page.join_placed(WORKSPACE, "Workspace").unwrap();
     ready(&[&page]).await;
-    crate::support::admitted(&page).await;
+    wait_keyed(&page, &note).await;
 
     // The page holds the write for the surface it does not run, and says so:
     // it waits for the app surface alone, not for keys or governance.
