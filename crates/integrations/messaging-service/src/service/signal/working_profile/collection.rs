@@ -21,7 +21,7 @@ impl RamDirectory {
         let mut directory = self.root.try_clone()?;
         for part in [
             launcher::appdir::WORKSPACES_DIR,
-            launcher::appdir::PERSONAL_WORKSPACE,
+            self.slug.as_str(),
             SERVICE_PACKAGE,
         ] {
             directory = open_directory(&directory, &component(OsStr::new(part))?)?;
@@ -136,13 +136,13 @@ mod tests {
     fn fixture() -> (tempfile::TempDir, RamDirectory) {
         let root = tempfile::tempdir_in("/dev/shm").unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let ram = RamDirectory::allocate(root.path()).unwrap();
+        let ram = RamDirectory::allocate(root.path(), "workspace-account").unwrap();
         (root, ram)
     }
     fn package(ram: &RamDirectory) -> PathBuf {
         ram.source()
             .join(launcher::appdir::WORKSPACES_DIR)
-            .join(launcher::appdir::PERSONAL_WORKSPACE)
+            .join(&ram.slug)
             .join(SERVICE_PACKAGE)
     }
     #[test]

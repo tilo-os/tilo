@@ -49,7 +49,6 @@ impl NativeSignalWorkingProfile {
     ) -> Result<(), SendError> {
         self.guard.check()?;
         if options.app_id.as_deref() != Some(SERVICE_PACKAGE)
-            || options.workspace_id.is_some()
             || !matches!(options.mode, launcher::run::LaunchMode::Service { .. })
             || options.expected_package_hash.is_none()
             || !options.landlock_enforce
@@ -67,6 +66,9 @@ impl NativeSignalWorkingProfile {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| SendError::AlreadyReserved)?;
         options.data_home = Some(self.ram.source());
+        // The account is the person's, so its private state is an app's state in the person's own
+        // workspace.
+        options.workspace_id = Some(self.ram.workspace.clone());
         options.no_services = true;
         Ok(())
     }
@@ -138,7 +140,9 @@ impl NativeSignalAccount {
         runtime_root: &Path,
     ) -> Result<NativeSignalWorkingProfile, SendError> {
         self.guard.check()?;
-        let ram = RamDirectory::allocate(runtime_root).map_err(|_| SendError::Unavailable)?;
+        let workspace = self.guard.identity.workspace_id();
+        let ram =
+            RamDirectory::allocate(runtime_root, &workspace).map_err(|_| SendError::Unavailable)?;
         let mut sealed = self.open_profile(encrypted_root)?;
         let image = sealed.begin_use().map_err(|_| SendError::Unavailable)?;
         image
@@ -163,9 +167,13 @@ struct RamDirectory {
     parent: File,
     name: CString,
     root: File,
+    /// The workspace the account belongs to.
+    workspace: String,
+    /// [`workspace`](Self::workspace) as the app directory tree names it.
+    slug: String,
 }
 impl RamDirectory {
-    fn allocate(parent_path: &Path) -> io::Result<Self> {
+    fn allocate(parent_path: &Path, workspace: &str) -> io::Result<Self> {
         if !parent_path.is_absolute() {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -175,6 +183,7 @@ impl RamDirectory {
             .open(parent_path)?;
         validate_directory(&parent)?;
         ram_backing(&parent)?;
+        let slug = launcher::appdir::workspace_slug(workspace);
         let name = component(OsStr::new(&format!("tilo-signal-{}", uuid::Uuid::new_v4())))?;
         if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
             return Err(io::Error::last_os_error());
@@ -188,7 +197,13 @@ impl RamDirectory {
                 return Err(error);
             }
         };
-        Ok(Self { parent, name, root })
+        Ok(Self {
+            parent,
+            name,
+            root,
+            workspace: workspace.to_owned(),
+            slug,
+        })
     }
     fn source(&self) -> PathBuf {
         fd_path(&self.root)
@@ -205,7 +220,7 @@ impl RamDirectory {
         let mut directory = self.root.try_clone()?;
         for part in [
             launcher::appdir::WORKSPACES_DIR,
-            launcher::appdir::PERSONAL_WORKSPACE,
+            self.slug.as_str(),
             SERVICE_PACKAGE,
         ] {
             directory = child_directory(&directory, &component(OsStr::new(part))?)?;
@@ -438,6 +453,11 @@ pub(super) mod tests {
         true
     }
 
+    /// The person whose Signal account the working profile belongs to.
+    fn workspace() -> String {
+        collab_types::person_workspace(&[0x11; 32]).to_string()
+    }
+
     fn runtime() -> tempfile::TempDir {
         tempfile::Builder::new()
             .prefix("tilo-signal-ram-")
@@ -451,11 +471,11 @@ pub(super) mod tests {
         let runtime = runtime();
         let link = runtime.path().join("link");
         symlink(runtime.path(), &link).unwrap();
-        assert!(RamDirectory::allocate(&link).is_err());
+        assert!(RamDirectory::allocate(&link, &workspace()).is_err());
         let public = runtime.path().join("public");
         std::fs::create_dir(&public).unwrap();
         std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(RamDirectory::allocate(&public).is_err());
+        assert!(RamDirectory::allocate(&public, &workspace()).is_err());
         assert_eq!(std::fs::read_dir(&public).unwrap().count(), 0);
         let disk = tempfile::Builder::new()
             .prefix("tilo-signal-disk-refusal-")
@@ -491,12 +511,12 @@ pub(super) mod tests {
         }
         let runtime = runtime();
         let outside = tempfile::tempdir().unwrap();
-        let ram = RamDirectory::allocate(runtime.path()).unwrap();
+        let ram = RamDirectory::allocate(runtime.path(), &workspace()).unwrap();
         ram.write_profile("data/account.db", b"fixture-profile-state")
             .unwrap();
         let profile = launcher::appdir::host_app_dir(
             &ram.source(),
-            launcher::appdir::PERSONAL_WORKSPACE,
+            &launcher::appdir::workspace_slug(&workspace()),
             SERVICE_PACKAGE,
         );
         let file = profile.join("data/account.db");
@@ -526,7 +546,7 @@ pub(super) mod tests {
             return;
         }
         let runtime = runtime();
-        let ram = RamDirectory::allocate(runtime.path()).unwrap();
+        let ram = RamDirectory::allocate(runtime.path(), &workspace()).unwrap();
         ram.write_profile("account.db", b"fixture-profile-state")
             .unwrap();
         let original = runtime.path().join(OsStr::from_bytes(ram.name.as_bytes()));

@@ -568,8 +568,15 @@ fn resolve_blob_bind_at(
     if no_services {
         return Ok(None);
     }
-    // The same partition the app's private directory uses, so a launch with no workspace lands in the
-    // personal workspace.
+    // The same partition the app's private directory uses. A launch that names no workspace has no
+    // scope to ask for, so it gets no media connection.
+    let Some(workspace_id) = workspace_id.filter(|workspace| !workspace.trim().is_empty()) else {
+        tracing::warn!(
+            app_id,
+            "no document media scope for a launch that names no workspace"
+        );
+        return Ok(None);
+    };
     let workspace = crate::appdir::workspace_slug(workspace_id);
     if !blob_scope_component(&workspace) || !blob_scope_component(app_id) {
         tracing::warn!(app_id, workspace, "no document media scope for this launch");
@@ -1322,11 +1329,17 @@ mod tests {
                     .expect("blob bind");
                 assert_eq!(workspace.name, BLOB_SERVICE);
                 assert_eq!(workspace.child_fd, BLOB_CHILD_FD);
-                let personal = resolve_blob_bind_at(&path, "so.tilo.notes", None, false)
+                let other = resolve_blob_bind_at(&path, "so.tilo.notes", Some("workspace-8"), false)
                     .expect("resolve")
-                    .expect("personal blob bind");
+                    .expect("another workspace's blob bind");
                 let frames = reader.join().expect("reader");
-                drop((workspace, personal));
+                drop((workspace, other));
+                assert!(
+                    resolve_blob_bind_at(&path, "so.tilo.notes", None, false)
+                        .expect("a launch that names no workspace")
+                        .is_none(),
+                    "a launch that names no workspace gets no media scope"
+                );
                 assert_eq!(frames[0].0, BLOB_HANDOFF_MAGIC);
                 assert_eq!(
                     frames[0].1,
@@ -1337,7 +1350,7 @@ mod tests {
                         "app_id": "so.tilo.notes",
                     })
                 );
-                assert_eq!(frames[1].1["workspace"], crate::appdir::PERSONAL_WORKSPACE);
+                assert_eq!(frames[1].1["workspace"], "workspace-8");
 
                 assert!(
                     resolve_blob_bind_at(

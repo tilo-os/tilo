@@ -162,6 +162,12 @@ impl Identity {
         Ok(())
     }
 
+    /// The person's own workspace: what is theirs alone, and where their
+    /// accounts' state belongs.
+    pub(crate) fn workspace_id(&self) -> String {
+        self.ownership.workspace.to_string()
+    }
+
     /// The same owner as a running account: it outlives the enrollment's
     /// session and is checked against whatever session is current.
     pub(crate) fn running(&self) -> Self {

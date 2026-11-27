@@ -50,12 +50,14 @@ pub(crate) fn provision(
     original.check()?;
     let consent = consent::request(original.clone(), policy)?;
     let cancellation = &policy.cancellation;
-    let ram = RamDirectory::allocate(runtime_root).map_err(|_| SendError::Unavailable)?;
+    let workspace = original.workspace_id();
+    let ram =
+        RamDirectory::allocate(runtime_root, &workspace).map_err(|_| SendError::Unavailable)?;
     // Materialize the empty app subtree, never another account's directory.
     let mut directory: File = ram.root.try_clone().map_err(|_| SendError::Unavailable)?;
     for part in [
         launcher::appdir::WORKSPACES_DIR,
-        launcher::appdir::PERSONAL_WORKSPACE,
+        ram.slug.as_str(),
         super::SERVICE_PACKAGE,
     ] {
         directory = super::child_directory(
@@ -67,6 +69,7 @@ pub(crate) fn provision(
     drop(directory);
     let mut launch = super::super::acquire_launch(|| original.check(), cancellation)?;
     launch.options.data_home = Some(ram.source());
+    launch.options.workspace_id = Some(workspace);
     let key = ServiceLeaseKey::default();
     let (streams, receive) = mpsc::sync_channel(1);
     let (completed, stopped) = mpsc::sync_channel(1);

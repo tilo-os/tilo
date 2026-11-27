@@ -47,13 +47,13 @@ pub fn data_home(home: &Path) -> PathBuf {
     home.join(TILO_SUPPORT_DIR)
 }
 
-pub fn container_dir(data_home: &Path, workspace_id: Option<&str>, package_id: &str) -> PathBuf {
+pub fn container_dir(data_home: &Path, workspace_id: &str, package_id: &str) -> PathBuf {
     appdir::host_app_dir(data_home, &appdir::workspace_slug(workspace_id), package_id)
 }
 
 pub fn prepare_container(
     data_home: &Path,
-    workspace_id: Option<&str>,
+    workspace_id: &str,
     package_id: &str,
 ) -> io::Result<PathBuf> {
     let dir = appdir::prepare_host_app_dir(data_home, workspace_id, package_id)?;
@@ -700,7 +700,7 @@ mod tests {
         {
             let data = Path::new("/Users/u/Library/Application Support/Tilo");
             let suffix = |workspace: &str, package: &str| {
-                darwin_dir_suffix(&container_dir(data, Some(workspace), package)).unwrap()
+                darwin_dir_suffix(&container_dir(data, workspace, package)).unwrap()
             };
             assert_eq!(suffix("r", "so.tilo.notes"), "so.tilo+r+so.tilo.notes");
             assert_ne!(suffix("a.b", "c"), suffix("a", "b.c"));
@@ -710,7 +710,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let user_cache = tmp.path().join("C");
             std::fs::create_dir_all(&user_cache).unwrap();
-            let container = container_dir(tmp.path(), Some("r"), "so.tilo.notes");
+            let container = container_dir(tmp.path(), "r", "so.tilo.notes");
             let cache = prepare_darwin_cache(&user_cache, &container).unwrap();
             assert_eq!(cache.suffix, "so.tilo+r+so.tilo.notes");
             assert_eq!(
@@ -724,7 +724,7 @@ mod tests {
                 cache
             );
 
-            let other = container_dir(tmp.path(), Some("r"), "so.tilo.other");
+            let other = container_dir(tmp.path(), "r", "so.tilo.other");
             std::os::unix::fs::symlink(
                 &cache.dir,
                 user_cache.join(darwin_dir_suffix(&other).unwrap()),
@@ -769,20 +769,20 @@ mod tests {
             let data = data_home(home);
             assert_eq!(data, Path::new("/Users/u/Library/Application Support/Tilo"));
             assert_eq!(
-                container_dir(&data, None, "so.tilo.notes"),
-                data.join("tilo-workspaces/personal/so.tilo.notes")
+                container_dir(&data, "workspace-7", "so.tilo.notes"),
+                data.join("tilo-workspaces/workspace-7/so.tilo.notes")
             );
             assert_ne!(
-                container_dir(&data, Some("a"), "so.tilo.notes"),
-                container_dir(&data, Some("b"), "so.tilo.notes")
+                container_dir(&data, "a", "so.tilo.notes"),
+                container_dir(&data, "b", "so.tilo.notes")
             );
             assert!(
-                container_dir(&data, Some("../../x"), "../..")
+                container_dir(&data, "../../x", "../..")
                     .starts_with(data.join("tilo-workspaces"))
             );
 
             let tmp = tempfile::tempdir().unwrap();
-            let dir = prepare_container(tmp.path(), None, "so.tilo.notes").unwrap();
+            let dir = prepare_container(tmp.path(), "workspace-7", "so.tilo.notes").unwrap();
             assert!(dir.join(CONTAINER_TMP).is_dir());
             assert!(dir.join(".config").is_dir());
         }

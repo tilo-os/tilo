@@ -587,17 +587,29 @@ tilo_test_env::scenario! {
         }
         {
             let data = DataHome::new();
-
-            launch_in_workspace(&data, None, &["write", "diary.txt", "personal"]);
-            let from_workspace = launch_in_workspace(
-                &data,
-                Some("some-workspace"),
-                &["read", "/run/tilo/app/diary.txt"],
-            );
-            assert_eq!(
-                from_workspace, "ERR /run/tilo/app/diary.txt ENOENT",
-                "the personal workspace must be as unreachable from a workspace as any \
-             other workspace"
+            let opts = LaunchOptions {
+                no_services: true,
+                bwrap_bin: Some(bwrap()),
+                workspace_id: None,
+                mode: launcher::run::LaunchMode::Cli {
+                    command: "workspacetest".to_string(),
+                    passthrough_argv: vec![
+                        "write".to_string(),
+                        "diary.txt".to_string(),
+                        "nowhere".to_string(),
+                    ],
+                },
+                ..isolated_options(&data.path)
+            };
+            let error = launch_with_captured(
+                &manifest(PACKAGE, "bin/workspacetest", "off"),
+                workspacetest_payload(),
+                &opts,
+            )
+            .expect_err("a launch that names no workspace has no app directory");
+            assert!(
+                matches!(error, launcher::run::LaunchError::NoWorkspace { .. }),
+                "{error}"
             );
         }
         {

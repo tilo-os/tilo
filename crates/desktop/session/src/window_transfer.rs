@@ -55,7 +55,7 @@ pub(crate) struct Profile {
 impl Profile {
     /// The records `app` keeps in `workspace`, run on this device.
     pub(crate) fn of(data_home: &Path, workspace: &str, app: &str) -> Self {
-        let slug = launcher::appdir::workspace_slug(Some(workspace));
+        let slug = launcher::appdir::workspace_slug(workspace);
         Self {
             root: launcher::appdir::host_app_dir(data_home, &slug, app).join(".local/share"),
             workspace: workspace.to_owned(),

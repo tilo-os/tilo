@@ -60,7 +60,7 @@ pub(super) fn launch(
         .then(|| apps.hosted_window_link(&app.app_id, workspace))
         .transpose()?;
     let container =
-        launcher_macos::policy::prepare_container(&apps.data_home, Some(workspace), &app.app_id)
+        launcher_macos::policy::prepare_container(&apps.data_home, workspace, &app.app_id)
             .map_err(|error| {
                 format!("refusing to launch {}: its container: {error}", app.app_id)
             })?;
@@ -221,7 +221,7 @@ pub(super) fn connector(
         return Err("refusing to start a connector: HOME is not set".into());
     }
     let container =
-        launcher_macos::policy::prepare_container(&apps.data_home, Some(workspace), &app.app_id)
+        launcher_macos::policy::prepare_container(&apps.data_home, workspace, &app.app_id)
             .map_err(|error| {
                 format!(
                     "refusing to start {}'s connector: its container: {error}",

@@ -17,9 +17,6 @@ pub const SANDBOX_STARTUP_TIMELINE: &str = "/run/tilo/app/.local/state/startup-t
 /// me" rather than inferring it from `HOME`.
 pub const APP_DIR_ENV: &str = "TILO_APP_DIR";
 
-/// The directory a launch with no workspace belongs to.
-pub const PERSONAL_WORKSPACE: &str = "personal";
-
 /// Directory under the user's data home that holds every workspace.
 pub use package_store::state::WORKSPACES_DIR;
 
@@ -68,11 +65,15 @@ pub fn push_font_index_landlock(argv: &mut Vec<String>) {
 }
 
 /// Turn a workspace id into a single path component that cannot escape its parent.
-pub fn workspace_slug(workspace_id: Option<&str>) -> String {
-    let raw = workspace_id.unwrap_or("").trim();
-    if raw.is_empty() {
-        return PERSONAL_WORKSPACE.to_string();
-    }
+///
+/// Every app launch belongs to a workspace, so there is no directory for one that names none: a
+/// caller with no workspace and no person fails here rather than writing somewhere made up.
+pub fn workspace_slug(workspace_id: &str) -> String {
+    let raw = workspace_id.trim();
+    assert!(
+        !raw.is_empty(),
+        "an app launch names the workspace it belongs to: with none it has no directory"
+    );
     let mapped: String = raw
         .chars()
         .map(|c| {
@@ -112,7 +113,7 @@ pub fn host_app_dir(data_home: &Path, workspace: &str, package_id: &str) -> Path
 /// Create the directory this launch gets.
 pub fn prepare_host_app_dir(
     data_home: &Path,
-    workspace_id: Option<&str>,
+    workspace_id: &str,
     package_id: &str,
 ) -> io::Result<PathBuf> {
     let workspace = workspace_slug(workspace_id);
@@ -267,12 +268,12 @@ mod tests {
         phase a_symlinked_xdg_component_refuses_the_launch;
         {
             let data = tempfile::tempdir().expect("data home");
-            let dir = prepare_host_app_dir(data.path(), Some("workspace"), "so.tilo.notes")
+            let dir = prepare_host_app_dir(data.path(), "workspace", "so.tilo.notes")
                 .expect("a fresh app directory");
             let elsewhere = tempfile::tempdir().expect("a directory the app must not reach");
             std::fs::remove_dir_all(dir.join(".local")).expect("remove");
             std::os::unix::fs::symlink(elsewhere.path(), dir.join(".local")).expect("plant");
-            let error = prepare_host_app_dir(data.path(), Some("workspace"), "so.tilo.notes")
+            let error = prepare_host_app_dir(data.path(), "workspace", "so.tilo.notes")
                 .expect_err("a symlinked component must refuse the launch");
             assert!(error.to_string().contains("symbolic link"), "{error}");
             assert!(
@@ -298,7 +299,7 @@ mod tests {
                     "\0evil",
                     "workspace\nname",
                 ] {
-                    let slug = workspace_slug(Some(hostile));
+                    let slug = workspace_slug(hostile);
                     assert!(
                         !slug.contains('/'),
                         "{hostile:?} produced a multi-component slug {slug:?}"
@@ -326,15 +327,15 @@ mod tests {
             {
                 let data = Path::new("/data");
                 for hostile in ["..", "../../etc", "/", "a/b"] {
-                    let dir = host_app_dir(data, PERSONAL_WORKSPACE, hostile);
+                    let dir = host_app_dir(data, "workspace", hostile);
                     assert!(
-                        dir.starts_with("/data/tilo-workspaces/personal/"),
+                        dir.starts_with("/data/tilo-workspaces/workspace/"),
                         "{hostile:?} escaped to {}",
                         dir.display()
                     );
                     assert_eq!(
                         dir.components().count(),
-                        Path::new("/data/tilo-workspaces/personal/x")
+                        Path::new("/data/tilo-workspaces/workspace/x")
                             .components()
                             .count(),
                         "{hostile:?} produced more than one component: {}",
@@ -343,9 +344,11 @@ mod tests {
                 }
             }
             {
-                assert_eq!(workspace_slug(None), PERSONAL_WORKSPACE);
-                assert_eq!(workspace_slug(Some("")), PERSONAL_WORKSPACE);
-                assert_eq!(workspace_slug(Some("   ")), PERSONAL_WORKSPACE);
+                assert_eq!(workspace_slug("workspace-7"), "workspace-7");
+                assert!(
+                    std::panic::catch_unwind(|| workspace_slug("   ")).is_err(),
+                    "a launch naming no workspace has no directory"
+                );
             }
         }
 
@@ -364,9 +367,9 @@ mod tests {
                 ("so.tilo.büro", "so.tilo.b_ro"),
             ] {
                 assert_eq!(
-                    host_app_dir(data, PERSONAL_WORKSPACE, package_id),
+                    host_app_dir(data, "workspace", package_id),
                     data.join(WORKSPACES_DIR)
-                        .join(PERSONAL_WORKSPACE)
+                        .join("workspace")
                         .join(expected),
                     "host_app_dir package_id={package_id:?}"
                 );
@@ -376,10 +379,10 @@ mod tests {
                     "local_person_dir package_id={package_id:?}"
                 );
             }
-            assert_eq!(workspace_slug(Some("..")), "workspace_07da1a07b4a03f2d");
+            assert_eq!(workspace_slug(".."), "workspace_07da1a07b4a03f2d");
             let long_workspace = "a".repeat(129);
             assert_eq!(
-                workspace_slug(Some(&long_workspace)),
+                workspace_slug(&long_workspace),
                 "workspace_ba20d66a82fdb40c"
             );
         }
@@ -434,11 +437,11 @@ mod tests {
                 let mut argv = Vec::new();
                 push_app_dir(
                     &mut argv,
-                    Path::new("/data/tilo-workspaces/personal/so.tilo.notes"),
+                    Path::new("/data/tilo-workspaces/workspace-a/so.tilo.notes"),
                 );
                 assert!(
                     argv.windows(3).any(|w| w[0] == "--bind"
-                        && w[1] == "/data/tilo-workspaces/personal/so.tilo.notes"
+                        && w[1] == "/data/tilo-workspaces/workspace-a/so.tilo.notes"
                         && w[2] == SANDBOX_APP_DIR),
                     "app dir must be bound read-write at the fixed path: {argv:?}"
                 );
@@ -479,7 +482,7 @@ mod tests {
             {
                 let tmp = tempfile::tempdir().unwrap();
                 let dir =
-                    prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
+                    prepare_host_app_dir(tmp.path(), "workspace-a", "so.tilo.notes").unwrap();
                 assert!(dir.join(".local/share").is_dir());
                 assert!(dir.join(".config").is_dir());
                 assert!(dir.join(".cache").is_dir());
@@ -491,11 +494,11 @@ mod tests {
             {
                 let tmp = tempfile::tempdir().unwrap();
                 let dir =
-                    prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
+                    prepare_host_app_dir(tmp.path(), "workspace-a", "so.tilo.notes").unwrap();
                 std::fs::write(dir.join("startup-7.json"), "{}").unwrap();
                 std::fs::write(dir.join("startup-notes.txt"), "mine").unwrap();
                 std::fs::create_dir(dir.join("startup-album.json")).unwrap();
-                prepare_host_app_dir(tmp.path(), Some("workspace-a"), "so.tilo.notes").unwrap();
+                prepare_host_app_dir(tmp.path(), "workspace-a", "so.tilo.notes").unwrap();
                 assert!(!dir.join("startup-7.json").exists());
                 assert!(dir.join("startup-notes.txt").is_file(), "not a trace");
                 assert!(

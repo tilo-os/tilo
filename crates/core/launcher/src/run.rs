@@ -156,6 +156,11 @@ pub enum LaunchError {
     #[error("refusing managed-service launch: {0}")]
     InvalidServiceLaunch(String),
     #[error(
+        "refusing to launch `{package}`: a launch names the workspace it belongs to, and this one \
+         names none, so the app would have no directory of its own to write to."
+    )]
+    NoWorkspace { package: String },
+    #[error(
         "refusing to launch `{package}` as `{app_id}`: an app has exactly one id, the package id \
          of its signed manifest"
     )]
@@ -586,23 +591,28 @@ fn resolve_app_dir(manifest: &ManifestView, opts: &LaunchOptions) -> Result<Path
         .clone()
         .or_else(crate::appdir::host_data_home)
         .ok_or_else(|| LaunchError::NoDataHome(manifest.package_id.clone()))?;
-    crate::appdir::prepare_host_app_dir(
-        &data_home,
-        opts.workspace_id.as_deref(),
-        &manifest.package_id,
+    let workspace = opts
+        .workspace_id
+        .as_deref()
+        .filter(|workspace| !workspace.trim().is_empty())
+        .ok_or_else(|| LaunchError::NoWorkspace {
+            package: manifest.package_id.clone(),
+        })?;
+    crate::appdir::prepare_host_app_dir(&data_home, workspace, &manifest.package_id).map_err(
+        |source| LaunchError::AppDir {
+            package: manifest.package_id.clone(),
+            path: crate::appdir::host_app_dir(
+                &data_home,
+                &crate::appdir::workspace_slug(workspace),
+                &manifest.package_id,
+            ),
+            source,
+        },
     )
-    .map_err(|source| LaunchError::AppDir {
-        package: manifest.package_id.clone(),
-        path: crate::appdir::host_app_dir(
-            &data_home,
-            &crate::appdir::workspace_slug(opts.workspace_id.as_deref()),
-            &manifest.package_id,
-        ),
-        source,
-    })
 }
 
-/// The directory the person's own records of this app are kept in, one per workspace.
+/// The directory the person's own records of this app are kept in, the same in every
+/// workspace.
 fn resolve_person_dir(
     manifest: &ManifestView,
     opts: &LaunchOptions,
@@ -4200,9 +4210,9 @@ mod app_dir_tests {
                     crate::capabilities::Participation::ReadOnly
                 );
 
-                let personal = resolve_capabilities(&m, &opts_in(None));
+                let unscoped = resolve_capabilities(&m, &opts_in(None));
                 assert_eq!(
-                    personal.participation,
+                    unscoped.participation,
                     crate::capabilities::Participation::Unscoped
                 );
 
@@ -4234,14 +4244,22 @@ mod app_dir_tests {
                 let m = manifest("so.tilo.fixture");
                 let a = resolve_person_dir(&m, &opts_at(data.path(), Some("workspace-a")))
                     .expect("workspace a");
-                let personal = resolve_person_dir(&m, &opts_at(data.path(), None)).expect("personal");
+                let shared = resolve_person_dir(&m, &opts_at(data.path(), Some("workspace-b")))
+                    .expect("another workspace");
                 assert!(a.is_dir());
-                assert_eq!(a, personal);
+                assert_eq!(a, shared, "a person's records of an app span their workspaces");
                 assert!(a.starts_with(data.path().join("tilo-person")));
                 let workspace =
                     resolve_app_dir(&m, &opts_at(data.path(), Some("workspace-a"))).expect("workspace");
                 assert!(!a.starts_with(&workspace) && !workspace.starts_with(&a));
-                let other = resolve_person_dir(&manifest("so.tilo.other"), &opts_at(data.path(), None))
+                assert!(
+                    matches!(
+                        resolve_app_dir(&m, &opts_at(data.path(), None)),
+                        Err(LaunchError::NoWorkspace { .. })
+                    ),
+                    "a launch naming no workspace has no app directory"
+                );
+                let other = resolve_person_dir(&manifest("so.tilo.other"), &opts_at(data.path(), Some("workspace-a")))
                     .expect("another app");
                 assert_ne!(a, other, "an app keeps only its own records of the person");
             }

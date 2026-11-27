@@ -183,10 +183,15 @@ pub fn run_connected(
         .data_home
         .clone()
         .ok_or_else(|| LaunchError::InvalidServiceLaunch("private working lease missing".into()))?;
+    let workspace = options
+        .workspace_id
+        .as_deref()
+        .filter(|workspace| !workspace.trim().is_empty())
+        .ok_or_else(|| LaunchError::InvalidServiceLaunch("the launch names no workspace".into()))?;
     let mut owner = NamespaceOwner::new(authority, cancellation)?;
     owner.endpoint = crate::appdir::host_app_dir(
         &data_home,
-        crate::appdir::PERSONAL_WORKSPACE,
+        &crate::appdir::workspace_slug(workspace),
         &manifest.package_id,
     )
     .join("provider.sock");
@@ -208,11 +213,20 @@ pub fn run_connected(
 
 fn configure_service_options(options: &mut LaunchOptions) -> Result<(), LaunchError> {
     crate::run::validate_owned_service_options(options)?;
+    // A service's state is the app's state: it lives in the workspace the launch belongs to.
+    if options
+        .workspace_id
+        .as_deref()
+        .is_none_or(|workspace| workspace.trim().is_empty())
+    {
+        return Err(LaunchError::InvalidServiceLaunch(
+            "a service launch names the workspace it belongs to".into(),
+        ));
+    }
     if options.bwrap_bin.is_some()
         || options.sandbox_shim_bin.is_some()
         || options.minimal_libs
         || options.runtime_root.is_some()
-        || options.workspace_id.is_some()
         || !options.no_services
         || options.capabilities_path.is_some()
         || options.wayland_socket.is_some()

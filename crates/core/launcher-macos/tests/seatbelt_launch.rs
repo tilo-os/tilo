@@ -64,7 +64,7 @@ fn fixture() -> Fixture {
     compile_probe(&probe);
     std::fs::write(payload.join("data.txt"), b"payload").unwrap();
 
-    let container = prepare_container(&root.join("support"), None, PACKAGE).unwrap();
+    let container = prepare_container(&root.join("support"), "workspace-7", PACKAGE).unwrap();
     let outside = root.join("outside");
     std::fs::create_dir_all(&outside).unwrap();
     let secret = outside.join("secret.txt");
@@ -466,9 +466,8 @@ impl Drop for CacheDir {
 fn each_app_keeps_its_own_shader_cache_and_no_other() {
     let f = fixture();
     let workspace = format!("cache-test-{}", std::process::id());
-    let container = prepare_container(&f.root.join("support"), Some(&workspace), PACKAGE).unwrap();
-    let other =
-        prepare_container(&f.root.join("support"), Some(&workspace), "so.tilo.other").unwrap();
+    let container = prepare_container(&f.root.join("support"), &workspace, PACKAGE).unwrap();
+    let other = prepare_container(&f.root.join("support"), &workspace, "so.tilo.other").unwrap();
     let own = CacheDir(user_cache_dir().join(format!("so.tilo+{workspace}+{PACKAGE}")));
     let _other = CacheDir(user_cache_dir().join(format!("so.tilo+{workspace}+so.tilo.other")));
 
