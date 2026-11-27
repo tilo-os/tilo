@@ -44,6 +44,9 @@ pub struct ShellLinks {
     /// The seats a shell link is admitted for now: a seat has one shell, and a second link for it
     /// is refused while the first stands.
     live: std::sync::Mutex<std::collections::HashSet<u64>>,
+    /// Woken when a seat's link ends ([`Self::ended`]): what a wait for the seat to be free
+    /// returns on, rather than look again and again.
+    freed: std::sync::Condvar,
 }
 
 impl ShellLinks {
@@ -111,6 +114,23 @@ impl ShellLinks {
     /// The seat's shell link ended: its seat takes a new one from now on.
     pub fn ended(&self, seat: u64) {
         lock(&self.live).remove(&seat);
+        self.freed.notify_all();
+    }
+
+    /// Whether the seat's link ended within `within`: waited for by a shell that takes the seat
+    /// after the one before it ended, which the daemon learns of a moment after that shell does.
+    #[must_use]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the seat's lock is held across the wait it guards, and the wait takes it"
+    )]
+    pub fn wait_until_free(&self, seat: u64, within: std::time::Duration) -> bool {
+        let live = lock(&self.live);
+        let (live, _) = self
+            .freed
+            .wait_timeout_while(live, within, |live| live.contains(&seat))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !live.contains(&seat)
     }
 
     /// Hand the shells' instances to `processes` from now on: the device's tilolang processes,

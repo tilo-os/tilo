@@ -1491,6 +1491,14 @@ impl Daemon {
         self.shell_links.live(seat)
     }
 
+    /// Wait until the seat has no shell link standing, up to `within`: whether it is free. A link
+    /// the shell ended frees its seat a moment later, when this daemon reads the connection
+    /// close, so the shell that takes the seat next waits rather than be refused.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn wait_shell_free(&self, seat: u64, within: std::time::Duration) -> bool {
+        self.shell_links.wait_until_free(seat, within)
+    }
+
     /// Whether this daemon acts for `person`: the person whose certificate names this device,
     /// whose workspaces its services keep, and for whom its shell links are made.
     pub(crate) fn serves(&self, person: [u8; 32]) -> bool {

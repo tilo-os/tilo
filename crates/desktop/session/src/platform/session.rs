@@ -3321,6 +3321,13 @@ impl Drop for Session {
         if let Some(launch) = &self.shared.launch {
             launch.end_running(teardown);
         }
+        // The session's link to its daemon ends with it: the daemon frees the seat, so the
+        // session that starts next on this computer takes it, and nothing this session handed to
+        // a follower keeps the link open past it.
+        #[cfg(unix)]
+        if let Some(link) = &self.shared.link {
+            link.end();
+        }
     }
 }
 

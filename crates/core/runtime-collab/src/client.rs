@@ -1441,6 +1441,8 @@ struct LinkWatch {
     generation: tokio::sync::watch::Sender<u64>,
     socket: std::sync::Mutex<Option<std::path::PathBuf>>,
     wake: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Whether the shell is done with its link for good: it asks its daemon for no other.
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(unix)]
@@ -1451,7 +1453,18 @@ impl LinkWatch {
             generation: tokio::sync::watch::channel(0).0,
             socket: std::sync::Mutex::default(),
             wake: std::sync::Mutex::default(),
+            stopped: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The shell is done with its link: the follower asks for no other.
+    fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn set(&self, status: ShellLink) {
@@ -1537,6 +1550,14 @@ impl ShellClient {
         let served = Arc::clone(&self.served);
         let watch = Arc::clone(&self.link);
         self.runtime().spawn(relinking(shared, served, watch, end));
+    }
+
+    /// End this shell's link: the daemon lets go of the seat it held for it, and no follower of
+    /// this client asks for another. What a session does as it ends, so the session that starts on
+    /// the same seat next finds it free, however many holders of this client are still about.
+    pub fn end(&self) {
+        self.link.stop();
+        self.current().wire().hang_up();
     }
 
     /// The descriptors the daemon handed over on this link, by their numbers on it: a call that
@@ -1897,9 +1918,15 @@ async fn relinking(
 ) {
     loop {
         end.await;
+        if watch.stopped() {
+            return;
+        }
         watch.set(ShellLink::Reconnecting);
         let mut wait = ASK_AGAIN;
         loop {
+            if watch.stopped() {
+                return;
+            }
             let socket = watch
                 .socket
                 .lock()
@@ -1926,6 +1953,11 @@ async fn relinking(
                     continue;
                 }
             };
+            // The link this shell was done with while the ask was on its way: it is let go, and
+            // the seat it would take stays free.
+            if watch.stopped() {
+                return;
+            }
             let Ok(link) = tokio::net::UnixStream::from_std(link) else {
                 watch.set(ShellLink::Unreachable {
                     why: "the shell link is no socket".to_owned(),
@@ -1946,6 +1978,17 @@ async fn relinking(
                 };
                 generation
             };
+            // The shell was done with its link while this one was being made: it is let go
+            // rather than held open, and the seat stays free for the shell that follows.
+            if watch.stopped() {
+                shared
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .client
+                    .wire()
+                    .hang_up();
+                return;
+            }
             replay(&shared, &served).await;
             let _ = watch.generation.send(generation);
             watch.set(ShellLink::Linked);

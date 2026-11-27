@@ -78,6 +78,9 @@ struct Shared {
     next: AtomicU64,
     outgoing: mpsc::UnboundedSender<Call>,
     closed: watch::Receiver<bool>,
+    /// Where an endpoint that ends the connection itself says so: `carry` stops, and the socket
+    /// closes under every holder, however many clones of the client are still held elsewhere.
+    hang_up: watch::Sender<bool>,
 }
 
 impl Shared {
@@ -172,18 +175,27 @@ impl Client {
     {
         let (outgoing, calls) = mpsc::unbounded_channel();
         let (close, closed) = watch::channel(false);
+        let (hang_up, told_to_close) = watch::channel(false);
         let shared = Arc::new(Shared {
             routes: Mutex::new(Routes::default()),
             next: AtomicU64::new(1),
             outgoing,
             closed,
+            hang_up,
         });
         let client = Self {
             shared: Arc::clone(&shared),
         };
         (
             client,
-            carry(reader, writer, calls, Arc::downgrade(&shared), close),
+            carry(
+                reader,
+                writer,
+                calls,
+                Arc::downgrade(&shared),
+                close,
+                told_to_close,
+            ),
         )
     }
 
@@ -297,6 +309,13 @@ impl Client {
             let _ = closed.wait_for(|closed| *closed).await;
         }
     }
+
+    /// End the connection from this end: the host sees its socket closed and lets go of what it
+    /// kept for it, and every clone of this client fails its calls from now on. What a program
+    /// that is done with the host does, rather than leave the connection open behind it.
+    pub fn hang_up(&self) {
+        let _ = self.shared.hang_up.send(true);
+    }
 }
 
 /// Carry `calls` to the host and the host's frames to their routes until
@@ -307,6 +326,7 @@ async fn carry<R, W>(
     mut calls: mpsc::UnboundedReceiver<Call>,
     shared: Weak<Shared>,
     close: watch::Sender<bool>,
+    mut told_to_close: watch::Receiver<bool>,
 ) where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -342,9 +362,15 @@ async fn carry<R, W>(
             route(&shared, frame);
         }
     };
+    let closing = async {
+        let _ = told_to_close.wait_for(|told| *told).await;
+    };
     let ended = tokio::select! {
         () = write => Failure::Closed,
         ended = read => ended,
+        // This end is done with the connection: the socket closes as though the host had, so
+        // nothing this endpoint kept is held open by a clone still in someone's hands.
+        () = closing => Failure::Closed,
     };
     if let Some(shared) = shared.upgrade() {
         let mut routes = shared.routes();
@@ -458,5 +484,28 @@ mod tests {
                 .await,
             Err(Failure::Unreadable(_))
         ));
+    }
+
+    /// A connection this end is done with closes though a clone of its client is still held: the
+    /// peer reads the close, and the clone's connection has ended with it.
+    #[tokio::test]
+    async fn hanging_up_closes_the_connection_under_its_clones() {
+        use tokio::io::AsyncReadExt as _;
+        let (endpoint, mut host) = tokio::io::duplex(1 << 16);
+        let (reader, writer) = tokio::io::split(endpoint);
+        let (client, carried) = Client::new(reader, writer);
+        let carried = tokio::spawn(carried);
+        let held = client.clone();
+        client.hang_up();
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(10), host.read(&mut byte))
+            .await
+            .expect("the peer reads the close")
+            .expect("the peer's read");
+        assert_eq!(read, 0, "the peer sees the connection closed");
+        tokio::time::timeout(std::time::Duration::from_secs(10), held.closed())
+            .await
+            .expect("the clone's connection ends with it");
+        carried.await.unwrap();
     }
 }

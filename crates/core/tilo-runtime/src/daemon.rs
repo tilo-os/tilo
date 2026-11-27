@@ -609,8 +609,14 @@ impl Running {
         &self,
         within: Duration,
     ) -> io::Result<runtime_portal::process_link::Descriptor> {
+        let services = self.person.within(within)?;
+        // The seat is this process's, and the session before this one held it: the link it ended
+        // is let go by the daemon a moment after the session ends, so the link taken now waits
+        // for the seat rather than be refused by the session that is gone.
+        let seat = crate::seats::seat_id(crate::seats::own_account(), std::process::id());
+        services.wait_shell_free(seat, within);
         Ok(runtime_portal::packet::descriptor_of(
-            self.person.within(within)?.shell_link()?,
+            services.shell_link()?,
         ))
     }
 
