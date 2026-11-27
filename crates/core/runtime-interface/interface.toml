@@ -954,6 +954,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "IMPORTS::ui_bind_state" = "ii -> "
 "IMPORTS::ui_bind_state_at" = "iil -> "
 "IMPORTS::ui_child" = "ii -> "
+"IMPORTS::ui_choose" = "ii -> "
 "IMPORTS::ui_node" = "ii -> i"
 "IMPORTS::ui_on" = "iii -> "
 "IMPORTS::ui_prop_b" = "iii -> "
