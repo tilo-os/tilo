@@ -324,6 +324,11 @@ pub struct Core {
     /// Where a task's programs send what they change, in a host that runs no app's code
     /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
     pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
+    /// The member each automation the host admitted acts for ([`Runtime::acts_for`]): whom
+    /// `invoker` reads while one of its runs invokes, so what an app shows and groups by (whose
+    /// conversation it writes in) is that member's. Who may do what, and who a change says made
+    /// it, stay the automation.
+    pub principals: RefCell<std::collections::HashMap<crate::ids::Actor, crate::ids::Actor>>,
     /// Whether [`Self::invoker`] takes this runtime's own actions too, as a host that holds no
     /// records needs, or only other apps'.
     pub delegates_own: std::cell::Cell<bool>,
@@ -609,6 +614,7 @@ impl Core {
             text_search: RefCell::new(None),
             invoking_window: RefCell::new(None),
             invoker: RefCell::new(None),
+            principals: RefCell::default(),
             delegates_own: std::cell::Cell::new(false),
             published: RefCell::new(crate::published::Published::default()),
             reader: RefCell::new(None),

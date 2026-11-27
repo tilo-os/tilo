@@ -289,10 +289,17 @@ tilo_test_env::scenario! {
         let people = program(vec![watch_chat(ActorFilter::People)]);
         let not_bots = program(vec![watch_chat(ActorFilter::NotBots)]);
         let agent = Acting::agent("a", "ada").acting_for(Acting::person("ada"));
+        // What another shortcut's run writes is no person's own: a trigger on people's changes
+        // never fires on it, so no run starts another and none loops back.
+        let run = tilo_actions::remote::Caller::local_person("ada")
+            .running_shortcut("reminder")
+            .acting()
+            .clone();
         let cases = [
             (person("bob"), true, true),
             (agent, false, true),
             (bot("b9"), false, false),
+            (run, false, true),
         ];
         for (actor, by_people, by_not_bots) in cases {
             let event = post(actor.clone(), &"0".repeat(64), None);

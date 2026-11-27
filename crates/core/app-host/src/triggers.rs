@@ -120,8 +120,8 @@ pub struct Armed {
     /// Who saved it, by their device's proof: its triggers fire on their behalf only, bounded by
     /// its grant.
     pub saver: String,
-    /// The agent of theirs that saved it with its own key, and that key: its runs act as its
-    /// person, the shortcut's maker, held to the agent's grants as well as the shortcut's own.
+    /// The agent of theirs that saved it with its own key, and that key: its runs act as that
+    /// agent's shortcut for its person, held to the agent's grants as well as its own.
     pub agent: Option<(String, [u8; 32])>,
     /// The device that saved it: the one its firings start on. On the device that made an
     /// agent's key ([`tilo_workspace_service::work::AgentEngine::key_here`]) this is that device,

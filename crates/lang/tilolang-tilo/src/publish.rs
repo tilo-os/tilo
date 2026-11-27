@@ -104,6 +104,14 @@ impl Caller {
         let by = if self.handed { by.handed() } else { by };
         Some(by.acting_for(tilo_actions::Acting::person(person)))
     }
+
+    /// On whose behalf the caller invokes, as the app reads `invoker`: the actor, or the person
+    /// an automation runs for ([`tilo_actions::Acting::principal`]).
+    #[must_use]
+    pub fn principal(&self) -> tilolang_runtime::ids::Actor {
+        self.acting_for()
+            .map_or_else(|| self.actor.clone(), |acting| acting.principal().clone())
+    }
 }
 
 impl From<&tilo_actions::ActionInvoker> for Caller {

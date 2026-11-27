@@ -606,6 +606,27 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
             "{showing}: {refused:?}"
         );
     }
+    // Nor is a Shortcut's unattended run, whether she or her agent saved it: nobody is there to
+    // be shown the secret.
+    for (saved_by, run) in [
+        ("her", as_ada.clone().running_shortcut("reminder")),
+        ("her agent", agent.clone().running_shortcut("reminder")),
+    ] {
+        for showing in [workspace_vault::REVEAL, workspace_vault::COPY] {
+            let refused = ask(
+                &service,
+                workspace_id,
+                (&ada, &run),
+                showing,
+                json!({"item": &reference}),
+            )
+            .await;
+            assert!(
+                matches!(refused, Err(ActionCallError::UnknownAction)),
+                "a shortcut {saved_by} saved, {showing}: {refused:?}"
+            );
+        }
+    }
 
     // Every change waits for its person: with nobody to ask, their answer
     // is still wanted and nothing changed.

@@ -504,6 +504,55 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     server.shutdown().await;
 }
 
+/// A disk's recovery keys and the operator's blocks are the person's own, at a screen: a
+/// Shortcut's unattended run, saved by them or by their agent, reaches none of them, while the
+/// person themselves does.
+#[tokio::test]
+async fn a_shortcuts_run_reaches_no_recovery_key_and_no_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let host = super::super::tests::host_dispatch(server.workspaces());
+    let laptop = owners_laptop();
+    let theirs = settled(host.as_host(&laptop).invoke(
+        &caller(&laptop),
+        host_request(super::RECOVERY_KEYS, json!({})),
+    ))
+    .await;
+    assert!(
+        !matches!(theirs, Err(ActionCallError::UnknownAction)),
+        "the person reads their recovery keys: {theirs:?}"
+    );
+    for (saved_by, run) in [
+        ("them", caller(&laptop).running_shortcut("nightly")),
+        (
+            "their agent",
+            caller(&laptop)
+                .delegated_to("writer")
+                .running_shortcut("nightly"),
+        ),
+    ] {
+        for (action, argument) in [
+            (super::RECOVERY_KEYS, json!({})),
+            (super::KEEP_RECOVERY_KEY, json!({ "key": "0000-0000" })),
+            (super::BLOCK, json!({ "device": "00".repeat(32) })),
+            (super::UNBLOCK, json!({ "device": "00".repeat(32) })),
+        ] {
+            let refused = settled(
+                host.as_host(&laptop)
+                    .invoke(&run, host_request(action, argument)),
+            )
+            .await;
+            assert_eq!(
+                refused.err(),
+                Some(ActionCallError::UnknownAction),
+                "a shortcut {saved_by} saved, {action}"
+            );
+        }
+    }
+    server.shutdown().await;
+}
+
 /// A block is the operator's own `tilo.host` action: it names one key, a device
 /// or a person's root, writes it to the record of their own workspace, and the
 /// host refuses the key from then on. Lifting it writes the record again.

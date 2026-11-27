@@ -24,7 +24,6 @@ pub(super) fn is_person_here(
     origin: Option<&super::super::published_invocation::InvocationCaller>,
 ) -> bool {
     caller.acting().is_person()
-        && !caller.acting().is_automation()
         && super::super::provided::is_local_host_caller(caller, origin)
         && caller.acting_for_person().is_none()
         && !caller.is_foreign_device()

@@ -403,8 +403,7 @@ impl std::fmt::Display for Actor {
 
 /// Who made a change, and who they acted for, as a tree: an automation a person
 /// set up, run by an agent, for two people, is
-/// `Automation(1) for [Agent(1) for [Person(Q), Person(X)]]`. The unattended run of a Shortcut
-/// is its maker acting (`by`), with the Shortcut in the tree of whom it acts through.
+/// `Automation(1) for [Agent(1) for [Person(Q), Person(X)]]`.
 ///
 /// Every format writes every field. A signed claim keeps the text its signer wrote, so an entry
 /// written by a build that left unnamed fields out still checks against its own bytes.
@@ -692,22 +691,9 @@ impl Acting {
         self.by.member_id().is_some_and(MemberId::is_bot)
     }
 
-    /// Whether this acting is an automation's, not a person's own: an automation acting by
-    /// itself, or the unattended run of a Shortcut, which acts as the person who saved it and
-    /// names the Shortcut as how it came ([`Self::shortcut`]).
     #[must_use]
     pub fn is_automation(&self) -> bool {
-        matches!(self.by, Actor::Automation(_)) || self.shortcut().is_some()
-    }
-
-    /// The Shortcut whose run this acting is, when one is: nobody is at a screen, and the
-    /// Shortcut is how the maker's change came ([`Self::is_automation`]).
-    #[must_use]
-    pub fn shortcut(&self) -> Option<&AutomationId> {
-        self.acted_for.iter().find_map(|node| match &node.by {
-            Actor::Automation(id) => Some(id),
-            Actor::Member(_) | Actor::App(_) | Actor::Visitor(_) => None,
-        })
+        matches!(self.by, Actor::Automation(_))
     }
 
     #[must_use]
@@ -732,6 +718,19 @@ impl Acting {
             .first()
             .and_then(|node| node.by.member_id())
             .and_then(MemberId::person_id)
+    }
+
+    /// On whose behalf this acting writes, as an app reads who invoked it: the actor itself,
+    /// or, for an automation acting for a member (a Shortcut's run), that member. Only what an
+    /// app shows and groups by follows it (whose conversation a run writes in); who may do what,
+    /// and who history says did it, are decided on the acting itself, where the automation
+    /// stays the actor and nobody is at a screen.
+    #[must_use]
+    pub fn principal(&self) -> &Actor {
+        match (&self.by, self.acted_for.first()) {
+            (Actor::Automation(_), Some(node)) if node.by.member_id().is_some() => &node.by,
+            _ => &self.by,
+        }
     }
 
     /// Every member in the tree, the actor first.
@@ -814,6 +813,45 @@ pub fn identity_color(identity: &str) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An automation acting for a person (a Shortcut's unattended run, through an app or not, on
+    /// a device of theirs or not) is never that person's own act: every accessor a gate reads
+    /// says it is not the person themselves, and none of them reads it as an agent either, so
+    /// "not an agent" never stands in for "the person". Only the principal, whom an app shows its
+    /// writes as for, is the person.
+    #[test]
+    fn an_automation_acting_for_a_person_is_never_their_own_act() {
+        let runs = [
+            Acting::automation("reminder").acting_for(Acting::person("q")),
+            Acting::automation("reminder")
+                .acting_for(Acting::person("q"))
+                .in_app("so.tilo.chat"),
+            Acting::automation("reminder")
+                .acting_for(Acting::person("q"))
+                .on_foreign_device(true),
+            Acting::automation("reminder")
+                .acting_for(Acting::agent("scout", "q").acting_for(Acting::person("q"))),
+        ];
+        for run in &runs {
+            assert!(!run.is_person(), "{run:?}");
+            assert_eq!(run.person_id(), None, "{run:?}");
+            assert!(!run.direct(), "{run:?}");
+            assert_eq!(run.direct_person(), None, "{run:?}");
+            assert!(run.delegated(), "{run:?}");
+            assert!(!run.is_agent() && !run.is_bot(), "{run:?}");
+            assert_eq!(run.member_id(), None, "{run:?}");
+            assert!(run.is_automation(), "{run:?}");
+        }
+        assert_eq!(runs[0].acted_for_person(), Some("q"));
+        assert_eq!(
+            runs[0].principal(),
+            &Actor::Member(MemberId::person("q")),
+            "the run writes for its person"
+        );
+        let person = Acting::person("q");
+        assert!(person.is_person() && person.direct() && !person.is_automation());
+        assert_eq!(person.principal(), &person.by);
+    }
 
     tilo_test_env::scenario! {
         fn a_member_tree_names_and_writes_its_members;

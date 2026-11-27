@@ -2755,7 +2755,6 @@ pub fn persons_own_call(caller: &Caller) -> bool {
     let acting = caller.acting();
     caller.is_own_connection()
         && acting.is_person()
-        && !acting.is_automation()
         && acting.app().is_none()
         && acting.acted_for_person().is_none()
         && caller.turn().is_none()

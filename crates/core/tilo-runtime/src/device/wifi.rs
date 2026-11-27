@@ -361,6 +361,27 @@ mod tests {
         );
     }
 
+    /// Joining, sharing or forgetting a network is the person's own act at a screen: a
+    /// Shortcut's unattended run, saved by them or by their agent, does none of it.
+    #[test]
+    fn a_shortcuts_run_reaches_no_network() {
+        let person = [1; 32];
+        let own = Caller::authenticated(person, [2; 32]);
+        assert_eq!(the_persons_own(&own, &Admitted::default()), Ok(()));
+        let agent = Caller::delegated_agent("scout", person, [2; 32]);
+        for run in [
+            own.running_shortcut("nightly"),
+            agent.running_shortcut("nightly"),
+        ] {
+            assert_eq!(
+                the_persons_own(&run, &Admitted::default()),
+                Err(THE_PERSONS_OWN.to_owned()),
+                "{:?}",
+                run.acting()
+            );
+        }
+    }
+
     /// A call of the provider on the device's dispatch, as the person on this device asks it.
     async fn ask(
         wifi: &Wifi,

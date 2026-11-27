@@ -1234,13 +1234,9 @@ fn origin_of(caller: &Caller, request: &InvokeRequest) -> Option<Origin> {
         .and_then(|turn| Origin::parse(&turn.conversation, None))
 }
 
-/// Whether `caller` is the person `owner` works for, when `owner` is an agent's caller, or the
-/// person a Shortcut's run acts as: what lets them take back what it wrote.
+/// Whether `caller` is the person `owner` works for, when `owner` is an agent's caller.
 fn agent_person_is(caller: &Caller, owner: &Caller) -> bool {
-    let Some(person) = owner
-        .acting_for_person()
-        .or_else(|| owner.acting().person_id())
-    else {
+    let Some(person) = owner.acting_for_person() else {
         return false;
     };
     let acting = caller.acting();
@@ -1248,7 +1244,6 @@ fn agent_person_is(caller: &Caller, owner: &Caller) -> bool {
         && !acting.is_agent()
         && !acting.is_bot()
         && acting.app().is_none()
-        && acting.shortcut().is_none()
 }
 
 /// Whether `caller` is a live run of the person's other than the live run that made `recorded`'s

@@ -857,10 +857,10 @@ impl Caller {
         })
     }
 
-    /// The caller's invocations are the steps of Shortcut `id`'s run: the person who saved it
-    /// acts, so what the run writes is theirs, and the Shortcut is recorded as how it came.
-    /// The run's authority is that person's, bounded by the Shortcut's own grants, which the
-    /// runner applies. Set only by the provider's Shortcut runner.
+    /// The caller's invocations are the steps of Shortcut `id`'s run: still
+    /// the person's authority (bounded by the Shortcut's own grants, which
+    /// the runner applies), but the Shortcut is who acts, for the person.
+    /// Set only by the provider's Shortcut runner.
     #[must_use]
     pub fn running_shortcut(mut self, id: impl Into<String>) -> Self {
         let person = self
@@ -869,10 +869,7 @@ impl Caller {
             .or_else(|| self.acting.acted_for_person())
             .unwrap_or_default()
             .to_owned();
-        // The maker acts, and the Shortcut its run is rides in the tree of whom it acts
-        // through: nobody is at a screen for the run, and every app tells its writes from the
-        // person's own by it.
-        let mut acting = Acting::person(person).acting_for(Acting::automation(id));
+        let mut acting = Acting::automation(id).acting_for(Acting::person(person));
         acting.app.clone_from(&self.acting.app);
         acting.foreign_device = self.acting.foreign_device;
         self.acting = acting;
@@ -885,7 +882,7 @@ impl Caller {
     /// very action; a caller that runs no Shortcut is left as it was.
     #[must_use]
     pub fn consented_in_advance(mut self) -> Self {
-        self.consented = self.acting.shortcut().is_some();
+        self.consented = matches!(self.acting.by, tilo_action_policy::Actor::Automation(_));
         self
     }
 
@@ -1179,6 +1176,50 @@ mod tests {
             appearance: None,
             signed: None,
         }
+    }
+
+    /// A Shortcut's unattended run, saved by its person or by their agent, is the Shortcut acting
+    /// for that person: nobody is at a screen, so no gate that asks for the person themselves
+    /// passes it, while an app reads the person as whom it writes for.
+    #[test]
+    fn a_shortcuts_run_is_no_person_at_a_screen_and_writes_for_its_person() {
+        let ada = hex::encode([1; 32]);
+        for (saved_by, saver) in [
+            ("her device", Caller::own_person(ada.as_str())),
+            ("her agent", Caller::local_agent("scout", ada.as_str())),
+        ] {
+            let run = saver.running_shortcut("reminder");
+            let acting = run.acting();
+            assert!(
+                !acting.is_person() && !acting.is_agent() && acting.person_id().is_none(),
+                "{saved_by}: {acting:?}"
+            );
+            assert!(acting.is_automation(), "{saved_by}: {acting:?}");
+            assert_eq!(
+                crate::remote::asked::answering_person(&run),
+                None,
+                "{saved_by}: a run answers none of its person's asks"
+            );
+            assert_eq!(
+                crate::remote::asked::asked_person(&run).as_deref(),
+                Some(ada.as_str()),
+                "{saved_by}: what a run asks is put to its person"
+            );
+            assert_eq!(acting.acted_for_person(), Some(ada.as_str()), "{saved_by}");
+            assert_eq!(
+                acting.principal().member_id().and_then(|m| m.person_id()),
+                Some(ada.as_str()),
+                "{saved_by}: the run writes for her"
+            );
+        }
+        let own = Caller::own_person(ada.as_str());
+        assert_eq!(own.acting().principal(), &own.acting().by);
+        let agent = Caller::local_agent("scout", ada.as_str());
+        assert_eq!(
+            agent.acting().principal(),
+            &agent.acting().by,
+            "an agent writes as itself"
+        );
     }
 
     /// Ada's approved agent answers Bo: it acts for Bo, bounded by Ada. A sub-agent it starts

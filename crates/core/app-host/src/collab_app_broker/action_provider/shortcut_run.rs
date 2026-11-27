@@ -228,9 +228,8 @@ impl AppBrokerState {
             .as_ref()
             .and_then(|membership| membership.workspace_revocations(workspace))
             .ok_or(ActionCallError::NotPermitted)?;
-        // An agent that saved it with its own key runs it as its person, the shortcut's maker,
-        // with the agent bounded by what its certificate delegates; a device's proof runs it as
-        // the person too.
+        // An agent that saved it with its own key runs it as itself, for its person; a device's
+        // proof runs it as the person.
         let name = &shortcut.name;
         let Some(saver) = tilo_peer_state::workspace::proven(
             workspace,

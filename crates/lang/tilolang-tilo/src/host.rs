@@ -867,6 +867,7 @@ impl HostInner {
     pub(crate) fn admit_agent(&self, caller: &Caller) {
         self.authority
             .admit_agent(&caller.actor, caller.on_behalf_of.as_deref());
+        self.runtime.acts_for(&caller.actor, &caller.principal());
     }
 
     pub(crate) fn package_of(&self, app: &str) -> Result<Rc<Package>, String> {
