@@ -659,12 +659,15 @@ impl Host {
     }
 
     /// The MCP session the workspace service hands a turn of `agent`, named `name`, in the
-    /// founded workspace: the per-turn provider over this daemon's one dispatch, its agent's own
-    /// key, and the caller an agent acts as on a turn answering the person's message.
+    /// founded workspace: the per-turn provider over the dispatch a turn makes its calls
+    /// through, its agent's own key, and the caller an agent acts as on a turn answering the
+    /// person's message. The agent's calls are the agent's, decided by what the workspace grants
+    /// it.
     ///
     /// # Panics
     ///
-    /// This device certifies no agent's key, or the session cannot be bound to a turn.
+    /// This device certifies no agent's key, the session cannot be bound to a turn, or the
+    /// device's action broker is not up.
     #[must_use]
     pub fn turn_agent(&self, agent: &str, name: &str) -> Agent<WorkspaceActionProvider> {
         let daemon = self.daemon();
@@ -678,16 +681,22 @@ impl Host {
         let key = keys
             .grant(id, agent, name, person)
             .expect("this device makes the agent's key");
+        // The caller a turn's agent acts as, as the engine builds it: bound to its roster entry,
+        // and marked as a turn this device runs here, so every admission reads it as one.
         let caller = Caller::delegated_agent(agent, person, key)
             .in_workspace(workspace)
             .named(name)
-            .in_agent_session("agent-session:test")
             .on_roster(0, person)
+            .in_engine_turn_here()
+            .in_agent_session("agent-session:test")
             .on_roster_turn(tilo_action_policy::turn::Turn::new(
                 "chat/conversation",
                 "asked",
             ));
-        let actions = EngineActions::new(Arc::new(daemon.action_provider().unwrap()), keys);
+        let dispatch = daemon
+            .turn_action_provider()
+            .expect("the device's action broker answers its turns");
+        let actions = EngineActions::new(dispatch, keys);
         let provider = WorkspaceActionProvider::new(actions, id);
         Agent {
             session: tilo_mcp::McpServer::for_turn(provider, caller)

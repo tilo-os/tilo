@@ -4170,6 +4170,22 @@ impl Daemon {
         self.person()?.provider(workspace)
     }
 
+    /// The dispatch a turn this device's agent engine carries out calls through: the broker's
+    /// host, which admits the turn by the agent's own key and the roster entry it was bound to,
+    /// and decides each call by what the workspace grants that agent. The person's own dispatch
+    /// ([`Self::action_provider`]) admits the person's calls, never an agent's.
+    ///
+    /// # Errors
+    /// The device's action broker is not up.
+    pub fn turn_action_provider(
+        &self,
+    ) -> io::Result<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>> {
+        self.broker
+            .app_action_broker()
+            .map(|broker| broker.device_host())
+            .ok_or_else(|| io::Error::other("the action broker is unavailable"))
+    }
+
     /// A call of one of the person's actions in `workspace`, made as the person on this device:
     /// what their own runs reach of a provider the workspace's host answers (`tilo.telling`), or
     /// an action of the workspace itself. It is the one dispatch every call of theirs takes, so
