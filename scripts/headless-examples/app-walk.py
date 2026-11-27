@@ -1162,11 +1162,10 @@ def hover(session: Session, selector: str, deadline: float = 20.0) -> dict:
 
 # --- a person's other devices -----------------------------------------------------------------
 
-# The one-use code a new device of the person's joins with, as the device's daemon issues it: the
-# action Settings' Add a device asks the daemon for. The walk names the resource and action and
-# the desktop says which provider lists them: a device's daemon need not answer as the session's
-# own provider.
-DEVICE_TICKET = ("devices", "issue")
+# The provider the device's daemon issues the one-use code a new device joins with under: the
+# action Settings' Add a device asks it for. The walk asks the daemon itself, as the page does;
+# the listing gives a device provider's rows only when it is named, never in the whole catalogue.
+DEVICE_TICKET = ("tilo.device", "devices", "issue")
 # The credential a device's daemon spends at its first start to become its person's: the name the
 # unit hands it in `$CREDENTIALS_DIRECTORY`.
 TICKET_CREDENTIAL = "tilo.ticket"
@@ -1343,9 +1342,7 @@ class Devices:
         # Add a device runs, asked through the desktop's own dispatch. A walk joins devices without
         # opening the page, and the page and the walk ask the same daemon for the same kind of
         # one-use code.
-        row = until_value("the desktop to offer a new device's code",
-                          lambda: row_for(first.actions(""), *DEVICE_TICKET), 15)
-        answer = first.invoke_row(row, {})
+        answer = first.invoke(*DEVICE_TICKET, {})
         ticket = value_of(answer)
         if isinstance(ticket, dict):
             ticket = ticket.get("ticket")
