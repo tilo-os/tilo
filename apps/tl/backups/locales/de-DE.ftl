@@ -488,8 +488,11 @@ d-egcbexsk = Abbrechen
 d-5b35wzq6 = Auswahl lesen
     .doc = Liest die Ordner des Ordners, den die Auswahl zeigt.
 
+d-e7w6p5gh = Arbeit beginnt
+    .doc = Leert, was die letzte Arbeit sagte, wenn eine neue beginnt.
+
 d-ifgic4vt = Arbeit starten
-    .doc = Startet eine Arbeit und merkt sich den Auftrag, den das Gerät gab.
+    .doc = Startet eine Sicherung oder Prüfung und merkt sich den Auftrag, den das Gerät gab.
 
 d-ifgic4vt-kind = Art
 

@@ -235,11 +235,17 @@ mod cases {
     impl Backups {
         fn new() -> Self {
             let engine = Engine::default();
-            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            let authority = TestAuthority::new();
+            let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             rt.set_engine(engine.clone());
             rt.set_device_files(Disk);
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
+            // The workspace's policy for this app: what it changes on the device is its own
+            // work, so the person has already said yes to it.
+            for action in &app.meta().actions {
+                authority.grant_outside(&action.id);
+            }
             // What this device protects is the device's own: its root stands under the device.
             let ty = app
                 .meta()
@@ -510,6 +516,79 @@ mod cases {
                 .done_with(r#"{"files": 1840, "bytes": 48200000000}"#);
             s.ended();
             assert_eq!(s.text(&s.root, "notice"), "The snapshot is back.");
+        }
+
+        phase a_restore_always_asks_first_shift_held_or_not;
+        {
+            let s = Backups::new();
+            let dispatch = Dispatch::new();
+            s.rt.set_foreign_invoker(dispatch.clone());
+            s.set_up();
+            s.done("back_up_now", vec![Value::resource(&s.root)]);
+            s.engine.done_with(&catalog_json());
+            s.ended();
+            let snapshot = s.records(&s.root, "snapshots")[1].clone();
+            s.done(
+                "ask_restore",
+                vec![Value::resource(&s.root), Value::resource(&snapshot)],
+            );
+            s.done(
+                "go",
+                vec![Value::resource(&s.root), Value::text("/home/you/restored")],
+            );
+            s.done("pick", vec![Value::resource(&s.root)]);
+            let sheet = s
+                .rt
+                .open_view(
+                    &me(),
+                    &s.app.view("snapshot_sheet"),
+                    vec![Value::resource(&s.root), Value::resource(&snapshot)],
+                )
+                .unwrap_or_else(|e| panic!("snapshot_sheet: {e}"));
+            let restore = of_kind(sheet.tree(), "ui.Banner")
+                .into_iter()
+                .find(|b| prop(b, "action") == "Restore here")
+                .expect("the sheet offers to restore into the chosen folder")
+                .key
+                .clone();
+            let restores = || {
+                s.engine
+                    .calls
+                    .borrow()
+                    .iter()
+                    .filter(|(op, _)| op == "restore")
+                    .count()
+            };
+            // What the restore writes over is gone, which undo cannot bring back: it asks,
+            // Shift held or not, and nothing is written before the yes.
+            for shift in [false, true] {
+                let held = tilolang_runtime::Held {
+                    shift,
+                    ..tilolang_runtime::Held::default()
+                };
+                let InvokeOutcome::Asked(_) = sheet.fire_held(&restore, "act", None, None, held).unwrap()
+                else {
+                    panic!("a press of Restore confirms it first, Shift held: {shift}");
+                };
+                assert_eq!(dispatch.asked().0, s.app.action("restore_now"));
+            }
+            assert_eq!(restores(), 0, "nothing is restored yet");
+            let id = s.app.action("restore_now");
+            let out = s
+                .rt
+                .invoke_approved_through(
+                    &me(),
+                    None,
+                    (
+                        id.as_str(),
+                        vec![Value::resource(&s.root), Value::resource(&snapshot)],
+                    ),
+                    None,
+                )
+                .unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(restores(), 1, "it goes on the yes");
+            assert_eq!(s.text(&s.root, "working"), "restore");
         }
 
         phase a_run_is_followed_while_it_runs_and_can_be_stopped;

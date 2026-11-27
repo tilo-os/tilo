@@ -9,7 +9,7 @@ app so.tilo.backups "Backups" (
 op "catalog"
 op "backup"
 op "verify"
-op "restore"
+op "restore" changes device
 
 /// Was a snapshot taken by the schedule or by hand?
 enum Taken {
@@ -406,12 +406,18 @@ action begin_restore(b: Backups) {
 }
 
 /// Restores the snapshot into the folder the person chose.
-action restore_now(b: Backups, s: Snapshot) uses time, files (icon: .history, label: "Restore") {
+///
+/// What it writes over there is gone, and the workspace's undo cannot bring it back, so a press
+/// always asks first.
+destructive action restore_now(b: Backups, s: Snapshot) uses time, files (
+    icon: .history,
+    label: "Restore",
+) {
     require b.restore_into != "" "Choose a folder to restore into"
     require not busy(b) "One piece of work is running already"
     b.picking = ""
-    start_work(
-        b,
+    work_begins(b)
+    let started = engine.start(
         "restore",
         json.encode(
             RestoreAsk(
@@ -421,7 +427,18 @@ action restore_now(b: Backups, s: Snapshot) uses time, files (icon: .history, la
                 overwrite: b.overwrite,
             ),
         ),
+        done: j -> work_ended(b, "restore", j),
+        progress: j -> work_moved(b, j),
     )
+    match started {
+        .err(why) => {
+            b.failure = why
+        }
+        .ok(job) => {
+            b.job = job
+            b.working = "restore"
+        }
+    }
 }
 
 /// Stops the work under way; what it was writing goes.
@@ -756,13 +773,21 @@ fn busy(b: Backups) -> Bool {
     b.job != ""
 }
 
-/// Starts a piece of work and keeps the job the device gave it.
-action start_work(b: Backups, kind: Text, ask: Text) {
+/// Clears what the last piece of work said, as a new one begins.
+action work_begins(b: Backups) {
     b.trouble = ""
     b.failure = ""
     b.notice = ""
     b.result = ""
     b.progress = ""
+}
+
+/// Starts a backup or a verification and keeps the job the device gave it.
+///
+/// A restore starts its own ([`restore_now`]): what it writes over cannot be taken back, so it
+/// is asked apart.
+action start_work(b: Backups, kind: Text, ask: Text) {
+    work_begins(b)
     let started = if kind == "backup" {
         engine.start(
             "backup",
@@ -770,16 +795,9 @@ action start_work(b: Backups, kind: Text, ask: Text) {
             done: j -> work_ended(b, kind, j),
             progress: j -> work_moved(b, j),
         )
-    } else if kind == "verify" {
-        engine.start(
-            "verify",
-            ask,
-            done: j -> work_ended(b, kind, j),
-            progress: j -> work_moved(b, j),
-        )
     } else {
         engine.start(
-            "restore",
+            "verify",
             ask,
             done: j -> work_ended(b, kind, j),
             progress: j -> work_moved(b, j),
