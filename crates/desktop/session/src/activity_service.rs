@@ -429,6 +429,12 @@ impl Served {
         }
     }
 
+    /// The model's last read of `read`, which answers none it may offer as `null`: the value an
+    /// app reads, or none when the model offered none. What the focus is until someone asks.
+    fn last_offered<T: serde::de::DeserializeOwned>(&self, read: Read) -> Option<T> {
+        self.last::<Option<T>>(read).flatten()
+    }
+
     /// Build the reading an app gets from the reads' last values.
     fn build(&mut self) {
         let feed: Feed = self.last(Read::Feed).unwrap_or_default();
@@ -436,7 +442,9 @@ impl Served {
         let summary: Summary = self.last(Read::Summary).unwrap_or_default();
         let replay: Replay = self.last(Read::Replay).unwrap_or_default();
         let sessions: Sessions = self.last(Read::Sessions).unwrap_or_default();
-        let focus: Option<Focus> = self.last(Read::Focus);
+        // The model answers the focus with none offered as `null`, which is the reading an app
+        // gets and not a shape it cannot read: what it opens is unasked for until someone asks.
+        let focus: Option<Focus> = self.last_offered(Read::Focus);
         self.reading = Activity {
             feed: Some(feed),
             everywhere: Some(everywhere),
@@ -1063,5 +1071,38 @@ mod tests {
         let output = served.read(&output).expect("the output reads");
         assert_eq!(output["output"]["lines"][1], "ok");
         assert_eq!(output["output"]["running"], false);
+    }
+
+    #[test]
+    fn the_focus_the_model_offers_reads_as_offered_and_none_as_none() {
+        let requests = activity_requests(Arc::new(AtomicBool::new(false)));
+        let mut served = Served::new(requests);
+        let answering = |value: Value| Followed {
+            invocation: tilo_actions::InvocationId::new(),
+            last: Some(value),
+        };
+        // No one asked the app to open anything: the model answers none, as an app reads none.
+        served.followed = Some(BTreeMap::from([(Read::Focus, answering(Value::Null))]));
+        assert_eq!(
+            served.last_offered::<Focus>(Read::Focus),
+            None,
+            "none offered is none, not a reading of another shape"
+        );
+        served.build();
+        assert!(
+            served.reading.focus.is_none(),
+            "the activity reads with no focus"
+        );
+
+        // Someone asked: what it asked for is the focus the app gets.
+        served.followed = Some(BTreeMap::from([(
+            Read::Focus,
+            answering(serde_json::json!({"serial": 3, "view": "history"})),
+        )]));
+        let offered = served
+            .last_offered::<Focus>(Read::Focus)
+            .expect("the focus offered reads");
+        assert_eq!(offered.serial, 3);
+        assert_eq!(offered.view, wire::View::History);
     }
 }
