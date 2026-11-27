@@ -481,8 +481,9 @@ impl Core {
         }
         // A filtered or ordered collection read whole still depends on what it saw item by
         // item: an item changing whether it is in, or where, is no change to the collection's
-        // field.
-        if seen.sweep == len && len > 0 && !coll.derived() {
+        // field. An empty one is read whole by any read of it: the first item it gains is the
+        // change that moves what it answered (a seat taken at an empty table opens leaving it).
+        if seen.sweep == len && !coll.derived() {
             seen.whole = true;
             seen.at = Vec::new();
             vs.reads.push((seen.resource.clone(), coll.field.clone()));

@@ -92,6 +92,7 @@ pub(super) fn package_of(app: &str) -> &'static str {
         "so.tilo.lang.ticking" => "tests/window/ticking",
         "test.letters" => "../tilolang/tests/fixtures/letters",
         "t.totp" => "tests/window/secret",
+        "so.tilo.poker" => "../../../apps/tl/poker",
         other => panic!("no test package is {other}"),
     }
 }

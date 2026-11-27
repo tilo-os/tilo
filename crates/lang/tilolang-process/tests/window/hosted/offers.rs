@@ -108,3 +108,45 @@ fn a_task_checked_off_offers_reopen_and_the_finished_ones_can_be_cleared() {
     session.settle();
     assert!(session.titles().is_empty(), "{:?}", session.titles());
 }
+
+/// A person seated at the Poker table from their window is offered the way up, by the window's
+/// control and by the catalogue an agent and the palette read: both are decided for the person
+/// at the window, whose id is their key.
+#[test]
+fn a_seat_taken_at_the_window_offers_leaving_the_table() {
+    use ui::tilo_actions::Availability;
+    let _settled = ui::motion::testing::settled();
+    let person = "c9f492a76c47c7cbe0281d39135c53f68826a275dd763343da2baff59926bb1a";
+    let mut session = Session::open("so.tilo.poker", person, Window::live);
+    let sit = session.identity_named("Take a seat");
+    assert!(
+        session
+            .window
+            .app()
+            .press_window_control(&sit, ui::window_targets::TargetAction::Activate),
+        "the window takes the press"
+    );
+    session.settle();
+    let leaving = session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .actions()
+        .iter()
+        .find(|action| action.action_label == "Leave the table")
+        .expect("the window offers leaving the table")
+        .contract
+        .availability
+        .clone();
+    assert_eq!(leaving, Availability::Available);
+    let leave = session
+        .window
+        .node_named("Leave the table")
+        .expect("seated, the window offers the way up")
+        .1;
+    assert!(
+        leave.supports_action(ui::accesskit::Action::Click),
+        "leaving is open to the person seated: {:?}",
+        leave.description()
+    );
+}
