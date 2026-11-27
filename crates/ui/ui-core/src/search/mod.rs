@@ -38,6 +38,7 @@ mod button_component;
 pub mod capability;
 #[cfg(feature = "model")]
 mod command;
+#[cfg(feature = "model")]
 pub mod index_publication;
 mod ordinals;
 mod preview;

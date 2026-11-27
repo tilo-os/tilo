@@ -24,6 +24,7 @@ pub trait SearchSource: Widget {
     /// `None` for a source that publishes none. Read every frame that publishes, so it
     /// must not build anything: [`search_index_entries`](Self::search_index_entries) is
     /// asked only when this changes.
+    #[cfg(feature = "model")]
     fn search_index_state(&self) -> Option<super::index_publication::IndexState> {
         None
     }
@@ -31,6 +32,7 @@ pub trait SearchSource: Widget {
     /// The entries the system's persistent search index keeps for this source: short
     /// metadata keyed by the stable resource id a hit opens, found after the app closes
     /// too.
+    #[cfg(feature = "model")]
     fn search_index_entries(&self) -> Vec<super::index_publication::IndexEntry> {
         Vec::new()
     }
@@ -121,6 +123,7 @@ impl SearchProviderDescriptor {
 
 /// What `widget`'s entries for the system's persistent search index are of now, if it
 /// publishes any.
+#[cfg(feature = "model")]
 pub fn search_index_state(
     widget: &(impl Widget + ?Sized),
 ) -> Option<super::index_publication::IndexState> {
@@ -128,6 +131,7 @@ pub fn search_index_state(
 }
 
 /// `widget`'s entries for the system's persistent search index.
+#[cfg(feature = "model")]
 pub fn search_index_entries(
     widget: &(impl Widget + ?Sized),
 ) -> Vec<super::index_publication::IndexEntry> {
