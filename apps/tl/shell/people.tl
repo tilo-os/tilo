@@ -79,8 +79,9 @@ view people_button() {
     }
 }
 
-/// One person here as their face on the bar: a press opens their card, and a dot says they follow
-/// this person.
+/// One person here as their face on the bar: a press opens their card, and the mark on their face
+/// says they follow this person. The mark is the presence face's own — a disc in their colour with
+/// an eye on its edge — never a count's dot, which says something new waits behind a control.
 view face_button(p: device.Person) {
     let name = if p.name != "" { p.name } else { std.say("Someone") }
     let label = if is_follower(p) { std.say("{name}, follows you") } else { name }
@@ -88,8 +89,8 @@ view face_button(p: device.Person) {
         ui.Button(
             label,
             faces: [face],
+            follows_you: is_follower(p),
             icon_only: true,
-            dot: is_follower(p),
             role: .bar,
             size: if shell.bar_size == .small {
                 .small
@@ -98,11 +99,12 @@ view face_button(p: device.Person) {
             on press: device.show_person(device.people, person: p.key)
         }
     } else {
+        // The workspace lists nobody by that name (a session with no member rows yet): the
+        // person's own name still says who it opens, and their card shows their face.
         ui.Button(
             label,
             icon: .user,
             icon_only: true,
-            dot: is_follower(p),
             role: .bar,
             size: if shell.bar_size == .small {
                 .small
@@ -116,7 +118,12 @@ view face_button(p: device.Person) {
 /// The actor a person the session lists is, where the workspace lists their name: a face on a
 /// button, which takes the member rather than a name.
 fn face_of(p: device.Person) -> Option<Actor> {
-    return workspace.members.people.filter(m -> m.name() == p.name).first()
+    return face_named(p.name)
+}
+
+/// The actor named `name` here, where the workspace lists that name: a face on a button or a chip.
+fn face_named(name: Text) -> Option<Actor> {
+    return workspace.members.people.filter(m -> m.name() == name).first()
 }
 
 /// An agent here, as its presence: a chip that opens its menu. The menu says what it is doing and
@@ -1028,13 +1035,18 @@ view following_face(who: device.Person, label: Text, words: Bool) {
     }
 }
 
-/// What stands where the bar's glance value does: the time, unless this person follows someone or
-/// their own input has just ended it — a view that is not their own is said where the clock
-/// stands, so the clock keeps out of its way ([`follow_chip`]), folded on a `compact` bar.
-view clock_or_follow(compact: Bool) {
+/// What stands where the bar's glance value does: whose view this person follows, or the news
+/// about people (who arrived, who waved), or else the time. Everything the bar says about people
+/// in a moment is said here, where nothing a person aims at stands: the clock yields for it, as it
+/// yields to whose view this is, and the faces and every control keep their places.
+view clock_or_news(compact: Bool) {
     let board = device.people
     if board.following != "" or board.stopped != "" {
         follow_chip(compact)
+    } else if board.arrived_seen != "" or not board.arrived.is_empty() {
+        arrival_notice()
+    } else if board.waved != "" {
+        wave_notice()
     } else {
         clock()
     }
@@ -1080,14 +1092,19 @@ view sharing_indicator() {
     }
 }
 
-/// Someone waved at this person: who, beside the faces, for a moment. The session clears it when
+/// Someone waved at this person: who, in the bar's glance, for a moment. The session clears it when
 /// its moment is over, so the bar never keeps a word that has gone stale. It is news, so a reader
-/// hears it without having to be looking at the bar.
+/// hears it without having to be looking at the bar, and it carries the waver's face.
 view wave_notice() {
     let board = device.people
     if board.waved != "" {
         let name = board.waved
-        ui.Chip(std.say("{name} waved at you"), icon: .hand, tone: .info, live: .polite)
+        let label = std.say("{name} waved at you")
+        if let face = face_named(name) {
+            ui.Chip(label, faces: [face], tone: .info, live: .polite)
+        } else {
+            ui.Chip(label, icon: .hand, tone: .info, live: .polite)
+        }
     }
 }
 
@@ -1111,8 +1128,16 @@ view arrival_notice() {
         } else {
             std.say("{short} and {others} others are here")
         }
-        ui.Chip(label, icon: .users, tone: .success, live: .polite) {
-            on press: device.show(device.people)
+        // Whoever nobody named reads as "Someone" here, as a roster row names them: their face is
+        // still theirs, and says who to open.
+        if let face = face_named(first) {
+            ui.Chip(label, faces: [face], tone: .success, live: .polite) {
+                on press: device.show(device.people)
+            }
+        } else {
+            ui.Chip(label, icon: .users, tone: .success, live: .polite) {
+                on press: device.show(device.people)
+            }
         }
     }
 }

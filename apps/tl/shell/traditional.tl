@@ -282,7 +282,7 @@ view traditional_bar() {
         }
         action_bar(layout, room)
         spacer
-        clock_or_follow(space.compact)
+        clock_or_news(space.compact)
         if room != .one {
             people_button()
         }

@@ -3832,6 +3832,21 @@ outputs = ["/target/shell-ui-shots/**"]
 timeout_secs = 3600
 default = false
 
+# Pictures of the bar a person sees between two machines
+# (crates/desktop/session/tests/people_between_devices.rs): the arrival notice, the wave notice and
+# a follower's face on their bar, in the workspace's dark theme and in the light one. Those tests
+# start a device's own daemon and the session a daemon starts, so this builds them beside the test
+# binary first, as the session's nextest setup does. Only when named.
+[[check]]
+name = "people-bar-shots"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "rm -rf /target/people-bar-shots /target/people-bar-shots-light\nbash tools/build-sibling-binaries.sh tilo-daemon:tilo-runtime=test-support,agents launcher:tilo-launcher=dev-overrides\nTL_SHELL_SHOTS=/target/people-bar-shots bash tools/test-env.sh cargo test --locked -p tilo-session --test it --features ui/test-support -- people_between_devices::\nTILO_PEOPLE_LIGHT=1 TL_SHELL_SHOTS=/target/people-bar-shots-light bash tools/test-env.sh cargo test --locked -p tilo-session --test it --features ui/test-support -- people_between_devices::\n"
+requires = ["arch=any"]
+outputs = ["/target/people-bar-shots/**", "/target/people-bar-shots-light/**"]
+evidence = ["/target/people-bar-shots/**", "/target/people-bar-shots-light/**"]
+timeout_secs = 3600
+default = false
+
 [[check]]
 name = "tilo-vm-binary-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }

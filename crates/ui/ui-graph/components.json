@@ -642,6 +642,11 @@
           }
         },
         {
+          "name": "follows_you",
+          "doc": "The first of `faces` follows the person looking: their face wears the follower's mark — a disc in their colour with an eye, on the face's own edge — beside nothing else, never a count's dot, which says something new is behind a control.",
+          "type": "bool"
+        },
+        {
           "name": "role",
           "doc": "What kind of action it is: `secondary` unless said, `plain` for an icon-only one.",
           "type": {

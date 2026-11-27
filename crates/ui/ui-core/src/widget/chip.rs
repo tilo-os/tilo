@@ -26,6 +26,38 @@ use tilo_ui_base::{
 pub(crate) const TINT_FILL: f32 = 0.15;
 pub(crate) const TINT_EDGE: f32 = 0.38;
 
+/// The edge a tinted chip wears on `ground`: its tone carried far enough from the ground to read
+/// as the pill's own boundary at the non-text contrast floor, deeper than [`TINT_EDGE`] where the
+/// tone at that step is too faint, and the ground's primary ink where even the tone's whole self
+/// does not clear it (a pale tone on a light bar). Tokens only: the steps are mixes of the theme's
+/// own tone and ink.
+fn tinted_edge(theme: &Theme, ground: Color, tint: Color) -> Color {
+    let reads =
+        |edge: Color| tilo_ui_base::a11y::contrast_ratio(edge, ground) >= NON_TEXT_MIN_CONTRAST;
+    // The tint at the stock step, then deeper a tenth at a time to its whole self.
+    for step in 0..=6_u8 {
+        let strength = TINT_EDGE + 0.1 * f32::from(step);
+        let edge = mix8(ground, tint, strength);
+        if reads(edge) {
+            return edge;
+        }
+    }
+    let whole = mix8(ground, tint, 1.0);
+    if reads(whole) {
+        return whole;
+    }
+    // Where even the tone does not clear the floor on this ground, the ground's own ink does:
+    // stepped out from four tenths until it reads.
+    let ink = theme.tokens.colors.text_primary;
+    for step in 0..=6_u8 {
+        let edge = mix8(ground, ink, 0.4 + 0.1 * f32::from(step));
+        if reads(edge) {
+            return edge;
+        }
+    }
+    ink
+}
+
 /// How much of its tint a tinted chip's fill carries: more under the pointer, by as much as the
 /// theme's hover lifts a plain chip. Lifting the fill as a plain chip's is would wash its tint
 /// out to grey, and a chosen chip hovered would look unchosen.
@@ -92,11 +124,13 @@ impl ChipStyle {
             Self::Tinted(tone) => {
                 let tint = tone.colour(theme);
                 let fill = mix8(ground, tint, TINT_FILL);
-                let edge = mix8(ground, tint, TINT_EDGE);
+                let edge = tinted_edge(theme, ground, tint);
                 ChipColors {
                     fill,
                     edge: Some(edge),
-                    ink: colors.on_surface_at(fill, SMALL_TEXT_MIN_CONTRAST).ink,
+                    // A tone says what a chip is about, never that its words are less than the
+                    // text beside it: the primary ink, held to its floor on the fill.
+                    ink: colors.ink_on_any(&[fill], colors.text_primary, SMALL_TEXT_MIN_CONTRAST),
                     lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
                 }
             }

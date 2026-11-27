@@ -35,6 +35,10 @@ pub struct ButtonProps {
     /// Who is here, as their faces: up to three faces, then a face counting the rest, and nothing else on
     /// the button at any width. Each is the member, so their face wears the picture they set.
     pub faces: Vec<Person>,
+    /// The first of `faces` follows the person looking: their face wears the follower's mark — a
+    /// disc in their colour with an eye, on the face's own edge — beside nothing else, never a
+    /// count's dot, which says something new is behind a control.
+    pub follows_you: bool,
     /// What kind of action it is: `secondary` unless said, `plain` for an icon-only one.
     pub role: Option<ButtonRole>,
     /// A toggle button, and whether it is on: on, it stands on a lift of its ground and is announced as
@@ -93,6 +97,7 @@ impl Default for ButtonProps {
             icon: None,
             icon_only: false,
             faces: Vec::new(),
+            follows_you: false,
             role: None,
             toggled: None,
             size: ControlSize::default(),
@@ -123,6 +128,7 @@ impl Described for Button {
             icon,
             icon_only,
             faces,
+            follows_you,
             role,
             toggled,
             size,
@@ -145,7 +151,8 @@ impl Described for Button {
             _ if !faces.is_empty() => Self::new(key, "")
                 .with_accessible_name(&label)
                 .tooltip(label.clone())
-                .with_faces_of(faces),
+                .with_faces_of(faces)
+                .with_follows_you(follows_you),
             // An icon alone is named by its accessible name when the label is empty
             // (`ui.Button("", icon: .refresh, icon_only: true, accessible_name: ...)`).
             Some(icon) if icon_only => {

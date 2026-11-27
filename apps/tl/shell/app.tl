@@ -246,7 +246,7 @@ view bar_part(part: BarPart, narrow: Bool, compact: Bool, wide: Bool) {
     if part.kind == .spacer {
         spacer
     } else if part.kind == .clock {
-        clock_or_follow(compact)
+        clock_or_news(compact)
     } else if part.kind == .menu {
         row(gap: .related, align: .center) {
             ui.MenuButton(
@@ -310,8 +310,6 @@ view bar_part(part: BarPart, narrow: Bool, compact: Bool, wide: Bool) {
                     }
                 }
             }
-            wave_notice()
-            arrival_notice()
             sharing_indicator()
             continuity_offer()
         }

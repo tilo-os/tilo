@@ -104,13 +104,6 @@ fn peers(device: &Device) -> Vec<Value> {
         .collect()
 }
 
-/// Whether the session of `device` has `name` here in one of its workspaces.
-fn here(device: &Device, name: &str) -> bool {
-    peers(device)
-        .iter()
-        .any(|row| row["label"].as_str() == Some(name))
-}
-
 /// What `device` knows when a step fails: who its session has here, and every word its shell says.
 fn explain(device: &Device) -> String {
     let people: Vec<String> = peers(device)
@@ -204,7 +197,8 @@ fn shot_name(name: &str) -> String {
     format!("{name}-{theme}.png")
 }
 
-/// Take a picture of `device`'s screen, where this run was asked to keep pictures.
+/// Take a picture of `device`'s screen, where this run was asked to keep pictures, and the band
+/// of the bar across its top beside it: what the bar says, close enough to look at.
 #[track_caller]
 fn snapshot(device: &Device, name: &str) {
     let Some(directory) = std::env::var_os("TL_SHELL_SHOTS") else {
@@ -220,7 +214,16 @@ fn snapshot(device: &Device, name: &str) {
         path.display(),
         device.diagnostic()
     );
+    let picture = image::open(&path)
+        .unwrap_or_else(|error| panic!("the picture at {}: {error}", path.display()))
+        .to_rgba8();
+    let band = image::imageops::crop_imm(&picture, 0, 0, picture.width(), BAR_HEIGHT).to_image();
+    band.save(path.with_extension("band.png"))
+        .unwrap_or_else(|error| panic!("the bar's band at {}: {error}", path.display()));
 }
+
+/// The rows of the screen the bar stands in.
+const BAR_HEIGHT: u32 = 56;
 
 /// Choose the light theme in the workspace in front, as Settings' Appearance page or Quick
 /// Settings' Dark mode tile does: the field's own published setter, which every device reads.
@@ -280,25 +283,30 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
 
     // Ada's bar says Bob is here on its own, in the bar, once her session knows he is here: the
     // arrival notice names the first word of his name, where the standing label beside the faces
-    // names the whole of it. Who her session has here is read a few times a second, not at every
-    // frame: it is the whole state dump.
+    // names the whole of it. One cheap ask a frame watches both — his face, which appears as her
+    // session knows him, and the notice — never the session's whole state dump, which on a loaded
+    // machine can outlast the notice's four seconds between two looks.
     let mut knew_at: Option<Instant> = None;
-    let mut look_at = Instant::now();
     let arrival = waited(&ada_laptop, "Bob's arrival", JOINING, || {
-        if knew_at.is_none() && Instant::now() >= look_at {
-            look_at = Instant::now() + Duration::from_millis(250);
-            if here(&ada_laptop, "Bob Builder") {
-                knew_at = Some(Instant::now());
-            }
+        let shown = controls(&ada_laptop);
+        let says = |name: &str| {
+            shown
+                .iter()
+                .any(|control| control["name"].as_str() == Some(name))
+        };
+        if knew_at.is_none() && says("Bob Builder") {
+            knew_at = Some(Instant::now());
         }
         if let Some(knew) = knew_at {
             assert!(
                 knew.elapsed() < Duration::from_secs(10),
-                "Ada's session had Bob here but her bar never said he arrived\n{}",
+                "Ada's bar drew Bob's face but never said he arrived\n{}",
                 explain(&ada_laptop),
             );
         }
-        named(&ada_laptop, "Bob is here").into_iter().next()
+        shown
+            .into_iter()
+            .find(|control| control["name"].as_str() == Some("Bob is here"))
     });
     let [_, y, _, height] = rect(&arrival);
     assert!(

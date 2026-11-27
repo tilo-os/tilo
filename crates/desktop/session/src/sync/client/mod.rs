@@ -593,11 +593,13 @@ impl Roster {
 
     /// The person came to a workspace where people already are: the bar's faces pulse and a short
     /// name slides out of them, once for the workspace they came to. A workspace nobody else is in
-    /// says nothing.
+    /// says nothing, and someone nobody has named is said as every surface says them ("Someone"),
+    /// never left out of the news of who came.
     fn show_arrival(&self, workspace: &str, members: &[LiveMember]) {
-        let people: Vec<&LiveMember> = members
+        let people: Vec<(&LiveMember, String)> = members
             .iter()
-            .filter(|member| member.kind != "agent" && !member.label.trim().is_empty())
+            .filter(|member| member.kind != "agent")
+            .map(|member| (member, tilo_ui_base::presence::person_label(&member.label)))
             .collect();
         if people.is_empty() || self.arrived_in.borrow().as_deref() == Some(workspace) {
             return;
@@ -607,12 +609,9 @@ impl Roster {
             Some(tilo_session_core::desktop::host::chrome::ArrivalNotice {
                 people: people
                     .iter()
-                    .map(|member| member.publisher.clone())
+                    .map(|(member, _)| member.publisher.clone())
                     .collect(),
-                names: people
-                    .iter()
-                    .map(|member| member.label.trim().to_owned())
-                    .collect(),
+                names: people.into_iter().map(|(_, name)| name).collect(),
                 seen: None,
                 at: ui::time::now(),
             });

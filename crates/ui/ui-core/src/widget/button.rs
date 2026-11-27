@@ -68,6 +68,8 @@ pub struct Button {
     /// key.
     image: Option<vello::peniko::ImageData>,
     faces: Vec<Person>,
+    /// The first of `faces` follows the person looking, and their face wears the follower's mark.
+    face_follows_you: bool,
     avatar: Option<Person>,
     placeholder: bool,
     content_tone: Option<Tone>,
@@ -200,6 +202,7 @@ impl Button {
             icon: None,
             image: None,
             faces: Vec::new(),
+            face_follows_you: false,
             avatar: None,
             placeholder: false,
             content_tone: None,
@@ -351,6 +354,18 @@ impl Button {
         self
     }
 
+    /// Mark the first face as following the person looking ([`tilo_ui_base::presence::Face`]): it
+    /// wears the follower's mark, a disc in its colour with an eye on its own edge, as the bare
+    /// roster's faces do.
+    #[must_use]
+    pub fn with_follows_you(mut self, follows: bool) -> Self {
+        if self.face_follows_you != follows {
+            self.face_follows_you = follows;
+            self.dirty = true;
+        }
+        self
+    }
+
     /// Lead with one person's avatar before the label, so a chip names who it is about as well as
     /// what it is called, in the presence `hue` the workspace gives them
     /// ([`PresenceCtx::hue_for`](tilo_ui_base::presence::PresenceCtx::hue_for)): the one they chose, never one
@@ -442,6 +457,7 @@ impl Button {
             || fresh.role != self.role
             || fresh.primary_on_hover != self.primary_on_hover
             || fresh.faces != self.faces
+            || fresh.face_follows_you != self.face_follows_you
             || fresh.avatar != self.avatar
         {
             return false;
@@ -459,9 +475,9 @@ impl Button {
             self.set_label(fresh.label.clone(), fresh.placeholder);
         }
         self.set_detail(fresh.detail.clone());
-        if fresh.faces != self.faces {
+        if fresh.faces != self.faces || fresh.face_follows_you != self.face_follows_you {
             self.faces.clone_from(&fresh.faces);
-            self.layout_dirty = true;
+            self.face_follows_you = fresh.face_follows_you;
             self.dirty = true;
         }
         if let Some(icon) = fresh.icon {
@@ -1301,6 +1317,7 @@ impl FaceSizer {
             icon,
             image: None,
             faces: &[],
+            follows_you: false,
             avatar: None,
             placeholder: false,
             tone: None,
@@ -1329,6 +1346,8 @@ struct FaceContent<'a> {
     /// Painted instead of `icon` on an icon-only face.
     image: Option<&'a vello::peniko::ImageData>,
     faces: &'a [Person],
+    /// The first face follows the person looking, and wears the follower's mark.
+    follows_you: bool,
     avatar: Option<&'a Person>,
     placeholder: bool,
     /// What the content marks means: its colour, where the face's own ink would stand.
@@ -1396,12 +1415,17 @@ impl FaceContent<'_> {
         let stack = tilo_ui_base::presence::FaceStack::in_face(side);
         let (shown, more) = stack.group(self.faces.len());
         let palette = &ctx.theme.tokens.colors.presence;
-        let faces: Vec<tilo_ui_base::presence::Face<'_>> = self
+        let mut faces: Vec<tilo_ui_base::presence::Face<'_>> = self
             .faces
             .iter()
             .take(shown)
             .map(|who| tilo_ui_base::presence::Face::of(who, palette.hue(who.hue)))
             .collect();
+        // The face the control is about wears the follower's mark, where its person follows the
+        // one looking: the badge the presence face already draws, never a count's dot.
+        if let Some(first) = faces.first_mut() {
+            first.follows_you = self.follows_you;
+        }
         let width = stack.width_of(faces.len(), more);
         stack.paint(
             ctx,
@@ -1972,6 +1996,7 @@ impl<'a> ButtonFace<'a> {
             icon: self.icon,
             image: None,
             faces: &[],
+            follows_you: false,
             avatar: None,
             placeholder: false,
             tone: None,
@@ -2039,6 +2064,7 @@ impl<'a> ButtonFace<'a> {
                 icon: self.icon,
                 image: None,
                 faces: &[],
+                follows_you: false,
                 avatar: None,
                 placeholder: false,
                 tone: self.tone,
@@ -2143,6 +2169,7 @@ impl Button {
                 icon: self.icon,
                 image: self.image.as_ref(),
                 faces: self.shown_faces(),
+                follows_you: self.face_follows_you,
                 avatar: self.avatar.as_ref(),
                 placeholder: self.placeholder,
                 tone: self.content_tone,
@@ -2209,6 +2236,7 @@ impl Button {
                 icon: self.icon,
                 image: None,
                 faces: self.shown_faces(),
+                follows_you: self.face_follows_you,
                 avatar: self.avatar.as_ref(),
                 placeholder: self.placeholder,
                 tone: None,

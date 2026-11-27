@@ -214,6 +214,14 @@ fn bar_says(session: &Session, words: &str) -> bool {
     session.shell_says(words)
 }
 
+/// Where the control named `name` stands on the bar `session` drew: `(x, y, width, height)`.
+#[track_caller]
+fn control(session: &Session, name: &str) -> (f64, f64, f64, f64) {
+    session
+        .shell_control(name)
+        .unwrap_or_else(|| panic!("the bar shows {name:?}: {:?}", session.accessible_labels()))
+}
+
 /// Run frames until the bar stops saying `words`, failing with everything it does say when
 /// `within` runs out: a notice that outlives its moment is the bug this names.
 #[track_caller]
@@ -258,9 +266,16 @@ fn the_bar_says_who_arrived_who_waved_and_who_follows_this_person() {
         session.shell_control("Ada is here").is_some()
     });
     keep_bar(&mut session, "people-bar-arrival");
+    let (_, arrival_y, _, _) = control(&session, "Ada is here");
+    assert!(arrival_y < 80.0, "the arrival stands in the bar");
     // The arrival is a notice, not a row: no hand takes it away, and the session gives it up when
     // its four seconds are over.
     bar_gone(&mut session, "Ada is here", Duration::from_secs(8));
+
+    // Where the faces and the invite stand while the bar says nothing: a notice must not move
+    // what a person may be aiming at.
+    let faces = control(&session, "Ada Lovelace");
+    let invite = control(&session, "Invite someone");
 
     // Ada waves at this person: the bar says who.
     presence(
@@ -274,6 +289,18 @@ fn the_bar_says_who_arrived_who_waved_and_who_follows_this_person() {
     crate::common::until(&mut session, "Ada's wave", |session| {
         bar_says(session, "Ada Lovelace waved at you")
     });
+    // The news stands where the clock stood, and the controls of who is here keep their places:
+    // nothing a person aims at is shoved aside by a word that goes by itself.
+    assert_eq!(
+        control(&session, "Ada Lovelace"),
+        faces,
+        "the faces stay where they were while the bar says who waved"
+    );
+    assert_eq!(
+        control(&session, "Invite someone"),
+        invite,
+        "the invite stays where it was while the bar says who waved"
+    );
     keep_bar(&mut session, "people-bar-wave");
     // And it goes by itself, after its six seconds, with nothing pressed since it was heard.
     bar_gone(
