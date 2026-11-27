@@ -1164,8 +1164,8 @@ impl Shell {
             }
             let request = tilo_actions::remote::InvokeRequest {
                 argument: tilo_actions::remote::InvokeArgument::Json(arguments),
-                // Answered once the change is made, or with why it was not, within the longest
-                // any provider holds an answer: an answer that it was only taken is no outcome.
+                // Answered once the change is made where the provider can hold its answer that
+                // long; one that answers it only took the change is followed to its end.
                 wait_ms: Some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
                 ..tilo_actions::remote::InvokeRequest::plain(
                     tilo_actions::remote::RemoteActionTarget {
@@ -1177,11 +1177,10 @@ impl Shell {
                     serde_json::Map::new(),
                 )
             };
-            let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
             let (daemon_at, workspace) = (daemon.clone(), workspace.to_owned());
             let refusals = std::sync::Arc::clone(&self.dispatch_refusals);
             daemon.runtime().spawn(async move {
-                if let Err(why) = daemon_at.dispatch(Some(&workspace), &message).await {
+                if let Err(why) = own_call_made(&daemon_at, &workspace, request).await {
                     tracing::warn!(
                         action = %address.action,
                         %why,
@@ -2382,6 +2381,73 @@ impl crate::Session {
             .ok_or_else(|| "the shell does not run".to_owned())?
             .run_action(action, arguments)
     }
+}
+
+/// How long a person's change of their shell is followed to its end before it is said to have
+/// stopped: the change is one write of the shell's record.
+const OWN_CALL_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Run `request`, the person's change of their shell, in `workspace` and follow it to its end:
+/// a provider may answer that it took the change before it is made, and the dispatch's record of
+/// the invocation then says once it was made, or why not.
+///
+/// # Errors
+/// Why the change was refused, failed or stopped, or that it did not end in time.
+async fn own_call_made(
+    daemon: &tilo_session_client::daemon_documents::DaemonShell,
+    workspace: &str,
+    request: tilo_actions::remote::InvokeRequest,
+) -> Result<(), String> {
+    use tilo_actions::InvocationUpdate;
+    use tilo_actions::remote::ReceiptStatus;
+    let invocation = request.invocation;
+    match daemon
+        .invoke_receipt(Some(workspace), request)
+        .await?
+        .status
+    {
+        ReceiptStatus::Completed { .. } => return Ok(()),
+        ReceiptStatus::Accepted => {}
+        ReceiptStatus::Rejected { error } => return Err(error.to_string()),
+        ReceiptStatus::Failed { error } => return Err(error.message),
+        ReceiptStatus::Cancelled { message } => {
+            return Err(message.unwrap_or_else(|| "the change was stopped".to_owned()));
+        }
+    }
+    let followed = async {
+        loop {
+            let Some(state) = daemon
+                .observe(
+                    Some(workspace),
+                    invocation,
+                    Some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
+                )
+                .await?
+            else {
+                // The dispatch keeps no record of it: its provider answered it, and the shell
+                // draws the change as it takes its record back in.
+                return Ok(());
+            };
+            match state.update {
+                InvocationUpdate::Succeeded { .. } => return Ok(()),
+                InvocationUpdate::Failed { error, .. } => return Err(error.message),
+                InvocationUpdate::Cancelled { message, .. } => {
+                    return Err(message.unwrap_or_else(|| "the change was stopped".to_owned()));
+                }
+                InvocationUpdate::Accepted { .. }
+                | InvocationUpdate::Progress { .. }
+                | InvocationUpdate::Item { .. } => {}
+            }
+        }
+    };
+    tokio::time::timeout(OWN_CALL_PATIENCE, followed)
+        .await
+        .unwrap_or_else(|_| {
+            Err(format!(
+                "the change did not end within {} s",
+                OWN_CALL_PATIENCE.as_secs()
+            ))
+        })
 }
 
 /// What holds the keyboard over the shell: a surface opened over the field the person types in,
