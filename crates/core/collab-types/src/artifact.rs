@@ -32,13 +32,19 @@ pub fn files_call_verbs(action: &str) -> &'static [&'static str] {
     }
 }
 
-/// Whether `target` names Files' action on a workspace's own folder in the records of `app`.
-fn names_files_folder(target: &tilo_actions::ActionAddress, app: &str) -> bool {
+/// Whether `target` names Files' action on a workspace's own folder in the records of `app`: the
+/// app's own call on it (`app.<app>`), or the device's answerer of the same action where the
+/// tree is kept (`tilo.device-files` on `files.folder`). A caller that reaches the folder asks
+/// one or the other, never a second action beside them.
+fn names_files_folder(target: &tilo_actions::remote::RemoteActionTarget, app: &str) -> bool {
     app == tilo_app_id::apps::FILE_EXPLORER
-        && target
+        && (target
+            .address
             .resource
             .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
             == Some(tilo_app_id::apps::FILE_EXPLORER)
+            || (target.provider == tilo_actions::remote::DEVICE_FILES_PROVIDER
+                && target.address.resource == tilo_actions::remote::DEVICE_FILES_FOLDER))
 }
 
 /// Whether the call `target` asks, as its own, for the step `verb` on a record of `kind` in the
@@ -47,20 +53,20 @@ fn names_files_folder(target: &tilo_actions::ActionAddress, app: &str) -> bool {
 /// own grants on them decide it.
 #[must_use]
 pub fn files_open_step(
-    target: &tilo_actions::ActionAddress,
+    target: &tilo_actions::remote::RemoteActionTarget,
     (app, kind, verb): (&str, &str, &str),
 ) -> bool {
     kind == FILES_TREE_KIND
         && names_files_folder(target, app)
-        && files_call_verbs(&target.action).contains(&verb)
+        && files_call_verbs(&target.address.action).contains(&verb)
 }
 
 /// Whether the call `target` asks, as its own, for a step through the history of the records of
 /// `app`: Files' `undo` on the workspace's own folder takes a call back as History takes back a
 /// step, and the caller's own grants on the tree decide it.
 #[must_use]
-pub fn files_history_step(target: &tilo_actions::ActionAddress, app: &str) -> bool {
-    target.action == "undo" && names_files_folder(target, app)
+pub fn files_history_step(target: &tilo_actions::remote::RemoteActionTarget, app: &str) -> bool {
+    target.address.action == "undo" && names_files_folder(target, app)
 }
 
 /// Whether `argument`, an `open`'s, names content to put: one file's `content`, or many as

@@ -19,10 +19,10 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 pub use tilo_app_id::apps::FILE_EXPLORER as APP;
 
 /// The provider the device answers calls on its folder under.
-pub const PROVIDER: &str = "tilo.device-files";
+pub const PROVIDER: &str = tilo_actions::remote::DEVICE_FILES_PROVIDER;
 
 /// The resource the actions are on, and its kind: the workspace's own folder.
-pub const FOLDER: &str = "files.folder";
+pub const FOLDER: &str = tilo_actions::remote::DEVICE_FILES_FOLDER;
 
 /// Put the file, or the files, `arguments` name into the workspace's own folder.
 pub const OPEN: &str = "open";

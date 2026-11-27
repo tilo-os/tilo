@@ -19,6 +19,14 @@ pub const APPLICATION_RESOURCE_KIND: &str = "applications.app";
 /// Action id that opens an application into a workspace.
 pub const APPLICATION_OPEN_ACTION: &str = "open";
 
+/// The provider a device answers the workspace's own folder under: the files it holds, and
+/// Files' verbs on them by paths in the workspace (`tilo_action_services::device_files`).
+pub const DEVICE_FILES_PROVIDER: &str = "tilo.device-files";
+
+/// The resource of the workspace's own folder a device's actions are on. It is the folder the
+/// Files app behind [`APPLICATION_RESOURCE_PREFIX`] is about, answered where its tree is kept.
+pub const DEVICE_FILES_FOLDER: &str = "files.folder";
+
 /// Action id that starts an application in a workspace without showing it:
 /// an instance with no window where the provider runs one, ready for the
 /// actions of the app that show nothing. It answers with that instance.

@@ -404,10 +404,7 @@ fn puts_files(
     let step = |did: &tilo_actions::Did| match did {
         tilo_actions::Did::Verb(verb) => {
             verb.action.kind == resource.kind
-                && collab_types::files_open_step(
-                    &target.address,
-                    (app, &resource.kind, &verb.action.action),
-                )
+                && collab_types::files_open_step(target, (app, &resource.kind, &verb.action.action))
         }
         _ => false,
     };
@@ -435,7 +432,7 @@ fn undoes_files(
     app: &str,
 ) -> bool {
     matches!(&context.what, Some(tilo_actions::Did::History(_)))
-        && collab_types::files_history_step(&target.address, app)
+        && collab_types::files_history_step(target, app)
 }
 
 /// Whether the verb `claimed`, as a change names it, is the action `signed` the caller asked
@@ -659,7 +656,7 @@ pub fn carried_effect(
         && members
             .iter()
             .all(|member| matches!(member, collab_types::claim::ClaimedAction::History(_)))
-        && collab_types::files_history_step(&target.address, record.app)
+        && collab_types::files_history_step(target, record.app)
     {
         return false;
     }
@@ -676,7 +673,7 @@ fn puts_files_claimed(
 ) -> bool {
     !verbs.is_empty()
         && verbs.iter().all(|action| {
-            collab_types::files_open_step(&target.address, (app, &action.kind, &action.action))
+            collab_types::files_open_step(target, (app, &action.kind, &action.action))
         })
 }
 
@@ -696,7 +693,7 @@ fn store_files_step(
     !members.is_empty()
         && members.iter().all(|member| match member {
             collab_types::claim::ClaimedAction::Edit { kind, path } if path.is_empty() => {
-                collab_types::files_open_step(&target.address, (app, kind, verb))
+                collab_types::files_open_step(target, (app, kind, verb))
             }
             _ => false,
         })
