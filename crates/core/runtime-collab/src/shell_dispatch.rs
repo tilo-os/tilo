@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use runtime_portal::NotAvailable;
@@ -37,20 +37,88 @@ pub struct ShellDispatch(Arc<Inner>);
 struct Inner {
     shell: ShellClient,
     runtime: tokio::runtime::Handle,
-    /// Where each call the daemon told of last stood, from a wait for it to move: what the look
-    /// that follows the wake reads, so a change costs one round trip.
-    fresh: Mutex<HashMap<InvocationId, (InvocationState, Option<String>)>>,
+    /// The one thread that drives [`Self::runtime`] when it has only one: the thread every answer
+    /// of the daemon arrives on, so a look that waits there for one waits for itself.
+    driver: OnceLock<std::thread::ThreadId>,
+    /// Where each call the daemon told of last stood, from its receipt or from a wait for it to
+    /// move: what the look that follows reads, so a change costs one round trip, and a look made
+    /// on the link's own thread (a wait's look after its wake, which runs where the wake arrived)
+    /// is answered without the daemon.
+    fresh: Mutex<Fresh>,
     next_correlation: AtomicU64,
+}
+
+/// What the daemon last said of each call a look has not read yet: where it stood, or `None` when
+/// the daemon has no state of it for its caller, with the workspace it was asked in.
+#[derive(Default)]
+struct Fresh {
+    told: HashMap<InvocationId, (Option<InvocationState>, Option<String>, u64)>,
+    next: u64,
+}
+
+/// The most calls whose last word is kept unread: one a caller never looks at again goes once
+/// this many newer ones were told.
+const MAX_FRESH: usize = 4096;
+
+impl Fresh {
+    fn tell(
+        &mut self,
+        invocation: InvocationId,
+        state: Option<InvocationState>,
+        workspace: Option<String>,
+    ) {
+        if self.told.len() >= MAX_FRESH && !self.told.contains_key(&invocation) {
+            let oldest = self
+                .told
+                .iter()
+                .min_by_key(|(_, (_, _, order))| *order)
+                .map(|(invocation, _)| *invocation);
+            if let Some(oldest) = oldest {
+                self.told.remove(&oldest);
+            }
+        }
+        self.next = self.next.wrapping_add(1);
+        self.told.insert(invocation, (state, workspace, self.next));
+    }
 }
 
 impl ShellDispatch {
     pub(crate) fn new(shell: ShellClient) -> Self {
-        Self(Arc::new(Inner {
-            runtime: shell.runtime(),
+        let runtime = shell.runtime();
+        let inner = Arc::new(Inner {
+            runtime: runtime.clone(),
             shell,
+            driver: OnceLock::new(),
             fresh: Mutex::default(),
             next_correlation: AtomicU64::new(1),
-        }))
+        });
+        if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
+            let noted = Arc::clone(&inner);
+            runtime.spawn(async move {
+                let _ = noted.driver.set(std::thread::current().id());
+            });
+        }
+        Self(inner)
+    }
+
+    /// Whether this thread drives the link's runtime: a wait here for the daemon's answer would
+    /// stop the very thread that carries it, and every other ask of the desktop's behind it.
+    fn on_the_link(&self) -> bool {
+        self.0.driver.get() == Some(&std::thread::current().id())
+    }
+
+    /// Keep what the daemon said of `invocation`, asked in `workspace`, for the next look at it.
+    fn tell(
+        &self,
+        invocation: InvocationId,
+        state: Option<InvocationState>,
+        workspace: Option<String>,
+    ) {
+        self.0
+            .fresh
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tell(invocation, state, workspace);
     }
 
     /// `message` asked of the daemon's dispatch in `workspace`, answered with the frame that
@@ -457,12 +525,28 @@ impl ActionProvider for ShellDispatch {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let this = self.clone();
+        let workspace = caller.workspace().map(str::to_owned);
         self.asking(
             caller,
             RemoteActionMessage::Invoke(request),
-            |answer| match answer {
+            move |answer| match answer {
                 RemoteActionMessage::Receipt(receipt) => match receipt.status {
                     ReceiptStatus::Rejected { error } => Err(error),
+                    // A call taken up and still running is where its first look finds it: a wait
+                    // for it to settle looks as soon as its receipt arrives, on the link's thread.
+                    ReceiptStatus::Accepted => {
+                        let invocation = receipt.invocation;
+                        this.tell(
+                            invocation,
+                            Some(InvocationState::new(
+                                invocation,
+                                tilo_actions::InvocationUpdate::Accepted { invocation },
+                            )),
+                            workspace,
+                        );
+                        Ok(receipt)
+                    }
                     _ => Ok(receipt),
                 },
                 _ => Err(unexpected()),
@@ -478,10 +562,23 @@ impl ActionProvider for ShellDispatch {
             .fresh
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .told
             .remove(id)
-            .filter(|(_, of)| *of == workspace);
-        if let Some((state, _)) = fresh {
-            return Some(state);
+            .filter(|(_, of, _)| *of == workspace);
+        if let Some((state, _, _)) = fresh {
+            return state;
+        }
+        // The daemon's answer arrives on this very thread: waiting for it here would hold the
+        // link, and every ask of the desktop's behind it, until the look gave up. Nothing told
+        // of this call is known here, which is what the look says.
+        if self.on_the_link() {
+            tracing::error!(
+                invocation = %id,
+                from = %std::backtrace::Backtrace::force_capture(),
+                "a look at a call was made on the thread that carries the daemon's link, with \
+                 nothing told of it yet"
+            );
+            return None;
         }
         let look = self.asking(
             caller,
@@ -509,14 +606,16 @@ impl ActionProvider for ShellDispatch {
             .fresh
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .told
             .get(id)
-            .map(|(state, _)| UpdateMark::of(&state.update));
-        let inner = Arc::clone(&self.0);
+            .and_then(|(state, _, _)| state.as_ref())
+            .map(|state| UpdateMark::of(&state.update));
+        let this = self.clone();
         let (invocation, workspace) = (*id, caller.workspace().map(str::to_owned));
         let (changed, change) = tilo_actions::remote::pending();
         self.0.runtime.spawn(async move {
             let asked = Self::ask(
-                &inner.shell,
+                &this.0.shell,
                 workspace.clone(),
                 RemoteActionMessage::Observe {
                     correlation: 0,
@@ -526,16 +625,20 @@ impl ActionProvider for ShellDispatch {
                 },
             )
             .await;
-            if let Ok(RemoteActionMessage::Update {
-                state: Some(state), ..
-            }) = asked
-            {
-                inner
-                    .fresh
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .insert(invocation, (state, workspace));
-            }
+            // Whatever the daemon answered is what the look this wakes reads: that look runs on
+            // this thread, where it cannot wait for the daemon.
+            let state = match asked {
+                Ok(RemoteActionMessage::Update { state, .. }) => state,
+                Ok(_) => {
+                    tracing::warn!(%invocation, "the daemon answered a wait for a call with something else");
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!(%invocation, %error, "the daemon did not answer a wait for a call");
+                    None
+                }
+            };
+            this.tell(invocation, state, workspace);
             changed.complete(());
         });
         Some(change)
@@ -766,3 +869,7 @@ async fn serve(
         .map(Answer::Action)
         .map_err(|error| error.to_string())
 }
+
+#[cfg(test)]
+#[path = "shell_dispatch_tests.rs"]
+mod tests;
