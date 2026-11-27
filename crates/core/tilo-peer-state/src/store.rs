@@ -3432,6 +3432,56 @@ mod tests {
         Cursor { lineage, after_seq }
     }
 
+    /// A device's own line is numbered from the block the store made durable, past what the
+    /// record gave it and past what the store itself holds: a store that starts again continues
+    /// after the block it reserved before, never at a number another device already holds.
+    #[test]
+    fn reserved_sequences_continue_past_their_block_across_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let lineage = Lineage::of(APP, RECORD, [3; 32]);
+        {
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(
+                store.reserve_sequence(workspace(), lineage, 0, 1).unwrap(),
+                1
+            );
+            assert_eq!(
+                store.reserve_sequence(workspace(), lineage, 0, 1).unwrap(),
+                2,
+                "the numbers of a block come out in order"
+            );
+            assert_eq!(
+                store
+                    .reserve_sequence(workspace(), lineage, 100, 2)
+                    .unwrap(),
+                101,
+                "a record that gave the line a higher number is numbered past it"
+            );
+        }
+        let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        assert_eq!(
+            store.reserve_sequence(workspace(), lineage, 0, 1).unwrap(),
+            133,
+            "the block reserved before the restart is skipped"
+        );
+    }
+
+    /// The frames a store holds on a device's own line are where its numbering starts, as a
+    /// device that lost its own state resumes from what the devices keeping the workspace hold.
+    #[test]
+    fn reserved_sequences_start_past_the_frames_the_store_holds() {
+        let (_dir, store) = open();
+        let key = device(4);
+        let authored = frame(&key, 50, ContentRetention::Delta);
+        assert_eq!(store.retain(workspace(), &authored).unwrap(), Retained::New);
+        assert_eq!(
+            store
+                .reserve_sequence(workspace(), authored.lineage, 0, 1)
+                .unwrap(),
+            51
+        );
+    }
+
     tilo_test_env::scenario! {
         fn replay_serves_a_records_frames_in_order_within_its_floor_and_budget;
 
