@@ -17,7 +17,7 @@ pub fn requested() -> bool {
 pub fn prepare() {}
 
 /// No render service draws this window. # Errors Always: this target has no render service.
-pub(crate) fn spawn(
+pub fn spawn(
     _window: Arc<Window>,
     _transparent: bool,
     _wake: Arc<dyn Fn() + Send + Sync>,

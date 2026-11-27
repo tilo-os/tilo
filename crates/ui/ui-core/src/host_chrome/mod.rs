@@ -20,7 +20,7 @@ pub mod model;
 #[cfg(any(feature = "native", test))]
 mod owner;
 #[cfg(all(windows, feature = "native"))]
-pub(crate) mod windows;
+pub mod windows;
 #[cfg(any(all(windows, feature = "native"), any(test, feature = "test-support")))]
 pub mod windows_items;
 pub mod zoom;

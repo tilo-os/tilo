@@ -3411,8 +3411,9 @@ fn start_capture(
 }
 
 /// [`start_capture`] where no sandbox keeps a capture's directories: the capture runs with no
-/// grant of this computer's, and writes nowhere of its own.
-#[cfg(not(target_os = "linux"))]
+/// grant of this computer's, and writes nowhere of its own. A capture is a Unix launch, as
+/// [`start_requested`] is.
+#[cfg(all(unix, not(target_os = "linux")))]
 fn start_capture(
     daemon: &Arc<Daemon>,
     app: &app_catalogue::apps::InstalledApp,

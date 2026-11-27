@@ -43,11 +43,11 @@ const PKEY_TITLE: PROPERTYKEY = PROPERTYKEY {
 static STARTUP_COMMAND: Mutex<Option<ControlInvocation>> = Mutex::new(None);
 
 /// The invocation this process was launched with, from a Jump List task.
-pub(crate) fn request_startup_command(invocation: ControlInvocation) {
+pub fn request_startup_command(invocation: ControlInvocation) {
     *STARTUP_COMMAND.lock_recover() = Some(invocation);
 }
 
-pub(crate) fn take_startup_command() -> Option<ControlInvocation> {
+pub fn take_startup_command() -> Option<ControlInvocation> {
     STARTUP_COMMAND.lock_recover().take()
 }
 
@@ -61,14 +61,14 @@ struct State {
 }
 
 /// The menu bar and Jump List of one window, rebuilt when commands change.
-pub(crate) struct WindowsChrome {
+pub struct WindowsChrome {
     state: Box<State>,
 }
 
 impl WindowsChrome {
     /// Take over `hwnd`'s menu messages. `hwnd` must be a live window of this thread, and this value
     /// must be dropped before it is destroyed.
-    pub(crate) fn install(hwnd: HWND, dispatch: impl Fn(ControlInvocation) + 'static) -> Self {
+    pub fn install(hwnd: HWND, dispatch: impl Fn(ControlInvocation) + 'static) -> Self {
         let state = Box::new(State {
             hwnd,
             commands: RefCell::new(Vec::new()),
@@ -92,7 +92,7 @@ impl WindowsChrome {
 
     /// Present `commands`: the menu bar is rebuilt only when an item's text changed, the Jump List only
     /// when its tasks did.
-    pub(crate) fn update(&self, commands: Vec<HostCommand>) {
+    pub fn update(&self, commands: Vec<HostCommand>) {
         let conventions = PlatformConventions::new(Platform::Windows);
         let shape: Vec<_> = commands
             .iter()

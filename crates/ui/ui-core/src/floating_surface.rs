@@ -412,11 +412,8 @@ impl FloatingSurfaceServiceClient {
         None
     }
 
-    #[cfg_attr(
-        not(feature = "native"),
-        expect(dead_code, reason = "only a native window gives its place to the next")
-    )]
-    pub(crate) fn hand_over(self) {}
+    /// Nothing to hand over: no floating-surface service runs on this platform.
+    pub fn hand_over(self) {}
 
     pub fn send(&mut self, _message: &FloatingSurfaceClientMessage) -> Result<(), String> {
         Err("floating-surface service is unavailable on this platform".into())
