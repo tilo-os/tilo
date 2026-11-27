@@ -619,13 +619,14 @@ impl Shared {
             .collect()
     }
 
-    /// Who a message goes to, as the names a box holds: an agent named as a
-    /// new one is made here first, so the message never goes to an agent the
-    /// workspace does not list. A new agent the person did not name is named
-    /// `asked`, by what it is sent.
+    /// Who a message goes to: an agent named as a new one is made here first, so the message never
+    /// goes to an agent the workspace does not list, and every other recipient is taken as the
+    /// workspace lists it, by its id or by its name alone ([`Self::named`]). A new agent the person
+    /// did not name is named `asked`, by what it is sent.
     ///
     /// # Errors
-    /// A new agent could not be made or admitted, or nobody is left to go to.
+    /// A new agent could not be made or admitted, the workspace lists nobody under a name a
+    /// recipient gives, or nobody is left to go to.
     fn recipients_of(
         &self,
         workspace: &str,
@@ -650,11 +651,9 @@ impl Shared {
                         name,
                     ));
                 }
-                RecipientKind::Agent
-                | RecipientKind::Person
-                | RecipientKind::Conversation
-                | RecipientKind::Feedback => {
-                    resolved.push(recipient.clone());
+                RecipientKind::Feedback => resolved.push(recipient.clone()),
+                RecipientKind::Agent | RecipientKind::Person | RecipientKind::Conversation => {
+                    resolved.push(self.named(workspace, recipient)?);
                 }
             }
         }
@@ -662,6 +661,15 @@ impl Shared {
             return Err("a message needs someone to go to".into());
         }
         Ok(resolved)
+    }
+
+    /// `recipient` as `workspace` has it: itself where it carries an id, else the one of its kind
+    /// whose name it gives, as the list every box reads names them ([`Self::recipients`]).
+    ///
+    /// # Errors
+    /// The workspace lists no person, agent or conversation of its kind called that.
+    fn named(&self, workspace: &str, recipient: &Recipient) -> Result<Recipient, String> {
+        named_in(&self.search.recipients(workspace), recipient)
     }
 
     /// Reporting a problem, as a row of every box's list of whom a message goes to and as the chip
@@ -707,6 +715,29 @@ impl Shared {
 /// The most people a box starts addressed to: more chips than a line of them holds, and a person
 /// saying something to everyone here names the rest themselves.
 const MAX_PEOPLE_CHIPS: usize = 4;
+
+/// `recipient` as `listed` has it: itself where it carries an id, else the one of its kind called
+/// that, whatever the case typed.
+///
+/// # Errors
+/// The list holds no person, agent or conversation of its kind called that.
+fn named_in(listed: &[Recipient], recipient: &Recipient) -> Result<Recipient, String> {
+    let name = recipient.name.trim();
+    if !recipient.id.is_empty() || name.is_empty() {
+        return Ok(recipient.clone());
+    }
+    let wanted = name.to_lowercase();
+    listed
+        .iter()
+        .find(|found| found.kind == recipient.kind && found.name.trim().to_lowercase() == wanted)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "this workspace has no {} called {name}",
+                recipient.kind.label().to_lowercase()
+            )
+        })
+}
 
 /// The rows among `rows` a box that says something to the people here opens to: the people, never
 /// the agents and conversations the same search finds.
@@ -1241,6 +1272,48 @@ mod tests {
             };
             assert_eq!(workspace, "w_notes");
             assert_eq!(to, [ada], "and goes to whom it named");
+        }
+
+        phase a_recipient_named_by_name_alone_is_the_one_the_workspace_lists;
+        // A person, an agent or a conversation named by its name alone, as a box or a script may
+        // name one, is the one of that kind the workspace lists under that name; a name nobody
+        // there is called is refused rather than sent to no one.
+        {
+            let helper = Recipient::found(
+                RecipientKind::Agent,
+                crate::search::recipient_id(&tilo_member_types::MemberId::agent(
+                    "helper-42",
+                    "ad".repeat(32),
+                )),
+                "Helper 42",
+            );
+            let general = Recipient::found(RecipientKind::Conversation, "c_1", "#general");
+            let listed = [helper.clone(), general.clone()];
+            let named = |kind, name: &str| named_in(&listed, &Recipient::found(kind, "", name));
+            assert_eq!(
+                named(RecipientKind::Agent, "helper 42"),
+                Ok(helper),
+                "found by its name, whatever the case typed"
+            );
+            assert_eq!(
+                named(RecipientKind::Conversation, "#general"),
+                Ok(general),
+                "a conversation by the name a box shows"
+            );
+            assert!(
+                named(RecipientKind::Agent, "Helper 4").is_err(),
+                "a name nobody there is called is refused"
+            );
+            assert!(
+                named(RecipientKind::Person, "Helper 42").is_err(),
+                "another kind's name is nobody's"
+            );
+            let by_id = Recipient::found(RecipientKind::Agent, "agent:ad/helper-42", "Helper 42");
+            assert_eq!(
+                named_in(&listed, &by_id),
+                Ok(by_id.clone()),
+                "an id stands as the caller gave it"
+            );
         }
     }
 }
