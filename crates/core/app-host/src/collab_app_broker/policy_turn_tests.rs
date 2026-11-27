@@ -1,10 +1,10 @@
-//! The broker's policy turn: membership surfaces and native
-//! context subscribers are re-checked when an input announces a change and
-//! at the first expiry the last check read, not once a second.
+//! The broker's policy turn: the workspaces' policy and native context
+//! subscribers are re-checked when an input announces a change and at the
+//! first expiry the last check read, not once a second.
 use super::*;
 // The idle-broker test reads its thread's wakeups from /proc, so it and the
-// fixtures only it uses (`RECHECK_INTERVAL`, `Announcing::write`,
-// `CountedWorkspace`) exist on Linux.
+// fixtures only it uses (`RECHECK_INTERVAL`, `CountedAuthority`,
+// `HeldWorkspace`) exist on Linux.
 #[cfg(target_os = "linux")]
 use crate::policy_schedule::RECHECK_INTERVAL;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
@@ -28,45 +28,49 @@ impl crate::services::WorkspaceAuthority for Announcing {
     }
 }
 
+/// A committed tree that announces its writes, as the shell's does, and keeps the wall time of
+/// every read the broker makes of it: each re-check of the workspaces' policy reads the tree
+/// once for the next change it waits for, so the reads are the re-checks.
 #[cfg(target_os = "linux")]
-impl Announcing {
+struct CountedAuthority {
+    tree: crate::test_support::WorkspaceTreeHandle,
+    reads: Mutex<Vec<u64>>,
+}
+
+#[cfg(target_os = "linux")]
+impl crate::services::WorkspaceAuthority for CountedAuthority {
+    fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
+        self.reads.lock().unwrap().push(tilo_clock::unix_now_ns());
+        read(&self.tree.read().desktop);
+        Ok(())
+    }
+
+    fn announces_policy_changes(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl CountedAuthority {
+    fn reads(&self) -> Vec<u64> {
+        self.reads.lock().unwrap().clone()
+    }
+
     /// Change the tree and announce it, as the shell's write guard does.
     fn write(&self, change: impl FnOnce(&mut WorkspaceTree)) {
-        change(&mut self.0.write());
+        change(&mut self.tree.write());
         policy_change::announce();
     }
 }
 
-/// The native membership owner of one workspace. Every re-check of the workspace's
-/// membership surface asks whether it keeps the workspace, so the questions are
-/// the re-checks.
+/// The native membership owner of one workspace: what makes the broker re-check policy at all.
 #[cfg(target_os = "linux")]
-struct CountedWorkspace {
-    workspace: String,
-    checks: Mutex<Vec<u64>>,
-}
+struct HeldWorkspace(String);
 
 #[cfg(target_os = "linux")]
-impl CountedWorkspace {
-    fn checks(&self) -> Vec<u64> {
-        self.checks.lock().unwrap().clone()
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl crate::services::WorkspaceMemberships for CountedWorkspace {
+impl crate::services::WorkspaceMemberships for HeldWorkspace {
     fn requires_workspace(&self, workspace: &str) -> bool {
-        self.checks.lock().unwrap().push(tilo_clock::unix_now_ns());
-        workspace == self.workspace
-    }
-
-    fn execute(
-        &self,
-        _: String,
-        _: tilo_user_identity::DeviceCert,
-        _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> crate::services::WorkspaceMembershipFuture {
-        Box::pin(async { Err("the policy turn fixture never commits".into()) })
+        workspace == self.0
     }
 }
 
@@ -217,13 +221,12 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
     let expiry = start.saturating_add(3600);
     let agent_expiry = start.saturating_add(7200);
     let (tree, workspace) = expiring_workspace(expiry, agent_expiry);
-    let authority = Arc::new(Announcing(tree.shared()));
-    let owner = Arc::new(CountedWorkspace {
-        workspace,
-        checks: Mutex::new(Vec::new()),
+    let authority = Arc::new(CountedAuthority {
+        tree: tree.shared(),
+        reads: Mutex::new(Vec::new()),
     });
     let services = ProcessServices {
-        workspace_memberships: Some(Arc::clone(&owner) as Arc<_>),
+        workspace_memberships: Some(Arc::new(HeldWorkspace(workspace)) as Arc<_>),
         ..ProcessServices::default()
     };
     let membership: crate::services::WorkspaceAuthorityHandle = authority.clone();
@@ -270,7 +273,7 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
 
     // The grant ends, and the policy clock announces it: one re-check, at
     // the expiry, which registers the next one.
-    let before_expiry = owner.checks().len();
+    let before_expiry = authority.reads().len();
     let _held = tilo_clock::testing::hold_wall_everywhere(
         process,
         std::time::UNIX_EPOCH
@@ -279,10 +282,10 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
     );
     policy_change::announce();
     tilo_test_env::wait_until("the re-check at the expiry", || {
-        owner.checks().len() > before_expiry
+        authority.reads().len() > before_expiry
     });
     assert_eq!(
-        owner.checks()[before_expiry],
+        authority.reads()[before_expiry],
         expiry.saturating_mul(NS),
         "the broker re-checked when the grant expired"
     );
@@ -292,10 +295,10 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
 
     // A revocation, announced: re-checked on the announcement, not on a
     // clock (the wall clock stands still).
-    let checks = owner.checks().len();
+    let checks = authority.reads().len();
     authority.write(|tree| tree.workspaces[0].policy.owner = None);
     tilo_test_env::wait_until("the re-check of the announced revocation", || {
-        owner.checks().len() > checks
+        authority.reads().len() > checks
     });
 }
 

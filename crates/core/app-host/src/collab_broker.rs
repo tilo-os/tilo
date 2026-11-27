@@ -549,31 +549,6 @@ impl AppActionBroker {
     pub fn downgrade(&self) -> WeakAppActionBroker {
         WeakAppActionBroker(Arc::new(WeakBrokerDiscovery(Arc::downgrade(&self.state))))
     }
-    /// Invoke one closed native workspace-membership command as the retained
-    /// certified person. The owner still rechecks current Admin authority.
-    /// Told whether `workspace`'s membership actions are published, once the
-    /// broker's loop has looked (see
-    /// `AppBrokerState::await_membership_surface`). Ask before
-    /// [`Self::change_workspace_membership`] in a workspace that may have
-    /// appeared since the broker last published its workspaces' actions.
-    pub fn await_membership_surface(
-        &self,
-        workspace: &str,
-    ) -> Result<std::sync::mpsc::Receiver<bool>, String> {
-        self.state
-            .while_live(|state| Ok(state.await_membership_surface(workspace)))
-    }
-
-    pub fn change_workspace_membership(
-        &self,
-        workspace: &str,
-        command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-        certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<crate::collab_app_broker::InvocationJob, String> {
-        self.state
-            .while_live(|state| state.invoke_workspace_membership(workspace, command, certificate))
-    }
-
     /// Construct the shell-facing facade around a real broker state for
     /// `LocalSet` integration tests. Production hosts construct this facade
     /// through `BrokerHandle`; arbitrary state injection is test-only.

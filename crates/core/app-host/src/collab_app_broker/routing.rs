@@ -91,41 +91,6 @@ impl AppBrokerState {
         // placeholder id; the caller drops it on the next tokio yield.
         self.fanout.upgrade().map_or(u64::MAX, |t| t.next_peer_id())
     }
-    pub(super) fn next_service_peer_id(&self) -> u64 {
-        // A fanout allocates unique ids. Without one — before the first
-        // connection, and on a broker tests drive directly — the placeholder
-        // would be handed out again, and a workspace's second service would
-        // replace its first in every registry. Take the next id no surface
-        // holds instead.
-        let candidate = self.next_peer_id();
-        let peer_id = if candidate == u64::MAX {
-            match self.publishers.surfaces.lock() {
-                Ok(surfaces) if surfaces.contains_key(&candidate) => (1..candidate)
-                    .rev()
-                    .find(|id| !surfaces.contains_key(id))
-                    .unwrap_or(candidate),
-                _ => candidate,
-            }
-        } else {
-            candidate
-        };
-        match self.service_peers.lock() {
-            Ok(mut peers) => peers.push(peer_id),
-            Err(poisoned) => poisoned.into_inner().push(peer_id),
-        }
-        peer_id
-    }
-    /// Withdraw the services a broker thread that unwound had started, as
-    /// if their connections had closed, before a new thread starts them.
-    pub(super) fn forget_service_peers(&self) {
-        let peers = match self.service_peers.lock() {
-            Ok(mut peers) => std::mem::take(&mut *peers),
-            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
-        };
-        for peer_id in peers {
-            self.remove_connection(peer_id);
-        }
-    }
     /// Drive an event onto the subscribed queues `route` addresses,
     /// skipping `except`. Called from [`FanoutState::fanout_to_route`]
     /// Delegates to
@@ -721,32 +686,20 @@ impl AppBrokerState {
     pub(super) fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
         // Read only the workspaces' grants: decided again whatever else this host serves.
         self.refresh_shown_actions();
-        // Only the opens waiting before this refresh reads the workspaces are
-        // told its outcome; a later one waits for the next.
-        let waiting = self.take_membership_surface_waiters();
         if self.services.workspace_memberships.is_none() || self.membership.is_none() {
-            // No membership surface, and no native context subscriber can
-            // be admitted: nothing here changes with policy.
-            self.answer_membership_surface_waiters(waiting);
+            // No native context subscriber can be admitted: nothing here changes with policy.
             return false;
         }
         // Sampled before anything is read: an expiry between this sample
         // and a read is registered as well, so none is skipped.
         let before = self.policy_now_ns();
-        let surface_failed = self
-            .refresh_workspace_membership_services()
-            .inspect_err(|error| {
-                tracing::warn!(%error, "native membership surface could not be refreshed");
-            })
-            .is_err();
-        self.answer_membership_surface_waiters(waiting);
         let context_failed = self
             .refresh_workspace_context_services()
             .inspect_err(|error| {
                 tracing::warn!(%error, "native membership context could not be refreshed");
             })
             .is_err();
-        let clocked = surface_failed || context_failed;
+        let clocked = context_failed;
         let announced = self
             .membership
             .as_ref()

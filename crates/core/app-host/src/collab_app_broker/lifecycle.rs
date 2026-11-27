@@ -324,7 +324,6 @@ impl AppBrokerState {
             .thread_restarts
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
-        self.forget_service_peers();
         if restarts > BROKER_THREAD_RESTARTS || self.stopped.load(Ordering::Acquire) {
             tracing::error!(
                 restarts,
@@ -440,7 +439,6 @@ impl AppBrokerState {
         clear!(self.pending_invocations);
         clear!(self.served_invocations);
         clear!(self.stable_invocation_subscribers);
-        clear!(self.workspace_governance_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
         clear!(self.host_step_stops);
@@ -784,8 +782,6 @@ impl AppBrokerState {
                 job_canceller: Mutex::new(None),
                 local_report_receipts: Mutex::default(),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
-                workspace_governance_peers: Mutex::new(HashMap::new()),
-                membership_surface_waiters: Mutex::new(Vec::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 live_views: live_views::LiveViews::default(),
                 host_step_stops: Mutex::new(HashMap::new()),
@@ -805,7 +801,6 @@ impl AppBrokerState {
                 offloads: Mutex::default(),
                 host_workers: Mutex::default(),
                 route_holders: Mutex::default(),
-                service_peers: Mutex::new(Vec::new()),
                 thread_restarts: AtomicU64::new(0),
                 turn_work: std::sync::Arc::new(TurnWork {
                     handed: Mutex::new(Vec::new()),

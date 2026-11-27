@@ -174,15 +174,6 @@ async fn a_native_context_subscriber_is_told_where_the_members_are() {
         fn requires_workspace(&self, workspace: &str) -> bool {
             workspace == self.0
         }
-
-        fn execute(
-            &self,
-            _: String,
-            _: tilo_user_identity::DeviceCert,
-            _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-        ) -> crate::services::WorkspaceMembershipFuture {
-            Box::pin(async { Err("the fixture never commits owner state".into()) })
-        }
     }
 
     let root = SigningKey::from_bytes(&[57; 32]);
@@ -278,15 +269,6 @@ async fn a_native_context_refuses_a_noncanonical_agent_identity() {
     impl crate::services::WorkspaceMemberships for NativeWorkspace {
         fn requires_workspace(&self, workspace: &str) -> bool {
             workspace == self.0
-        }
-
-        fn execute(
-            &self,
-            _: String,
-            _: tilo_user_identity::DeviceCert,
-            _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-        ) -> crate::services::WorkspaceMembershipFuture {
-            Box::pin(async { Err("the fixture never commits owner state".into()) })
         }
     }
 

@@ -118,8 +118,6 @@ mod shortcut_approval;
     )
 )]
 mod wire;
-#[path = "workspace_memberships.rs"]
-mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     AwaitingDocument, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
@@ -343,8 +341,6 @@ pub(crate) fn device_host(
 pub use launchable::launchable_provider;
 #[path = "policy_context.rs"]
 mod policy_context;
-#[path = "published_service.rs"]
-mod published_service;
 
 /// A unique actual private connection, independent of device role. A native
 /// primary device and a delegated Cloud host retain their existing admission paths.
@@ -523,13 +519,6 @@ pub struct AppBrokerState {
     committing_invocations: Mutex<HashSet<u64>>,
     local_report_receipts: Mutex<local_document_action::ReceiptCache>,
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
-    /// The workspace's governance surface per native workspace: the changes to
-    /// its people, published under the provider clients name.
-    workspace_governance_peers: Mutex<HashMap<String, u64>>,
-    /// Opens waiting for a workspace's membership actions to be published, each
-    /// told after the next refresh of the membership surfaces whether they
-    /// are ([`Self::await_membership_surface`]).
-    membership_surface_waiters: Mutex<Vec<(String, std::sync::mpsc::Sender<bool>)>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     /// Host steps whose result stays current, while they are open.
     live_views: live_views::LiveViews,
@@ -573,8 +562,6 @@ pub struct AppBrokerState {
     host_workers: Mutex<host_workers::HostWorkers>,
     /// The connection each further route hold belongs to ([`route_holds`]).
     route_holders: Mutex<route_holds::RouteHolders>,
-    /// Peer ids of the broker's own services on its thread's runtime.
-    service_peers: Mutex<Vec<u64>>,
     /// How often the broker thread unwound and started again.
     thread_restarts: AtomicU64,
     /// Work another thread hands the broker's turn (see [`TurnWork`]).

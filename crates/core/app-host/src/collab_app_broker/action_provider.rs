@@ -2064,18 +2064,10 @@ impl AppBrokerState {
             );
         }
         // A provider registered on this device: the host's own steps, and what its embedder
-        // registered, which another device's call reaches through the same registry. An action a
-        // surface published here offers as its workspace's governance is the one exception: it
-        // goes where the workspace's governance is published
-        // ([`Self::start_governance_action`]), on whichever device holds it. Every other action
-        // of a workspace's governance — its agents' actions among them — is the service
-        // registered here, which answers the workspaces it holds.
-        let answered_where_published = request.target.provider
-            == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
-            && self.a_surface_offers(&request.target.address);
-        if !answered_where_published
-            && let Some(registered) = self.registered(&request.target.provider)
-        {
+        // registered, which another device's call reaches through the same registry. A
+        // workspace's governance is the service registered here, which answers the workspaces
+        // it holds.
+        if let Some(registered) = self.registered(&request.target.provider) {
             return self.invoke_registered(caller, origin, serving, &registered, request);
         }
         if request.target.provider == tilo_action_services::own_device::PROVIDER {
@@ -2922,15 +2914,6 @@ impl AppBrokerState {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
-        if provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER {
-            return self.start_governance_action(
-                caller,
-                origin,
-                original_request,
-                request,
-                argument.as_deref(),
-            );
-        }
         if let Some(workspace) = provider_workspace(provider) {
             return self
                 .start_workspace_action(

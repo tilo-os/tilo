@@ -20,12 +20,6 @@ struct Native {
     origin: PolicyOrigin,
     cached_projection: Mutex<Option<tilo_desktop_model::Layout>>,
     spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
-    /// The workspace's host records no effect receipt: one it is asked for
-    /// is refused, as a host out of reach refuses it.
-    receipts_refused: std::sync::atomic::AtomicBool,
-    /// The owner is still opening, as a session's is at its start: health
-    /// says so until it is open.
-    opening: std::sync::atomic::AtomicBool,
     /// The agent sessions going, each with what its person allowed it.
     sessions: Mutex<Vec<(String, crate::services::GoingSession)>>,
     /// The agents the workspace's record of its agents names.
@@ -130,23 +124,14 @@ impl WorkspaceCommits for Native {
     }
 
     fn health(&self) -> Result<(), String> {
-        if self.opening.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err("the native record is still opening; try again in a moment".into());
-        }
         self.owner.health()
     }
 
     fn effect(&self, workspace: String, redacted: Vec<u8>) -> EffectFuture {
         let owner = self.owner.clone();
         let certificate = self.certificate.clone();
-        let receipts_refused = self
-            .receipts_refused
-            .load(std::sync::atomic::Ordering::SeqCst);
         Box::pin(async move {
             tokio::task::yield_now().await;
-            if receipts_refused {
-                return Err("the workspace's record records no receipt".into());
-            }
             let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
                 .ok_or_else(|| "invalid workspace".to_owned())?;
             let receipt: tilo_actions::receipt::WorkspaceEffectReceipt =
@@ -182,30 +167,6 @@ impl WorkspaceMemberships for Native {
     }
     fn health(&self) -> Result<(), String> {
         self.owner.health()
-    }
-    fn execute(
-        &self,
-        workspace: String,
-        caller: tilo_user_identity::DeviceCert,
-        command: WorkspaceMembershipCommand,
-    ) -> crate::services::WorkspaceMembershipFuture {
-        let owner = self.owner.clone();
-        let key = self.key.clone();
-        Box::pin(async move {
-            let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
-                .ok_or_else(|| "invalid workspace".to_owned())?;
-            owner
-                .commit_membership(
-                    workspace,
-                    &caller,
-                    &command,
-                    &key,
-                    std::time::SystemTime::now(),
-                )
-                .await
-                .map(drop)
-                .map_err(|error| error.to_string())
-        })
     }
 }
 impl crate::services::AgentSessions for Native {
@@ -296,8 +257,6 @@ impl Fixture {
             origin: OwnerPolicyClock::new().unwrap().new_origin(),
             cached_projection: Mutex::new(None),
             spent_grants: Mutex::new(Vec::new()),
-            receipts_refused: std::sync::atomic::AtomicBool::new(false),
-            opening: std::sync::atomic::AtomicBool::new(false),
             sessions: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
         });
@@ -490,148 +449,6 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
             .unwrap();
     }
 }
-/// A membership change whose outcome the broker cannot record (its effect
-/// receipt is refused) does not leave whoever asked for it waiting, as an
-/// opening app's authorship was left: the asker hears at once that no
-/// outcome was recorded, and the workspace's membership service goes on serving.
-/// The receipt prepared for the change admits only the owner's own
-/// terminal, so the journal keeps the change for recovery to answer.
-#[tokio::test(flavor = "current_thread")]
-async fn a_membership_change_whose_receipt_is_refused_does_not_leave_its_asker_waiting() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let f = Fixture::new();
-            f.native
-                .receipts_refused
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            let workspace = workspace_id().to_string();
-            f.state.refresh_workspace_membership_services().unwrap();
-            assert!(
-                f.state.membership_published(&workspace),
-                "the workspace's membership actions are offered"
-            );
-            let job = f
-                .state
-                .invoke_workspace_membership(
-                    &workspace,
-                    &WorkspaceMembershipCommand::Settings(
-                        tilo_peer_state::workspace_membership::SettingsChange::Rename {
-                            name: "Studio".into(),
-                        },
-                    ),
-                    &f.native.certificate,
-                )
-                .unwrap();
-            let deadline = tilo_test_env::hang_deadline();
-            let heard = loop {
-                match job.completion.try_recv() {
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                    heard => break heard,
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the asker was left waiting on a membership service that stopped"
-                );
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            };
-            if let Ok(completed) = heard {
-                assert!(
-                    !completed.code.is_empty(),
-                    "a change whose outcome was not recorded never reads as done"
-                );
-            }
-            tokio::task::yield_now().await;
-            assert!(
-                f.state.membership_published(&workspace),
-                "one change's unrecorded outcome does not take the workspace's membership service away"
-            );
-            drop(f);
-        })
-        .await;
-}
-
-/// Apps opened together at a session's start each ask that they may author
-/// the workspace, and their grants queue on the workspace's membership service. The
-/// first grant's outcome cannot be recorded while the native owner is still
-/// opening; that grant is told why, and every grant behind it still
-/// completes on the same service: none hears that its outcome is unknown
-/// because the service went away, which left the apps' windows refused
-/// ("This workspace's host did not let you add ...") on their first open.
-#[tokio::test(flavor = "current_thread")]
-async fn grants_in_flight_survive_an_unrecorded_one_while_the_owner_opens() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let f = Fixture::new();
-            let workspace = workspace_id().to_string();
-            f.state.refresh_workspace_membership_services().unwrap();
-            assert!(f.state.membership_published(&workspace));
-            let grant = |name: &str| {
-                f.state
-                    .invoke_workspace_membership(
-                        &workspace,
-                        &WorkspaceMembershipCommand::Settings(
-                            tilo_peer_state::workspace_membership::SettingsChange::Rename {
-                                name: name.into(),
-                            },
-                        ),
-                        &f.native.certificate,
-                    )
-                    .unwrap()
-            };
-            f.native
-                .opening
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            let first = grant("Notes");
-            let first = answer_of(&first).await;
-            f.native
-                .opening
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-            let queued = ["Tasks", "Chat", "Board"].map(grant);
-            for job in &queued {
-                let answer = answer_of(job).await;
-                assert!(
-                    answer.code.is_empty(),
-                    "a grant behind an unrecorded one completes: {} {}",
-                    answer.code,
-                    answer.message
-                );
-            }
-            assert!(
-                !first.message.contains("disconnect"),
-                "the unrecorded grant is told why, not that its service went away: {}",
-                first.message
-            );
-            assert!(
-                first.code.is_empty() || first.message.contains("still opening"),
-                "the unrecorded grant hears the owner's own reason: {} {}",
-                first.code,
-                first.message
-            );
-            assert!(f.state.membership_published(&workspace));
-            drop(f);
-        })
-        .await;
-}
-
-/// The answer `job` hears, waited for while the broker's loop runs.
-async fn answer_of(job: &super::InvocationJob) -> InvocationCompletion {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        match job.completion.try_recv() {
-            Ok(answer) => return answer,
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                panic!("an asker was left without an answer")
-            }
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "an asker was left waiting on the workspace's membership service"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 use tilo_actions::remote::{ActionCallError, Caller, InvocationReceipt, InvokeRequest, Pending};
 
 /// A step that is a turn's (registered for turns): the session's layout, out here.

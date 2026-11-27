@@ -1150,27 +1150,6 @@ impl AppBrokerState {
             );
         }
     }
-    /// Answer invocation `id` of `peer_id`, whose terminal update could not
-    /// be recorded (`error`), with that reason: its asker hears why, never
-    /// that its peer went away. The peer goes on serving the others.
-    pub(super) fn fail_unrecorded_invocation(&self, peer_id: u64, id: u64, error: &str) {
-        let Some(invocation) = self
-            .pending_invocations
-            .lock()
-            .ok()
-            .and_then(|mut pending| {
-                pending
-                    .get(&id)
-                    .is_some_and(|invocation| invocation.peer_id == peer_id)
-                    .then(|| pending.remove(&id))
-                    .flatten()
-            })
-        else {
-            return;
-        };
-        let failed = format!("the action's outcome could not be recorded: {error}");
-        self.answer_unfinished(id, &invocation, &failed, &failed);
-    }
     /// Answer `invocation`, taken out of the pending registry unfinished:
     /// an unjournaled one fails with `failed`, a journaled one's outcome is
     /// unknown, said as `unknown`.

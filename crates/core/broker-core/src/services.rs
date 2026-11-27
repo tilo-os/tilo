@@ -23,9 +23,7 @@ pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use resource_requests::{
     FilesEntry, FilesPutCall, KEYLESS_AGENT, LandedInvocations, ResourceRequestContext,
 };
-pub use workspace_memberships::{
-    WorkspaceMembershipFuture, WorkspaceMemberships, WorkspaceStatusFuture,
-};
+pub use workspace_memberships::{WorkspaceMemberships, WorkspaceStatusFuture};
 pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 
 /// Current native device identity, installed only by the authenticated host.

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tilo_broker_core::services::WorkspaceAuthorityHandle;
 
 use super::Workspaces;
-use tilo_broker_core::services::{WorkspaceMembershipFuture, WorkspaceMemberships};
+use tilo_broker_core::services::WorkspaceMemberships;
 
 /// The member list the broker on a host serves: which workspaces this host holds, and the picture
 /// each person set in the profile it keeps for them. The workspace service a device runs installs
@@ -39,21 +39,6 @@ impl WorkspaceMemberships for ProfileMemberships {
 
     fn health(&self) -> Result<(), String> {
         Ok(())
-    }
-
-    fn execute(
-        &self,
-        _workspace: String,
-        _caller: tilo_user_identity::DeviceCert,
-        _command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> WorkspaceMembershipFuture {
-        Box::pin(async {
-            Err(
-                "a member's own change is written by their own device, not by the host keeping \
-                 the workspace"
-                    .into(),
-            )
-        })
     }
 
     fn person_photo(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
