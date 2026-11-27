@@ -507,6 +507,37 @@ async fn a_key_for_one_workspace_asks_the_host_for_nothing_but_its_workspace_ope
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_server_key_neither_stops_nor_follows_the_hosts_agent_sessions() {
+    let root = SigningKey::from_bytes(&[0x15; 32]);
+    let device = device_host(&root).await;
+    // A key its person made for their programs acts as them in every workspace, and is still no
+    // device of theirs: the agent sessions the host runs are stopped and followed on one.
+    let server = certified(
+        &root,
+        18,
+        "Visa backend #5",
+        DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
+    );
+    let key = session(&device, &server).await;
+    for action in [
+        tilo_action_services::mcp_server::STOP,
+        tilo_action_services::mcp_server::SERVER,
+    ] {
+        let target = tilo_action_services::mcp_server::target(action);
+        let refused = key
+            .ask_host(
+                tilo_session_client::session::HOST_ITSELF,
+                target.clone(),
+                serde_json::Map::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "unknown_action", "{target:?}: {refused:?}");
+    }
+    key.close();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_grant_for_one_workspace_is_invited_into_that_one_alone() {
     let root = SigningKey::from_bytes(&[0x13; 32]);
     let device = device_host(&root).await;

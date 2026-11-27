@@ -2301,7 +2301,13 @@ impl Workspaces {
         let host = &self.inner.host.cert;
         certificate
             .filter(|certificate| {
+                // A device of the person's own: no key they made for their programs (which acts
+                // as them and is still no device of theirs), no agent's grant, and no device
+                // confined to one workspace (its VM, or one placed for its records).
                 caller.acting().is_person()
+                    && caller.key().is_none()
+                    && certificate.capabilities.agent.is_none()
+                    && certificate.capabilities.workspace_name().is_none()
                     && caller.device_public_key() == Some(&certificate.device_public_key)
                     && caller.user_public_key() == Some(&certificate.user_public_key)
                     && certificate.user_public_key == host.user_public_key
