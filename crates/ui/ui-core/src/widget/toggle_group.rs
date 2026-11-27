@@ -2384,6 +2384,11 @@ impl Widget for ToggleGroup {
         self.touch.is_active() || self.menu.is_open()
     }
 
+    /// The folded strip's menu while it is open: it stands over the page as every open menu does.
+    fn modal_capture(&self) -> Option<Rect> {
+        self.menu.modal_capture()
+    }
+
     fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
