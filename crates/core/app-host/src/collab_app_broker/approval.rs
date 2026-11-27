@@ -153,6 +153,19 @@ impl AppBrokerState {
                     .flatten()
                     .filter(|descriptor| &descriptor.address == address)
                     .map(|descriptor| (app, descriptor))
+            })
+            // A registered provider's action on one of the rows its reading publishes (a saved
+            // network, a paired accessory): the eager listing holds the resources in front alone,
+            // and its own catalogue names the row at the address the call asks.
+            .or_else(|| {
+                let registered = self.registered(provider)?;
+                let descriptor = self.services.providers.as_ref()?.descriptor(
+                    &registered,
+                    caller,
+                    address,
+                    request.argument.to_slot().as_deref(),
+                )?;
+                Some((registered.app.to_string(), descriptor))
             });
         let Some((app, descriptor)) = offered else {
             // An application that publishes a directory names the action by its address.

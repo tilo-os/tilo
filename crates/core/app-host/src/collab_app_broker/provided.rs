@@ -3011,3 +3011,126 @@ mod own_provider_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod registered_ask_tests {
+    use super::super::AppBrokerState;
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use std::sync::Arc;
+    use tilo_actions::remote::{
+        ActionCallError, Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
+        RemoteActionTarget,
+    };
+    use tilo_workspace_service::workspaces::providers::{Providers, Reach};
+
+    /// The provider the session's own services answer the device's dispatch under.
+    const PROVIDER: &str = "session.services";
+    /// The saved network the call forgets.
+    const RESOURCE: &str = "saved-network:uuid-home";
+
+    fn descriptor() -> tilo_actions::ActionDescriptor {
+        tilo_actions::ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new(RESOURCE, "forget"),
+            resource_kind: "so.tilo.connectivity.saved-network".into(),
+            resource_label: "Saved network".into(),
+            action_label: "Forget the network".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: tilo_actions::ExecutionLocus::default(),
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract {
+                kind: tilo_actions::ActionKind::Outside,
+                confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                ..tilo_actions::ActionContract::default()
+            },
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        }
+    }
+
+    /// A provider that declares the action and runs nothing: the call is refused for want of the
+    /// person's yes before it starts.
+    struct Forgets;
+
+    impl Admits for Forgets {
+        const PROVIDER: &'static str = PROVIDER;
+        const APP: &'static str = crate::shell::SHELL_APP;
+
+        fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
+            // A network's own row, as the reading publishes it under the resource holding it.
+            vec![tilo_actions::api::PlacedAction {
+                parent: "network".to_owned(),
+                has_children: false,
+                action: descriptor(),
+            }]
+        }
+
+        fn start(
+            &self,
+            _caller: &Caller,
+            _request: &InvokeRequest,
+            _admitted: &Admitted,
+        ) -> Result<Pending<Outcome>, String> {
+            Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
+        }
+    }
+
+    /// A provider registered on the device refuses a call its contract asks first: the question
+    /// its person is shown names the action by the label it declared, never by the action's id.
+    #[test]
+    fn a_registered_providers_ask_names_the_action_by_its_declared_label() {
+        let person = hex::encode([41u8; 32]);
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(41), "Home");
+        workspace.policy.set_owner(person.clone());
+        let workspace_id = workspace.id().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let providers = Providers::default();
+        providers.provide(
+            PROVIDER,
+            crate::shell::SHELL_APP,
+            Reach::ThisDevice,
+            Arc::new(Forgets),
+        );
+        let state = AppBrokerState::test_state_only(
+            Some(tree.shared().authority()),
+            crate::services::ProcessServices {
+                providers: Some(providers),
+                ..Default::default()
+            },
+        );
+        let caller = Caller::local_person(person).in_workspace(&workspace_id);
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(RESOURCE, "forget"),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let answered = state
+            .action_invoke(&caller, None, None, &request)
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("the dispatch answers");
+        let Err(ActionCallError::ConfirmationRequired(facts)) = answered else {
+            panic!("it waits for the person: {answered:?}");
+        };
+        assert_eq!(facts.verb, "Forget the network", "{facts:?}");
+        assert_eq!(facts.on.as_deref(), Some("Saved network"), "{facts:?}");
+        assert!(facts.destructive, "{facts:?}");
+    }
+}

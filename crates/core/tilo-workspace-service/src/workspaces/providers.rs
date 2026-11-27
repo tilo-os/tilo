@@ -1040,12 +1040,34 @@ impl Providers {
                     .filter(|other| other.app == registered.app)
                     .find_map(|other| published(&other.published))
             })
-            .or_else(|| {
-                Self::rows(registered, caller)
-                    .into_iter()
-                    .filter_map(|row| row.action)
-                    .find(|action| &action.address == address)
-            })
+            .or_else(|| Self::action(registered, caller, address))
+    }
+
+    /// The action `address` names, as `registered` lists it to `caller` now: the row its
+    /// catalogue holds at that address, whether the action is on a resource of the provider's
+    /// own or on one of the rows a reading of it publishes. `None` where the provider lists
+    /// none there, or answers only once it has gone to ask.
+    #[must_use]
+    pub fn action(
+        registered: &Registered,
+        caller: &Caller,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::ActionDescriptor> {
+        let query = CatalogueQuery {
+            provider: Some(registered.provider.to_string()),
+            target: Some(address.clone()),
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        };
+        let tilo_actions::remote::PendingPoll::Ready(Ok(page)) =
+            registered.answers.query(caller, query).poll_ready()
+        else {
+            return None;
+        };
+        page.rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|action| &action.address == address)
     }
 
     /// What `registered` lists for `caller`, as it answers at once: a registered provider lists

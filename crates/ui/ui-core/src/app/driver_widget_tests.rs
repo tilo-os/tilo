@@ -131,3 +131,36 @@ fn the_root_takes_a_key_under_the_modifier_state_it_is_given() {
     assert!(driver.dispatch_to_root_with(&key, &modifiers));
     assert!(driver.root::<NavShell>().is_sidebar_open());
 }
+
+/// A question names the action in its headline and on the answer that carries it out, and its
+/// panel may be named for it too. The answer is the control a press by that name means, so it
+/// comes first.
+#[test]
+fn a_name_said_beside_a_control_is_the_control() {
+    use crate::widget::Popover;
+    use vello::kurbo::Rect as KurboRect;
+    let panel = Popover::with_content(
+        Column::new()
+            .push(Box::new(Text::new("Forget the network")))
+            .push(Box::new(Button::new("forget", "Forget the network"))),
+    )
+    .with_label("Forget the network")
+    .open(true)
+    .with_viewport(KurboRect::new(0.0, 0.0, 800.0, 600.0));
+    let driver = Driver::new(State::new(), Box::new(panel), (800, 600));
+    let named = driver.a11y_nodes_named("Forget the network");
+    let roles: Vec<_> = named
+        .iter()
+        .filter_map(|&id| driver.a11y_node(id))
+        .map(|node| node.role())
+        .collect();
+    assert_eq!(
+        roles.first(),
+        Some(&crate::accesskit::Role::Button),
+        "the answer comes first: {roles:?}"
+    );
+    assert!(
+        roles.len() > 1,
+        "the headline says the name as well: {roles:?}"
+    );
+}

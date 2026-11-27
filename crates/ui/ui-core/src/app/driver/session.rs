@@ -255,17 +255,25 @@ impl Driver {
 
     /// The ids of every exported node whose accessible name is `name`, or whose row title is
     /// exactly `name`, in tree order: a list row is named by all of its text, its title and its
-    /// secondary line, so the line it is titled with finds it. Nodes named `name` come before rows
-    /// titled it.
+    /// secondary line, so the line it is titled with finds it. A control that answers a press on
+    /// it comes before what only says the name (a question's headline says the action its yes
+    /// button runs), and nodes named `name` come before rows titled it.
     #[must_use]
     pub fn a11y_nodes_named(&self, name: &str) -> Vec<accesskit::NodeId> {
         let titled: HashMap<_, _> = self.row_titles().into_iter().collect();
         let nodes = self.a11y_nodes();
-        let mut named: Vec<accesskit::NodeId> = nodes
+        let mut labelled: Vec<(bool, accesskit::NodeId)> = nodes
             .iter()
             .filter(|(_, node)| node.label() == Some(name))
-            .map(|(id, _)| *id)
+            .map(|(id, node)| {
+                let answers_a_press = node.supports_action(crate::accesskit::Action::Click)
+                    || node.supports_action(crate::accesskit::Action::Focus);
+                (!answers_a_press, *id)
+            })
             .collect();
+        // Stable: within the controls and within the rest, the tree's reading order stands.
+        labelled.sort_by_key(|(not_answered, _)| *not_answered);
+        let mut named: Vec<accesskit::NodeId> = labelled.into_iter().map(|(_, id)| id).collect();
         named.extend(nodes.iter().filter_map(|(id, node)| {
             (node.label() != Some(name) && titled.get(id).is_some_and(|title| title == name))
                 .then_some(*id)
