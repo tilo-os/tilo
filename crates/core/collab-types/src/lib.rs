@@ -44,6 +44,7 @@
 
 pub mod action_authority;
 pub mod actors;
+pub mod app_actions;
 pub mod app_surface;
 pub mod artifact;
 pub mod before_call;

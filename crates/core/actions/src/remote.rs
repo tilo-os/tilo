@@ -31,11 +31,9 @@ use std::collections::{HashMap, VecDeque};
 use serde::{Deserialize, Serialize};
 
 pub use window_actions::{
-    APPLICATION_ACTIVATE_ACTION, APPLICATION_ACTIVATE_TYPE, APPLICATION_OPEN_LINK_ACTION,
-    APPLICATION_OPEN_LINK_TYPE, APPLICATION_OPEN_TYPE, APPLICATION_OUTLINE_ACTION,
-    APPLICATION_OUTLINE_TYPE, OPEN_LINK_PARAM, OUTLINE_ANCHOR_PARAM, OUTLINE_PICTURE_UNAVAILABLE,
-    activate_spec, activation_requested, link_scheme, open_link_arguments, outline_anchor,
-    outline_asked, outline_spec,
+    APPLICATION_OUTLINE_ACTION, APPLICATION_OUTLINE_TYPE, OUTLINE_ANCHOR_PARAM,
+    OUTLINE_PICTURE_UNAVAILABLE, activation_requested, link_scheme, outline_anchor, outline_asked,
+    outline_spec,
 };
 
 pub mod admitted;
@@ -90,8 +88,7 @@ mod within;
 pub mod workspace_activity;
 
 pub use application::{
-    APPLICATION_PROVIDER, ApplicationLaunch, CONTENT_HASH_ARGUMENT, NAME_ARGUMENT,
-    application_action_target, application_open_target, application_provider,
+    APPLICATION_PROVIDER, application_action_target, application_open_target, application_provider,
     application_provider_resource, application_provider_token, application_resource_target,
     valid_file_name,
 };
@@ -2916,72 +2913,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn an_application_action_names_its_destination;
-
-        phase opening_an_app_needs_no_workspace_consent;
-        // Camera's "Open Photos" opens a window of the person's own, as the
-        // launcher does: a workspace's grants have nothing to consent to, so a guest
-        // is not asked first.
-        {
-            for spec in [
-                ApplicationLaunch::app("so.tilo.photos").spec("open-photos", "Open Photos", ""),
-                ApplicationLaunch::content_spec("so.tilo.photos", "open-capture", "Open", ""),
-            ] {
-                assert!(spec.contract.is_own_device(), "{}", spec.id);
-                assert_eq!(
-                    spec.contract.need().kind,
-                    crate::ActionKind::Read,
-                    "{}",
-                    spec.id
-                );
-            }
-        }
-
-        phase application_launch_action_preserves_destination_and_never_falls_back_to_open;
-        {
-            let launch = ApplicationLaunch::with_action(
-                "so.tilo.file-explorer",
-                "files.remote-account:616461",
-                "open-remote-account",
-            );
-            let spec = launch.spec("open-files", "Browse files", "Open this account in Files");
-            let encoded = spec.build_args([]).unwrap();
-            assert_eq!(encoded.type_id, ApplicationLaunch::TYPE);
-            let decoded: ApplicationLaunch = serde_json::from_slice(&encoded.payload).unwrap();
-            assert!(decoded.valid());
-            for workspace in ["workspace-a", "workspace-b"] {
-                assert_eq!(
-                    decoded.target(workspace),
-                    application_action_target(
-                        workspace,
-                        "so.tilo.file-explorer",
-                        "files.remote-account:616461",
-                        "open-remote-account",
-                    )
-                );
-            }
-            assert!(matches!(decoded.argument(), InvokeArgument::None));
-            let legacy: ApplicationLaunch = serde_json::from_value(serde_json::json!({
-                "app_id": "so.tilo.photos"
-            }))
-            .unwrap();
-            assert!(legacy.valid());
-            assert_eq!(
-                legacy.target("workspace-a"),
-                application_open_target("workspace-a", "so.tilo.photos")
-            );
-            let mut invalid = decoded;
-            invalid.content_hash = Some("a".repeat(64));
-            assert!(
-                !invalid.valid(),
-                "a handoff must not mix content staging and an app action"
-            );
-            invalid.content_hash = None;
-            invalid.action.as_mut().unwrap().resource.clear();
-            assert!(
-                !invalid.valid(),
-                "an invalid destination must fail, not open an empty app"
-            );
-        }
 
         phase an_application_action_target_names_its_workspace_and_app;
         {

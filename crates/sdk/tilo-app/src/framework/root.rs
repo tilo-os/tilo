@@ -9,6 +9,8 @@ use tilo_actions::ResourceSpec;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use crate::runner::{with_native_presentations, with_view_operations};
+use collab_types::app_actions::{AppOpen, OPEN_APP_OPERATION, OPEN_OPERATION};
+use tilo_resource::Effect as _;
 use tilo_resource::{Resource, SearchEntry};
 use tilo_ui_base::PresencePayload;
 use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
@@ -275,41 +277,11 @@ impl ui_core::widget::WindowHistory for ResourceRoot {
     }
 }
 
-/// The operation type of the framework's `open` view: show the item at an
-/// anchor, as picking a search hit does.
-pub(crate) const OPEN_TYPE: &str = tilo_actions::remote::APPLICATION_OPEN_TYPE;
-
-/// The parameter of `open` naming what to show.
-const OPEN_ANCHOR: &str = "anchor";
-
 /// `open`: show the item at an anchor (a search entry's anchor). Published
 /// when a view shows items ([`ViewCx::on_open`](super::ViewCx::on_open)), so
 /// an agent opens the app where a person's search hit would.
 fn open_spec() -> tilo_actions::ActionSpec {
-    tilo_actions::ActionSpec::typed_operation(
-        "open",
-        "Open",
-        "Item to open",
-        tilo_actions::OperationKind::View,
-        OPEN_TYPE,
-        vec![tilo_actions::ActionParam::required(
-            OPEN_ANCHOR,
-            tilo_actions::ParamType::Text,
-            "Item to open: the anchor of a search hit",
-        )],
-        |args| {
-            tilo_actions::EncodedAction::encode_operation(
-                OPEN_TYPE,
-                &serde_json::json!({ OPEN_ANCHOR: args.text(OPEN_ANCHOR) }),
-            )
-            .unwrap_or_else(|_| tilo_actions::EncodedAction {
-                type_id: OPEN_TYPE.into(),
-                payload: Vec::new(),
-            })
-        },
-    )
-    .of_kind(tilo_actions::ActionKind::Read)
-    .with_description("Open the app at one item: the anchor of a search hit.")
+    collab_types::app_actions::open_spec()
 }
 
 /// The label of the item view the framework gives an item resource that
@@ -318,24 +290,10 @@ const ITEM_VIEW_LABEL: &str = "Item";
 
 /// `open` on one item resource: show that item, as its search hit would.
 pub(crate) fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
-    let encoded = tilo_actions::EncodedAction::encode_operation(
-        OPEN_TYPE,
-        &serde_json::json!({ OPEN_ANCHOR: anchor }),
-    )
-    .unwrap_or_else(|_| tilo_actions::EncodedAction {
-        type_id: OPEN_TYPE.into(),
-        payload: Vec::new(),
-    });
-    tilo_actions::ActionSpec::typed_operation(
-        "open",
-        "Open",
-        "Open",
-        tilo_actions::OperationKind::View,
-        OPEN_TYPE,
-        Vec::new(),
-        move |_| encoded.clone(),
-    )
-    .of_kind(tilo_actions::ActionKind::Read)
+    AppOpen::Open {
+        anchor: anchor.to_owned(),
+    }
+    .bound()
     .with_description("Show this item.")
 }
 
@@ -400,7 +358,7 @@ pub fn reserved_action_ids() -> Vec<String> {
     .map(str::to_owned)
     .collect();
     ids.push(open_spec().id.clone());
-    ids.push(open_link::spec().id.clone());
+    ids.push(collab_types::app_actions::open_link_spec().id.clone());
     ids.push(tilo_resource::read::spec(None).id.clone());
     ids.push(facts::FACTS.to_owned());
     ids.push(tilo_resource::share::SHARE_LINK.to_owned());
@@ -1525,14 +1483,14 @@ impl RootModel for ResourceRoot {
         handlers.insert(tilo_resource::share::SHARE_TYPE.to_owned());
         handlers.insert(tilo_resource::share::SHARE_INVITE_TYPE.to_owned());
         if self.stages.opens() {
-            handlers.insert(OPEN_TYPE.to_owned());
+            handlers.insert(OPEN_OPERATION.to_owned());
         }
         if self.open_link.is_some() {
-            handlers.insert(tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE.to_owned());
+            handlers.insert(collab_types::app_actions::OPEN_LINK_OPERATION.to_owned());
         }
         // Opening another app is routed by the host to the workspace
         // broker, whichever resource offers it.
-        handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
+        handlers.insert(OPEN_APP_OPERATION.to_owned());
         // A resource reads itself when it says it does, and its items from
         // its record's table when it does not (`offer_item_reads`); a record
         // kept beside it that reads itself is read through it too.
@@ -1621,15 +1579,11 @@ impl RootModel for ResourceRoot {
             return Ok(Some(started));
         }
         let request = op.request();
-        if request.type_id == OPEN_TYPE {
-            let args: serde_json::Value = tilo_actions::decode_json(request.payload)
+        if request.type_id == OPEN_OPERATION {
+            let AppOpen::Open { anchor } = AppOpen::from_payload(request.payload)
                 .map_err(|error| tilo_resource::Refusal::new(error.to_string()))?;
-            let anchor = args
-                .get(OPEN_ANCHOR)
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| tilo_resource::Refusal::new("open needs the anchor of an item"))?;
             self.stages
-                .open(anchor)
+                .open(&anchor)
                 .map_err(tilo_resource::Refusal::new)?;
             // Whichever window of the app shows the item, it comes forward with it.
             self.native_presentation.request_activation();

@@ -2802,7 +2802,7 @@ fn perform_resource_operation(
     let capture_encoded = observation.as_ref().map(|_| encoded.clone());
     let capture_context = observation.as_ref().map(|_| context.clone());
     let result = (|| {
-        let asked_of_session = encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE;
+        let asked_of_session = encoded.type_id == collab_types::app_actions::OPEN_APP_OPERATION;
         let started = if spec.kind == tilo_actions::OperationKind::Document {
             let action = registry
                 .decode(&encoded)
@@ -2951,7 +2951,7 @@ fn perform_resource_operation(
             tilo_ui_base::widget::ResourceOperationStart::Completed(
                 selected.read(doc).map_err(refused)?,
             )
-        } else if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
+        } else if encoded.type_id == collab_types::app_actions::OPEN_APP_OPERATION {
             crate::session_api::start_application_launch(
                 api,
                 target_route.as_ref(),

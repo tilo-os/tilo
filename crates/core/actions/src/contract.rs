@@ -309,6 +309,11 @@ pub const RESOURCE_READ_TAG: &str = "read:record";
 /// is never guessed from its name.
 pub const OPENS_PATH_TAG: &str = "open:path";
 
+/// [`ActionContract::tags`] entry of the action that shows one item a window
+/// holds (a search hit's anchor): the palette leaves it out, because the hit's
+/// own row stands for it.
+pub const OPENS_HIT_TAG: &str = "open:hit";
+
 /// Prefix of the [`ActionContract::tags`] entries naming a capability of
 /// the host the action needs: `requires-host:native-paths`. On a host
 /// without it the action is published unavailable, coded

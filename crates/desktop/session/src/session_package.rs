@@ -145,19 +145,12 @@ impl tilo_resource::words::RowType for Application {
     const LABEL: &'static str = "Application";
 }
 
-/// What an app offers: opening it in the workspace in front.
-#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "tilo.application.launch")]
-pub enum ApplicationOpen {
-    /// Open the app
-    #[effect(kind = "undoable", label = "session-application-open")]
-    Open,
-}
-
 fn application() -> ResourceSpec {
-    let mut resource = tilo_resource::offer::<ApplicationOpen>(tilo_resource::typed_resource::<
-        Application,
-    >(String::new(), String::new()));
+    // What an app offers, declared with the window's actions: opening it in the workspace in
+    // front, with the content it opens.
+    let mut resource = tilo_resource::offer::<collab_types::app_actions::ApplicationOpen>(
+        tilo_resource::typed_resource::<Application>(String::new(), String::new()),
+    );
     // The kind stands for whatever app a package names: neither its verb nor its resource is
     // labelled here.
     for action in &mut resource.actions {

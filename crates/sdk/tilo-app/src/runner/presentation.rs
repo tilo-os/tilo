@@ -2,6 +2,7 @@
 
 use super::RENDER_TYPE;
 use crate::framework::ViewCx;
+use collab_types::app_actions::ACTIVATE_OPERATION;
 use std::cell::Cell;
 use tilo_resource::Resource;
 use tilo_ui_base::presence::PresenceCtx;
@@ -80,7 +81,7 @@ impl Presentation {
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         let request = op.request();
         match request.type_id {
-            tilo_actions::remote::APPLICATION_ACTIVATE_TYPE => {
+            ACTIVATE_OPERATION => {
                 self.activation_requested.set(true);
                 Ok(Some(tilo_actions::remote::activation_requested()))
             }
@@ -234,11 +235,7 @@ impl Presentation {
 }
 
 pub(crate) fn operation_types() -> &'static [&'static str] {
-    &[
-        RENDER_TYPE,
-        super::OUTLINE_TYPE,
-        tilo_actions::remote::APPLICATION_ACTIVATE_TYPE,
-    ]
+    &[RENDER_TYPE, super::OUTLINE_TYPE, ACTIVATE_OPERATION]
 }
 
 pub(crate) fn with_native_presentations(
@@ -257,10 +254,7 @@ pub(crate) fn with_native_presentations(
 }
 
 fn activate_spec() -> tilo_actions::ActionSpec {
-    tilo_actions::remote::activate_spec(
-        tilo_ui_base::i18n::widget_text("app-activate-window"),
-        tilo_ui_base::i18n::widget_text("app-activate-window-description"),
-    )
+    collab_types::app_actions::activate_spec()
 }
 
 fn render_spec() -> tilo_actions::ActionSpec {

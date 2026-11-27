@@ -118,7 +118,7 @@ tilo_test_env::scenario! {
         let record = app.record().clone();
         let heads = app.read_document(Transactable::base_heads);
         let shown = app
-            .call(tilo_actions::remote::APPLICATION_ACTIVATE_ACTION, json!({}))
+            .call(collab_types::app_actions::ACTIVATE_WINDOW, json!({}))
             .unwrap()
             .unwrap();
         assert_eq!(shown, json!({"activation_requested": true}));

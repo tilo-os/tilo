@@ -17,7 +17,7 @@ fn an_empty_typed_argument_map_opens_without_content() {
 fn a_file_handed_over_by_its_name_opens_its_content() {
     let hash = "ab".repeat(32);
     let tilo_actions::remote::InvokeArgument::Json(map) =
-        tilo_actions::remote::ApplicationLaunch::with_content("so.tilo.notes", &hash)
+        collab_types::app_actions::ApplicationLaunch::with_content("so.tilo.notes", &hash)
             .named("plan.txt")
             .argument()
     else {

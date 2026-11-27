@@ -573,11 +573,11 @@ impl DesktopSession {
             });
         }
         // As the broker: the argument is the content to open, by hash
-        // (`ApplicationLaunch::argument`).
+        // (`ApplicationLaunch::argument`, declared in `collab_types::app_actions`).
         if matches!(request.argument, InvokeArgument::None) {
             return Ok((app, None, None));
         }
-        match tilo_actions::remote::ApplicationLaunch::opened_content(&request.argument) {
+        match collab_types::app_actions::opened_content(&request.argument) {
             Some((hash, name)) if ui::content::valid_reference(hash) => {
                 Ok((app, None, Some((hash, name))))
             }

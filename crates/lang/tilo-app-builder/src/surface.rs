@@ -26,6 +26,14 @@
 //! next time its surface is written (`tilolang surface`), when the app is
 //! next built or changed.
 
+/// The actions every app's window publishes, as `collab-types` declares them.
+mod app_actions {
+    tilo_resource_macros::bindings!(
+        provider = "application",
+        surface = "../../core/collab-types/app-view-surface.json"
+    );
+}
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -1355,7 +1363,7 @@ pub(crate) fn with_offers(manifest: &str, offers: &[Value]) -> String {
         .filter(|offer| {
             takes_links
                 || offer.get("action").and_then(Value::as_str)
-                    != Some(tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION)
+                    != Some(app_actions::applications_app::OPEN_LINK)
         })
         .collect();
     let lines: Vec<&str> = manifest.lines().collect();

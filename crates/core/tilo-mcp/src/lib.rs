@@ -1562,7 +1562,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let page = self
             .ask(CatalogueQuery {
                 provider: Some(peer.to_string()),
-                needle: tilo_actions::remote::APPLICATION_ACTIVATE_ACTION.into(),
+                needle: collab_types::app_actions::ACTIVATE_WINDOW.into(),
                 max_results: 1,
                 ..CatalogueQuery::default()
             })
@@ -1574,7 +1574,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 )
             })?;
         let address = page.rows.into_iter().filter_map(|row| row.action)
-            .find(|action| action.address.action == tilo_actions::remote::APPLICATION_ACTIVATE_ACTION
+            .find(|action| action.address.action == collab_types::app_actions::ACTIVATE_WINDOW
                 && action.kind == tilo_actions::OperationKind::View)
             .map(|action| action.address)
             .ok_or_else(|| format!("existing {app_id} window does not support activation; update its SDK or use its current window"))?;

@@ -1002,7 +1002,6 @@ pub(crate) fn link_offer(meta: &PackageMeta) -> Option<LinkOffer> {
 /// its root that takes the link as its one text argument, so a shell hands the app a link of a
 /// scheme it claims while no window of it is open. An app that opens no links offers none.
 fn offers_of(meta: &PackageMeta) -> String {
-    use ui::tilo_actions::remote::{APPLICATION_OPEN_LINK_ACTION, OPEN_LINK_PARAM};
     let Some(offer) = link_offer(meta) else {
         return String::new();
     };
@@ -1012,8 +1011,14 @@ fn offers_of(meta: &PackageMeta) -> String {
          label = \"Open link\"\nkind = \"read\"\noperation = \"view\"\nasks = {asks}\n",
         resource = toml_string(&offer.resource),
         kind = toml_string(&offer.kind),
-        action = toml_string(APPLICATION_OPEN_LINK_ACTION),
-        asks = toml_string(OPEN_LINK_PARAM),
+        action = toml_string(collab_types::app_actions::OPEN_LINK),
+        asks = toml_string(
+            collab_types::app_actions::AppLink::OPEN_LINK
+                .params()
+                .first()
+                .copied()
+                .unwrap_or_default()
+        ),
     )
 }
 

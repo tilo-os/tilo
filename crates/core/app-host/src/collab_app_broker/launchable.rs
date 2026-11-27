@@ -500,6 +500,8 @@ impl LaunchableCatalogue {
 mod tests {
     use std::sync::Weak;
 
+    use tilo_resource::Effect as _;
+
     use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
     use tilo_actions::remote::{
         ActionCallError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
@@ -599,14 +601,18 @@ mod tests {
     /// The `open-link` every framework app publishes: a view, taking the link to show.
     fn open_link() -> PublishedAction {
         let mut open = action(
-            tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+            collab_types::app_actions::OPEN_LINK,
             tilo_actions::ConfirmationPolicy::None,
         );
         open.operation_kind = tilo_actions::OperationKind::View;
         open.contract.kind = tilo_actions::ActionKind::Read;
         open.contract.risk = tilo_actions::RiskLevel::None;
         open.params = vec![tilo_actions::ActionParam::required_owned(
-            tilo_actions::remote::OPEN_LINK_PARAM,
+            collab_types::app_actions::AppLink::OPEN_LINK
+                .params()
+                .first()
+                .copied()
+                .unwrap_or_default(),
             tilo_actions::ParamType::Text,
             "The link to show",
         )];
@@ -2396,11 +2402,7 @@ mod tests {
                 offer("never-published", OfferKind::Read, false),
                 tilo_app_package::manifest::OfferedAction {
                     operation: tilo_app_package::manifest::OfferOperation::View,
-                    ..offer(
-                        tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
-                        OfferKind::Read,
-                        false,
-                    )
+                    ..offer(collab_types::app_actions::OPEN_LINK, OfferKind::Read, false)
                 },
             ],
             surface: None,
@@ -2503,21 +2505,26 @@ mod tests {
                 &workspace,
                 APP,
                 "files.app",
-                tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+                collab_types::app_actions::OPEN_LINK,
             );
             invoke_with(
                 &state,
                 &owner,
                 &target.provider,
                 &target.address,
-                InvokeArgument::Json(tilo_actions::remote::open_link_arguments("files:/notes/a.md")),
+                InvokeArgument::Json(
+                    collab_types::app_actions::AppLink::OpenLink {
+                        link: "files:/notes/a.md".into(),
+                    }
+                    .arguments(),
+                ),
                 None,
             )
             .expect("admitted once launched");
             assert_eq!(*launches.lock().expect("launches"), [APP], "the app was started");
             let mut stream = streams.try_recv().expect("the app came up");
             let delivered = stream.try_recv().expect("the link reached the app");
-            assert_eq!(delivered.action, tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION);
+            assert_eq!(delivered.action, collab_types::app_actions::OPEN_LINK);
             let argument: serde_json::Value = serde_json::from_str(
                 delivered
                     .argument

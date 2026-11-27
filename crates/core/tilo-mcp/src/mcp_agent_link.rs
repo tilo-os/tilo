@@ -365,7 +365,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     ) -> Result<(), Failure> {
         let action = descriptor.address.action.as_str();
         let failed = value.pointer("/update/state").and_then(Value::as_str) == Some("failed");
-        if action == tilo_actions::remote::APPLICATION_ACTIVATE_ACTION && !failed {
+        if action == collab_types::app_actions::ACTIVATE_WINDOW && !failed {
             self.show(provider, app_id).await?;
         }
         Ok(())

@@ -65,7 +65,7 @@ pub fn unreadable_types(meta: &Meta) -> Vec<String> {
 }
 
 /// The action a package declares to open links, on its root: its host publishes it as the
-/// system's `open-link` (`tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION`), which every shell
+/// system's `open-link` (`collab_types::app_actions::OPEN_LINK`), which every shell
 /// delivers a link of a scheme the app claims through, whether the app is open or not.
 pub const OPEN_LINK_ACTION: &str = "open_link";
 
@@ -106,11 +106,12 @@ pub fn open_link(meta: &Meta) -> Option<(&TypeMeta, &ActionMeta)> {
         .iter()
         .find(|action| !action.scenario && action.name == OPEN_LINK_ACTION)?;
     let target = meta.target_of(&action.params)?;
-    let takes_link = action
-        .params
-        .iter()
-        .skip(1)
-        .any(|param| param.name == tilo_actions::remote::OPEN_LINK_PARAM && param.ty == "Text");
+    let takes_link = action.params.iter().skip(1).any(|param| {
+        collab_types::app_actions::AppLink::OPEN_LINK
+            .params()
+            .contains(&param.name.as_str())
+            && param.ty == "Text"
+    });
     (takes_link && meta.roots.contains(&target.id)).then_some((target, action))
 }
 

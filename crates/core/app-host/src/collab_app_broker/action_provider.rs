@@ -602,13 +602,14 @@ fn launch_content_hash(argument: Option<&str>) -> std::borrow::Cow<'_, str> {
     };
     match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json) {
         Ok(map) if map.is_empty() => "".into(),
-        Ok(map) => match map
-            .get(tilo_actions::remote::CONTENT_HASH_ARGUMENT)
-            .and_then(serde_json::Value::as_str)
-        {
-            Some(hash) => hash.to_owned().into(),
-            None => argument.into(),
-        },
+        Ok(map) => {
+            match collab_types::app_actions::opened_content(
+                &tilo_actions::remote::InvokeArgument::Json(map),
+            ) {
+                Some((hash, _)) => hash.to_owned().into(),
+                None => argument.into(),
+            }
+        }
         Err(error) => {
             tracing::warn!(%error, "an app's open was given an argument map that does not parse");
             argument.into()

@@ -1984,7 +1984,7 @@ impl App {
             // argument-binding, confirmation, and broker-admission API above.
             // This branch runs only when the broker directs that admitted action
             // back to its source app, preserving the normal receipt lifecycle.
-            if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
+            if encoded.type_id == collab_types::app_actions::OPEN_APP_OPERATION {
                 let Some(invocation) = invocation else {
                     return Err(tilo_actions::ApiError::Failed(
                         "application launch was not admitted by the broker".into(),

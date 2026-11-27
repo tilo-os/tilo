@@ -1306,23 +1306,7 @@ mod tests {
     /// The `open` every framework app publishes: it shows the item its
     /// anchor names.
     fn open_action() -> ActionSpec {
-        use tilo_actions::{EncodedAction, OperationKind};
-        ActionSpec::typed_operation(
-            OPEN_ACTION,
-            "Open",
-            "Item to open",
-            OperationKind::View,
-            tilo_actions::remote::APPLICATION_OPEN_TYPE,
-            vec![tilo_actions::ActionParam::required(
-                OPEN_ANCHOR,
-                tilo_actions::ParamType::Text,
-                "Item to open",
-            )],
-            |_| EncodedAction {
-                type_id: tilo_actions::remote::APPLICATION_OPEN_TYPE.into(),
-                payload: Vec::new(),
-            },
-        )
+        collab_types::app_actions::open_spec()
     }
 
     /// The page anchor `id`, as an app opens it.

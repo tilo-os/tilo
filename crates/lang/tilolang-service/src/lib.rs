@@ -28,6 +28,7 @@ use std::sync::Arc;
 use collab_types::history::verbs::{self, EDIT_TYPE, HistoryEdit, HistoryView, VIEW_TYPE};
 use serde_json::{Map, Value as Json};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
+use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};
 use tilolang_runtime::InvokeOutcome;
 use tilolang_runtime::store::{ChangeNote, Mutation, Scalar, Store as _, Version};
@@ -586,15 +587,10 @@ impl ResourceService {
         invoker: &tilo_actions::ActionInvoker,
         beside: String,
     ) -> Result<Started, ApiError> {
-        let arguments: Json = tilo_actions::decode_json(payload)
-            .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
-        let link = arguments
-            .get(tilo_actions::remote::OPEN_LINK_PARAM)
-            .and_then(Json::as_str)
-            .ok_or_else(|| {
-                ApiError::InvalidArguments("open-link needs the link to open".to_owned())
-            })?
-            .to_owned();
+        let collab_types::app_actions::AppLink::OpenLink { link: asked } =
+            collab_types::app_actions::AppLink::from_payload(payload)
+                .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
+        let link = asked;
         let app = tilolang_tilo::publish::app_of(&address.resource)
             .ok_or_else(|| ApiError::Unknown(address.clone()))?
             .to_owned();
@@ -676,7 +672,7 @@ impl ResourceService {
                         .map_err(ApiError::Failed)?;
                 return Ok(Started::Done(output));
             }
-            if encoded.type_id == tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE {
+            if encoded.type_id == collab_types::app_actions::OPEN_LINK_OPERATION {
                 return self.open_link_asked(&encoded.payload, &address, invoker, beside);
             }
             if let Some(answer) =

@@ -58,7 +58,7 @@ opens it as below.
 ## How replay steps
 
 Replay opens the recorded app with the recording, the way any app opens
-content another app holds (`tilo_actions::remote::ApplicationLaunch`): the
+content another app holds (`collab_types::app_actions::ApplicationLaunch`): the
 workspace reads the bytes through Chat's own content scope, verifies them
 against their hash and hands them to the app as a read-only file. A
 recording's bytes start with a header that says what they are

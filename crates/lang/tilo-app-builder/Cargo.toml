@@ -36,6 +36,8 @@ tilo-caps = { version = "0.1.0", path = "../../sdk/tilo-caps" }
 # History's message convention, which `check` lists missing messages by.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
+# The window actions an app publishes, bound from what collab-types declares.
+tilo-resource-macros = { version = "0.1.0", path = "../../core/tilo-resource-macros" }
 # The form a surface is kept by, whose hash `install-app` names.
 # Compiles the `surface.toml` an author writes into the one form the system ships and addresses.
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }

@@ -229,22 +229,7 @@ mod tests {
     }
 
     fn open() -> ActionSpec {
-        ActionSpec::typed_operation(
-            "open",
-            "Open",
-            "Item to open",
-            OperationKind::View,
-            tilo_actions::remote::APPLICATION_OPEN_TYPE,
-            vec![tilo_actions::ActionParam::required(
-                "anchor",
-                tilo_actions::ParamType::Text,
-                "Item to open",
-            )],
-            |_| EncodedAction {
-                type_id: tilo_actions::remote::APPLICATION_OPEN_TYPE.into(),
-                payload: Vec::new(),
-            },
-        )
+        collab_types::app_actions::open_spec()
     }
 
     /// A notebook's own search, as the framework publishes it: its notes,

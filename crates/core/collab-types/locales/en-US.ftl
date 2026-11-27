@@ -13,3 +13,8 @@ tilo-app-part-history-edit-undo = Undo
 tilo-app-part-history-edit-redo = Redo
 tilo-app-part-history-edit-restore = Restore version
 tilo-app-part-history-edit-checkpoint = Checkpoint
+
+# The actions an app's window publishes, read from here when a surface shows them.
+app-activate-window = Show this window
+app-open = Open
+app-open-link = Open link

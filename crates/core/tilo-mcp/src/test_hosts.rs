@@ -98,7 +98,7 @@ impl StubHost {
         descriptor.kind = *self.kind.lock().unwrap();
         descriptor.contract.tags = self.tags.lock().unwrap().clone();
         if self.activation {
-            descriptor.address.action = tilo_actions::remote::APPLICATION_ACTIVATE_ACTION.into();
+            descriptor.address.action = collab_types::app_actions::ACTIVATE_WINDOW.into();
             descriptor.kind = tilo_actions::OperationKind::View;
             descriptor.contract = tilo_actions::ActionContract::view();
             descriptor.params.clear();

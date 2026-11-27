@@ -13,3 +13,8 @@ tilo-app-part-history-edit-undo = Rückgängig
 tilo-app-part-history-edit-redo = Wiederholen
 tilo-app-part-history-edit-restore = Version wiederherstellen
 tilo-app-part-history-edit-checkpoint = Checkpoint
+
+# Die Aktionen, die das Fenster einer App veröffentlicht.
+app-activate-window = Dieses Fenster anzeigen
+app-open = Öffnen
+app-open-link = Link öffnen

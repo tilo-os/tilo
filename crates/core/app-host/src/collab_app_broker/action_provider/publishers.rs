@@ -1,7 +1,7 @@
 //! Which connection of an app may take an action that shows something: only
 //! a window of the app, never an instance with no window.
 
-use tilo_actions::remote::{APPLICATION_OPEN_ACTION, APPLICATION_OPEN_LINK_ACTION};
+use tilo_actions::remote::APPLICATION_OPEN_ACTION;
 
 use super::super::AppBrokerState;
 
@@ -19,7 +19,7 @@ impl AppBrokerState {
         address: &tilo_actions::ActionAddress,
     ) -> bool {
         if address.action == APPLICATION_OPEN_ACTION
-            || address.action == APPLICATION_OPEN_LINK_ACTION
+            || address.action == collab_types::app_actions::OPEN_LINK
             || collab_types::app_surface::shows(app_id, &address.action)
         {
             return true;

@@ -2767,12 +2767,17 @@ impl FlatAction<'_> {
     /// search) is offered this action: one they can take now
     /// ([`ActionContract::a_person_can_take_now`]) on a resource listed for
     /// people ([`listed_for_people`]), and not the opening of a search hit,
-    /// which the hit's own row stands for.
+    /// which the hit's own row stands for ([`OPENS_HIT_TAG`]).
     #[must_use]
     pub fn offered_to_a_person(&self) -> bool {
         self.action.contract.a_person_can_take_now()
             && listed_for_people(&self.resource_kind, &self.resource_label)
-            && self.action.operation_type.as_deref() != Some(crate::remote::APPLICATION_OPEN_TYPE)
+            && !self
+                .action
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == crate::OPENS_HIT_TAG)
     }
 
     /// Whether it is listed as a row of its own: [`Self::offered_to_a_person`]

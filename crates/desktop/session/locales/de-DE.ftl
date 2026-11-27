@@ -214,7 +214,6 @@ session-style-make = Zu meinem machen
 session-style-check = Ein Stilpaket prüfen
 session-style-install = Ein Stilpaket installieren
 session-turn-conversation = Ganze Unterhaltung
-session-application-open = Die App öffnen
 session-devices = Geräte
 session-continuity = Von einem anderen Gerät fortsetzen
 session-speakers = Lautsprecher

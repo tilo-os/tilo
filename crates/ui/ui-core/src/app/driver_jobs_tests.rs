@@ -141,7 +141,7 @@ impl tilo_ui_base::widget::ResourceOperations for Worker {
             ERASE,
             FAIL,
             ANSWER,
-            tilo_actions::remote::ApplicationLaunch::TYPE,
+            collab_types::app_actions::OPEN_APP_OPERATION,
         ]
     }
 
@@ -214,8 +214,8 @@ impl tilo_ui_base::widget::ResourceOperations for Worker {
 }
 
 /// What `open-photos` launches.
-fn photos() -> tilo_actions::remote::ApplicationLaunch {
-    tilo_actions::remote::ApplicationLaunch::app("so.tilo.photos")
+fn photos() -> collab_types::app_actions::ApplicationLaunch {
+    collab_types::app_actions::ApplicationLaunch::app("so.tilo.photos")
 }
 
 fn worker_driver(worker: Worker) -> Driver {

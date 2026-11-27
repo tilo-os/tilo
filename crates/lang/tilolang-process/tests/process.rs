@@ -891,7 +891,7 @@ tilo_test_env::scenario! {
         };
         let (read, activate) = (
             find("read"),
-            find(tilo_actions::remote::APPLICATION_ACTIVATE_ACTION),
+            find(collab_types::app_actions::ACTIVATE_WINDOW),
         );
 
         deliver(&inbox, 1, &read, "grace");

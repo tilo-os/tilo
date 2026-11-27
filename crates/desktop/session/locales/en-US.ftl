@@ -210,7 +210,6 @@ session-style-make = Make it mine
 session-style-check = Check a style package
 session-style-install = Install a style package
 session-turn-conversation = Whole conversation
-session-application-open = Open the app
 session-devices = Devices
 session-continuity = Continue from another device
 session-speakers = Speakers

@@ -942,7 +942,7 @@ fn a_link_handed_to_a_window_still_building_its_page_opens_once_the_page_is_ther
     PAGE_SHOWN.set(false);
     let mut app = TestApp::<LatePageApp>::new().unwrap();
     app.call(
-        tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+        collab_types::app_actions::OPEN_LINK,
         serde_json::json!({ "link": "late:one" }),
     )
     .unwrap();

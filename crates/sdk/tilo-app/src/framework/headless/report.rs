@@ -216,7 +216,7 @@ fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value>
         let contract = &action.contract;
         let resource = action.address.resource.as_str();
         let id = action.address.action.as_str();
-        let opens_links = id == tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION;
+        let opens_links = id == collab_types::app_actions::OPEN_LINK;
         if !contract.offered_to_people()
             || !contract.availability.is_available()
             || (reserved.iter().any(|framework| framework == id) && !opens_links)

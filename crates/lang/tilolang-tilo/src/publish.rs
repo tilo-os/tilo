@@ -13,13 +13,14 @@ use std::sync::Arc;
 use serde_json::Value as Json;
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
-    ActionArgs, ActionKind, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus,
-    Noun, OperationKind, ParamType, ResourceSpec, ResourceType, ResourceViewSpec, Target,
+    ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, Noun,
+    ParamType, ResourceSpec, ResourceType, ResourceViewSpec, Target,
 };
 
 use crate::action::{BLOCK_EDITS, BlockEdit, BlockEditKind, DIRECT_EDITS, DirectEdit, DynAction};
 use crate::resources::{ResourceStore, Watch};
 use tilo_actions::api::{PlacedAction, survey_placed_level};
+use tilo_resource::Effect as _;
 use tilolang_runtime::ids::Actor;
 use tilolang_runtime::meta::{ActionMeta, FieldKind, Meta, Ty, TypeMeta};
 use tilolang_runtime::store::{
@@ -768,9 +769,6 @@ impl ActionTypes {
 /// it, since a change it makes is claimed by that action ([`crate::surface`]), and an agent's
 /// types describe it.
 fn offer_open_link(meta: &Meta, resource: &mut tilo_actions::ResourceSpec) {
-    use tilo_actions::remote::{
-        APPLICATION_OPEN_LINK_ACTION, APPLICATION_OPEN_LINK_TYPE, OPEN_LINK_PARAM,
-    };
     let Some(root) = crate::meta::open_link_root(meta) else {
         return;
     };
@@ -778,34 +776,12 @@ fn offer_open_link(meta: &Meta, resource: &mut tilo_actions::ResourceSpec) {
         || resource
             .actions
             .iter()
-            .any(|spec| spec.id == APPLICATION_OPEN_LINK_ACTION)
+            .any(|spec| spec.id == collab_types::app_actions::OPEN_LINK)
     {
         return;
     }
     let target = Target::new(resource.id.as_str().to_owned());
-    let spec = ActionSpec::typed_operation_on(
-        APPLICATION_OPEN_LINK_ACTION,
-        "Open link",
-        "Open link",
-        OperationKind::View,
-        APPLICATION_OPEN_LINK_TYPE,
-        vec![ActionParam::required(
-            OPEN_LINK_PARAM,
-            ParamType::Text,
-            "The link to open, of a scheme the app claims (tube:watch?v=abc)",
-        )],
-        Arc::new(|_target, args| {
-            let arguments = serde_json::json!({ OPEN_LINK_PARAM: args.text(OPEN_LINK_PARAM) });
-            EncodedAction::encode_operation(APPLICATION_OPEN_LINK_TYPE, &arguments).unwrap_or_else(
-                |_| EncodedAction {
-                    type_id: APPLICATION_OPEN_LINK_TYPE.into(),
-                    payload: Vec::new(),
-                },
-            )
-        }),
-    )
-    .of_kind(ActionKind::Read)
-    .with_description("Show what a link names, in the app that claims its scheme.");
+    let spec = collab_types::app_actions::open_link_spec();
     resource.actions.push(spec.action_type().bind(target));
 }
 
@@ -869,7 +845,6 @@ fn places_of(
     declared: &tilolang::meta::TypeMeta,
     words: &dyn Words,
 ) -> Vec<(Arc<ActionType>, String)> {
-    use tilo_resource::Effect as _;
     meta.places_of(&declared.id)
         .iter()
         .map(|place| {
@@ -916,7 +891,6 @@ fn open_with_type(
     description: Option<&str>,
     place: bool,
 ) -> Arc<ActionType> {
-    use tilo_resource::Effect as _;
     let mut spec = crate::effects::OpenEffect::OpenWith {
         anchor: String::new(),
         view: view.to_owned(),
@@ -937,7 +911,6 @@ fn open_with_type(
 /// [`open_with_type`] built for that view: bound as [`tilo_resource::Effect::bound`] binds an
 /// effect to the resource it is offered on.
 fn open_with_spec(ty: &Arc<ActionType>, anchor: &str, view: &str) -> ActionSpec {
-    use tilo_resource::Effect as _;
     let arguments = crate::effects::OpenEffect::OpenWith {
         anchor: anchor.to_owned(),
         view: view.to_owned(),
@@ -967,7 +940,6 @@ pub fn publish_resource(
 
 /// The `open` view action of the published resource `anchor`: what a search hit invokes.
 fn open_spec(anchor: &str) -> ActionSpec {
-    use tilo_resource::Effect as _;
     crate::effects::OpenEffect::Open {
         anchor: anchor.to_owned(),
     }
@@ -978,7 +950,6 @@ fn open_spec(anchor: &str) -> ActionSpec {
 /// names (`anchor`, as a search hit on the item does). A person choosing it asks for nothing: left
 /// out, the item is the document itself.
 fn root_open_spec(anchor: &str) -> ActionSpec {
-    use tilo_resource::Effect as _;
     let open = crate::effects::OpenEffect::Open {
         anchor: anchor.to_owned(),
     };

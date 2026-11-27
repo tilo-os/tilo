@@ -16,7 +16,7 @@
 //! - **What every app publishes:** on its app's resource the instance publishes the history
 //!   verbs (Undo, Redo, History, ...: `collab_types::history::verbs`), `read`
 //!   (`tilo_resource::read`), `outline` (`tilo_actions::remote::outline_spec`) and, where it
-//!   shows a window, "Show this window" (`tilo_actions::remote::activate_spec`), and answers them
+//!   shows a window, "Show this window" (`collab_types::app_actions::WindowAction`), and answers them
 //!   as a framework app does: undo and redo through the store, `read` through the runtime,
 //!   `outline` as the lines of its views (`crate::outline`), and "Show this window" by asking its
 //!   window to come forward. The person's Undo on a notice in the window is the same `undo`, as
@@ -45,6 +45,7 @@ use tilo_actions::{
 };
 use tilo_render_protocol::WireError;
 use tilo_render_protocol::patch::{ToUi, Transport};
+use tilo_resource::Effect as _;
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
@@ -1351,10 +1352,7 @@ impl Platform for HostPlatform {
         // it opened first.
         let mut window = Vec::new();
         if self.shows == Shows::View {
-            window.push(tilo_actions::remote::activate_spec(
-                self.phrases.say("app-activate-window", &[]),
-                self.phrases.say("app-activate-window-description", &[]),
-            ));
+            window.push(collab_types::app_actions::activate_spec());
         }
         window.push(tilo_actions::remote::outline_spec());
         // A call that shows nothing has no view to bound what it holds: it publishes the app's
@@ -4223,7 +4221,7 @@ impl Hosted {
                 .map_err(|error| Refused::new("action_failed", error))
                 .map(Ran::Done);
         }
-        if encoded.type_id == tilo_actions::remote::APPLICATION_ACTIVATE_TYPE {
+        if encoded.type_id == collab_types::app_actions::ACTIVATE_OPERATION {
             self.instance.activate_window();
             return Ok(Ran::Done(tilo_actions::remote::activation_requested()));
         }
@@ -4302,7 +4300,7 @@ impl Hosted {
         if tilo_resource::share::handles(&encoded.type_id) {
             return self.shared(encoded.payload.as_slice()).map(Ran::Done);
         }
-        if encoded.type_id == tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE {
+        if encoded.type_id == collab_types::app_actions::OPEN_LINK_OPERATION {
             return self.open_link_from_action(&encoded.payload).map(Ran::Done);
         }
         Err(Refused::new(
@@ -4326,18 +4324,10 @@ impl Hosted {
         &mut self,
         payload: &[u8],
     ) -> Result<tilo_actions::ActionOutput, Refused> {
-        let arguments: serde_json::Value = tilo_actions::decode_json(payload)
-            .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
-        let link = arguments
-            .get(tilo_actions::remote::OPEN_LINK_PARAM)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                Refused::new(
-                    "action_invalid_arguments",
-                    "open-link needs the link to open".to_owned(),
-                )
-            })?;
-        self.run_open_link(link)
+        let collab_types::app_actions::AppLink::OpenLink { link } =
+            collab_types::app_actions::AppLink::from_payload(payload)
+                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
+        self.run_open_link(&link)
             .map_err(|why| Refused::new("action_failed", why))?;
         Ok(tilo_actions::ActionOutput::default())
     }
@@ -4525,14 +4515,14 @@ impl Hosted {
             VIEW_TYPE.to_owned(),
             EDIT_TYPE.to_owned(),
             tilo_resource::read::TYPE.to_owned(),
-            tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.to_owned(),
+            collab_types::app_actions::ACTIVATE_OPERATION.to_owned(),
             // The system's own verbs every resource with a view offers, which this host mints
             // ([`tilolang_tilo::share`]) rather than the app.
             tilo_resource::share::SHARE_TYPE.to_owned(),
             tilo_resource::share::SHARE_INVITE_TYPE.to_owned(),
             // The link into an app that opens links, which this host answers by running the
             // app's own `open_link` ([`Self::open_link_from_action`]).
-            tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE.to_owned(),
+            collab_types::app_actions::OPEN_LINK_OPERATION.to_owned(),
             // What the window shows, read as lines (`crate::outline`).
             tilo_actions::remote::APPLICATION_OUTLINE_TYPE.to_owned(),
         ]);

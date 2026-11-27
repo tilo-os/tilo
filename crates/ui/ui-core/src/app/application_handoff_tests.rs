@@ -1,7 +1,8 @@
 // Exercise the real host action API, not an app-local launcher.
 #[test]
 fn application_action_handoff_requires_workspace_admission_and_routes_exact_destination() {
-    use tilo_actions::remote::{ApplicationLaunch, InvokeArgument, RemoteActionMessage};
+    use collab_types::app_actions::ApplicationLaunch;
+    use tilo_actions::remote::{InvokeArgument, RemoteActionMessage};
     use tilo_ui_base::{collaboration::PeerTransport, collaboration::RouteSpec};
     struct Transport {
         sent: Rc<RefCell<Vec<CollabRequest>>>,

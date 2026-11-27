@@ -77,6 +77,8 @@ tilo-app-window = { version = "0.1.0", path = "../../sdk/tilo-app-window" }
 tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
 # `tilolang profile --times`: the named scopes the framework marks, timed per interaction.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+# The window actions every app publishes, as collab-types declares them.
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 
 [dev-dependencies]
 # The outside-repository journey publishes into a real registry on loopback.

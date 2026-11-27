@@ -187,6 +187,10 @@ pub fn register_built_in_surface(app_id: &str, surface: Option<&'static str>) {
 /// `#[derive(Model)]` expansions resolve through `use ui::prelude::*`.
 pub use tilo_resource;
 
+/// The actions every app's window publishes and the opening of an app into a
+/// workspace, declared once: what an app offers another app through.
+pub use collab_types::app_actions;
+
 /// The workspace's own emoji and its agents: records every window of the
 /// workspace opens, re-exported for the app that keeps them and for hosts
 /// that show them.

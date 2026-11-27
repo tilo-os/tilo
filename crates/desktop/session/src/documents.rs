@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tilo_app_launch::Launch;
 use tilo_app_launch::routing;
 use tilo_desktop_search::providers::host_apps::HostAppKind;
+use tilo_resource::Effect as _;
 use tilo_session_core::desktop::state::DesktopHandle;
 
 use crate::lists::AppLists;
@@ -113,9 +114,12 @@ pub(crate) fn link_delivery(
                 workspace,
                 app,
                 resource,
-                tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+                collab_types::app_actions::OPEN_LINK,
             ),
-            tilo_actions::remote::open_link_arguments(link),
+            collab_types::app_actions::AppLink::OpenLink {
+                link: link.to_owned(),
+            }
+            .arguments(),
         )
     })
 }
@@ -128,7 +132,7 @@ fn link_offer(lists: &AppLists, app: &str) -> Option<String> {
         .find(|launchable| launchable.package_id == app)?
         .offers
         .iter()
-        .find(|offer| offer.action == tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION)
+        .find(|offer| offer.action == collab_types::app_actions::OPEN_LINK)
         .map(|offer| offer.resource.clone())
 }
 

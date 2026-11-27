@@ -63,6 +63,7 @@ FRAMEWORK = (
     "crates/core/automation",
     "crates/core/collaboration",
     "crates/core/collab-types/src/history",
+    "crates/core/collab-types/src/app_actions",
     "crates/lang/tilolang",
     "crates/sdk/tilo-app-window",
     "crates/lang/tilolang-tilo",

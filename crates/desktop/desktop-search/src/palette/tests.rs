@@ -450,22 +450,7 @@ tilo_test_env::scenario! {
             )
         };
         // The framework's `open`, which shows the item at a hit's anchor.
-        let open = tilo_actions::ActionSpec::typed_operation(
-            "open",
-            "Open",
-            "Item to open",
-            tilo_actions::OperationKind::View,
-            tilo_actions::remote::APPLICATION_OPEN_TYPE,
-            vec![tilo_actions::ActionParam::required(
-                "anchor",
-                tilo_actions::ParamType::Text,
-                "Item to open",
-            )],
-            |_| tilo_actions::EncodedAction {
-                type_id: tilo_actions::remote::APPLICATION_OPEN_TYPE.into(),
-                payload: Vec::new(),
-            },
-        );
+        let open = collab_types::app_actions::open_spec();
         let mut notebook = ResourceSpec::new("notes.notebook", "notes.notebook", "Notebook")
             .with_action(open)
             .with_action(action("new-note", "New note"));

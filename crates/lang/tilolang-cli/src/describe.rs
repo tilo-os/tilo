@@ -288,14 +288,19 @@ fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
         offers.push(FleetOffer {
             resource: offer.resource,
             resource_kind: offer.kind,
-            action: ui::tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION.to_owned(),
+            action: collab_types::app_actions::OPEN_LINK.to_owned(),
             label: "Open link".to_owned(),
             description: String::new(),
             kind: "read".to_owned(),
             operation: "view".to_owned(),
             confirm: false,
             asks: vec![FleetAsked {
-                name: ui::tilo_actions::remote::OPEN_LINK_PARAM.to_owned(),
+                name: collab_types::app_actions::AppLink::OPEN_LINK
+                    .params()
+                    .first()
+                    .copied()
+                    .unwrap_or_default()
+                    .to_owned(),
                 ty: "text".to_owned(),
                 description: String::new(),
             }],

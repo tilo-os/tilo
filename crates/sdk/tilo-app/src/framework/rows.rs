@@ -10,8 +10,9 @@
 
 pub use tilo_resource::row::LiveRow;
 
-use tilo_actions::remote::ApplicationLaunch;
+use collab_types::app_actions::{ApplicationLaunch, ApplicationOpen};
 use tilo_actions::{ActionBinding, ActionSpec, ResourceSemanticIdentity, ResourceSpec};
+use tilo_resource::Effect as _;
 use tilo_ui_base::widget::ActionEmitter;
 
 pub(crate) use tilo_resource::share::{outside_document, resolved_outside_document};
@@ -78,9 +79,11 @@ impl ContentHandoff {
         let spec = ApplicationLaunch::content_spec(&self.app, id, &self.label, &self.description);
         let row = self.row(spec.clone());
         ActionBinding::new(&row, &spec, |hash: String| {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert("content_hash".into(), serde_json::Value::String(hash));
-            arguments
+            ApplicationOpen::Open {
+                content_hash: Some(hash),
+                name: None,
+            }
+            .arguments()
         })
         .ok()
         .map(ActionEmitter::new)
@@ -92,16 +95,11 @@ impl ContentHandoff {
         let spec = ApplicationLaunch::content_spec(&self.app, id, &self.label, &self.description);
         let row = self.row(spec.clone());
         ActionBinding::new(&row, &spec, |(hash, name): (String, String)| {
-            serde_json::Map::from_iter([
-                (
-                    tilo_actions::remote::CONTENT_HASH_ARGUMENT.to_owned(),
-                    serde_json::Value::String(hash),
-                ),
-                (
-                    tilo_actions::remote::NAME_ARGUMENT.to_owned(),
-                    serde_json::Value::String(name),
-                ),
-            ])
+            ApplicationOpen::Open {
+                content_hash: Some(hash),
+                name: Some(name),
+            }
+            .arguments()
         })
         .ok()
         .map(ActionEmitter::new)

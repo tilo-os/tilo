@@ -15016,6 +15016,7 @@ dependencies = [
  "tilo-history",
  "tilo-paths",
  "tilo-registry-types",
+ "tilo-resource-macros",
  "tilo-runtime-bundle",
  "tilo-runtime-portal",
  "tilo-sandbox-core",
