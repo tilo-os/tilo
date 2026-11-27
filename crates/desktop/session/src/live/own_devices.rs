@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use collab_types::scope::Scope;
 use iroh::{EndpointAddr, EndpointId};
@@ -56,12 +57,21 @@ enum Sending {
     },
 }
 
+/// How long this device's own scope waits, after it was not joined, before a pass joins it
+/// again while the devices it hears are the same.
+const JOIN_AGAIN: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 enum Receiving {
     #[default]
     Closed,
     Opening,
     Open(Arc<LiveSession>),
+    /// It was not joined at `since`: joined again once other devices are to be heard, or
+    /// [`JOIN_AGAIN`] later.
+    Missed {
+        since: Instant,
+    },
 }
 
 impl OwnDevices {
@@ -147,14 +157,17 @@ impl OwnDevices {
     /// ask, and heard from `from` from then on.
     pub(crate) fn heard(&self, from: &BTreeSet<[u8; 32]>) -> Vec<([u8; 32], Vec<u8>)> {
         let mut state = self.state.lock_recover();
-        let roster_moved = state.heard_from != *from;
-        if roster_moved {
+        let heard_moved = state.heard_from != *from;
+        if heard_moved {
             state.heard_from.clone_from(from);
         }
         let session = match &state.here {
             Receiving::Open(session) if !session.ended() => Arc::clone(session),
             Receiving::Opening => return Vec::new(),
-            Receiving::Open(_) | Receiving::Closed => {
+            Receiving::Missed { since } if !heard_moved && since.elapsed() < JOIN_AGAIN => {
+                return Vec::new();
+            }
+            Receiving::Open(_) | Receiving::Closed | Receiving::Missed { .. } => {
                 let Some(runtime) = self.shared.runtime.get().cloned() else {
                     return Vec::new();
                 };
@@ -165,16 +178,19 @@ impl OwnDevices {
                 runtime.spawn(async move {
                     let opened = open(&shared, own, false, roster).await;
                     let mut state = heard.lock_recover();
-                    state.here = match opened {
-                        Some(session) => {
-                            // The devices named while it opened are the ones it hears, and what
-                            // they send wakes the session's pass the moment it is here.
-                            session.set_roster(Roster::new(state.heard_from.iter().copied()));
-                            session.set_wake(Arc::clone(&shared.wake));
-                            Receiving::Open(Arc::new(session))
-                        }
-                        None => Receiving::Closed,
+                    let Some(session) = opened else {
+                        // Nothing came to hear: the session's pass is not woken for it, or each
+                        // pass would join again at once and wake the next.
+                        state.here = Receiving::Missed {
+                            since: Instant::now(),
+                        };
+                        return;
                     };
+                    // The devices named while it opened are the ones it hears, and what they
+                    // send wakes the session's pass the moment it is here.
+                    session.set_roster(Roster::new(state.heard_from.iter().copied()));
+                    session.set_wake(Arc::clone(&shared.wake));
+                    state.here = Receiving::Open(Arc::new(session));
                     drop(state);
                     (shared.wake)();
                 });
@@ -182,7 +198,7 @@ impl OwnDevices {
             }
         };
         drop(state);
-        if roster_moved {
+        if heard_moved {
             session.set_roster(Roster::new(from.iter().copied()));
         }
         std::iter::from_fn(|| session.try_recv())
@@ -259,5 +275,69 @@ async fn open(
                 "the scope of the person's device was not joined");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// A device of a person: the scope's join reads only its keys.
+    fn cert() -> tilo_user_identity::DeviceCert {
+        tilo_user_identity::DeviceCert {
+            user_public_key: [7; 32],
+            device_public_key: [9; 32],
+            device_label: "Laptop".to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 0,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        }
+    }
+
+    /// A scope that does not join wakes no pass, and is not joined again by the passes after it
+    /// while the devices it hears stay the same: a session that cannot join its own scope
+    /// would otherwise wake itself to join again, round after round.
+    #[test]
+    fn a_scope_that_did_not_join_is_not_joined_again_by_every_pass() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let woken = Arc::clone(&wakes);
+        let live = super::super::Live::new(
+            cert(),
+            Arc::new(move || {
+                woken.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        live.shared.runtime.set(runtime.handle().clone()).unwrap();
+        let own = live.own_devices();
+        let missed = || matches!(own.state.lock_recover().here, Receiving::Missed { .. });
+        let one = BTreeSet::from([[1_u8; 32]]);
+        assert!(own.heard(&one).is_empty());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !missed() {
+            assert!(Instant::now() < deadline, "the join never ended");
+            std::thread::yield_now();
+        }
+        for _ in 0..100 {
+            assert!(own.heard(&one).is_empty());
+            assert!(missed(), "a pass joined the scope again");
+        }
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            0,
+            "a join that failed woke the session"
+        );
+        // Another device to hear joins it again.
+        assert!(
+            own.heard(&BTreeSet::from([[1_u8; 32], [2_u8; 32]]))
+                .is_empty()
+        );
+        assert!(!missed(), "another device to hear did not join again");
     }
 }
