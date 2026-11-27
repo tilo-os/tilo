@@ -25,13 +25,13 @@ scenario = "a library of feeds"
 invoke = { resource = "tl:so.tilo.feeds:root-u5mhrzrx", action = "begin_reading", bind = "reader" }
 
 [[situation.steps]]
-invoke = { resource = "{{reader.resources.0}}", action = "larger_text" }
+invoke = { resource = "{{reader.resources.0}}", action = "larger_text", bind = "bigger" }
 
 [[situation.steps]]
-invoke = { resource = "{{reader.resources.0}}", action = "set_face", args = { face = "sans" } }
+invoke = { resource = "{{reader.resources.0}}", action = "set_face", args = { face = "sans" }, bind = "faced" }
 
 [[situation.steps]]
-invoke = { resource = "{{reader.resources.0}}", action = "set_paper", args = { paper = "sepia" } }
+invoke = { resource = "{{reader.resources.0}}", action = "set_paper", args = { paper = "sepia" }, bind = "papered" }
 
 [[situation.steps]]
 press = "A quiet morning in the city"

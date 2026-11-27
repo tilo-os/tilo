@@ -5,16 +5,16 @@ name = "connections"
 title = "Saved SSH and desktop connections"
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Home server", host = "nas.home.arpa", kind = "ssh", port = 22, user = "lena" } }
+invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Home server", host = "nas.home.arpa", kind = "ssh", port = 22, user = "lena" }, bind = "added" }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Build machine", host = "build-01.lab.internal", kind = "ssh", user = "ci" } }
+invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Build machine", host = "build-01.lab.internal", kind = "ssh", user = "ci" }, bind = "added" }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Studio iMac", host = "studio-imac.local", kind = "vnc", port = 5900 } }
+invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Studio iMac", host = "studio-imac.local", kind = "vnc", port = 5900 }, bind = "added" }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Office workstation", host = "ws-14.office.internal", kind = "vnc", port = 5901 } }
+invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Office workstation", host = "ws-14.office.internal", kind = "vnc", port = 5901 }, bind = "added" }
 
 [[situation]]
 name = "new-connection"
