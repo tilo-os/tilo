@@ -328,6 +328,15 @@ async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_on
                 app.remote_action(&frame).await.unwrap();
             }
             let pressed = delivered(press).await;
+            // The call the person's press made is theirs: it runs as them, never as the app they
+            // pressed in, so the record it changes is a step of theirs, with their undo.
+            assert_eq!(
+                pressed.actor,
+                tilo_actions::Actor::from(tilo_actions::MemberId::person(person_id_for_root(
+                    env.cert.user_public_key
+                ))),
+                "the press's call is the person's, not the app's"
+            );
             let child = new_note(Some(press));
             let made = app_asks(&app, child.clone()).await;
             assert!(admitted(&made), "{made:?}");

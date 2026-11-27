@@ -773,6 +773,11 @@ impl JoinedChannel {
                     pressed,
                 },
             };
+            // A call the person's own press made is the person's: it runs as them, never as the
+            // app they pressed in, so the record it changes is a step of theirs, with their undo.
+            // The press is the one the compositor issued to this window and proved here, so an
+            // app carries no standing of theirs without it.
+            let caller = if pressed { person.clone() } else { caller };
             let provider = action_provider::ConnectionActionProvider {
                 state: Arc::clone(&state),
                 own_peer: peer_id,
