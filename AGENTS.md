@@ -158,11 +158,12 @@ ask whether the larger thing could be done a better way; if it could, say so bef
 - `main` is the unstable integration branch, with fairly minimal testing.
   Releases are cut from it onto a release branch, which takes the fixes and
   stabilization until it ships; every fix made there is ported back to `main`.
-- Commit small and push straight to `main` (`git pull --rebase origin main`,
-  then `git push origin HEAD:main`). There is no merge queue and no
-  branch in front of `main`. The pre-commit hook is fast and reads only what the
-  commit stages; the pre-push hook lints the packages the push changes through
-  t's per-package clippy checks, and compiles the packages that build directly
+- Commit small and land straight on `main` with `tools/land.py`: it rebases onto
+  `main` and pushes, and when `main` moved while the push hook linted, rebases and
+  pushes again at once, on the pass the hook remembers for the same change. There
+  is no merge queue and no branch in front of `main`. The pre-commit hook is
+  fast and reads only what the commit stages; the pre-push hook lints the
+  packages the push changes through t's per-package clippy checks, and compiles the packages that build directly
   on them in one `t cargo check` (only a compile error there refuses),
   answered from t's cache when a rebase changed nothing they read (or `$CARGO`,
   any cargo drop-in, when set). Neither covers the policy suite or a package's

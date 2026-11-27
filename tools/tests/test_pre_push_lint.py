@@ -34,6 +34,8 @@ HOOK_SOURCES = [
     "tools/policy/derived_catalogue.py",
     "tools/policy/judged.py",
     "tools/policy/rust_source.py",
+    # The landing command that pushes through the hook while main moves.
+    "tools/land.py",
 ]
 WORKSPACE = """[workspace]
 members = ["native", "web", "fake-binding"]
@@ -86,13 +88,17 @@ LIB = """pub fn answer() -> u32 {{
 # describes, rustfmt is always happy, and Clippy takes a moment and then answers
 # with the status the test asked for. Each compiling call records when it
 # started and ended, so a test can tell whether two ran at the same time; the
-# workspace remark is what a failure report must leave out.
+# workspace remark is what a failure report must leave out. STUB_DURING_LINT names a
+# script the first compiling call runs: another person landing on main while the lint runs.
 CARGO_STUB = """#!/bin/sh
 case "$1" in
   metadata) printf '%s\\n' "$STUB_METADATA"; exit 0 ;;
   fmt) printf 'fmt %s\\n' "$*" >> "$HOOK_LOG"; [ "$2" = "--version" ] && exit 0; exit "${STUB_FMT_STATUS:-0}" ;;
 esac
 printf 'start %s %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
+if [ -n "${STUB_DURING_LINT:-}" ] && [ ! -e "$STUB_DURING_LINT.ran" ]; then
+  : > "$STUB_DURING_LINT.ran"; sh "$STUB_DURING_LINT" >&2
+fi
 sleep "${STUB_SLEEP:-0}"
 printf 'warning: a/Cargo.toml: version requirement `1.0+meta` includes semver metadata\\n'
 for n in $(seq 1 100); do printf '    Checking crate-%s v0.1.0\\n' "$n"; done
@@ -1401,6 +1407,100 @@ class PrePushLintTests(unittest.TestCase):
         retry = self.push(remote_oid=main)
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def origin(self):
+        """A bare remote holding the fixture's main as `origin`, which Git pushes to through the
+        hook as a clone set up by CONTRIBUTING.md does."""
+        remote = self.temporary / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+        self.git("remote", "add", "origin", str(remote))
+        self.git("push", "-q", "origin", "HEAD:main")
+        self.git("config", "core.hooksPath", ".githooks")
+        return remote
+
+    def someone_lands(self, remote, name, text):
+        """A shell script that lands another person's commit writing `name` on the remote's
+        main, from a clone of their own."""
+        other = self.temporary / "other"
+        git = shutil.which("git")
+        script = self.temporary / f"lands-{name.replace('/', '-')}.sh"
+        script.write_text(f"""set -e
+[ -d {other} ] || {git} clone -q {remote} {other}
+cd {other}
+{git} pull -q --rebase origin main
+mkdir -p "$(dirname {name})"
+printf '%s' '{text}' > {name}
+{git} add -A
+{git} -c user.name=Other -c user.email=other@example.org -c core.hooksPath=/dev/null \\
+  commit -qm "docs: someone else's change"
+{git} -c core.hooksPath=/dev/null push -q origin HEAD:main
+""")
+        return script
+
+    def land(self, during_lint=None, **environment):
+        """Run tools/land.py here; `during_lint` runs once while the first lint runs."""
+        env = self.environment(**environment)
+        if during_lint is not None:
+            env["STUB_DURING_LINT"] = str(during_lint)
+        return subprocess.run(["python3", str(self.root / "tools/land.py")], cwd=self.root,
+                              capture_output=True, text=True, env=env, timeout=HANG_BOUND)
+
+    def remote_log(self, remote):
+        return subprocess.run(["git", "-C", str(remote), "log", "--format=%s", "main"],
+                              capture_output=True, text=True, check=True).stdout.splitlines()
+
+    def test_landing_retries_at_once_on_the_pass_when_main_moved_during_the_lint(self):
+        # The lint passes, but main moved while it ran, so the remote refuses the push for its
+        # old value. The landing rebases and pushes again, and the replayed change is sent on the
+        # pass it already has, with no second lint.
+        remote = self.origin()
+        self.write("native/src/lib.rs", LIB.format(answer=70))
+        self.commit("feat: answer 70")
+        result = self.land(during_lint=self.someone_lands(remote, "docs/notes.md", "words"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("main moved while the push ran (attempt 1 of 10)", result.stderr)
+        self.assertIn("pre-push: reusing the clippy pass for patch ", result.stderr)
+        self.assertRegex(result.stderr, r"land: landed \w{12} on main in \d+s \(attempt 2\)")
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY], "linted once, on the first attempt")
+        self.assertEqual(self.remote_log(remote)[:2],
+                         ["feat: answer 70", "docs: someone else's change"])
+
+    def test_landing_stops_on_a_change_the_hook_refuses(self):
+        # A lint that fails is the change's to fix: another round would lint it again for the
+        # same answer, whether or not main moved meanwhile.
+        remote = self.origin()
+        self.write("native/src/lib.rs", LIB.format(answer=71))
+        self.commit("feat: answer 71")
+        result = self.land(during_lint=self.someone_lands(remote, "docs/notes.md", "words"),
+                           status=1)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("land: the push hook refused the change (above)", result.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        self.assertEqual(self.remote_log(remote)[0], "docs: someone else's change")
+
+    def test_landing_aborts_a_rebase_that_meets_a_conflict(self):
+        remote = self.origin()
+        subprocess.run(["sh", str(self.someone_lands(remote, "native/src/lib.rs",
+                                                     LIB.format(answer=72)))],
+                       check=True, capture_output=True)
+        self.write("native/src/lib.rs", LIB.format(answer=73))
+        mine = self.commit("feat: answer 73")
+        result = self.land()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("the rebase met a conflict and was aborted", result.stderr)
+        self.assertEqual(self.head(), mine, "the branch is left as it was")
+        self.assertFalse((self.root / ".git/rebase-merge").exists())
+        self.assertEqual(self.calls(), [], "nothing was linted")
+
+    def test_landing_refuses_a_checkout_with_uncommitted_changes(self):
+        self.origin()
+        self.write("native/src/lib.rs", LIB.format(answer=74))
+        self.commit("feat: answer 74")
+        self.write("native/src/stray.rs", "pub fn stray() {}\n")
+        result = self.land()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("untracked files in the checkout", result.stderr)
+        self.assertEqual(self.calls(), [])
 
     def test_each_runs_whole_output_and_time_can_be_kept(self):
         self.write("native/src/lib.rs", LIB.format(answer=12))

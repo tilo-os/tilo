@@ -195,7 +195,10 @@ With [t](https://code.tilo.so/tilo/t) installed, the lint is t's own checks
 nothing that package's build reads has changed: a push retried after a rebase
 onto unrelated commits passes in seconds, and a package the new commits of
 `main` reach, through a dependency too, is linted again. When `main` moved
-while the lint ran, the push is refused: rebase and push again.
+while the lint ran, the push is refused: rebase and push again. With push access
+to `main`, `tools/land.py` does that for you: it rebases the commits checked out
+onto `main` and pushes them, and again at once each time `main` moved under the
+push, until they land, the hook refuses them, or the rebase meets a conflict.
 
 A lint that passed stands for the same change after such a rebase. The hook
 remembers a pass by the push's own patch, the packages it lints and the change

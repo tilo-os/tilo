@@ -1933,7 +1933,7 @@ def main(argv: list[str]) -> int:
     if push.behind:
         say(f"pre-push: main is at {push.behind[0][:12]} now, which this push does not contain, so "
             "the remote refuses it whatever a lint says; nothing was linted. Rebase onto it "
-            "and push again")
+            "and push again: tools/land.py does both, as often as main moves")
         return 1
     if push.unnamed:
         say("pre-push: refusing a push the check cannot name")
