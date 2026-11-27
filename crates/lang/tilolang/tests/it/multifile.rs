@@ -538,6 +538,8 @@ const NEEDS_PUBLISHED_APPS: &[&str] = &[
     "migrate",
     "monitor",
     "notes",
+    "onboarding",
+    "osk",
     "passwords",
     "photos",
     "print-centre",

@@ -391,9 +391,7 @@ primary action find_sources(m: Migrations) (
     did: "looked for sources",
 ) {
     match json.decode<OfferedSources>(engine.sources()) {
-        .ok(found) => {
-            offer(m, found.device, found.sources)
-        }
+        .ok(found) => { offer(m, found.device, found.sources) }
         // The engine answers these itself, in the shape this app reads: an answer that is not
         // one leaves the list as it is rather than showing rows of nothing.
         .err(_) => {}

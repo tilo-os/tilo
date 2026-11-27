@@ -1398,7 +1398,9 @@ action busy(c: Calendars, from: Date, to: Date) -> List<Busy> (
     label: "Busy times",
 ) {
     let taken: List<Busy> = []
-    let held = c.events.filter(e -> not e.cancelled and (e.recurrence != "" or e.day <= to and e.end_day >= from))
+    let held = c.events.filter(
+        e -> not e.cancelled and (e.recurrence != "" or e.day <= to and e.end_day >= from),
+    )
     for e in held {
         for at in moments(e, from, to) {
             taken = taken + [Busy(start: at, end: at + (ends(e) - starts(e)), all_day: e.all_day)]
@@ -1670,11 +1672,11 @@ action take_invitation(c: Calendars, text: Text) -> Text uses time (
     icon: .calendar,
     label: "Take an invitation in",
     shows: [
-        addresses_named(text),
-        (organised_by(text), .addresses),
-        (invites(text), .addresses),
-        (text, .long),
-    ],
+    addresses_named(text),
+    (organised_by(text), .addresses),
+    (invites(text), .addresses),
+    (text, .long),
+],
 ) {
     require text.find("BEGIN:VEVENT") != .none "That is not a calendar invitation"
     // An agent brings up to date and takes out only an invitation it put in itself, and only
