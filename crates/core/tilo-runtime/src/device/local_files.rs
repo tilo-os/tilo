@@ -194,6 +194,20 @@ impl LocalFiles {
         }
     }
 
+    /// `request` as the app's own call on the workspace's folder: the address a change of the
+    /// tree is checked against ([`collab_types::files_open_step`]), whatever provider of this
+    /// device carried it out. The device's provider answers the same action at its own address;
+    /// the record keeps the call the app's.
+    fn as_app_call(request: &InvokeRequest) -> InvokeRequest {
+        let mut call = request.clone();
+        call.target.address.resource = format!(
+            "{}{}",
+            tilo_actions::remote::APPLICATION_RESOURCE_PREFIX,
+            tilo_app_id::apps::FILE_EXPLORER
+        );
+        call
+    }
+
     /// What the caller said of the invocation it makes this call the work of, and the context
     /// the tree's change is made in. The group is the host's to say; the request itself is kept
     /// where the tree is changed ([`FilesPutCall`]).
@@ -279,7 +293,11 @@ impl LocalFiles {
             .puts()
             .ok_or("The workspace's folder is not served on this computer.")?;
         let context = Self::caller_context(caller, request);
-        let call = FilesPutCall { context, request };
+        let app_call = Self::as_app_call(request);
+        let call = FilesPutCall {
+            context,
+            request: &app_call,
+        };
         let confirm = || self.confirm(caller, &id, &collab_types::FILES_OPEN_VERBS);
         puts.put(parsed, &arguments, Some(call), &confirm)
             .map(|value| Ok(Self::output(value)))
@@ -304,7 +322,11 @@ impl LocalFiles {
             .ok_or("The workspace's folder is not served on this computer.")?;
         let arguments = Self::arguments(request);
         let context = Self::caller_context(caller, request);
-        let call = FilesPutCall { context, request };
+        let app_call = Self::as_app_call(request);
+        let call = FilesPutCall {
+            context,
+            request: &app_call,
+        };
         let confirm = || self.confirm(caller, &id, file_verbs);
         puts.change(parsed, verb, &arguments, Some(call), &confirm)
             .map(|value| Ok(Self::output(value)))
