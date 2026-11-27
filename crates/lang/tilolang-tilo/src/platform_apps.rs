@@ -222,11 +222,17 @@ impl Roots {
     /// replaces it. A root the host reads in its own workspace (its members) reads as it is
     /// there.
     fn seed(host: &crate::host::Host, target: &crate::runtime::ResourceRef) {
-        if !host.reads_in_workspace(target) {
-            let _ = host
-                .runtime()
-                .set_reading(target, platform_root_defaults(&target.id_string()));
+        if host.reads_in_workspace(target) {
+            return;
         }
+        // A listing lists nothing before its app publishes anything: an empty listing, never a
+        // reading that holds no list, which a query of it traps on.
+        let reading = if crate::runtime::foreign::is_listing(target) {
+            serde_json::json!({ crate::runtime::foreign::LISTED: [] }).to_string()
+        } else {
+            platform_root_defaults(&target.id_string()).to_owned()
+        };
+        let _ = host.runtime().set_reading(target, &reading);
     }
 
     /// Whether `app` is a platform app this window reads: what its views change is its
