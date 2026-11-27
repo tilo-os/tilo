@@ -283,6 +283,10 @@ pub use {
 };
 mod app_widget;
 #[cfg(feature = "model")]
+#[cfg(feature = "test-support")]
+pub use app_widget::BoundAppWidget;
+#[cfg(feature = "model")]
+#[cfg(not(feature = "test-support"))]
 pub(crate) use app_widget::BoundAppWidget;
 
 /// A component's widget as a window's managed root holds it, for the tests above the toolkit.
@@ -956,8 +960,6 @@ pub(crate) mod control_result_probe;
 #[cfg(any(test, feature = "test-support"))]
 pub mod effect_fixture;
 pub mod keyboard_map;
-#[cfg(test)]
-mod magnify_tests;
 pub use {
     keyboard_map::KeyboardMap, keyboard_map::KeyboardMapInput, keyboard_map::KeyboardMapKey,
     keyboard_map::KeyboardMapSelection,

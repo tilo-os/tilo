@@ -14,12 +14,41 @@
     clippy::arithmetic_side_effects,
     reason = "test scenes and pixel tallies: failures are the assertion"
 )]
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use taffy::style_helpers::percent;
+use taffy::{Dimension, Size, Style};
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::*;
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
 use vello::Scene;
+use winit::event::*;
+use winit::keyboard::*;
 
-use super::*;
-use crate::app::{App, AppSurface, SurfaceDamage};
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_ui::app::{App, AppSurface, SurfaceDamage};
 use tilo_ui_base::collection_transition::ListModelChange;
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::kurbo::RoundedRect;
@@ -103,7 +132,7 @@ fn transcript(theme: &Theme) -> App {
         })
     })
     .with_viewport_height(480.0);
-    let mut app = App::new_with_controlled_inputs(crate::state::State::new(), Box::new(list));
+    let mut app = App::new_with_controlled_inputs(tilo_ui::state::State::new(), Box::new(list));
     app.set_theme(theme.clone());
     app
 }
@@ -312,7 +341,7 @@ fn arrives_and_matches(first: &str, counted: Option<usize>) {
     })
     .in_view("Today", Some(counted.unwrap_or(2)))
     .with_viewport_height(480.0);
-    let mut app = App::new_with_controlled_inputs(crate::state::State::new(), Box::new(list));
+    let mut app = App::new_with_controlled_inputs(tilo_ui::state::State::new(), Box::new(list));
     app.set_theme(theme.clone());
     let background = theme.tokens.colors.surfaces.content;
     let mut damage = SurfaceDamage::copying();
@@ -363,13 +392,8 @@ fn arrives_and_matches(first: &str, counted: Option<usize>) {
         .as_any_mut()
         .and_then(|any| any.downcast_mut::<VirtualList<Arriving>>())
         .expect("the list");
-    let headings: Vec<&str> = list
-        .groups
-        .bands
-        .iter()
-        .map(|band| band.heading.as_str())
-        .collect();
-    let first_row = list.row_box(0).expect("the first row is placed");
+    let headings = list.test_group_headings();
+    let first_row = list.test_row_box(0).expect("the first row is placed");
     if first == "Today" {
         assert!(
             headings.is_empty(),
@@ -382,7 +406,7 @@ fn arrives_and_matches(first: &str, counted: Option<usize>) {
     } else {
         assert_eq!(
             headings,
-            ["Overdue", "Today"],
+            ["Overdue".to_owned(), "Today".to_owned()],
             "two groups keep their headings"
         );
     }

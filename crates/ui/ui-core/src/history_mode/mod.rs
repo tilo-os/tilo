@@ -653,17 +653,6 @@ pub use embedded::{FocusRestrictions, allows_focus, has_surfaces};
 #[cfg(any(test, feature = "test-support"))]
 pub use testing::preview as test_preview;
 
-/// What a restore fixture's record holds: the fixture the component tests drive through a
-/// managed root.
-#[cfg(feature = "model")]
-#[cfg(test)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "The assertion helper compares queued and refused bindings across one ownership transition."
-)]
-#[path = "readiness_tests.rs"]
-mod readiness_tests;
-
 #[cfg(feature = "model")]
 pub(crate) mod routes;
 

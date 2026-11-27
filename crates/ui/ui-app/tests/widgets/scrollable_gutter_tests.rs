@@ -92,3 +92,53 @@ fn a_view_measured_at_its_natural_height_and_placed_at_a_cap_settles_with_its_gu
         "the words overflow the cap, so the bar keeps its gutter"
     );
 }
+
+/// A page in a navigation shell, as Clocks shows its timers: the shell's first solve gives the
+/// scroll view no width, where the wrapped page is far taller than the window, and the next
+/// gives it its place, where the page fits.
+#[test]
+fn content_that_overflowed_before_the_view_had_its_place_keeps_no_gutter() {
+    let page = || -> tilo_ui_base::widget::Element {
+        let mut column = Column::new().with_intrinsic_height();
+        for _ in 0..6 {
+            column = column.push(Box::new(Text::new(
+                "A paragraph long enough to wrap onto many lines when the view it \
+                 is laid out in has no width yet, and onto one or two once it has.",
+            )));
+        }
+        Box::new(column)
+    };
+    let shell = tilo_ui::widget::NavShell::new()
+        .content_kind(tilo_ui_base::widget::ContentKind::Page)
+        .mode(tilo_ui::widget::NavMode::Push)
+        .sidebar(Box::new(tilo_ui::widget::NavList::new(vec![
+            tilo_ui::widget::NavSection::untitled(
+                "sections",
+                ["One", "Two", "Three"]
+                    .into_iter()
+                    .map(|label| tilo_ui::widget::NavItem::new(label.to_owned(), label))
+                    .collect(),
+            ),
+        ])))
+        .content(Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_child(page()),
+        ));
+    let mut harness = Driver::new_with_theme(
+        tilo_ui::State::new(),
+        Box::new(shell),
+        (900, 760),
+        Theme::dark(),
+    );
+    assert!(harness.take_skip_report().is_none());
+    for width in [880, 700, 520] {
+        harness
+            .resize((width, 760))
+            .unwrap_or_else(|error| panic!("{width} px: {error:?}"));
+        let gutter = harness
+            .with_widget_mut(|scroll: &mut Scrollable| scroll.reserve_vertical)
+            .unwrap();
+        assert!(!gutter, "{width} px: the page fits, so no gutter is kept");
+    }
+}

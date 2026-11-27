@@ -1609,7 +1609,6 @@ pub mod test_support {
     use std::sync::*;
     use std::time::*;
     use taffy::{AvailableSpace, Size};
-    use tilo_ui::app::driver::Driver;
     use tilo_ui::kurbo::*;
     use tilo_ui::testing::Dispatch;
     use tilo_ui::vello::*;

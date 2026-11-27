@@ -431,3 +431,62 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+#[test]
+fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {
+    use tilo_ui::State;
+    use tilo_ui_base::LocalState;
+    use winit::event::TouchPhase::{Cancelled, Ended, Moved, Started};
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let selected = LocalState::new(0_usize);
+    let next = selected.clone();
+    let commits = Rc::new(RefCell::new(Vec::new()));
+    let receipts = Rc::clone(&commits);
+    let mut frame = Driver::for_root(
+        State::new(),
+        ToggleGroup::new(
+            vec![
+                Segment::new("Photo"),
+                Segment::new("Video"),
+                Segment::new("Scan"),
+            ],
+            0,
+        )
+        .bind_selection(&selected)
+        .on_choose("camera-modes", move |index| {
+            next.set(index);
+            receipts.borrow_mut().push(index);
+        }),
+        (360, 100),
+        Theme::dark(),
+    );
+    let rect = frame.root::<ToggleGroup>().get_rect();
+    let start = rect.center();
+    frame.touch(1, Started, start.x, start.y);
+    frame.touch(1, Moved, start.x - 90.0, start.y);
+    assert_eq!(selected.get(), 0, "motion alone cannot change mode");
+    frame.touch(1, Ended, start.x - 90.0, start.y);
+    assert_eq!(selected.get(), 1);
+    frame.touch(1, Ended, start.x - 90.0, start.y);
+    assert_eq!(selected.get(), 1, "a release commits once");
+    frame.touch(2, Started, start.x, start.y);
+    frame.touch(2, Ended, start.x - 20.0, start.y + 90.0);
+    assert_eq!(selected.get(), 1, "vertical scrolling keeps the mode");
+    frame.touch(3, Started, start.x, start.y);
+    frame.touch(3, Cancelled, start.x - 90.0, start.y);
+    frame.touch(3, Ended, start.x - 90.0, start.y);
+    assert_eq!(selected.get(), 1, "cancelled swipes cannot commit");
+    frame.touch(4, Started, start.x, start.y);
+    frame.touch(5, Started, start.x, start.y);
+    frame.touch(4, Ended, start.x - 90.0, start.y);
+    frame.touch(5, Ended, start.x - 90.0, start.y);
+    assert_eq!(selected.get(), 1, "multitouch cannot change modes");
+    frame.touch(6, Started, start.x, start.y);
+    frame.touch(6, Ended, start.x + 90.0, start.y);
+    assert_eq!(selected.get(), 0, "right swipe selects the previous mode");
+    assert_eq!(
+        &*commits.borrow(),
+        &[1, 0],
+        "only two deliberate swipes invoke the real view operation"
+    );
+}

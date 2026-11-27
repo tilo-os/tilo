@@ -3737,10 +3737,6 @@ mod answer;
 use answer::OutlineLook;
 
 #[cfg(test)]
-#[path = "map_motion_tests.rs"]
-mod motion_tests;
-
-#[cfg(test)]
 #[path = "map_marker_tests.rs"]
 mod marker_tests;
 
@@ -3873,6 +3869,8 @@ pub mod test_support {
         reason = "test-support helpers are compiled for every test build whether or not a test uses this one"
     )]
     use super::*;
+    /// The margin a place arriving in view keeps from its edges.
+    pub const TEST_ARRIVAL_MARGIN: f64 = ARRIVAL_MARGIN;
     use std::cell::*;
     use std::collections::*;
     use std::path::*;
@@ -4153,6 +4151,39 @@ mod pointing_tests;
 /// What a map's tests read of it, without widening what a view builds against.
 #[cfg(feature = "test-support")]
 impl Map {
+    /// Each pin's motion, by key, as the region advances it.
+    #[must_use]
+    pub fn test_placed(
+        &self,
+    ) -> std::rc::Rc<
+        std::cell::RefCell<std::collections::HashMap<String, tilo_ui_base::motion::Placed>>,
+    > {
+        std::rc::Rc::clone(&self.placed)
+    }
+
+    /// The pins in draw order, to move one as a person would.
+    #[must_use]
+    pub fn test_pins_mut(&mut self) -> &mut Vec<(String, PinPlace, tilo_ui_base::widget::Element)> {
+        &mut self.pins
+    }
+
+    /// Mark the pins as moved, as a view that set one in place does.
+    pub fn test_invalidate(&mut self) {
+        self.invalidation.invalidate();
+    }
+
+    /// Whether any pin is still moving at `now`.
+    #[must_use]
+    pub fn test_pins_moving(&self, now: crate::time::Instant) -> bool {
+        self.pins_moving(now)
+    }
+
+    /// The place the camera is panning to, if one arrived.
+    #[must_use]
+    pub fn test_reveal(&self) -> Option<&String> {
+        self.reveal.as_ref()
+    }
+
     /// The pin the map kept as its answer.
     #[must_use]
     pub fn test_answer(&self) -> Option<String> {

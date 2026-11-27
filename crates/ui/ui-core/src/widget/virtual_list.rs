@@ -3018,10 +3018,6 @@ mod a11y;
 #[path = "virtual_list_group_tests.rs"]
 mod group_tests;
 
-#[cfg(test)]
-#[path = "virtual_list_copy_tests.rs"]
-mod copy_tests;
-
 #[path = "virtual_list_arrivals.rs"]
 mod arrivals;
 
@@ -3054,6 +3050,26 @@ fn path_safe(key: &str) -> String {
         .replace('#', "%23")
 }
 
+/// What a list's tests read of it, without widening what a view builds against.
+#[cfg(feature = "test-support")]
+impl VirtualRows {
+    /// The headings of the groups the rows stand in, in order.
+    #[must_use]
+    pub fn test_group_headings(&self) -> Vec<String> {
+        self.groups
+            .bands
+            .iter()
+            .map(|band| band.heading.clone())
+            .collect()
+    }
+
+    /// Where the row at `index` was placed.
+    #[must_use]
+    pub fn test_row_box(&self, index: usize) -> Option<Rect> {
+        self.row_box(index)
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     #![allow(
@@ -3082,7 +3098,6 @@ pub mod test_support {
     use std::sync::*;
     use std::time::*;
     use taffy::{AvailableSpace, Size};
-    use tilo_ui::app::driver::Driver;
     use tilo_ui::kurbo::*;
     use tilo_ui::testing::Dispatch;
     use tilo_ui::vello::*;

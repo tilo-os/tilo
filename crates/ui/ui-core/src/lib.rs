@@ -600,9 +600,6 @@ mod component_coverage_tests;
 #[path = "component/feedback_tests.rs"]
 mod component_feedback_tests;
 #[cfg(test)]
-#[path = "component/tests.rs"]
-mod component_tests;
-#[cfg(test)]
 #[path = "control_domain/lifecycle_tests.rs"]
 mod control_domain_lifecycle_tests;
 #[cfg(test)]

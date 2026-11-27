@@ -179,6 +179,12 @@ mod window_group_visual_journey;
 #[path = "finish_render.rs"]
 mod finish_render;
 
+#[path = "component_tests.rs"]
+mod component_tests;
+
+#[path = "history_mode_readiness.rs"]
+mod history_mode_readiness;
+
 mod application_contract;
 
 #[path = "bound_component_dispatch.rs"]
@@ -294,6 +300,8 @@ mod board_tests;
 mod button_runner_tests;
 #[path = "widgets/call_tile_ratio.rs"]
 mod call_tile_ratio;
+#[path = "widgets/canvas_place_tests.rs"]
+mod canvas_place_tests;
 #[path = "widgets/card_parts_tests.rs"]
 mod card_parts_tests;
 #[path = "widgets/chat_reactions_tests.rs"]
@@ -322,5 +330,11 @@ mod group_row_presence_tests;
 mod image_bounds;
 #[path = "widgets/list_row_actions_tests.rs"]
 mod list_row_actions_tests;
+#[path = "widgets/magnify_tests.rs"]
+mod magnify_tests;
+#[path = "widgets/map_motion_tests.rs"]
+mod map_motion_tests;
 #[path = "widgets/page_edges_land_on_device_pixels.rs"]
 mod page_edges_land_on_device_pixels;
+#[path = "widgets/virtual_list_copy_tests.rs"]
+mod virtual_list_copy_tests;

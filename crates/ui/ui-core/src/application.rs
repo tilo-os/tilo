@@ -1412,6 +1412,19 @@ impl AppComponent {
         self.callback_binding()
     }
 
+    /// Give the component its root, or take it away, as an instance's launch and close do.
+    #[cfg(feature = "test-support")]
+    pub fn test_set_root(&mut self, root: Option<Box<dyn crate::widget::AppWidget>>) {
+        self.root = root;
+    }
+
+    /// The root the component holds, if any.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn test_root(&self) -> Option<&dyn crate::widget::AppWidget> {
+        self.root.as_deref()
+    }
+
     pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
         self.context.callback_binding()
     }

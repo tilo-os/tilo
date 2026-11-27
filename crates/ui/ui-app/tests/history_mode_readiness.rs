@@ -1,14 +1,40 @@
-use super::testing::*;
-use super::*;
-use crate::application::{LaunchTarget, RestoreInput};
-use crate::application_test_support::{
-    APP, ProbeHarness, runner_permissions, runner_probe_definition,
-};
-use crate::widget::{Column, IconDescriptor};
-use crate::{State, headless::Driver, widget::BoundAppWidget};
+use crate::support::application::{APP, ProbeHarness, runner_permissions, runner_probe_definition};
 use automerge::{ROOT, transaction::Transactable};
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
 use std::{cell::Cell, rc::Rc};
+use tilo_ui::app::driver::Driver;
+use tilo_ui::application::{LaunchTarget, RestoreInput};
+use tilo_ui::headless::*;
+use tilo_ui::history_mode::testing::*;
+use tilo_ui::history_mode::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::*;
+use tilo_ui::widget::{Column, IconDescriptor};
+use tilo_ui::{State, widget::BoundAppWidget};
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
 struct DraftRoot {
     pending: Rc<Cell<bool>>,
@@ -25,19 +51,19 @@ impl DraftRoot {
     }
 }
 impl Widget for DraftRoot {
-    tilo_ui_base::provides!(dyn crate::history_mode::capability::DocumentHistory);
+    tilo_ui_base::provides!(dyn tilo_ui::history_mode::capability::DocumentHistory);
 
-    crate::testing::delegate_widget_methods!(
+    tilo_ui::delegate_widget_methods!(
         inner: sync,
         build_layout,
         apply_layout,
         draw,
         get_rect
     );
-    crate::testing::inert_widget_methods!(name = "draft-root");
+    tilo_ui::inert_widget_methods!(name = "draft-root");
 }
 
-impl crate::history_mode::capability::DocumentHistory for DraftRoot {
+impl tilo_ui::history_mode::capability::DocumentHistory for DraftRoot {
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
         assert_eq!(scope, "document");
         self.calls.set(self.calls.get() + 1);
@@ -48,7 +74,7 @@ impl crate::history_mode::capability::DocumentHistory for DraftRoot {
         }
     }
 }
-crate::testing::test_app_widget!(
+tilo_ui::test_app_widget!(
     DraftRoot,
     "Draft root",
     icon = IconDescriptor::Named("draft".into())
@@ -68,7 +94,7 @@ fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> Driver {
                 "draft",
                 "lifetime",
                 RESTORABLE.app_id,
-                crate::DocumentId::for_tab(180),
+                tilo_ui::DocumentId::for_tab(180),
             ),
         }],
     )
@@ -82,7 +108,7 @@ fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> Driver {
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
-        tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&tilo_ui::history_source::entry_id_from_hash(
             &hash.to_string()
         ))
     );
@@ -131,7 +157,7 @@ fn readiness_refuses_review_refresh_and_confirmation_without_head_change() {
             .click_named("history-restore-review.primary")
             .unwrap();
         assert_eq!(
-            crate::history_mode::testing::body(&driver.state_mut().doc),
+            tilo_ui::history_mode::testing::body(&driver.state_mut().doc),
             "old"
         );
     }
@@ -143,7 +169,7 @@ static COMPONENT_HISTORY: HistoryDefinition = HistoryDefinition {
         key: "document",
         title: "Notebook",
         presentation: HistoryPresentation::Domain {
-            create: crate::history_mode::testing::preview,
+            create: tilo_ui::history_mode::testing::preview,
         },
     }],
 };
@@ -151,7 +177,7 @@ fn component(
     pending: Rc<Cell<bool>>,
     calls: Rc<Cell<usize>>,
     id: u64,
-) -> (ProbeHarness, crate::application::AppComponent) {
+) -> (ProbeHarness, tilo_ui::application::AppComponent) {
     let host = ProbeHarness::new();
     let definition = runner_probe_definition();
     let context = host
@@ -160,7 +186,7 @@ fn component(
     let mut component = definition
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
-    component.root = Some(Box::new(DraftRoot::new(pending, calls)));
+    component.test_set_root(Some(Box::new(DraftRoot::new(pending, calls))));
     component
         .register_document_history(&COMPONENT_HISTORY)
         .unwrap();
@@ -173,25 +199,27 @@ fn readiness_component_adapter_forwards_only_its_own_root_and_refuses_unavailabl
     let (_host, owned) = component(pending.clone(), calls.clone(), 182);
     let mut adapter = BoundAppWidget::new(owned);
     assert!(
-        crate::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
+        tilo_ui::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
     );
     let other_calls = Rc::new(Cell::new(0));
     let (_other, other) = component(Rc::new(Cell::new(false)), other_calls.clone(), 183);
     let other = BoundAppWidget::new(other);
-    assert!(crate::history_mode::capability::history_restore_readiness(&other, "document").is_ok());
+    assert!(
+        tilo_ui::history_mode::capability::history_restore_readiness(&other, "document").is_ok()
+    );
     assert_eq!(calls.get(), 1);
     assert_eq!(other_calls.get(), 1);
     pending.set(false);
     assert!(
-        crate::history_mode::capability::history_restore_readiness(&adapter, "document").is_ok()
+        tilo_ui::history_mode::capability::history_restore_readiness(&adapter, "document").is_ok()
     );
-    adapter.component.root = None;
+    adapter.test_component_mut().test_set_root(None);
     assert!(
-        crate::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
+        tilo_ui::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
     );
-    adapter.component.close();
+    adapter.test_component_mut().close();
     assert!(
-        crate::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
+        tilo_ui::history_mode::capability::history_restore_readiness(&adapter, "document").is_err()
     );
     assert_eq!(calls.get(), 2);
 }
@@ -200,24 +228,34 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
     let pending = Rc::new(Cell::new(false));
     let calls = Rc::new(Cell::new(0));
     let (_host, component) = component(pending.clone(), calls.clone(), 184);
-    let binding = component.callback_binding();
+    let binding = component.callback_binding_for_test();
     let selected = binding
-        .records
-        .with_history(&binding.checkout.id, |doc, history| {
+        .records_for_test()
+        .with_history(&binding.checkout_for_test().id, |doc, history| {
             doc.put(ROOT, "body", "old").unwrap();
-            history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+            history.commit_action_authored(
+                doc,
+                None,
+                None,
+                Some(binding.author_for_test().clone()),
+            );
             let hash = doc.base_heads()[0];
             doc.put(ROOT, "body", "live").unwrap();
-            history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+            history.commit_action_authored(
+                doc,
+                None,
+                None,
+                Some(binding.author_for_test().clone()),
+            );
             hash
         })
         .unwrap();
-    let tile = crate::widget::TileHost::from_component(component);
+    let tile = tilo_ui::widget::TileHost::from_component(component);
     let mut driver = Driver::new(State::new(), Box::new(tile), (900, 650));
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
-        tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&tilo_ui::history_source::entry_id_from_hash(
             &selected.to_string()
         ))
     );
@@ -243,8 +281,11 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
     assert!(driver.a11y_node_named("Restore version").is_none());
     assert_eq!(
         binding
-            .records
-            .read_checked(&binding.checkout.id, crate::history_mode::testing::body)
+            .records_for_test()
+            .read_checked(
+                &binding.checkout_for_test().id,
+                tilo_ui::history_mode::testing::body
+            )
             .unwrap(),
         "live"
     );
@@ -257,8 +298,11 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
         .unwrap();
     assert_eq!(
         binding
-            .records
-            .read_checked(&binding.checkout.id, crate::history_mode::testing::body)
+            .records_for_test()
+            .read_checked(
+                &binding.checkout_for_test().id,
+                tilo_ui::history_mode::testing::body
+            )
             .unwrap(),
         "old"
     );

@@ -1,7 +1,36 @@
-use crate::component_catalogue::TOOLKIT;
-use crate::component_testing::{Node, given, given_with_views, sample};
-use crate::widget::ListRowProps;
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::component::Component;
+use tilo_ui::component_catalogue::TOOLKIT;
+use tilo_ui::component_testing::{Node, given, given_with_views, sample};
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::ListRowProps;
+use tilo_ui::widget::*;
+use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
 /// The toolkit's own described widgets, as a window that builds only them composes them.
 fn toolkit() -> Registry {
@@ -242,7 +271,7 @@ tilo_test_env::scenario! {
     // props that carried none of their views, so every card showed empty.
     phase a_widget_holding_parts_takes_other_parts_only_by_being_built_again;
     {
-        use crate::widget::{
+        use tilo_ui::widget::{
             Board, BoardCardProps, BoardListProps, BoardProps, Map, MapPinProps, MapProps, Text,
         };
 
@@ -282,9 +311,9 @@ tilo_test_env::scenario! {
 
         fn laid_out<W: tilo_ui_base::widget::Widget + 'static>(
             widget: W,
-        ) -> (crate::headless::Driver, Vec<String>) {
-            let host = crate::headless::Driver::for_root(
-                crate::State::new(),
+        ) -> (tilo_ui::headless::Driver, Vec<String>) {
+            let host = tilo_ui::headless::Driver::for_root(
+                tilo_ui::State::new(),
                 widget,
                 (900, 600),
                 tilo_ui_base::theme::Theme::dark(),
@@ -377,7 +406,7 @@ tilo_test_env::scenario! {
     {
         let mut nothing = given("k", &[]);
         let error = toolkit().build("EmptyState", &mut nothing).err();
-        assert_eq!(error, Some(Error::missing("EmptyState", "title")));
+        assert_eq!(error, Some(tilo_ui_base::component::Error::missing("EmptyState", "title")));
         let mut wrong = given("k", &[("title", Value::Int(3))]);
         assert!(toolkit().build("EmptyState", &mut wrong).is_err());
         let mut unknown = given("k", &[]);
@@ -444,9 +473,9 @@ tilo_test_env::scenario! {
                 ("toggled", Value::Bool(true)),
             ],
         );
-        let props = crate::widget::ButtonProps::from_source(&mut source).expect("reads");
-        let button = <crate::widget::Button as Described>::from_props("pin", props);
-        assert_eq!(button.role_of(), crate::widget::ButtonRole::Plain);
+        let props = tilo_ui::widget::ButtonProps::from_source(&mut source).expect("reads");
+        let button = <tilo_ui::widget::Button as Described>::from_props("pin", props);
+        assert_eq!(button.role_of(), tilo_ui::widget::ButtonRole::Plain);
         assert!(button.is_toggled());
     }
 }
@@ -556,7 +585,7 @@ fn whole_list(props: &[(&str, Value)], items: Vec<Node>) -> Node {
     })
 }
 
-fn grouped_list(title: Option<&str>, items: &[(&str, &str)]) -> crate::widget::DescribedList {
+fn grouped_list(title: Option<&str>, items: &[(&str, &str)]) -> tilo_ui::widget::DescribedList {
     let mut props = vec![("in_column", Value::Bool(true))];
     if let Some(title) = title {
         props.push(("ungrouped_title", Value::Text(title.into())));
@@ -566,11 +595,13 @@ fn grouped_list(title: Option<&str>, items: &[(&str, &str)]) -> crate::widget::D
         .map(|(key, group)| given(key, &[("group", Value::Text((*group).into()))]))
         .collect();
     let mut source = whole_list(&props, items);
-    let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
-    <crate::widget::DescribedList as Described>::from_props("list", props)
+    let props = tilo_ui::widget::VirtualListProps::from_source(&mut source).expect("reads");
+    <tilo_ui::widget::DescribedList as Described>::from_props("list", props)
 }
 
-fn rendered_list(items: Vec<Item>) -> (crate::widget::DescribedList, tilo_ui_base::Intents<Fired>) {
+fn rendered_list(
+    items: Vec<Item>,
+) -> (tilo_ui::widget::DescribedList, tilo_ui_base::Intents<Fired>) {
     let (list, queue, _) = rendered_list_and_rows(items);
     (list, queue)
 }
@@ -578,7 +609,7 @@ fn rendered_list(items: Vec<Item>) -> (crate::widget::DescribedList, tilo_ui_bas
 fn rendered_list_and_rows(
     items: Vec<Item>,
 ) -> (
-    crate::widget::DescribedList,
+    tilo_ui::widget::DescribedList,
     tilo_ui_base::Intents<Fired>,
     std::rc::Rc<std::cell::RefCell<Rendered>>,
 ) {
@@ -602,9 +633,9 @@ fn rendered_list_and_rows(
         )
     }
     .rows(rows);
-    let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
+    let props = tilo_ui::widget::VirtualListProps::from_source(&mut source).expect("reads");
     (
-        <crate::widget::DescribedList as Described>::from_props("list", props),
+        <tilo_ui::widget::DescribedList as Described>::from_props("list", props),
         queue,
         rendered,
     )
@@ -629,9 +660,9 @@ tilo_test_env::scenario! {
             item("b", "Groceries", false),
         ]);
         let virtual_list = list.list_mut().expect("the list");
-        assert_eq!(crate::widget::ListModel::len(virtual_list.model()), 2);
+        assert_eq!(tilo_ui::widget::ListModel::len(virtual_list.model()), 2);
         assert_eq!(
-            crate::widget::ListModel::label(virtual_list.model(), 1).as_deref(),
+            tilo_ui::widget::ListModel::label(virtual_list.model(), 1).as_deref(),
             Some("Groceries"),
             "a row is named by its title, for type-ahead"
         );
@@ -642,7 +673,7 @@ tilo_test_env::scenario! {
             .menu()
             .items()
             .iter()
-            .map(crate::widget::MenuItem::label)
+            .map(tilo_ui::widget::MenuItem::label)
             .collect();
         assert_eq!(labels, vec![Some("Delete")]);
         assert!(queue.take().iter().any(|fired| fired.event == "select"
@@ -673,8 +704,8 @@ tilo_test_env::scenario! {
             item("a", "Q3 plan", false),
             item("b", "Groceries", false),
         ]);
-        let mut harness = crate::headless::Driver::for_root(
-            crate::State::new(),
+        let mut harness = tilo_ui::headless::Driver::for_root(
+            tilo_ui::State::new(),
             list,
             (400, 300),
             tilo_ui_base::theme::Theme::dark(),
@@ -714,8 +745,8 @@ tilo_test_env::scenario! {
     phase a_page_column_holds_the_readable_measure_from_its_first_row;
     {
         fn pages<'a>(
-            node: &'a crate::headless::InspectionNode,
-            out: &mut Vec<&'a crate::headless::InspectionNode>,
+            node: &'a tilo_ui::headless::InspectionNode,
+            out: &mut Vec<&'a tilo_ui::headless::InspectionNode>,
         ) {
             if node.widget == "Page" {
                 out.push(node);
@@ -735,10 +766,10 @@ tilo_test_env::scenario! {
                 .map(|key| given(key, &[("title", Value::Text((*key).into()))]))
                 .collect(),
         );
-        let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
-        let list = <crate::widget::DescribedList as Described>::from_props("list", props);
-        let mut harness = crate::headless::Driver::for_root(
-            crate::State::new(),
+        let props = tilo_ui::widget::VirtualListProps::from_source(&mut source).expect("reads");
+        let list = <tilo_ui::widget::DescribedList as Described>::from_props("list", props);
+        let mut harness = tilo_ui::headless::Driver::for_root(
+            tilo_ui::State::new(),
             list,
             (1600, 900),
             tilo_ui_base::theme::Theme::dark(),
@@ -748,8 +779,8 @@ tilo_test_env::scenario! {
         let mut found = Vec::new();
         pages(&inspection.root, &mut found);
         assert_eq!(found.len(), 3, "one page row per message");
-        let measure = f64::from(crate::widget::arrange::MEASURE_REM)
-            * f64::from(crate::widget::arrange::rem_of(&tilo_ui_base::theme::Theme::dark()));
+        let measure = f64::from(tilo_ui::widget::arrange::MEASURE_REM)
+            * f64::from(tilo_ui::widget::arrange::rem_of(&tilo_ui_base::theme::Theme::dark()));
         for page in &found {
             let width = page.children.first().expect("a row").rect[2];
             assert!(
@@ -769,24 +800,24 @@ tilo_test_env::scenario! {
 
     phase rows_that_name_no_group_stand_under_their_own_heading;
     {
-        use crate::widget::RowGroup;
+        use tilo_ui::widget::RowGroup;
         let list = grouped_list(
             Some("No date"),
             &[("a", "Jul 1"), ("b", ""), ("c", "Jul 1")],
         );
         let model = list.list().expect("the list").model();
         assert_eq!(
-            crate::widget::ListModel::group_at(model, 0),
+            tilo_ui::widget::ListModel::group_at(model, 0),
             Some(RowGroup::heading("Jul 1"))
         );
         assert_eq!(
-            crate::widget::ListModel::group_at(model, 1),
+            tilo_ui::widget::ListModel::group_at(model, 1),
             Some(RowGroup::heading("No date")),
             "a row whose item names no group is not the last group's"
         );
         let list = grouped_list(None, &[("a", "Jul 1"), ("b", "")]);
         let model = list.list().expect("the list").model();
-        assert_eq!(crate::widget::ListModel::group_at(model, 1), None);
+        assert_eq!(tilo_ui::widget::ListModel::group_at(model, 1), None);
         let mut source = whole_list(
             &[("ungrouped_title", Value::Text("No date".into()))],
             vec![given(
@@ -797,10 +828,10 @@ tilo_test_env::scenario! {
                 ],
             )],
         );
-        let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
-        let list = <crate::widget::DescribedList as Described>::from_props("list", props);
+        let props = tilo_ui::widget::VirtualListProps::from_source(&mut source).expect("reads");
+        let list = <tilo_ui::widget::DescribedList as Described>::from_props("list", props);
         assert_eq!(
-            crate::widget::ListModel::group_at(list.list().expect("the list").model(), 0),
+            tilo_ui::widget::ListModel::group_at(list.list().expect("the list").model(), 0),
             None
         );
     }

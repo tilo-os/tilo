@@ -414,6 +414,21 @@ mod component_adapter {
         update_reads: Option<tilo_ui_base::component_inputs::Reads>,
     }
 
+    /// What a test reads of the component an app widget wraps.
+    #[cfg(feature = "test-support")]
+    impl BoundAppWidget {
+        /// The component whose root this widget shows.
+        #[must_use]
+        pub fn test_component(&self) -> &AppComponent {
+            &self.component
+        }
+
+        /// The component, to launch, close or re-root it as its own test does.
+        pub fn test_component_mut(&mut self) -> &mut AppComponent {
+            &mut self.component
+        }
+    }
+
     impl BoundAppWidget {
         pub fn new(component: AppComponent) -> Self {
             Self {

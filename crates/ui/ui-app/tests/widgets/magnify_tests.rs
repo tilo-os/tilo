@@ -1,13 +1,34 @@
 //! A dock item that magnifies under the pointer: the item under it is larger than its
 //! neighbours, those than the items further off, and leaving settles every one back.
 
-use super::{Button, Container, Magnify, MagnifyProps, Row};
-use crate::app::driver::Driver;
-use crate::time::Duration;
-use tilo_ui_base::component::Described;
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::*;
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
 use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::Rhythm;
-
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 /// A row of `count` tile buttons, each in a `Magnify` of `zoom` and a container between them, as
 /// the dock draws them: a view call around the button is a wrapper, and the scale reaches the
 /// button through it.
@@ -34,7 +55,7 @@ fn dock(zoom: f64, count: usize) -> Row {
 
 fn driver_with(zoom: f64, theme: Theme) -> Driver {
     let mut driver = Driver::new_with_theme(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(dock(zoom, 5)),
         (600, 140),
         theme,
@@ -72,7 +93,7 @@ fn the_item_under_the_pointer_grows_more_than_its_neighbours() {
         let mut along = Vec::new();
         assert!(settle(&mut driver, &mut along), "the growth settles");
         let grown = driver.targets();
-        let height = |name: &str| grown.get(name).map_or(0.0, vello::kurbo::Rect::height);
+        let height = |name: &str| grown.get(name).map_or(0.0, tilo_ui::kurbo::Rect::height);
         let (near, neighbour, far) = (height("t2"), height("t1"), height("t0"));
         assert!(
             near > neighbour + 2.0 && neighbour > far + 1.0,
@@ -152,21 +173,24 @@ fn the_dock_grows_itself_so_the_items_never_overlap() {
 }
 
 /// A tile's props at `size`, as the dock builds its buttons.
-fn tile_props(size: super::ControlSize) -> crate::widget::ButtonProps {
-    crate::widget::ButtonProps {
+fn tile_props(size: tilo_ui::widget::ControlSize) -> tilo_ui::widget::ButtonProps {
+    tilo_ui::widget::ButtonProps {
         label: "Tile".to_owned(),
         icon: Some(tilo_ui_base::icons::Icon::X),
         icon_only: true,
         size,
-        ..crate::widget::ButtonProps::default()
+        ..tilo_ui::widget::ButtonProps::default()
     }
 }
 
 #[test]
 fn a_size_setting_change_reaches_its_new_height_through_the_frames_between() {
     let mut driver = Driver::for_root(
-        crate::State::new(),
-        <Button as Described>::from_props("tile", tile_props(super::ControlSize::Regular)),
+        tilo_ui::State::new(),
+        <Button as Described>::from_props(
+            "tile",
+            tile_props(tilo_ui::widget::ControlSize::Regular),
+        ),
         (400, 200),
         Theme::dark(),
     );
@@ -174,7 +198,7 @@ fn a_size_setting_change_reaches_its_new_height_through_the_frames_between() {
     let regular = driver.targets()["tile"].height();
     let taken = driver
         .with_widget_mut(|button: &mut Button| {
-            button.set_props(tile_props(super::ControlSize::Large))
+            button.set_props(tile_props(tilo_ui::widget::ControlSize::Large))
         })
         .is_some_and(|taken| taken);
     assert!(taken, "the new size is taken in place, keeping the face");
