@@ -434,11 +434,10 @@ fn job_outcome(invocation: InvocationId, record: &Value) -> InvocationUpdate {
     }
 }
 
-/// Why a job's record says it ended as it did: what its own detail carries under `why`, the one
-/// field every job's reason is written in. A record that names none ends an invocation with no
-/// reason it could tell.
+/// Why a job's record ended as it did: `why`, or an engine op's own `error` in its detail.
 fn why(detail: &Value) -> Option<&str> {
-    detail.get("why").and_then(Value::as_str)
+    let reason = |key: &str| detail.get(key).and_then(Value::as_str);
+    reason("why").or_else(|| reason("error"))
 }
 
 /// What a handler's receipt comes to, as its invocation's ending.
