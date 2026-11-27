@@ -1251,7 +1251,7 @@ fn tab_of(session: &Session, window: u64) -> Option<u64> {
 
 /// The other app's own window, made by the spare bound to it, takes the tab held for it: that tab
 /// still waited for it.
-fn other_takes_its_tab(session: &mut Session, pid: u32, instance: u64, workspace: &str) {
+fn other_takes_its_tab(session: &Session, pid: u32, instance: u64, workspace: &str) {
     session.desktop().with_policy(|policy| {
         policy
             .map(a_bound_window(90, pid, OTHER, workspace, instance))
@@ -1313,7 +1313,7 @@ fn a_bound_process_claiming_another_app_and_its_instance_shows_its_own_app() {
         None,
         "the other app's tab still waits"
     );
-    other_takes_its_tab(&mut session, pid, instance, &workspace);
+    other_takes_its_tab(&session, pid, instance, &workspace);
 }
 
 /// The system may give a spare window process the id of a process another app's launch started:
@@ -1365,7 +1365,7 @@ fn a_reused_process_id_takes_nothing() {
         vec![tab_of(&session, 22).unwrap()],
         "the window shows as the app its connection was bound to"
     );
-    other_takes_its_tab(&mut session, pid, instance, &workspace);
+    other_takes_its_tab(&session, pid, instance, &workspace);
 }
 
 /// A spare bound to no app yet is no app's: a window it maps gets no tab, whatever process id,
@@ -1417,5 +1417,5 @@ fn an_unbound_spares_window_gets_no_tab() {
             .collect()
     });
     assert_eq!(before, after, "no tab came or went");
-    other_takes_its_tab(&mut session, pid, instance, &workspace);
+    other_takes_its_tab(&session, pid, instance, &workspace);
 }
