@@ -9,9 +9,8 @@
 //!
 //! The fixture raises the account's user manager before the first check runs, as a login session
 //! does, because the micro-VM it runs in boots no init and the supervisor starts each check as a
-//! service of that manager, in a cgroup it bounds. The manager starts the account's own bus as a
-//! login's does. Only the run named by [`FIXTURE`] runs it; the rest of the suite passes it
-//! without starting anything.
+//! service of that manager, in a cgroup it bounds. Only the run named by [`FIXTURE`] runs it;
+//! the rest of the suite passes it without starting anything.
 
 #![cfg(unix)]
 #![allow(
@@ -24,16 +23,13 @@
 )]
 
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tilo_actions::remote::answered;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, InvokeArgument, InvokeRequest, ReadAnswer,
-    ReceiptStatus, RemoteActionTarget, ResourceReadRequest, WORKSPACE_GOVERNANCE_PROVIDER,
-    workspace_governance_address,
+    ActionCallError, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_address,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_server_protocol::page::window::WindowLink;
@@ -60,106 +56,6 @@ fn step(what: &str) {
         let _ = writeln!(file, "approved checks: {what}");
         let _ = file.flush();
     }
-}
-
-/// What the daemon says about the app it starts, written where the check streams it: an app
-/// that starts and then says nothing more is read from the device's own words as they arrive.
-struct DaemonSaid;
-
-/// Whether an app's window is being opened now: the daemon's own lines are read then, while they
-/// say what a start does; past it, only what the apps themselves say is streamed.
-static OPENING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-#[derive(Default)]
-struct SaidMessage {
-    text: Option<String>,
-}
-
-impl tracing::field::Visit for SaidMessage {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.text = Some(format!("{value:?}"));
-        }
-    }
-}
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for DaemonSaid {
-    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        if *event.metadata().level() > tracing::Level::INFO {
-            return;
-        }
-        let target = event.metadata().target();
-        let app = target == tilo_startup_metrics::APP_OUTPUT_TARGET;
-        let opening = OPENING.load(std::sync::atomic::Ordering::Relaxed);
-        if !(app || (opening && target.starts_with("tilo_runtime"))) {
-            return;
-        }
-        let mut message = SaidMessage::default();
-        event.record(&mut message);
-        if let Some(text) = message.text {
-            step(&format!("said: {text}"));
-        }
-    }
-}
-
-/// What runs now, as the check streams it while it waits: a start that stops without a word
-/// is read from the processes that are there, not guessed at.
-fn describe_processes() -> String {
-    let mut rows = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return "no /proc".to_owned();
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(|name| name.parse::<u32>().ok()) else {
-            continue;
-        };
-        let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
-            continue;
-        };
-        let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-        if !(cmdline.contains("tilo")
-            || cmdline.contains("bwrap")
-            || cmdline.contains("systemd")
-            || cmdline.contains("dbus"))
-        {
-            continue;
-        }
-        let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|stat| stat.split_whitespace().nth(2).map(ToOwned::to_owned))
-            .unwrap_or_default();
-        let mut waiting = Vec::new();
-        let threads = std::fs::read_dir(format!("/proc/{pid}/task")).map_or(0, |tasks| {
-            for task in tasks.flatten() {
-                let channel = std::fs::read_to_string(task.path().join("wchan"))
-                    .map_or_else(|_| "?".to_owned(), |channel| channel.trim().to_owned());
-                waiting.push(channel);
-            }
-            waiting.len()
-        });
-        let fds: Vec<String> = std::fs::read_dir(format!("/proc/{pid}/fd"))
-            .map(|fds| {
-                fds.flatten()
-                    .filter_map(|fd| std::fs::read_link(fd.path()).ok())
-                    .map(|target| target.display().to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-        // A tilolang host's descriptors say which window it is: the page's holds the page's
-        // link and the patch, the instance's the workspace's connections.
-        let named = if cmdline.contains("tilolang-process") {
-            format!(" fds [{}]", fds.join(" "))
-        } else {
-            format!(" {} fds", fds.len())
-        };
-        rows.push(format!(
-            "{pid} {state} {threads} threads in [{}],{named}: {cmdline}",
-            waiting.join(" ")
-        ));
-    }
-    rows.sort();
-    rows.join("\n")
 }
 
 /// End this process where it is: the steps carry the failure already, and the unwinding a panic
@@ -321,64 +217,58 @@ fn approval(
     })
 }
 
+/// What `target` answers `arguments` with, run as the person and followed to its end.
+async fn answer(
+    host: &Host,
+    target: RemoteActionTarget,
+    arguments: Value,
+    what: &str,
+) -> Result<ActionOutput, ActionCallError> {
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        host::output(host, target, arguments),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the device did not answer {what} within 60s"))
+}
+
 /// The `checks` setting written, or removed, through the device's own action.
 async fn settings(host: &Host, action: &str, arguments: Value) -> Result<Value, ActionCallError> {
     let target = RemoteActionTarget {
         provider: tilo_device_identity::login::PROVIDER.to_owned(),
         address: ActionAddress::new("settings", action),
     };
-    tokio::time::timeout(
-        Duration::from_secs(60),
-        host::output(host, target, arguments),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("the device did not answer `settings#{action}` within 60s"))
-    .map(|output| output.value.unwrap_or(Value::Null))
+    answer(host, target, arguments, &format!("`settings#{action}`"))
+        .await
+        .map(|output| output.value.unwrap_or(Value::Null))
 }
 
 /// The check the fixture app publishes on its project: the action's address, and the identity
 /// of the record it acts on, which the approval names exactly.
 async fn awaiting_check(host: &Host) -> (ActionAddress, tilo_actions::ResourceSemanticIdentity) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let page = tokio::time::timeout(Duration::from_secs(30), host::listed(host, APP))
-            .await
-            .unwrap_or_else(|_| panic!("the app did not answer its catalogue within 30s"))
-            .expect("the app lists what it publishes");
-        let found = page.rows.iter().find_map(|row| {
-            let descriptor = row.action.as_ref()?;
-            if descriptor.address.action != "run-approved-check" {
-                return None;
+    tilo_test_env::within("the fixture app's check action", async {
+        loop {
+            let page = tokio::time::timeout(Duration::from_secs(30), host::listed(host, APP))
+                .await
+                .unwrap_or_else(|_| panic!("the app did not answer its catalogue within 30s"))
+                .expect("the app lists what it publishes");
+            let found = page.rows.iter().find_map(|row| {
+                let descriptor = row.action.as_ref()?;
+                if descriptor.address.action != "run-approved-check" {
+                    return None;
+                }
+                Some((
+                    descriptor.address.clone(),
+                    descriptor.semantic_identity.clone()?,
+                ))
+            });
+            if let Some(found) = found {
+                return found;
             }
-            let identity = descriptor.semantic_identity.clone()?;
-            Some((descriptor.address.clone(), identity))
-        });
-        if let Some(found) = found {
-            return found;
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        let shown: Vec<String> = page
-            .rows
-            .iter()
-            .map(|row| {
-                format!(
-                    "{} {} {} identity={}",
-                    row.provider,
-                    row.resource.id,
-                    row.action
-                        .as_ref()
-                        .map_or("-", |action| action.address.action.as_str()),
-                    row.action
-                        .as_ref()
-                        .is_some_and(|action| action.semantic_identity.is_some()),
-                )
-            })
-            .collect();
-        assert!(
-            Instant::now() < deadline,
-            "the fixture app never published its check action on a record: {shown:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    })
+    .await
 }
 
 /// Install the package file `tapp` in `workspace`, as `tilo-app push` does: the workspace keeps
@@ -425,94 +315,9 @@ async fn output_to(host: &Host, workspace: &str, action: &str, arguments: Value)
         provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
         address: workspace_governance_address(workspace, action),
     };
-    tokio::time::timeout(
-        Duration::from_secs(60),
-        host::output(host, target, arguments),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("the workspace did not answer `{action}` within 60s"))
-    .unwrap_or_else(|error| panic!("the workspace answers `{action}`: {error:?}"));
-}
-
-/// What the account's manager says of the checks it was asked to run: whether it runs at all,
-/// the units it keeps, and the log it writes beside the account's bus, where a unit that failed
-/// says why.
-fn manager_said() -> String {
-    use std::fmt::Write as _;
-    let mut said = String::new();
-    for args in [
-        vec!["--user", "--no-pager", "is-system-running"],
-        vec![
-            "--user",
-            "--no-pager",
-            "--all",
-            "--no-legend",
-            "list-units",
-            "tilo-approved-check-*",
-        ],
-    ] {
-        let output = std::process::Command::new("/usr/bin/timeout")
-            .args(["--signal=KILL", "5", "/usr/bin/systemctl"])
-            .args(&args)
-            .output_locked();
-        match output {
-            Ok(output) => {
-                let _ = writeln!(
-                    said,
-                    "systemctl {}: {:?} {}{}",
-                    args.join(" "),
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr),
-                );
-            }
-            Err(error) => {
-                let _ = writeln!(said, "systemctl {}: {error}", args.join(" "));
-            }
-        }
-    }
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        for name in ["manager.log", "account-bus.log"] {
-            let log = Path::new(&runtime).join(name);
-            if let Ok(text) = std::fs::read_to_string(&log) {
-                let mut keep: Vec<&str> = text.lines().rev().take(40).collect();
-                keep.reverse();
-                let _ = write!(said, "{}:\n{}\n", log.display(), keep.join("\n"));
-            }
-        }
-    }
-    said
-}
-
-/// The app's primary record in `workspace`, read as the person from this device: whether the
-/// record its view opens on is there, which is what that view awaits.
-async fn primary_reading(host: &Host, workspace: &str) -> String {
-    let Some(reads) = host.dispatch().resource_reads() else {
-        return "this device keeps no resource reads".to_owned();
-    };
-    let cert = host.daemon().workspaces().device_cert().clone();
-    let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key);
-    let request = ResourceReadRequest {
-        workspace: workspace.to_owned(),
-        app: APP.to_owned(),
-        record: "@tilo:package-primary".to_owned(),
-        joined: false,
-        after: None,
-        wait_ms: None,
-        answer: ReadAnswer::Reading,
-    };
-    match tokio::time::timeout(Duration::from_secs(15), answered(reads, &caller, request)).await {
-        Ok(Ok(answer)) => {
-            let entries = answer["records"].as_array().map_or(0, Vec::len);
-            let value = answer["records"]
-                .get(0)
-                .and_then(|entry| entry.get("value"))
-                .cloned();
-            format!("its primary record: {entries} entries, {value:?}")
-        }
-        Ok(Err(error)) => format!("its primary record could not be read: {error}"),
-        Err(_) => "its primary record did not answer within 15s".to_owned(),
-    }
+    answer(host, target, arguments, &format!("`{action}`"))
+        .await
+        .unwrap_or_else(|error| panic!("the workspace answers `{action}`: {error:?}"));
 }
 
 /// The job `job` as the device keeps it: the record at `devices/<device>/jobs/<job>`, which the
@@ -525,6 +330,23 @@ fn job_reading(job: &str) -> Result<Value, String> {
         .join(format!("{job}.json"));
     let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// The job's record, once it holds one.
+fn job_record(job: &str) -> Value {
+    let mut last = String::new();
+    tilo_test_env::wait_for(format!("the job's record {job}"), || {
+        match job_reading(job) {
+            Ok(record) => Some(record),
+            Err(said) => {
+                if said != last {
+                    step(&format!("the job's read: {said}"));
+                    last = said;
+                }
+                None
+            }
+        }
+    })
 }
 
 /// Run the approved check `check_id` through the app's own published action, following the
@@ -560,54 +382,52 @@ async fn run_check(
         .await
         .unwrap_or_else(|_| panic!("the dispatch did not take `{check_id}` within 60s"))
         .expect("the dispatch answers")?;
-    let deadline = tilo_test_env::hang_deadline();
     let mut status = Some(receipt.status);
-    loop {
-        if let Some(state) = provider.observe(&caller, &invocation) {
-            match state.update {
-                InvocationUpdate::Succeeded { output, .. } => {
+    tilo_test_env::within(format!("the check `{check_id}` to end"), async {
+        loop {
+            if let Some(state) = provider.observe(&caller, &invocation) {
+                match state.update {
+                    InvocationUpdate::Succeeded { output, .. } => {
+                        let (receipt, job) = answered_receipt(&output, &name);
+                        return Ok((job, receipt));
+                    }
+                    InvocationUpdate::Failed { error, .. } => {
+                        return Err(ActionCallError::Refused {
+                            reason: error.message,
+                        });
+                    }
+                    InvocationUpdate::Cancelled { .. } => {
+                        return Err(ActionCallError::Refused {
+                            reason: "the check was cancelled".into(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            match status.take() {
+                Some(ReceiptStatus::Accepted) | None => {}
+                Some(ReceiptStatus::Completed { output }) => {
                     let (receipt, job) = answered_receipt(&output, &name);
                     return Ok((job, receipt));
                 }
-                InvocationUpdate::Failed { error, .. } => {
+                Some(ReceiptStatus::Failed { error }) => {
                     return Err(ActionCallError::Refused {
                         reason: error.message,
                     });
                 }
-                InvocationUpdate::Cancelled { .. } => {
+                Some(ReceiptStatus::Rejected { error }) => return Err(error),
+                Some(ReceiptStatus::Cancelled { .. }) => {
                     return Err(ActionCallError::Refused {
                         reason: "the check was cancelled".into(),
                     });
                 }
-                _ => {}
             }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        match status.take() {
-            Some(ReceiptStatus::Accepted) | None => {}
-            Some(ReceiptStatus::Completed { output }) => {
-                let (receipt, job) = answered_receipt(&output, &name);
-                return Ok((job, receipt));
-            }
-            Some(ReceiptStatus::Failed { error }) => {
-                return Err(ActionCallError::Refused {
-                    reason: error.message,
-                });
-            }
-            Some(ReceiptStatus::Rejected { error }) => return Err(error),
-            Some(ReceiptStatus::Cancelled { .. }) => {
-                return Err(ActionCallError::Refused {
-                    reason: "the check was cancelled".into(),
-                });
-            }
-        }
-        assert!(Instant::now() < deadline, "the check never ended");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    })
+    .await
 }
 
-/// The job the host kept for the check: the receipt names it by the invocation it served, which
-/// is the record at `devices/<device>/jobs/<job>`. An answer that names none is the invocation
-/// asked with.
 /// The reason a refusal names, for the refusals the fixture pins to their exact words: an
 /// answer that is no refusal names none.
 fn refusal_reason(error: &ActionCallError) -> Option<String> {
@@ -634,245 +454,6 @@ fn answered_receipt(output: &ActionOutput, asked: &str) -> (Value, String) {
     (receipt, job)
 }
 
-/// The job's record, once it holds one.
-fn job_record(job: &str) -> Value {
-    let deadline = tilo_test_env::hang_deadline();
-    let mut last = "no read".to_owned();
-    loop {
-        match job_reading(job) {
-            Ok(record) => return record,
-            Err(said) => {
-                if said != last {
-                    step(&format!("the job's read: {said}"));
-                }
-                last = said;
-            }
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the job's record never appeared: {last}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-/// The account's user manager a login session starts: the micro-VM boots no init, so the check
-/// raises it itself, and the supervisor starts each check as a service of it, in a cgroup it
-/// bounds. The micro-VM has no login session bus either, so the manager is reached over its own
-/// socket, which `systemd-run --user` and `systemctl --user` take when the session names it.
-struct UserManager {
-    system_bus: Child,
-    manager: Child,
-}
-
-impl UserManager {
-    /// Whether the manager still runs: `None` while it does, else how it ended.
-    fn stopped(&mut self) -> Option<std::process::ExitStatus> {
-        self.manager.try_wait().ok().flatten()
-    }
-}
-
-impl Drop for UserManager {
-    fn drop(&mut self) {
-        let _ = std::process::Command::new("/usr/bin/systemctl")
-            .args(["--user", "exit"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status_locked();
-        for child in [&mut self.manager, &mut self.system_bus] {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-fn start_user_manager() -> UserManager {
-    let runtime = std::env::var("XDG_RUNTIME_DIR").expect("the test names its runtime directory");
-    std::fs::create_dir_all("/run/systemd/system").expect("a session's system directory");
-    // The manager starts the account's own bus as a login's does, on the account's own daemon:
-    // the bus service it starts by default wants the journal socket this micro-VM has none of.
-    // A bus that stops says why in its own log, which the check reads when no unit starts.
-    let config = match std::env::var_os("XDG_CONFIG_HOME").filter(|dir| !dir.is_empty()) {
-        Some(dir) => PathBuf::from(dir),
-        None => Path::new(&std::env::var("HOME").expect("the test names its home")).join(".config"),
-    };
-    let units = config.join("systemd/user");
-    std::fs::create_dir_all(&units).expect("the account's user units");
-    let account_bus_log = Path::new(&runtime).join("account-bus.log");
-    let drop_in = units.join("dbus-broker.service.d");
-    std::fs::create_dir_all(&drop_in).expect("the bus service's own directory");
-    std::fs::write(
-        drop_in.join("override.conf"),
-        format!(
-            "[Service]\nExecStart=\n\
-             ExecStart=/usr/bin/dbus-daemon --session --address=systemd: --nofork --nopidfile \\
-             --systemd-activation\n\
-             StandardOutput=file:{}\nStandardError=file:{}\n",
-            account_bus_log.display(),
-            account_bus_log.display()
-        ),
-    )
-    .expect("the account's bus is named");
-    // The manager bounds each service in the cgroup a login gives it: root's own slice, with
-    // the controllers delegated to the manager's unit.
-    let unit = Path::new("/sys/fs/cgroup/user.slice/user-0.slice/user@0.service");
-    for dir in [
-        PathBuf::from("/sys/fs/cgroup"),
-        PathBuf::from("/sys/fs/cgroup/user.slice"),
-        PathBuf::from("/sys/fs/cgroup/user.slice/user-0.slice"),
-        unit.to_path_buf(),
-    ] {
-        std::fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
-        std::fs::write(dir.join("cgroup.subtree_control"), "+cpu +memory +pids")
-            .unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
-    }
-    let scope = unit.join("init.scope");
-    std::fs::create_dir_all(&scope).expect("the manager's own scope");
-    std::fs::write(scope.join("cgroup.procs"), std::process::id().to_string())
-        .expect("this process joins the manager's scope");
-    // A booted computer has a system bus under its manager, and the manager connects to it;
-    // this micro-VM has none, so the check raises one.
-    std::fs::create_dir_all("/run/dbus").expect("a system bus's directory");
-    let system_log = Path::new(&runtime).join("system-bus.log");
-    step("starting the system bus");
-    let system_bus = std::process::Command::new("/usr/bin/dbus-daemon")
-        .args(["--system", "--nofork"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(&system_log).expect("the system bus's log"))
-        .spawn_locked()
-        .expect("the system bus starts");
-    let system_deadline = Instant::now() + Duration::from_secs(30);
-    while !Path::new("/run/dbus/system_bus_socket").exists() {
-        assert!(
-            Instant::now() < system_deadline,
-            "the system bus did not listen within 30s:\n{}",
-            std::fs::read_to_string(&system_log).unwrap_or_default()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let manager_log = Path::new(&runtime).join("manager.log");
-    step("starting the account's user manager");
-    let manager = std::process::Command::new("/usr/lib/systemd/systemd")
-        .args(["--user", "--log-target=console"])
-        .env("XDG_RUNTIME_DIR", &runtime)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(&manager_log).expect("the manager's log"))
-        .spawn_locked()
-        .expect("the account's user manager starts");
-    let mut manager = UserManager {
-        system_bus,
-        manager,
-    };
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        // Each ask is bounded: a manager that takes a message and never answers one would
-        // otherwise leave this waiting with no deadline of its own.
-        let state = std::process::Command::new("/usr/bin/timeout")
-            .args([
-                "--signal=KILL",
-                "5",
-                "/usr/bin/systemctl",
-                "--user",
-                "is-system-running",
-            ])
-            .output_locked();
-        let said = state.as_ref().map_or_else(ToString::to_string, |state| {
-            format!(
-                "{:?} {}",
-                state.status,
-                String::from_utf8_lossy(&state.stdout)
-            )
-        });
-        if let Ok(state) = &state
-            && (state.status.success()
-                || String::from_utf8_lossy(&state.stdout).trim() == "degraded")
-        {
-            step(&format!("the account's user manager answers: {said}"));
-            // A manager that answers and then stops says so in its status: a check would be
-            // placed in nothing, so what it said is part of failing here.
-            std::thread::sleep(Duration::from_secs(3));
-            let ended = manager.stopped();
-            step(&format!(
-                "three seconds on: the manager {ended:?}; log:\n{}\nrunning:\n{}",
-                std::fs::read_to_string(&manager_log).unwrap_or_default(),
-                describe_processes()
-            ));
-            assert!(
-                ended.is_none(),
-                "the account's user manager stopped as it started: {ended:?}"
-            );
-            // A manager starts a transient unit of its own before any check's: one that cannot
-            // says so here, with what it and its bus said, rather than as a check that observed
-            // nothing to bound.
-            let probe = std::process::Command::new("/usr/bin/timeout")
-                .args([
-                    "--signal=KILL",
-                    "20",
-                    "/usr/bin/systemd-run",
-                    "--user",
-                    "--quiet",
-                    "--wait",
-                    "--pipe",
-                    "--unit",
-                    "tilo-check-probe",
-                    "/bin/true",
-                ])
-                .output_locked();
-            step(&format!("a unit of the manager's own: {probe:?}"));
-            assert!(
-                probe.as_ref().is_ok_and(|probe| probe.status.success()),
-                "the account's manager starts no unit: {probe:?}\nits log:\n{}\nits bus:\n{}",
-                std::fs::read_to_string(&manager_log).unwrap_or_default(),
-                std::fs::read_to_string(&account_bus_log).unwrap_or_default()
-            );
-            // And one with the bounds a check's service asks for, unit for unit: what a manager
-            // refuses is then the property it refused, not a check that observed nothing.
-            let bounded = std::process::Command::new("/usr/bin/timeout")
-                .args([
-                    "--signal=KILL",
-                    "20",
-                    "/usr/bin/systemd-run",
-                    "--user",
-                    "--quiet",
-                    "--wait",
-                    "--pipe",
-                    "--service-type=exec",
-                    "--unit",
-                    "tilo-check-probe-bounded",
-                    "--property",
-                    "CPUQuota=100%",
-                    "--property",
-                    "MemoryMax=536870912",
-                    "--property",
-                    "MemorySwapMax=0",
-                    "--property",
-                    "TasksMax=64",
-                    "--property",
-                    "KillMode=control-group",
-                    "--property",
-                    "RuntimeMaxSec=120",
-                    "--property",
-                    "TimeoutStopSec=2",
-                    "--",
-                    "/bin/true",
-                ])
-                .output_locked();
-            step(&format!("a bounded unit of the manager's own: {bounded:?}"));
-            return manager;
-        }
-        step(&format!("waiting for the account's user manager: {said}"));
-        assert!(
-            Instant::now() < deadline,
-            "the account's user manager did not start (last answer {said}):\n{}\n{}",
-            std::fs::read_to_string(&manager_log).unwrap_or_default(),
-            std::fs::read_to_string(&system_log).unwrap_or_default()
-        );
-        std::thread::sleep(Duration::from_millis(300));
-    }
-}
-
 #[test]
 fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
     if std::env::var_os(FIXTURE).is_none() {
@@ -891,13 +472,7 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
             // failure already: end here, and the harness's process exits.
             end_here();
         }));
-        host::also_trace(Box::new(DaemonSaid));
         step("fixture start");
-        step(&format!(
-            "the fonts: catalog {:?}, cache {:?}",
-            tilo_ui_base::font_catalog::catalog_root(),
-            std::env::var_os("TILO_FONT_ASSET_CACHE"),
-        ));
         let workspace = host.workspace().to_owned();
         step("installing the fixture app");
         let tapp = host::apps::install_source(APP, SOURCE);
@@ -920,20 +495,6 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
         // device's own follow of its workspace's apps, which may still be unpacking the package
         // when the view opens: a view that ends for that is tried again, and the one it ends for
         // is said.
-        OPENING.store(true, std::sync::atomic::Ordering::Relaxed);
-        let quiet = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let watching = {
-            let quiet = std::sync::Arc::clone(&quiet);
-            std::thread::spawn(move || {
-                for _ in 0..40 {
-                    std::thread::sleep(Duration::from_secs(5));
-                    if quiet.load(std::sync::atomic::Ordering::Relaxed) {
-                        return;
-                    }
-                    step(&format!("while the view opens:\n{}", describe_processes()));
-                }
-            })
-        };
         let deadline = Instant::now() + Duration::from_secs(180);
         let mut last: String;
         let window = loop {
@@ -991,8 +552,7 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
                 }
             }
             if Instant::now() >= deadline {
-                // What the app does say is read before the dump: whether it published, and what
-                // record its project is.
+                // What the app does say is read before giving up: whether it published.
                 let catalogue =
                     tokio::time::timeout(Duration::from_secs(20), host::listed(&host, APP)).await;
                 let said = match catalogue {
@@ -1013,18 +573,10 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
                     Ok(Err(error)) => format!("its catalogue failed: {error}"),
                     Err(_) => "it did not answer its catalogue within 20s".to_owned(),
                 };
-                let primary = primary_reading(&host, &workspace).await;
-                panic!(
-                    "the fixture app's view did not open within 180s ({last}); what the app \
-                     says: {said}; {primary}\nwhat ran:\n{}",
-                    describe_processes()
-                );
+                panic!("the fixture app's view did not open within 180s ({last}); {said}");
             }
             std::thread::sleep(Duration::from_secs(1));
         };
-        quiet.store(true, std::sync::atomic::Ordering::Relaxed);
-        OPENING.store(false, std::sync::atomic::Ordering::Relaxed);
-        let _ = watching.join();
         step("the fixture app's view is open");
         // The view stays open for the whole test: an app whose window closed stops.
         let _view = window;
@@ -1041,14 +593,13 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
         // The account's user manager is what places a check in its service, so it starts before
         // the first check runs; the app is opened before it, as a person's app is opened whether
         // or not a check is running.
-        let _manager = start_user_manager();
+        let _manager = host::user_manager();
         step("the account's user manager started");
         let written = settings(&host, "set", json!({ "name": "checks", "value": approved }))
             .await
             .expect("the person approves the project's checks");
         assert_eq!(written["name"], "checks");
         step("the approval is written");
-        step(&format!("before the check runs:\n{}", describe_processes()));
 
         let (job, receipt) = run_check(&host, &address.resource, "passing")
             .await
@@ -1056,13 +607,6 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
         // What the action answered is the host's receipt of the check it ran, or the reason it
         // ran none: the job's record then says what it did.
         step(&format!("the check's own answer: {receipt}"));
-        if receipt["outcome"] != "exited" {
-            step(&format!(
-                "the manager says:\n{}\nwhat runs:\n{}",
-                manager_said(),
-                describe_processes()
-            ));
-        }
         let record = job_record(&job);
         assert_eq!(record["state"], "done", "{record}");
         assert_eq!(record["progress"]["phase"], "Tests", "{record}");

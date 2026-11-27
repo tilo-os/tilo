@@ -440,6 +440,161 @@ fn shell_runtime(profile: &std::path::Path) -> std::process::Child {
     child
 }
 
+/// The account's user manager, with the account's own bus beneath it, as a login session starts
+/// the two: a micro-VM boots no init, so a test whose units must be placed in a service of the
+/// manager raises it itself. The manager bounds each service in the cgroup a login gives it, and
+/// keeps the log at `$XDG_RUNTIME_DIR/manager.log`. Stopped, and its bus with it, when dropped.
+pub struct UserManager {
+    system_bus: std::process::Child,
+    manager: std::process::Child,
+}
+
+impl Drop for UserManager {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("/usr/bin/systemctl")
+            .args(["--user", "exit"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status_locked();
+        for child in [&mut self.manager, &mut self.system_bus] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// `program` with `args`, bounded: a manager or a bus that takes a message and never answers one
+/// would otherwise leave the test waiting with no deadline of its own.
+fn bounded(secs: &str, program: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
+    std::process::Command::new("/usr/bin/timeout")
+        .args(["--signal=KILL", secs, program])
+        .args(args)
+        .output_locked()
+}
+
+/// Raise the account's user manager, answered once it starts a bounded unit of its own.
+///
+/// # Panics
+///
+/// When the guest has no root, or the manager, its bus or a unit of it does not start.
+pub fn user_manager() -> UserManager {
+    use std::process::{Command, Stdio};
+    let runtime = std::env::var("XDG_RUNTIME_DIR").expect("the test names its runtime directory");
+    let home = std::env::var("HOME").expect("the test names its home");
+    std::fs::create_dir_all("/run/systemd/system").expect("a session's system directory");
+    // The manager starts the account's own bus as a login's does, on the account's own daemon:
+    // the bus service it starts by default wants the journal socket this micro-VM has none of.
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| Path::new(&home).join(".config"), PathBuf::from);
+    let units = config.join("systemd/user");
+    std::fs::create_dir_all(&units).expect("the account's user units");
+    let account_bus_log = Path::new(&runtime).join("account-bus.log");
+    let drop_in = units.join("dbus-broker.service.d");
+    std::fs::create_dir_all(&drop_in).expect("the bus service's own directory");
+    std::fs::write(
+        drop_in.join("override.conf"),
+        format!(
+            "[Service]\nExecStart=\n\
+             ExecStart=/usr/bin/dbus-daemon --session --address=systemd: --nofork --nopidfile \
+             --systemd-activation\n\
+             StandardOutput=file:{}\nStandardError=file:{}\n",
+            account_bus_log.display(),
+            account_bus_log.display()
+        ),
+    )
+    .expect("the account's bus is named");
+    // The manager bounds each service in the cgroup a login gives it: root's own slice, with
+    // the controllers delegated to the manager's unit.
+    let unit = Path::new("/sys/fs/cgroup/user.slice/user-0.slice/user@0.service");
+    for dir in [
+        PathBuf::from("/sys/fs/cgroup"),
+        PathBuf::from("/sys/fs/cgroup/user.slice"),
+        PathBuf::from("/sys/fs/cgroup/user.slice/user-0.slice"),
+        unit.to_path_buf(),
+    ] {
+        std::fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
+        std::fs::write(dir.join("cgroup.subtree_control"), "+cpu +memory +pids")
+            .unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
+    }
+    let scope = unit.join("init.scope");
+    std::fs::create_dir_all(&scope).expect("the manager's own scope");
+    std::fs::write(scope.join("cgroup.procs"), std::process::id().to_string())
+        .expect("this process joins the manager's scope");
+    // A booted computer has a system bus under its manager, and the manager connects to it;
+    // this micro-VM has none, so one is raised here.
+    std::fs::create_dir_all("/run/dbus").expect("a system bus's directory");
+    let system_log = Path::new(&runtime).join("system-bus.log");
+    let system_bus = Command::new("/usr/bin/dbus-daemon")
+        .args(["--system", "--nofork"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&system_log).expect("the system bus's log"))
+        .spawn_locked()
+        .expect("the system bus starts");
+    tilo_test_env::wait_for("the system bus to listen", || {
+        Path::new("/run/dbus/system_bus_socket")
+            .exists()
+            .then_some(())
+    });
+    let manager_log = Path::new(&runtime).join("manager.log");
+    let manager = Command::new("/usr/lib/systemd/systemd")
+        .args(["--user", "--log-target=console"])
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&manager_log).expect("the manager's log"))
+        .spawn_locked()
+        .expect("the account's user manager starts");
+    let mut manager = UserManager {
+        system_bus,
+        manager,
+    };
+    tilo_test_env::wait_for(
+        format!(
+            "the account's user manager to answer (what it says is in {})",
+            manager_log.display()
+        ),
+        || {
+            let state =
+                bounded("5", "/usr/bin/systemctl", &["--user", "is-system-running"]).ok()?;
+            (state.status.success() || String::from_utf8_lossy(&state.stdout).trim() == "degraded")
+                .then_some(state)
+        },
+    );
+    // A manager that answers and then stops says so in its status: a check would be placed in
+    // nothing, so what it said is part of failing here.
+    std::thread::sleep(Duration::from_secs(3));
+    let ended = manager.manager.try_wait().expect("the manager's status");
+    assert!(
+        ended.is_none(),
+        "the account's user manager stopped as it started: {ended:?}: {}",
+        std::fs::read_to_string(&manager_log).unwrap_or_default()
+    );
+    // A manager starts a transient unit of its own before any check's: one that cannot says so
+    // here, with what it and its bus said, rather than as a check that observed nothing to bound.
+    let probe = bounded(
+        "20",
+        "/usr/bin/systemd-run",
+        &[
+            "--user",
+            "--quiet",
+            "--wait",
+            "--pipe",
+            "--unit",
+            "tilo-check-probe",
+            "/bin/true",
+        ],
+    );
+    assert!(
+        probe.as_ref().is_ok_and(|probe| probe.status.success()),
+        "the account's manager starts no unit: {probe:?}\nits log:\n{}\nits bus:\n{}",
+        std::fs::read_to_string(&manager_log).unwrap_or_default(),
+        std::fs::read_to_string(&account_bus_log).unwrap_or_default()
+    );
+    manager
+}
+
 /// A headless compositor for the test's runtime directory `runtime`, listening on a
 /// `wayland-N` socket there and publishing its name in the login the daemon reads
 /// ([`tilo_paths::login::WAYLAND_DISPLAY_FILE`]), as a nested session's compositor publishes
