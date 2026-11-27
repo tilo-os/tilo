@@ -421,6 +421,9 @@ pub struct Instance {
     /// What the window's page started or stopped waiting on the person's yes for, as the window
     /// encoded it, in order, not yet taken by the host.
     page_prompts: Vec<Vec<u8>>,
+    /// The layout of the desktop the device shows this instance's window on, as the window last
+    /// handed it ([`ToApp::Desktop`]) and the host has not taken yet.
+    desktop: Option<String>,
     /// The person's environment moved: their language, their formats, or what the member list
     /// calls someone. What a view shows of any of them is shown again, and what it sent is sent again.
     person_changed: bool,
@@ -576,6 +579,7 @@ impl Instance {
             press_calls: None,
             pressed: Vec::new(),
             page_prompts: Vec::new(),
+            desktop: None,
             person_changed: false,
             open_requests: Rc::default(),
             place_opens: false,
@@ -1094,6 +1098,22 @@ impl Instance {
     /// its own action, and withdraws it once the page no longer waits.
     pub fn take_page_prompts(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.page_prompts)
+    }
+
+    /// The layout of the desktop the device shows this instance's window on, as its person reads
+    /// it there, when the window handed a new one since the host last took it
+    /// ([`ToApp::Desktop`]): the layout's `read` answer, as its JSON.
+    pub fn take_desktop(&mut self) -> Option<String> {
+        self.desktop.take()
+    }
+
+    /// Ask the device that shows this instance's window on a desktop to carry out the layout's
+    /// `action` with `argument` there, as the person it shows the window to ([`ToUi::Desktop`]).
+    pub fn ask_desktop(&mut self, action: &str, argument: &serde_json::Value) {
+        self.out.push(ToUi::Desktop {
+            action: action.to_owned(),
+            argument: argument.to_string(),
+        });
     }
 
     /// The invocations the instance's views read (`invoked(id)`), by the id they read each by:
@@ -1933,6 +1953,7 @@ impl Instance {
                 }
             }
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
+            ToApp::Desktop { layout } => self.desktop = Some(layout),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
             ToApp::Held(held) => self.held = held,
@@ -2107,7 +2128,8 @@ impl Instance {
             | ToApp::Held(_)
             | ToApp::SaveAgain
             | ToApp::Space { .. }
-            | ToApp::Serving { .. }) => {
+            | ToApp::Serving { .. }
+            | ToApp::Desktop { .. }) => {
                 self.window_told(told);
                 Ok(())
             }

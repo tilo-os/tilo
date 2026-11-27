@@ -906,6 +906,28 @@ impl HostedWindow {
         }
     }
 
+    /// Hand the instance `layout`, the desktop the device shows this window on as its person
+    /// reads it there ([`tilo_render_protocol::patch::ToApp::Desktop`]). Nothing before the
+    /// window connected.
+    pub fn hand_desktop(&mut self, layout: String) {
+        if let Some(connected) = &mut self.connected {
+            connected
+                .view
+                .tell(tilo_render_protocol::patch::ToApp::Desktop { layout });
+            connected.view.flush();
+        }
+    }
+
+    /// The layout's actions the instance asked the desktop this window is shown on to carry out
+    /// since this was last asked, each `(action, argument)`
+    /// ([`tilo_render_protocol::patch::ToUi::Desktop`]).
+    pub fn take_desktop_asks(&mut self) -> Vec<(String, String)> {
+        self.connected
+            .as_mut()
+            .map(|connected| connected.view.take_desktop_asks())
+            .unwrap_or_default()
+    }
+
     fn take_channel(
         &mut self,
         channel: PatchConnection,

@@ -632,7 +632,11 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
                             html: format!("{action:?}"),
                         },
                     ]),
-                    WindowAsk::Changed | WindowAsk::Wells(_) => WindowAnswer::Changed(Vec::new()),
+                    WindowAsk::Changed => WindowAnswer::Changed(Vec::new()),
+                    WindowAsk::Desktop { .. } => WindowAnswer::Desktop {
+                        changed: Vec::new(),
+                        asked: Vec::new(),
+                    },
                     WindowAsk::Pointer(event) => {
                         pointers.lock().unwrap().push(event);
                         WindowAnswer::Changed(vec![

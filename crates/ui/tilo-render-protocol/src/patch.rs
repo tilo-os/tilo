@@ -696,6 +696,11 @@ pub enum ToUi {
     /// The app closes its window (the `close()` a view applies, as a terminal whose shell exited
     /// does): it goes as the person closing it does.
     CloseWindow,
+    /// Carry out the layout's action `action` with `argument` (its JSON) on the desktop the
+    /// device shows this window on ([`ToApp::Desktop`]), as the person it shows the window to: a
+    /// shell's Close of a window, its launcher's Open, a drag that moves or sizes one. The device
+    /// runs it as that person, as their own session would, never as the app.
+    Desktop { action: String, argument: String },
 }
 
 /// Which of a person's pictures a call tile shows.
@@ -924,6 +929,13 @@ pub enum ToApp {
     PagePrompt {
         #[serde(with = "serde_bytes")]
         prompt: Vec<u8>,
+    },
+    /// The layout of the desktop the device shows this window on, as the person it shows the
+    /// window to reads it there: the layout's `read` answer, as its JSON. A shell shown where no
+    /// session runs it (a web page of the workspace's desktop) is handed its layout this way, as
+    /// a session hands its own shell the layout it keeps.
+    Desktop {
+        layout: String,
     },
 }
 

@@ -40,11 +40,16 @@ pub enum WindowAsk {
     },
     /// What changed on the page since the window last answered.
     Changed,
-    /// What the page shows in each of its wells from now on, by the place each shows: where the
-    /// view leaves a window to the device that shows it (a desktop's windows), the markup the
-    /// device stands there instead — that window's own page, shown in the well as the
-    /// compositor shows its surface on a device. Answered with what changed.
-    Wells(std::collections::BTreeMap<String, String>),
+    /// The desktop the page shows, as its person reads it now: the layout (its `read` answer),
+    /// which the view reads as a shell reads the layout its session keeps, and what the page
+    /// shows in each of its wells, by the place each shows — where the view leaves a window to
+    /// the device (a desktop's windows), that window's own page, shown in the well as the
+    /// compositor shows its surface on a device. Answered with what changed and what the view
+    /// asked of the desktop since ([`WindowAnswer::Desktop`]).
+    Desktop {
+        layout: serde_json::Value,
+        wells: std::collections::BTreeMap<String, String>,
+    },
     /// The pointer, in the window's own logical pixels: a press, a move or a release, carried
     /// into the view's widgets as a device's pointer is. Answered with what changed.
     Pointer(PointerEvent),
@@ -64,6 +69,23 @@ pub enum WindowAnswer {
     },
     /// What changed: elements replaced, put in or taken out, outermost first.
     Changed(Vec<PagePatch>),
+    /// What changed once the page shows the desktop [`WindowAsk::Desktop`] handed it, and the
+    /// layout's actions its view asked the device to carry out since it was last asked, oldest
+    /// first: the device carries each out as the page's person, as their session would.
+    Desktop {
+        changed: Vec<PagePatch>,
+        asked: Vec<DesktopAsk>,
+    },
+}
+
+/// One of the layout's actions a page's view asked the device to carry out on its desktop: a
+/// window's Close, the launcher's Open, a drag that moves or sizes a window.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopAsk {
+    /// The layout's action, as it publishes it (`close`, `place`, `position`, ...).
+    pub action: String,
+    /// Its argument.
+    pub argument: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Write `message` as one frame on `stream`.
@@ -125,7 +147,7 @@ impl WindowLink {
     pub fn open(&mut self, show: Option<String>) -> std::io::Result<(String, String, String)> {
         match self.ask(&WindowAsk::Open { show })? {
             WindowAnswer::Shown { title, css, body } => Ok((title, css, body)),
-            WindowAnswer::Changed(_) => Err(std::io::Error::other(
+            WindowAnswer::Changed(_) | WindowAnswer::Desktop { .. } => Err(std::io::Error::other(
                 "the page's window answered an open with changes",
             )),
         }
@@ -147,15 +169,22 @@ impl WindowLink {
         self.changes(&WindowAsk::Changed)
     }
 
-    /// What changed once the page shows `wells` in its wells, as [`WindowAsk::Wells`] asks it.
+    /// What changed once the page shows the desktop `layout` with `wells` in its wells, and what
+    /// its view asked of the desktop since, as [`WindowAsk::Desktop`] asks it.
     ///
     /// # Errors
     /// As [`Self::open`].
-    pub fn wells(
+    pub fn desktop(
         &mut self,
+        layout: serde_json::Value,
         wells: std::collections::BTreeMap<String, String>,
-    ) -> std::io::Result<Vec<PagePatch>> {
-        self.changes(&WindowAsk::Wells(wells))
+    ) -> std::io::Result<(Vec<PagePatch>, Vec<DesktopAsk>)> {
+        match self.ask(&WindowAsk::Desktop { layout, wells })? {
+            WindowAnswer::Desktop { changed, asked } => Ok((changed, asked)),
+            WindowAnswer::Changed(_) | WindowAnswer::Shown { .. } => Err(std::io::Error::other(
+                "the page's window answered its desktop with something else",
+            )),
+        }
     }
 
     /// What changed once the window's widgets took `event`, as [`WindowAsk::Pointer`] asks it.
@@ -174,7 +203,7 @@ impl WindowLink {
     pub fn appearance(&mut self, dark: bool) -> std::io::Result<(String, String, String)> {
         match self.ask(&WindowAsk::Appearance { dark })? {
             WindowAnswer::Shown { title, css, body } => Ok((title, css, body)),
-            WindowAnswer::Changed(_) => Err(std::io::Error::other(
+            WindowAnswer::Changed(_) | WindowAnswer::Desktop { .. } => Err(std::io::Error::other(
                 "the page's window answered an appearance with changes",
             )),
         }
@@ -183,9 +212,9 @@ impl WindowLink {
     fn changes(&mut self, ask: &WindowAsk) -> std::io::Result<Vec<PagePatch>> {
         match self.ask(ask)? {
             WindowAnswer::Changed(patches) => Ok(patches),
-            WindowAnswer::Shown { .. } => Err(std::io::Error::other(
-                "the page's window answered changes with a page whole",
-            )),
+            WindowAnswer::Shown { .. } | WindowAnswer::Desktop { .. } => Err(
+                std::io::Error::other("the page's window answered changes with something else"),
+            ),
         }
     }
 }

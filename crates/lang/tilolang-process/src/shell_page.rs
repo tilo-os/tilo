@@ -5,10 +5,11 @@
 //! the windows. Here the shell is an instance like any app's, and what it reads of a session it
 //! is handed from what the device's dispatch answers, asked as the person at the page:
 //!
-//! - **The layout** is the workspace's shared layout, read through its `read` action
-//!   (`so.tilo.layout`), and written into the shell's `session.*` resources as a session writes
-//!   it ([`LayoutOrigin`]). It is read again while the page is open, so a window someone opened
-//!   or closed anywhere shows here.
+//! - **The layout** is the workspace's shared layout as the person at the page reads it, which
+//!   the device that shows the page reads in their run and hands the window
+//!   (`ToApp::Desktop`), written into the shell's `session.*` resources as a session writes it
+//!   ([`LayoutOrigin`]). The device hands it again while the page is open, so a window someone
+//!   opened or closed anywhere shows here.
 //! - **The apps** the launcher lists (`session:apps`) are those the dispatch's catalogue lists the
 //!   person, and **the windows** the dock and the switcher walk (`session:windows`) are the
 //!   layout's.
@@ -17,24 +18,21 @@
 //!   revision, so a style installed while the page is open is offered there too. Picking one is
 //!   the shell's own `show_style`, which the dispatch runs over the person's shell record.
 //! - **What the views ask of the session** is carried out where its state is: a window's Close
-//!   and the launcher's Open are the layout's `close` and `place`, as the person at the page;
-//!   the surface over the windows (`desktop:overlays`) is the page's own, as a device's shell
+//!   and the launcher's Open are the layout's `close` and `place`, which the window asks the
+//!   device to carry out (`ToUi::Desktop`) and the device runs as the person at the page, as
+//!   their own session would, never as the shell; the surface over the windows (`desktop:overlays`) is the page's own, as a device's shell
 //!   keeps its own, so nobody else's screen moves when this person opens the launcher.
 //!
 //! What else a view asks of a session goes through the dispatch as any call does, and is
 //! answered as it is there.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use collaboration::{CollabEvent, CollabRequest};
 use serde_json::{Value, json};
-use tilo_actions::remote::{
-    CatalogueQuery, InvocationReceipt, InvokeArgument, InvokeRequest, ReadAnswer, ReceiptStatus,
-    RemoteActionMessage, RemoteActionTarget, ResourceReadRequest,
-};
-use tilo_actions::{ActionAddress, InvocationId};
+use tilo_actions::remote::{CatalogueQuery, ReadAnswer, RemoteActionMessage, ResourceReadRequest};
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::shell::{LayoutOrigin, LayoutReading, LayoutWorkspaceReading};
@@ -42,10 +40,6 @@ use ui_core::time::{Duration, Instant};
 
 /// The shell's package id: the app whose instances are shown this way.
 pub const SHELL_APP: &str = tilolang_tilo::shell::SHELL_APP;
-
-/// The provider and resource of the workspace's layout's actions, as the device publishes them.
-const LAYOUT_PROVIDER: &str = "so.tilo.layout";
-const LAYOUT_RESOURCE: &str = "workspace:layout";
 
 /// The session's app, whose arranging actions the page carries out on the shared layout.
 const SESSION_APP: &str = tilolang_tilo::platform::SESSION_APP;
@@ -62,7 +56,7 @@ const OVERLAYS: &str = "desktop:overlays";
 /// What the session publishes a place as (`shell:place:<key>`), its key being the window's.
 const PLACE: &str = "shell:place:";
 
-/// How often the layout and the apps are read again while the page is open.
+/// How often the apps are read again while the page is open.
 const READ_AGAIN: Duration = Duration::from_millis(1000);
 
 /// How long a read may go unanswered before it is asked again.
@@ -78,7 +72,7 @@ const STYLES_WAIT_MS: u32 = 5_000;
 /// What the shell's views asked that the page carries out, as they asked it.
 type Asked = Rc<RefCell<Vec<Invocation>>>;
 
-/// One read in flight or due: the layout, or the apps.
+/// One read in flight or due: the apps, or the styles.
 #[derive(Default)]
 struct Read {
     asked_at: Option<Instant>,
@@ -129,7 +123,6 @@ pub struct ShellPage {
     asked: Asked,
     /// The surface the page shows over its windows: empty at rest.
     here: String,
-    layout_read: Read,
     apps_read: Read,
     styles_read: Read,
     /// The person's own workspace, where the device publishes the styles: `None` for a page
@@ -138,14 +131,11 @@ pub struct ShellPage {
     /// The styles as last read, and the revision they were read at: the next read waits past it.
     styles: Option<Value>,
     styles_after: Option<String>,
-    /// The layout's last answer, and the apps as last listed.
+    /// The layout as the device last handed it, and the apps as last listed.
     layout: Option<Value>,
     apps: Option<Vec<Listed>>,
     /// The readings changed since the views were told.
     untold: bool,
-    /// The layout reads in flight, and the layout's changes the page asked for.
-    reading: Option<InvocationId>,
-    changing: HashMap<InvocationId, &'static str>,
     /// The catalogue read in flight.
     listing: Option<u64>,
     /// The styles read in flight.
@@ -165,7 +155,6 @@ impl ShellPage {
             origin,
             asked: Rc::default(),
             here: String::new(),
-            layout_read: Read::default(),
             apps_read: Read::default(),
             styles_read: Read::default(),
             styles_workspace: tilo_action_policy::roles::workspace_of_person(person),
@@ -174,8 +163,6 @@ impl ShellPage {
             layout: None,
             apps: None,
             untold: true,
-            reading: None,
-            changing: HashMap::new(),
             listing: None,
             styles_reading: None,
             next_correlation: 1,
@@ -197,9 +184,8 @@ impl ShellPage {
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
         let now = ui_core::time::now();
         let soonest = self
-            .layout_read
+            .apps_read
             .wakes_in(now)
-            .min(self.apps_read.wakes_in(now))
             .min(self.styles_read.wakes_in(now));
         Some(std::time::Duration::from_millis(
             u64::try_from(soonest.as_millis()).unwrap_or(u64::MAX),
@@ -211,7 +197,7 @@ impl ShellPage {
         let CollabEvent::RemoteAction { message } = event else {
             return false;
         };
-        let receipt = match message {
+        match message {
             RemoteActionMessage::CatalogueResponse {
                 correlation,
                 result,
@@ -230,7 +216,7 @@ impl ShellPage {
                         tracing::debug!(?error, "the apps a page's shell lists were not read");
                     }
                 }
-                return true;
+                true
             }
             RemoteActionMessage::ResourceReading {
                 correlation,
@@ -239,65 +225,30 @@ impl ShellPage {
                 self.styles_reading = None;
                 self.styles_read.waiting = false;
                 self.take_styles(result);
-                return true;
+                true
             }
-            RemoteActionMessage::Receipt(receipt) => receipt.clone(),
-            RemoteActionMessage::Update {
-                invocation,
-                state: Some(state),
-                ..
-            } => InvocationReceipt {
-                invocation: *invocation,
-                status: state.receipt().status,
-            },
-            _ => return false,
-        };
-        if self.reading == Some(receipt.invocation) {
-            if matches!(receipt.status, ReceiptStatus::Accepted) {
-                return true;
-            }
-            self.reading = None;
-            self.layout_read.waiting = false;
-            match receipt.status {
-                ReceiptStatus::Completed { output } => {
-                    let read = output.value.unwrap_or_default();
-                    if self.layout.as_ref() != Some(&read) {
-                        self.layout = Some(read);
-                        self.untold = true;
-                    }
-                }
-                status => tracing::debug!(?status, "a page's shell did not read the layout"),
-            }
-            return true;
+            _ => false,
         }
-        let Some(action) = self.changing.get(&receipt.invocation).copied() else {
-            return false;
-        };
-        if matches!(receipt.status, ReceiptStatus::Accepted) {
-            return true;
-        }
-        self.changing.remove(&receipt.invocation);
-        if !matches!(receipt.status, ReceiptStatus::Completed { .. }) {
-            tracing::warn!(action, status = ?receipt.status, "a page's change of the layout was refused");
-        }
-        // What it changed shows once the layout is read again.
-        self.layout_read.now = true;
-        true
     }
 
-    /// Carry out what the views asked, read what is due, and tell `instance`'s views what moved.
-    pub fn turn(&mut self, instance: &Instance) {
+    /// Take the layout the device handed, carry out what the views asked, read what is due, and
+    /// tell `instance`'s views what moved.
+    pub fn turn(&mut self, instance: &mut Instance) {
+        if let Some(layout) = instance.take_desktop() {
+            match serde_json::from_str::<Value>(&layout) {
+                Ok(layout) if self.layout.as_ref() != Some(&layout) => {
+                    self.layout = Some(layout);
+                    self.untold = true;
+                }
+                Ok(_) => {}
+                Err(error) => tracing::error!(%error, "the layout the device handed is no JSON"),
+            }
+        }
         let asked = std::mem::take(&mut *self.asked.borrow_mut());
         for invocation in &asked {
-            self.carry_out(invocation);
+            self.carry_out(instance, invocation);
         }
         let now = ui_core::time::now();
-        if self.reading.is_none() && self.layout_read.due(now) {
-            self.layout_read.ask(now);
-            let request = invoke("read", Value::Null);
-            self.reading = Some(request.invocation);
-            self.queued.push(RemoteActionMessage::Invoke(request));
-        }
         if self.listing.is_none() && self.apps_read.due(now) {
             self.apps_read.ask(now);
             let correlation = self.next_correlation;
@@ -342,13 +293,9 @@ impl ShellPage {
     }
 
     /// Send what is queued with `send`. A read the connection does not take is asked again when
-    /// it is due; a change it does not take is not carried out.
+    /// it is due.
     pub fn say(&mut self, mut send: impl FnMut(CollabRequest) -> bool) {
         for message in std::mem::take(&mut self.queued) {
-            let invocation = match &message {
-                RemoteActionMessage::Invoke(request) => Some(request.invocation),
-                _ => None,
-            };
             let correlation = match &message {
                 RemoteActionMessage::CatalogueRequest { correlation, .. }
                 | RemoteActionMessage::ResourceRead { correlation, .. } => Some(*correlation),
@@ -359,14 +306,6 @@ impl ShellPage {
                 press: None,
             }) {
                 continue;
-            }
-            if invocation.is_some() && invocation == self.reading {
-                self.reading = None;
-                self.layout_read.waiting = false;
-            } else if let Some(invocation) = invocation
-                && let Some(action) = self.changing.remove(&invocation)
-            {
-                tracing::warn!(action, "a page's change of the layout was not sent");
             }
             if correlation.is_some() && correlation == self.listing {
                 self.listing = None;
@@ -379,22 +318,19 @@ impl ShellPage {
         }
     }
 
-    /// Carry out `invocation`, which the views asked of the session or the device.
-    fn carry_out(&mut self, invocation: &Invocation) {
+    /// Carry out `invocation`, which the views asked of the session or the device: the layout's
+    /// actions are the device's to carry out, as the person at the page ([`Instance::ask_desktop`]).
+    fn carry_out(&mut self, instance: &mut Instance, invocation: &Invocation) {
         match taken(invocation) {
             Some(Taken::Close(window)) => {
-                let request = invoke("close", json!({ "window": window }));
-                self.changing.insert(request.invocation, "close");
-                self.queued.push(RemoteActionMessage::Invoke(request));
+                instance.ask_desktop("close", &json!({ "window": window }));
             }
             Some(Taken::Open(app)) => {
                 // What the launcher opened stands on the layout, and the launcher closes over
                 // it, as it does on a device.
                 self.here.clear();
                 self.untold = true;
-                let request = invoke("place", json!({ "app": app }));
-                self.changing.insert(request.invocation, "place");
-                self.queued.push(RemoteActionMessage::Invoke(request));
+                instance.ask_desktop("place", &json!({ "app": app }));
             }
             Some(Taken::Surface(surface)) => {
                 self.here = if self.here == surface {
@@ -405,22 +341,16 @@ impl ShellPage {
                 self.untold = true;
             }
             Some(Taken::Position(window, x, y)) => {
-                let request = invoke("position", json!({ "window": window, "x": x, "y": y }));
-                self.changing.insert(request.invocation, "position");
-                self.queued.push(RemoteActionMessage::Invoke(request));
+                instance.ask_desktop("position", &json!({ "window": window, "x": x, "y": y }));
             }
             Some(Taken::Size(window, width, height)) => {
-                let request = invoke(
+                instance.ask_desktop(
                     "size",
-                    json!({ "window": window, "width": width, "height": height }),
+                    &json!({ "window": window, "width": width, "height": height }),
                 );
-                self.changing.insert(request.invocation, "size");
-                self.queued.push(RemoteActionMessage::Invoke(request));
             }
             Some(Taken::Activate(window)) => {
-                let request = invoke("activate", json!({ "window": window }));
-                self.changing.insert(request.invocation, "activate");
-                self.queued.push(RemoteActionMessage::Invoke(request));
+                instance.ask_desktop("activate", &json!({ "window": window }));
             }
             // What the canvas sees of a hugging place is this device's view of it, which the
             // shared layout does not keep for a page: the window a page shows is its app's, and
@@ -551,29 +481,6 @@ fn fill(instance: &Instance, published: &str, reading: &Value) -> Result<(), Str
         .set_reading(&target, &reading.to_string())
         .map(drop)
         .map_err(|error| error.to_string())
-}
-
-/// A call of the layout's action `action` with `argument`, as the person at the page.
-fn invoke(action: &str, argument: Value) -> InvokeRequest {
-    InvokeRequest {
-        asks: false,
-        invocation: InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: LAYOUT_PROVIDER.to_owned(),
-            address: ActionAddress::new(LAYOUT_RESOURCE, action),
-        },
-        argument: match argument {
-            Value::Object(arguments) => InvokeArgument::Json(arguments),
-            _ => InvokeArgument::None,
-        },
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    }
 }
 
 /// The apps `page` lists, each by its id and its name: named as its own top resource is.

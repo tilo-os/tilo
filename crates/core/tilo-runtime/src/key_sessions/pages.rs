@@ -35,7 +35,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
-use tilo_server_protocol::page::window::{WindowAsk, WindowLink};
+use tilo_server_protocol::page::window::{DesktopAsk, WindowAsk, WindowLink};
 use tilo_server_protocol::page::{
     CallAnswer, DESKTOP, OpenedPage, PageAction, PageAddress, PageNotice, PagePatch, PageRefusal,
     PointerEvent, encode_part,
@@ -278,7 +278,6 @@ impl Inner {
                 workspace_id,
                 dispatch: dispatch.clone(),
                 caller: caller.clone(),
-                shown: None,
             })
         });
         if let Some(wells) = &mut wells {
@@ -563,29 +562,56 @@ impl Inner {
     }
 }
 
-/// What a desktop page stands where its shell leaves a window to the device: each window's own
-/// page, on the record it shows, for the apps the page's person may open. A well is where the
-/// compositor shows a window's surface on a device; a page shows the same window's own page in
-/// it, never a list of its own. Read again from the layout's actions as the page's person before
-/// each answer, so a window someone else opened anywhere shows here too.
+/// The desktop a page's shell shows, as the page's person has it: the layout, read in their run
+/// as their own session reads it, and each window's own page in the well the shell leaves it,
+/// for the apps the page's person may open. A well is where the compositor shows a window's
+/// surface on a device; a page shows the same window's own page in it, never a list of its own.
+/// What the shell's views ask of the layout (a window's Close, the launcher's Open, a drag) is
+/// carried out here, in the same run, as that person: never as the shell, and never beyond what
+/// the person's own session could do. Read again before each answer, so a window someone else
+/// opened anywhere shows here too.
 struct DesktopWells {
     workspace_id: WorkspaceId,
     dispatch: SessionHost,
     caller: Caller,
-    /// What the page's window was last told.
-    shown: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl DesktopWells {
-    /// Tell `window` the wells as the layout has them now, when they moved: what that changed.
-    fn follow(&mut self, window: &mut WindowLink) -> Result<Vec<PagePatch>, PageRefusal> {
-        let wells = self.read()?;
-        if self.shown.as_ref() == Some(&wells) {
-            return Ok(Vec::new());
+    /// The most rounds of a view's asks one follow carries out before it answers: each round
+    /// hands the view the layout its last asks left, which it may answer with more.
+    const ROUNDS: usize = 4;
+
+    /// Hand `window` the desktop as the layout has it now, and carry out what its view asked of
+    /// the layout since: what that changed on the page.
+    fn follow(&self, window: &mut WindowLink) -> Result<Vec<PagePatch>, PageRefusal> {
+        let mut patches = Vec::new();
+        for _ in 0..Self::ROUNDS {
+            let (layout, wells) = self.read()?;
+            let (changed, asked) = window.desktop(layout, wells).map_err(unavailable)?;
+            patches.extend(changed);
+            if asked.is_empty() {
+                break;
+            }
+            for ask in asked {
+                self.carry_out(ask);
+            }
         }
-        let patches = window.wells(wells.clone()).map_err(unavailable)?;
-        self.shown = Some(wells);
         Ok(patches)
+    }
+
+    /// Carry out `ask`, one of the layout's actions the page's view asked for, as the page's
+    /// person in their run: what their grants refuse is refused here as it is on their devices.
+    fn carry_out(&self, ask: DesktopAsk) {
+        let action = ask.action.clone();
+        match self.layout_call(&ask.action, InvokeArgument::Json(ask.argument)) {
+            Ok(ReceiptStatus::Completed { .. }) => {}
+            Ok(status) => {
+                tracing::info!(%action, ?status, "a page's change of the layout did not run");
+            }
+            Err(refusal) => {
+                tracing::info!(%action, ?refusal, "a page's change of the layout did not run");
+            }
+        }
     }
 
     /// The receipt of `invocation`, which the dispatch took, once it ends.
@@ -597,31 +623,36 @@ impl DesktopWells {
             let state = self
                 .dispatch
                 .observe(&self.caller, &invocation)
-                .ok_or_else(|| unavailable("the device no longer knows of the layout's read"))?;
+                .ok_or_else(|| unavailable("the device no longer knows of the layout's call"))?;
             if state.is_terminal() {
                 return Ok(state.receipt());
             }
             let left =
                 ANSWER_WITHIN.saturating_sub(tilo_clock::now().saturating_duration_since(started));
             let Some(change) = change.filter(|_| !left.is_zero()) else {
-                return Err(unavailable("the layout was not read in time"));
+                return Err(unavailable("the layout did not answer in time"));
             };
             if change.wait_timeout(left).is_err() {
-                return Err(unavailable("the layout was not read in time"));
+                return Err(unavailable("the layout did not answer in time"));
             }
         }
     }
 
-    /// Each window on the layout, by its key, as its own page in the well it shows in.
-    fn read(&self) -> Result<std::collections::BTreeMap<String, String>, PageRefusal> {
+    /// Call the layout's `action` with `argument` as the page's person in their run: how it
+    /// ended.
+    fn layout_call(
+        &self,
+        action: &str,
+        argument: InvokeArgument,
+    ) -> Result<ReceiptStatus, PageRefusal> {
         let request = InvokeRequest {
             asks: false,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: crate::device::layout::PROVIDER.to_owned(),
-                address: ActionAddress::new(crate::device::layout::RESOURCE, "read"),
+                address: ActionAddress::new(crate::device::layout::RESOURCE, action),
             },
-            argument: InvokeArgument::None,
+            argument,
             context: None,
             confirmation: None,
             revision: None,
@@ -633,11 +664,24 @@ impl DesktopWells {
         let invocation = request.invocation;
         let receipt = waited(self.dispatch.invoke(&self.caller, request))?.map_err(unavailable)?;
         // The run's dispatch answers a host step once it is admitted; its outcome follows.
-        let receipt = match receipt.status {
-            ReceiptStatus::Accepted => self.outcome_of(invocation)?,
-            _ => receipt,
-        };
-        let read = match receipt.status {
+        Ok(match receipt.status {
+            ReceiptStatus::Accepted => self.outcome_of(invocation)?.status,
+            status => status,
+        })
+    }
+
+    /// The layout as the page's person reads it, and each window on it, by its key, as its own
+    /// page in the well it shows in.
+    fn read(
+        &self,
+    ) -> Result<
+        (
+            serde_json::Value,
+            std::collections::BTreeMap<String, String>,
+        ),
+        PageRefusal,
+    > {
+        let read = match self.layout_call("read", InvokeArgument::None)? {
             ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
             ReceiptStatus::Rejected { error } => return Err(unavailable(error)),
             ReceiptStatus::Failed { error } => return Err(unavailable(error.message)),
@@ -690,7 +734,7 @@ impl DesktopWells {
                 ),
             );
         }
-        Ok(wells)
+        Ok((read, wells))
     }
 }
 

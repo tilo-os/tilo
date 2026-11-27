@@ -799,3 +799,8 @@ reason = "a person's told log and the pushes made from it are JSON, read by name
 file = "crates/core/tilo-server-protocol/src/config.rs"
 enum = "WebTls"
 reason = "read only from a server's TOML configuration, by name, never by position; its `dev` value never reached stable, which has no `web_tls` at all"
+
+[[break]]
+file = "crates/core/tilo-server-protocol/src/page/window.rs"
+enum = "WindowAsk"
+reason = "JSON frames on the stream between a device and the page's window process it started, both from one build and live only as long as the page; no byte of them is kept, and the desktop's wells now come with its layout"

@@ -333,6 +333,10 @@ pub struct AppWindow {
     /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window takes
     /// them ([`Self::take_shown_runs`]).
     shown_runs: Vec<String>,
+    /// The layout's actions the app asked the desktop this window is shown on to carry out
+    /// ([`ToUi::Desktop`]), each `(action, argument)`, until the device that shows it takes them
+    /// ([`Self::take_desktop_asks`]).
+    desktop_asks: Vec<(String, String)>,
     /// How many presses the window sent the app (`ToApp::Fire`, `ToApp::Invoke`), and how many of
     /// them the app said it ran (`ToUi::Took`).
     fired: u64,
@@ -539,6 +543,7 @@ impl AppWindow {
             held_sent: wire::Held::default(),
             activations: 0,
             shown_runs: Vec::new(),
+            desktop_asks: Vec::new(),
             fired: 0,
             took: 0,
             typed: std::collections::VecDeque::new(),
@@ -774,6 +779,12 @@ impl AppWindow {
         (!self.shown_runs.is_empty()).then(|| self.shown_runs.remove(0))
     }
 
+    /// The layout's actions the app asked the desktop this window is shown on to carry out since
+    /// this was last asked, oldest first ([`ToUi::Desktop`]): each `(action, argument)`.
+    pub fn take_desktop_asks(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.desktop_asks)
+    }
+
     /// What the app's connection heard of the people at the app since this was last asked
     /// ([`ToUi::Heard`]): the window's toolkit shows it as it shows what a connection of its own
     /// hears.
@@ -921,6 +932,7 @@ impl AppWindow {
                 ToUi::Loading => self.show_loading(),
                 ToUi::Activate => self.activations = self.activations.saturating_add(1),
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
+                ToUi::Desktop { action, argument } => self.desktop_asks.push((action, argument)),
                 ToUi::Speak(language) => tilo_ui_base::i18n::I18nManager::set_locale(&language),
                 ToUi::Kept(kept) => self.kept(kept),
                 // The window's page does what the app asked, and its answer goes back as the

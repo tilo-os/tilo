@@ -241,6 +241,10 @@ impl<'a> Validator<'a> {
                 }
                 Ok(())
             }
+            ToUi::Desktop { action, argument } => {
+                self.key(action)?;
+                self.carried(argument.len(), "over the limit of bytes in a message")
+            }
             ToUi::Page { request, .. } => {
                 if request.len() > super::MAX_PAGE_BYTES {
                     return Err(Refused::invalid(
@@ -757,6 +761,7 @@ impl<'a> Validator<'a> {
             | ToApp::Serving { .. }
             | ToApp::PageAnswer { .. }
             | ToApp::PagePrompt { .. }
+            | ToApp::Desktop { .. }
             | ToApp::Back
             | ToApp::Answer(_)
             | ToApp::Undo
@@ -810,6 +815,12 @@ impl<'a> Validator<'a> {
             ToApp::PageAnswer { answer, .. } => {
                 if answer.len() > super::MAX_PAGE_BYTES {
                     return Err(Refused::invalid("over the limit of bytes in a page answer"));
+                }
+                Ok(())
+            }
+            ToApp::Desktop { layout } => {
+                if layout.len() > super::MAX_PAGE_BYTES {
+                    return Err(Refused::invalid("over the limit of bytes in a layout"));
                 }
                 Ok(())
             }

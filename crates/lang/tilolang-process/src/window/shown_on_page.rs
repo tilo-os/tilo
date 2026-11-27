@@ -321,8 +321,15 @@ pub fn serve(
                 WindowAnswer::Changed(patches(changed))
             }
             WindowAsk::Changed => WindowAnswer::Changed(patches(page.changed(frame))),
-            WindowAsk::Wells(wells) => {
-                WindowAnswer::Changed(patches(page.fill_wells(frame, wells)))
+            WindowAsk::Desktop { layout, wells } => {
+                if let Some(window) = frame.widget_mut::<HostedWindow>() {
+                    window.hand_desktop(layout.to_string());
+                }
+                let changed = patches(page.fill_wells(frame, wells));
+                WindowAnswer::Desktop {
+                    changed,
+                    asked: desktop_asks(frame),
+                }
             }
             WindowAsk::Pointer(event) => WindowAnswer::Changed(patches(page.pointer(frame, event))),
             WindowAsk::Appearance { dark } => {
@@ -335,6 +342,27 @@ pub fn serve(
         window::send(link, &answer)?;
     }
     Ok(())
+}
+
+/// The layout's actions `frame`'s instance asked of the desktop since this was last asked. An
+/// argument that is no JSON object is no action's, and is said and dropped.
+fn desktop_asks(frame: &mut Driver) -> Vec<window::DesktopAsk> {
+    let asked = frame
+        .widget_mut::<HostedWindow>()
+        .map(HostedWindow::take_desktop_asks)
+        .unwrap_or_default();
+    asked
+        .into_iter()
+        .filter_map(|(action, argument)| {
+            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&argument) {
+                Ok(argument) => Some(window::DesktopAsk { action, argument }),
+                Err(error) => {
+                    tracing::error!(%error, %action, "a desktop's action asked with no argument");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 fn serving_call(frame: &mut Driver, call: Vec<u8>, invoker: Option<String>) {

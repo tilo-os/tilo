@@ -965,8 +965,10 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
                                 title,
                                 ..
                             } => title.as_str(),
-                            tilo_server_protocol::page::window::WindowAnswer::Changed(_) =>
-                                "changes",
+                            tilo_server_protocol::page::window::WindowAnswer::Changed(_)
+                            | tilo_server_protocol::page::window::WindowAnswer::Desktop {
+                                ..
+                            } => "changes",
                         })
                     ));
                     if answered.is_none() {

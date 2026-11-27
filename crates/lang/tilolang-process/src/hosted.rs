@@ -2719,7 +2719,7 @@ impl Hosted {
         self.invocations
             .say(|request| connection.manager().send(request));
         if let Some(shell) = &mut self.shell {
-            shell.turn(&self.instance);
+            shell.turn(&mut self.instance);
             shell.say(|request| connection.manager().send(request));
         }
         self.presence.say(&self.instance, |said| {
