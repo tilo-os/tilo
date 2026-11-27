@@ -165,8 +165,9 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for CountedRead<R> {
     ) -> std::task::Poll<std::io::Result<()>> {
         let before = buf.filled().len();
         let poll = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
-        if let std::task::Poll::Ready(Ok(())) = &poll {
-            self.counters.adding(false, buf.filled().len() - before);
+        if matches!(&poll, std::task::Poll::Ready(Ok(()))) {
+            self.counters
+                .adding(false, buf.filled().len().saturating_sub(before));
         }
         poll
     }
@@ -3304,6 +3305,10 @@ impl DirectSync {
     /// them (`opens`) is sent the records every device is replayed and each
     /// chain's newest part, and the history of a record it opens
     /// ([`LinkFrame::Open`]), which is added to `opened`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an answer reads the device's ask, this device's state and the record rounds it carries, in the order the link writes them"
+    )]
     #[cfg(not(target_arch = "wasm32"))]
     async fn answer_asks(
         &self,
@@ -3849,22 +3854,29 @@ impl DirectSync {
     /// # Errors
     ///
     /// This device is not in the workspace's roster.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the replica is read once for the certificate and the revocations it carries, and the guard is gone before the hello is built"
+    )]
     fn hello(&self) -> Result<Authored, String> {
         let device = self.device();
-        let replica = self.0.replica.lock();
-        // A holder of the workspace is no member, and is named by the address
-        // it signed among those keeping it: the same name a member device is
-        // in the roster by ([`certified`]). A device placed to serve one
-        // record without a roster row comes with the certificate its host
-        // placed it with.
-        let cert = certified(&replica, device)
-            .or_else(|| self.0.placed.clone())
-            .ok_or("this device is not in the workspace roster")?;
-        let revocations = replica
-            .revocations()
-            .into_iter()
-            .filter(|entry| entry.user_public_key == cert.user_public_key)
-            .collect();
+        let (cert, revocations) = {
+            let replica = self.0.replica.lock();
+            // A holder of the workspace is no member, and is named by the
+            // address it signed among those keeping it: the same name a member
+            // device is in the roster by ([`certified`]). A device placed to
+            // serve one record without a roster row comes with the certificate
+            // its host placed it with.
+            let cert = certified(&replica, device)
+                .or_else(|| self.0.placed.clone())
+                .ok_or("this device is not in the workspace roster")?;
+            let revocations = replica
+                .revocations()
+                .into_iter()
+                .filter(|entry| entry.user_public_key == cert.user_public_key)
+                .collect();
+            (cert, revocations)
+        };
         Ok(Authored {
             from: device,
             message: NeighbourMsg::IdentityHello {
@@ -3905,7 +3917,7 @@ impl DirectSync {
 
     /// The heads a [`Self::holds_tell`] names, when `since` is one: what that
     /// device already holds of the workspace's own history. `None` for a
-    /// device that said nothing, and for a SyncReq that asks for the state.
+    /// device that said nothing, and for a `SyncReq` that asks for the state.
     fn told(since: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
         if since.is_empty() {
             return None;
@@ -4262,10 +4274,10 @@ impl DirectSync {
         }
         // The version the other device's hello names, and what its tell says
         // it holds: the link answers only what that device lacks.
-        if let NeighbourMsg::IdentityHello { protocol, .. } = &authored.message {
-            if authored.from == remote {
-                opening.protocol.send_replace(Some(*protocol));
-            }
+        if let NeighbourMsg::IdentityHello { protocol, .. } = &authored.message
+            && authored.from == remote
+        {
+            opening.protocol.send_replace(Some(*protocol));
         }
         // An ask another device made reached this one only because a
         // host forwarded it, and is not this device's to answer.
@@ -5524,7 +5536,7 @@ async fn answer_only_here(
     send: &mut StreamSend,
     dialing: bool,
     waiting: &[OnlyHere],
-    takes: &impl Fn(&NeighbourMsg) -> bool,
+    takes: &(impl Fn(&NeighbourMsg) -> bool + Sync),
     opening: &Opening,
 ) -> Result<(), String> {
     // The device that dialled reads the other one's state with its history,
