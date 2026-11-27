@@ -1,5 +1,7 @@
-# Slides: decks built through the deck's actions, and the window's own views of
-# them. A deck is written from an outline; its slides are laid out by the app.
+# Slides: a deck built through the deck's actions. The overview and the
+# presenter's speaker notes are the window's own toolbar views, which a plan
+# reaches only by pressing a button it cannot address; the deck's slide is what
+# the window shows.
 
 [[situation]]
 name = "pitch-deck"
@@ -16,46 +18,3 @@ invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "add_slides", 
   {"title": "Pilot results", "body": "312 trees inspected in six weeks\nInspection time down from 20 to 7 minutes per tree\nEvery storm report on the map within the hour", "layout": "title_content"},
   {"title": "Next steps", "body": "Two more districts in spring\nOpen data export for researchers", "layout": "title_content"}
 ]''' } }
-
-[[situation]]
-name = "overview"
-title = "A lecture deck in the slide overview"
-
-[[situation.steps]]
-invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "set_title", args = { title = "Introduction to Bread" } }
-
-[[situation.steps]]
-invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "add_slides", args = { outline = '''[
-  {"title": "Introduction to Bread", "body": "Week 3: wild yeast", "layout": "title"},
-  {"title": "What a starter is", "body": "Flour, water and time\nWild yeasts and lactic bacteria working together", "layout": "title_content"},
-  {"title": "Feeding schedule", "body": "Morning: discard half, feed 1:1:1\nEvening: check for bubbles and a domed top", "layout": "two_column"},
-  {"title": "Hands-on", "layout": "section"},
-  {"title": "Shaping a boule", "body": "Pre-shape, rest twenty minutes\nBuild tension, boundary side up into the basket", "layout": "title_content"},
-  {"title": "Questions?", "layout": "title"}
-]''' } }
-
-[[situation.steps]]
-perform = { target = "All slides", action = "activate" }
-
-[[situation]]
-name = "speaker-notes"
-title = "A slide with its speaker notes open"
-
-[[situation.steps]]
-invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "set_title", args = { title = "Annual report 2026" } }
-
-[[situation.steps]]
-invoke = { resource = "tl:so.tilo.slides:root-be43leya", action = "add_slides", args = { outline = '''[
-  {"title": "Annual report 2026", "body": "Neighbourhood library association", "layout": "title", "notes": "Welcome everyone. Thank the volunteers by name, and mention the new reading room."},
-  {"title": "The year in numbers", "body": "41,200 visits\n2,300 new members\n18,600 books lent", "layout": "title_content", "notes": "The visits figure is up a fifth on last year."}
-]''' } }
-
-[[situation.steps]]
-perform = { target = "Present", action = "activate" }
-
-# The presenter's view holds the speaker notes beside the slide.
-[[situation.steps]]
-perform = { target = "Presenter", action = "activate" }
-
-[[situation.steps]]
-perform = { target = "Notes", action = "activate" }

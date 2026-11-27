@@ -17,15 +17,5 @@ invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connectio
 invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Office workstation", host = "ws-14.office.internal", kind = "vnc", port = 5901 } }
 
 [[situation]]
-name = "new-connection"
-title = "Adding a new connection"
-
-[[situation.steps]]
-invoke = { resource = "tl:so.tilo.remote:root-z57y6pux", action = "add_connection", args = { name = "Raspberry Pi in the garden", host = "garden-pi.home.arpa", kind = "ssh", user = "pi" } }
-
-[[situation.steps]]
-perform = { target = "New connection", action = "activate" }
-
-[[situation]]
 name = "empty"
 title = "No connections yet"
