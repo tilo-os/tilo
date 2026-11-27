@@ -5,7 +5,8 @@ Each app's plan (`tools/screenshots/<app>.toml`) lists situations: a name, a
 one-line description, and the steps that set the situation up, in the
 `--headless-drive` grammar (`invoke` a published action by resource and
 action, `bind` its answer for later steps; `press` a control by the name a
-person reads it by, or the resource a list row presents; `wait_for_named`;
+person reads it by, or the resource a list row presents; `search` what the app
+holds, in the system's search scoped to it; `wait_for_named`;
 `expect`), with dates written relative to the day of the run (`${TODAY+1}`,
 `${MON+2}`: this week's Wednesday). No pointer or keyboard steps: a situation is
 reached through the app's resources and actions, or through the controls its
@@ -31,8 +32,8 @@ per app) as the device's own development build once, and starts it on each
 situation's capture (`tilo-runtime --run-app … --headless-drive`), with the
 connectors the device runs for the app's origins. Situations built from a
 scenario, or with no steps, share that device and run side by side; a
-situation whose steps write into the workspace gets a device of its own, so no
-picture shows another's data. No app binary is run by this
+situation whose steps change anything gets a device of its own, so no picture
+shows another's data. No app binary is run by this
 script, so what a capture shows is what a person's app reaches on a device. It
 captures four pictures after the steps settle, each the whole window as a
 session shows it, the desktop's window bar above the app's frame (the harness
@@ -41,8 +42,10 @@ light, at the wide (1280x800) and compact (420x800) viewports, and at any
 larger size its plan names (`sizes = ["large"]`: 2560x1440). Each app's directory gets a
 `manifest.json` naming its situations and pictures, and `resources.json`, the
 published resource tree after the first situation: what a plan can invoke.
-`summary.json` at the top lists every failure; the exit status is 1 when
-there is one.
+`inspect.json` beside it is the window the first situation laid out, with what
+each widget says to assistive technology: the names, identities and targets a
+plan presses by. `summary.json` at the top lists every failure; the exit status
+is 1 when there is one.
 
 Usage:
   tools/screenshots/run.py --bin-dir DIR --out DIR [--apps "tasks chat ..."] [--jobs N]
@@ -84,7 +87,7 @@ EXTRA_VIEWPORTS = {"large": (2560, 1440)}
 # have), and is reported as such rather than holding the whole runner.
 RUN_SECONDS = 240
 # Steps a plan may use: the action-driven and control-driven part of the drive grammar.
-ALLOWED_STEPS = {"invoke", "wait_for_named", "expect", "perform", "press"}
+ALLOWED_STEPS = {"invoke", "wait_for_named", "expect", "perform", "press", "search"}
 
 
 # Dates in a plan relative to the day the shots are taken, so a calendar
@@ -636,12 +639,13 @@ class Session:
 
 def shares_a_session(situation: Situation) -> bool:
     """Whether a situation can be captured on the device its app's other situations use: one
-    built from a scenario reads that scenario's fixtures, and one without steps changes nothing.
-    A situation whose steps write into the person's workspace, or that runs over it, gets a
-    device of its own, so no picture shows what another situation wrote."""
-    if situation.workspace:
+    built from a scenario with no steps reads that scenario's fixtures and changes nothing, and
+    one without steps changes nothing. A situation whose steps change anything — the person's
+    workspace, or the app's own records — gets a device of its own, so no picture shows what
+    another situation wrote."""
+    if situation.workspace or situation.steps:
         return False
-    return situation.scenario is not None or not situation.steps
+    return True
 
 
 def run_situation(session: Session, situation: Situation, first: bool) -> dict:
@@ -674,6 +678,9 @@ def run_situation(session: Session, situation: Situation, first: bool) -> dict:
         spec["workspace"] = True
     if first:
         spec["resources"] = str(app_dir / "resources.json")
+        # Every widget as the window laid it out, with what it says to assistive technology: the
+        # names, identities and targets a plan presses by, where a person finds them.
+        spec["inspect"] = str(app_dir / "inspect.json")
     started = time.monotonic()
     status, log = session.capture(spec)
     seconds = round(time.monotonic() - started, 1)

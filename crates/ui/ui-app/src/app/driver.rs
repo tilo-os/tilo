@@ -247,6 +247,10 @@ pub struct Driver {
 /// by their targets.
 pub const WINDOW_PARTS: &str = "window-parts";
 
+/// The frames a `press` waits for the control it names to be shown: a menu the step before opened
+/// draws a frame or two later, and the row an action made is laid out in the frame after it.
+const PRESS_FRAMES: usize = 8;
+
 /// How long a step that reads a call's answer — what it binds, or the refusal it expects — waits
 /// for an app that runs the call off this window's thread. A hosted app answers in a frame or two;
 /// one that never answers fails the step, naming the action, rather than holding the drive.
@@ -2462,44 +2466,57 @@ impl Driver {
             crate::headless::PressVerb::ShowContextMenu => Action::ShowContextMenu,
         };
         let wanted = tilo_ui_base::accesskit_bridge::map_action(&action);
-        let target = if let Some(identity) = &press.identity {
-            self.a11y_nodes()
+        // The control a press finds is one the next few frames show: a menu the step before
+        // opened, the row an action just made, the window's own bar as it settles.
+        let mut target = None;
+        for _ in 0..PRESS_FRAMES {
+            target = self.control_for(press, wanted);
+            if target.is_some() {
+                break;
+            }
+            self.run_frame();
+        }
+        let target =
+            target.ok_or_else(|| format!("no control {} is offered", address_of(press)))?;
+        self.perform_a11y_action(target, &action)
+    }
+
+    /// The exported node `press` addresses, as the assistive technology acts on it: by what the
+    /// control does, by the address of the resource a row presents, or by the words it answers
+    /// to.
+    fn control_for(
+        &self,
+        press: &crate::headless::Press,
+        wanted: accesskit::Action,
+    ) -> Option<accesskit::NodeId> {
+        if let Some(identity) = &press.identity {
+            return self
+                .a11y_nodes()
                 .into_iter()
                 .find(|(_, described)| {
                     described.author_id() == Some(identity.as_str())
                         && described.supports_action(wanted)
                 })
-                .map(|(id, _)| id)
-                .ok_or_else(|| format!("no control does {identity:?} in this window"))?
-        } else if let Some(resource) = &press.resource {
-            // The address is one this window publishes, read the way an action's resource
-            // argument is ([`Self::reference_arguments`]): the published resource names the app
-            // the run installed, and the row that presents it is the one a person opens.
-            let resources = self.resources();
-            let published = find_resource(&resources, resource)
-                .ok_or_else(|| format!("this window publishes nothing at {resource:?}"))?;
-            let shown = published.id.as_str().to_owned();
-            let node = self.control_node_of_resource(&shown)?;
-            let id = accesskit::NodeId(u64::from(node).saturating_add(1));
-            if !self
-                .a11y_nodes()
-                .iter()
-                .any(|(exported, _)| *exported == id)
-            {
-                return Err(format!("no control shows {shown:?} in this window"));
-            }
-            id
-        } else {
+                .map(|(id, _)| id);
+        }
+        let Some(resource) = &press.resource else {
             let name = press.name.as_deref().unwrap_or_default();
-            self.a11y_nodes_named(name)
-                .into_iter()
-                .find(|id| {
-                    self.a11y_node(*id)
-                        .is_some_and(|described| described.supports_action(wanted))
-                })
-                .ok_or_else(|| format!("no control named {name:?} is offered"))?
+            return self.a11y_nodes_named(name).into_iter().find(|id| {
+                self.a11y_node(*id)
+                    .is_some_and(|described| described.supports_action(wanted))
+            });
         };
-        self.perform_a11y_action(target, &action)
+        // The address is one this window publishes, read the way an action's resource argument
+        // is ([`Self::reference_arguments`]): the published resource names the app the run
+        // installed, and the row that presents it is the one a person opens.
+        let resources = self.resources();
+        let published = find_resource(&resources, resource)?;
+        let node = self.control_node_of_resource(published.id.as_str()).ok()?;
+        let id = accesskit::NodeId(u64::from(node).saturating_add(1));
+        self.a11y_nodes()
+            .iter()
+            .any(|(exported, described)| *exported == id && described.supports_action(wanted))
+            .then_some(id)
     }
 
     /// The laid-out widget whose own words or target name the resource `resource`: the row of a
@@ -3359,6 +3376,27 @@ impl Driver {
             }
             Action::Invoke(invocation) => self.perform_invocation(invocation).map(drop),
             Action::Press(press) => self.press_control(press),
+            Action::Search(query) => self.search_app(query),
+        }
+    }
+
+    /// Open the system's search scoped to this app with `query` typed in it, as the app's search
+    /// button or the window's search does: what the app holds, found where a person finds it.
+    ///
+    /// # Errors
+    /// While a dialog the app holds open keeps the window to itself; without Tilo's model there
+    /// is no search to open.
+    fn search_app(&mut self, query: &str) -> Result<(), String> {
+        #[cfg(feature = "model")]
+        {
+            let request =
+                crate::widget::search_request::SearchRequest::this_app().with_query(query);
+            self.open_search(&request)
+        }
+        #[cfg(not(feature = "model"))]
+        {
+            let _ = query;
+            Err("opening the app's search needs Tilo's model".into())
         }
     }
 
@@ -3614,6 +3652,20 @@ impl Driver {
             .take_window_invocation_answer(invocation)
             .ok_or_else(unanswered)
     }
+}
+
+/// The address a `press` was given, in the words a failed step names it by.
+fn address_of(press: &crate::headless::Press) -> String {
+    if let Some(name) = &press.name {
+        return format!("named {name:?}");
+    }
+    if let Some(identity) = &press.identity {
+        return format!("doing {identity:?}");
+    }
+    press.resource.as_ref().map_or_else(
+        || "at that address".to_owned(),
+        |r| format!("showing {r:?}"),
+    )
 }
 
 /// The published resource `address` names in `resources`, at any depth: a document's items stand

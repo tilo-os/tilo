@@ -575,8 +575,9 @@ impl AccessNode {
 }
 
 /// Whether the targets `one` and `other` name the same resource: the same name, a published
-/// address and the id inside it (`tl:<app>:<id>` and `<id>`), or a row's target, which carries
-/// the id of the item it presents after the list's own key (`key:<widget>~<widget>/<id>`).
+/// address and the id inside it (`tl:<app>:<id>` and `<id>`), or a row's target, which names the
+/// item it presents by its key (`key:<id>`, or `key:<widget>~<widget>/<id>` where the list chains
+/// its own key over the item's).
 ///
 /// A node that presents an item, runs an action on one, or is itself that item names it one of
 /// these ways; a caller that knows the resource it means finds it by this rule.
@@ -589,9 +590,16 @@ pub fn names_one_resource(one: &str, other: &str) -> bool {
     if carried == named {
         return true;
     }
-    // A list row's target is the list's key, then `~`, then the widget's own key, then the id
-    // of the item the row presents.
-    let row = carried.split_once('~').map_or(carried, |(_, after)| after);
+    // A list row's key is the item it presents, bare, or chained under the list's own key with
+    // `~` and the row's key before the item.
+    let key = carried.strip_prefix("key:").unwrap_or(carried);
+    if key == named {
+        return true;
+    }
+    let row = key.split_once('~').map_or(key, |(_, after)| after);
+    if row == named {
+        return true;
+    }
     let item = row.split_once('/').map_or(row, |(_, item)| item);
     item == named
 }
@@ -1235,6 +1243,11 @@ mod tests {
         assert!(!names_one_resource(
             "key:list.t142.body~list.for3/root-a/i1",
             "tl:so.tilo.migrate:root-a/i2"
+        ));
+        // A row whose key is the item itself, as a list of resources keys its rows.
+        assert!(names_one_resource(
+            "key:root-a/i1",
+            "tl:so.tilo.migrate:root-a/i1"
         ));
         assert!(!names_one_resource("root-a/i1/check", "root-a/i1"));
     }

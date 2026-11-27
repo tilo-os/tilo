@@ -20,7 +20,6 @@ perform = { target = "key:item:unread", action = "activate" }
 name = "article"
 title = "An article in the reader's own face, size and paper"
 scenario = "a library of feeds"
-workspace = true
 
 [[situation.steps]]
 invoke = { resource = "tl:so.tilo.feeds:root-u5mhrzrx", action = "begin_reading", bind = "reader" }

@@ -56,6 +56,7 @@ pub(crate) fn action_description(action: &Action) -> String {
                     .map(|resource| format!("press the row of {resource:?}"))
             })
             .unwrap_or_else(|| "press".into()),
+        Action::Search(query) => format!("search {query:?}"),
     }
 }
 

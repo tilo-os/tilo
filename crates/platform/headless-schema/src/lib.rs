@@ -100,6 +100,9 @@ pub enum Action {
     /// presents. A row opened this way is a row a person opens, its own activation and nothing
     /// a widget's id would reach.
     Press(Press),
+    /// Open the system's search scoped to the app, with `query` typed in it: what the window's
+    /// search or the app's search button does, as a person searches what the app holds.
+    Search(String),
     /// Invoke one published action by address, through the same resolution, availability,
     /// confirmation and strict binding the live host applies.
     Invoke(Invocation),
@@ -550,6 +553,7 @@ fn parse_action(value: &serde_json::Value) -> Result<Action, String> {
         "expect" => parse_expectation(argument).map(Action::Expect),
         "perform" => parse_semantic_action(argument),
         "press" => parse_press(argument).map(Action::Press),
+        "search" => Ok(Action::Search(required_string(argument, name)?)),
         "invoke" => parse_invocation(argument).map(Action::Invoke),
         other => Err(format!("unknown action {other:?}")),
     }
@@ -1274,6 +1278,13 @@ mod tests {
         ] {
             assert!(parse_actions(wrong).is_err(), "{wrong}");
         }
+        // A search carries the query a person searches by.
+        let actions = parse_actions(r#"[{"search":"deploy"}]"#).unwrap();
+        let Action::Search(query) = &actions[0] else {
+            panic!("not a search");
+        };
+        assert_eq!(query, "deploy");
+        assert!(parse_actions(r#"[{"search":3}]"#).is_err());
     }
 
     #[test]

@@ -389,7 +389,7 @@ They run a single `sync → build_layout → compute_layout → apply_layout →
   "dump":"/tmp/after.json"}'
 ```
 
-Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `press` (one control, by what a person finds it by), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`, `workspace` (run over the workspace the device serves, so a call reaches another app). The whole grammar is `crates/platform/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
+Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `press` (one control, by what a person finds it by), `search` (the system's search, scoped to the app), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`, `workspace` (run over the workspace the device serves, so a call reaches another app). The whole grammar is `crates/platform/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
 
 `invoke` performs one action the app publishes, by address, through the same resolution, availability, confirmation and strict argument binding the live host applies:
 
@@ -418,6 +418,12 @@ The address is the one `bind` hands back (`{{project.resources.0}}`), so a plan 
 ```
 
 A row pressed this way opens its own item, and a button runs what its press runs: a control a plan could only name by a widget id before.
+
+`search` opens the system's search scoped to the app with its query typed, as the app's search button or the window's search does — the app's own records found, never a private field of the app's:
+
+```json
+{"search": "deploy"}
+```
 
 The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`tilo_app::framework::testing`) mounts a component in one `Driver`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the driver, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
 
@@ -490,7 +496,7 @@ t outputs layout-check --run <run> --to ~/layout-shots
 
 ## Screenshots of every app
 
-`tools/screenshots/run.py` photographs every app of the default collection in realistic situations, set up only through each app's actions and the controls its window offers by name. A plan per app, `tools/screenshots/<app>.toml`, lists situations; each is a name, a one-line title and the steps that reach it (`invoke`, `press`, `wait_for_named`, `expect`, `perform`; no clicks or keys):
+`tools/screenshots/run.py` photographs every app of the default collection in realistic situations, set up only through each app's actions and the controls its window offers by name. A plan per app, `tools/screenshots/<app>.toml`, lists situations; each is a name, a one-line title and the steps that reach it (`invoke`, `press`, `search`, `wait_for_named`, `expect`, `perform`; no clicks or keys):
 
 ```toml
 [[situation]]
