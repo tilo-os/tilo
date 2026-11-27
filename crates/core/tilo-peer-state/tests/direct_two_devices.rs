@@ -381,8 +381,8 @@ struct Hosted {
     b_key: SigningKey,
     store: Arc<tilo_peer_state::store::Store>,
     /// The stores' directories, kept for the test's duration.
-    a_dir: tempfile::TempDir,
-    b_dir: tempfile::TempDir,
+    _a_dir: tempfile::TempDir,
+    _b_dir: tempfile::TempDir,
     host_endpoint: iroh::Endpoint,
     b_endpoint: iroh::Endpoint,
     router: iroh::protocol::Router,
@@ -447,8 +447,8 @@ impl Hosted {
             a_key,
             b_key,
             store,
-            a_dir: store_dir,
-            b_dir,
+            _a_dir: store_dir,
+            _b_dir: b_dir,
             host_endpoint,
             b_endpoint,
             router,
@@ -457,10 +457,16 @@ impl Hosted {
     }
 
     /// Link `device` to the host again, answering what the link brought.
-    fn again(&self, device: &DirectSync) -> tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>> {
+    fn again(
+        &self,
+        device: &DirectSync,
+    ) -> tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>> {
         tokio::spawn({
-            let (device, b_endpoint, a_addr) =
-                (device.clone(), self.b_endpoint.clone(), addr(&self.host_endpoint));
+            let (device, b_endpoint, a_addr) = (
+                device.clone(),
+                self.b_endpoint.clone(),
+                addr(&self.host_endpoint),
+            );
             async move { device.connect(&b_endpoint, a_addr).await }
         })
     }
@@ -501,13 +507,7 @@ async fn a_device_that_links_again_is_sent_only_what_it_lacks() {
 
     // One change, made while the link was down, and the device links again.
     let person = hosted.a.read(StatePeer::owner);
-    seed(
-        &hosted.a,
-        keys,
-        &hosted.a_key,
-        &person,
-        "after the break",
-    );
+    seed(&hosted.a, keys, &hosted.a_key, &person, "after the break");
     let held = heads(&hosted.a, keys);
     let before = b.traffic();
     let reader = b.reader();

@@ -18,6 +18,15 @@
 //! its store holds, so a device that carries a workspace's history serves a
 //! member the same way a host does.
 //!
+//! What a link carries, a device that links again already holds most of: the
+//! dialling device says what it has of the workspace's own history as the link
+//! opens ([`DirectSync::holds_tell`], its document's heads in the ask's
+//! `since`), and the device that accepted answers the changes after those
+//! heads. Heads it cannot place — another epoch's, or a history compacted past
+//! them — are answered every change, so a device is never left behind. A
+//! device built before the tell says nothing and is answered the whole state,
+//! as it always was.
+//!
 //! A frame can come ahead of what it builds on, or what it builds on can be
 //! lost: a workspace's changes reach a member both as the host forwards
 //! another member's frame and as the host publishes its own governance. A
@@ -103,7 +112,10 @@ struct Counters {
 impl Counters {
     fn adding(&self, sent: bool, bytes: usize) {
         let counter = if sent { &self.sent } else { &self.received };
-        counter.fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), std::sync::atomic::Ordering::Relaxed);
+        counter.fetch_add(
+            u64::try_from(bytes).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     fn traffic(&self) -> Traffic {
@@ -622,7 +634,11 @@ impl LinkAdmit {
 fn own_row_frame(message: &NeighbourMsg) -> bool {
     matches!(
         message,
-        NeighbourMsg::SyncResp { .. } | NeighbourMsg::IdentityHello { .. }
+        NeighbourMsg::SyncResp { .. }
+            | NeighbourMsg::IdentityHello { .. }
+            // A device says what it holds as its link opens ([`DirectSync::holds_tell`]):
+            // an ask for state, and no write of the workspace's.
+            | NeighbourMsg::SyncReq { .. }
     )
 }
 
@@ -636,6 +652,7 @@ fn records_frame(message: &NeighbourMsg) -> bool {
         message,
         NeighbourMsg::AppDocument { .. }
             | NeighbourMsg::SyncResp { .. }
+            | NeighbourMsg::SyncReq { .. }
             | NeighbourMsg::IdentityHello { .. }
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
@@ -933,7 +950,7 @@ enum OnlyHere {
 /// What a link's device said of itself as the link opened: the peer version
 /// its hello named, and the workspace document's heads it holds, which a
 /// device that works this build's tell names right after its hello
-/// ([`DirectSync::tell`]). What it says decides what the link sends it: the
+/// ([`DirectSync::holds_tell`]). What it says decides what the link sends it: the
 /// changes it lacks, or its whole state when it says nothing.
 ///
 /// A device that said nothing is answered everything, exactly as builds
@@ -3321,6 +3338,10 @@ impl DirectSync {
         opening: &Opening,
     ) -> Result<(), String> {
         let mut opens_an_ask = true;
+        // Whether this ask was answered the state: a tell answers the link's
+        // first ask, and every ask after it is answered the state again, so a
+        // change the device let go finds what it waited for.
+        let mut state_sent = *opening.answered.borrow_and_update();
         // The state an ask opens with that earlier answers had not allocated.
         let mut state = std::collections::VecDeque::new();
         let own = self.device();
@@ -3371,7 +3392,7 @@ impl DirectSync {
             {
                 opened.write_recover().extend(eager.followed());
             }
-            if opens_an_ask && !*opening.answered.borrow() {
+            if opens_an_ask && !state_sent {
                 // The store's frames follow the state, from where the device
                 // asking stands.
                 state.extend(
@@ -3431,6 +3452,9 @@ impl DirectSync {
             );
             write_link(&mut control.send, &LinkFrame::Frames { frames, more }).await?;
             opens_an_ask = !more;
+            if opens_an_ask {
+                state_sent = false;
+            }
             if let Some(answered) = answered {
                 answered.send_replace(true);
                 if !more {
@@ -5686,6 +5710,40 @@ mod tests {
         )
         .unwrap();
         DirectSync::new(peer, key.clone())
+    }
+
+    /// The state a tell asks for is the changes its device lacks: heads this
+    /// device holds are answered none, and heads it cannot place — another
+    /// epoch's, a history compacted past them — every change, so a device is
+    /// never left behind.
+    #[test]
+    fn a_tell_is_answered_the_changes_its_device_lacks() {
+        let root = SigningKey::from_bytes(&[0x77; 32]);
+        let roster = vec![device(&root, 0x78), device(&root, 0x79)];
+        let link = link(&roster, RevocationList::new());
+        let all = link.read(|peer| peer.workspace_changes_since(&[]));
+        assert!(!all.is_empty(), "a founded workspace has changes");
+
+        let changes = |heads: &[automerge::ChangeHash]| -> usize {
+            link.state_since(heads)
+                .into_iter()
+                .filter_map(|authored| match authored.message {
+                    NeighbourMsg::SyncResp { changes, .. } => Some(changes.len()),
+                    _ => None,
+                })
+                .sum()
+        };
+        let heads = link.read(StatePeer::workspace_heads).unwrap();
+        assert_eq!(
+            changes(&heads),
+            0,
+            "a device holding the heads lacks nothing"
+        );
+        assert_eq!(
+            changes(&[automerge::ChangeHash([0x11; 32])]),
+            all.len(),
+            "heads this device cannot place are answered every change"
+        );
     }
 
     /// An ask for content from `from`, naming `requester` as its asker.
