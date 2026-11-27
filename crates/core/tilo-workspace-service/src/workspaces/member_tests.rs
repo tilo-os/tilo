@@ -399,6 +399,71 @@ async fn a_member_copy_held_again_with_its_link_up_keeps_that_link() {
     .await;
 }
 
+/// A further device of a member, taken in while another member's copy is linked, reaches that
+/// copy: its own row came to the serving device with its membership proof, over no link, and the
+/// serving device carries it on to the copies linked before, whose key groups then take the
+/// device in.
+#[tokio::test]
+async fn a_further_device_of_a_member_reaches_the_copies_linked_before_it() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let first_state = tempfile::tempdir().unwrap();
+    let second_state = tempfile::tempdir().unwrap();
+    let (serving, first, created, invitation) =
+        shared(serving_state.path(), "Two devices", 31).await;
+    let workspace_id = WorkspaceId::parse(&created.workspace).expect("a workspace id");
+    let first = member_service(first_state.path(), first).await;
+    first
+        .workspaces()
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    first
+        .workspaces()
+        .wait_member_link(workspace_id)
+        .await
+        .expect("the first copy's link is up");
+    let hint = first
+        .workspaces()
+        .member_hint(workspace_id)
+        .await
+        .expect("the copy names the device serving it");
+
+    // The same person's desk, which no invitation brings: a device of someone the workspace has.
+    let desk = device_cert(
+        &SigningKey::from_bytes(&[31; 32]),
+        "desk",
+        DeviceCapabilities::member(),
+    );
+    let desk_device = desk.1.device_public_key;
+    let desk = member_service(second_state.path(), desk).await;
+    desk.workspaces()
+        .hold_as_member(workspace_id, &hint)
+        .await
+        .expect("the person's further device is taken in");
+
+    let copies = first.workspaces().clone();
+    let workspace = created.workspace.clone();
+    tilo_test_env::within(
+        "the first copy lists the person's further device",
+        async move {
+            loop {
+                let listed = copies.state(&workspace).await.is_some_and(|state| {
+                    state
+                        .governance()
+                        .key_holders(web_time::SystemTime::now())
+                        .is_ok_and(|holders| holders.contains(&desk_device))
+                });
+                if listed {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    drop(serving);
+}
+
 #[tokio::test]
 async fn a_members_write_reaches_the_device_serving_the_workspace() {
     let serving_state = tempfile::tempdir().unwrap();

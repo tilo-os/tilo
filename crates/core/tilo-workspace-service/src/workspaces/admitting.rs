@@ -617,7 +617,11 @@ impl Workspaces {
                     if answer.is_err() || join.admission.is_empty() {
                         continue;
                     }
-                    self.carry_own_admission(workspace, join)?;
+                    self.carry_own_admission(
+                        workspace,
+                        join.redemption.certificate().device_public_key,
+                        join.admission.to_vec(),
+                    )?;
                 }
             }
             self.settle(workspace).await?;
@@ -642,21 +646,22 @@ impl Workspaces {
         admitted
     }
 
-    /// Carry `join`'s own admission, the changes its device signed for itself, as the device's
-    /// own change: live to the devices linked to `workspace` now, and kept for those that link
-    /// later. A device that entered was admitted by this host's answer, not by a change its own
-    /// link brought, so the row reaches the workspace's other members only by this host passing
-    /// it on.
+    /// Carry `changes`, the admission `device` signed for itself, as the device's own change:
+    /// live to the devices linked to `workspace` now, and kept for those that link later. A
+    /// device that entered, or a further device of a member, was admitted by this host's
+    /// answer, not by a change its own link brought, so the row reaches the workspace's other
+    /// members only by this host passing it on.
     ///
     /// # Errors
     /// The row does not encode, or the workspace could not keep or carry it.
-    fn carry_own_admission(
+    pub(super) fn carry_own_admission(
         &self,
         workspace: &HostedWorkspace,
-        join: &Redeeming<'_>,
+        device: [u8; 32],
+        changes: Vec<Vec<u8>>,
     ) -> Result<(), CollaborationError> {
         let row = neighbour_wire::NeighbourMsg::SyncResp {
-            changes: join.admission.to_vec(),
+            changes,
             workspace: workspace.workspace_id().to_string(),
         };
         let body = postcard::to_stdvec(&row)
@@ -665,7 +670,7 @@ impl Workspaces {
             .records
             .carry(
                 workspace.workspace_id(),
-                join.redemption.certificate().device_public_key,
+                device,
                 &crate::workspace_documents::HostCommit { body },
             )
             .map(drop)

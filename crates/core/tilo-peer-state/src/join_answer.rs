@@ -66,6 +66,14 @@ pub trait WorkspaceTxn {
     ) -> Result<(), JoinError> {
         self.commit_governance(peer, now, log)
     }
+
+    /// Carry `changes`, the row `device` signed for itself and the last commit took in, to the
+    /// workspace's other devices under `device`'s name as that commit is sent: the row came with
+    /// the device's request, over no link, so no link passes it on. A store with no other
+    /// devices to tell carries nothing.
+    fn carry_own_row(&mut self, device: [u8; 32], changes: Vec<Vec<u8>>) {
+        let _ = (device, changes);
+    }
 }
 
 /// Where the workspaces a join is answered for live.
@@ -520,6 +528,7 @@ fn admit_member_device(
     }
     let log = workspace.log().clone();
     workspace.commit_governance(candidate, now, &mut |_| Ok(log.clone()))?;
+    workspace.carry_own_row(device.device_public_key, request.admission.clone());
     tracing::info!(
         workspace = %workspace.workspace(),
         person = %hex::encode(device.user_public_key),

@@ -1994,6 +1994,9 @@ pub(super) struct HeldWorkspace<'a> {
     replica: &'a mut tilo_peer_state::StatePeer,
     staged: bool,
     pub(super) committed: bool,
+    /// The rows devices signed for themselves that the commit took in, by device, for the
+    /// settle to carry ([`tilo_peer_state::join_answer::WorkspaceTxn::carry_own_row`]).
+    own_rows: Vec<([u8; 32], Vec<Vec<u8>>)>,
 }
 
 impl<'a> HeldWorkspace<'a> {
@@ -2010,6 +2013,7 @@ impl<'a> HeldWorkspace<'a> {
             replica,
             staged: false,
             committed: false,
+            own_rows: Vec::new(),
         }
     }
 
@@ -2074,6 +2078,10 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
     ) -> Result<(), CollaborationError> {
         self.keep(peer, now, log)
     }
+
+    fn carry_own_row(&mut self, device: [u8; 32], changes: Vec<Vec<u8>>) {
+        self.own_rows.push((device, changes));
+    }
 }
 
 /// This server's workspaces, to the host that answers their workspace-join
@@ -2097,7 +2105,7 @@ impl JoinWorkspaces for Workspaces {
     ) -> Result<T, CollaborationError> {
         let held = self.workspace(workspace).await?;
         let mut locked = held.lock().await;
-        let (answer, staged, committed) = {
+        let (answer, staged, committed, own_rows) = {
             // A member's write reaches this workspace's replica over the link it
             // syncs on, without this workspace's lock: holding the replica for
             // the decision is what keeps the state a change is built from the
@@ -2111,9 +2119,12 @@ impl JoinWorkspaces for Workspaces {
                 &mut replica,
             );
             let answer = decide(&mut held);
-            (answer, held.staged, held.committed)
+            (answer, held.staged, held.committed, held.own_rows)
         };
         if committed {
+            for (device, changes) in own_rows {
+                self.carry_own_admission(&locked, device, changes)?;
+            }
             self.settle(&mut locked).await?;
         }
         drop(locked);
