@@ -666,13 +666,10 @@ fn a_certificate_the_persons_root_never_signed_opens_no_desktop_page() {
         let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
         let mut person = [0; 32];
         hex::decode_to_slice(host.person(), &mut person).unwrap();
-        let (forger, _) = host::stranger("Someone else's browser");
-        let (_, forged) = host::certified(
-            &forger,
-            person,
-            "Not Ada's browser",
-            tilo_user_identity::DeviceCapabilities::member(),
-        );
+        // Someone else's root signs a certificate of their own, which is then made to name the
+        // person: the signature is the other root's, over another person.
+        let (_, mut forged) = host::stranger("Not Ada's browser");
+        forged.user_public_key = person;
         let refused = open(&daemon, &workspace, &host::linked(&forged, &workspace)).await;
         assert!(
             refused.is_err(),
@@ -1010,11 +1007,26 @@ fn an_agents_pick_and_a_press_change_the_shells_record_the_computer_merges() {
         assert!(!failed, "the agent picks the canvas: {picked}");
         let document = computer.picked(&own, FRAMES).await;
         // The shell's record is the person's own: its document, as the store of their own
-        // workspace places it, is read by them alone, so by their own devices and no one else.
+        // workspace places it, is read by every member of that workspace, and its one member is
+        // the person, so it is read by their own devices and no one else's.
         assert_eq!(
             collab_types::store_document_readers(&document),
-            Some(collab_types::reader_set_name(host.person()).as_str()),
-            "the shell's document is read by its person alone: {document}"
+            Some(collab_types::EVERY_MEMBER),
+            "the shell's document is read by its workspace's members: {document}"
+        );
+        let people: Vec<String> = daemon
+            .workspaces()
+            .policy_of(&own)
+            .await
+            .expect("the person's own workspace's policy reads")
+            .people()
+            .into_iter()
+            .map(|(person, _)| person)
+            .collect();
+        assert_eq!(
+            people,
+            [host.person()],
+            "the person's own workspace has them alone as its member"
         );
 
         let page = Page::of(&daemon, &workspace, &browser(&host)).await;

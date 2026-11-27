@@ -582,6 +582,30 @@ impl DesktopWells {
         Ok(patches)
     }
 
+    /// The receipt of `invocation`, which the dispatch took, once it ends.
+    fn outcome_of(&self, invocation: InvocationId) -> Result<InvocationReceipt, PageRefusal> {
+        let started = tilo_clock::now();
+        loop {
+            // Asked for before the look, so an end between the two still wakes the wait.
+            let change = self.dispatch.next_change(&self.caller, &invocation);
+            let state = self
+                .dispatch
+                .observe(&self.caller, &invocation)
+                .ok_or_else(|| unavailable("the device no longer knows of the layout's read"))?;
+            if state.is_terminal() {
+                return Ok(state.receipt());
+            }
+            let left =
+                ANSWER_WITHIN.saturating_sub(tilo_clock::now().saturating_duration_since(started));
+            let Some(change) = change.filter(|_| !left.is_zero()) else {
+                return Err(unavailable("the layout was not read in time"));
+            };
+            if change.wait_timeout(left).is_err() {
+                return Err(unavailable("the layout was not read in time"));
+            }
+        }
+    }
+
     /// Each window on the layout, by its key, as its own page in the well it shows in.
     fn read(&self) -> Result<std::collections::BTreeMap<String, String>, PageRefusal> {
         let request = InvokeRequest {
@@ -600,7 +624,13 @@ impl DesktopWells {
             appearance: None,
             signed: None,
         };
+        let invocation = request.invocation;
         let receipt = waited(self.dispatch.invoke(&self.caller, request))?.map_err(unavailable)?;
+        // The run's dispatch answers a host step once it is admitted; its outcome follows.
+        let receipt = match receipt.status {
+            ReceiptStatus::Accepted => self.outcome_of(invocation)?,
+            _ => receipt,
+        };
         let read = match receipt.status {
             ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
             ReceiptStatus::Rejected { error } => return Err(unavailable(error)),
