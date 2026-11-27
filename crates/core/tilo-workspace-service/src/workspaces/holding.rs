@@ -817,23 +817,12 @@ async fn report_copy(workspaces: Weak<super::WorkspacesInner>, workspace: String
     // Said once at the start, also by a holder no other holder is named
     // beside.
     links.touch();
-    let mut before = std::collections::BTreeMap::new();
     loop {
         links.changed().await;
         let Some(inner) = workspaces.upgrade() else {
             return;
         };
         let this = Workspaces { inner };
-        // A holder this copy turned current with is pushed again what this
-        // device pushed it and it did not say it keeps.
-        let now = links.now();
-        if now
-            .iter()
-            .any(|(device, link)| *link == Link::Current && before.get(device) != Some(link))
-        {
-            this.push_again(&workspace, true);
-        }
-        before = now;
         let held = held_copy(&links);
         let cert = this.device_cert().clone();
         let reported = this

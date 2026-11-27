@@ -582,6 +582,7 @@ impl Workspaces {
         link.drop_refused_workspace_changes().await;
         self.inner.direct.serve(link.clone())?;
         self.follow_link(workspace, &link);
+        self.keep_pushing(workspace.workspace(), &link);
         Ok(())
     }
 

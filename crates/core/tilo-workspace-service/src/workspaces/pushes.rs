@@ -209,8 +209,10 @@ impl Workspaces {
         }
     }
 
-    /// Keep pushing what goes to the host of `workspace` over `link`, the link
-    /// serving this device's copy of it, for as long as the link lasts.
+    /// Keep pushing what goes to the hosts of `workspace` over `link`, for as long as the link
+    /// lasts: all of it again as a link starts, whichever device dialled it (a holder that
+    /// restarted reaches this one as often as this one reaches it), and what went unanswered
+    /// past its patience.
     pub(super) fn keep_pushing(&self, workspace: &str, link: &tilo_peer_state::direct::DirectSync) {
         let mut linked = link.content_linked();
         let workspaces = self.downgrade();
