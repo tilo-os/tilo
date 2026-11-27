@@ -22,7 +22,7 @@ use tilo_actions::remote::{
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
-use super::{HostedBrowsers, page_action, update_of_error};
+use super::{HostedBrowsers, update_of_error};
 use tilo_server_protocol::WorkspaceId;
 
 /// How long a window has to say how a page action it was handed for a turn ended.
@@ -112,14 +112,14 @@ impl HostedBrowsers {
         person: [u8; 32],
         request: InvokeRequest,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let Some(window) = self.window(workspace_id) else {
+        let Some((window, page)) = self.window_and_page(workspace_id) else {
             return Err(ActionCallError::Refused {
                 reason: NO_WINDOW.to_owned(),
             });
         };
         // A turn reaches the window of the workspace it works in, and its page: anything else
         // names nothing here.
-        if !page_action(&request.target, &window.provider) {
+        if !page.names(&request.target) {
             return Err(ActionCallError::UnknownAction);
         }
         let (Some(hand), Some(own)) = (self.hand(), self.this_device()) else {

@@ -3,7 +3,7 @@
 //! `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link` and `tilo_status` address
 //! everything by **path**: `notes/Todo/body#append-paragraph` is the app
 //! (`notes`), the resource by its title, kind or key (`Todo`, `body`) and the
-//! action after `#`. `browser@4711/page#read-page` names one window of an
+//! action after `#`. `notes@4711/Todo#append-paragraph` names one window of an
 //! app by its provider (what the desktop's `open` answers, what `tilo_ls`
 //! lists); without it the app's newest window answers. The host's own
 //! services answer to their app too: `desktop` is the desktop's layout, on a

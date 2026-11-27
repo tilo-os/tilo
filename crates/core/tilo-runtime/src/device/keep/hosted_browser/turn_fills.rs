@@ -31,13 +31,13 @@ use serde_json::{Map, json};
 use tilo_action_services::environment_device::{ItemUse, ItemUsed};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionMessage, RemoteActionTarget, pending,
+    RemoteActionMessage, pending,
 };
-use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
-use tilo_app_host::agents::windows::{PAGE_RESOURCE, Release, Releasing, TurnFill};
+use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_app_host::agents::windows::{PageWindow, Release, Releasing, TurnFill};
 use tilo_lock::MutexRecover as _;
 
-use super::{HostedBrowsers, Window};
+use super::HostedBrowsers;
 use tilo_server_protocol::WorkspaceId;
 
 /// The Browser's page action that fills a field from a vault item by reference.
@@ -115,7 +115,7 @@ impl HostedBrowsers {
         fill: TurnFill,
         releasing: Releasing,
     ) -> Result<InvocationUpdate, ActionCallError> {
-        let Some(window) = self.window(workspace_id) else {
+        let Some((window, page)) = self.window_and_page(workspace_id) else {
             return Err(ActionCallError::Refused {
                 reason: "No Browser window is open in this workspace, so there is no page to fill"
                     .to_owned(),
@@ -156,7 +156,7 @@ impl HostedBrowsers {
             workspace_id,
             own,
             window.device,
-            RemoteActionMessage::Invoke(fill_request(&window, &fill)),
+            RemoteActionMessage::Invoke(fill_request(&page, &fill)),
         );
         let ask_again = || {
             hand.hand(
@@ -330,9 +330,9 @@ impl HostedBrowsers {
     }
 }
 
-/// The page action `window` is handed for `fill`: the Browser's own, answered at once where
-/// the fill ends quickly.
-fn fill_request(window: &Window, fill: &TurnFill) -> InvokeRequest {
+/// The page action `page`'s window is handed for `fill`, answered at once where the fill ends
+/// quickly.
+fn fill_request(page: &PageWindow, fill: &TurnFill) -> InvokeRequest {
     let mut arguments = Map::new();
     arguments.insert("element".into(), json!(fill.element));
     arguments.insert("item".into(), json!(fill.item));
@@ -341,10 +341,7 @@ fn fill_request(window: &Window, fill: &TurnFill) -> InvokeRequest {
     }
     InvokeRequest {
         invocation: fill.invocation,
-        target: RemoteActionTarget {
-            provider: window.provider.clone(),
-            address: ActionAddress::new(PAGE_RESOURCE, FILL_PAGE_ITEM),
-        },
+        target: page.target(FILL_PAGE_ITEM),
         argument: InvokeArgument::Json(arguments),
         context: None,
         confirmation: None,

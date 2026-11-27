@@ -19,7 +19,7 @@ see it in their window, in the desktop app and on the web page, live.
 The window it answers with has a page, and the page's actions are what an agent drives:
 
 ```text
-browser@<window>/page#navigate
+<window provider>  tl:so.tilo.browser:<page-id>#navigate
 ```
 
 ## What an agent does with a page

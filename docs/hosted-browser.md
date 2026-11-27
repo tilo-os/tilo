@@ -52,7 +52,8 @@ to the one Browser record and its page track; page actions on it still run
 as the calling agent, for the workspace's person. It opens the Browser window
 on the workspace's Browser record, so the window is live, published and
 subscribed like a Browser window on anyone's computer, and its page actions
-(`browser@<window>/page#read-page`, …) are the ones Browser already has.
+(`read_page` and the rest, on the page record `tl:so.tilo.browser:<page-id>` the open
+answered, under the window's provider) are the ones Browser already has.
 
 ### git
 
@@ -135,7 +136,7 @@ command.
   microVM.
 - **What leaves the VM** is what leaves any device in the workspace: the
   Browser record's changes, action answers, the page's display list for the
-  members viewing it, and, for `capture-page`, a picture of the page.
+  members viewing it, and, for `capture_page`, a picture of the page.
 - **Egress is the public internet and the server.** The hosted VM network
   drops private, shared, link-local (the metadata endpoint), loopback,
   multicast and reserved networks and Azure's platform address. Every VM is
@@ -226,7 +227,7 @@ session's standard input as one line:
 | `account` | Who pays, as the server counts it. |
 
 It reports on its standard output: `ready`, then `up <provider>` once the
-window is live (an agent names it `browser@<provider>`), then `used` whenever
+window is live (the provider its page actions are addressed under), then `used` whenever
 the page is used.
 
 An agent's calls go to the workspace host's device. So the server lists
@@ -251,7 +252,7 @@ while the caller waits: a caller needs nothing beyond asking and following
 what it asked for. Allowed, the server hands the same invocation to the
 window again carrying the person's approve of the asked record it was kept
 as, and the session runs the action once. Denied or unanswered, the invocation ends
-refused and nothing runs. That is the approval before `submit-page`.
+refused and nothing runs. That is the approval before `submit_page`.
 
 **Every departure is that same approval, however it was triggered.** In a
 window opened for an agent the engine stops the page where it was about to
@@ -303,8 +304,8 @@ holds without asking each time: the person ticks **Operate web pages in
 Browser** where they make the key (it is ticked unless they say no, and a key
 minted from a key keeps its answer), and the key's certificate carries it.
 Holding it, the server answers for the person on the page actions that
-operating a page is — `navigate`, `fill-page`, `select-page`, `click-page`,
-`press-page`, `scroll-page`, `drag-page` and `pointer-path`/`pointer-page` —
+operating a page is — `navigate`, `fill_page`, `select_page`, `click_page`,
+`press_page`, `scroll_page`, `drag_page` and `pointer-path`/`pointer-page` —
 handing the key's own signed call to the window over the link the window holds
 to it, with a confirmation. The session takes that word from the host that
 placed it alone — the server it was handed, over that server's link, for the
@@ -314,7 +315,7 @@ engine still stops the page where it was about to send something, answers
 that invocation that it needs the person, and only their own answer releases
 that one request, so a key that clicks a submit button still waits for them.
 It answers for nothing else either:
-`submit-page`, filling in a file or a password, and everything else Browser
+`submit_page`, filling in a file or a password, and everything else Browser
 holds for the person still asks them, a key without the scope is asked about
 every page action, and revoking the key ends it with the key's certificate.
 Where the person sees it: the entry's grants page says it on the key, and the

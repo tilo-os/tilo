@@ -39,7 +39,7 @@ use collab_types::CommitNamed as _;
 use crate::keep::common::{
     Linked, TestDevice, TestServer, TestUser, spawn_server, spawn_server_serving_apps,
 };
-use tilo_app_host::agents::windows::PAGE_RESOURCE;
+use tilo_app_host::agents::windows::PageWindow;
 use tilo_runtime::device::keep::hosted_browser::APP;
 use tilo_workspace_service::environment::vm_placed_records;
 use tilo_workspace_service::workspaces::person_workspace::devices;
@@ -47,7 +47,7 @@ use tilo_workspace_service::workspaces::person_workspace::devices;
 const WS: WorkspaceId = WorkspaceId::from_u128(0x1111_1111_1111_4111_8111_1111_1111_1111);
 const OTHER_WS: WorkspaceId = WorkspaceId::from_u128(0x2222_2222_2222_4222_8222_2222_2222_2222);
 const WS_NAME: &str = "11111111-1111-4111-8111-111111111111";
-const WINDOW: &str = "browser@42";
+const WINDOW: &str = "42";
 /// What the host publishes for the workspace itself.
 const HOST_PROVIDER: &str = "workspace:11111111-1111-4111-8111-111111111111";
 /// The revision the window's own listing answers at.
@@ -233,6 +233,11 @@ fn as_asked(asker: &TestDevice, mut request: InvokeRequest) -> InvokeRequest {
     request
 }
 
+/// The window's page, as its page actions name it: the Browser's page record the open answered.
+fn the_page() -> PageWindow {
+    PageWindow::new(WINDOW, WINDOW_RECORD)
+}
+
 /// The page action `action` of the window, asked by `asker`.
 fn page(asker: &TestDevice, invocation: InvocationId, action: &str) -> InvokeRequest {
     as_asked(
@@ -240,10 +245,7 @@ fn page(asker: &TestDevice, invocation: InvocationId, action: &str) -> InvokeReq
         InvokeRequest {
             on_behalf_of: None,
             invocation,
-            target: RemoteActionTarget {
-                provider: WINDOW.into(),
-                address: ActionAddress::new(PAGE_RESOURCE, action),
-            },
+            target: the_page().target(action),
             argument: InvokeArgument::None,
             context: None,
             confirmation: None,
@@ -267,10 +269,7 @@ fn page_with(
         InvokeRequest {
             on_behalf_of: None,
             invocation,
-            target: RemoteActionTarget {
-                provider: WINDOW.into(),
-                address: ActionAddress::new(PAGE_RESOURCE, action),
-            },
+            target: the_page().target(action),
             argument: InvokeArgument::None,
             context: None,
             confirmation,
@@ -285,7 +284,7 @@ fn page_with(
 /// The submit the agent asks for, as a person's approving device is shown it:
 /// the purpose it acts on, by the words the agent gave it.
 fn submit(asker: &TestDevice, invocation: InvocationId) -> InvokeRequest {
-    let mut request = page(asker, invocation, "submit-page");
+    let mut request = page(asker, invocation, "submit_page");
     request.context = Some(tilo_actions::ActionContext {
         purpose: Some("Submit the application".into()),
         ..tilo_actions::ActionContext::default()
@@ -479,14 +478,14 @@ impl Asks {
     fn asks(self, action: &str) -> bool {
         /// What only looks at the page.
         const OBSERVES: [&str; 4] = [
-            "read-page",
-            "find-page-element",
-            "capture-page",
-            "wait-page-settled",
+            "read_page",
+            "find_page_element",
+            "capture_page",
+            "wait_page_settled",
         ];
         match self {
             Self::Never => false,
-            Self::Submit => action == "submit-page",
+            Self::Submit => action == "submit_page",
             Self::Acting | Self::Departing => !OBSERVES.contains(&action),
         }
     }
@@ -522,8 +521,92 @@ struct WindowActions {
     placement: tilo_action_services::browser::Placement,
 }
 
+/// The page actions of the Browser's `Page` (`apps/tl/browser/app.tl`) a window here answers,
+/// each with the parameters the Browser declares for it.
+const PAGE_ACTIONS: &[(&str, &[&str])] = &[
+    ("read_page", &["from", "frame"]),
+    ("read_page_table", &["element", "from", "frame"]),
+    ("find_page_text", &["text", "frame", "frames"]),
+    (
+        "find_page_element",
+        &["role", "name", "nth", "frame", "frames"],
+    ),
+    (
+        "wait_page_settled",
+        &["quiet_ms", "timeout_ms", "text", "gone", "frame"],
+    ),
+    ("capture_page", &["element", "max_width", "frame"]),
+    ("navigate", &["url"]),
+    ("click_page", &["element", "frame"]),
+    ("hover_page", &["element", "x", "y"]),
+    (
+        "drag_page",
+        &["from", "from_x", "from_y", "to", "to_x", "to_y", "steps"],
+    ),
+    ("fill_page", &["element", "text", "frame"]),
+    ("fill_page_secret", &["element", "item"]),
+    ("select_page", &["element", "values", "frame"]),
+    ("press_page", &["key", "element", "frame"]),
+    (
+        "scroll_page",
+        &["element", "to", "by", "into_view", "frame"],
+    ),
+    ("pointer_page", &["steps", "button"]),
+    ("submit_page", &["element", "cross_origin", "frame"]),
+    ("let_leave", &["id", "origin", "method", "leaving"]),
+];
+
+/// The page actions the session holding the window raises itself, which its page does not
+/// publish: releasing or keeping a request the page holds, and a fill from a vault item.
+const SESSION_ACTIONS: [&str; 3] = [
+    tilo_action_services::browser::SEND_HELD,
+    tilo_action_services::browser::KEEP_HELD,
+    tilo_runtime::device::keep::hosted_browser::FILL_PAGE_ITEM,
+];
+
+/// The window's page as its listing declares it: each of [`PAGE_ACTIONS`] on the page record.
+fn declared_page() -> Vec<tilo_actions::remote::CatalogueRow> {
+    let page = the_page();
+    PAGE_ACTIONS
+        .iter()
+        .map(|(action, params)| {
+            tilo_actions::remote::CatalogueRow::for_action(
+                &page.provider,
+                APP,
+                tilo_actions::ActionDescriptor {
+                    did: None,
+                    state: tilo_actions::ActionState::default(),
+                    semantic_identity: None,
+                    address: ActionAddress::new(&page.page, *action),
+                    resource_kind: "tl.so.tilo.browser.Page".to_owned(),
+                    resource_label: "Page".to_owned(),
+                    action_label: (*action).to_owned(),
+                    keywords: Vec::new(),
+                    icon: None,
+                    description: None,
+                    locus: tilo_actions::ExecutionLocus::ServerPreferred,
+                    kind: tilo_actions::OperationKind::Effect,
+                    contract: tilo_actions::ActionContract::default(),
+                    input: tilo_actions::InputSpec::None,
+                    params: params
+                        .iter()
+                        .map(|name| {
+                            tilo_actions::ActionParam::optional(
+                                name,
+                                tilo_actions::ParamType::Text,
+                                "",
+                            )
+                        })
+                        .collect(),
+                    view: None,
+                },
+            )
+        })
+        .collect()
+}
+
 impl ActionProvider for WindowActions {
-    /// What the window offers, read from the window.
+    /// What the window offers, read from the window: the Browser's page actions on its page.
     fn query(
         &self,
         _caller: &Caller,
@@ -531,6 +614,7 @@ impl ActionProvider for WindowActions {
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         Pending::ready(Ok(CataloguePage {
             revision: WINDOW_REVISION.into(),
+            rows: declared_page(),
             ..CataloguePage::default()
         }))
     }
@@ -540,6 +624,13 @@ impl ActionProvider for WindowActions {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // The window answers what its page declares, on its page, and nothing else.
+        let action = request.target.address.action.as_str();
+        let declared = PAGE_ACTIONS.iter().any(|(named, _)| *named == action)
+            || SESSION_ACTIONS.contains(&action);
+        if !the_page().names(&request.target) || !declared {
+            return Pending::ready(Err(ActionCallError::UnknownAction));
+        }
         // Only the host that placed this window, over its own link, for the
         // workspace it placed it in, answers for the person; the dispatch that
         // admitted the same call again on the person's approve of its asked
@@ -571,7 +662,7 @@ impl ActionProvider for WindowActions {
             };
             let mut facts = tilo_action_services::browser::departure_asked(stated);
             if facts.on.is_none() {
-                facts.on = Some(PAGE_RESOURCE.to_owned());
+                facts.on = Some(the_page().page);
             }
             if facts.words.is_empty()
                 && let Some(purpose) = request.context.as_ref().and_then(|c| c.purpose.clone())
@@ -1016,7 +1107,7 @@ async fn a_page_action_reaches_the_window_as_the_caller() {
     let id = InvocationId::new();
     let receipt = tilo_test_env::within(
         "the window answers the page action",
-        ActionProvider::invoke(&remote, &caller, page(&fixture.agent, id, "read-page")),
+        ActionProvider::invoke(&remote, &caller, page(&fixture.agent, id, "read_page")),
     )
     .await
     .expect("the host answers")
@@ -1122,6 +1213,20 @@ async fn the_host_lists_the_window_and_hands_its_listing_to_it() {
         page.revision, WINDOW_REVISION,
         "the window answered its own listing"
     );
+    // What it lists is the Browser's page, by the record the open answered: the page actions an
+    // agent calls, under the Browser's own names.
+    let fill = page
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .find(|action| action.address.action == "fill_page_secret")
+        .expect("the window lists the Browser's fill of a secret");
+    assert_eq!(
+        fill.address.resource,
+        format!("tl:so.tilo.browser:{WINDOW_RECORD}")
+    );
+    let params: Vec<&str> = fill.params.iter().map(|param| &*param.name).collect();
+    assert_eq!(params, ["element", "item"]);
 }
 
 /// A session takes as long to start as its VM takes to wake: meanwhile the
@@ -1184,7 +1289,7 @@ async fn a_page_action_past_the_allowance_is_refused_and_says_how_to_continue() 
             .ask_message(RemoteActionMessage::Invoke(page(
                 &fixture.agent,
                 id,
-                "fill-page",
+                "fill_page",
             )))
             .await
             .and_then(Result::ok),
@@ -1239,7 +1344,7 @@ async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_pers
     let approver_actions = asking(&approver, WS_NAME).await;
     let approver_caller = approver.caller(fixture.user.user_pk);
 
-    for action in ["read-page", "find-page-element", "fill-page", "select-page"] {
+    for action in ["read_page", "find_page_element", "fill_page", "select_page"] {
         let id = InvocationId::new();
         let ran = ActionProvider::invoke(&remote, &caller, page(&fixture.agent, id, action))
             .await
@@ -1275,7 +1380,7 @@ async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_pers
     );
     let question = asked(&approver_actions, &approver_caller).await;
     assert_eq!(question.facts.words, "Submit the application");
-    assert_eq!(question.facts.on.as_deref(), Some(PAGE_RESOURCE));
+    assert_eq!(question.facts.on.as_deref(), Some(the_page().page.as_str()));
     assert_eq!(
         *fixture.meter.recorded.lock().unwrap(),
         4,
@@ -1338,7 +1443,7 @@ async fn a_click_on_a_submit_button_is_asked_about_by_what_leaves() {
     let approver_caller = approver.caller(fixture.user.user_pk);
 
     let id = InvocationId::new();
-    let receipt = ActionProvider::invoke(&remote, &caller, page(&fixture.agent, id, "click-page"))
+    let receipt = ActionProvider::invoke(&remote, &caller, page(&fixture.agent, id, "click_page"))
         .await
         .expect("the host answers")
         .expect("the window holds it for the person");
@@ -1408,7 +1513,7 @@ async fn a_keys_page_actions_run_at_once_where_its_person_let_it_operate_them() 
     let approver_actions = asking(&approver, WS_NAME).await;
     let approver_caller = approver.caller(fixture.user.user_pk);
 
-    for action in ["navigate", "fill-page", "select-page", "click-page"] {
+    for action in ["navigate", "fill_page", "select_page", "click_page"] {
         let id = InvocationId::new();
         let ran = ActionProvider::invoke(&remote, &caller, page(&key, id, action))
             .await
@@ -1498,7 +1603,7 @@ async fn a_keys_page_actions_ask_first_where_it_may_not_operate_them() {
     let approver_actions = asking(&approver, WS_NAME).await;
     let approver_caller = approver.caller(fixture.user.user_pk);
 
-    for action in ["fill-page", "select-page", "click-page"] {
+    for action in ["fill_page", "select_page", "click_page"] {
         let id = InvocationId::new();
         let receipt = ActionProvider::invoke(&remote, &caller, page(&key, id, action))
             .await
@@ -1711,7 +1816,7 @@ async fn a_confirmation_the_caller_brings_runs_no_page_action() {
         page_with(
             &key,
             InvocationId::new(),
-            "click-page",
+            "click_page",
             Some(Confirmation::Operated),
         ),
     )
@@ -1743,7 +1848,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
         RemoteActionMessage::Invoke(page_with(
             &key,
             InvocationId::new(),
-            "click-page",
+            "click_page",
             Some(Confirmation::Operated),
         ))
     };
@@ -2517,10 +2622,7 @@ fn reported_departure(invocation: InvocationId, id: u32) -> InvokeRequest {
     InvokeRequest {
         on_behalf_of: None,
         invocation,
-        target: RemoteActionTarget {
-            provider: WINDOW.into(),
-            address: ActionAddress::new(PAGE_RESOURCE, "send-held-request"),
-        },
+        target: the_page().target(tilo_action_services::browser::SEND_HELD),
         argument: InvokeArgument::Json(serde_json::Map::from_iter([(
             "id".to_owned(),
             id.to_string().into(),

@@ -45,7 +45,7 @@ use tilo_actions::{
 };
 
 use super::turn_provider::{Ending, Rows};
-use super::windows::{PAGE_RESOURCE, Windows, page_action};
+use super::windows::{PageWindow, Windows, page_resource};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use tilo_action_policy::WorkspacePolicy;
 use tilo_app_id::apps::BROWSER as APP;
@@ -57,15 +57,17 @@ const NAVIGATE: &str = "navigate";
 /// The argument that names the address.
 const ADDRESS: &str = "url";
 /// The Browser's page action that reads the page's outline.
-const READ: &str = "read-page";
+const READ: &str = "read_page";
 /// The Browser's page action that reads the page's tables.
-const READ_TABLE: &str = "read-page-table";
+const READ_TABLE: &str = "read_page_table";
 /// The Browser's page action that finds words on the page.
-const FIND_TEXT: &str = "find-page-text";
+const FIND_TEXT: &str = "find_page_text";
 /// The Browser's page action that clicks an element.
-const CLICK: &str = "click-page";
+const CLICK: &str = "click_page";
 /// The argument of [`FIND_TEXT`] that names the words.
 const TEXT: &str = "text";
+/// The kind of the Browser's page record, as its package declares it.
+const PAGE_KIND: &str = "tl.so.tilo.browser.Page";
 /// The longest address a window is sent to.
 const MAX_ADDRESS_BYTES: usize = 2048;
 /// The longest frame id or element ref a window is handed.
@@ -213,11 +215,11 @@ impl TurnPages {
     }
 
     /// The window up in the turn's workspace, where this turn is offered its page.
-    fn window(&self) -> Option<String> {
+    fn window(&self) -> Option<PageWindow> {
         self.browsers
             .as_ref()
             .filter(|_| self.offered)?
-            .window_provider(self.workspace_id)
+            .page_window(self.workspace_id)
     }
 
     /// Take the page action `request` as `caller`: how it ended, or this server's refusal.
@@ -271,12 +273,12 @@ impl TurnPages {
         let invocation = request.invocation;
         let address = public_address(&request.argument)
             .map_err(|reason| ActionCallError::Refused { reason })?;
-        let Some(window) = browsers.window_provider(self.workspace_id) else {
+        let Some(window) = browsers.page_window(self.workspace_id) else {
             return Err(ActionCallError::refused(NO_WINDOW));
         };
         let mut arguments = Map::new();
         arguments.insert(ADDRESS.to_owned(), json!(address.as_str()));
-        let handed = to_window(window, invocation, NAVIGATE, arguments);
+        let handed = to_window(&window, invocation, NAVIGATE, arguments);
         let ended = browsers
             .page_for_turn(self.workspace_id, person, handed)
             .await?;
@@ -306,10 +308,10 @@ impl TurnPages {
         let action = request.target.address.action.as_str();
         let arguments = sifted(action, takes, &request.argument, NOT_READ)
             .map_err(|reason| ActionCallError::Refused { reason })?;
-        let Some(window) = browsers.window_provider(self.workspace_id) else {
+        let Some(window) = browsers.page_window(self.workspace_id) else {
             return Err(ActionCallError::refused(NO_WINDOW));
         };
-        let handed = to_window(window, invocation, action, arguments);
+        let handed = to_window(&window, invocation, action, arguments);
         let ended = browsers
             .page_for_turn(self.workspace_id, person, handed)
             .await?;
@@ -343,10 +345,10 @@ impl TurnPages {
         let action = request.target.address.action.as_str();
         let arguments = sifted(action, takes, &request.argument, NOT_CLICKED)
             .map_err(|reason| ActionCallError::Refused { reason })?;
-        let Some(window) = browsers.window_provider(self.workspace_id) else {
+        let Some(window) = browsers.page_window(self.workspace_id) else {
             return Err(ActionCallError::refused(NO_WINDOW));
         };
-        let handed = to_window(window, invocation, action, arguments);
+        let handed = to_window(&window, invocation, action, arguments);
         let ended = browsers
             .page_for_turn(self.workspace_id, person, handed)
             .await?;
@@ -372,7 +374,7 @@ impl TurnProvider for TurnPages {
     fn providers(&self, _caller: &Caller) -> Vec<CatalogueProvider> {
         self.window()
             .map(|window| CatalogueProvider {
-                provider: window,
+                provider: window.provider,
                 app_id: APP.to_owned(),
                 workspace: self.workspace.clone(),
                 document_id: String::new(),
@@ -387,7 +389,7 @@ impl TurnProvider for TurnPages {
     fn rows(&self, _caller: &Caller, query: &CatalogueQuery) -> Option<Rows> {
         let window = self.window()?;
         let click = self.granted(CLICK);
-        (query.provider.as_deref() == Some(window.as_str()))
+        (query.provider.as_deref() == Some(window.provider.as_str()))
             .then(|| Pending::ready(Ok(rows_of(&window, click))))
     }
 
@@ -396,8 +398,8 @@ impl TurnProvider for TurnPages {
     fn takes(&self, target: &RemoteActionTarget) -> bool {
         self.browsers
             .as_ref()
-            .and_then(|browsers| browsers.window_provider(self.workspace_id))
-            .is_some_and(|window| page_action(target, &window))
+            .and_then(|browsers| browsers.page_window(self.workspace_id))
+            .is_some_and(|window| window.names(target))
     }
 
     /// What a read of a page answers was written by whoever made the page. The turn's tools
@@ -412,30 +414,30 @@ impl TurnProvider for TurnPages {
     }
 }
 
-/// The page action `action` as an agent's rules name it: an action of the Browser app, on
-/// whatever window it is asked of.
+/// The page action `action` as an agent's rules name it: an action of the Browser app on the
+/// page a workspace's window holds, whatever window it is asked of.
 fn on_browser(action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
         provider: APP.to_owned(),
-        address: ActionAddress::new(PAGE_RESOURCE, action),
+        address: ActionAddress::new(
+            page_resource(tilo_workspace_service::environment::VM_RECORD),
+            action,
+        ),
     }
 }
 
-/// The Browser's own page action `action` of the window `provider` names, made here with
-/// `arguments`: what a window is handed for a turn. What the turn's call carried beside its
-/// arguments (an answer somebody is said to have given, a context) is not handed on.
+/// The Browser's own page action `action` of `window`'s page, made here with `arguments`: what
+/// a window is handed for a turn. What the turn's call carried beside its arguments (an answer
+/// somebody is said to have given, a context) is not handed on.
 fn to_window(
-    provider: String,
+    window: &PageWindow,
     invocation: InvocationId,
     action: &str,
     arguments: Map<String, Value>,
 ) -> InvokeRequest {
     InvokeRequest {
         invocation,
-        target: RemoteActionTarget {
-            provider,
-            address: ActionAddress::new(PAGE_RESOURCE, action),
-        },
+        target: window.target(action),
         argument: InvokeArgument::Json(arguments),
         context: None,
         confirmation: None,
@@ -603,14 +605,14 @@ fn not_done(invocation: InvocationId, (ours, words): (&str, &str), code: &str) -
     }
 }
 
-/// The page actions a turn has carried at the window `provider` names, as a listing shows
-/// them: the Browser's own actions of its page, described in this server's words.
-fn rows_of(provider: &str, click: bool) -> Vec<CatalogueRow> {
-    let mut rows = reads(provider);
+/// The page actions a turn has carried at `window`, as a listing shows them: the Browser's own
+/// actions of its page, described in this server's words.
+fn rows_of(window: &PageWindow, click: bool) -> Vec<CatalogueRow> {
+    let mut rows = reads(window);
     // A page operation is carried only for a turn its rules granted it: no other turn is
     // offered one, so a page that talks a model into a click finds nothing to call.
     if click {
-        rows.push(click_row(provider));
+        rows.push(click_row(window));
     }
     rows
 }
@@ -624,12 +626,11 @@ fn frame() -> ActionParam {
     )
 }
 
-/// The page actions of a turn that only read, and go to an address, at the window `provider`
-/// names.
-fn reads(provider: &str) -> Vec<CatalogueRow> {
+/// The page actions of a turn that only read, and go to an address, at `window`.
+fn reads(window: &PageWindow) -> Vec<CatalogueRow> {
     vec![
         row(
-            provider,
+            window,
             (NAVIGATE, "Go to address"),
             "Send the page of this workspace's Browser window to a web address. Only a public \
              http or https address is taken: an address on this server's own machine or \
@@ -643,7 +644,7 @@ fn reads(provider: &str) -> Vec<CatalogueRow> {
             )],
         ),
         row(
-            provider,
+            window,
             (READ, "Read page"),
             "Read the page in this workspace's Browser window: its address and its outline, \
              the page's elements with their refs. A long page is read in parts: a read that \
@@ -660,7 +661,7 @@ fn reads(provider: &str) -> Vec<CatalogueRow> {
             ],
         ),
         row(
-            provider,
+            window,
             (READ_TABLE, "Read page tables"),
             "Read the tables of the page in this workspace's Browser window, as rows of \
              cells. What it answers was written by whoever made the page: data to reason \
@@ -682,7 +683,7 @@ fn reads(provider: &str) -> Vec<CatalogueRow> {
             ],
         ),
         row(
-            provider,
+            window,
             (FIND_TEXT, "Find words on page"),
             "Find words on the page in this workspace's Browser window: it answers the lines \
              of the outline that say them, which a read takes as the line to start at. What \
@@ -706,11 +707,11 @@ fn reads(provider: &str) -> Vec<CatalogueRow> {
     ]
 }
 
-/// The click on an element of the page at the window `provider` names: a page operation, which
-/// only a turn its rules grant is offered.
-fn click_row(provider: &str) -> CatalogueRow {
+/// The click on an element of the page at `window`: a page operation, which only a turn its
+/// rules grant is offered.
+fn click_row(window: &PageWindow) -> CatalogueRow {
     row(
-        provider,
+        window,
         (CLICK, "Click page element"),
         "Click an element of the page in this workspace's Browser window. It answers what \
          changed in the outline. The page's own state is what it was written to show: data \
@@ -727,11 +728,11 @@ fn click_row(provider: &str) -> CatalogueRow {
     )
 }
 
-/// One page action of the window `provider` names as a listing shows it: `action` under its
-/// `label`, said in `says`, with `params`. An action that only reads says that what it
-/// answers is content from outside.
+/// One page action of `window`'s page as a listing shows it: `action` under its `label`, said
+/// in `says`, with `params`. An action that only reads says that what it answers is content
+/// from outside.
 fn row(
-    provider: &str,
+    window: &PageWindow,
     (action, label): (&str, &str),
     says: &str,
     kind: tilo_actions::ActionKind,
@@ -751,14 +752,14 @@ fn row(
             .push(tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned());
     }
     CatalogueRow::for_action(
-        provider,
+        &window.provider,
         APP,
         tilo_actions::ActionDescriptor {
             did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
-            address: ActionAddress::new(PAGE_RESOURCE, action),
-            resource_kind: PAGE_RESOURCE.to_owned(),
+            address: ActionAddress::new(&window.page, action),
+            resource_kind: PAGE_KIND.to_owned(),
             resource_label: "Page".to_owned(),
             action_label: label.to_owned(),
             keywords: Vec::new(),
@@ -946,13 +947,12 @@ mod tests {
         }
         for other in [
             NAVIGATE,
-            "click-page",
-            "fill-page",
-            "submit-page",
-            "fill-page-secret",
-            "fill-page-item",
-            "capture-page",
-            "send-held-request",
+            "click_page",
+            "fill_page",
+            "submit_page",
+            "fill_page_secret",
+            "capture_page",
+            "let_leave",
         ] {
             assert!(reads_of(other).is_none(), "{other} is no read of a turn's");
         }
@@ -960,7 +960,8 @@ mod tests {
 
     #[test]
     fn the_rows_offer_the_windows_page_where_to_go_and_what_to_read() {
-        let rows = rows_of("4711", false);
+        let window = PageWindow::new("4711", "browser");
+        let rows = rows_of(&window, false);
         let offered: Vec<&str> = rows
             .iter()
             .filter_map(|row| row.action.as_ref())
@@ -970,7 +971,7 @@ mod tests {
         for row in &rows {
             assert_eq!(row.provider, "4711");
             assert_eq!(row.app_id, APP);
-            assert_eq!(row.resource.id, PAGE_RESOURCE);
+            assert_eq!(row.resource.id, "tl:so.tilo.browser:browser");
             assert_eq!(row.resource.label, "Page");
             let action = row.action.as_ref().expect("an action");
             let reads = reads_of(&action.address.action).is_some();
@@ -992,7 +993,7 @@ mod tests {
 
     #[test]
     fn a_granted_turn_is_offered_the_pages_click_and_no_other_turn_is() {
-        let rows = rows_of("4711", true);
+        let rows = rows_of(&PageWindow::new("4711", "browser"), true);
         let click = rows
             .iter()
             .find(|row| {

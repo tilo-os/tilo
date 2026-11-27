@@ -95,7 +95,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionFailure, InvocationUpdate, ResourceSpec};
 use tilo_app_host::agents::windows::{
-    Ends, Releasing, TurnFill, Windows, opened_resource, page_action,
+    Ends, PageWindow, Releasing, TurnFill, Windows, opened_resource,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_remote_actions::asked::AskedStore;
@@ -161,14 +161,14 @@ fn published() -> Vec<ResourceSpec> {
 /// else Browser holds for the person are none of them.
 pub const OPERATING_ACTIONS: [&str; 9] = [
     "navigate",
-    "fill-page",
-    "select-page",
-    "click-page",
-    "press-page",
-    "scroll-page",
-    "drag-page",
-    "pointer-path",
-    "pointer-page",
+    "fill_page",
+    "select_page",
+    "click_page",
+    "press_page",
+    "scroll_page",
+    "drag_page",
+    "pointer_page",
+    "hover_page",
 ];
 /// The page action that keeps the page as it is, dropping the held request.
 pub use tilo_action_services::browser::KEEP_HELD;
@@ -292,6 +292,11 @@ struct Open {
 }
 
 impl Open {
+    /// The window as its page actions name it: its provider and the page it was opened on.
+    fn page(&self) -> PageWindow {
+        PageWindow::new(self.window.provider.clone(), &self.record)
+    }
+
     /// `caller`'s frames are handed to the window from now on, and its
     /// answers reach `caller` as this host's. Bounded as what is handed is:
     /// a host that has handed the window more callers than that starts over.
@@ -527,6 +532,11 @@ impl HostedBrowsers {
     /// action reaches its handler, admitted the same way. A host that places no window registers
     /// nothing, so an open is answered by its device's own refusal.
     pub fn provide_in(self: &Arc<Self>, providers: &Providers) {
+        // A window's page actions are Browser's own: a call of one is judged at what Browser
+        // declares it, as its package ships it, though no Browser runs on this host.
+        if let Some(surface) = fleet_catalogue::surface(APP) {
+            collab_types::app_surface::register_built_in(APP, surface);
+        }
         let answers: Arc<dyn ActionProvider + Send + Sync> = Arc::<Self>::clone(self);
         providers.provide(PROVIDER, APP, Reach::Devices, Arc::clone(&answers));
         *self.publishing.lock_recover() = Some(RegisteredAs {
@@ -622,6 +632,14 @@ impl HostedBrowsers {
             .map(|open| open.window.clone())
     }
 
+    /// The window `workspace_id`'s Browser is in and the page its actions name, when one is up.
+    fn window_and_page(&self, workspace_id: WorkspaceId) -> Option<(Window, PageWindow)> {
+        self.open
+            .lock_recover()
+            .get(&workspace_id)
+            .map(|open| (open.window.clone(), open.page()))
+    }
+
     /// Where `workspace_id`'s page action goes: to the device holding its
     /// window, once the meter admits it for the workspace's account; answered
     /// here with the host's typed refusal otherwise. `None` for an action
@@ -709,16 +727,12 @@ impl HostedBrowsers {
         let RemoteActionMessage::Invoke(request) = message else {
             return self.answered_or_asked_after(workspace_id, caller, message);
         };
-        let (provider, window, window_device) = {
+        let (page, window, window_device) = {
             let open = self.open.lock_recover();
             let up = open.get(&workspace_id)?;
-            (
-                up.window.provider.clone(),
-                up.window.device,
-                up.device.device_public_key,
-            )
+            (up.page(), up.window.device, up.device.device_public_key)
         };
-        if !page_action(&request.target, &provider) {
+        if !page.names(&request.target) {
             return None;
         }
         let device = *caller.device_public_key()?;
@@ -1566,10 +1580,10 @@ impl HostedBrowsers {
         let Some(workspace_id) = caller.workspace().and_then(WorkspaceId::parse) else {
             return Err(ActionCallError::UnknownAction);
         };
-        let Some(window) = self.window(workspace_id) else {
+        let Some((_, page)) = self.window_and_page(workspace_id) else {
             return Err(ActionCallError::UnknownAction);
         };
-        if !page_action(&request.target, &window.provider) {
+        if !page.names(&request.target) {
             return Err(ActionCallError::UnknownAction);
         }
         self.carry_page_action(workspace_id, caller, request).await
@@ -2419,8 +2433,8 @@ pub fn refused(invocation: tilo_actions::InvocationId, reason: String) -> Remote
 
 /// The windows this server places, as a turn it carries out itself reaches them.
 impl Windows for HostedBrowsers {
-    fn window_provider(&self, workspace_id: WorkspaceId) -> Option<String> {
-        self.window(workspace_id).map(|window| window.provider)
+    fn page_window(&self, workspace_id: WorkspaceId) -> Option<PageWindow> {
+        self.window_and_page(workspace_id).map(|(_, page)| page)
     }
 
     fn page_for_turn(
@@ -2572,31 +2586,32 @@ mod tests {
     use tilo_actions::ActionAddress;
     use tilo_actions::ActionOutput;
     use tilo_actions::remote::RemoteActionTarget;
-    use tilo_app_host::agents::windows::PAGE_RESOURCE;
 
     fn page(provider: &str, resource: &str) -> RemoteActionTarget {
         RemoteActionTarget {
             provider: provider.to_owned(),
-            address: ActionAddress::new(resource, "read-page"),
+            address: ActionAddress::new(resource, "read_page"),
         }
     }
 
     tilo_test_env::scenario! {
         fn the_host_recognises_the_page_actions_and_opens_addressed_to_it;
 
-        phase a_windows_page_action_is_the_one_addressed_to_that_window;
+        phase a_windows_page_action_is_the_one_addressed_to_that_windows_page;
         {
-            assert!(page_action(
-                &page("browser@42", PAGE_RESOURCE),
-                "browser@42"
-            ));
+            let window = PageWindow::new("42", "browser");
+            assert!(window.names(&page("42", "tl:so.tilo.browser:browser")));
             assert!(
-                !page_action(&page("browser@42", PAGE_RESOURCE), "browser@7"),
+                !window.names(&page("7", "tl:so.tilo.browser:browser")),
                 "another window's page is another device's action"
             );
             assert!(
-                !page_action(&page("browser@42", "browser.tab"), "browser@42"),
-                "the record's own actions are the host's, not the window's"
+                !window.names(&page("42", "tl:so.tilo.browser:another")),
+                "a page the open did not answer is not the window's"
+            );
+            assert!(
+                !window.names(&page("42", "tl:so.tilo.browser")),
+                "the app's own actions are the host's, not the window's"
             );
         }
 

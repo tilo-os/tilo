@@ -28,13 +28,13 @@ pub struct Window {
     /// The device the workspace's VM joined as: the one its placement's ticket was certified
     /// for, since one VM joins with one ticket.
     pub device: [u8; 32],
-    /// The provider token the window publishes under (`browser@42`): what a
+    /// The provider token the window publishes under (`42`): what a
     /// page action names in place of the app.
     pub provider: String,
 }
 
 /// What a session in the workspace's VM answers once it is up: the provider token its window
-/// publishes under (`browser@42`). The device it runs as is the one its ticket certified, which
+/// publishes under (`42`). The device it runs as is the one its ticket certified, which
 /// the host knows already.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Started {

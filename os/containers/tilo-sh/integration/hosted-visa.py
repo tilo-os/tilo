@@ -9,20 +9,20 @@ sheet (integration/person.mjs --answer, integration/page_person.py):
      workspace's, and the time from the open to a live window is printed (the
      VM's cold start), then a second open attaches to the same window;
   b. the agent navigates the window to the visa test page and fills it with
-     page actions (`find-page-element`, `fill-page`, `select-page`,
-     `click-page`), then reads it back — the key operates web pages, so the
+     page actions (`find_page_element`, `fill_page`, `select_page`,
+     `click_page`), then reads it back — the key operates web pages, so the
      person is asked nothing and Browser runs every one of them; a person
      invited into the workspace, in their own browser, sees that page on their
      shell and sees it change as the agent fills one more field: what the
      person approving a submit is looking at;
-  c. `capture-page` answers a picture of the filled form, saved as a PNG;
+  c. `capture_page` answers a picture of the filled form, saved as a PNG;
   d. the person refuses one submission: the window holds it, the call ends
      refused, and the form stays filled and unsent — and the sheet they were
      asked on names the page it leaves from, and the form being sent, and
      where it goes;
   e. a second form instance is submitted: the person is asked exactly once,
      the sheet names the submission, and they allow it; the same call returns,
-     and the page shows its receipt and reference (`read-page`); then a third
+     and the page shows its receipt and reference (`read_page`); then a third
      is allowed on a browser of theirs signed in through a ticket from their
      page, which holds none of their identity (`person.mjs --pair`): the
      person is asked on whichever of their devices they are at;
@@ -116,7 +116,7 @@ PAGE_ANSWERS = os.environ.get("HOSTED_VISA_PAGE_ANSWERS", "")
 # wherever their page is showing.
 PAGE_WORKSPACE = os.environ.get("HOSTED_VISA_PAGE_WORKSPACE", "")
 # What the agent puts in the page's fields, by the name the page gives each
-# of them: the words of its label, which is what `find-page-element` matches.
+# of them: the words of its label, which is what `find_page_element` matches.
 FILLED = {
     "Given names": "Jane",
     "Family name": "Doe",
@@ -343,13 +343,13 @@ class Page:
 
     async def find(self, role: str, name: str, nth: int = 1) -> str:
         """The ref of the `nth` `role` on the page answering to `name`."""
-        answer = await outcome(self.do("find-page-element", role=role, name=name, nth=nth))
+        answer = await outcome(self.do("find_page_element", role=role, name=name, nth=nth))
         element = answer.get("element") if isinstance(answer, dict) else None
         check(isinstance(element, str) and element, f"the page names {role} {name!r} as {element}")
         return str(element)
 
     async def read(self) -> dict:
-        answer = await outcome(self.do("read-page"))
+        answer = await outcome(self.do("read_page"))
         return answer if isinstance(answer, dict) else {}
 
     async def title(self) -> str:
@@ -480,18 +480,18 @@ async def fill(page: Page) -> str:
     """Fill the form the agent has open, through the page's own actions, and
     answer the ref of the button that submits it."""
     await outcome(page.do("navigate", url=FORM_URL))
-    await outcome(page.do("wait-page-settled", quiet_ms=300, timeout_ms=60000))
+    await outcome(page.do("wait_page_settled", quiet_ms=300, timeout_ms=60000))
     title = await page.title()
     check("Visa application" in title, f"the form is the page the agent opened ({title!r})")
     for name, value in FILLED.items():
         element = await page.find("textbox", name)
-        await outcome(page.do("fill-page", element=element, text=value))
+        await outcome(page.do("fill_page", element=element, text=value))
     element = await page.find("combobox", "Nationality")
-    await outcome(page.do("select-page", element=element, values=[CHOSEN["Nationality"]]))
+    await outcome(page.do("select_page", element=element, values=[CHOSEN["Nationality"]]))
     element = await page.find("radio", CHOSEN["Purpose"])
-    await outcome(page.do("click-page", element=element))
+    await outcome(page.do("click_page", element=element))
     element = await page.find("checkbox", DECLARATION)
-    await outcome(page.do("click-page", element=element))
+    await outcome(page.do("click_page", element=element))
     return await page.find("button", SUBMIT)
 
 
@@ -565,7 +565,7 @@ async def page_phase(report: dict[str, object]) -> int:
     say("b. the agent opens the visa form in the window")
     began = time.perf_counter()
     await outcome(page.do("navigate", url=FORM_URL))
-    await outcome(page.do("wait-page-settled", quiet_ms=300, timeout_ms=60000))
+    await outcome(page.do("wait_page_settled", quiet_ms=300, timeout_ms=60000))
     title = await page.title()
     check("Visa application" in title, f"the form is the page the agent opened ({title!r})")
     report["page_seconds"] = round(time.perf_counter() - began, 2)
@@ -611,24 +611,24 @@ async def fill_phase(report: dict[str, object]) -> int:
         # The agent fills a field while they watch: what the person approving
         # the submit sees happen on the page before they are asked about it.
         element = await page.find("textbox", "Given names")
-        await outcome(page.do("fill-page", element=element, text=f"{FILLED['Given names']} Wilhelmine"))
+        await outcome(page.do("fill_page", element=element, text=f"{FILLED['Given names']} Wilhelmine"))
         seen = await asyncio.to_thread(shell.wait, "change", 60)
         check(int(seen.get("moved", 0)) > 150, f"the agent's fill reached the person's shell ({seen})")
         say("   seen", f"the fill changed {seen['moved']} pixels of the page on their shell, {seen['ms']} ms after the change before")
         report["shell_fill"] = seen
         # What the rest of the flow asserts, back in its field.
         element = await page.find("textbox", "Given names")
-        await outcome(page.do("fill-page", element=element, text=FILLED["Given names"]))
+        await outcome(page.do("fill_page", element=element, text=FILLED["Given names"]))
         await asyncio.to_thread(shell.wait, "change", 60)
 
         say("c. the agent captures the filled form")
-        captured = await outcome(page.do("capture-page"))
+        captured = await outcome(page.do("capture_page"))
         ref = content_ref(captured)
         if ref:
             saved = write("filled-form.png", await aws.files.download(ref))
         else:
             inline = (captured or {}).get("data", {}).get("png") if isinstance(captured, dict) else None
-            check(inline, f"capture-page answers the page's picture ({str(captured)[:200]})")
+            check(inline, f"capture_page answers the page's picture ({str(captured)[:200]})")
             saved = write("filled-form.png", base64.b64decode(inline))
         with open(saved, "rb") as picture:
             head = picture.read(8)
@@ -638,7 +638,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         say("d. the person refuses a submission, and the form does not leave")
         asked = person.begin("deny", "submission-denied")
         began = time.perf_counter()
-        refused = await refusal_of(page.do("submit-page", element=submit))
+        refused = await refusal_of(page.do("submit_page", element=submit))
         report["deny_seconds"] = round(time.perf_counter() - began, 2)
         questions = await person.settle(asked)
         check(len(questions) == 1, f"the person was asked exactly once ({questions})")
@@ -657,7 +657,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         submit = await fill(page)
         asked = person.begin("allow", "submission-allowed")
         began = time.perf_counter()
-        run = await outcome(page.do("submit-page", element=submit))
+        run = await outcome(page.do("submit_page", element=submit))
         report["allow_seconds"] = round(time.perf_counter() - began, 2)
         check("released" in json.dumps(run), f"the submission ran once the person allowed it ({run})")
         questions = await person.settle(asked)
@@ -680,7 +680,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         submit = await fill(page)
         asked = phone.begin("allow", "phone-allowed")
         began = time.perf_counter()
-        run = await outcome(page.do("submit-page", element=submit))
+        run = await outcome(page.do("submit_page", element=submit))
         report["phone_allow_seconds"] = round(time.perf_counter() - began, 2)
         check("released" in json.dumps(run), f"the submission ran once the person allowed it on their paired browser ({run})")
         questions = await phone.settle(asked)
@@ -714,7 +714,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         submit = await fill(page)
         asked = paired.begin("allow", "browser-allowed")
         began = time.perf_counter()
-        started = await page.do("submit-page", element=submit)
+        started = await page.do("submit_page", element=submit)
         if isinstance(started, Invocation):
             # The agent following it reads where it stands while it waits,
             # not only that nothing answered yet.
@@ -744,7 +744,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         say("e4. a submission the person denies on their paired browser is refused to the agent by name")
         submit = await fill(page)
         asked = paired.begin("deny", "browser-denied")
-        refused = await refusal_of(page.do("submit-page", element=submit))
+        refused = await refusal_of(page.do("submit_page", element=submit))
         questions = await paired.settle(asked)
         check(len(questions) == 1, f"the paired browser was asked exactly once ({questions})")
         check_leaves(questions[0], "a submission denied on a browser paired to the person")
@@ -764,7 +764,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         say("f. a click on the submit button is held, and the person is asked once")
         submit = await fill(page)
         asked = person.begin("allow", "click-allowed")
-        clicked_once = await outcome(page.do("click-page", element=submit))
+        clicked_once = await outcome(page.do("click_page", element=submit))
         check("released" in json.dumps(clicked_once), f"the click left once the person allowed it ({clicked_once})")
         questions = await person.settle(asked)
         check(len(questions) == 1, f"the person was asked exactly once ({questions})")
@@ -814,18 +814,18 @@ async def fill_phase(report: dict[str, object]) -> int:
         # Taking the window somewhere asks; reading the page it is on does
         # not (the agent's window holds none of the person's sign-ins).
         await asked_once("navigate", other.do("navigate", url=FORM_URL))
-        await outcome(other.do("wait-page-settled", quiet_ms=300, timeout_ms=60000))
-        found = await outcome(other.do("find-page-element", role="textbox", name="Given names"))
+        await outcome(other.do("wait_page_settled", quiet_ms=300, timeout_ms=60000))
+        found = await outcome(other.do("find_page_element", role="textbox", name="Given names"))
         element = found.get("element") if isinstance(found, dict) else None
         check(isinstance(element, str) and element, f"the page names the field it found ({found})")
-        await asked_once("fill-page", other.do("fill-page", element=element, text=FILLED["Given names"]))
+        await asked_once("fill_page", other.do("fill_page", element=element, text=FILLED["Given names"]))
     report["unscoped_questions"] = 2
     await unscoped.aclose()
 
     say("i. metering: the plans file's free page actions are used up")
     refused = "allowed"
     for _ in range(600):
-        refused = await refusal_of(page.do("read-page"))
+        refused = await refusal_of(page.do("read_page"))
         if refused != "allowed":
             break
     check(

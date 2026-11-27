@@ -343,7 +343,7 @@ mod tests {
         assert!(takes(&open_of(tilo_app_id::apps::BROWSER, HERE).target));
         assert!(!takes(&open_of("so.tilo.chat", HERE).target));
         let mut read = open_of(tilo_app_id::apps::BROWSER, HERE).target;
-        read.address.action = "read-page".to_owned();
+        read.address.action = "read_page".to_owned();
         assert!(!takes(&read), "no page action is taken here");
     }
 }

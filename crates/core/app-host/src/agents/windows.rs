@@ -18,9 +18,8 @@ pub type Ends<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// The Browser windows a host places for its workspaces, as a turn reaches them.
 pub trait Windows: Send + Sync {
-    /// The provider the window up in `workspace_id` publishes its page actions under
-    /// (`browser@42`), where one is up.
-    fn window_provider(&self, workspace_id: WorkspaceId) -> Option<String>;
+    /// The window up in `workspace_id`, as its page actions name it, where one is up.
+    fn page_window(&self, workspace_id: WorkspaceId) -> Option<PageWindow>;
 
     /// Hand the page action `request` to the window in `workspace_id`, for `person`: how it
     /// ended, as the window said it.
@@ -57,15 +56,47 @@ pub trait Windows: Send + Sync {
     ) -> Ends<'_, RemoteActionMessage>;
 }
 
-/// The resource the window's page actions are actions of (`browser.page`);
-/// their provider names the window (`browser@42`).
-pub const PAGE_RESOURCE: &str = "browser.page";
+/// A Browser window up in a workspace, as its page actions name it: the provider the window
+/// publishes under (`42`) and its page, the Browser's own `Page` record
+/// (`tl:so.tilo.browser:<page-id>`), whose actions are the page actions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageWindow {
+    pub provider: String,
+    pub page: String,
+}
 
-/// Whether `target` is an action of the page `provider`'s window publishes:
-/// the window's provider and the page's resource.
+impl PageWindow {
+    /// The window `provider` names, holding the page the open of Browser answered as `record`.
+    #[must_use]
+    pub fn new(provider: impl Into<String>, record: &str) -> Self {
+        Self {
+            provider: provider.into(),
+            page: page_resource(record),
+        }
+    }
+
+    /// The Browser's page action `action` of this window's page.
+    #[must_use]
+    pub fn target(&self, action: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: self.provider.clone(),
+            address: tilo_actions::ActionAddress::new(&self.page, action),
+        }
+    }
+
+    /// Whether `target` is an action of this window's page: its provider and its page record.
+    #[must_use]
+    pub fn names(&self, target: &RemoteActionTarget) -> bool {
+        target.provider == self.provider
+            && logical_resource_id(&target.address.resource) == self.page.as_str()
+    }
+}
+
+/// The Browser's `Page` record `record`, as its page actions name it
+/// (`tl:so.tilo.browser:<page-id>`).
 #[must_use]
-pub fn page_action(target: &RemoteActionTarget, provider: &str) -> bool {
-    target.provider == provider && logical_resource_id(&target.address.resource) == PAGE_RESOURCE
+pub fn page_resource(record: &str) -> String {
+    format!("tl:{}:{record}", tilo_app_id::apps::BROWSER)
 }
 
 /// The record an answered open of Browser made, when it made one: the

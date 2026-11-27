@@ -422,7 +422,7 @@ async def card() -> dict[str, object]:
             listing = await aws.ls("browser")
             open_rows = [str(row.path) for row in listing.rows]
             check(open_rows, f"the workspace's Browser window is open ({open_rows})")
-            page = "browser/page#read-page"
+            page = "browser/page#read_page"
             began = time.perf_counter()
             answer = await outcome(aws.do(page))
             seconds = time.perf_counter() - began
