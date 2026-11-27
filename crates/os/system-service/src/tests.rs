@@ -2209,6 +2209,15 @@ fn the_host_resource_reads_the_devices_facts_and_refreshes_them() {
         arch: "x86_64".into(),
         cpu: "AMD Ryzen 7".into(),
         memory: "32 GB".into(),
+        model: "Framework Laptop 13 (AMD)".into(),
+        firmware: "03.03".into(),
+        components: vec![tilo_system_resources::host_info::HostComponent {
+            kind: "graphics".into(),
+            name: "AMD Radeon 780M".into(),
+            state: "supported".into(),
+            present: true,
+        }],
+        blocked: false,
         unknown: false,
     };
     let mut service = service(&fake);
@@ -2217,6 +2226,10 @@ fn the_host_resource_reads_the_devices_facts_and_refreshes_them() {
     assert_eq!(host["pretty_name"], json!("Tilo Linux 44"));
     assert_eq!(host["kernel"], json!("6.18.58"));
     assert_eq!(host["memory"], json!("32 GB"));
+    assert_eq!(host["model"], json!("Framework Laptop 13 (AMD)"));
+    assert_eq!(host["components"][0]["kind"], json!("graphics"));
+    assert_eq!(host["components"][0]["state"], json!("supported"));
+    assert_eq!(host["blocked"], json!(false));
 
     let published = service
         .resources()
@@ -2248,14 +2261,8 @@ fn the_host_resource_reads_the_devices_facts_and_refreshes_them() {
 #[test]
 fn a_fact_this_machine_cannot_read_is_unknown_and_said_so() {
     let missing = std::path::Path::new("/nonexistent/tilo-host-info");
-    let facts = crate::host_info::facts_from(
-        missing,
-        missing,
-        missing,
-        missing,
-        &[missing, missing],
-        missing,
-    );
+    let facts =
+        crate::host_info::facts_from(missing, missing, missing, &[missing, missing], missing);
     assert_eq!(facts.kernel, "unknown");
     assert_eq!(facts.memory, "unknown");
     assert_eq!(facts.cpu, "unknown");

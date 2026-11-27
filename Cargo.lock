@@ -21062,6 +21062,7 @@ name = "tilo-system-service"
 version = "0.1.0"
 dependencies = [
  "block-devices",
+ "hardware-report",
  "jiff",
  "os-actions",
  "serde",

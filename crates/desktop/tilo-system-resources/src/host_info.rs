@@ -27,6 +27,18 @@ pub struct HostInfo {
     pub cpu: String,
     /// The memory it has, in words: `32 GB`.
     pub memory: String,
+    /// The computer's model, as its firmware names it: `Framework Laptop 13 (AMD)`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// The firmware's version, when it names one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub firmware: String,
+    /// What the hardware check found, one entry per component class.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<HostComponent>,
+    /// A component the desktop needs is unsupported: Tilo cannot install here.
+    #[serde(default)]
+    pub blocked: bool,
     /// What this machine last reported as missing, when a fact could not be read.
     #[serde(default)]
     pub unknown: bool,
@@ -36,6 +48,23 @@ pub struct HostInfo {
     /// Why the last read did not happen, until the next one.
     #[serde(default)]
     pub problem: Option<String>,
+}
+
+/// One component class of this computer, as the hardware check found it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct HostComponent {
+    /// The class: "graphics", "wifi", "storage".
+    pub kind: String,
+    /// The devices the check found in that class, as the system names them.
+    #[serde(default)]
+    pub name: String,
+    /// "supported", "limited", "unsupported" or "unverified".
+    pub state: String,
+    /// Whether the check found such hardware: an absent optional part is no fault.
+    #[serde(default)]
+    pub present: bool,
 }
 
 /// The `host-info` resource's actions.

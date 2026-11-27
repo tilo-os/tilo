@@ -57,6 +57,15 @@ impl DestinationIdentity {
                 || trimmed(self.sku.as_deref()).is_some())
     }
 
+    /// The model's name when the firmware names a manufacturer or a model, and nothing when it
+    /// names neither: a surface that shows no model is better than one guessing "unknown".
+    #[must_use]
+    pub fn name(&self) -> Option<String> {
+        (trimmed(self.manufacturer.as_deref()).is_some()
+            || trimmed(self.model.as_deref()).is_some())
+        .then(|| self.label())
+    }
+
     #[must_use]
     pub fn label(&self) -> String {
         let manufacturer = trimmed(self.manufacturer.as_deref());

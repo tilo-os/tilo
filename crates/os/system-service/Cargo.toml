@@ -28,6 +28,8 @@ tilo-deployment-status = { path = "../deployment-status" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-paths = { path = "../../platform/tilo-paths" }
 tilo-system-stats = { path = "../system-stats" }
+# What the hardware is and how the selected release supports it, as the installers read it.
+hardware-report = { path = "../hardware-report" }
 block-devices = { path = "../block-devices", features = ["udisks"] }
 tilo-location = { path = "../../platform/tilo-location" }
 tilo-resource = { path = "../../core/tilo-resource" }
