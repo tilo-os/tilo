@@ -319,7 +319,11 @@ view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool) {
                         // narrower than the least its bar, its tabs and an app need: a row of
                         // more windows than that holds scrolls along it.
                         row_window(a, s, lists, fill(strip_weight(s).to_float()), min: 44rem)
-                        gap_here(held, strips, s, min: 1.5rem, max: 1.5rem)
+                        // Only between two windows: the row's last window reaches the shell's
+                        // edge, as its first reaches the other.
+                        if strip_after(strips, s) != "" {
+                            gap_here(held, strips, s, min: 1.5rem, max: 1.5rem)
+                        }
                     }
                     if strips.is_empty() {
                         ui.EmptyState("No window here yet", inline: true)
@@ -384,11 +388,10 @@ fn least_window_width() -> Float {
 /// changes, so no border belongs to two windows. The row's first window's leading edge is the
 /// row's own start, which has nothing to give: it is no grip.
 view row_window(a: Layout, s: LayoutStrip, lists: Bool) {
-    let share = if s.width <= 0 { 667 } else { s.width }
     if s.leaving {
-        leaving_window(a, s, fill: share, min: 44rem)
+        leaving_window(a, s)
     } else {
-        standing_window(a, s, lists, true, fill: share, min: 44rem)
+        standing_window(a, s, lists, true)
     }
 }
 
