@@ -319,13 +319,7 @@ pub fn start_server_serving(
     >,
 > {
     Box::pin(async move {
-        KeptServer::serving_apps(
-            cfg.on_loopback(),
-            identity,
-            server,
-            test_server::relay_mode(),
-        )
-        .await
+        KeptServer::serving_apps(test_server::on_loopback_relay(cfg), identity, server).await
     })
 }
 

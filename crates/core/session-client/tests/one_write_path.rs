@@ -46,10 +46,7 @@ async fn a_page_writes_once_and_a_restart_publishes_nothing_again() {
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        HostSettings {
-            relayed: true,
-            ..HostSettings::default()
-        },
+        HostSettings::default(),
     )
     .await;
     let workspaces = host.server.workspaces().unwrap();

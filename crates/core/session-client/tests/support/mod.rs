@@ -210,7 +210,6 @@ pub async fn start_host_admitting(
             plain_listen,
             guests,
             fetch_proxy: None,
-            ..HostSettings::default()
         },
     )
     .await
@@ -224,22 +223,6 @@ pub async fn restart_host(root: &SigningKey, host: &Device, state: &Path) -> Tes
     start_host(root, host, state, "127.0.0.1:0".parse().unwrap()).await
 }
 
-/// [`restart_host`] through this machine's loopback relay, which outlives it:
-/// its pages find it there by its identity, at the address they knew.
-pub async fn restart_host_relayed(root: &SigningKey, host: &Device, state: &Path) -> TestHost {
-    start_host_serving(
-        root,
-        host,
-        state,
-        "127.0.0.1:0".parse().unwrap(),
-        HostSettings {
-            relayed: true,
-            ..HostSettings::default()
-        },
-    )
-    .await
-}
-
 /// What a test host serves beyond its secure listener.
 #[derive(Default)]
 pub struct HostSettings<'a> {
@@ -249,12 +232,6 @@ pub struct HostSettings<'a> {
     pub guests: &'a [[u8; 32]],
     /// The fetch proxy it serves its pages.
     pub fetch_proxy: Option<tilo_runtime::device::keep::web::FetchProxySetup>,
-    /// Reached through this machine's loopback packet relay, as a host
-    /// serving pages is: a page holds no UDP socket and reaches it only
-    /// through one, which outlives the host so a restarted one is found at
-    /// the same address. Without it the host looks up no relay and is reached
-    /// on this machine's loopback alone.
-    pub relayed: bool,
 }
 
 /// A host serving what `settings` names.
@@ -269,7 +246,6 @@ pub async fn start_host_serving(
         plain_listen,
         guests,
         fetch_proxy,
-        relayed,
     } = settings;
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_server_protocol::config::ServerConfig {
@@ -282,22 +258,15 @@ pub async fn start_host_serving(
         };
     }
     // The loopback relay outlives the host, as a relay a host is deployed
-    // with does: a page finds a restarted host there by its identity. A host
-    // without one is dialled directly and looks up no relay: the sandboxed
-    // runner refuses the public server network, so a restarted host would never
-    // be found at its new port.
+    // with does: a page holds no UDP socket and reaches it only through one,
+    // and finds a restarted host there by its identity.
     let identity = ServerIdentity {
         user_public_key: user,
         device_signing_key: host.key.clone(),
         device_cert: host.cert.clone(),
         revocations: RevocationList::new(),
     };
-    let mode = if relayed {
-        test_server::relay_mode()
-    } else {
-        iroh::RelayMode::Disabled
-    };
-    let server = KeptServer::with_relay_mode(cfg.on_loopback(), identity, mode)
+    let server = KeptServer::start(test_server::on_loopback_relay(cfg), identity)
         .await
         .unwrap();
     let web = server
@@ -315,9 +284,7 @@ pub async fn start_host_serving(
         })
         .await
         .unwrap();
-    if relayed {
-        names_its_server(&server);
-    }
+    names_its_server(&server);
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost {
         server,
@@ -448,14 +415,13 @@ pub async fn start_workspace_host_relaying(
         revocations: RevocationList::new(),
     };
     // A host running its own packet relay is reached through it. One that
-    // runs none is reached on the network the test runs in, and looks up no
-    // public relay or address: an invitation names what a stranger can dial
-    // of its host, which would otherwise be a relay and an address out on
-    // the internet, and the test would stand on whether those answer.
+    // runs none is reached through this machine's loopback relay: an
+    // invitation names what a stranger can dial of its host, which would
+    // otherwise be a relay out on the internet.
     let server = if packet_relay {
         KeptServer::start(config.on_loopback(), identity).await
     } else {
-        KeptServer::with_relay_mode(config.on_loopback(), identity, iroh::RelayMode::Disabled).await
+        KeptServer::start(test_server::on_loopback_relay(config), identity).await
     }
     .unwrap();
     let web = server

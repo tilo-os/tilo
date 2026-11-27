@@ -921,18 +921,17 @@ fn person_server() -> PersonServer {
         .unwrap();
     let state = tempfile::tempdir().unwrap();
     let server = serving
-        .block_on(crate::device::keep::server::KeptServer::with_relay_mode(
-            tilo_server_protocol::config::ServerConfig {
+        .block_on(crate::device::keep::server::KeptServer::start(
+            test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig {
                 state_root: state.path().join("server"),
                 ..Default::default()
-            },
+            }),
             crate::device::keep::server::ServerIdentity {
                 user_public_key: root.group_public_key(),
                 device_signing_key: server_key,
                 device_cert: cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
             },
-            iroh::RelayMode::Disabled,
         ))
         .unwrap();
     let line = serde_json::to_string(&tilo_server_protocol::web::PageHost {
@@ -1607,18 +1606,17 @@ fn the_persons_server(
         .unwrap();
     let state = tempfile::tempdir().unwrap();
     let server = serving
-        .block_on(crate::device::keep::server::KeptServer::with_relay_mode(
-            tilo_server_protocol::config::ServerConfig {
+        .block_on(crate::device::keep::server::KeptServer::start(
+            test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig {
                 state_root: state.path().join("server"),
                 ..Default::default()
-            },
+            }),
             crate::device::keep::server::ServerIdentity {
                 user_public_key: root.group_public_key(),
                 device_signing_key: server_key,
                 device_cert: server_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
             },
-            iroh::RelayMode::Disabled,
         ))
         .unwrap();
     let line = serde_json::to_string(&tilo_server_protocol::web::PageHost {

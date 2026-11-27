@@ -18,8 +18,8 @@ use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, enrol, hears, holds, person_of, ready, restart_host_relayed, route, say,
-    set_field, start_host_serving, start_peer, wait_for,
+    HostSettings, enrol, hears, holds, person_of, ready, restart_host, route, say, set_field,
+    start_host_serving, start_peer, wait_for,
 };
 
 /// How many members' writes landed in `peer`'s replica since the last count.
@@ -90,10 +90,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        HostSettings {
-            relayed: true,
-            ..HostSettings::default()
-        },
+        HostSettings::default(),
     )
     .await;
 
@@ -161,7 +158,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     // was committed while the observer was away.
     drop(host.web);
     host.server.shutdown().await;
-    let host = restart_host_relayed(&root, &host_device, state.path()).await;
+    let host = restart_host(&root, &host_device, state.path()).await;
     author.send(Cmd::Reconnect).unwrap();
     ready(&[&author]).await;
     author

@@ -298,6 +298,18 @@ pub fn loopback_relay() -> (&'static str, String) {
     (settings_store::relay::ENV, loopback_url())
 }
 
+/// `cfg` for a host a test keeps in its own process: on loopback, reached through this machine's
+/// loopback relay as a server daemon started for a test is, so it asks the internet for nothing.
+#[must_use]
+pub fn on_loopback_relay(
+    cfg: tilo_server_protocol::config::ServerConfig,
+) -> tilo_server_protocol::config::ServerConfig {
+    tilo_server_protocol::config::ServerConfig {
+        packet_relay_url: Some(loopback_url()),
+        ..cfg.on_loopback()
+    }
+}
+
 /// The trust this crate's endpoints bind with: the system's, and the certificate the address
 /// discovery service on this machine presents.
 fn discovery_trust() -> iroh::tls::CaTlsConfig {

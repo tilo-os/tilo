@@ -83,18 +83,19 @@ impl Admitted {
         let held = held(&bob, &device_key);
         let now = tilo_clock::unix_now_ns();
         let state = tempfile::tempdir().unwrap();
-        // The host reaches no packet relay: the link it hands out then names the addresses it
-        // has here, which the device dials directly. A host with a public relay names only that
-        // relay, which this test's device would reach over the internet or not at all.
-        let server = KeptServer::with_relay_mode(
-            ServerConfig::loopback(state.path().to_path_buf()),
+        // The host runs its own packet relay on loopback: a host on a public relay names only
+        // that relay, which this test's device would reach over the internet or not at all.
+        let server = KeptServer::start(
+            ServerConfig {
+                packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+                ..ServerConfig::loopback(state.path().to_path_buf())
+            },
             tilo_runtime::device::keep::server::ServerIdentity {
                 user_public_key: alice.verifying_key().to_bytes(),
                 device_signing_key: host_key.clone(),
                 device_cert: host.clone(),
                 revocations: RevocationList::new(),
             },
-            iroh::RelayMode::Disabled,
         )
         .await
         .unwrap();

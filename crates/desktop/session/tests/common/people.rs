@@ -192,21 +192,19 @@ impl Site {
         let host_key = tilo_device_identity::persist::read_device_key(&paths.device_privkey)
             .expect("the site's device key");
         let (server, workspaces, workspace) = runtime.block_on(async {
-            let server = tilo_runtime::device::keep::server::KeptServer::with_relay_mode(
-                tilo_server_protocol::config::ServerConfig {
+            // The site relays through this machine's loopback relay, as its people's devices do:
+            // neither side reaches number 0.
+            let server = tilo_runtime::device::keep::server::KeptServer::start(
+                test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig {
                     state_root: state.path().join("host"),
                     ..tilo_server_protocol::config::ServerConfig::default()
-                }
-                .on_loopback(),
+                }),
                 tilo_runtime::device::keep::server::ServerIdentity {
                     user_public_key: owner.public,
                     device_signing_key: host_key.clone(),
                     device_cert: host.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
                 },
-                // The site relays through this machine's loopback relay, as its people's devices
-                // do: neither side reaches number 0.
-                test_server::relay_mode(),
             )
             .await
             .expect("the site's host");

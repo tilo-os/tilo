@@ -12,7 +12,7 @@ use tilo_session_client::{Cmd, Event, FailureKind, LocalState, Outbox, Transport
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, enrol, holds, person_of, ready, restart_host_relayed, route, say, start_host,
+    HostSettings, enrol, holds, person_of, ready, restart_host, route, say, start_host,
     start_host_serving, start_peer, wait_for, workspace,
 };
 
@@ -29,10 +29,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        HostSettings {
-            relayed: true,
-            ..HostSettings::default()
-        },
+        HostSettings::default(),
     )
     .await;
     let peer = start_peer(
@@ -56,7 +53,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
 
     drop(host.web);
     host.server.shutdown().await;
-    let host = restart_host_relayed(&root, &host_device, state.path()).await;
+    let host = restart_host(&root, &host_device, state.path()).await;
     // A reconnect resumes: the page already holds what it published.
     peer.send(Cmd::Reconnect).unwrap();
     ready(&[&peer]).await;
@@ -112,10 +109,7 @@ fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backof
                     &host_device,
                     state.path(),
                     "127.0.0.1:0".parse().unwrap(),
-                    HostSettings {
-                        relayed: true,
-                        ..HostSettings::default()
-                    },
+                    HostSettings::default(),
                 )
                 .await;
                 let peer = start_peer(
@@ -177,7 +171,7 @@ fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backof
                     tilo_clock::unix_now_ms() < due,
                     "back before the backoff ran out"
                 );
-                let host = restart_host_relayed(&root, &host_device, state.path()).await;
+                let host = restart_host(&root, &host_device, state.path()).await;
                 ready(&[&peer]).await;
                 peer.close();
                 host.server.shutdown().await;

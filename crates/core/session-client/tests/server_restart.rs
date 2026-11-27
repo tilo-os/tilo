@@ -15,8 +15,7 @@ use tilo_session_client::{Outbox, TransportPhase};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, enrol, person_of, ready, restart_host_relayed, route, say, start_host_serving,
-    start_peer,
+    HostSettings, enrol, person_of, ready, restart_host, route, say, start_host_serving, start_peer,
 };
 
 /// How long a restart may stay visible to a held session once the server is back: its next dial
@@ -39,10 +38,7 @@ async fn a_held_session_is_served_again_within_seconds_of_its_server_restarting(
         &server_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        HostSettings {
-            relayed: true,
-            ..HostSettings::default()
-        },
+        HostSettings::default(),
     )
     .await;
     let session = start_peer(
@@ -63,7 +59,7 @@ async fn a_held_session_is_served_again_within_seconds_of_its_server_restarting(
 
     drop(server.web);
     server.server.shutdown().await;
-    let server = restart_host_relayed(&root, &server_device, state.path()).await;
+    let server = restart_host(&root, &server_device, state.path()).await;
     let back = Instant::now();
 
     // Nothing tells the session to reconnect: the computer's next action is simply served.
@@ -98,10 +94,7 @@ async fn a_session_closed_while_its_server_is_away_stops_dialing_at_once() {
         &server_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        HostSettings {
-            relayed: true,
-            ..HostSettings::default()
-        },
+        HostSettings::default(),
     )
     .await;
     let address = server.iroh();

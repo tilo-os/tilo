@@ -12,7 +12,7 @@ use tilo_session_client::Outbox as _;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    HostSettings, arrive_under, enrol, restart_host_relayed, start_host_serving, wait_for,
+    HostSettings, arrive_under, enrol, restart_host, start_host_serving, wait_for,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -28,7 +28,6 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
         "127.0.0.1:0".parse().unwrap(),
         HostSettings {
             guests: &[guest_root.verifying_key().to_bytes()],
-            relayed: true,
             ..HostSettings::default()
         },
     )
@@ -70,7 +69,7 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
         reset.path().join("web-certificate"),
     )
     .unwrap();
-    let host = restart_host_relayed(&root, &host_device, reset.path()).await;
+    let host = restart_host(&root, &host_device, reset.path()).await;
     let failed = wait_for("the reset host to refuse the guest", || {
         let snapshot = peer.snapshot();
         async move { (snapshot.phase == "failed").then_some(snapshot) }

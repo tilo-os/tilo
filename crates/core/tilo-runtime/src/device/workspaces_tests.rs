@@ -112,15 +112,16 @@ async fn holds_its_workspace_and_lists_what_the_server_keeps(
     let (server_key, server_cert) = enrol(&root, "home-server", server_capabilities);
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
@@ -356,15 +357,16 @@ async fn a_workspace_joined_after_the_login_reaches_this_devices_copy() {
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
@@ -484,15 +486,16 @@ async fn a_grant_written_on_the_server_reaches_this_devices_copy_and_admits_a_pr
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
@@ -1102,15 +1105,16 @@ async fn a_server_answers_an_action_through_its_devices_dispatch() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let (server_key, server_cert) = enrol(&root, "home-server", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();

@@ -274,15 +274,16 @@ async fn a_member_device_makes_its_workspaces_built_in_records_offline_and_membe
     // The laptop is closed while offline; the host comes back, the laptop is opened again and
     // reaches it, and carries what it made there. Another member's device then reads all three.
     laptop.shutdown().await;
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .expect("the host starts again");

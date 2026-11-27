@@ -105,10 +105,7 @@ impl Ada {
             &host_device,
             state.path(),
             "127.0.0.1:0".parse().unwrap(),
-            HostSettings {
-                relayed: true,
-                ..HostSettings::default()
-            },
+            HostSettings::default(),
         )
         .await;
         Self {

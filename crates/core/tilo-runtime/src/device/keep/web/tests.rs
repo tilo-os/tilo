@@ -71,14 +71,15 @@ async fn server_at(
     identity: crate::device::keep::server::ServerIdentity,
     config: ServerConfig,
 ) -> KeptServer {
-    KeptServer::with_relay_mode(
-        ServerConfig {
-            state_root: state.path().into(),
-            ..config
-        }
-        .on_loopback(),
+    KeptServer::start(
+        test_server::on_loopback_relay(
+            ServerConfig {
+                state_root: state.path().into(),
+                ..config
+            }
+            .on_loopback(),
+        ),
         identity,
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap()

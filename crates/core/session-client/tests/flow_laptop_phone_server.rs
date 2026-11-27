@@ -919,7 +919,6 @@ async fn flow_newcomer_browser_joins_through_the_static_entry_with_no_domain_nam
         "127.0.0.1:0".parse().unwrap(),
         HostSettings {
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
-            relayed: true,
             ..HostSettings::default()
         },
     )

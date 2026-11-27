@@ -225,6 +225,9 @@ async fn serve_server() -> anyhow::Result<()> {
     let setup: Setup = serde_json::from_str(&stdin.next_line().await?.context("no setup")?)?;
     let cfg = ServerConfig {
         state_root: setup.state_root.clone(),
+        // Its own relay on loopback, as a host is deployed with: no connection to a relay out on
+        // the internet, whose keep-alives would be counted as the server's egress.
+        packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..ServerConfig::default()
     };
     let identity = ServerIdentity {
@@ -233,9 +236,7 @@ async fn serve_server() -> anyhow::Result<()> {
         device_cert: setup.server_cert,
         revocations: RevocationList::new(),
     };
-    // Loopback only: no home-relay connection, whose keep-alives would be
-    // counted as the server's egress.
-    let server = KeptServer::serving_apps(cfg, identity, None, iroh::RelayMode::Disabled).await?;
+    let server = KeptServer::serving_apps(cfg, identity, None).await?;
     // The workspaces are the server owner's: their server makes each, and the
     // load's devices enter it.
     let workspaces = server

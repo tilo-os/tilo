@@ -268,7 +268,6 @@ impl KeptServer {
             cfg,
             identity,
             None,
-            None,
             Vec::new(),
             None,
             Some(tilo_workspace_service::service::RegistriesFile::default()),
@@ -290,7 +289,6 @@ impl KeptServer {
             cfg,
             identity,
             None,
-            None,
             Vec::new(),
             None,
             Some(registries),
@@ -298,53 +296,7 @@ impl KeptServer {
         .await
     }
 
-    /// [`Self::start`], on the relays `relay_mode` names instead of the configuration's: a relay
-    /// on this machine, or none where nothing dials the host through one.
-    ///
-    /// # Errors
-    /// As [`Self::start`].
-    pub async fn with_relay_mode(
-        cfg: ServerConfig,
-        identity: ServerIdentity,
-        relay_mode: iroh::RelayMode,
-    ) -> Result<Self, ServerError> {
-        Box::pin(Self::compose(
-            cfg,
-            identity,
-            None,
-            Some(relay_mode),
-            Vec::new(),
-            None,
-            Some(tilo_workspace_service::service::RegistriesFile::default()),
-        ))
-        .await
-    }
-
-    /// [`Self::with_relay_mode`] on a host that founds the workspaces it makes with
-    /// `registries` in place of the official ones: a test's own catalogue, so no test reaches
-    /// the real registry.
-    ///
-    /// # Errors
-    /// As [`Self::start`].
-    pub async fn with_relay_mode_founding(
-        cfg: ServerConfig,
-        identity: ServerIdentity,
-        relay_mode: iroh::RelayMode,
-        registries: tilo_workspace_service::service::RegistriesFile,
-    ) -> Result<Self, ServerError> {
-        Box::pin(Self::compose(
-            cfg,
-            identity,
-            None,
-            Some(relay_mode),
-            Vec::new(),
-            None,
-            Some(registries),
-        ))
-        .await
-    }
-
-    /// [`Self::with_relay_mode`], with `app_serving` answering the workspaces' apps' calls.
+    /// [`Self::start`], with `app_serving` answering the workspaces' apps' calls.
     ///
     /// # Errors
     /// As [`Self::start`].
@@ -352,13 +304,11 @@ impl KeptServer {
         cfg: ServerConfig,
         identity: ServerIdentity,
         app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
-        relay_mode: iroh::RelayMode,
     ) -> Result<Self, ServerError> {
         Box::pin(Self::compose(
             cfg,
             identity,
             None,
-            Some(relay_mode),
             Vec::new(),
             app_serving,
             Some(tilo_workspace_service::service::RegistriesFile::default()),
@@ -382,7 +332,6 @@ impl KeptServer {
             cfg,
             identity,
             Some((endpoint, reaching)),
-            None,
             extra,
             None,
             Some(tilo_workspace_service::service::RegistriesFile::default()),
@@ -415,7 +364,6 @@ impl KeptServer {
         cfg: ServerConfig,
         identity: ServerIdentity,
         endpoint: Option<(Endpoint, Reaching)>,
-        relay_mode: Option<iroh::RelayMode>,
         extra: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
         app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
         founding_registries: Option<tilo_workspace_service::service::RegistriesFile>,
@@ -423,16 +371,13 @@ impl KeptServer {
         validate_server_identity(&identity)?;
         std::fs::create_dir_all(&cfg.state_root)?;
         let identity = kept_revocations(identity, &cfg.state_root)?;
-        let relay = PacketRelay::start(&cfg, endpoint.is_some() || relay_mode.is_some()).await?;
-        let (endpoint, reaching) = if let Some((endpoint, reaching)) = endpoint {
-            (endpoint, reaching)
+        // Bound as the daemon binds its endpoint: on the relay its configuration names.
+        let (endpoint, relay, reaching) = if let Some((endpoint, reaching)) = endpoint {
+            (endpoint, PacketRelay::start(&cfg, true).await?, reaching)
         } else {
-            let mode = relay_mode.or_else(|| relay.mode());
-            let reaching = mode.as_ref().map_or(Reaching::ByRelay, reaching_of);
-            let endpoint = bind_endpoint(&cfg, &identity.device_signing_key, mode).await?;
-            (endpoint, reaching)
+            let (endpoint, relay) = bind_keeping(&cfg, &identity.device_signing_key).await?;
+            (endpoint, relay, Reaching::ByRelay)
         };
-        endpoints_agree(&identity, &endpoint)?;
         reaching.awaited(&endpoint).await;
         relay.reached(&endpoint)?;
         let device = tilo_identity::identity_store::DeviceIdentity::kept(
@@ -1135,17 +1080,6 @@ fn dialled_at(serving: std::net::SocketAddr) -> std::net::SocketAddr {
             |local| local.ip(),
         );
     std::net::SocketAddr::new(ip, serving.port())
-}
-
-/// Whether an endpoint bound with `relay_mode` names where it is reached: one
-/// told to use no relay never does, and everything else is expected to.
-#[cfg(any(test, feature = "test-support"))]
-fn reaching_of(relay_mode: &iroh::RelayMode) -> Reaching {
-    if matches!(relay_mode, iroh::RelayMode::Disabled) {
-        Reaching::OnItsOwn
-    } else {
-        Reaching::ByRelay
-    }
 }
 
 /// Bind the one endpoint of a device that keeps what `cfg` names: on the address it names,

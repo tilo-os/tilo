@@ -16,8 +16,8 @@ use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use crate::support::{
-    HostSettings, admitted, enrol, holds, person_of, ready, restart_host_relayed, route, say,
-    start_host, start_host_serving, start_peer, wait_for,
+    HostSettings, admitted, enrol, holds, person_of, ready, restart_host, route, say, start_host,
+    start_host_serving, start_peer, wait_for,
 };
 
 /// How many of `peer`'s writes to the workspace its replica's ownership still holds.
@@ -96,10 +96,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        HostSettings {
-            relayed: true,
-            ..HostSettings::default()
-        },
+        HostSettings::default(),
     )
     .await;
 
@@ -147,7 +144,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     assert_ne!(peer.status().phase, TransportPhase::Connected);
     assert_eq!(peer.snapshot().synchronization, "pending");
 
-    let host = restart_host_relayed(&root, &host_device, state.path()).await;
+    let host = restart_host(&root, &host_device, state.path()).await;
     peer.send(Cmd::Reconnect).unwrap();
     let receipt = peer.barrier().unwrap();
     wait_for("the replayed commits to be durable", || async {

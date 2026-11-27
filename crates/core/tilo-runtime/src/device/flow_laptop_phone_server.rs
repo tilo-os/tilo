@@ -274,15 +274,16 @@ async fn flow_every_device_manages_every_other() {
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let (phone_key, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
@@ -543,15 +544,16 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
     let (_, bob_cert) = enrol(&bob, "Bob", DeviceCapabilities::primary());
     let (_, carol_cert) = enrol(&carol, "Carol", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
@@ -999,15 +1001,16 @@ async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() 
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let (_, carol_cert) = enrol(&carol, "Carol", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
@@ -1233,15 +1236,16 @@ async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let (phone_key, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
@@ -1368,15 +1372,16 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
     let (server_key, server_cert) = enrol(&root, "the-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
@@ -1552,15 +1557,16 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let (phone_key, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let server = crate::device::keep::server::KeptServer::with_relay_mode(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+    let server = crate::device::keep::server::KeptServer::start(
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
+            state.path().join("server"),
+        )),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         },
-        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
