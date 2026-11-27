@@ -2719,13 +2719,20 @@ class Walk:
         kept: reading every window once more would only repeat the look it ended on."""
         def count() -> int:
             return len(self.session.windows())
+
+        def at_least() -> int | None:
+            n = count()
+            return n if n >= wanted else None
+
+        def exactly() -> int | None:
+            n = count()
+            return n if n == int(value) else None
+
         if isinstance(value, dict):
             wanted = int(value["at_least"])
-            found = until_value(f"at least {wanted} windows",
-                                lambda: (n := count()) if n >= wanted else None, 10)
+            found = until_value(f"at least {wanted} windows", at_least, 10)
         else:
-            found = until_value(f"{value} windows",
-                                lambda: (n := count()) if n == int(value) else None, 10)
+            found = until_value(f"{value} windows", exactly, 10)
         return {"windows": found}
 
     def op_focused(self, value) -> dict:

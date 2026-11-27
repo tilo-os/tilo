@@ -378,7 +378,7 @@ def invocation(provider: str, resource: str, action: str, args: dict | None = No
     request = {
         "invocation": str(uuid.uuid4()),
         "target": {"provider": provider, "address": {"resource": resource, "action": action}},
-        "argument": {"Json": args} if args else "None",
+        "argument": {"Json": args} if args is not None else "None",
     }
     if wait_ms:
         request["wait_ms"] = wait_ms
