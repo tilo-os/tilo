@@ -153,8 +153,10 @@ impl HostedWorkspaces for Hosts {
     }
 
     /// The actions of `device`, a device of `workspace`: over the link it holds to this device,
-    /// where it holds one; the device serving the workspace itself, or `device` through it, where
-    /// another device serves it; and otherwise `device` dialled by its key.
+    /// where it holds one; the device serving the workspace itself where that is `device`; and
+    /// otherwise `device` dialled by its key, and asked through the host serving the workspace as
+    /// well, where another device serves it: whichever answers (a page, over its link to the
+    /// host; any other device, at its own address).
     fn reach(&self, workspace: &str, device: [u8; 32]) -> Option<RemoteDevice> {
         let workspaces = self.workspaces.upgrade()?;
         let service = workspaces.copies().action_service();
@@ -162,16 +164,13 @@ impl HostedWorkspaces for Hosts {
             return Some(linked);
         }
         let endpoint = workspaces.endpoint();
+        let own = EndpointAddr::new(EndpointId::from_bytes(&device).ok()?);
         Some(match self.serving(workspace) {
             Some((serving, address)) if serving == device => {
                 service.remote(&endpoint, &address, workspace)
             }
-            Some((_, address)) => service.through(&endpoint, &address, workspace, device),
-            None => service.remote(
-                &endpoint,
-                &EndpointAddr::new(EndpointId::from_bytes(&device).ok()?),
-                workspace,
-            ),
+            Some((_, host)) => service.through(&endpoint, &host, workspace, &own),
+            None => service.remote(&endpoint, &own, workspace),
         })
     }
 }

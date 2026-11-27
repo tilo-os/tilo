@@ -185,9 +185,11 @@ async fn a_request_addressed_to_another_device_is_passed_on() {
         &a_endpoint,
         &server.server.node_addr(),
         &WS.to_string(),
-        page.device_pubkey(),
+        &iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(&page.device_pubkey()).unwrap(),
+        ),
     );
-    let id = InvocationId::new();
+    let (id, asked) = (InvocationId::new(), std::time::Instant::now());
     let receipt = tilo_test_env::within(
         "the host passes the request on",
         ActionProvider::invoke(&through, &caller, invoke(id)),
@@ -195,6 +197,8 @@ async fn a_request_addressed_to_another_device_is_passed_on() {
     .await
     .expect("the page answers")
     .expect("the page runs the invocation");
+    // A page has no address to dial, so it is asked through the host at once.
+    assert!(asked.elapsed() < std::time::Duration::from_secs(2));
     assert_eq!(receipt.invocation, id);
     assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
     let seen: Vec<_> = held

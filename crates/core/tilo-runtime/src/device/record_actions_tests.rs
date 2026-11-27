@@ -168,7 +168,7 @@ async fn service_of(
 }
 
 /// [`service_of`], entered into the workspace `login` names and keeping its copy.
-async fn copy_of(
+pub(super) async fn copy_of(
     dir: &std::path::Path,
     (key, cert): (&SigningKey, &DeviceCert),
     login: &tilo_device_identity::login::Device,

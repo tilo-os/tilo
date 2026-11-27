@@ -87,9 +87,12 @@ pub(crate) mod home;
 mod host_runs;
 mod host_shells;
 mod hosts;
+#[cfg(test)]
+mod hosts_tests;
 pub(crate) mod jobs;
 pub mod keep;
 pub(crate) mod key_use;
+pub mod lan;
 pub(crate) mod layout;
 mod live;
 mod live_call;
@@ -104,9 +107,7 @@ mod mcp_server;
 pub(crate) mod migrate;
 /// The workspace's model providers, read by the apps attached here as `models`.
 mod models;
-pub mod lan;
 pub mod nearby;
-pub mod speakers;
 mod offload_place;
 pub mod online;
 mod own_device;
@@ -132,6 +133,7 @@ pub mod serve;
 pub mod server_settings;
 pub mod services;
 mod shell;
+pub mod speakers;
 #[cfg(target_os = "linux")]
 pub(crate) mod ush_line;
 

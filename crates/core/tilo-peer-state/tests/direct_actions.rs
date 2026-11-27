@@ -470,7 +470,13 @@ async fn a_device_that_is_not_the_sender_is_refused() {
         else {
             panic!("the request naming another device is refused, got {answer:?}");
         };
-        assert_eq!(refusal(&error), "the request names another device");
+        let why = if third == c.1.device_public_key {
+            "takes only this device's own requests over the link it dialled"
+        } else {
+            "has no link open to this one to pass the request on over"
+        };
+        let device = hex::encode(&third[..8]);
+        assert_eq!(refusal(&error), format!("device {device} {why}"));
         assert!(
             asked.elapsed() < Duration::from_secs(2),
             "refused at once, not after waiting on the device"
@@ -1619,8 +1625,11 @@ async fn a_request_addressed_to_another_device_is_passed_on() {
     };
     assert_eq!(
         refusal(&error),
-        "the request names another device",
-        "{error:?}"
+        format!(
+            "device {} has no link open to this one to pass the request on over",
+            hex::encode(&unfound[..8])
+        ),
+        "the refusal names the device and why: {error:?}"
     );
     drop(b_service);
     engine.close().await;

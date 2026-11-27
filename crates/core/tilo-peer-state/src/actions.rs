@@ -787,9 +787,8 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
         placement: Option<Vec<u8>>,
-        target: Option<[u8; 32]>,
+        via: Option<Arc<Device>>,
     ) -> Arc<Device> {
-        let target = target.unwrap_or(*addr.id.as_bytes());
         Arc::new(Device {
             way: Way::Dial {
                 endpoint: endpoint.clone(),
@@ -797,7 +796,8 @@ impl ActionService {
             },
             workspace: workspace.to_owned(),
             placement,
-            target,
+            target: *addr.id.as_bytes(),
+            via,
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
             connection: Mutex::new(None),
@@ -822,6 +822,7 @@ impl ActionService {
             workspace: workspace.to_owned(),
             placement: None,
             target: device,
+            via: None,
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
             connection: Mutex::new(None),
@@ -838,18 +839,19 @@ impl ActionService {
         Some(self.remote_over(self.reach(device)?, device, workspace))
     }
 
-    /// [`Self::remote`] for a request addressed to `target` through the device
-    /// at `addr`: a page asks its host for the actions of another device of its
-    /// workspace, which the host passes the request on to.
+    /// [`Self::remote`] for `target`, a device of the `workspace` the device at `host` serves:
+    /// asked at its own address and through `host`, which passes requests on over a page's link
+    /// ([`Device::either`]).
     #[must_use]
     pub fn through(
         &self,
         endpoint: &Endpoint,
-        addr: &EndpointAddr,
+        host: &EndpointAddr,
         workspace: &str,
-        target: [u8; 32],
+        target: &EndpointAddr,
     ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace, None, Some(target)))
+        let host = self.device_at(endpoint, host, workspace, None, None);
+        RemoteDevice(self.device_at(endpoint, target, workspace, None, Some(host)))
     }
 
     /// The devices of `workspace` that may be asked to take work, other than this
@@ -1028,7 +1030,7 @@ impl ActionService {
                 .read_workspace_for(
                     Some((source, placement.as_ref())),
                     &action.workspace,
-                    |peer| -> Result<(_, _, _, _, _, _, _), ActionCallError> {
+                    |peer| -> Result<(_, _, _, _, _, _), ActionCallError> {
                         let revocations = revocations_of(peer);
                         let mut acting = source;
                         if let RemoteActionMessage::Invoke(request) = &action.message
@@ -1056,10 +1058,6 @@ impl ActionService {
                                 acting = certificate.device_public_key;
                             }
                         }
-                        let target_certified = peer
-                            .certificates()
-                            .iter()
-                            .any(|certificate| certificate.device_public_key == action.target);
                         let authority = peer.permissions(acting, now);
                         // A certificate placed for records is no member's, whatever roster lists it.
                         let certificate = peer.certificates().into_iter().find(|certificate| {
@@ -1094,22 +1092,14 @@ impl ActionService {
                                         (created_at, delegation.user_public_key)
                                     })
                             });
-                        Ok((
-                            acting,
-                            authority,
-                            certificate,
-                            opened,
-                            target_certified,
-                            roster,
-                            placed,
-                        ))
+                        Ok((acting, authority, certificate, opened, roster, placed))
                     },
                 )
                 .await
                 .ok_or_else(|| ActionCallError::Refused {
                     reason: "this device does not have that workspace".into(),
                 })??;
-            let (acting, _, certificate, opened, _, _, placed) = &decided;
+            let (acting, _, certificate, opened, _, placed) = &decided;
             let unknown = certificate.is_none() && placed.is_none() && !opened;
             if !proved
                 && unknown
@@ -1122,7 +1112,7 @@ impl ActionService {
             }
             break decided;
         };
-        let (acting, authority, certificate, opened, target_certified, roster, placed) = decided;
+        let (acting, authority, certificate, opened, roster, placed) = decided;
         // A call its device makes for someone else carries their signature: one that names
         // another caller and carries none runs as nobody, and never as the device that sent it.
         let own_call = |caller: Caller| -> Result<Caller, ActionCallError> {
@@ -1149,19 +1139,20 @@ impl ActionService {
         // A request addressed to another device this one reaches: pass it on there, which decides
         // and answers it, and hand its answer back to the caller.
         if action.target != self.device() {
-            // A key that dialled this device proves only itself: a request is passed on to it
-            // only where the workspace certifies it, and refused at once otherwise, never left
-            // to wait on a key that serves no actions.
-            if !target_certified && self.0.dialled_in.lock_recover().contains(&action.target) {
+            // A device whose link is the connection it dialled this one on reads this device at
+            // its other end, and takes only this device's own requests over it: another's is
+            // refused here at once, never left to wait on it.
+            let target = action.target;
+            if self.0.dialled_in.lock_recover().contains(&target) {
                 return Err(ActionCallError::Refused {
-                    reason: "the request names another device".into(),
+                    reason: unpassed(target, ONLY_ITS_OWN),
                 });
             }
             let passed = self
                 .pass_on(signed)
                 .await
                 .ok_or_else(|| ActionCallError::Refused {
-                    reason: "the request names another device".into(),
+                    reason: unpassed(target, NO_LINK),
                 })?;
             return passed.map(|answer| Decided::Passed(Box::new(answer)));
         }
@@ -1977,6 +1968,8 @@ struct Device {
     /// workspace's work on the device ([`ActionService::placing`]).
     placement: Option<Vec<u8>>,
     target: [u8; 32],
+    /// The host asked as well, where another device serves the workspace.
+    via: Option<Arc<Device>>,
     key: Arc<dyn DeviceSigner>,
     runtime: tokio::runtime::Handle,
     /// The connection to this device, kept while it lasts: one per pair, and
@@ -2249,6 +2242,7 @@ impl Device {
         &self,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, tilo_actions::remote::ActionCallError> {
+        let asked = self.via.as_ref().map(|host| (host, message.clone()));
         let signed = SignedDeviceAction::sign(
             &DeviceAction {
                 workspace: self.workspace.clone(),
@@ -2265,10 +2259,76 @@ impl Device {
         let bytes = postcard::to_allocvec(&ActionServiceFrame::Action(Box::new(signed))).map_err(
             |error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()),
         )?;
-        let answer = self.exchange(&bytes).await?;
+        let answer = match asked {
+            Some((host, message)) => self.either(host, &message, &bytes).await?,
+            None => self.exchange(&bytes).await?,
+        };
         RemoteActionFrame::decode(&answer)
             .map(|frame| frame.message)
             .map_err(|error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()))
+    }
+
+    /// `bytes`, the request `asked`, sent to this device's own address and through `host`, the
+    /// latter only once the former fails where this endpoint uses that address now: the first
+    /// answer, the host's refusal to pass it on being none. Where neither answers, both reasons.
+    async fn either(
+        &self,
+        host: &Self,
+        asked: &RemoteActionMessage,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, tilo_actions::remote::ActionCallError> {
+        let Way::Dial { endpoint, addr } = &self.way else {
+            return self.exchange(bytes).await;
+        };
+        let lately = endpoint.remote_info(addr.id).await.is_some_and(|known| {
+            known
+                .addrs()
+                .any(|addr| matches!(addr.usage(), iroh::endpoint::TransportAddrUsage::Active))
+        });
+        let own = async {
+            self.exchange(bytes)
+                .await
+                .map_err(|error| error.to_string())
+        };
+        let through = async {
+            let answer = host
+                .exchange(bytes)
+                .await
+                .map_err(|error| error.to_string())?;
+            let message = RemoteActionFrame::decode(&answer).map(|frame| frame.message);
+            for why in [NO_LINK, ONLY_ITS_OWN] {
+                let reason = unpassed(self.target, why);
+                let refused = tilo_actions::remote::ActionCallError::Refused {
+                    reason: reason.clone(),
+                };
+                if message.as_ref().ok() == tilo_actions::remote::refuse(asked, refused).as_ref() {
+                    return Err(reason);
+                }
+            }
+            Ok(answer)
+        };
+        tokio::pin!(own, through);
+        let (mut own_failed, mut through_failed) = (None, None);
+        loop {
+            let ask_host = through_failed.is_none() && (!lately || own_failed.is_some());
+            tokio::select! {
+                answer = &mut own, if own_failed.is_none() => match answer {
+                    Ok(answer) => return Ok(answer),
+                    Err(why) => own_failed = Some(why),
+                },
+                answer = &mut through, if ask_host => match answer {
+                    Ok(answer) => return Ok(answer),
+                    Err(why) => through_failed = Some(why),
+                },
+            }
+            if let (Some(own), Some(through)) = (&own_failed, &through_failed) {
+                return Err(unavailable(&format!(
+                    "device {} answered neither at its own address ({own}) nor through its \
+                     workspace's host ({through})",
+                    hex::encode(&self.target[..8])
+                )));
+            }
+        }
     }
 
     /// Write `bytes` on a stream of this device's own, and read the one
@@ -2301,6 +2361,15 @@ impl Device {
             .map_err(|error| unavailable(&error))?
             .ok_or_else(|| unavailable("the device closed without answering"))
     }
+}
+
+/// Why a device passes a request for another on to no one ([`unpassed`]).
+const NO_LINK: &str = "has no link open to this one to pass the request on over";
+const ONLY_ITS_OWN: &str = "takes only this device's own requests over the link it dialled";
+
+/// The refusal of a request for `target` a device passes on to no one, for `why`.
+fn unpassed(target: [u8; 32], why: &str) -> String {
+    format!("device {} {why}", hex::encode(&target[..8]))
 }
 
 /// What a peer did not answer, as the caller reads it.
