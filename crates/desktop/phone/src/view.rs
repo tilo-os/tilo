@@ -323,20 +323,8 @@ pub fn open(
     bundles: &BTreeMap<String, Arc<Bundle>>,
     records: Records,
 ) -> Result<tilolang_process::window::hosted::HostedWindow, String> {
-    // A thing told names the app that holds what it is about by its id, which a telling written
-    // elsewhere may spell whole (`so.tilo.notes`) where the phone carries `notes`.
-    let found = bundles.get(app).or_else(|| {
-        let last = app.rsplit('.').next().unwrap_or_default();
-        bundles.get(last)
-    });
-    let bundle = if let Some(bundle) = found {
-        Arc::clone(bundle)
-    } else {
-        let payload = tilo_runtime::device::package_runs::verified_payload(app)?;
-        Arc::new(Bundle::read(&payload).map_err(|error| format!("{app}: {error}"))?)
-    };
-    let id = uuid::Uuid::parse_str(workspace)
-        .unwrap_or_else(|_| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes()));
+    let bundle = bundle_of(app, bundles)?;
+    let id = workspace_id(workspace);
     let opened = match records {
         Records::Here(storage) => {
             let route = tilolang_process::route_of(&bundle.meta, id, ME);
@@ -364,6 +352,36 @@ pub fn open(
         }
     };
     opened.map_err(|error| format!("{app} did not start: {error}"))
+}
+
+/// The package `app` runs from: the bundle the APK carries, or the tilolang package this device
+/// installed from the workspace and verified as a launch of it verifies it.
+///
+/// # Errors
+/// The phone carries no bundle of the app and holds no verified install of it.
+pub(crate) fn bundle_of(
+    app: &str,
+    bundles: &BTreeMap<String, Arc<Bundle>>,
+) -> Result<Arc<Bundle>, String> {
+    // A thing told names the app that holds what it is about by its id, which a telling written
+    // elsewhere may spell whole (`so.tilo.notes`) where the phone carries `notes`.
+    let found = bundles.get(app).or_else(|| {
+        let last = app.rsplit('.').next().unwrap_or_default();
+        bundles.get(last)
+    });
+    if let Some(bundle) = found {
+        return Ok(Arc::clone(bundle));
+    }
+    let payload = tilo_runtime::device::package_runs::verified_payload(app)?;
+    Ok(Arc::new(
+        Bundle::read(&payload).map_err(|error| format!("{app}: {error}"))?,
+    ))
+}
+
+/// The workspace `workspace` names, as every route of it names it.
+pub(crate) fn workspace_id(workspace: &str) -> uuid::Uuid {
+    uuid::Uuid::parse_str(workspace)
+        .unwrap_or_else(|_| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes()))
 }
 
 /// The phone's device as the origin of what the shell's view reads of it.

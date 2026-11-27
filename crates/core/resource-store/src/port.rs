@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use collab_types::store::wire::{Bytes, Command, Reply, Turn};
@@ -40,10 +41,13 @@ pub trait Port {
 /// disk under `dir` when given, each document's changes appended to a file of its own, and read
 /// back whole when the store opens again.
 ///
-/// It keeps an app's records beside its resources, as a window with no workspace does: each by its
-/// app and its id, read and written with the record commands a workspace answers, so the app's
-/// records open from it as they do from a workspace. Those records are this process's alone: a
-/// record is the workspace's, so one kept here lives no longer than the window that reads it.
+/// It keeps an app's records beside its resources, as a window with no workspace does: each
+/// record by its app and its id, read and written with the record commands a workspace answers,
+/// so the app's records open from it as they do from a workspace. A record is kept the way the
+/// store's documents are: its changes appended to a file of its own under `dir`, named
+/// `record/<app>/<id>` in the escaped form every document's file name has, and read back when the
+/// store opens again. So what an app kept before anyone signed in is still there when its window
+/// opens again, and a device's sign-in can carry it into the workspace.
 pub struct LocalPort {
     app: String,
     store: RefCell<Store>,
@@ -51,6 +55,23 @@ pub struct LocalPort {
     /// The runs of each record's write still to come.
     runs: RefCell<BTreeMap<String, Vec<u8>>>,
     dir: Option<PathBuf>,
+}
+
+/// The first part of the name a record is kept under: a store document's name starts with its
+/// reader set, `*` or sixteen hex digits, so no store document is ever mistaken for a record.
+const RECORD: &str = "record";
+
+/// The name the record `id` of the app `app` is kept under: each part escaped, so the name reads
+/// back as the one app and id it was made from.
+fn record_doc(app: &str, id: &str) -> String {
+    format!("{RECORD}/{}/{}", escape(app), escape(id))
+}
+
+/// The app and id the record `doc` is kept for; `None` for the name of a store document.
+fn record_of(doc: &str) -> Option<(String, String)> {
+    let rest = doc.strip_prefix(RECORD)?.strip_prefix('/')?;
+    let (app, id) = rest.split_once('/')?;
+    Some((unescape(app)?, unescape(id)?))
 }
 
 impl Default for LocalPort {
@@ -91,6 +112,7 @@ impl LocalPort {
     pub fn at(dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         let mut store = Store::new(Self::WORKSPACE);
+        let mut documents = BTreeMap::new();
         let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
         for entry in entries {
             let entry = entry.map_err(|error| error.to_string())?;
@@ -105,6 +127,14 @@ impl LocalPort {
                 continue;
             }
             let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+            if let Some((app, id)) = record_of(&doc) {
+                let mut record = automerge::Automerge::new();
+                record.load_incremental(&bytes).map_err(|error| {
+                    format!("the record `{id}` of `{app}` does not read: {error}")
+                })?;
+                documents.insert((app, id), record);
+                continue;
+            }
             store
                 .load(&doc, &bytes)
                 .map_err(|error| format!("{doc} does not read: {error}"))?;
@@ -112,7 +142,7 @@ impl LocalPort {
         Ok(Self {
             app: String::new(),
             store: RefCell::new(store),
-            documents: RefCell::default(),
+            documents: RefCell::new(documents),
             runs: RefCell::default(),
             dir: Some(dir),
         })
@@ -219,8 +249,90 @@ impl LocalPort {
         Ok(true)
     }
 
+    /// The ids of this port's app's records, in order: what a caller carrying them elsewhere
+    /// reads each of with [`Self::record`].
+    #[must_use]
+    pub fn records(&self) -> Vec<String> {
+        self.documents
+            .borrow()
+            .range((self.app.clone(), String::new())..)
+            .take_while(|((of, _), _)| *of == self.app)
+            .map(|((_, id), _)| id.clone())
+            .collect()
+    }
+
+    /// A copy of this port's record `id`: what it holds, for a caller that carries it elsewhere.
+    /// `None` for a record this port holds nothing of, or one of another app's.
+    #[must_use]
+    pub fn record(&self, id: &str) -> Option<automerge::Automerge> {
+        self.documents
+            .borrow()
+            .get(&(self.app.clone(), id.to_owned()))
+            .cloned()
+    }
+
+    /// Each resource the store holds, as the store placed it: its kind and id, and the readers,
+    /// parent, order and fields a [`Command::Put`] places it with.
+    #[must_use]
+    pub fn resources(&self) -> Vec<(String, String, collab_types::store::Resource)> {
+        let store = self.store.borrow();
+        let mut out = Vec::new();
+        for doc in store.index().documents() {
+            let readers = store.index().readers(doc).unwrap_or_default().to_owned();
+            for (kind, id) in store.index().held(doc) {
+                let Some(held) = store.index().get(kind, id) else {
+                    continue;
+                };
+                out.push((
+                    kind.to_owned(),
+                    id.to_owned(),
+                    collab_types::store::Resource {
+                        readers: readers.clone(),
+                        parent: held.parent.clone(),
+                        order: held.order.clone(),
+                        fields: held.fields.clone(),
+                    },
+                ));
+            }
+        }
+        out
+    }
+
+    /// Whether `kind`'s type names who reads a resource of it: a write founding one names no
+    /// readers, and the store places it by the type's rule (see [`Store::reads_by_rule`]).
+    #[must_use]
+    pub fn placed_by_rule(&self, kind: &str) -> bool {
+        self.store.borrow().reads_by_rule(kind)
+    }
+
+    /// Whether `kind`'s type names only its author reads a resource of it, or every member once
+    /// its flag holds (see [`Store::reads_by_author_rule`]): a kind an app writes for the person
+    /// whose window it runs in.
+    #[must_use]
+    pub fn read_by_author_rule(&self, kind: &str) -> bool {
+        self.store.borrow().reads_by_author_rule(kind)
+    }
+
+    /// The document holding the content of the resource `id` of `kind`, when the store holds
+    /// content of it: what a caller carrying the resource elsewhere reads its content from.
+    #[must_use]
+    pub fn content_document(&self, kind: &str, id: &str) -> Option<String> {
+        let doc = self.store.borrow().content_doc(kind, id)?;
+        self.store.borrow().document(&doc)?;
+        Some(doc)
+    }
+
+    /// The stamp the resource `id` of `kind` was first written under, if it holds a change that
+    /// names one.
+    #[must_use]
+    pub fn first_stamp(&self, kind: &str, id: &str) -> Option<crate::Stamp> {
+        self.store
+            .borrow()
+            .version_end(kind, id, false)
+            .and_then(|version| version.stamp)
+    }
+
     fn keep(&self, written: &[crate::Written]) -> Result<(), String> {
-        use std::io::Write as _;
         let Some(dir) = &self.dir else {
             return Ok(());
         };
@@ -266,7 +378,8 @@ impl LocalPort {
     }
 
     /// Takes `changes`, a run of this app's own changes of its record `id`: kept until the last
-    /// run, then the record takes them all, founded by its first.
+    /// run, then the record takes them all, founded by its first, and the store keeps them under
+    /// `dir` when it has one.
     fn record_change(&self, id: &str, changes: &[u8], more: bool) -> Result<(), String> {
         let mut runs = self.runs.borrow_mut();
         runs.entry(id.to_owned())
@@ -282,7 +395,17 @@ impl LocalPort {
             .or_default()
             .load_incremental(&changes)
             .map(drop)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        let Some(dir) = &self.dir else {
+            return Ok(());
+        };
+        let path = dir.join(format!("{}.changes", escape(&record_doc(&self.app, id))));
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|error| error.to_string())?;
+        file.write_all(&changes).map_err(|error| error.to_string())
     }
 }
 

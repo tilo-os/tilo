@@ -3,7 +3,9 @@
 //! drawn natively over what that daemon reads. A person signs in with a ticket another of their
 //! devices printed, picks one of their workspaces, and opens its apps, each the tilolang app
 //! the APK carries, run in tilolang-process's in-process window. Every view here is the shell's
-//! tl package's; this crate hosts it and draws nothing of its own.
+//! tl package's; this crate hosts it and draws nothing of its own. What an app's window kept
+//! while the device was nobody's is carried into the person's own workspace at sign-in, before
+//! any of their windows opens again.
 //!
 //! The daemon keeps its profile and the device's identity under the app's private files, where
 //! the Android launch environment points `HOME` and the XDG directories.
@@ -101,14 +103,22 @@ fn hand_window_connection(worker: &worker::Worker) {
             let workspace = devices
                 .own
                 .ok_or("this phone holds no certificate of yours yet")?;
-            window_connection(device, &workspace).map(Some)
+            window_connection(device, &workspace).map(|handed| Some((handed, workspace)))
         })
         .and_then(|made| made);
-    match made {
-        Ok(None) => {}
-        Ok(Some(handed)) => ui::launch::hand_connection(Ok(handed)),
-        Err(why) => ui::launch::hand_connection(Err(unkept(&why))),
-    }
+    let (handed, workspace) = match made {
+        Ok(None) => return,
+        Ok(Some(made)) => made,
+        Err(why) => {
+            ui::launch::hand_connection(Err(unkept(&why)));
+            return;
+        }
+    };
+    // What the apps kept before anyone signed in is the person's now: it goes into their own
+    // workspace, which every device of theirs finds by their key alone, before any of their
+    // windows opens again.
+    carry_kept(worker, &workspace);
+    ui::launch::hand_connection(Ok(handed));
 }
 
 /// The connection the phone's window joins `workspace` over, made by the phone's `device`.
@@ -136,6 +146,81 @@ pub(crate) fn window_connection(
 pub(crate) fn unkept(why: &str) -> String {
     tracing::error!(why, "the phone's window has no connection to its workspace");
     format!("Tilo couldn't connect to your workspace, so nothing here would be kept: {why}")
+}
+
+/// Carry what the phone's apps kept before anyone signed in into the person's own workspace,
+/// which every device of theirs finds by their key alone, through the connection each app's
+/// window would join there. Say for each app whose documents could not be carried why: they stay
+/// on the phone until they are.
+fn carry_kept(worker: &worker::Worker, workspace: &str) {
+    let Some(dir) = storage_dir() else {
+        return;
+    };
+    if !dir.is_dir() {
+        return;
+    }
+    let bundles = match bundles() {
+        Ok(bundles) => bundles,
+        Err(why) => {
+            tracing::error!(why, "what the apps kept before sign-in is not carried");
+            return;
+        }
+    };
+    let id = view::workspace_id(workspace);
+    let carried = tilolang_process::carry::signed_out(&dir, |app| {
+        let bundle = view::bundle_of(app, &bundles)?;
+        let (person, collaboration, identity) = worker.files().ask({
+            let app = app.to_owned();
+            let workspace = workspace.to_owned();
+            move |device| {
+                device
+                    .window_connection(&app, &workspace)
+                    .map(|connection| {
+                        (
+                            connection.person,
+                            connection.collaboration,
+                            connection.identity,
+                        )
+                    })
+                    .map_err(|error| format!("{error:#}"))
+            }
+        })??;
+        let route = tilolang_process::route_of(&bundle.meta, id, &person);
+        // A window's connection is served as the app it runs: its writes are the app's own, and
+        // a workspace keeps them by the grant installing the app gave it.
+        let as_app = Some(bundle.meta.app.clone());
+        Ok(tilolang_process::carry::Handed {
+            bundle,
+            route,
+            collaboration,
+            identity,
+            person,
+            as_app,
+        })
+    });
+    match carried {
+        Ok(carried) => {
+            for (app, why) in carried.refused() {
+                tracing::error!(
+                    app,
+                    why,
+                    "what the app kept before sign-in is still on the phone"
+                );
+            }
+        }
+        Err(why) => tracing::error!(why, "what the apps kept before sign-in is not carried"),
+    }
+}
+
+/// Where the phone keeps what its apps write before anyone signed in: this app's data directory,
+/// then `tilolang`. The window's view keeps an app's documents there, and the carry reads them
+/// from there once a person's identity has the device.
+fn storage_dir() -> Option<PathBuf> {
+    tilo_paths::AppPaths::for_app(TILO_PHONE)
+        .data()
+        .native_path()
+        .ok()
+        .map(|data| data.join("tilolang"))
 }
 
 /// The launch's [`start`]: a daemon that did not start is what the window shows, so the window
@@ -238,16 +323,9 @@ fn bundles()
     }
 }
 
-fn opened(cx: &ViewCx<Workspace>) -> Result<view::PhoneView, String> {
+fn opened(_cx: &ViewCx<Workspace>) -> Result<view::PhoneView, String> {
     let worker = worker()?.clone();
-    let storage = cx
-        .storage()
-        .files()
-        .paths()
-        .data()
-        .native_path()
-        .ok()
-        .map(|data| data.join("tilolang"));
+    let storage = storage_dir();
     let wake = ui::wake::WakeHandle::new();
     view::PhoneView::new(
         worker,

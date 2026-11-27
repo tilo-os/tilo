@@ -123,6 +123,8 @@ tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # The workspace's document of each person's own state, which every app of the workspace opens: its
 # id, its document, and the changes that arrive for it.
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
+# Who a change names as its caller: the app or the person, as a carried change does.
+tilo-member-types.workspace = true
 automerge.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -200,7 +202,6 @@ runtime-dylib = { path = "../../sdk/runtime-dylib", optional = true }
 
 [dev-dependencies]
 tilo-action-types.workspace = true
-tilo-member-types.workspace = true
 tilo-action-line-serve = { path = "../../core/action-line-serve" }
 test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # The fake broker these tests and examples run instances against, as the apps'

@@ -1624,6 +1624,17 @@ impl Store {
         self.rules.contains_key(kind)
     }
 
+    /// Whether `kind`'s type names its author as the one who reads a resource of it, or every
+    /// member once its flag holds ([`tilo_actions::surface::ReaderRule::Author`]): a kind an app
+    /// writes for the person whose session it runs in, when no one else reads it.
+    #[must_use]
+    pub fn reads_by_author_rule(&self, kind: &str) -> bool {
+        matches!(
+            self.rules.get(kind),
+            Some(tilo_actions::surface::ReaderRule::Author { .. })
+        )
+    }
+
     /// The changes every holder makes alike to found the content of the resource `id` of `kind`
     /// in this store's workspace:
     /// the founding of the containers its type declares ([`collab_types::document::founding`]),

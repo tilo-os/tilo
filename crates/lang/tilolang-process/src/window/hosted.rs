@@ -368,8 +368,9 @@ pub fn start(
         Some(storage) => {
             tilolang_tilo::resources::LocalPort::at(storage.join(&spec.app).join("resources"))
                 .map_err(StartError::Store)?
+                .named(spec.app.clone())
         }
-        None => tilolang_tilo::resources::LocalPort::in_memory(),
+        None => tilolang_tilo::resources::LocalPort::in_memory().named(spec.app.clone()),
     };
     let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(port));
     host_over(
@@ -401,25 +402,60 @@ pub fn start_joined(
     ),
     wake: tilolang_tilo::background::Waker,
 ) -> Result<(TilolangProcess, PatchConnection), StartError> {
-    // Receivers decide each change against the app's surface: its package's own.
-    let surface = bundle
-        .surface()
-        .map_err(|error| StartError::Join(error.to_string()))?;
-    collab_types::app_surface::register_package(&bundle.meta.app, &surface);
-    let manager = collaboration::CollaborationManager::join_instance(
-        &collab_types::document::ResourceType::new(tilolang_tilo::meta::MetaExt::resource_type(
-            &bundle.meta,
-        )),
-        collaboration,
-        identity,
-        route,
-    )
-    .map_err(|error| StartError::Join(format!("{error:?}")))?
-    .finish_join()
-    .map_err(|error| StartError::Join(error.to_string()))?;
-    let connection = crate::connection::Connection::new(manager).map_err(StartError::Join)?;
+    let kind = collab_types::document::ResourceType::new(
+        tilolang_tilo::meta::MetaExt::resource_type(&bundle.meta),
+    );
+    let connection =
+        joined(&bundle, &kind, route, (collaboration, identity)).map_err(StartError::Join)?;
     let store = tilolang_tilo::resources::ResourceStore::new(Rc::new(connection.port(None)));
     host_over(spec, (connection, store), bundle, phrases, wake)
+}
+
+/// The connection a window of `bundle`'s app opens: its instance joins `route` as the record
+/// kind `kind` on `collaboration`, the connection the device's daemon made for that window and
+/// attests as it, signing what it writes as the person `identity` holds. Waits for the workspace
+/// to take the join. `identity` must outlive what is opened on it.
+///
+/// # Errors
+/// The app's surface cannot be read, or the connection was refused or ended before the workspace
+/// took the join.
+pub fn joined(
+    bundle: &Bundle,
+    kind: &collab_types::document::ResourceType,
+    route: crate::connection::Route,
+    (collaboration, identity): (
+        runtime_portal::process_link::Descriptor,
+        &runtime_portal::process_link::Descriptor,
+    ),
+) -> Result<crate::connection::Connection, String> {
+    // Receivers decide each change against the app's surface: its package's own.
+    let surface = bundle.surface().map_err(|error| error.to_string())?;
+    collab_types::app_surface::register_package(&bundle.meta.app, &surface);
+    let manager =
+        collaboration::CollaborationManager::join_instance(kind, collaboration, identity, route)
+            .map_err(|error| format!("{error:?}"))?
+            .finish_join()
+            .map_err(|error| error.to_string())?;
+    crate::connection::Connection::new(manager)
+}
+
+/// The port a device carrying the documents it kept before anyone signed in writes them into the
+/// workspace through, as an app's own window would: the window of `bundle`'s app joined to
+/// `route` as no one kind, so a record it writes may be of any kind that app's surface declares
+/// (the records a window writes are its app's root's). `identity` must outlive the port.
+///
+/// # Errors
+/// As [`joined`].
+pub fn joined_port(
+    bundle: &Bundle,
+    route: crate::connection::Route,
+    (collaboration, identity): (
+        runtime_portal::process_link::Descriptor,
+        &runtime_portal::process_link::Descriptor,
+    ),
+) -> Result<crate::connection::CallPort, String> {
+    let kind = collab_types::document::ResourceType::new(String::new());
+    Ok(joined(bundle, &kind, route, (collaboration, identity))?.port(None))
 }
 
 /// The host running the one instance `spec` of `bundle` on `connection`, its resources in

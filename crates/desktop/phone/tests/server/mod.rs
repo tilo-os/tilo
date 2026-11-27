@@ -102,6 +102,13 @@ impl Server {
     /// kept by the workspace's host, and the workspace's governance naming it as the version
     /// every member runs (`workspace/apps#install`). A tilolang app publishes no surface.
     pub fn install(&self, tapp: &Path) {
+        self.install_in(&self.workspace, tapp);
+    }
+
+    /// [`Self::install`] in the workspace `workspace`: a workspace keeps an app's records only
+    /// where the app is installed, so a test that carries an app's documents into the person's
+    /// own workspace installs the app there too.
+    pub fn install_in(&self, workspace: &str, tapp: &Path) {
         let bytes = std::fs::read(tapp).unwrap();
         let read = tilo_app_package::tapp::read(
             std::io::BufReader::new(bytes.as_slice()),
@@ -110,7 +117,7 @@ impl Server {
         .unwrap();
         let manifest = read.meta.manifest.package.clone();
         let workspaces = self.host.workspaces();
-        let file = workspaces.keep_app_file(&self.workspace, &bytes).unwrap();
+        let file = workspaces.keep_app_file(workspace, &bytes).unwrap();
         let arguments = json!({
             "app": manifest.id,
             "version": manifest.version,
@@ -124,7 +131,7 @@ impl Server {
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
                 provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
-                address: workspace_governance_address(&self.workspace, "install-app"),
+                address: workspace_governance_address(workspace, "install-app"),
             },
             argument: InvokeArgument::Json(arguments.as_object().unwrap().clone()),
             context: None,
@@ -137,7 +144,7 @@ impl Server {
         };
         let cert = self.host.host_hint().host;
         let person = Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_workspace(&self.workspace);
+            .in_workspace(workspace);
         // The install runs on the server's runtime, where the workspace's providers answer.
         let pending = {
             let _entered = self.runtime.enter();
@@ -178,6 +185,26 @@ pub fn notes_packages() -> tilolang_workspace::records::Packages {
 
 /// Notes, `apps/tl/notes`, built into a signed `.tapp` under `scratch`: the file a person installs.
 pub fn notes_tapp(scratch: &Path) -> PathBuf {
+    notes_built(scratch).tapp
+}
+
+/// Notes as this build compiles it, and its bundle: the app's compiled package, the payload a
+/// window runs, and the signed `.tapp` a person installs.
+pub fn notes(
+    scratch: &Path,
+) -> (
+    tilolang_cli::package::BuiltApp,
+    std::sync::Arc<tilolang_tilo::bundle::Bundle>,
+) {
+    let built = notes_built(scratch);
+    let bundle = tilolang_tilo::bundle::Bundle::read(&built.payload)
+        .unwrap_or_else(|error| panic!("Notes' payload is a bundle: {error}"));
+    (built, std::sync::Arc::new(bundle))
+}
+
+/// Notes as this build compiles it: the app's compiled package, its payload the bundle a window
+/// runs, and the signed `.tapp` a person installs.
+pub fn notes_built(scratch: &Path) -> tilolang_cli::package::BuiltApp {
     use tilolang_cli::package::{self, BuildOptions};
     // A build writes each package's ids lock and source catalogue: it builds a copy, never the
     // tree it runs from.
@@ -202,7 +229,7 @@ pub fn notes_tapp(scratch: &Path) -> PathBuf {
     .unwrap_or_else(|error| panic!("Notes builds: {error}"));
     // The build answers the packages the app is made with first and the app last: the app is
     // what a person installs.
-    built.last().expect("Notes is built").tapp.clone()
+    built.last().expect("Notes is built").clone()
 }
 
 fn copy_tree(from: &Path, to: &Path) {

@@ -5287,6 +5287,7 @@ mod store {
 /// An app's records, as a window that runs with no workspace keeps and reads them: through the
 /// record commands a workspace answers.
 mod records {
+    use automerge::ReadDoc as _;
     use automerge::transaction::Transactable as _;
     use collab_types::store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
     use tilo_resource_store::{LocalPort, Port};
@@ -5385,6 +5386,54 @@ mod records {
             })
             .is_err()
         );
+    }
+
+    /// A record written before the store opened again reads back from the directory the port
+    /// kept it in, and a store document and a record do not read as one another.
+    #[test]
+    fn a_local_port_keeps_an_app_s_record_on_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "tilo-resource-store-records-kept-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        {
+            let port = LocalPort::at(dir.clone()).unwrap().named("so.tilo.notes");
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "title", "a note").unwrap();
+            doc.commit();
+            write(&port, "doc-1", &doc.save_after(&[]));
+        }
+
+        let port = LocalPort::at(dir.clone()).unwrap().named("so.tilo.notes");
+        assert_eq!(
+            port.records(),
+            ["doc-1"],
+            "the port lists the record it kept"
+        );
+        let (whole, heads) = read(&port, "doc-1", &[]);
+        let mut copy = automerge::AutoCommit::load(&whole).unwrap();
+        let read_heads: Vec<automerge::ChangeHash> =
+            heads.iter().map(|head| head.parse().unwrap()).collect();
+        assert_eq!(
+            copy.get_heads(),
+            read_heads,
+            "the record reads back at the heads it was written at"
+        );
+        let title = match copy.get(automerge::ROOT, "title").unwrap().unwrap().0 {
+            automerge::Value::Scalar(scalar) => match scalar.as_ref() {
+                automerge::ScalarValue::Str(text) => text.to_string(),
+                other => panic!("the title reads as a scalar: {other:?}"),
+            },
+            other @ automerge::Value::Object(_) => panic!("the title reads as a value: {other:?}"),
+        };
+        assert_eq!(title, "a note", "the record keeps what it held");
+        assert!(
+            port.documents().is_empty(),
+            "a record is no store document: {:?}",
+            port.documents()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 

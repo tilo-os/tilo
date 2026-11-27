@@ -35,6 +35,8 @@ pub mod approved_checks;
 pub mod backups_engine;
 pub mod call;
 pub mod canvas;
+/// What a device kept of its apps before anyone signed in, carried into the workspace at sign-in.
+pub mod carry;
 pub mod connection;
 #[cfg(feature = "app-launch")]
 pub mod containers_engine;
