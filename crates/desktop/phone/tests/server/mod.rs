@@ -105,9 +105,7 @@ impl Server {
         self.install_in(&self.workspace, tapp);
     }
 
-    /// [`Self::install`] in the workspace `workspace`: a workspace keeps an app's records only
-    /// where the app is installed, so a test that carries an app's documents into the person's
-    /// own workspace installs the app there too.
+    /// [`Self::install`] in the workspace `workspace`.
     pub fn install_in(&self, workspace: &str, tapp: &Path) {
         let bytes = std::fs::read(tapp).unwrap();
         let read = tilo_app_package::tapp::read(
@@ -116,16 +114,51 @@ impl Server {
         )
         .unwrap();
         let manifest = read.meta.manifest.package.clone();
+        let file = self
+            .host
+            .workspaces()
+            .keep_app_file(workspace, &bytes)
+            .unwrap();
+        self.installs(
+            workspace,
+            &json!({
+                "app": manifest.id,
+                "version": manifest.version,
+                "package": hex::encode(read.meta.id.0),
+                "publisher": hex::encode(read.meta.root.publisher_identity),
+                "file": file,
+                "dev": false,
+            }),
+        );
+    }
+
+    /// The version of `app` this test's device verified — the one its package store holds —
+    /// installed in `workspace`, as a phone asks its workspace's host to run what it runs: the
+    /// version, package root, publisher and surface the release names, and no file.
+    pub fn install_verified(&self, workspace: &str, app: &str) {
+        let release = tilo_workspace_service::workspaces::held_release(app)
+            .unwrap_or_else(|| panic!("this device holds a verified package of {app}"));
+        self.installs(
+            workspace,
+            &json!({
+                "app": release.app,
+                "version": release.version,
+                "package": release.package,
+                "publisher": release.publisher,
+                "surface": release.surface,
+                "if_absent": true,
+            }),
+        );
+    }
+
+    /// The workspace takes the install `arguments` name, as its `install-app`.
+    fn installs(&self, workspace: &str, arguments: &serde_json::Value) {
+        let app = arguments
+            .get("app")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let workspaces = self.host.workspaces();
-        let file = workspaces.keep_app_file(workspace, &bytes).unwrap();
-        let arguments = json!({
-            "app": manifest.id,
-            "version": manifest.version,
-            "package": hex::encode(read.meta.id.0),
-            "publisher": hex::encode(read.meta.root.publisher_identity),
-            "file": file,
-            "dev": false,
-        });
         let request = InvokeRequest {
             asks: false,
             invocation: tilo_actions::InvocationId::new(),
@@ -161,11 +194,10 @@ impl Server {
             .recv_timeout(tilo_test_env::hang_bound())
             .expect("the workspace answers the install")
             .expect("the install is answered, not abandoned")
-            .unwrap_or_else(|error| panic!("the workspace takes {}: {error:?}", manifest.id));
+            .unwrap_or_else(|error| panic!("the workspace takes {app}: {error:?}"));
         assert!(
             matches!(receipt.status, ReceiptStatus::Completed { .. }),
-            "the workspace takes {}: {receipt:?}",
-            manifest.id
+            "the workspace takes {app}: {receipt:?}"
         );
     }
 }

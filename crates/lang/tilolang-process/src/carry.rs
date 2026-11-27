@@ -10,7 +10,9 @@
 //!
 //! Such a connection is served as the app it runs: the workspace keeps what it writes by the
 //! grant installing the app gave it, which is why a workspace keeps a carried app's records only
-//! where that app is installed, and refuses the carry there in words where it is not.
+//! where that app is installed. The carry installs each app there first, as the person, from the
+//! package the device verified, through the workspace's own `install-app`; where that install is
+//! refused, the app's carry is refused in words and its documents stay on the device.
 //!
 //! A window that ran before sign-in ran as the person `me`, a name it had no way to know its
 //! person by. What its changes say of that person is renamed before the workspace sees it: the
@@ -87,17 +89,23 @@ impl Carried {
 }
 
 /// Carry every app's documents kept under `dir` into the workspace `make` connects to for it,
-/// deleting each app's directory once every write of it was accepted.
+/// installing each app there first, and deleting each app's directory once every write of it was
+/// accepted.
 ///
 /// `make` is what a device's sign-in answers with for an app: the package it runs and the
-/// connection its window would join. A device of any kind calls this with its own answer.
+/// connection its window would join. `install` puts that app in the workspace as the person,
+/// from the package the device verified, through the workspace's own `install-app` (what
+/// `workspace/apps#install` asks): a workspace keeps an app's records only where it is
+/// installed. A device of any kind calls this with its own two answers.
 ///
 /// # Errors
-/// `dir` cannot be read. A failure for one app is no failure of the others: it is answered in
-/// the [`Carried::apps`] entry for that app, and its documents stay where they are.
+/// `dir` cannot be read. A failure for one app — its install refused as much as a connection it
+/// cannot make — is no failure of the others: it is answered in the [`Carried::apps`] entry for
+/// that app, and its documents stay where they are.
 pub fn signed_out(
     dir: &Path,
     mut make: impl FnMut(&str) -> Result<Handed, String>,
+    mut install: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<Carried, String> {
     let mut carried = Carried::default();
     let entries = match std::fs::read_dir(dir) {
@@ -125,7 +133,11 @@ pub fn signed_out(
     }
     apps.sort();
     for app in apps {
-        let outcome = carry_app(dir, &app, &mut make);
+        // The app is installed before anything of it is written: its records are kept only where
+        // it is, and installing it is what gives it that place.
+        let outcome = install(&app)
+            .map_err(|why| format!("{app}: it is not installed in your workspace: {why}"))
+            .and_then(|()| carry_app(dir, &app, &mut make));
         let outcome = match outcome {
             Ok(()) => match std::fs::remove_dir_all(dir.join(&app)) {
                 Ok(()) => Ok(()),

@@ -187,9 +187,9 @@ pub(crate) fn unkept(why: &str) -> String {
 }
 
 /// Carry what the phone's apps kept before anyone signed in into the person's own workspace,
-/// which every device of theirs finds by their key alone, through the connection each app's
-/// window would join there. Say for each app whose documents could not be carried why: they stay
-/// on the phone until they are.
+/// which every device of theirs finds by their key alone, installing each app there first and
+/// then through the connection its window would join. Say for each app whose install or carry
+/// could not be made why: they stay on the phone until they are.
 fn carry_kept(worker: &worker::Worker, workspace: &str) {
     let Some(dir) = storage_dir() else {
         return;
@@ -205,7 +205,7 @@ fn carry_kept(worker: &worker::Worker, workspace: &str) {
         }
     };
     let id = view::workspace_id(workspace);
-    let carried = tilolang_process::carry::signed_out(&dir, |app| {
+    let made = |app: &str| {
         let bundle = view::bundle_of(app, &bundles)?;
         let (person, collaboration, identity) = worker.files().ask({
             let app = app.to_owned();
@@ -235,7 +235,21 @@ fn carry_kept(worker: &worker::Worker, workspace: &str) {
             person,
             as_app,
         })
-    });
+    };
+    // The app goes into the person's own workspace as the person, from the package this phone
+    // verified, before any of what it kept is written there.
+    let installed = |app: &str| {
+        worker.files().ask({
+            let app = app.to_owned();
+            let workspace = workspace.to_owned();
+            move |device| {
+                device
+                    .install_app(&workspace, &app)
+                    .map_err(|error| format!("{error:#}"))
+            }
+        })?
+    };
+    let carried = tilolang_process::carry::signed_out(&dir, made, installed);
     match carried {
         Ok(carried) => {
             for (app, why) in carried.refused() {

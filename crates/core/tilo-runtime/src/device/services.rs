@@ -4608,6 +4608,41 @@ impl Daemon {
             .ok_or_else(|| io::Error::other("the action broker is unavailable"))
     }
 
+    /// Ask `workspace`'s own tree the action `request` names, as `caller`, a device of this
+    /// computer's person: the device that holds the workspace decides it — this device asks that
+    /// host as it asks what host keeps for the person, and one that holds the workspace itself
+    /// asks its own dispatch. The person's own workspace is settled first, as their own first
+    /// call there settles it, so this device is listed with their devices before it acts.
+    ///
+    /// # Errors
+    /// This device's person's own workspace is not here, or this device reaches no device that
+    /// holds `workspace`.
+    pub(crate) fn workspace_action(
+        &self,
+        workspace: &str,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> io::Result<Pending<Result<InvocationReceipt, ActionCallError>>> {
+        use tilo_app_host::services::HostedWorkspaces as _;
+
+        self.first
+            .settle_if_theirs(workspace)
+            .map_err(io::Error::other)?;
+        let answers = self
+            .workspaces
+            .hosts()
+            .and_then(|hosts| hosts.host_actions(workspace))
+            .or_else(|| {
+                self.workspaces
+                    .copies()
+                    .providers()
+                    .get(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)
+                    .map(|registered| registered.answers)
+            })
+            .ok_or_else(|| io::Error::other("this device reaches no host of that workspace"))?;
+        Ok(answers.invoke(caller, request))
+    }
+
     /// A call of one of the person's actions in `workspace`, made as the person on this device:
     /// what their own runs reach of a provider the workspace's host answers (`tilo.telling`), or
     /// an action of the workspace itself. It is the one dispatch every call of theirs takes, so

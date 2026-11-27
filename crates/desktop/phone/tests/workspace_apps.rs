@@ -122,8 +122,9 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
 
 /// A phone nobody signed in to yet opens Notes over the documents it keeps itself and makes a
 /// note; the note is still there when its window opens again. At sign-in, what it kept is carried
-/// into the person's own workspace, and the phone's window joined there shows it. A carry whose
-/// connection cannot be made keeps the app's documents and says why in words.
+/// into the person's own workspace, which installs the app there first, and the phone's window
+/// joined there shows it. A carry whose install is refused keeps the app's documents and says
+/// why in words.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -205,14 +206,17 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     // The phone is in the person's own workspace, which every device of theirs finds by their
     // key alone: there is where what they kept before sign-in goes.
     assert_eq!(devices.own.as_deref(), Some(own.as_str()));
-    // A workspace keeps an app's records only where the app is installed: the app the phone
-    // carried is installed in the person's own workspace before the carry reaches it.
-    server.install_in(&own, &notes.tapp);
+    // Nothing installed Notes in the person's own workspace: the phone follows the workspace it
+    // joined, which runs Notes, and holds the version its device verified.
+    support::until("the phone holds the version its workspace runs", || {
+        tilo_runtime::device::package_runs::verified_payload(server::NOTES).map(drop)
+    });
 
-    // At sign-in, what the phone kept is carried into the person's own workspace, through the
-    // connection each app's window would join there.
+    // At sign-in, what the phone kept is carried into the person's own workspace: the app is
+    // installed there first, as the person, and then through the connection its window would
+    // join there.
     let workspace = uuid::Uuid::parse_str(&own).expect("the workspace is one a route names");
-    let carried = tilolang_process::carry::signed_out(&dir, |app| {
+    let made = |app: &str| {
         let bundle = bundles
             .get(app)
             .cloned()
@@ -230,12 +234,33 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
             person: connection.person,
             as_app,
         })
-    })
-    .expect("what the phone kept is read");
-    assert!(
-        carried.all_carried(),
-        "what the phone kept is carried: {:?}",
-        carried.refused()
+    };
+    // The app's install in the person's own workspace, as the phone's daemon asks the workspace's
+    // host for it: here the host is this test's server, so it takes the version the phone
+    // verified from the phone's own package store, and records it in that workspace.
+    let installed = |app: &str| {
+        server.install_verified(&own, app);
+        Ok(())
+    };
+    support::until("what the phone kept is carried", || {
+        let carried = tilolang_process::carry::signed_out(&dir, made, installed)?;
+        if carried.all_carried() {
+            Ok(())
+        } else {
+            Err(format!("{:?}", carried.refused()))
+        }
+    });
+    // The app the carry installed in the person's own workspace runs there now.
+    support::until(
+        "the app the phone carried is installed in the person's own workspace",
+        || {
+            let apps = phone.apps(&own).map_err(|error| format!("{error:#}"))?;
+            if apps.iter().any(|app| app.key == server::NOTES) {
+                Ok(())
+            } else {
+                Err(format!("the workspace runs {apps:?}"))
+            }
+        },
     );
     assert!(
         !dir.join(server::NOTES).exists(),
@@ -296,13 +321,15 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     });
     drop(joined);
 
-    // A carry whose connection cannot be made keeps the app's documents and says why in words.
+    // A carry whose install the workspace refuses keeps the app's documents and says why.
     let refused_dir = scratch.path().join("refused");
     std::fs::create_dir_all(refused_dir.join(server::NOTES).join("resources"))
         .expect("the app's directory is made");
-    let refused = tilolang_process::carry::signed_out(&refused_dir, |app| {
-        Err(format!("{app} has nowhere to go"))
-    })
+    let refused = tilolang_process::carry::signed_out(
+        &refused_dir,
+        |_| Err("nothing to connect to".to_owned()),
+        |app| Err(format!("{app} has nowhere to go")),
+    )
     .expect("the phone's kept documents are read");
     let (app, why) = refused
         .apps
