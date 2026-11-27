@@ -19889,6 +19889,7 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "workspace-hack",
+ "x509-parser 0.18.1",
  "zeroize",
  "zip",
 ]

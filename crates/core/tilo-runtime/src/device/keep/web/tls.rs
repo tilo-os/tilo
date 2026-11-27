@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
@@ -272,13 +274,10 @@ const CA_KEY_CONTEXT: &[u8] = b"tilo/web-ca/key/v1\0";
 /// CA as its own.
 const CA_ENDORSEMENT_CONTEXT: &[u8] = b"tilo/web-ca/endorsement/v1\0";
 
-/// The CA certificate's extension that carries its [`Endorsement`]: OID
-/// 2.25.6082511997203997251 (a 2.25 arc of our own).
-const ENDORSEMENT_OID: &[u64] = &[2, 25, 6_082_511_997_203_997_251];
-/// [`ENDORSEMENT_OID`] as DER encodes it.
-const ENDORSEMENT_OID_DER: &[u8] = &[
-    0x06, 0x0a, 0x69, 0xd4, 0xb4, 0xdb, 0x8d, 0xf5, 0xbb, 0x95, 0xc4, 0x43,
-];
+/// The scheme of the subject-alternative-name URI that carries the CA's
+/// [`Endorsement`], as base64url postcard: a standard name every X.509 parser
+/// reads, where a private extension needs an OID arc of our own.
+const ENDORSEMENT_SCHEME: &str = "tilo-endorsement:";
 
 /// An Ed25519 PKCS#8 v1 document up to its 32-byte seed.
 const ED25519_PKCS8_PREFIX: &[u8] = &[
@@ -350,12 +349,14 @@ impl LocalCa {
                     .to_vec(),
             })
             .map_err(|error| error.to_string())?;
-            params
-                .custom_extensions
-                .push(rcgen::CustomExtension::from_oid_content(
-                    ENDORSEMENT_OID,
-                    endorsement,
-                ));
+            let uri = format!(
+                "{ENDORSEMENT_SCHEME}{}",
+                URL_SAFE_NO_PAD.encode(endorsement)
+            );
+            let uri = uri
+                .try_into()
+                .map_err(|error: rcgen::Error| error.to_string())?;
+            params.subject_alt_names.push(rcgen::SanType::URI(uri));
         }
         let issuer = rcgen::CertifiedIssuer::self_signed(params, ca_key)
             .map_err(|error| error.to_string())?;
@@ -621,42 +622,19 @@ impl ServerCertVerifier for PersonCa {
     }
 }
 
-/// The [`Endorsement`] in the CA certificate `ca`: the value of the
-/// extension [`ENDORSEMENT_OID`] names. Only located here; what it says is
-/// believed once its signatures verify.
+/// The [`Endorsement`] in the CA certificate `ca`: its subject-alternative-name
+/// URI of [`ENDORSEMENT_SCHEME`]. Only read here; what it says is believed once
+/// its signatures verify.
 fn endorsement_in(ca: &[u8]) -> Option<Endorsement> {
-    let at = ca
-        .windows(ENDORSEMENT_OID_DER.len())
-        .position(|window| window == ENDORSEMENT_OID_DER)?
-        .checked_add(ENDORSEMENT_OID_DER.len())?;
-    let mut rest = ca.get(at..)?;
-    // An extension's criticality, when it is written.
-    if rest.first() == Some(&0x01) {
-        rest = rest.get(3..)?;
-    }
-    let (0x04, value) = der_value(rest)? else {
-        return None;
-    };
-    postcard::from_bytes(value).ok()
-}
-
-/// The tag and value of the DER element `input` starts with.
-fn der_value(input: &[u8]) -> Option<(u8, &[u8])> {
-    let (&tag, rest) = input.split_first()?;
-    let (&first, rest) = rest.split_first()?;
-    let (len, rest) = if first < 0x80 {
-        (usize::from(first), rest)
-    } else {
-        let (bytes, rest) = rest.split_at_checked(usize::from(first & 0x7f))?;
-        if bytes.is_empty() || bytes.len() > 4 {
-            return None;
+    let (_, ca) = x509_parser::parse_x509_certificate(ca).ok()?;
+    let names = ca.subject_alternative_name().ok()??.value;
+    names.general_names.iter().find_map(|name| match name {
+        x509_parser::extensions::GeneralName::URI(uri) => {
+            let encoded = uri.strip_prefix(ENDORSEMENT_SCHEME)?;
+            postcard::from_bytes(&URL_SAFE_NO_PAD.decode(encoded).ok()?).ok()
         }
-        let len = bytes
-            .iter()
-            .fold(0usize, |len, byte| (len << 8) | usize::from(*byte));
-        (len, rest)
-    };
-    Some((tag, rest.get(..len)?))
+        _ => None,
+    })
 }
 
 /// A certificate the local CA issued, and its key, as the host keeps it.
@@ -787,6 +765,14 @@ mod tests {
             let adas = trusting_person(ada.verifying_key().to_bytes(), RevocationList::new());
             let bobs = trusting_person(bob.verifying_key().to_bytes(), RevocationList::new());
             presented(&adas, &adas_chain, "localhost", now).expect("Ada's devices trust her server's CA");
+            // Go's x509 refuses an OID arc over 31 bits, which a private extension's 2.25 arc is.
+            for der in &adas_chain {
+                let (_, cert) = x509_parser::parse_x509_certificate(der).expect("a strict parser reads it");
+                let fits = |ext: &x509_parser::extensions::X509Extension<'_>| {
+                    ext.oid.iter().is_some_and(|mut arcs| arcs.all(|arc| arc < 1 << 31))
+                };
+                assert!(cert.extensions().iter().all(fits), "every OID fits 31-bit arcs");
+            }
             assert!(
                 presented(&adas, &adas_chain, "elsewhere.example", now).is_err(),
                 "a certificate is trusted only for the names it was issued for"

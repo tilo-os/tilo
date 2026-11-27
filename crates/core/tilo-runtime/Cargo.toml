@@ -213,8 +213,10 @@ http-body-util = "0.1"
 bytes.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
-# A server's development certificate, which a page pins.
+# A server's local CA and the certificates it issues, which a page pins; the reader of its
+# endorsement.
 rcgen.workspace = true
+x509-parser = "0.18.1"
 # Web Push to a person's browsers: P-256 agreement and signing, HKDF and AES-GCM, from the crate
 # TLS already builds; certificates' canonical encoding in install bodies.
 ring = "0.17"
