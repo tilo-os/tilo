@@ -2029,8 +2029,6 @@ d-j5z7brtk = Leistenort
 d-xfexkr2v = Leistensuche
     .w-search-this-window-and-replace = Dieses Fenster durchsuchen und ersetzen
     .w-search-this-window = Dieses Fenster durchsuchen
-    .w-previous-match = Voriger Treffer
-    .w-next-match = Nächster Treffer
     .w-close-the-search = Suche schließen
 
 d-6zyejo5v = Fensterleisten-Aktionen
@@ -2521,3 +2519,23 @@ d-payy22lj = Anwesende verschieben
     .doc = Verschiebt die auf dem Bildschirm behaltenen Anwesenden an den Rand `edge`, wie ein dort losgelassenes Ziehen.
 
 d-payy22lj-edge = Rand
+
+d-okr3ibql = Im Fenster suchen
+    .doc = Die Suchtaste der Fensterleiste: die eigene Suche des Fensters klappt das Feld der Leiste auf, wo seine App etwas an Ort und Stelle zu finden hat, und sonst öffnet sich die Systemsuche, eingeengt auf die App.
+
+d-okr3ibql-w = Fenster
+
+d-pjy75m5i = Suche erweitern
+    .doc = Erweitert die Suche eines Fensters und nimmt das Getippte mit: über alles, was seine App hält (`app`), oder über alles (`everywhere`), durch die Systemsuche, die die Shell für dieses Ziel öffnet. Das Feld der Leiste schließt sich mit ihr.
+
+d-pjy75m5i-w = Fenster
+
+d-pjy75m5i-reach = Ziel
+
+d-pjy75m5i-text = Text
+
+d-racosa5u = Suche bestätigen
+    .doc = Was die Eingabetaste in der Suche eines Fensters fragt: den nächsten Treffer, solange ein Dokument welche hat, sonst die eigene Suche der App über das Getippte.
+
+d-racosa5u-w = Fenster
+

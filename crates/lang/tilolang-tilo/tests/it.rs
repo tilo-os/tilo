@@ -158,6 +158,7 @@ mod unions;
 mod upgrade;
 mod vision;
 mod weather;
+mod window_find;
 mod windows_apps;
 mod words;
 mod workspace_members;

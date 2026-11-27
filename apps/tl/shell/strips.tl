@@ -818,32 +818,86 @@ view bar_location(w: device.Window) {
 }
 
 /// The field a window's bar holds open to search what the window shows, as its app's Ctrl+F (or
-/// Ctrl+H, for replace) asks: the query goes to the app, the arrows step through what it found,
-/// and the close takes the field away.
+/// Ctrl+H, for replace) asks: what it found and the options it runs under reach the field from
+/// the window's own reading, and every step goes back to the app, whose search this is. The
+/// widening steps hand the query to the system search, first over what the app holds and then
+/// everywhere.
 view bar_search(w: device.Window) {
-    state query: Text = ""
-    row(gap: .tight, align: .center) {
-        ui.TextInput(
+    state query: Text = if let f = w.find { f.query } else { "" }
+    if let f = w.find {
+        ui.FindControls(
             bind: query,
-            autofocus: true,
             placeholder: if w.bar_field == "replace" {
                 "Search this window and replace"
             } else { "Search this window" },
+            acts_on: f.acts_on,
+            current: f.current,
+            total: f.total,
+            replaces: f.replaces,
+            regex: f.regex,
+            hex: f.hex,
+            match_case: f.match_case,
+            match_whole_word: f.match_whole_word,
+            match_regex: f.match_regex,
+            match_hex: f.match_hex,
+            app: w.origin_app,
+            replacing: w.bar_field == "replace",
         ) {
             // Every word reaches the window's app as it is typed, so what it shows narrows with
-            // the search; Enter asks for it again with the query it holds.
-            on changed: session.bar_search(tab: w.key, query: query)
-            on submit: session.bar_search(tab: w.key, query: query)
+            // the search, and its count follows.
+            on changed(text): session.bar_search(tab: w.key, query: text)
+            on submit(text): find_submit(w, text: text)
+            on step(forward): session.bar_search_step(tab: w.key, forward: forward)
+            on option(chosen): session.bar_search_option(tab: w.key, option: chosen)
+            on replace(text): session.bar_search_replace(tab: w.key, with: text, all: false)
+            on replace_all(text): session.bar_search_replace(tab: w.key, with: text, all: true)
+            on widen(reach): find_widen(w, reach: reach, text: query)
+            on close: session.bar_search_close(tab: w.key)
         }
-        ui.Button("Previous match", icon: .arrow_up, icon_only: true, role: .plain) {
-            on press: session.bar_search_step(tab: w.key, forward: false)
+    } else {
+        // A window whose app offers nothing to search in place keeps the field it always had:
+        // what it asks reaches the app, never a second search here.
+        row(gap: .tight, align: .center) {
+            ui.TextInput(bind: query, autofocus: true, placeholder: "Search this window") {
+                on changed(text): session.bar_search(tab: w.key, query: text)
+            }
+            ui.Button("Close the search", icon: .x, icon_only: true, role: .plain) {
+                on press: session.bar_search_close(tab: w.key)
+            }
         }
-        ui.Button("Next match", icon: .arrow_down, icon_only: true, role: .plain) {
-            on press: session.bar_search_step(tab: w.key, forward: true)
-        }
-        ui.Button("Close the search", icon: .x, icon_only: true, role: .plain) {
-            on press: session.bar_search_close(tab: w.key)
-        }
+    }
+}
+
+/// What Enter in a window's find asks: the next match while a document has them, else the app's
+/// own search over what is typed.
+action find_submit(w: device.Window, text: Text) {
+    if let f = w.find {
+        if f.acts_on == "document" and f.total > 0 {
+            session.bar_search_step(tab: w.key, forward: true)
+        } else { find_widen(w, reach: "app", text: text) }
+    }
+}
+
+/// Widen a window's find, taking what is typed with it: over everything its app holds (`app`), or
+/// over everything (`everywhere`), through the system search the shell opens for that scope. The
+/// bar's field closes with it.
+action find_widen(w: device.Window, reach: Text, text: Text) {
+    if reach == "app" {
+        session.search(query: text, scope: "app", app: w.app_key)
+    } else {
+        session.search(query: text, scope: "everywhere")
+    }
+    session.bar_search_close(tab: w.key)
+}
+
+/// The window bar's search control: the window's own find expands the bar's field where its app
+/// has something to find in place, and elsewhere it opens the system search narrowed to the app.
+action find_in_window(w: device.Window) {
+    let finds = if let f = w.find { f.acts_on != "nothing" } else { false }
+    if finds {
+        session.bar_find(tab: w.key)
+    } else {
+        session.search(scope: "app", app: w.app_key)
     }
 }
 
@@ -934,7 +988,7 @@ view window_bar_actions(w: device.Window) {
         }
     }
     ui.Button("Search this window", icon: .search, icon_only: true, role: .plain) {
-        on press: session.search()
+        on press: find_in_window(w)
     }
     ui.Button("History of this window", icon: .history, icon_only: true, role: .plain) {
         on press: session.activity(workspace: w.workspace_key, view: "catch-up", author: .none)

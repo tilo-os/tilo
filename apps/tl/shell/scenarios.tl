@@ -4192,3 +4192,71 @@ scenario "two windows, control hints off" -> Layout {
     )
     a
 }
+
+/// A window found in: the notebook's note in front with its own find expanded in the bar where
+/// its search control stood, the second of five matches current, as the note's app answers. The
+/// bar draws what it found and what its find offers, and every act goes back to the note.
+scenario "a window found in" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
+    d.strips.insert(
+        LayoutStrip(
+            key: "s-notes",
+            workspace: "studio",
+            row: "r-drafts",
+            width: 1000,
+            active: "p1",
+            placed: false,
+            shell: "so.tilo.shell",
+        ),
+    )
+    d.places.insert(
+        LayoutPlace(
+            key: "p1",
+            strip: "s-notes",
+            shows: "so.tilo.notes",
+            title: "Release planning",
+            name: "Release planning — Notes",
+            shell: "so.tilo.shell",
+        ),
+    )
+    stage(device.overlays, device.Overlays(here: "none"))
+    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(
+        device.windows,
+        device.Windows(
+            all: [
+                device.Window(
+                    key: "p1",
+                    title: "Release planning",
+                    origin_app: "Notes",
+                    app_key: "so.tilo.notes",
+                    icon: "notebook",
+                    strip: "Drafts",
+                    workspace: "Studio",
+                    recency: 1,
+                    focused: true,
+                    preview: "live",
+                    bar_field: "find",
+                    find: .some(
+                        device.Find(
+                            acts_on: "document",
+                            current: 2,
+                            total: 5,
+                            replaces: true,
+                            regex: true,
+                            hex: false,
+                            match_case: false,
+                            match_whole_word: false,
+                            match_regex: false,
+                            match_hex: false,
+                            query: "Ship",
+                        ),
+                    ),
+                ),
+            ],
+        ),
+    )
+}
