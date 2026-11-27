@@ -693,8 +693,19 @@ impl Driver {
     /// The live host reads the presence deadlines beside the tree's, as a window's frame clock
     /// does; a driver that read only the tree would never wake to clear them.
     fn next_frame_deadline(&self, now: crate::time::Instant) -> Option<crate::time::Instant> {
+        self.next_frame_deadline_moving(now, self.app.surface_moving(now))
+    }
+
+    /// [`Self::next_frame_deadline`] with whether the tree moves (`moving`, [`App::surface_moving`])
+    /// already found: a caller that asked it for the schedule shares that walk rather than
+    /// walking the tree for it again.
+    fn next_frame_deadline_moving(
+        &self,
+        now: crate::time::Instant,
+        moving: bool,
+    ) -> Option<crate::time::Instant> {
         [
-            self.app.surface_next_frame(now),
+            self.app.surface_next_frame_moving(now, moving),
             self.app.presence_ctx.interaction_next_wake_deadline(now),
             self.app.presence_ctx.widgets_change_at(now),
         ]
@@ -730,15 +741,18 @@ impl Driver {
     #[must_use]
     pub fn frame_owed(&self) -> bool {
         let now = crate::time::now();
-        self.frame_owed_by(now, || self.next_frame_deadline(now))
+        let moving = self.app.surface_moving(now);
+        self.frame_owed_by(now, moving, || self.next_frame_deadline_moving(now, moving))
     }
 
     /// [`Self::frame_owed`] at `now`, with the tree's next deadline asked of `deadline` only when
     /// nothing cheaper already owes the frame: a caller that has the deadline at hand passes it
-    /// rather than walking the tree for it again.
+    /// rather than walking the tree for it again. `moving` is [`App::surface_moving`] at `now`, as
+    /// the caller found it: a tree that moves owes the frame, so the redraw walk is skipped.
     fn frame_owed_by(
         &self,
         now: crate::time::Instant,
+        moving: bool,
         deadline: impl FnOnce() -> Option<crate::time::Instant>,
     ) -> bool {
         self.has_pending_owner_models()
@@ -753,11 +767,12 @@ impl Driver {
             // frame clock asks the tree what is due. A measure demand is no such ask: a window
             // reads it in a frame something else brought, and a leaf that keeps the default
             // `is_layout_dirty` reports one for as long as it lives.
+            || moving
             || self
                 .app
                 .presentation_roots()
                 .iter()
-                .any(|root| root.needs_redraw() || root.needs_animation_frame())
+                .any(|root| root.needs_redraw())
             || self.peer_holds_delivery()
             || self.peer_owes_app_frame()
             || deadline().is_some_and(|at| at <= now)
@@ -3053,12 +3068,15 @@ impl Driver {
         let now = crate::time::now();
         let queued_work =
             self.app.wake_pending() || self.app.unsettled() || self.has_pending_owner_models();
-        // Each of these walks the whole tree, so each is asked once and the answers shared.
-        let next_wake_deadline = self.next_frame_deadline(now);
+        // Each of these walks the whole tree, so each is asked once and the answers shared: a tree
+        // that moves owes a frame without the redraw walk, and the deadline needs no motion walk
+        // of its own.
+        let moving = self.app.surface_moving(now);
+        let next_wake_deadline = self.next_frame_deadline_moving(now, moving);
         crate::headless::FrameSchedule {
-            needs_redraw: self.frame_owed_by(now, || next_wake_deadline),
+            needs_redraw: self.frame_owed_by(now, moving, || next_wake_deadline),
             queued_work,
-            needs_animation_frame: self.app.surface_moving(now),
+            needs_animation_frame: moving,
             next_wake_deadline,
         }
     }

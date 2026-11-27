@@ -227,6 +227,10 @@ pub struct WidgetSurface {
     cadence: Cadence,
     /// A finger on the tree reaches it as a finger, not as the pointer ([`Self::with_fingers`]).
     fingers: bool,
+    /// The frame schedule the tree was last asked for, while nothing changed it: a turn reads
+    /// what the tree asks of its next frame several times (whether it wants one, when one is
+    /// due), and each answer walks the whole tree. Anything that changes the tree forgets it.
+    schedule: std::cell::Cell<Option<ui::headless::FrameSchedule>>,
 }
 
 impl WidgetSurface {
@@ -283,7 +287,25 @@ impl WidgetSurface {
             drag_seen: ui::widget::drag_bus::revision(),
             cadence: Cadence::new(),
             fingers: false,
+            schedule: std::cell::Cell::new(None),
         }
+    }
+
+    /// What the tree asks of its next frame, asked at most once until something changes it: the
+    /// asks of one turn — whether it wants a frame, whether the display's grid is early, when its
+    /// next frame is due — read one schedule rather than walking the whole tree for each.
+    fn schedule(&self) -> ui::headless::FrameSchedule {
+        if let Some(schedule) = self.schedule.get() {
+            return schedule;
+        }
+        let schedule = self.host.frame_schedule();
+        self.schedule.set(Some(schedule));
+        schedule
+    }
+
+    /// Forget the schedule read before: the tree changed, so what it asks may have.
+    fn forget_schedule(&self) {
+        self.schedule.set(None);
     }
 
     /// The flag something outside the tree sets to ask for its next pass: what
@@ -329,6 +351,9 @@ impl WidgetSurface {
     /// them in the same frame sees the windows where the tree just laid them
     /// out. What `work` draws, it draws over this tree's own backdrops.
     fn with_reports<T>(&mut self, work: impl FnOnce(&mut Driver) -> T) -> T {
+        // What `work` lays out or draws changes the tree, so what it asked of its next frame
+        // before is no answer to what it asks now.
+        self.forget_schedule();
         let _placed = self.placed();
         let (x, y) = self.placement.origin;
         let _wells = self
@@ -391,6 +416,7 @@ impl WidgetSurface {
 
     /// The toolkit's host of the widget tree, to drive it directly.
     pub fn host_mut(&mut self) -> &mut Driver {
+        self.forget_schedule();
         &mut self.host
     }
 
@@ -445,7 +471,7 @@ impl WidgetSurface {
         if self.owed != Owed::Nothing || self.asked() {
             return true;
         }
-        let schedule = self.host.frame_schedule();
+        let schedule = self.schedule();
         schedule.queued_work
             || self
                 .deadline_of(&schedule)
@@ -469,6 +495,7 @@ impl WidgetSurface {
     /// A frame is owed for what just moved, unless the tree already owes one
     /// of its material: that frame draws what moved as well.
     pub(crate) fn owe(&mut self) {
+        self.forget_schedule();
         if self.owed == Owed::Nothing {
             self.owed = Owed::Frame;
         }
@@ -790,6 +817,8 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
                 shown.push((name, rect));
             }
         }
+        // What an embedded app was handed may have changed it.
+        self.forget_schedule();
         shown
             .into_iter()
             .map(|(name, rect)| ui::window_targets::WindowControl {
@@ -1107,7 +1136,7 @@ impl ShellSurface for WidgetSurface {
         if self.owed != Owed::Nothing || self.asked() {
             return Some(Instant::now());
         }
-        self.deadline_of(&self.host.frame_schedule())
+        self.deadline_of(&self.schedule())
     }
 
     fn set_frame_interval(&mut self, interval: Duration) {
@@ -1136,7 +1165,7 @@ impl ShellSurface for WidgetSurface {
         // it would put more frames on the screen than it runs at.
         if self.owed == Owed::Nothing
             && self.cadence.early(now)
-            && self.host.frame_schedule().needs_animation_frame
+            && self.schedule().needs_animation_frame
         {
             return false;
         }

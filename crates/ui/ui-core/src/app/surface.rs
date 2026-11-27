@@ -1096,6 +1096,19 @@ impl App {
         tilo_ui_base::motion::own(self.motion_owner(), || self.surface_next_frame_own(now))
     }
 
+    /// [`Self::surface_next_frame`] with whether something moves (`moving`, [`Self::surface_moving`])
+    /// already found: a host that asks both for one schedule shares the motion walk rather than
+    /// asking the tree twice.
+    pub(crate) fn surface_next_frame_moving(
+        &self,
+        now: crate::time::Instant,
+        moving: bool,
+    ) -> Option<crate::time::Instant> {
+        tilo_ui_base::motion::own(self.motion_owner(), || {
+            self.surface_next_frame_own_moving(now, moving)
+        })
+    }
+
     /// Whether something in the app moves at `now`: a widget's motion, a
     /// frame a motion asked for, or a press or hover still settling. A host
     /// draws it again while it does, as a window of its own is redrawn.
@@ -1114,10 +1127,20 @@ impl App {
 
     /// [`Self::surface_next_frame`], asked as this app.
     fn surface_next_frame_own(&self, now: crate::time::Instant) -> Option<crate::time::Instant> {
+        self.surface_next_frame_own_moving(now, self.surface_moving_own(now))
+    }
+
+    /// [`Self::surface_next_frame_own`] with whether the app moves already found: what moves is due
+    /// now, so nothing walks the tree for a deadline it would not use.
+    fn surface_next_frame_own_moving(
+        &self,
+        now: crate::time::Instant,
+        moving: bool,
+    ) -> Option<crate::time::Instant> {
         // Due at the very instant the host asks at: read from its own clock instead, the answer
         // could fall after the host's `now` on a slow frame, and a motion's last frame would
         // never come due.
-        if self.surface_moving_own(now) {
+        if moving {
             return Some(now);
         }
         [
