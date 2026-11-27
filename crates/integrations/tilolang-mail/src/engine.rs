@@ -261,6 +261,11 @@ pub struct EngineConnector {
     /// Every request not answered yet: what it is, the account it is for, and for a move the
     /// mailbox the message went to, whose changes say where the server put it.
     pending: BTreeMap<Request, (EngineRequestKind, String, Option<String>)>,
+    /// Every fetch not answered yet, by request: the account and mailbox it reads. A fetch of a
+    /// folder already under way takes in what the server holds now, so a second one asked for
+    /// meanwhile is no fetch at all: it would read the folder again from the state last taken
+    /// in, as one never read, and its mail would be no news.
+    fetches: BTreeMap<Request, (String, String)>,
     /// What is answered before the engine is asked: the mail another mail program kept on this
     /// computer, which the OS installer brought over.
     ready: Vec<Event>,
@@ -290,6 +295,7 @@ impl EngineConnector {
             held: HashMap::new(),
             keys: HashMap::new(),
             pending: BTreeMap::new(),
+            fetches: BTreeMap::new(),
             ready: Vec::new(),
             kept_taken: HashSet::new(),
             kept_root: kept_mail_root(),
@@ -309,6 +315,7 @@ impl EngineConnector {
             held: HashMap::new(),
             keys: HashMap::new(),
             pending: BTreeMap::new(),
+            fetches: BTreeMap::new(),
             ready: Vec::new(),
             kept_taken: HashSet::new(),
             kept_root: kept_mail_root(),
@@ -443,6 +450,14 @@ impl EngineConnector {
         (keys, ids)
     }
 
+    /// Whether a fetch of the `account`'s `mailbox` is under way: one that answers what the
+    /// server holds now makes a second, asked for meanwhile, no fetch at all.
+    fn fetching(&self, account: &str, mailbox: &str) -> bool {
+        self.fetches
+            .values()
+            .any(|(asked_of, folder)| asked_of == account && folder == mailbox)
+    }
+
     fn take_in(&mut self, account: &str, folder: Folder, messages: &[Message]) -> Vec<ImapMessage> {
         // The engine answers in the order it was asked: while a move of the account's is
         // unanswered, a fetch that answers before it read its folder before the move. A message
@@ -509,29 +524,45 @@ impl MailConnector for EngineConnector {
         }
         let config = self.config(account)?;
         let folder = Folder::from_key(mailbox)?;
+        if self.fetching(account, mailbox) {
+            return None;
+        }
         let known = self
             .held
             .get(account)
             .and_then(|held| Window::of(held, account, folder));
-        self.request(EngineRequest::fetch_wanting(
+        let request = self.request(EngineRequest::fetch_wanting(
             config,
             folder,
             Want::Latest { known },
-        ))
+        ));
+        if let Some(id) = request {
+            self.fetches
+                .insert(id, (account.to_owned(), mailbox.to_owned()));
+        }
+        request
     }
 
     fn older(&mut self, account: &str, mailbox: &str) -> Option<Request> {
         let config = self.config(account)?;
         let folder = Folder::from_key(mailbox)?;
+        if self.fetching(account, mailbox) {
+            return None;
+        }
         let known = self
             .held
             .get(account)
             .and_then(|held| Window::of(held, account, folder))?;
-        self.request(EngineRequest::fetch_wanting(
+        let request = self.request(EngineRequest::fetch_wanting(
             config,
             folder,
             Want::Older { known },
-        ))
+        ));
+        if let Some(id) = request {
+            self.fetches
+                .insert(id, (account.to_owned(), mailbox.to_owned()));
+        }
+        request
     }
 
     fn flag(&mut self, account: &str, key: &str, unread: bool, flagged: bool) -> Option<Request> {
@@ -696,6 +727,7 @@ impl EngineConnector {
             requests = self.pending.len(),
             "{WHY}: its requests are answered unsent"
         );
+        self.fetches.clear();
         for (request, (kind, account, _)) in std::mem::take(&mut self.pending) {
             out.push(match kind {
                 EngineRequestKind::Send => Event::Unsent {
@@ -787,11 +819,15 @@ impl EngineConnector {
     pub fn engine_event(&mut self, event: EngineEvent, out: &mut Vec<Event>) {
         match event {
             EngineEvent::Fetched {
+                request_id,
                 account_id,
                 folder,
                 synced,
                 ..
-            } => self.took_fetched(account_id, folder, &synced, out),
+            } => {
+                self.fetches.remove(&request_id);
+                self.took_fetched(account_id, folder, &synced, out);
+            }
             EngineEvent::Found {
                 account_id,
                 messages,
@@ -817,6 +853,7 @@ impl EngineConnector {
                 context,
                 message,
             } => {
+                self.fetches.remove(&request_id);
                 let account = self
                     .pending
                     .remove(&request_id)
@@ -852,6 +889,7 @@ impl EngineConnector {
             }
             EngineEvent::Completed { request_id, kind } => {
                 // A write's completion with no error before it: the server took it.
+                self.fetches.remove(&request_id);
                 let Some((_, account, to)) = self.pending.remove(&request_id) else {
                     return;
                 };
