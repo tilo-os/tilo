@@ -259,11 +259,20 @@ pub(super) fn row_menu(session: &mut Session, title: &str) -> Vec<String> {
     session.window.show_context_menu(title);
     session.settle();
     // What the app offers on its row: the system's Export… and Copy link stand on every
-    // resource and are marked as the system's, not the app's commands.
+    // resource and run the platform's own actions, so they are not the app's commands.
     let row = super::window::row(session, title);
     row.of_kind("ui.MenuItem")
         .into_iter()
-        .filter(|item| !item.props.contains_key("system"))
+        .filter(|item| !runs_a_system_offer(item))
         .filter_map(|item| item.props.get("label").map(display))
         .collect()
+}
+
+/// Whether `item` runs one of the platform's offers on every resource (`$export`, the `$save`
+/// around an app's own export, `$copy_link`) rather than a command of the app's.
+fn runs_a_system_offer(item: &tilo_app_window::UiNode) -> bool {
+    item.events
+        .get("choose")
+        .and_then(|event| event.invokes.as_ref())
+        .is_some_and(|run| matches!(run.action.as_str(), "$export" | "$save" | "$copy_link"))
 }
