@@ -100,16 +100,6 @@ mod tests {
             assert!(runs_on(terminal.id, &["tilo-os", "linux"]));
             assert!(runs_on("dev.tilo.terminal", &["linux"]), "a local build");
             assert!(runs_on("dev.tilo.terminal", &["web"]));
-
-            let os_only = catalog()
-                .iter()
-                .find(|app| app.platforms == ["tilo-os"])
-                .expect("the registry has a Tilo-OS-only app");
-            assert!(!runs_on(os_only.id, &["macos"]));
-            assert!(!runs_on(os_only.id, &["web"]));
-            assert!(runs_on(os_only.id, &["tilo-os", "linux"]));
-
-            assert!(runs_on("so.tilo.notes", &["web"]));
             assert!(
                 runs_on("node-app:7", &["web"]),
                 "not the registry's to judge"
@@ -123,31 +113,23 @@ mod tests {
             assert!(web.iter().all(|app| app.platforms.contains(&"web")));
         }
 
-        phase a_tilolang_app_runs_where_its_runtime_runs;
+        phase an_app_a_desktop_cannot_run_is_not_offered_there_and_says_where_it_runs;
         {
-            // A tilolang app executes on the tilolang runtime, built for Linux and, as its web
-            // bundle, for a browser tab: a Mac has none, so it does not offer to open one.
-            let notes = app("so.tilo.notes");
-            assert_eq!(notes.platforms, ["linux", "web"]);
-            assert!(runs_on(notes.id, &["linux"]));
-            assert!(runs_on(notes.id, &["tilo-os", "linux"]));
-            assert!(runs_on(notes.id, &["web"]));
-            assert!(!runs_on(notes.id, &["macos"]));
-        }
-
-        phase an_app_that_does_not_run_here_says_where_it_does;
-        {
-            assert_eq!(
-                runs_elsewhere("so.tilo.backups", "the browser"),
-                "Backups runs in Tilo on a computer, not in the browser"
-            );
-            let os_only = catalog()
+            // An app whose manifest names fewer platforms than Tilo runs on: a browser tab,
+            // which provides none of them, does not offer it, and a window standing in its
+            // place there says where it runs instead.
+            let narrow = catalog()
                 .iter()
-                .find(|app| app.platforms == ["tilo-os"])
-                .expect("the registry has a Tilo-OS-only app");
+                .find(|app| !app.platforms.contains(&"web"))
+                .expect("the registry has an app that runs on no browser tab");
+            assert!(!runs_on(narrow.id, &["web"]));
+            assert!(narrow
+                .platforms
+                .iter()
+                .all(|platform| runs_on(narrow.id, &[platform])));
             assert_eq!(
-                runs_elsewhere(os_only.id, "the browser"),
-                format!("{} runs on Tilo OS, not in the browser", os_only.name)
+                runs_elsewhere(narrow.id, "the browser"),
+                format!("{} runs in Tilo on a computer, not in the browser", narrow.name)
             );
             assert_eq!(
                 runs_elsewhere("node-app:7", "the browser"),
