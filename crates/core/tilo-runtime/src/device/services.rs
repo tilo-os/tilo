@@ -2093,7 +2093,7 @@ impl Daemon {
         let admission = host
             .admission()
             .ok_or_else(|| io::Error::other("this dispatch admitted no run to delegate"))?;
-        let (host, caller, _, agent) =
+        let (host, caller, cert, agent) =
             host.agent_session_of(admission, &policy_time, |person| {
                 (
                     tilo_actions::remote::device_agent_id(person, name),
@@ -2110,6 +2110,7 @@ impl Daemon {
                 .with_invoker(tilo_actions::ActionInvoker::admitted(agent.acting()))
                 .with_task_hosts(tasks)
                 .with_device_shell()
+                .signed_as(cert.user_public_key, cert.device_public_key)
         })
     }
 
@@ -3216,6 +3217,17 @@ impl Daemon {
                 });
             }));
         }
+        // A key its person revokes ends every connection it holds to this daemon at once,
+        // told why, rather than being refused by its next call alone.
+        let connections = Arc::downgrade(&daemon.connections);
+        daemon
+            .workspaces
+            .copies()
+            .on_device_revoked(Arc::new(move |user, device| {
+                if let Some(connections) = connections.upgrade() {
+                    connections.end_key(user, device);
+                }
+            }));
         // The person's shell reaches the one dispatch their own runs do, as them.
         match daemon.person() {
             Ok(person) => shell_dispatch.serve(person),

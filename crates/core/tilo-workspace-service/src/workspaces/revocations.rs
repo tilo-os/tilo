@@ -13,7 +13,9 @@
 //! every handshake, session and administration entry reads, so the key is
 //! refused everywhere at once — a device of the person's, and the stand-in
 //! approver this holder keeps for them, which no workspace lists because a
-//! stand-in is no device. Every workspace the device hosts also writes the
+//! stand-in is no device. Every live link the key holds here ends as the entry
+//! is kept ([`Workspaces::end_key`]), so it receives nothing written after it.
+//! Every workspace the device hosts also writes the
 //! entries it may carry into its governance, each with its cut
 //! ([`tilo_peer_state::removals`]): the device leaves the workspace's access
 //! and keys, every member's replica refuses what it signs from there on, and
@@ -213,18 +215,15 @@ impl Workspaces {
                 .write_recover()
                 .insert((*entry).clone())
                 .map_err(|error| error.to_string())?;
-            // The entry holds only the host's own person's devices.
-            if entry.user_public_key == host.cert.user_public_key {
-                self.inner
-                    .mcp_server
-                    .forget(&entry.revoked_device_public_key);
-            }
-            // What is kept by the device's key goes with it.
-            self.device_revoked(&entry.user_public_key, &entry.revoked_device_public_key);
         }
         let fresh = fresh.into_iter().cloned().collect::<Vec<_>>();
         crate::workspace_files::append_revocations(log_root, &fresh)
             .map_err(|error| error.to_string())?;
+        // Every live link the key holds ends now, rather than at its next call: what is written
+        // from here on reaches it over none of them.
+        for entry in &fresh {
+            self.end_key(&entry.user_public_key, &entry.revoked_device_public_key);
+        }
         if changed {
             crate::authority_epoch::bump();
         }

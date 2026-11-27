@@ -1092,6 +1092,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
         to_agents: None,
         launch: None,
         connections: None,
+        acting: None,
     });
     let who = ask(OWN, json!({"native": "account#who"}));
     let person = who["person"].as_str().expect("a person now").to_owned();
@@ -1259,6 +1260,7 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
         to_agents: None,
         launch: None,
         connections: None,
+        acting: None,
     });
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
@@ -1602,6 +1604,7 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
         to_agents: None,
         launch: None,
         connections: None,
+        acting: None,
     });
     // Another person's connection is served by an endpoint of the key it acts as, which says
     // that key and its person as the workspace it serves.
@@ -1643,6 +1646,7 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
                 to_agents: None,
                 launch: None,
                 connections: None,
+                acting: None,
             }
             .take(stream, slot, Some(seated))
         },
@@ -2027,6 +2031,7 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
         to_agents: None,
         launch: None,
         connections: None,
+        acting: None,
     });
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
@@ -2621,6 +2626,7 @@ fn root_reaches_the_person_in_their_own_daemon_and_the_device_under_the_system_u
             to_agents: None,
             launch: None,
             connections: None,
+            acting: None,
         });
         let socket = dir.path().join("native.sock");
         let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
@@ -2716,6 +2722,7 @@ fn person_served_as_the_kernel_says(
         to_agents: None,
         launch: None,
         connections: None,
+        acting: None,
     });
     // A process the daemon started is the app it runs.
     native
@@ -3246,6 +3253,7 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         to_agents: None,
         launch: None,
         connections: None,
+        acting: None,
     });
     // The same seat acts as the person now, over the link it made them with and with no new
     // sign-in: a call of the person's is no longer held to the setup's reach.
@@ -3816,6 +3824,7 @@ fn a_sign_in_as_someone_else_answers_the_calls_in_flight_and_hands_nothing_on() 
             to_agents: None,
             launch: None,
             connections: Some(Arc::clone(connections)),
+            acting: None,
         }
     };
 

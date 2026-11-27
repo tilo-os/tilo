@@ -333,15 +333,28 @@ impl Workspaces {
     /// Keep `next` as the keys this host refuses, announcing the narrowing that
     /// changes what admission decides.
     fn keep_blocked(&self, next: BlockedKeys) {
-        let changed = {
+        let (changed, revoked) = {
             let mut keys = self.inner.host.blocked.write_recover();
             if *keys == next {
-                false
+                drop(keys);
+                (false, Vec::new())
             } else {
+                // A revocation the record of the person's devices holds now and did not before:
+                // the key it names is ended where it is linked, as one the host took in is.
+                let revoked = next
+                    .revocations
+                    .iter()
+                    .filter(|entry| !keys.revocations.contains(entry))
+                    .map(|entry| (entry.user_public_key, entry.revoked_device_public_key))
+                    .collect::<Vec<_>>();
                 *keys = next;
-                true
+                drop(keys);
+                (true, revoked)
             }
         };
+        for (user, device) in &revoked {
+            self.end_key(user, device);
+        }
         if changed {
             crate::authority_epoch::bump();
         }

@@ -625,3 +625,129 @@ async fn an_invited_device_reads(process: tilo_clock::testing::OwnProcess) {
     service.shutdown().await;
     drop(keys);
 }
+
+/// The workspace's keys as `keys` holds them now, when it holds them.
+fn held_keys(keys: Option<tilo_workspace_keys::SharedKeys>) -> Option<key_group::ContentKeys> {
+    let workspace = tilo_desktop_model::WorkspaceId::parse(&WORKSPACE.to_string()).unwrap();
+    match keys?.access(workspace).0 {
+        tilo_workspace_keys::KeyAccess::Ready(keys) => Some(keys),
+        _ => None,
+    }
+}
+
+/// A member the workspace removes opens nothing written after: the removal rotates the
+/// workspace's keys, so what the server seals from then on is under a key the removed person's
+/// device never held, while what was sealed before still opens with the keys it kept.
+#[test]
+fn a_removed_member_opens_nothing_sealed_after_the_removal() {
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_removed_member_opens_nothing_sealed_after_the_removal",
+        || {
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            runtime().block_on(a_removed_member_opens_nothing(process));
+        },
+    );
+}
+
+async fn a_removed_member_opens_nothing(process: tilo_clock::testing::OwnProcess) {
+    let ada = TestUser::fresh("Ada");
+    let (server, issuer, _hint) = Box::pin(notes_written_long_ago(&ada, process)).await;
+    let hosted = server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
+
+    // Bob joins and reads, taking part in the workspace's group.
+    let bob = TestUser::fresh("Bob");
+    let desktop = bob.enrol("desktop", DeviceCapabilities::primary());
+    let invited = crate::keep::common::invitation(
+        hosted,
+        &issuer,
+        &WORKSPACE.to_string(),
+        tilo_peer_state::join::Role::Editor,
+        &desktop,
+    )
+    .await;
+    let state = tempfile::tempdir().unwrap();
+    let (service, keys) = own_service(state.path(), &desktop).await;
+    let copies = service.workspaces().clone();
+    tilo_test_env::within(
+        "the invited device joins",
+        copies.join_member(&tilo_peer_state::join::encode_invitation_text(
+            &invited.signed_invitation,
+        )),
+    )
+    .await
+    .expect("the server admits the invitation");
+    reads_every_note(&copies, "the invited device reads the notes").await;
+
+    // The keys Bob's device holds once it is current with the server's.
+    let (kept, before) = tilo_test_env::within("Bob's device to hold the current keys", async {
+        loop {
+            if let (Some(kept), Some(current)) = (
+                held_keys(keys.keys().get()),
+                held_keys(server.server.workspace_keys()),
+            ) && kept.epoch() == current.epoch()
+            {
+                return (kept, current);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let note = collab_types::document_artifact_id(NOTES, &WORKSPACE.to_string(), "after");
+    let (metadata, sealed) = before
+        .seal_content(note, collab_types::ContentRetention::Delta, b"before")
+        .unwrap();
+    assert_eq!(
+        kept.open_content(note, &metadata, &sealed)
+            .unwrap()
+            .as_slice(),
+        b"before",
+        "a member opens what is sealed under the workspace's keys"
+    );
+
+    // The owner removes Bob.
+    hosted
+        .remove_member(
+            &WORKSPACE.to_string(),
+            &issuer.cert,
+            tilo_workspace_service::workspaces::RemoveMemberRequest {
+                request_id: [0x52; 32],
+                user_public_key: bob.user_pk,
+            },
+        )
+        .await
+        .expect("the owner removes a member");
+
+    // The server's keys rotate, and what it seals from then on Bob's device does not open,
+    // with the keys it kept or with whatever it holds now.
+    let after = tilo_test_env::within("the workspace's keys to rotate", async {
+        loop {
+            if let Some(current) = held_keys(server.server.workspace_keys())
+                && current.epoch() > before.epoch()
+            {
+                return current;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let (metadata, sealed) = after
+        .seal_content(note, collab_types::ContentRetention::Delta, b"after")
+        .unwrap();
+    assert!(
+        kept.open_content(note, &metadata, &sealed).is_err(),
+        "the keys Bob's device kept open nothing sealed after his removal"
+    );
+    if let Some(now) = held_keys(keys.keys().get()) {
+        assert!(
+            now.open_content(note, &metadata, &sealed).is_err(),
+            "nor does anything Bob's device holds now"
+        );
+    }
+    drop(copies);
+    service.shutdown().await;
+    drop(keys);
+}

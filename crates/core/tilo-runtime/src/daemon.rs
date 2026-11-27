@@ -1255,6 +1255,7 @@ fn the_persons(
         #[cfg(not(unix))]
         launch: None,
         connections: Some(Arc::clone(session.connections())),
+        acting: None,
     }
 }
 
@@ -1566,6 +1567,7 @@ impl Native {
             to_agents: None,
             launch: None,
             connections: None,
+            acting: None,
         }
         .take(stream, slot, Some(seated))
     }
@@ -1965,6 +1967,7 @@ fn the_tenant(session: &Arc<Daemon>) -> Endpoint<<Daemon as RuntimeServices>::Ac
         launch: None,
         // The tenant is served for the person's part, and closed with it.
         connections: Some(Arc::clone(session.connections())),
+        acting: None,
     }
 }
 
@@ -2016,6 +2019,10 @@ pub(crate) struct Endpoint<H> {
     /// The connections of the person's part this endpoint serves for, each closed when that part
     /// ends; `None` for an endpoint that serves the device alone, which outlives every part.
     connections: Option<Arc<Connections>>,
+    /// The person's root key and the key every connection of this endpoint acts as, for one
+    /// that serves another person's key: each connection ends once their root revokes it
+    /// ([`Connections::end_key`]).
+    acting: Option<([u8; 32], [u8; 32])>,
 }
 
 /// A launcher's request to start an app on this computer, with what the connection sent with it.
@@ -2045,6 +2052,7 @@ pub(crate) fn agents_endpoint(
         to_agents: None,
         launch: None,
         connections: Some(Arc::clone(daemon.connections())),
+        acting: None,
     }
 }
 
@@ -2057,6 +2065,7 @@ fn key_endpoint(session: &Arc<Daemon>) -> KeyTake {
         let daemon = session
             .upgrade()
             .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+        let acting = Some((cert.user_public_key, cert.device_public_key));
         Endpoint {
             frames: Frames::of_a_key(&daemon, key.clone(), cert.clone()),
             session_factory: daemon.key_sessions(key, cert),
@@ -2068,6 +2077,7 @@ fn key_endpoint(session: &Arc<Daemon>) -> KeyTake {
             to_agents: None,
             launch: None,
             connections: Some(Arc::clone(daemon.connections())),
+            acting,
         }
         .take(stream, slot, Some(seated))
     })
@@ -2207,11 +2217,20 @@ impl<H> Clone for Endpoint<H> {
             to_agents: self.to_agents.clone(),
             launch: self.launch.clone(),
             connections: self.connections.clone(),
+            acting: self.acting,
         }
     }
 }
 
 impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> Endpoint<H> {
+    /// This endpoint with its sessions made by `sessions`: a test's connection of another agent
+    /// than the one the login was made for.
+    #[cfg(test)]
+    pub(crate) fn with_sessions(mut self, sessions: tilo_mcp::SessionFactory<H>) -> Self {
+        self.session_factory = sessions;
+        self
+    }
+
     /// Serve `stream` on its own thread, counted in `slot` while it lasts, as `seated` says
     /// who it is.
     fn take(&self, stream: Stream, slot: ConnectionSlot, seated: Option<Seated>) -> io::Result<()> {
@@ -2227,10 +2246,15 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
 
     /// Serve `stream` on this thread until it ends, `read` being what was read of it already.
     pub(crate) fn serve(&self, stream: Stream, read: Vec<u8>, seated: Option<&Seated>) {
-        let _held = self
+        let held = self
             .connections
             .as_ref()
             .and_then(|connections| connections.hold(&stream));
+        // A connection of another person's key acts as that key from its first line: it is shut
+        // once their root revokes the key, until a session it admits says how it is told.
+        if let (Some(held), Some((user, device))) = (&held, self.acting) {
+            held.acts_as(user, device, None);
+        }
         // The first line says whether the client asks to be carried to another device's MCP
         // server, or to have a shell started; anything else is served here, that line first. A
         // descriptor sent with it (a session's window connection, on its start) comes along.
@@ -2278,7 +2302,14 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             self.forward(stream, &forward, rest.is_empty());
             return;
         }
-        self.serve_session(stream, first, rest, follow, seated, descriptors);
+        self.serve_session(
+            stream,
+            first,
+            (rest, follow),
+            seated,
+            descriptors,
+            held.as_ref(),
+        );
     }
 
     /// Answer `stream` as a session, `first` and then `rest` and what `follow` reads being its
@@ -2288,10 +2319,10 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         &self,
         stream: Stream,
         first: Vec<u8>,
-        rest: Vec<u8>,
-        follow: Stream,
+        (rest, follow): (Vec<u8>, Stream),
         seated: Option<&Seated>,
         descriptors: Vec<runtime_portal::process_link::Descriptor>,
+        held: Option<&HeldConnection>,
     ) {
         // A connection that asks the seats (who it is, a shell started or waited for) is
         // answered by them alone: asking founds the person no workspace, so a shell started for
@@ -2337,7 +2368,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             &self.search,
             seated,
             self.agents.as_ref(),
-            self.connections.as_deref(),
+            held,
         ) {
             tracing::debug!(%error, "native runtime client disconnected");
         }
@@ -2369,12 +2400,31 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
 /// the next: that part may be another person's.
 #[derive(Default)]
 pub(crate) struct Connections {
-    open: Mutex<std::collections::BTreeMap<u64, Stream>>,
+    open: Mutex<std::collections::BTreeMap<u64, Open>>,
     next: std::sync::atomic::AtomicU64,
     /// The requests this part is answering now, each a call some program waits on.
     answering: Answering,
     /// Why the part takes no new call, once it ends: what each new call is answered with.
     ending: Mutex<Option<tilo_actions::remote::ActionCallError>>,
+}
+
+/// One connection a part of the daemon serves.
+struct Open {
+    stream: Stream,
+    /// The key it acts as, once that is known ([`HeldConnection::acts_as`]).
+    acting: Option<Acting>,
+}
+
+/// The key a connection acts as, and how it ends once that key's person revokes it
+/// ([`Connections::end_key`]).
+struct Acting {
+    /// The person's root key, and the key itself.
+    key: ([u8; 32], [u8; 32]),
+    /// What the connection tells its client as it ends, for a connection whose own loop reads
+    /// its ending ([`HeldConnection::ended`]); `None` for one shut at once.
+    told: Option<String>,
+    /// Set once the key was revoked: why the connection ends.
+    ended: Option<String>,
 }
 
 /// The calls a part of the daemon is answering now, counted while each answer runs: a part that
@@ -2445,7 +2495,13 @@ impl Connections {
             }
         };
         let number = self.next.fetch_add(1, Ordering::Relaxed);
-        self.open.lock_recover().insert(number, kept);
+        self.open.lock_recover().insert(
+            number,
+            Open {
+                stream: kept,
+                acting: None,
+            },
+        );
         Some(HeldConnection(Arc::downgrade(self), number))
     }
 
@@ -2453,12 +2509,36 @@ impl Connections {
     /// fails, so its serving ends and lets go of the part's services. The number closed.
     pub(crate) fn end(&self) -> usize {
         let open = std::mem::take(&mut *self.open.lock_recover());
-        for stream in open.values() {
+        for open in open.values() {
             // A shutdown wakes the reader and never waits: a connection already gone is
             // closed already.
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+            let _ = open.stream.shutdown(std::net::Shutdown::Both);
         }
         open.len()
+    }
+
+    /// End every connection that acts as the key `device` of the person `user`, as its person
+    /// revoked it: one whose loop reads its ending tells its client why and closes within that
+    /// loop's next look ([`HeldConnection::ended`]), and any other is shut now. What the
+    /// workspace writes from then on reaches the key over none of them, and its calls in flight
+    /// are dropped with them.
+    pub(crate) fn end_key(&self, user: &[u8; 32], device: &[u8; 32]) {
+        let mut open = self.open.lock_recover();
+        for open in open.values_mut() {
+            let Some(acting) = open
+                .acting
+                .as_mut()
+                .filter(|acting| acting.key == (*user, *device))
+            else {
+                continue;
+            };
+            match &acting.told {
+                Some(told) => acting.ended = Some(told.clone()),
+                None => {
+                    let _ = open.stream.shutdown(std::net::Shutdown::Both);
+                }
+            }
+        }
     }
 
     /// Have every call the part took answered before it ends, however long they run: from now
@@ -2505,6 +2585,31 @@ const ANSWERING_SAID: Duration = Duration::from_secs(10);
 
 /// A connection [`Connections::hold`] keeps, until its serving ends.
 pub(crate) struct HeldConnection(std::sync::Weak<Connections>, u64);
+
+impl HeldConnection {
+    /// This connection acts as the key `device` of the person `user`: it ends once their person
+    /// revokes that key ([`Connections::end_key`]). With `told`, its own loop reads that it ended
+    /// and tells its client so ([`Self::ended`]); without, it is shut at once.
+    pub(crate) fn acts_as(&self, user: [u8; 32], device: [u8; 32], told: Option<String>) {
+        let Some(connections) = self.0.upgrade() else {
+            return;
+        };
+        if let Some(open) = connections.open.lock_recover().get_mut(&self.1) {
+            open.acting = Some(Acting {
+                key: (user, device),
+                told,
+                ended: None,
+            });
+        }
+    }
+
+    /// Why this connection ends, once the key it acts as was revoked ([`Self::acts_as`]).
+    pub(crate) fn ended(&self) -> Option<String> {
+        let connections = self.0.upgrade()?;
+        let open = connections.open.lock_recover();
+        open.get(&self.1)?.acting.as_ref()?.ended.clone()
+    }
+}
 
 impl Drop for HeldConnection {
     fn drop(&mut self) {
@@ -2764,9 +2869,10 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     search: &OnceLock<Arc<tilo_os_search::OsSearch>>,
     seated: Option<&Seated>,
     agent: Option<&Arc<Presence>>,
-    connections: Option<&Connections>,
+    held: Option<&HeldConnection>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
+    let connections = held.and_then(|held| held.0.upgrade());
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     // Every connection thread waits on the one app runtime rather than
     // building a runtime per connection.
@@ -2802,6 +2908,16 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
                     if let Some(agents) = &agent {
                         agents.visit();
                     }
+                    // The connection acts as the session's key from here, and ends, told why, once
+                    // that key's person revokes it.
+                    if let (Some(held), Some((user, device))) = (held, admitted.key()) {
+                        let told = if agent.is_some() {
+                            tilo_app_host::agents::agent_keys::REVOKED.to_owned()
+                        } else {
+                            KEY_REVOKED.to_owned()
+                        };
+                        held.acts_as(user, device, Some(told));
+                    }
                     session = Some(Arc::clone(&admitted));
                     admitted
                 }
@@ -2834,9 +2950,14 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     };
     // Each call the part answers is counted until its answer: a part that ends waits for them,
     // so the call that made the change it ends for hears its answer.
-    let answer = |value: Value| match connections {
+    let answer = |value: Value| match &connections {
         Some(connections) => connections.counting(unanswered(value)),
         None => unanswered(value),
+    };
+    // A connection whose key was revoked ends at its loop's next look, whatever it waits on.
+    let mut revoked = || match held.and_then(HeldConnection::ended) {
+        Some(why) => Err(io::Error::new(io::ErrorKind::PermissionDenied, why)),
+        None => Ok(()),
     };
     // Each answer is written whole, so a descriptor it carries (the link `seats#signed-in` hands
     // root) goes with its line.
@@ -2844,12 +2965,30 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
         stream,
         handed: seated.map(|seated| &*seated.handed),
     });
-    let ended = serve_lines(runtime, input, &mut writer, answer, None);
+    let ended = serve_lines(
+        runtime,
+        input,
+        &mut writer,
+        answer,
+        held.map(|_| &mut revoked as &mut dyn FnMut() -> io::Result<()>),
+    );
+    // A connection ended for its revoked key tells its client why, naming no request.
+    if let Some(why) = held.and_then(HeldConnection::ended) {
+        let ending =
+            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32000, "message": why}});
+        let _ = tilo_mcp::lines::write_reply(&mut writer, &ending);
+    }
     // The reader thread holds a clone of the socket: shut it, so the reader
     // sees its end and the client its connection close.
     let _ = stream.shutdown(std::net::Shutdown::Both);
     ended
 }
+
+/// What a connection of a key that is no agent's is told as it ends, its person having revoked
+/// the key it acts as.
+const KEY_REVOKED: &str =
+    "key_revoked: this key was revoked, so its connection ended: approve this device again to \
+     connect once more";
 
 /// The answer to `request` its session could not be admitted for, saying `why`: a call's own
 /// refusal for a tool call, an error for any other request.

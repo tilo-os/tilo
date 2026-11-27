@@ -115,6 +115,9 @@ pub struct McpServer<H> {
     invoker: Option<tilo_actions::ActionInvoker>,
     /// Whose shell this session's `terminal#run` reaches ([`Shell`]).
     shell: Shell,
+    /// The person's root key and the key this session's calls are signed under, where that is
+    /// another key than its caller's own: an agent's, which its device made it ([`Self::key`]).
+    signed_as: Option<([u8; 32], [u8; 32])>,
     /// The session every invocation of this connection is attributed to.
     agent_session: std::sync::Mutex<Option<Session>>,
     /// The caller-chosen invocation ids a call of this session is running
@@ -596,6 +599,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             caller,
             invoker: None,
             shell: Shell::App,
+            signed_as: None,
             agent_session: std::sync::Mutex::new(None),
             invoking: InFlight::default(),
             handles: std::sync::Mutex::default(),
@@ -708,6 +712,27 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn execution_caller(&self) -> Caller {
         self.caller.clone()
+    }
+
+    /// This session with its calls signed under the key `device` of the person `user`: an
+    /// agent's own key, beside the caller it runs as.
+    #[must_use]
+    pub const fn signed_as(mut self, user: [u8; 32], device: [u8; 32]) -> Self {
+        self.signed_as = Some((user, device));
+        self
+    }
+
+    /// The person's root key and the key this session acts under: the key it signs its calls
+    /// with ([`Self::signed_as`]), or its caller's own. A revocation of that key ends the
+    /// session where it is connected. `None` for a caller with no key of its own.
+    #[must_use]
+    pub fn key(&self) -> Option<([u8; 32], [u8; 32])> {
+        self.signed_as.or_else(|| {
+            Some((
+                *self.caller.user_public_key()?,
+                *self.caller.device_public_key()?,
+            ))
+        })
     }
 
     /// Answer an action that produced image content with the image itself,

@@ -363,8 +363,8 @@ async fn a_revoked_devices_link_ends_and_another_members_stays_up() {
         .link(created.workspace_id)
         .expect("the server serves the workspace over a direct link");
 
-    // The person revokes that device, as their root does, and the host is told
-    // what admission reads may have narrowed.
+    // The person revokes that device, as their root does, and the host takes the
+    // entry in as it takes any device's announcement of it.
     let mut entry = RevocationEntry {
         user_public_key: revoked.user_public_key,
         revoked_device_public_key: revoked.device_public_key,
@@ -373,22 +373,13 @@ async fn a_revoked_devices_link_ends_and_another_members_stays_up() {
         signature: [0; 64],
     };
     sign_revocation_entry(&mut entry, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    workspaces
-        .inner
-        .host
-        .revocations
-        .write()
-        .unwrap()
-        .insert(entry)
-        .unwrap();
-    crate::authority_epoch::bump();
+    workspaces.take_revocations(vec![entry]).await.unwrap();
 
-    tilo_test_env::within("the revoked device's links to end", async {
-        while host.ended_link(revoked.device_public_key).is_none() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    // Its links ended as the revocation was taken in, not at its next dial or frame.
+    assert!(
+        host.ended_link(revoked.device_public_key).is_some(),
+        "the revoked device's links end at once"
+    );
     assert!(
         host.ended_link(kept.device_public_key).is_none(),
         "another member's links stay up"

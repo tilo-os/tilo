@@ -1372,17 +1372,43 @@ impl Workspaces {
     }
 
     /// Hand `heard` each device revoked here from now on, by its person's key and its own: what
-    /// a crate keeps by a device's key goes with it.
+    /// a crate keeps by a device's key goes with it, and a connection the key holds open there
+    /// ends ([`Self::end_key`]).
     pub fn on_device_revoked(&self, heard: DeviceRevoked) {
         self.inner.revoked.write_recover().push(heard);
     }
 
-    /// Tell what hears of revoked devices that the device `device` of the person `user` was
-    /// revoked.
-    pub(crate) fn device_revoked(&self, user: &[u8; 32], device: &[u8; 32]) {
+    /// End at once every live link the key `device` of the person `user` holds here, as its
+    /// person revoked it: each workspace's device link to it ends, refused as revoked; each agent
+    /// run it holds on its own device link stops; and everything that heard of revoked keys
+    /// ([`Self::on_device_revoked`]) ends what it keeps open for it, as the daemon its
+    /// connections. Nothing written after the revocation reaches the key over any of them, and
+    /// a dial or call it makes again is refused by its admission.
+    pub(crate) fn end_key(&self, user: &[u8; 32], device: &[u8; 32]) {
+        let linked = self
+            .inner
+            .link_remotes
+            .lock_recover()
+            .iter()
+            .filter(|(_, remotes)| remotes.contains(device))
+            .map(|(workspace, _)| *workspace)
+            .collect::<Vec<_>>();
+        for workspace in linked {
+            if let Some(link) = self.inner.direct.link(workspace) {
+                link.end_link(
+                    *device,
+                    tilo_server_protocol::refusal::Refusal::DeviceRevoked,
+                );
+            }
+        }
+        // The MCP server holds only the host's own person's agents.
+        if *user == self.inner.host.cert.user_public_key {
+            self.inner.mcp_server.forget(device);
+        }
         for heard in self.inner.revoked.read_recover().iter() {
             heard(user, device);
         }
+        presence_changed();
     }
 
     /// The MCP server as the person reads it: every agent it let in, the reach each was let in

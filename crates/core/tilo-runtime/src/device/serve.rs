@@ -1044,7 +1044,11 @@ mod tests {
 
     impl Agent {
         fn connect(agents: &Agents) -> Self {
-            let writing = agents.connect();
+            Self::over(agents.connect())
+        }
+
+        /// The agent at `writing`, a connection to the daemon, once it initialized.
+        fn over(writing: Stream) -> Self {
             writing
                 .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
@@ -1146,9 +1150,10 @@ mod tests {
     const REVOKED_TEST: &str = "device::serve::tests::an_agent_whose_key_its_person_revokes_is_ended_where_it_is_connected";
 
     /// An agent on the device's socket acts under a key the person's root certified it. Once the
-    /// person revokes that key, the open connection's next call is refused with why and the
-    /// connection ends; the workspace's host refuses whatever the key signs, whichever device
-    /// sends it; and an agent that connects again is told why it is not served.
+    /// person revokes that key, its open connection is told why and ends at once, without a call
+    /// of its own, while another agent's connection under another key of the person's stays up;
+    /// the workspace's host refuses whatever the key signs, whichever device sends it; and an
+    /// agent that connects again is told why it is not served.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -1208,6 +1213,15 @@ mod tests {
             .made(&cert.device_public_key)
             .unwrap();
 
+        // Another agent of the person's, connected under a key of its own.
+        let (theirs, served) = tilo_socket::pair().unwrap();
+        let endpoint = crate::daemon::agents_endpoint(&daemon, Arc::clone(&socket.presence))
+            .with_sessions(daemon.agent_sessions("another agent"));
+        std::thread::spawn(move || endpoint.serve(served, Vec::new(), None));
+        let mut other = Agent::over(theirs);
+        let (listed, failed) = other.tool("tilo_ls", &json!({"path": ""}));
+        assert!(!failed && listed.contains("devices"), "{listed}");
+
         // The person revokes it while the agent's connection is open: their root signs the entry
         // and their devices take it in, the record marking it with them.
         let mut entry = tilo_user_identity::RevocationEntry {
@@ -1222,16 +1236,26 @@ mod tests {
             .block_on(daemon.serving().copies().announce_revocations(vec![entry]))
             .unwrap();
 
-        // The same connection's next call is refused with why, and the connection ends.
-        let (said, failed) = agent.tool("tilo_ls", &json!({"path": ""}));
-        assert!(failed, "{said}");
-        assert_eq!(said, REVOKED);
+        // The connection is told why and ends, without a call of its own: nothing written from
+        // the revocation on reaches the agent over it.
         let mut line = String::new();
+        assert!(
+            agent.reading.read_line(&mut line).unwrap() > 0,
+            "the revoked agent's connection is told why it ends"
+        );
+        let told: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(told["error"]["message"], REVOKED, "{told}");
+        assert_eq!(told["id"], Value::Null, "{told}");
+        line.clear();
         assert_eq!(
             agent.reading.read_line(&mut line).unwrap(),
             0,
-            "the connection ends after its refusal: {line}"
+            "the connection ends once it was told: {line}"
         );
+
+        // The other agent's connection, under another key of the person's, stays up and acts.
+        let (listed, failed) = other.tool("tilo_ls", &json!({"path": ""}));
+        assert!(!failed && listed.contains("devices"), "{listed}");
 
         // The workspace's host was told: what the key signs is refused there, sent by anyone.
         let host = daemon.serving().copies().clone();
@@ -1298,7 +1322,7 @@ mod tests {
         let told: Value = serde_json::from_str(&told).unwrap();
         assert_eq!(told["error"]["message"], REVOKED, "{told}");
 
-        drop((agent, again));
+        drop((agent, other, again));
         daemon.agents().withdraw();
         runtime.block_on(socket.presence.close());
     }
