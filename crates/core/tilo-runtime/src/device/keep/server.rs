@@ -202,6 +202,9 @@ pub(crate) struct WebContext {
     /// apps are told through.
     #[cfg(feature = "agents")]
     pub(crate) closed_apps: Option<tilo_server_protocol::config::ApplePushKey>,
+    /// The stand-in for Apple's push service a test has the server push to.
+    #[cfg(all(test, feature = "agents"))]
+    pub(crate) apple_through: Arc<std::sync::OnceLock<crate::device::keep::apple_push::Service>>,
 }
 
 impl Server {
@@ -562,6 +565,8 @@ impl Server {
             link: Arc::default(),
             #[cfg(feature = "agents")]
             closed_apps: cfg.apple_push.clone(),
+            #[cfg(all(test, feature = "agents"))]
+            apple_through: Arc::default(),
         });
         let protocols: Protocols = Vec::new();
         let protocols = {

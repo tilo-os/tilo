@@ -1505,3 +1505,76 @@ async fn a_persons_picture_is_served_at_a_public_address_until_they_replace_it()
     assert_eq!(status, 404, "a picture they replaced serves nothing");
     stop(server, serving).await;
 }
+
+/// A server whose configuration names a key for Apple's push service tells a person's closed
+/// iPhone app that something waits for them: the key goes from the configuration the daemon
+/// reads to the sender its web start opens, with nothing else naming it.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closed_iphone_app_is_told_through_the_key_the_configuration_names() {
+    use crate::device::keep::apple_push::tests as apple;
+    use tilo_person_services::PersonServices;
+
+    let apple_service = apple::StandIn::start().await;
+    let keys = tempfile::tempdir().unwrap();
+    let (key, signs_with) = apple::made_up_key(keys.path());
+    let signer = SigningKey::from_bytes(&[81; 32]);
+    let host = host(&signer, 82, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = server_at(
+        &state,
+        host.identity(),
+        ServerConfig {
+            apple_push: Some(key),
+            ..ServerConfig::default()
+        },
+    )
+    .await;
+    assert!(
+        server
+            .web_context()
+            .apple_through
+            .set(apple_service.service())
+            .is_ok()
+    );
+    let web = web_of(&server, &host);
+    web.serve_pushes(
+        state.path(),
+        None,
+        None,
+        (std::net::Ipv4Addr::LOCALHOST, 0).into(),
+    );
+
+    // Her phone handed the server its address; no device of hers is looking.
+    let workspaces = server.workspaces().unwrap().clone();
+    let phone = apple::Device::new(1);
+    apple::reach(&workspaces, &apple::ADA, &phone);
+    let reminded = PersonServices::of(&workspaces)
+        .tell(
+            &apple::ADA,
+            apple::reminder("The landlord writes about the lease.", "lease-1"),
+        )
+        .unwrap();
+    assert!(reminded.reaches);
+
+    // The teller the server runs pushes it to her phone, through the key it was configured with.
+    let heard = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let heard = apple_service.heard();
+            if !heard.is_empty() {
+                return heard;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the server pushed nothing to Apple's service for her closed app");
+    assert_eq!(heard.len(), 1);
+    let push = heard.first().unwrap();
+    assert_eq!(push.token, phone.token);
+    let (header, claims) = apple::signed_in(push.header("authorization").unwrap(), &signs_with);
+    assert_eq!(header["kid"], "MADEUP0001");
+    assert_eq!(claims["iss"], "MADEUPTEAM");
+
+    crate::device::keep::server::Server::shutdown(server).await;
+}

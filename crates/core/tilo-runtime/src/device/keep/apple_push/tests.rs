@@ -36,7 +36,7 @@ use tilo_person_services::push_addresses::{PushKey, Register};
 use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
 
 /// A person this server keeps a log for. No device of theirs is on.
-const ADA: [u8; 32] = [8; 32];
+pub(crate) const ADA: [u8; 32] = [8; 32];
 /// Another, who shares nothing with her.
 const BO: [u8; 32] = [9; 32];
 /// The workspace her assistant works in.
@@ -49,15 +49,15 @@ const START: u64 = 1_000_000;
 const MINUTE: u64 = 60;
 
 /// One push the stand-in was sent.
-struct Seen {
+pub(crate) struct Seen {
     /// The token it was sent to, as the address of the request names it.
-    token: String,
+    pub(crate) token: String,
     headers: HashMap<String, String>,
     body: Value,
 }
 
 impl Seen {
-    fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(String::as_str)
     }
 
@@ -76,7 +76,7 @@ type Answers = Arc<Mutex<HashMap<String, (u16, Value)>>>;
 /// A stand-in for Apple's push service on this machine: HTTP/2 over TLS,
 /// with a certificate made when it starts. It takes every push with 200
 /// unless a test says what it answers one token with.
-struct StandIn {
+pub(crate) struct StandIn {
     port: u16,
     certificate: CertificateDer<'static>,
     seen: Arc<Mutex<Vec<Seen>>>,
@@ -84,7 +84,7 @@ struct StandIn {
 }
 
 impl StandIn {
-    async fn start() -> Self {
+    pub(crate) async fn start() -> Self {
         let key = rcgen::KeyPair::generate().unwrap();
         let certificate = rcgen::CertificateParams::new(vec!["localhost".to_owned()])
             .unwrap()
@@ -135,8 +135,25 @@ impl StandIn {
         }
     }
 
+    /// Apple's push service as a sender reaches this stand-in: at its port, trusting the
+    /// certificate it made.
+    pub(crate) fn service(&self) -> Service {
+        let mut tls =
+            tilo_net::client_config_also_trusting(vec![self.certificate.clone()]).unwrap();
+        tls.alpn_protocols = vec![b"h2".to_vec()];
+        let reached = Reached {
+            name: "localhost".to_owned(),
+            port: self.port,
+        };
+        Service {
+            production: reached.clone(),
+            development: reached,
+            tls: Arc::new(tls),
+        }
+    }
+
     /// The pushes it was sent since this was last asked, in order.
-    fn heard(&self) -> Vec<Seen> {
+    pub(crate) fn heard(&self) -> Vec<Seen> {
         std::mem::take(&mut *self.seen.lock().unwrap())
     }
 
@@ -193,17 +210,17 @@ async fn answer(
 
 /// A device as an app makes itself one: the token a push service would
 /// give it, and a key and a secret of its own. All made up.
-struct Device {
+pub(crate) struct Device {
     /// What the transport would certify it as.
     id: [u8; 32],
-    token: String,
+    pub(crate) token: String,
     key: agreement::EphemeralPrivateKey,
     public: Vec<u8>,
     secret: [u8; 16],
 }
 
 impl Device {
-    fn new(n: u8) -> Self {
+    pub(crate) fn new(n: u8) -> Self {
         let key =
             agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &SystemRandom::new())
                 .unwrap();
@@ -251,7 +268,7 @@ impl Device {
 
 /// A key as Apple hands one out, made up now, in a file under `folder`
 /// that its owner alone reads; and its public half.
-fn made_up_key(folder: &Path) -> (ApplePushKey, Vec<u8>) {
+pub(crate) fn made_up_key(folder: &Path) -> (ApplePushKey, Vec<u8>) {
     use ring::signature::KeyPair as _;
     use std::os::unix::fs::PermissionsExt as _;
     let algorithm = &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING;
@@ -288,22 +305,7 @@ fn for_stand_in(
     workspaces: Workspaces,
     apple: &StandIn,
 ) -> Result<ApplePush, String> {
-    let mut tls = tilo_net::client_config_also_trusting(vec![apple.certificate.clone()])
-        .map_err(|error| error.to_string())?;
-    tls.alpn_protocols = vec![b"h2".to_vec()];
-    let reached = Reached {
-        name: "localhost".to_owned(),
-        port: apple.port,
-    };
-    ApplePush::with(
-        setup,
-        workspaces,
-        Service {
-            production: reached.clone(),
-            development: reached,
-            tls: Arc::new(tls),
-        },
-    )
+    ApplePush::with(setup, workspaces, apple.service())
 }
 
 /// A server with nobody's device on, a stand-in for Apple's push service,
@@ -345,7 +347,7 @@ async fn served() -> Served<impl Sized> {
 }
 
 /// Hand `device` over as a device of `person`'s.
-fn reach(workspaces: &Workspaces, person: &[u8; 32], device: &Device) {
+pub(crate) fn reach(workspaces: &Workspaces, person: &[u8; 32], device: &Device) {
     PersonServices::of(workspaces)
         .register_push_address(
             person,
@@ -372,7 +374,7 @@ fn assistant() -> ToldBy {
 }
 
 /// A reminder a person's assistant tells them.
-fn reminder(words: &str, key: &str) -> ToTell {
+pub(crate) fn reminder(words: &str, key: &str) -> ToTell {
     ToTell {
         kind: Kind::Reminder,
         words: words.into(),
@@ -403,7 +405,7 @@ fn news(words: &str, key: &str) -> ToTell {
 
 /// What `authorization` signs in with: the header and the claims of its
 /// token, once the made-up key `public` is seen to have signed them.
-fn signed_in(authorization: &str, public: &[u8]) -> (Value, Value) {
+pub(crate) fn signed_in(authorization: &str, public: &[u8]) -> (Value, Value) {
     let token = authorization.strip_prefix("bearer ").unwrap();
     let parts: Vec<&str> = token.split('.').collect();
     assert_eq!(parts.len(), 3);

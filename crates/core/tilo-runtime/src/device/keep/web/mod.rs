@@ -104,8 +104,15 @@ impl Web {
                     // Apple's push service, where this server's configuration
                     // names a key for that.
                     let named = self.context.closed_apps.as_ref();
-                    let apple =
-                        crate::device::keep::apple_push::ApplePush::open(named, workspaces.clone());
+                    #[cfg(test)]
+                    let through = self.context.apple_through.get().cloned();
+                    #[cfg(not(test))]
+                    let through = None;
+                    let apple = crate::device::keep::apple_push::ApplePush::open_through(
+                        named,
+                        workspaces.clone(),
+                        through,
+                    );
                     let teller = if let Some(apple) = apple {
                         teller.also(Arc::new(apple))
                     } else {

@@ -87,7 +87,7 @@ struct Reached {
 
 /// Where Apple's push service is reached, and what is trusted to be it.
 #[derive(Clone)]
-struct Service {
+pub(crate) struct Service {
     production: Reached,
     development: Reached,
     tls: Arc<rustls::ClientConfig>,
@@ -317,18 +317,31 @@ async fn connect(reached: &Reached, tls: &Arc<rustls::ClientConfig>) -> Result<S
 }
 
 impl ApplePush {
-    /// The sender a server was told to be at its start. None where no key
-    /// was named, and none where the key that was named cannot be used:
-    /// the server's log says which, once.
+    /// The sender a server's configuration names, pushing to Apple's own service. None where
+    /// no key was named, and none where the key that was named cannot be used: the server's
+    /// log says which, once.
     #[must_use]
     pub fn open(setup: Option<&ApplePushKey>, workspaces: Workspaces) -> Option<Self> {
+        Self::open_through(setup, workspaces, None)
+    }
+
+    /// [`Self::open`], pushing to `through` where one is given instead of Apple's own
+    /// service: a stand-in a test serves.
+    pub(crate) fn open_through(
+        setup: Option<&ApplePushKey>,
+        workspaces: Workspaces,
+        through: Option<Service>,
+    ) -> Option<Self> {
         let Some(setup) = setup else {
             tracing::info!(
                 "no key for Apple's push service was named at the start: an app that is closed is told nothing"
             );
             return None;
         };
-        match Service::apple().and_then(|service| Self::with(setup, workspaces, service)) {
+        match through
+            .map_or_else(Service::apple, Ok)
+            .and_then(|service| Self::with(setup, workspaces, service))
+        {
             Ok(push) => {
                 tracing::info!(
                     apps = ?setup.topics,
@@ -658,4 +671,4 @@ impl tilo_app_host::agents::telling::Outside for ApplePush {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
