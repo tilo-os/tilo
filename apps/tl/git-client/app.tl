@@ -944,10 +944,16 @@ action pull(g: Repository, remote: Text = "") (icon: .arrow_down, label: "Pull f
     }
 }
 
-/// Pushes the current branch to a like-named branch on a remote.
+/// Pushes the current branch to a like-named branch on a remote. What it sends leaves the system
+/// for good: everyone who reads the remote has it.
 action push(g: Repository, remote: Text = "") (icon: .arrow_up, label: "Push to remote") {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "push", json.encode(RemoteAsk(path: s.path, remote: remote)))
+    match engine.call(leaves: true, "push", json.encode(RemoteAsk(path: s.path, remote: remote))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = "Pushed to {remote}"
     }

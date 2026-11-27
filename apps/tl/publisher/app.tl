@@ -325,7 +325,7 @@ primary action apply_for_namespaces(p: Publisher) (
         forge_account: p.forge_account,
         contact: p.contact,
     )
-    match engine.start("apply", json.encode(ask), done: j -> answered(p, j)) {
+    match engine.start(leaves: true, "apply", json.encode(ask), done: j -> answered(p, j)) {
         .err(why) => {
             p.notice_kind = "error"
             p.notice_detail = why

@@ -1113,6 +1113,8 @@ mod tests {
             "mail.purge",
             "messages.send",
             "git-client.delete_branch",
+            "git-client.push",
+            "api-tester.start_send",
             "terminal.restart",
         ] {
             assert_eq!(of(leaves).0, Confirms::Always, "{leaves} always confirms");

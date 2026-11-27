@@ -524,6 +524,7 @@ action put_file(c: Connection, local_path: Text, remote_path: Text) (
     require ssh_session(c) != .none "No SSH session to this machine is open here"
     let job = ssh_session(c)?.job ?? ""
     match engine.start(
+        leaves: true,
         "put",
         json.encode(TransferAsk(job: job, local_path: local_path, remote_path: remote_path)),
         done: j -> moved_file(c, j),

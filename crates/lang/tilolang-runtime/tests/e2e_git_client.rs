@@ -932,6 +932,48 @@ mod cases {
             assert_eq!(dispatch.len(), asked + 1, "and asks nothing more");
         }
 
+        phase pushing_leaves_the_system_so_it_always_confirms;
+        {
+            let s = Site::new();
+            let dispatch = Dispatch::new();
+            s.rt.set_foreign_invoker(dispatch.clone());
+            s.open(REPO);
+            let window = s.window();
+            let push = of_kind(window.tree(), "ui.Button")
+                .into_iter()
+                .find(|b| b.props.get("label") == Some(&Value::text("Push")))
+                .expect("the window offers Push")
+                .key
+                .clone();
+            // What a push sends, everyone who reads the remote has: it asks, Shift held or not,
+            // and nothing goes before the yes.
+            for shift in [false, true] {
+                let held = tilolang_runtime::Held {
+                    shift,
+                    ..tilolang_runtime::Held::default()
+                };
+                let tilolang_runtime::InvokeOutcome::Asked(_) =
+                    window.fire_held(&push, "press", None, None, held).unwrap()
+                else {
+                    panic!("a press of Push confirms it first, Shift held: {shift}");
+                };
+                assert_eq!(dispatch.asked().0, s.app.action("push"));
+            }
+            assert!(s.engine.asked_with("push").is_empty(), "nothing is pushed before the yes");
+            let id = s.app.action("push");
+            let out = s
+                .rt
+                .invoke_approved_through(
+                    &me(),
+                    None,
+                    (id.as_str(), vec![Value::resource(&s.root), Value::text("")]),
+                    None,
+                )
+                .unwrap();
+            assert!(matches!(out, tilolang_runtime::InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(s.engine.asked_with("push").len(), 1, "it goes on the yes");
+        }
+
         phase a_switch_over_uncommitted_work_asks_and_parks_it;
         {
             let s = Site::new();
