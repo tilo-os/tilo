@@ -1339,6 +1339,26 @@ impl Device {
         status["workspace"].as_str().unwrap_or_default().to_owned()
     }
 
+    /// The files of the workspaces this device's workspace service keeps on disk: what a step
+    /// that could not reach one reads, to say whether it was never written or never opened.
+    pub fn workspace_files(&self) -> String {
+        let dir = self
+            .home
+            .path()
+            .join("state/tilo/device/own/service/workspaces");
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| {
+                let size = entry.metadata().map(|meta| meta.len()).unwrap_or_default();
+                format!("{} ({size} bytes)", entry.file_name().to_string_lossy())
+            })
+            .collect();
+        files.sort();
+        format!("{}: {files:?}", dir.display())
+    }
+
     /// The person's device action `action` with `args`, asked on their own connection to this
     /// device's daemon as `tilo device` asks it, in the workspace it holds of theirs: its answer,
     /// asked again until the person's services, which start after the daemon answers, take it.
@@ -1727,7 +1747,7 @@ impl Device {
                     .filter(|line| {
                         [
                             "refused", "seal", "channel", "identity", "join", "WARN", "ERROR",
-                            "panicked", "exited",
+                            "panicked", "exited", "released", "held",
                         ]
                         .iter()
                         .any(|word| line.contains(word))

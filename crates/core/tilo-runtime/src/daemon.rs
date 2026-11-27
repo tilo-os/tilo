@@ -957,9 +957,10 @@ fn serve_device(
                 },
             );
         }
-        // Its workspace service stops answering and saves what it took in, before the next part
-        // opens the same stores and enters as the same device. The step is bounded from inside,
-        // so it always ends and lets go of the service it ran.
+        // Its workspace service stops answering before the next part opens the same stores and
+        // enters as the same device: what it held is already written through, every change kept
+        // before the call that made it was answered. The step is bounded from inside, so it
+        // always ends and lets go of the service it ran.
         let workspaces = Arc::clone(session.serving());
         let left = Arc::downgrade(&session);
         crate::device::serve::ending_step(

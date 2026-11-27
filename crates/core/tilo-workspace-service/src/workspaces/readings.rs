@@ -304,6 +304,11 @@ impl Workspaces {
             .lock()
             .await
             .insert(workspace.to_owned(), Arc::clone(state));
+        // Whoever waits for this workspace to be held hears it only once it is: the map is what
+        // every call in the workspace is admitted against.
+        self.inner
+            .kept_workspaces
+            .send_modify(|kept| *kept = kept.wrapping_add(1));
     }
 
     /// What `workspace` is read through: its store and its copy, a command or a read at a time.

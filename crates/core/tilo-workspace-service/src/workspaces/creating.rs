@@ -256,11 +256,7 @@ impl super::Workspaces {
         // Opened before it is held: a call admitted in the moment between holding it and the
         // settle below signs for a workspace this host serves.
         tilo_invocation_journal::opened(&summary.workspace);
-        self.inner
-            .workspaces
-            .lock()
-            .await
-            .insert(summary.workspace.clone(), Arc::clone(&workspace));
+        self.keep_held(&summary.workspace, &workspace).await;
         let mut hosted = workspace.lock().await;
         self.settle(&mut hosted).await?;
         self.name_own_host(&mut hosted).await?;
@@ -268,6 +264,9 @@ impl super::Workspaces {
             self.give_ownership(&mut hosted, person, None).await?;
         }
         self.serve_direct(&hosted).await?;
+        // Everything this create made is written through before it answers as done: the next
+        // part opens the store as this one leaves it, whatever moment this one ends at.
+        hosted.keep_followed();
         drop(hosted);
         self.keep_reading(&workspace).await;
         tracing::info!(workspace = %summary.workspace, workspace_id = %summary.workspace_id, "hosted workspace created");

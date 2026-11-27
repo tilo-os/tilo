@@ -176,6 +176,8 @@ pub use crate::documents::device_keys::{
 #[cfg(test)]
 mod copy_now_tests;
 #[cfg(test)]
+mod durability_tests;
+#[cfg(test)]
 mod kept_record_tests;
 #[cfg(test)]
 mod member_grants_tests;
@@ -933,6 +935,14 @@ impl HostedWorkspace {
     }
 }
 
+/// Why a call waiting for a workspace to be held here never is: the part that served on this
+/// service ended, and the part that starts next holds it.
+fn stopped_before_held() -> String {
+    "this device's workspace service stopped before it held that workspace; its next part holds \
+     it"
+    .to_owned()
+}
+
 /// The extension of the marker beside a workspace file this host released.
 const RELEASED: &str = "released";
 
@@ -1141,6 +1151,9 @@ struct WorkspacesInner {
     /// Moves when [`Self::stopped`] becomes true, so a write waiting on the workspaces ends
     /// rather than wait for a part that is gone ([`Workspaces::stops_changed`]).
     stops: tokio::sync::watch::Sender<bool>,
+    /// Moves whenever a workspace is taken into the held workspaces here: what a call waiting for
+    /// one to be held hears, instead of looking again ([`Workspaces::workspace_kept`]).
+    kept_workspaces: tokio::sync::watch::Sender<u64>,
     /// The mode the host runs under, when its operator offers a kill switch: what its entry
     /// admits follows it ([`Workspaces::hold_mode`]).
     mode: std::sync::RwLock<Option<Arc<mode::HostMode>>>,
@@ -1712,6 +1725,7 @@ impl Workspaces {
                 draining: std::sync::atomic::AtomicBool::new(false),
                 stopped: std::sync::atomic::AtomicBool::new(false),
                 stops: tokio::sync::watch::channel(false).0,
+                kept_workspaces: tokio::sync::watch::channel(0).0,
                 mode: std::sync::RwLock::new(None),
                 store,
                 direct,
@@ -1792,6 +1806,11 @@ impl Workspaces {
         }
         let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
+        // Every workspace this part opened is held from here on: whoever waited for one to be
+        // held hears it now.
+        this.inner
+            .kept_workspaces
+            .send_modify(|kept| *kept = kept.wrapping_add(1));
         let kept = this.served_kept().await;
         this.serve_kept(&kept).await?;
         // A page reading an invitation answers without a workspace's lock
@@ -2320,6 +2339,27 @@ impl Workspaces {
     #[must_use]
     pub fn holds_changed(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.readings.holds()
+    }
+
+    /// Resolves once `workspace` is held here, as what a founding waits for rather than looking
+    /// again: a workspace created, adopted or entered is taken into the held workspaces before
+    /// this answers.
+    ///
+    /// # Errors
+    /// This service stopped before it held `workspace`: the part that starts next holds it.
+    pub async fn workspace_kept(&self, workspace: &str) -> Result<(), String> {
+        let mut kept = self.inner.kept_workspaces.subscribe();
+        loop {
+            if self.inner.workspaces.lock().await.contains_key(workspace) {
+                return Ok(());
+            }
+            if self.stopped() {
+                return Err(stopped_before_held());
+            }
+            if kept.changed().await.is_err() {
+                return Err(stopped_before_held());
+            }
+        }
     }
 
     /// Each write to a record a workspace held here took in: a member's write to
@@ -3365,7 +3405,10 @@ impl Workspaces {
         let _ = (&app, &record);
         if followed.changed {
             self.landed(workspace, &message);
-            self.keep_soon(workspace);
+            // Written through before this write is done with: what a member wrote is kept in the
+            // workspace's file as the host's copy has it, not a second later. A part that ends
+            // now leaves the workspace opening as it stands.
+            workspace.keep_followed();
         }
         if followed.replay_wanted {
             self.replay_soon(workspace.workspace().to_owned());
@@ -3438,31 +3481,6 @@ impl Workspaces {
                 );
                 false
             }
-        }
-    }
-
-    /// Write through what every workspace's host took in of its members'
-    /// writes, for a host that is stopping: the write-through is deferred
-    /// ([`Self::keep_soon`]), so a host stopped inside that window would end
-    /// with its copies in memory alone. A start replays what the server
-    /// retains, but that replay takes a write only into a record the
-    /// host already keeps: the record a member's write changed has to be
-    /// on disk for a restart to serve it.
-    pub async fn keep_what_was_followed(&self) {
-        let held = {
-            let workspaces = self.inner.workspaces.lock().await;
-            workspaces.values().cloned().collect::<Vec<_>>()
-        };
-        for workspace in held {
-            let mut workspace = workspace.lock().await;
-            // A copy kept in the background may still be on its way: this
-            // one, written now, holds all it held. A write the link took in
-            // that the host has not followed yet is in the copy too.
-            if workspace.unkept || workspace.parts.pending() || workspace.differs_from_file() {
-                workspace.keeping = false;
-                workspace.keep_followed();
-            }
-            workspace.resources.keep();
         }
     }
 

@@ -250,18 +250,6 @@ impl HostedWorkspace {
         }
     }
 
-    /// Whether the copy holds what its workspace file does not name. The link takes a member's
-    /// write into the copy before the host follows it and marks the copy unkept, so a copy
-    /// can differ from its file with nothing marked. One that cannot be named counts as
-    /// differing: writing it says why.
-    pub(super) fn differs_from_file(&mut self) -> bool {
-        let named = {
-            let peer = self.peer.lock();
-            self.parts.name(&peer)
-        };
-        !named.is_ok_and(|parts| parts == self.record.peer)
-    }
-
     /// What [`Self::keep_followed`] writes, named now, and the files it is
     /// written to: written after the workspace is let go, as a large document
     /// can take the disk seconds, and every read of the workspace and every
@@ -516,8 +504,10 @@ impl Workspaces {
     }
 
     /// Write the members' writes `workspace` took in through to its workspace file
-    /// within [`KEEP_FOLLOWED`], once for all of them: a write each made a
-    /// busy chat queue behind its own workspace file.
+    /// within [`KEEP_FOLLOWED`], once for all of them. A workspace this host serves writes its
+    /// writes through before it answers them ([`HostedWorkspace::keep_followed`]); this is for a member
+    /// copy, whose durable copy is the device serving it, so a part that ends here starts again
+    /// from there.
     pub(super) fn keep_soon(&self, workspace: &mut HostedWorkspace) {
         workspace.unkept = true;
         if std::mem::replace(&mut workspace.keeping, true) {

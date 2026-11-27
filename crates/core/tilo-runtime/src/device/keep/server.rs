@@ -724,12 +724,10 @@ impl Server {
     /// endpoint right after, which sends `CONNECTION_CLOSE` straight away, so
     /// peers drop the subscription and queue instead.
     ///
-    /// What its workspaces took in of their members' writes is written
-    /// through to their files first
-    /// ([`tilo_workspace_service::workspaces::Workspaces::keep_what_was_followed`]): that
-    /// write-through is deferred, so a server stopped without it would start
-    /// again on documents that lack what was written last, and owe a turn its
-    /// agent had already answered.
+    /// Every write its workspaces took in is already in their files: each is
+    /// written through before the call that made it is answered, so a server
+    /// stopped at any moment starts again on what it answered, and owes no turn
+    /// its agent had answered.
     pub async fn shutdown(self) {
         // What this server started reaches the endpoint: stopped and awaited here, it lets go
         // of it before the daemon closes its endpoint. The dial loop is stopped first, so it

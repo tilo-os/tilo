@@ -201,12 +201,6 @@ impl PeerParts {
         }
     }
 
-    /// Whether a workspace file this named may not be written yet: one
-    /// written later is on its way, or failed.
-    pub(super) fn pending(&self) -> bool {
-        self.ordered > self.files.held().written
-    }
-
     /// The files the workspace's writes go to, for a write made without the
     /// workspace.
     pub(super) fn files(&self) -> PartFiles {

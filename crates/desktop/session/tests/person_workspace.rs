@@ -111,12 +111,13 @@ fn choose_mode(device: &Device, mode: &str) {
             }
             Some(_) => panic!(
                 "{} sets appearance.mode: {answer}\nits own workspace is {}, its daemon names \
-                 {:?}, it shows {:?}, and it holds {:?}\n{}",
+                 {:?}, it shows {:?}, it holds {:?}, and its service keeps {}\n{}",
                 device.label,
                 tilo_server_protocol::servers::person_workspace_id(&device.cert.user_public_key),
                 device.daemon_workspace(),
                 device.showing(),
                 device.held(),
+                device.workspace_files(),
                 device.diagnostic()
             ),
             None => return,

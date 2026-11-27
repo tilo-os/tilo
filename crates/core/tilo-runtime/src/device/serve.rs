@@ -45,8 +45,6 @@ pub(crate) const UNMOUNTING: Duration = Duration::from_secs(3);
 /// disk, all of them together: a tree's changes made here are saved, and a step still running
 /// is left behind rather than waited for.
 const STOPPING: Duration = Duration::from_secs(16);
-/// How long a stop waits for the workspace service to write through what it took in.
-const SAVING: Duration = Duration::from_secs(1);
 
 /// The most a holder's log keeps: a holder that takes the device empties a log grown past it.
 const LOG_KEPT: u64 = 8 << 20;
@@ -570,20 +568,13 @@ async fn serve_device(
         // cannot be interrupted; both are bounded, so a stop ends inside the unit's timeout.
         peer.stop(STOPPING).await;
     }
-    // A stop ends the process, and with it what its workspace service took in and has not
-    // written through yet: what this device signed into a workspace a moment ago, an agent's
-    // admission among it. A start would sign that again under numbers the workspace's other
-    // copies hold already. It is saved here, after the trees are kept, which write through it.
-    // A part that ends for the next one closes the service itself, before that part starts.
-    if stop.told()
-        && tokio::time::timeout(SAVING, daemon.serving().shutdown_service())
-            .await
-            .is_err()
-    {
-        tracing::error!(
-            waited_ms = SAVING.as_millis(),
-            "the person's part's workspace service did not save what it took in before the stop"
-        );
+    // A stop ends the process, and its workspace service with it: what it holds is already
+    // written through, every change kept before the call that made it was answered. Stopping it
+    // here ends its sessions and stops it numbering changes, so nothing it served answers into a
+    // part that is gone. A part that ends for the next one closes the service itself, before
+    // that part starts.
+    if stop.told() {
+        daemon.serving().shutdown_service().await;
     }
     socket.presence.close().await;
     Ok(held)
@@ -783,11 +774,10 @@ impl Drop for Watching {
 }
 
 /// How long a daemon told to stop takes at most to end: every wait of its stop together (the
-/// folders and trees, the workspace service saving, the session closing, the runtime's threads,
+/// folders and trees, the workspace service ending, the session closing, the runtime's threads,
 /// the stores closing). Less than the user service gives a stop, so the service never has to
 /// kill it.
 pub(crate) const STOPPED_WITHIN: Duration = STOPPING
-    .saturating_add(SAVING)
     .saturating_add(super::presence::CLOSING)
     .saturating_add(SHUTDOWN)
     .saturating_add(RELEASING)

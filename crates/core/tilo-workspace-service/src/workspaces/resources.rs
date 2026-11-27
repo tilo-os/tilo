@@ -12,7 +12,8 @@
 //! of each document ([`Store::restore`]), and the document itself only when a write or a
 //! member's change needs it; a document whose snapshot is missing or stale is read whole
 //! ([`Store::load`]). A document nobody wrote for a while leaves memory ([`Store::evict`]), saved
-//! whole with its snapshot, and so does every document when the service stops.
+//! whole with its snapshot. A write is in its document's file, and its snapshot written, before
+//! the call that made it answers: a service stopped at any moment starts on what it answered.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -691,23 +692,6 @@ impl Resources {
         write_whole(&index.join(file_name(doc)), &kept)?;
         self.unsnapshotted.remove(doc);
         Ok(())
-    }
-
-    /// Keeps every document in memory whole with its snapshot, as the service stops, so the
-    /// next start reads snapshots rather than documents.
-    pub(super) fn keep(&mut self) {
-        let docs: Vec<String> = self.used.keys().cloned().collect();
-        for doc in docs {
-            self.let_go(&doc);
-        }
-    }
-}
-
-impl Drop for Resources {
-    fn drop(&mut self) {
-        if !self.unsnapshotted.is_empty() {
-            self.keep();
-        }
     }
 }
 
