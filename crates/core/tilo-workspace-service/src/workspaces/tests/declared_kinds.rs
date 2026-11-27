@@ -125,8 +125,8 @@ fn every_kind_a_write_path_names_is_declared_in_the_store_a_start_builds() {
     store
         .declare(reference::schema())
         .expect("the reference type is declared");
-    for (_, surface) in surfaces.resources() {
-        store.declare(Schema::from_surface(&surface)).unwrap();
+    for (app, surface) in surfaces.resources() {
+        store.declare(Schema::of_app(&app, &surface)).unwrap();
     }
 
     platform_writes_land(&mut store, &surfaces);

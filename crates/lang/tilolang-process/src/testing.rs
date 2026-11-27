@@ -195,18 +195,16 @@ impl Workspace {
         {
             let _ = store.declare(tilo_resource_store::reference::schema());
         }
-        for file in collab_types::app_surface::every() {
-            for surface in &file.resources {
-                let _ = store.declare(tilo_resource_store::Schema::from_surface(surface));
-            }
+        for (app, surface) in collab_types::app_surface::Surfaces::process().resources() {
+            let _ = store.declare(tilo_resource_store::Schema::of_app(&app, &surface));
         }
         // The host package's types, as a session's workspace declares them: what an app's actions
         // write when one runs a block or waits for its person (`tl.tilo.host.Invocation`).
-        for surface in tilolang_tilo::surface::package_surfaces(
-            &tilolang_tilo::tilolang::host_meta(),
-            &tilolang_tilo::runtime::SourceWords,
-        ) {
-            let _ = store.declare(tilo_resource_store::Schema::from_surface(&surface));
+        let host = tilolang_tilo::tilolang::host_meta();
+        for surface in
+            tilolang_tilo::surface::package_surfaces(&host, &tilolang_tilo::runtime::SourceWords)
+        {
+            let _ = store.declare(tilo_resource_store::Schema::of_app(&host.app, &surface));
         }
     }
 

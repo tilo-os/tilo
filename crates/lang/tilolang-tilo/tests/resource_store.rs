@@ -25,12 +25,12 @@ fn compile() -> tilolang::Compiled {
 struct Declared(std::cell::RefCell<tilo_resource_store::Store>);
 
 impl Declared {
-    fn of(surfaces: &[collab_types::surface::SurfaceFile]) -> Self {
+    fn of(surfaces: &[(&str, &collab_types::surface::SurfaceFile)]) -> Self {
         let mut store = tilo_resource_store::Store::new("workspace");
-        for file in surfaces {
+        for (app, file) in surfaces {
             for surface in &file.resources {
                 store
-                    .declare(tilo_resource_store::Schema::from_surface(surface))
+                    .declare(tilo_resource_store::Schema::of_app(app, surface))
                     .unwrap();
             }
         }
@@ -386,10 +386,9 @@ fn an_apps_writes_land_beside_the_types_other_apps_declare() {
         }]}),
     ))
     .unwrap();
-    let surfaces = [
-        collab_types::surface::SurfaceFile::compiled(&own).unwrap(),
-        other,
-    ];
+    let own = collab_types::surface::SurfaceFile::compiled(&own).unwrap();
+    let app = compiled.meta.app.clone();
+    let surfaces = [(app.as_str(), &own), ("so.tilo.test-other", &other)];
     let t = Todo::over(
         ResourceStore::new(std::rc::Rc::new(Declared::of(&surfaces))),
         compiled,

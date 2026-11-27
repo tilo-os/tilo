@@ -185,7 +185,7 @@ fn the_gallery_s_surface_admits_the_root_its_host_creates() {
     let meta = &packages[0].meta;
     let mut there = Store::new("workspace");
     for surface in tilolang_tilo::surface::package_surfaces(meta, &tilolang_runtime::SourceWords) {
-        there.declare(Schema::from_surface(&surface)).unwrap();
+        there.declare(Schema::of_app(&meta.app, &surface)).unwrap();
     }
     let kind = tilolang_tilo::meta::MetaExt::resource_type(meta);
     // A field its record holds, by the id a document stores it under.

@@ -749,7 +749,7 @@ fn a_surface_declares_types_their_indexed_fields_and_what_nests_in_them() {
             {"name": "State", "cases": [{"name": "open"}, {"name": "done"}]},
         ],
     }));
-    let schema = Schema::from_surface(&surface);
+    let schema = Schema::of_app("so.tilo.test", &surface);
     let names: Vec<&str> = schema.types.iter().map(|ty| ty.name.as_str()).collect();
     assert_eq!(names, ["Tracker", "Issue", "Comment"]);
     let issue = schema.get("Issue").unwrap();
@@ -791,12 +791,12 @@ fn a_type_version_only_adds_fields_and_containers() {
     };
     let refused = |store: &mut tilo_resource_store::Store, surface: &Surface| {
         store
-            .declare(Schema::from_surface(surface))
+            .declare(Schema::of_app("so.tilo.test", surface))
             .expect_err("a version that does not only add is refused")
     };
     let mut store = tilo_resource_store::Store::new(crate::WORKSPACE);
     store
-        .declare(Schema::from_surface(&tracker_surface()))
+        .declare(Schema::of_app("so.tilo.test", &tracker_surface()))
         .expect("the first version is declared");
 
     let dropped = later(|surface| {
@@ -825,7 +825,7 @@ fn a_type_version_only_adds_fields_and_containers() {
             .push(serde_json::json!({"name": "due", "type": {"option": "date"}}));
     });
     store
-        .declare(Schema::from_surface(&added))
+        .declare(Schema::of_app("so.tilo.test", &added))
         .expect("a version that only adds is declared");
     assert!(
         store
@@ -1008,7 +1008,7 @@ fn a_collection_of_a_union_nests_each_of_its_types() {
              ]}}},
         ],
     }));
-    let schema = Schema::from_surface(&surface);
+    let schema = Schema::of_app("so.tilo.test", &surface);
     assert_eq!(
         schema.get("tl.so.tilo.chat.Conversations").unwrap().nested,
         [
@@ -1025,7 +1025,7 @@ fn a_collection_of_a_union_nests_each_of_its_types() {
 /// knows the kind its resources are, the fields they hold, and what each verb writes of them.
 #[test]
 fn a_surface_describes_its_own_record_and_what_its_verbs_write() {
-    let schema = Schema::from_surface(&tilolang_surface());
+    let schema = Schema::of_app("so.tilo.test", &tilolang_surface());
     let kind = "tl.so.tilo.lang.gallery.Gallery";
     let gallery = schema
         .get(kind)
@@ -1064,7 +1064,7 @@ fn a_surface_describes_its_own_record_and_what_its_verbs_write() {
 #[test]
 fn a_verb_writes_what_its_type_holds_and_the_units_it_declares() {
     use tilo_resource_store::FIELD_EDIT;
-    let schema = Schema::from_surface(&tracker_surface());
+    let schema = Schema::of_app("so.tilo.test", &tracker_surface());
     let kinds =
         |verb: &str| -> Vec<String> { schema.verb(verb).unwrap().writes.keys().cloned().collect() };
     assert_eq!(kinds("rename"), ["Issue", "Tracker"]);
@@ -3074,7 +3074,9 @@ mod store {
             super::tilolang_todo_surface(),
             super::tilolang_comment_surface(),
         ] {
-            there.declare(Schema::from_surface(&surface)).unwrap();
+            there
+                .declare(Schema::of_app("so.tilo.test", &surface))
+                .unwrap();
         }
         let anyone = |_: &Proposal<'_>| true;
         let item = |order: &str| Resource {
@@ -3135,7 +3137,9 @@ mod store {
             super::tilolang_todo_surface(),
             super::tilolang_item_surface(),
         ] {
-            there.declare(Schema::from_surface(&surface)).unwrap();
+            there
+                .declare(Schema::of_app("so.tilo.test", &surface))
+                .unwrap();
         }
         let anyone = |_: &Proposal<'_>| true;
         let named = |field: &str| Resource {
@@ -3173,10 +3177,13 @@ mod store {
     fn a_change_writes_the_platform_field_no_type_declares() {
         let mut there = issues();
         there
-            .declare(Schema::from_surface(&super::tilolang_surface()))
+            .declare(Schema::of_app("so.tilo.test", &super::tilolang_surface()))
             .unwrap();
         there
-            .declare(Schema::from_surface(&super::tilolang_item_surface()))
+            .declare(Schema::of_app(
+                "so.tilo.test",
+                &super::tilolang_item_surface(),
+            ))
             .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let item = Resource {
@@ -3456,7 +3463,7 @@ mod store {
     fn a_package_creates_its_root_under_its_surface() {
         let mut there = issues();
         there
-            .declare(Schema::from_surface(&super::tilolang_surface()))
+            .declare(Schema::of_app("so.tilo.test", &super::tilolang_surface()))
             .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let mut fields = BTreeMap::new();
@@ -3520,7 +3527,7 @@ mod store {
     /// the store admits it under its holder, and the holder's type says it nests that kind.
     #[test]
     fn a_record_a_field_holds_is_admitted_under_its_holder() {
-        let holding = Schema::from_surface(&super::tilolang_holding_surface());
+        let holding = Schema::of_app("so.tilo.test", &super::tilolang_holding_surface());
         assert_eq!(
             holding.get("tl.so.tilo.clocks.Clocks").unwrap().nested,
             [(
@@ -3532,7 +3539,10 @@ mod store {
         let mut there = issues();
         there.declare(holding).unwrap();
         there
-            .declare(Schema::from_surface(&super::tilolang_held_surface()))
+            .declare(Schema::of_app(
+                "so.tilo.test",
+                &super::tilolang_held_surface(),
+            ))
             .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let record = |parent: Option<&str>, field: &str, text: &str| Resource {
@@ -3572,7 +3582,7 @@ mod store {
         use tilo_resource_store::Refusal;
         let mut there = issues();
         there
-            .declare(Schema::from_surface(&super::tracker_surface()))
+            .declare(Schema::of_app("so.tilo.test", &super::tracker_surface()))
             .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let comment = |stamp: Stamp, id: &str| {
@@ -3617,7 +3627,7 @@ mod store {
         use tilo_resource_store::{CREATE_VERB, Refusal};
         let mut there = issues();
         there
-            .declare(Schema::from_surface(&super::tracker_surface()))
+            .declare(Schema::of_app("so.tilo.test", &super::tracker_surface()))
             .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let founding = |stamp: Stamp, id: &str, text: Option<&str>| {
@@ -3667,7 +3677,7 @@ mod store {
         use tilo_resource_store::{BRANCH_VERB, MOVE_VERB, Refusal};
         let mut there = issues();
         there
-            .declare(Schema::from_surface(&super::tracker_surface()))
+            .declare(Schema::of_app("so.tilo.test", &super::tracker_surface()))
             .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         // The step the fork's writer commits, read back as the store reads a change.
@@ -3859,7 +3869,7 @@ mod store {
     fn a_founding_derived_in_another_workspace_is_refused() {
         use collab_types::document::founding::{Scope, structure};
         use tilo_resource_store::{MOVE_VERB, Refusal, content_id};
-        let schema = Schema::from_surface(&super::tracker_surface());
+        let schema = Schema::of_app("so.tilo.test", &super::tracker_surface());
         let containers = schema.get("Comment").unwrap().founding.clone();
         let mut there = issues();
         there.declare(schema).unwrap();
@@ -3905,7 +3915,7 @@ mod store {
     fn a_migration_is_the_derived_step_or_a_rewrite_by_who_may_write() {
         use automerge::transaction::Transactable as _;
         use tilo_resource_store::{MOVE_VERB, Refusal, content_id};
-        let schema = Schema::from_surface(&super::tracker_surface());
+        let schema = Schema::of_app("so.tilo.test", &super::tracker_surface());
         let containers = schema.get("Comment").unwrap().founding.clone();
         let comment = collab_types::document::founding::Scope {
             workspace: crate::WORKSPACE,
@@ -4112,7 +4122,7 @@ mod store {
         let tracker = || {
             let mut store = issues();
             store
-                .declare(Schema::from_surface(&super::tracker_surface()))
+                .declare(Schema::of_app("so.tilo.test", &super::tracker_surface()))
                 .unwrap();
             store
         };
@@ -5932,5 +5942,82 @@ fn a_change_of_one_apps_kind_stamped_by_another_app_is_refused() {
         holder.index().ids_of("test.a.record").count(),
         0,
         "nothing of the refused change is kept"
+    );
+}
+
+/// A store that declares the kind `kind` and no app's surface names it: the holder cannot tell
+/// whose kind it is.
+fn kind_without_owner(kind: &str) -> tilo_resource_store::Store {
+    let mut store = tilo_resource_store::Store::new(WORKSPACE);
+    store
+        .declare(Schema {
+            types: vec![tilo_resource_store::Type {
+                name: kind.to_owned(),
+                fields: vec![tilo_resource_store::Field {
+                    name: "title".to_owned(),
+                    kind: FieldKind::Scalar,
+                    value: tilo_resource_store::Expected::Any,
+                    optional: true,
+                }],
+                nested: Vec::new(),
+                live: None,
+                founding: Vec::new(),
+                origin: None,
+                version: 1,
+            }],
+            ..Schema::default()
+        })
+        .unwrap();
+    store
+}
+
+/// An app-stamped change for a kind no app's surface declares is refused: a holder takes no
+/// app's word for a kind it cannot place, and every holder reaches the same refusal.
+#[test]
+fn an_app_stamped_change_for_a_kind_with_no_declared_owner_is_refused() {
+    use tilo_actions::Actor;
+    use tilo_resource_store::{Received, Refusal, Stamp};
+    const KIND: &str = "test.unowned.record";
+    let mut writer = kind_without_owner(KIND);
+    let mut holder = kind_without_owner(KIND);
+    let stamp = Stamp {
+        invoked: String::new(),
+        verb: "save".to_owned(),
+        invoker: Stamp::by(&Actor::App("so.tilo.a".into())),
+        invocation: "i1".to_owned(),
+        ..Stamp::default()
+    };
+    let written = writer
+        .put(
+            KIND,
+            "r1",
+            collab_types::store::Resource {
+                readers: "*".to_owned(),
+                parent: None,
+                order: None,
+                fields: BTreeMap::new(),
+            },
+            &stamp,
+        )
+        .expect("the writer makes it");
+    let refused = holder
+        .receive(
+            &written[0].doc,
+            &written[0].readers,
+            vec![Received {
+                change: written[0].change.clone(),
+                author: [7; 32],
+                claimed: None,
+            }],
+            &admits_everything,
+        )
+        .expect("the holder reads it");
+    assert!(
+        matches!(
+            refused.as_slice(),
+            [(_, Refusal::Undeclared(why))]
+                if why.contains("so.tilo.a") && why.contains(KIND)
+        ),
+        "an app-stamped change of a kind with no declared owner is refused, not {refused:?}"
     );
 }

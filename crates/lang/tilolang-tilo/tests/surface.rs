@@ -858,7 +858,7 @@ view inbox(i: Inbox) {
         let declared: Vec<String> = package_surfaces(meta, &SourceWords)
             .into_iter()
             .filter(|surface| {
-                tilo_resource_store::Schema::from_surface(surface)
+                tilo_resource_store::Schema::of_app(&meta.app, surface)
                     .verb(tilolang_tilo::action::ORIGIN_ACTION)
                     .is_some()
             })

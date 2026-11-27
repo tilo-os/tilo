@@ -86,7 +86,7 @@ pub fn read_state(
 /// The app surfaces kept under `dir`, each in the canonical compiled form: in the directory
 /// itself, or in an app's own directory under it (`<app>/surface.json`, as a build lays them
 /// out). Files that are no surface are passed over.
-fn surfaces_of(dir: &Path) -> Result<Vec<tilo_actions::surface::Surface>, String> {
+fn surfaces_of(dir: &Path) -> Result<Vec<(String, tilo_actions::surface::Surface)>, String> {
     let mut paths = Vec::new();
     surface_files(dir, 0, &mut paths)?;
     let mut surfaces = Vec::new();
@@ -97,7 +97,20 @@ fn surfaces_of(dir: &Path) -> Result<Vec<tilo_actions::surface::Surface>, String
         let Ok(file) = collab_types::surface::SurfaceFile::compiled(&bytes) else {
             continue;
         };
-        surfaces.extend(file.resources);
+        // A build lays an app's surface out as `<app>/surface.json`; a device's kept surfaces sit
+        // flat under hashes that name no app. This report reads and judges no change, so a
+        // surface whose app the path does not name stands as its own -- the report only needs
+        // the reader rules it declares.
+        let app = path
+            .parent()
+            .filter(|parent| *parent != dir)
+            .and_then(|parent| parent.file_name())
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_owned);
+        for surface in file.resources {
+            let app = app.clone().unwrap_or_else(|| surface.kind.clone());
+            surfaces.push((app, surface));
+        }
     }
     Ok(surfaces)
 }
@@ -126,9 +139,12 @@ fn surface_files(
 /// The types and rules the surfaces in `surfaces` declare, as a store declares them before it
 /// places a write: each given to `declare`. A type whose version does not only add to the one
 /// the store holds is refused, and the store keeps the type it has.
-pub(crate) fn declare_surfaces(store: &mut Store, surfaces: &[tilo_actions::surface::Surface]) {
-    for surface in surfaces {
-        if let Err(error) = store.declare(tilo_resource_store::Schema::from_surface(surface)) {
+pub(crate) fn declare_surfaces(
+    store: &mut Store,
+    surfaces: &[(String, tilo_actions::surface::Surface)],
+) {
+    for (app, surface) in surfaces {
+        if let Err(error) = store.declare(tilo_resource_store::Schema::of_app(app, surface)) {
             tracing::error!(%error, "the store keeps the type its surface declared before");
         }
     }

@@ -437,7 +437,7 @@ fn member_roots(peer: &StatePeer, now: SystemTime) -> std::collections::BTreeSet
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn kept_report(
     path: &Path,
-    surfaces: &[tilo_actions::surface::Surface],
+    surfaces: &[(String, tilo_actions::surface::Surface)],
 ) -> Result<(String, crate::readers_report::WorkspaceReport), String> {
     // A record of an older layout is brought up by opening it, which writes: a report never
     // writes, so it says what it found instead.

@@ -2994,18 +2994,17 @@ impl Store {
         }
     }
 
-    /// Refuses a change that names one app and writes another app's kind: every holder judges it
-    /// before the types, verbs and readers, whoever carried the change.
+    /// Refuses a change that names one app and writes a kind that app does not declare: every
+    /// holder judges it before the types, verbs and readers, whoever carried the change, and a
+    /// kind no schema names an owner of is refused.
     fn judge_ownership(
         &self,
         schema: Option<&Schema>,
         touched: &collab_types::touch::Touched,
         stamp: Option<&Stamp>,
     ) -> Result<(), Refusal> {
-        for schema in std::iter::once(&self.schema).chain(schema) {
-            crate::admit::owned_by_its_app(schema, touched, stamp).map_err(Refusal::Undeclared)?;
-        }
-        Ok(())
+        let schemas: Vec<&Schema> = std::iter::once(&self.schema).chain(schema).collect();
+        crate::admit::owned_by_its_app(&schemas, touched, stamp).map_err(Refusal::Undeclared)
     }
 
     /// Applies `change`, admitted, to `doc_id`, and indexes the resources it touched.

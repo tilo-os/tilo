@@ -127,9 +127,10 @@ pub struct Schema {
     /// Who reads a resource of each kind that says, by kind: the store places it by this alone.
     pub readers: BTreeMap<String, ReaderRule>,
     /// The apps that declare each kind, by kind: an app writes the kinds it declares and never
-    /// another app's, whoever carries the change. A schema declared on its own
-    /// ([`Schema::from_surface`]) names no owner, and a kind whose owner a store does not know is
-    /// not judged.
+    /// another app's, whoever carries the change, and a kind no schema names an owner of is
+    /// refused by every holder. [`Schema::of_app`] fills it from the app's surface; a schema a
+    /// store builds by hand names no owner, so an app-stamped write of one of its kinds is
+    /// refused.
     pub owners: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -321,12 +322,18 @@ fn plain_enum(surface: &Surface, name: &str) -> bool {
 }
 
 impl Schema {
-    /// The resource types `surface` declares: each resource type it names, with its fields, and
-    /// the types nested in it as collections of them. A surface that names no type of its own
+    /// The schema of `app`'s `surface`: each resource type it declares, with its fields, the
+    /// types nested in it as collections of them, each verb's write-set, the kinds the surface
+    /// says are `app`'s, and the reader rule it names. A surface that names no type of its own
     /// kind — a tilolang package describes its record by the fields it lists — declares that
-    /// record too, so its own kind and what its verbs write are known to the store.
+    /// record too, so its own kind and what its verbs write are known to the store. Each verb it
+    /// declares is recorded as `app`'s ([`Verb::declared`]): what a call of one of the app's
+    /// actions is judged by.
+    ///
+    /// This is the only way a schema is declared for an app: the store judges an app-stamped
+    /// change only for the kinds its app declares.
     #[must_use]
-    pub fn from_surface(surface: &Surface) -> Self {
+    pub fn of_app(app: &str, surface: &Surface) -> Self {
         let enums = |name: &str| plain_enum(surface, name);
         let cases = |name: &str| {
             surface
@@ -377,7 +384,41 @@ impl Schema {
                 ty_of
             })
             .collect();
-        let verbs = surface
+        let verbs = Self::surface_verbs(surface, own);
+        let mut schema = Self {
+            kind: surface.kind.clone(),
+            types,
+            verbs,
+            readers: surface
+                .readers
+                .iter()
+                .map(|rule| (surface.kind.clone(), rule.clone()))
+                .collect(),
+            owners: BTreeMap::from([(surface.kind.clone(), BTreeSet::from([app.to_owned()]))]),
+        };
+        for verb in &mut schema.verbs {
+            if let Some(declared) = surface
+                .verbs
+                .iter()
+                .find(|declared| declared.id == verb.name)
+            {
+                verb.declared.insert(
+                    app.to_owned(),
+                    Declared {
+                        kind: declared.kind,
+                        field: declared.field.clone(),
+                        offered: declared.offered().to_owned(),
+                    },
+                );
+            }
+        }
+        schema
+    }
+
+    /// The verbs `surface` declares, each with what it writes: a verb's write-set over the
+    /// surface's own record, the kinds it nests and the capabilities it queues.
+    fn surface_verbs(surface: &Surface, own: Option<&NamedType>) -> Vec<Verb> {
+        surface
             .verbs
             .iter()
             .map(|verb| {
@@ -424,48 +465,7 @@ impl Schema {
                 writes: writes_of(surface, own, &|_, _| true, true),
                 ..Verb::default()
             }))
-            .collect();
-        Self {
-            kind: surface.kind.clone(),
-            types,
-            verbs,
-            readers: surface
-                .readers
-                .iter()
-                .map(|rule| (surface.kind.clone(), rule.clone()))
-                .collect(),
-            // Whose kind it is an app names (`of_app`); a surface declared on its own names none.
-            owners: BTreeMap::new(),
-        }
-    }
-
-    /// [`Self::from_surface`] of `app`'s `surface`, each verb it declares recorded as `app`'s
-    /// ([`Verb::declared`]): what a call of one of the app's actions is judged by.
-    #[must_use]
-    pub fn of_app(app: &str, surface: &Surface) -> Self {
-        let mut schema = Self::from_surface(surface);
-        schema
-            .owners
-            .entry(surface.kind.clone())
-            .or_default()
-            .insert(app.to_owned());
-        for verb in &mut schema.verbs {
-            if let Some(declared) = surface
-                .verbs
-                .iter()
-                .find(|declared| declared.id == verb.name)
-            {
-                verb.declared.insert(
-                    app.to_owned(),
-                    Declared {
-                        kind: declared.kind,
-                        field: declared.field.clone(),
-                        offered: declared.offered().to_owned(),
-                    },
-                );
-            }
-        }
-        schema
+            .collect()
     }
 
     /// The kind `app`'s action `action` is declared as, by the name a call offers it by or the

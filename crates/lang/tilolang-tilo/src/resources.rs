@@ -891,6 +891,15 @@ impl ResourceStore {
     /// the declaration that carries its id now.
     pub fn declare_with(&self, meta: &Meta, former: &[(String, String)]) {
         self.inner.kinds.borrow_mut().declare(meta, former);
+        // The app's kinds are its own, as its surface declares them: a store that judges a
+        // change against them -- a window kept here, a test's workspace -- knows whose they are.
+        let mine = || BTreeSet::from([meta.app.clone()]);
+        let owners: BTreeMap<String, BTreeSet<String>> = meta
+            .types
+            .iter()
+            .map(|ty| (crate::meta::MetaExt::kind_of(meta, &ty.name), mine()))
+            .chain(std::iter::once((crate::personal::KIND.to_owned(), mine())))
+            .collect();
         self.inner.port.declare(tilo_resource_store::Schema {
             readers: meta
                 .types
@@ -902,6 +911,7 @@ impl ResourceStore {
                     ))
                 })
                 .collect(),
+            owners,
             ..tilo_resource_store::Schema::default()
         });
     }

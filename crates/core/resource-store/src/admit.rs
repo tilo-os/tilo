@@ -181,10 +181,11 @@ pub(crate) fn declared(
 
 /// Whether the change's stamp names an app, and the change writes only kinds that app declares:
 /// an app writes its own kinds and never another app's, whoever carries the change, so every
-/// holder reaches the same refusal. A change no app made (a person's, an agent's, one the
-/// platform wrote) is no app's to own, and a kind the schema knows no owner of is not judged.
+/// holder reaches the same refusal. A kind no schema here names an owner of is refused too: a
+/// holder takes no app's word for a kind it cannot place. A change no app made (a person's, an
+/// agent's, one the platform wrote) is no app's to own.
 pub(crate) fn owned_by_its_app(
-    schema: &Schema,
+    schemas: &[&Schema],
     touched: &Touched,
     stamp: Option<&Stamp>,
 ) -> Result<(), String> {
@@ -198,13 +199,23 @@ pub(crate) fn owned_by_its_app(
         let Some(kind) = &touch.kind else {
             continue;
         };
-        if let Some(owners) = schema.owners.get(kind)
-            && !owners.is_empty()
-            && !owners.contains(app.as_str())
+        let owners: Vec<&str> = schemas
+            .iter()
+            .filter_map(|schema| schema.owners.get(kind))
+            .flat_map(|owners| owners.iter().map(String::as_str))
+            .collect();
+        if owners.is_empty() {
+            return Err(format!(
+                "`{app}` writes `{kind}`, which no app's surface declares"
+            ));
+        }
+        if !owners
+            .iter()
+            .any(|owner| owner.eq_ignore_ascii_case(app.as_str()))
         {
             return Err(format!(
                 "`{app}` writes `{kind}`, which {} declares",
-                owners.iter().cloned().collect::<Vec<_>>().join(", ")
+                owners.join(", ")
             ));
         }
     }
