@@ -624,6 +624,9 @@ await_owner_certify_ask() {
   cat "$listed"-*.err >&2 2>/dev/null || true
   [ ! -f "$server_dir/serial.log" ] \
     || tr -d '\000' < "$server_dir/serial.log" | grep -viE 'recovery[ _-]?key' | tail -n 60 >&2 || true
+  # The installer's second stage says what it is doing on its screen, never on the serial.
+  local shot
+  shot="$(server_vm shot "unasked-$label" 2>/dev/null)" && cp -f "$shot" "$out/server-screen-$label.png" || true
   die "the owner was never asked to certify the machine's boot key ($label)"
 }
 # The person answers the asked record `invocation` in `workspace`: their yes approves the call
