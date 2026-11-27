@@ -119,6 +119,20 @@ pub fn is_device_settings(node: &TreePath) -> bool {
         })
 }
 
+/// The kind `app`'s record `resource` (of `resource_kind`) is decided at when its declaration
+/// decides it as the app's own record ([`app_fleet::Readers::AppRecord`]): the app's package kind,
+/// whose record it moved out of. `None` for every other record, decided at its own kind and id.
+#[must_use]
+pub fn app_record_kind(app: &str, resource_kind: &str, resource: &str) -> Option<String> {
+    app_fleet::declared_record(app, resource)
+        .or_else(|| {
+            app_fleet::declared_record(app, &app_fleet::derived_record(resource_kind))
+                .filter(|_| resource == resource_kind)
+        })
+        .is_some_and(|kept| kept.readers == app_fleet::Readers::AppRecord)
+        .then(|| app_fleet::package_kind(app))
+}
+
 /// Whether `node` is in a record no one reads, as its declaration says
 /// ([`app_fleet::Readers::NoOne`]).
 pub(crate) fn in_unread_record(node: &TreePath) -> bool {

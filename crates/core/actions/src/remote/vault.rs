@@ -40,7 +40,7 @@ pub const VAULT_PAGE_FILL: &str = "page-fill";
 
 // The record kind the workspace keeps its vault in, in Passwords, where every action of the vault
 // that writes takes its step, and the id its declaration binds to it.
-pub use app_fleet::{VAULT_KIND, VAULT_RECORD};
+pub use tilo_app_id::passwords::{VAULT_KIND, VAULT_RECORD};
 /// The vault record's step that keeps an item, a new one or an edit of one.
 pub const KEEP_SEALED: &str = "keep-sealed";
 /// The vault record's step that forgets an item.

@@ -78,10 +78,7 @@ impl WorkspaceDocument {
 /// What each member's own view of a workspace's layout is kept under, before their id.
 pub const PERSON_VIEW_PREFIX: &str = "view-of-";
 
-/// The kind of the workspace's vault.
-pub const VAULT_KIND: &str = "passwords.workspace-vault";
-/// The id of the workspace's vault record, which its declaration binds to [`VAULT_KIND`].
-pub const VAULT_RECORD: &str = "uuid:56daeee1-adbe-4b63-b0cc-5fd549e93077";
+pub use tilo_app_id::passwords::{VAULT_KIND, VAULT_RECORD};
 
 /// The records apps keep for their whole workspace.
 pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[

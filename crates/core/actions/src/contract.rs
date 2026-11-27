@@ -455,18 +455,9 @@ pub fn resource_node(
     resource: &str,
 ) -> tilo_action_policy::TreePath {
     // A record decided as its app's own record is decided where that record is.
-    let as_app_record = app_fleet::declared_record(app, resource)
-        .or_else(|| {
-            app_fleet::declared_record(app, &app_fleet::derived_record(resource_kind))
-                .filter(|_| resource == resource_kind)
-        })
-        .is_some_and(|kept| kept.readers == app_fleet::Readers::AppRecord);
-    if as_app_record {
-        return base
-            .clone()
-            .app(app)
-            .kind(app_fleet::package_kind(app))
-            .resource("");
+    if let Some(app_kind) = tilo_action_policy::roles::app_record_kind(app, resource_kind, resource)
+    {
+        return base.clone().app(app).kind(app_kind).resource("");
     }
     base.clone().app(app).kind(resource_kind).resource(resource)
 }

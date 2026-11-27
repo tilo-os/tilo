@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod apps;
 pub mod chat;
+pub mod passwords;
 
 pub const MAX_APP_ID_BYTES: usize = 255;
 
