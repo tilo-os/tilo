@@ -67,6 +67,8 @@ mod chat;
 
 #[path = "hosted/api.rs"]
 mod api;
+#[path = "hosted/books.rs"]
+mod books;
 #[path = "hosted/counter.rs"]
 mod counter;
 #[path = "hosted/history.rs"]
@@ -106,6 +108,8 @@ mod window;
 mod workspaces;
 
 const NOTES: &str = "so.tilo.notes";
+/// The library whose shelf a scenario fills.
+const BOOKS: &str = "so.tilo.ebook";
 /// The test's own notebook, whose notes' bodies are rich text.
 const RICHBODY: &str = "so.tilo.lang.richbody";
 /// The task list the person keeps.

@@ -175,6 +175,7 @@ remove_font@Library~present = o5nk6k7i
 rename_font@Library = xkw5f5wc
 saw_blocks@Book = o6ubqh53
 scan_folder@Library = ap57yp5t
+scenario "a shelf with a book" = fvih2ajr
 scheme_of = 73tb6jxi
 set_author@Book = 3cfv74w3
 set_cover@Book = np45fqzx
