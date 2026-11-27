@@ -1567,34 +1567,24 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Absence permits a new launch; a present but unready/refusing owner does not.
     pub async fn activate_existing(&self, app_id: &str) -> Result<Option<u64>, String> {
         let (_, instances) = self.instances().await?;
-        let Some((peer, _)) = instances.iter().rev().find(|(_, instance)| {
+        for (peer, _) in instances.iter().rev().filter(|(_, instance)| {
             instance["app_id"].as_str() == Some(app_id)
                 && matches!(
                     instance["document_id"].as_str(),
                     Some("" | "derived:default@tab:0000000000000000")
                 )
-        }) else {
-            return Ok(None);
-        };
-        match self.activate_peer(*peer, app_id).await {
-            Ok(()) => Ok(Some(*peer)),
-            Err(reason) => {
-                // A disappearing provider is not an unready live owner. The
-                // process-lifetime lease still prevents launching a writer
-                // until the actual process exits.
-                let (_, current) = self.instances().await.map_err(|failure| {
-                    format!("could not confirm {app_id} owner exit: {failure}; owner retained")
-                })?;
-                if current.iter().any(|(live, _)| live == peer) {
-                    Err(reason)
-                } else {
-                    Ok(None)
-                }
+        }) {
+            if self.activate_peer(*peer, app_id).await? {
+                return Ok(Some(*peer));
             }
         }
+        Ok(None)
     }
 
-    async fn activate_peer(&self, peer: u64, app_id: &str) -> Result<(), String> {
+    /// Ask the instance at `peer` to bring its window forward, and answer whether it is a window
+    /// of the app: an instance that publishes no window verb runs the app's code for the calls
+    /// delivered to it and shows nothing, so a launch shows a window of the app instead.
+    async fn activate_peer(&self, peer: u64, app_id: &str) -> Result<bool, String> {
         let page = self
             .ask(CatalogueQuery {
                 provider: Some(peer.to_string()),
@@ -1609,11 +1599,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     String::from(reason)
                 )
             })?;
-        let address = page.rows.into_iter().filter_map(|row| row.action)
-            .find(|action| action.address.action == collab_types::app_actions::ACTIVATE_WINDOW
-                && action.kind == tilo_actions::OperationKind::View)
+        let Some(address) = page
+            .rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|action| {
+                action.address.action == collab_types::app_actions::ACTIVATE_WINDOW
+                    && action.kind == tilo_actions::OperationKind::View
+            })
             .map(|action| action.address)
-            .ok_or_else(|| format!("existing {app_id} window does not support activation; update its SDK or use its current window"))?;
+        else {
+            return Ok(false);
+        };
         let value = self
             .invoke_one(OneCall {
                 provider: Addressed {
@@ -1630,7 +1627,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             })
             .await?;
         if value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded") {
-            Ok(())
+            Ok(true)
         } else {
             Err(format!(
                 "existing {app_id} window did not acknowledge activation; its document owner was retained"

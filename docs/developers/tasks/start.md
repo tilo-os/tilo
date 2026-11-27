@@ -27,10 +27,11 @@ existing process and document owner stay in place. The window manager decides
 whether to focus the window or request attention. After the owner exits, the
 next launch starts normally; a leftover launch-lock file is not a live owner.
 
-An unready or older running app returns a bounded activation diagnostic rather
-than starting a competing document writer. Update its SDK or use the existing
-window. App-specific command arguments still go through the app's parser;
-this default-view activation path does not discard or reinterpret them.
+An unready running app returns a bounded activation diagnostic rather than
+starting a competing document writer. An instance that shows no window is not
+one to bring forward: the launch shows a window of the app. App-specific
+command arguments still go through the app's parser; this default-view
+activation path does not discard or reinterpret them.
 
 The generated tests cover action dispatch, undo, persistence and headless
 interaction; the starter also tests peer edits and per-author undo. Transport,
