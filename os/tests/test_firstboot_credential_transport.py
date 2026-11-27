@@ -91,7 +91,6 @@ class CredentialTransportTests(unittest.TestCase):
             "CONF=/etc/tilo/install-user.conf": f"CONF={credential}",
             "FULL_NAME_CONF=/etc/tilo/install-user-full-name": f"FULL_NAME_CONF={name}",
             "TRANSACTION=/etc/tilo/install-user.transaction": f"TRANSACTION={root}/install-user.transaction",
-            "key=/var/lib/tilo/device-private/keypair.bin": f"key={root}/absent-device-key",
             '"/home/$user"': f'"{root}/home/$user"',
             '"/var/home/$user"': f'"{root}/var-home/$user"',
             'seed_helper=/etc/tilo/firstboot-home-seeds': f'seed_helper={seeds}',

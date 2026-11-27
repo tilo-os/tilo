@@ -175,16 +175,26 @@ else
   warn "unexpected swap set (expected only /dev/zram0): ${active_swaps:-none}"
 fi
 
+# The device key is the device's daemon's, and only it reads the key: the
+# key's directory is that account's own, 0700, and the key is 0600 under the
+# same account. Every other program of the computer signs through the daemon.
 device_key_dir=/var/lib/tilo/device-private
 device_key="$device_key_dir/keypair.bin"
-device_dir_meta="$(stat -c '%u:%G:%a' "$device_key_dir" 2>/dev/null || echo invalid)"
-device_key_meta="$(stat -c '%u:%G:%a:%h:%s' "$device_key" 2>/dev/null || echo invalid)"
-if [ "$device_dir_meta" = '0:tilo-identity:2750' ] && [ ! -L "$device_key_dir" ] \
-   && [ "$device_key_meta" = '0:tilo-identity:640:1:32' ] \
+device_key_owner="$(stat -c '%u' "$device_key" 2>/dev/null || echo invalid)"
+device_dir_meta="$(stat -c '%u:%a' "$device_key_dir" 2>/dev/null || echo invalid)"
+device_key_meta="$(stat -c '%u:%a:%h:%s' "$device_key" 2>/dev/null || echo invalid)"
+daemon_uids=" $(id -u tilo 2>/dev/null || true) $(id -u tilo-server 2>/dev/null || true) "
+case "$daemon_uids" in
+  *" $device_key_owner "*) daemon_key=1 ;;
+  *) daemon_key=0 ;;
+esac
+if [ "$daemon_key" -eq 1 ] && [ "$device_dir_meta" = "$device_key_owner:700" ] \
+   && [ ! -L "$device_key_dir" ] \
+   && [ "$device_key_meta" = "$device_key_owner:600:1:32" ] \
    && [ -f "$device_key" ] && [ ! -L "$device_key" ]; then
-  ok "device identity seed is root-owned, group-scoped, private, and unaliased"
+  ok "device identity seed is the daemon's, owner-only, private, and unaliased"
 else
-  warn "device identity storage is unsafe (directory=$device_dir_meta key=$device_key_meta)"
+  warn "device identity storage is unsafe (directory=$device_dir_meta key=$device_key_meta daemon uids:$daemon_uids)"
 fi
 
 # The kargs above are what we ASKED for. This is what the kernel actually did:

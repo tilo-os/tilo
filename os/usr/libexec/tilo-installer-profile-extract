@@ -186,7 +186,7 @@ for disk in "${candidates[@]}"; do
   find "$handoff_dir" -type d -exec chmod 0700 {} +
   key="$handoff_dir/var/lib/tilo/device-private/keypair.bin"
   if [ -f "$key" ]; then
-    chmod 0640 "$key"
+    chmod 0600 "$key"
   fi
   find "$handoff_dir" -type f -name '*.nmconnection' -exec chmod 0600 {} +
 done

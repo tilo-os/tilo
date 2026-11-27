@@ -3,8 +3,8 @@ Description=Tilo first-boot user creation (from custom installer)
 # Only runs if the custom installer seeded a credential file.
 ConditionPathExists=/etc/tilo/install-user.conf
 After=local-fs.target systemd-sysusers.service systemd-tmpfiles-setup.service
-# Must finish before the login greeter so the new account is loginable,
-# and before shell first-boot reads the enrolled device key.
+# Must finish before the login greeter so the new account is loginable, and
+# before shell first-boot reads what the enrolled identity left here.
 Before=greetd.service tilo-firstboot.service
 
 [Service]

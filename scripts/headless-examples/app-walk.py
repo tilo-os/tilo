@@ -53,7 +53,6 @@ import base64
 import contextlib
 import fnmatch
 import functools
-import grp
 import json
 import os
 import re
@@ -295,16 +294,6 @@ def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
     return until(what, check, deadline, step)
 
 
-def device_identity_gid(account) -> int:
-    """The group a device shares its provisioned device key with (`tilo-identity`), else the
-    session account's own: the machine's daemon reads the key as its owner root, the session as
-    a member of this group."""
-    try:
-        return grp.getgrnam("tilo-identity").gr_gid
-    except KeyError:
-        return account.pw_gid
-
-
 def machine_acl(state: Path) -> Path:
     """The capability list the machine's files daemon enforces, in this walk's state: the tree's
     shipped list seeds it, as it seeds a device's ``/var/lib/tilo/fs-capabilities.json``.
@@ -402,9 +391,8 @@ class MachineFiles:
         """Wait for the person's identity, which the session mints: the daemon presents it and
         starts nowhere without it.
 
-        The key becomes root's, shared read-only with the person's group, as a device's image
-        provisions it: the identity store admits a key owned by root or by the reader, and the
-        machine's daemon reads it as root while the session reads it as the person."""
+        The key stays the session account's, owner-only, as the image provisions it: root reads
+        it through its own privilege where it needs to, and no group is given it."""
         cert = self.state / "identity/device/cert.bin"
         deadline = time.monotonic() + self.START_WITHIN
         while not cert.is_file():
@@ -413,10 +401,6 @@ class MachineFiles:
             if time.monotonic() >= deadline:
                 raise Failed(f"the session minted no identity at {cert}")
             time.sleep(0.1)
-        key = self.state / "identity/device-private/keypair.bin"
-        if key.is_file():
-            os.chown(key, 0, device_identity_gid(self.account))
-            os.chmod(key, 0o640)
 
     def _launch(self) -> None:
         logs = self.out / "logs"

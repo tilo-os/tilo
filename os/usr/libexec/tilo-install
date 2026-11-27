@@ -2040,8 +2040,10 @@ if [ -d /run/tilo-installer/setup-handoff ]; then
   fi
   key="$HANDOFF_VAR/lib/tilo/device-private/keypair.bin"
   if [ -f "$key" ]; then
-    chgrp tilo-identity "$key" || die "tilo-identity group is missing; cannot install the device key"
-    chmod 0640 "$key"
+    # Only the installed device's daemon reads the key; the first boot gives it
+    # that account and this mode. Nothing hands it to the session's group.
+    chmod 0700 "${key%/*}"
+    chmod 0600 "$key"
   fi
   # The copy leaves every new file private. The enrolled person's public key
   # and the device certificates are public; a root-only copy makes the
@@ -2195,15 +2197,17 @@ enrol_planned_server() {
     relative="${written#"$var"/}"
     label_installed_tilo_path "$written" "/var/$relative"
   done < <(find "$identity" -mindepth 1 -print0)
-  # The installed system's first boot would have created these trees with tmpfiles' group, and
-  # the server's own account reads its device key through it (0640): give the identity tree the
-  # group and the setgid flag it has there.
+  # The installed system's first boot would have created these trees with tmpfiles' group: give
+  # the identity tree the group and the setgid flag it has there. The device-private directory
+  # keeps neither: it is the daemon's own, and its first boot gives the key that account and 0600.
   label_installed_tilo_path "$identity" /var/lib/tilo
   getent group tilo-identity >/dev/null 2>&1 \
     || die "the installed image declares no tilo-identity group"
-  find "$identity" -mindepth 1 -exec chown root:tilo-identity {} + \
+  find "$identity" -mindepth 1 \
+    \( -path "$identity/device-private" -prune \) -o -exec chown root:tilo-identity {} + \
     || die "could not give the joined identity to the tilo-identity group"
-  find "$identity" -mindepth 1 -type d -exec chmod g+s {} + \
+  find "$identity" -mindepth 1 -type d \
+    \( -path "$identity/device-private" -prune \) -o -exec chmod g+s {} + \
     || die "could not make the joined identity's directories group-inheriting"
   PLAN_ENROLLED_IDENTITY="$identity"
   log "  the machine joined your devices; its identity is at $identity"

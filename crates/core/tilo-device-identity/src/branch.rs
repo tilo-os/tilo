@@ -524,6 +524,9 @@ fn resume(
     if current.as_ref().map(SigningKey::to_bytes) != Some(to.to_bytes()) {
         persist::replace_device_key(paths, &to)?;
     }
+    // Written by a root unit: give it to the account that owns the key's directory, the device's
+    // daemon, which is the one process that reads it.
+    persist::enforce_device_key_owner_and_mode(&paths.device_privkey)?;
     (branch.after)(Stage::Key)?;
 
     let certification = certify(paths, journal, &from, &to, branch.now_ns)?;

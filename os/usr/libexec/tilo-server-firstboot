@@ -68,14 +68,25 @@ TILO_IDENTITY_ROOT="$identity_root" XDG_STATE_HOME="$state_home" HOME="$state_ho
 valid_device_certificate \
     || { echo "tilo-server-firstboot: the login left an unsafe device certificate" >&2; exit 1; }
 rm -f "$ticket"
-# The server's own account reads its device key through the identity group, and the login as
-# itself: what a join from the installer left is given the same group and setgid flag, and the
-# state is the server account's.
+# The certificates and the person's public key are given to the tilo-identity group the server
+# reads them through, with the setgid flag the identity tree's directories inherit. The device key
+# is the server daemon's own file: root:tilo-identity would make it a group's, and this account
+# must not read it.
 getent group tilo-identity >/dev/null 2>&1 \
     || { echo "tilo-server-firstboot: the image declares no tilo-identity group" >&2; exit 1; }
-find "$identity_root" -mindepth 1 -exec chown root:tilo-identity {} + \
+find "$identity_root" -mindepth 1 \
+    \( -path "$identity_root/device-private" -prune \) -o -exec chown root:tilo-identity {} + \
     || { echo "tilo-server-firstboot: could not give the identity to the tilo-identity group" >&2; exit 1; }
-find "$identity_root" -mindepth 1 -type d -exec chmod g+s {} + \
+find "$identity_root" -mindepth 1 -type d \
+    \( -path "$identity_root/device-private" -prune \) -o -exec chmod g+s {} + \
     || { echo "tilo-server-firstboot: could not make the identity's directories group-inheriting" >&2; exit 1; }
+install -d -o tilo-server -g tilo-server -m 0700 "$identity_root/device-private" \
+    || { echo "tilo-server-firstboot: could not give the device key directory to the server" >&2; exit 1; }
+if [ -f "$identity_root/device-private/keypair.bin" ]; then
+    chown tilo-server:tilo-server "$identity_root/device-private/keypair.bin" \
+        || { echo "tilo-server-firstboot: could not give the device key to the server" >&2; exit 1; }
+    chmod 0600 "$identity_root/device-private/keypair.bin" \
+        || { echo "tilo-server-firstboot: could not make the device key owner-only" >&2; exit 1; }
+fi
 chown -R tilo-server:tilo-server "$state_home/tilo"
 echo "tilo-server-firstboot: login and full-sync setup complete"

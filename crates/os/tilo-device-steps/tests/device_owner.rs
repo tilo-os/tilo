@@ -23,12 +23,14 @@ fn only_the_identity_the_device_is_enrolled_under_owns_it() {
     let (owner, device) = (dir.path().join("owner"), dir.path().join("device"));
     let (other, other_device) = (dir.path().join("other"), dir.path().join("other-device"));
     for (identity, root) in [(&owner, &device), (&other, &other_device)] {
-        ensure_collaboration_identity(
-            identity,
-            &IdentityPaths::under(root),
-            IdentityStorage::Files,
-        )
-        .unwrap();
+        // This process stands in for each device's daemon while its identity is provisioned: the
+        // key is made and taken first, as the daemon takes it when it starts, and the certificate
+        // is issued for that one key. A process that is not the daemon never makes the key.
+        let paths = IdentityPaths::under(root);
+        tilo_device_identity::persist::load_or_create_device_key(&paths).unwrap();
+        let taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
+        ensure_collaboration_identity(identity, &paths, IdentityStorage::Files).unwrap();
+        drop(taken);
     }
     // The device's daemon holds its key while a session asks who owns the device: the check
     // reads the device's key from the one process that took it, and this one takes it as the

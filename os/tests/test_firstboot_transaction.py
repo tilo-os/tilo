@@ -103,8 +103,6 @@ if [ "$2" = -1 ]; then
   [ "$REPLY" = "$password_hash" ] || die 'expiry released before the password was installed'
 fi
 put "$r/expiry" "$2"''',
-    'bin/chgrp': 'locked; fail key-repair',
-    'bin/chmod': 'locked; fail key-mode',
     'bin/chown': 'locked; fail chown',
     'bin/shred': r'''exec rm -- "${@: -1}"''',
 }
@@ -118,9 +116,6 @@ class TransactionTests(unittest.TestCase):
         r = self.root
         (r / 'etc').mkdir()
         (r / 'state').mkdir()
-        (r / 'state/device-private').mkdir(mode=0o700)
-        (r / 'state/device-private/keypair.bin').write_text('key')
-        (r / 'state/device-private/keypair.bin').chmod(0o600)
         (r / 'bin').mkdir()
         (r / 'home/fixtureuser').mkdir(parents=True)
         self.credential = r / 'etc/install-user.conf'
@@ -189,7 +184,6 @@ fail('seeds-after')
         s = SOURCE.read_text()
         for old, new in {
             '/etc/tilo': str(r / 'etc'),
-            '/var/lib/tilo': str(r / 'state'),
             '/var/home': str(r / 'home'),
             '"/home/$user"': f'"{r}/home/$user"',
             'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"': f'FILES_HELPER="{r}/bin/files-helper"',
@@ -218,9 +212,6 @@ fail('seeds-after')
         add = ['-e', '1970-01-02', '-p', lock, 'fixtureuser']
         rows = [
             # stand-in and arguments, expiry, shadow, its refusal (None: it accepts)
-            (['bin/chgrp', 'tilo-identity', 'key'], '1970-01-02', lock, None),
-            (['bin/chgrp', 'tilo-identity', 'key'], '1970-01-02', HASH, 'delivery ran unlocked'),
-            (['bin/chmod', '0640', 'key'], '-1', lock, 'delivery ran unexpired'),
             (['bin/chown', '0:0', 'run'], None, lock, 'expiry'),
             (['bin/chown', '0:0', 'run'], '1970-01-02', None, 'shadow'),
             (['seeds.py', 'fixtureuser'], '1970-01-02', HASH, 'delivery ran unlocked'),
@@ -261,7 +252,7 @@ fail('seeds-after')
         self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
 
     def test_every_failed_delivery_is_locked_and_retryable(self):
-        for stage in ['useradd', 'crash', 'seeds', 'seeds-after', 'key-repair', 'key-mode', 'password', 'expiry-release']:
+        for stage in ['useradd', 'crash', 'seeds', 'seeds-after', 'password', 'expiry-release']:
             with self.subTest(stage=stage):
                 result = self.run_boot(stage)
                 self.assertNotEqual(result.returncode, 0)
@@ -303,7 +294,7 @@ fail('seeds-after')
         self.assertEqual((self.root / 'expiry').read_text(), '-1')
 
     def test_termination_before_release_is_retryable(self):
-        for stage in ['key-repair', 'password', 'expiry-release']:
+        for stage in ['seeds-after', 'password', 'expiry-release']:
             with self.subTest(stage=stage):
                 result = self.run_boot(stage, terminate=True)
                 self.assertEqual(result.returncode, -15)
@@ -326,7 +317,7 @@ fail('seeds-after')
         # Model interruption after expiry release but before seed cleanup.
         (self.root / 'shadow').write_text(HASH)
         (self.root / 'expiry').write_text('-1')
-        result = self.run_boot('key-repair')
+        result = self.run_boot('seeds-after')
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue((self.root / 'shadow').read_text().startswith('!'))
         self.assertTrue(self.credential.exists())
@@ -336,7 +327,7 @@ fail('seeds-after')
         self.assertEqual((self.root / 'expiry').read_text(), '-1')
 
     def test_retry_expiry_failure_does_not_provision(self):
-        self.assertNotEqual(self.run_boot('key-repair').returncode, 0)
+        self.assertNotEqual(self.run_boot('seeds-after').returncode, 0)
         (self.root / 'shadow').write_text(HASH)
         (self.root / 'expiry').write_text('-1')
         result = self.run_boot('expiry-retry')
@@ -466,7 +457,7 @@ fail('seeds-after')
         self.assertEqual((self.root / 'expiry').read_text(), '1970-01-02')
 
     def test_attested_output_tampering_blocks_retry_before_ownership_or_unlock(self):
-        result = self.run_boot('key-repair')
+        result = self.run_boot('seeds-after')
         self.assertNotEqual(result.returncode, 0)
         receipt = self.root / 'state/seeds' / (str(os.getuid()) + '.json')
         before = receipt.read_bytes()

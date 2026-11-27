@@ -51,7 +51,9 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE
+# CAP_CHOWN and CAP_FOWNER give the key the re-key wrote as root back to the account that owns its
+# directory, the daemon that reads it.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

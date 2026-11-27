@@ -42,7 +42,10 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 RemoveIPC=yes
 KeyringMode=private
-CapabilityBoundingSet=CAP_CHOWN
+# The identity tree the login left belongs to the server account; give the
+# certificates to the trust group and the device key to the server account:
+# chown it, chmod files another account owns, and reach the key's 0700 directory.
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 AmbientCapabilities=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 SystemCallArchitectures=native

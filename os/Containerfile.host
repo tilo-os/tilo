@@ -266,9 +266,9 @@ COPY os/usr/lib/tmpfiles.d/tilo-host.conf os/usr/lib/tmpfiles.d/tilo-server.conf
 # module is loaded, and the service's own machine setup refuses to start without
 # it.
 COPY os/etc/modules-load.d/tilo-hosted.conf /usr/lib/modules-load.d/tilo-hosted.conf
-# The device-trust group owns the identity directory, so it has to exist before
-# tmpfiles-setup runs. There is no session user on a server image; only the
-# static server account joins this narrow device-identity boundary.
+# The device-trust group owns the certificate directories, so it has to exist before tmpfiles-setup
+# runs. There is no session user on a server image; only the static server account joins this
+# narrow boundary, for the certificates it serves.
 RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-server.conf \
         /usr/lib/sysusers.d/tilo-hosted.conf /usr/lib/sysusers.d/tilo-api.conf
 

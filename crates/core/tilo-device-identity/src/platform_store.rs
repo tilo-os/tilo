@@ -1,7 +1,7 @@
 //! A Tilo runtime's device key in the platform's secret store.
 //!
-//! The Tilo OS layout keeps the device key in a group-private file because
-//! two uids share it there. On macOS and Android only the user's own runtime
+//! The Tilo OS layout keeps the device key in a file only the device daemon's
+//! account can read. On macOS and Android only the user's own runtime
 //! reads it, so it is kept through `tilo-secrets` under this device's own app
 //! namespace — not the `so.tilo.identity` namespace person identity keys live
 //! in: a login Keychain generic password on macOS, and on Android a sealed file

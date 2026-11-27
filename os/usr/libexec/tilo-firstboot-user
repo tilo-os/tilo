@@ -136,32 +136,6 @@ if [ "$valid_user" -ne 1 ] || [ "$valid_hash" -ne 1 ]; then
   exit 1
 fi
 
-# The installer copies the enrolled device key before this machine's
-# `tilo-identity` group exists, so the stored group id can be wrong. The
-# session reads that key as a member of this machine's group.
-repair_enrolled_device_key() {
-  local key key_dir key_meta key_owner key_mode key_links
-  key=/var/lib/tilo/device-private/keypair.bin
-  if [ -e "$key" ] || [ -L "$key" ]; then
-    [ -f "$key" ] && [ ! -L "$key" ] || return 1
-    key_dir="${key%/*}"
-    [ -d "$key_dir" ] && [ ! -L "$key_dir" ] || return 1
-    case "$(stat -c '%u:%a' -- "$key_dir")" in
-      0:700|0:750|0:2700|0:2750) ;;
-      *) return 1 ;;
-    esac
-    key_meta="$(stat -c '%u:%a:%h' -- "$key")" || return 1
-    IFS=: read -r key_owner key_mode key_links <<<"$key_meta"
-    [ "$key_owner" = 0 ] && [ "$key_links" = 1 ] \
-      && { [ "$key_mode" = 600 ] || [ "$key_mode" = 640 ]; } || return 1
-    # The directory's 2750 mode is tmpfiles' (tilo.conf), applied before this unit runs:
-    # RestrictSUIDSGID refuses any chmod here that carries the setgid bit.
-    chgrp tilo-identity "$key_dir"
-    chgrp tilo-identity "$key"
-    chmod 0640 "$key"
-  fi
-}
-
 # The private intent's random locked shadow value proves transaction ownership.
 TRANSACTION=/etc/tilo/install-user.transaction
 FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"
@@ -199,10 +173,10 @@ fi
 
 native_home="/var/home/$user"
 if [ "$retry" -eq 0 ]; then
-  # `tilo-identity` is read access to the machine's device key. The
-  # compositor runs in this user's session and presents the device
-  # identity on the network — the same identity fs.service presents as
-  # root — so without this the session has no network identity at all.
+  # `tilo-identity` gives this user's session the device's public certificates,
+  # the person's public key, the enrollment paths and /run/tilo. It is not read
+  # access to the device key: only the device's daemon reads that, and the
+  # session signs through it.
   #
   # `video` is write access to the backlight: 90-tilo-backlight.rules
   # hands the group `/sys/class/backlight/*/brightness`, which is what
@@ -211,7 +185,7 @@ if [ "$retry" -eq 0 ]; then
   #
   # The setup handoff may already have seeded this home with the enrolled
   # identity. `useradd -m` refuses an existing home, which would leave the
-  # account uncreated and the device key unreadable.
+  # account uncreated.
   seeded_home=""
   for candidate in "$native_home" "/home/$user"; do
     if [ -d "$candidate" ] && [ ! -L "$candidate" ]; then
@@ -252,8 +226,6 @@ if [ ! -f "$seed_helper" ] || [ -L "$seed_helper" ] || [ ! -x "$seed_helper" ] \
   echo "tilo-firstboot-user: home defaults could not be attested; account remains locked" >&2
   exit 1
 fi
-
-repair_enrolled_device_key
 
 # Everything fallible runs while the account is expired and password locked.
 # Expiration also blocks SSH public-key authentication until final release.

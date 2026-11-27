@@ -104,8 +104,9 @@ The account key's only jobs: sign device certificates, and sign revocations.
 ### 3.2 Device certificate
 
 Binds a device key to the account (`tilo_user_identity::DeviceCert`). Each computer has exactly
-one device key, kept by `tilo_device_identity::IdentityPaths`: a file the device-trust group reads
-(`device-private/keypair.bin`), or on macOS a login Keychain item. Only the device's daemon reads
+one device key, kept by `tilo_device_identity::IdentityPaths`: a file only the device daemon's own
+account can read (`device-private/keypair.bin`, owner-only in a directory of that account), or on
+macOS a login Keychain item. Only the device's daemon reads
 it: the other programs of the computer ask the daemon to seal, prove and sign with it. It is a software key, created
 before anyone signs in because the machine needs its identity first ([sign-in.md](sign-in.md) §2).
 No device key is generated in or sealed to a TPM or FIDO2 token today. If one is, the certificate

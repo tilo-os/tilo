@@ -319,17 +319,22 @@ if [ "$mode" = runtime ]; then
     || die "Tilo graphical-session lifecycle target is not active"
 
   # Unit state and non-empty files are not cryptographic evidence. Require the
-  # personal root and every device-chain artifact, then run the same read-only
-  # verifier that checks compositor startup.
+  # personal root and every public device-chain artifact, then run the same
+  # read-only verifier that checks compositor startup.
   id -nG | tr ' ' '\n' | grep -Fqx tilo-identity \
     || die "login user is not a member of tilo-identity"
   for identity_file in \
     "$HOME/.config/tilo/identity/primary.json" \
     /var/lib/tilo/user-identity/pubkey.bin \
-    /var/lib/tilo/device-private/keypair.bin \
     /var/lib/tilo/device/cert.bin; do
     [ -s "$identity_file" ] || die "identity artifact is absent or empty: $identity_file"
   done
+  # Only the device's daemon reads the private key: the person's account is not
+  # given it, and signs through the daemon instead.
+  if [ -r /var/lib/tilo/device-private/keypair.bin ] \
+     || [ -x /var/lib/tilo/device-private ]; then
+    die "the login user can reach this device's private key"
+  fi
   /usr/bin/tilo-session --verify-collaboration-identity >/dev/null \
     || die "installed collaboration identity chain does not verify"
 

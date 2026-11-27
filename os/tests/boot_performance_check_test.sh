@@ -478,7 +478,12 @@ if grep -Fq 'systemctl enable tilo-growfs-sysroot.service' "$repo/os/Containerfi
   exit 1
 fi
 device_key_unit="$repo/os/usr/lib/systemd/system/tilo-device-key-init.service"
-grep -Fqx 'ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin' "$device_key_unit"
+# Every boot: the key is given the daemon account's owner and 0600 again, so a
+# re-key or an installer's copy cannot leave it unreadable by the daemon.
+if grep -q '^ConditionPathExists=' "$device_key_unit"; then
+  echo 'the device-key unit skips a boot, leaving a re-keyed key unreadable by the daemon' >&2
+  exit 1
+fi
 if grep -Fq 'tilo-identity.service' "$repo/os/Containerfile"; then
   echo 'a pre-session identity unit is back in the login path' >&2
   exit 1

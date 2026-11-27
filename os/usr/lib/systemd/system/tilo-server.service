@@ -44,8 +44,9 @@ LimitCORE=0
 # domain against a target labeled `var_lib_t`, which the base policy
 # refuses (avc: denied { rename }). The unit crash-loops.
 # A static, unprivileged tilo-server account removes the rename while ensuring a
-# network parser is not uid 0. Its tilo-identity supplementary group grants only
-# the certified device-key read boundary required for authenticated transport.
+# network parser is not uid 0. It owns the device key itself (see
+# tilo-host.conf); the tilo-identity group gives the certificates it serves and
+# the workspaces' paths, never the key.
 
 # Hardening: the server is a network-facing daemon on an always-on
 # device, so it stays behind a paranoid sandbox.
@@ -84,7 +85,8 @@ SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboo
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 
-# The server configuration, and the device key in the shared identity tree.
+# The server configuration, and the identity tree it reads its own key and the
+# certificates from.
 ReadOnlyPaths=/etc/tilo /var/lib/tilo
 
 [Install]

@@ -306,8 +306,10 @@ grep -Fq 'unused privileged kernel interface $interface' "$audit" \
 
 for required in \
   "device_key_dir=/var/lib/tilo/device-private" \
-  "device_key_meta=\"\$(stat -c '%u:%G:%a:%h:%s' \"\$device_key\" 2>/dev/null || echo invalid)\"" \
-  "[ \"\$device_key_meta\" = '0:tilo-identity:640:1:32' ]"; do
+  "device_key_meta=\"\$(stat -c '%u:%a:%h:%s' \"\$device_key\" 2>/dev/null || echo invalid)\"" \
+  "[ \"\$device_key_meta\" = \"\$device_key_owner:600:1:32\" ]" \
+  "[ \"\$device_dir_meta\" = \"\$device_key_owner:700\" ]" \
+  "daemon_uids=\" \$(id -u tilo 2>/dev/null || true) \$(id -u tilo-server 2>/dev/null || true) \""; do
   grep -Fq "$required" "$audit" \
     || bad "installed audit does not prove device-key storage: $required"
 done

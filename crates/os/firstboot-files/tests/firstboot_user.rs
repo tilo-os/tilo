@@ -57,11 +57,16 @@ import importlib.util, os, stat
 from pathlib import Path
 from unittest.mock import patch
 r = Path(os.environ['FIXTURE_ROOT'])
+def stop(stage):
+    if os.environ.get('FAIL_STAGE') != stage:
+        return
+    if os.environ.get('TERMINATE') == '1':
+        os.kill(os.getppid(), 15)
+    raise SystemExit(1)
 if (r / 'shadow').exists():
     assert (r / 'expiry').read_text() == '1970-01-02'
     assert (r / 'shadow').read_text().startswith('!')
-if os.environ.get('FAIL_STAGE') == 'seeds':
-    raise SystemExit(1)
+stop('seeds')
 spec = importlib.util.spec_from_file_location('seeds', {oracle:?})
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
@@ -77,8 +82,7 @@ with patch.object(helper.os, 'geteuid', return_value=0), \
         patch.object(helper, 'trusted', side_effect=trusted), \
         patch.object(helper.atomic, 'write_file', side_effect=write):
     helper.seed(r / 'home/fixtureuser', r / 'skel', os.getuid(), os.getgid(), r / 'receipts')
-if os.environ.get('FAIL_STAGE') == 'seeds-after':
-    raise SystemExit(1)
+stop('seeds-after')
 ",
         oracle = oracle.display().to_string(),
     );
@@ -186,8 +190,6 @@ if [ "$value" = -1 ]; then fail expiry-release; else fail expiry-retry; fi
 if [ "$value" = -1 ] && [ "$(cat "$r/shadow")" != "$FIXTURE_HASH" ]; then exit 1; fi
 printf '%s' "$value" > "$r/expiry""#,
     ),
-    ("chgrp", "locked; fail key-repair"),
-    ("chmod", "locked; fail key-mode"),
     ("shred", r#"rm -- "${@: -1}""#),
 ];
 
@@ -200,19 +202,12 @@ impl Transaction {
     fn new() -> Self {
         let work = tempfile::tempdir().unwrap();
         let root = work.path().to_path_buf();
-        for directory in [
-            "etc",
-            "state/device-private",
-            "bin",
-            "home/fixtureuser",
-            "skel",
-        ] {
+        for directory in ["etc", "bin", "home/fixtureuser", "skel"] {
             fs::create_dir_all(root.join(directory)).unwrap();
         }
         let fixture = Self { _work: work, root };
         fixture.seed();
         let r = &fixture.root;
-        fs::write(r.join("state/device-private/keypair.bin"), "key").unwrap();
         fs::write(r.join("skel/default"), "default").unwrap();
         fs::write(r.join("skel/seeded"), "skel").unwrap();
         fs::write(r.join("home/fixtureuser/seeded"), "installer").unwrap();
@@ -243,7 +238,6 @@ impl Transaction {
                     format!("seed_helper={}", display("attesting-seeds")),
                 ),
                 ("/etc/tilo", display("etc")),
-                ("/var/lib/tilo", display("state")),
                 ("/var/home", display("home")),
                 (
                     r#""/home/$user""#,
@@ -327,8 +321,6 @@ fn every_failed_delivery_is_locked_and_retryable() {
         "crash",
         "seeds",
         "seeds-after",
-        "key-repair",
-        "key-mode",
         "password",
         "expiry-release",
     ] {
@@ -363,7 +355,7 @@ fn every_failed_delivery_is_locked_and_retryable() {
 #[test]
 fn termination_before_release_is_retryable() {
     let t = Transaction::new();
-    for stage in ["key-repair", "password", "expiry-release"] {
+    for stage in ["seeds-after", "password", "expiry-release"] {
         let result = t.boot_with(stage, true);
         assert_eq!(result.status.signal(), Some(15), "{stage}: {result:?}");
         assert_eq!(t.read("expiry"), "1970-01-02", "{stage}");
@@ -407,7 +399,7 @@ tilo_test_env::scenario! {
     phase intent_does_not_adopt_wrong_shadow;
     {
         let t = Transaction::new();
-        assert!(!t.boot("key-repair").status.success());
+        assert!(!t.boot("seeds-after").status.success());
         t.write("shadow", "!unrelated");
         t.write("expiry", "-1");
         assert!(!t.boot("").status.success());
@@ -420,11 +412,11 @@ tilo_test_env::scenario! {
 #[test]
 fn retry_after_final_unlock_relocks_before_delivery() {
     let t = Transaction::new();
-    assert!(!t.boot("key-repair").status.success());
+    assert!(!t.boot("seeds-after").status.success());
     // Model interruption after expiry release but before seed cleanup.
     t.write("shadow", &hash());
     t.write("expiry", "-1");
-    assert!(!t.boot("key-repair").status.success());
+    assert!(!t.boot("seeds-after").status.success());
     assert!(t.read("shadow").starts_with('!'));
     assert!(t.credential().exists());
     assert_eq!(t.read("expiry"), "1970-01-02");
@@ -436,7 +428,7 @@ fn retry_after_final_unlock_relocks_before_delivery() {
 #[test]
 fn retry_expiry_failure_does_not_provision() {
     let t = Transaction::new();
-    assert!(!t.boot("key-repair").status.success());
+    assert!(!t.boot("seeds-after").status.success());
     t.write("shadow", &hash());
     t.write("expiry", "-1");
     assert!(!t.boot("expiry-retry").status.success());
@@ -474,7 +466,7 @@ fn useradd_failure_before_creation_retries() {
 #[test]
 fn seeded_home_keeps_installer_content_and_gets_skel() {
     let t = Transaction::new();
-    assert!(!t.boot("key-repair").status.success());
+    assert!(!t.boot("seeds-after").status.success());
     let default = t.path("home/fixtureuser/default");
     let captured = fs::metadata(&default).unwrap();
     let receipt = t.path(&format!(
@@ -497,7 +489,7 @@ fn seeded_home_keeps_installer_content_and_gets_skel() {
     assert!(args.iter().any(|a| a == "Fixture User"), "{args:?}");
 
     let tampered = Transaction::new();
-    assert!(!tampered.boot("key-repair").status.success());
+    assert!(!tampered.boot("seeds-after").status.success());
     tampered.write("home/fixtureuser/default", "changed after capture");
     let result = tampered.boot("");
     assert!(!result.status.success());
@@ -602,10 +594,6 @@ fn run_transport(root: &Path, full_name: bool, seeded_home: bool, fail_password:
             (
                 "TRANSACTION=/etc/tilo/install-user.transaction",
                 format!("TRANSACTION={r}/install-user.transaction"),
-            ),
-            (
-                "key=/var/lib/tilo/device-private/keypair.bin",
-                format!("key={r}/absent-device-key"),
             ),
             (r#""/home/$user""#, format!(r#""{r}/home/$user""#)),
             (r#""/var/home/$user""#, format!(r#""{r}/var-home/$user""#)),

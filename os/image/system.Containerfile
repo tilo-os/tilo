@@ -430,9 +430,9 @@ COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-server.conf os/u
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
 COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf /usr/share/user-tmpfiles.d/
 
-# The device-trust group, which must exist before tmpfiles-setup runs so
-# the identity directory can be created with it. See the snippet for why
-# the device key is group-owned rather than owned by one component.
+# The device-trust group, which must exist before tmpfiles-setup runs so the
+# certificate directories can be created with it. See the snippet: the device
+# key is the daemon account's alone, and this group is never given it.
 # The server's static account: a desktop set up as a node runs the server
 # (tilo-node-server@) under it, as the host image runs tilo-server.service. Its
 # snippet ships with the server component (os/components.toml), which arrives

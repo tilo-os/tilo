@@ -1070,8 +1070,8 @@ fn ensure_collaboration_identity_in_context(
 ) -> Result<ProvisionOutcome, io::Error> {
     prepare_identity_directory(identity_dir)?;
     let class = DeviceClass::of(identity_dir, class);
-    // A root kept for an account alone is sealed with this computer's device key: it is made
-    // before the root it seals.
+    // The device key signs the root an account keeps here. It is the daemon's: made before the
+    // daemon starts, and this process only asks it when it is not the daemon.
     let made = made_device_key(paths)?;
 
     let now_ns = tilo_clock::unix_now_ns();
@@ -1339,20 +1339,18 @@ pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -
 }
 
 /// This device's public key when it is known here without asking the device's daemon: the key
-/// this process took as the daemon, or one made here because the computer had none yet. A key
-/// made before the daemon first starts is handed to it in its file, and nothing here keeps it.
-/// `None` when the key is the daemon's in another process: it answers which key that is
-/// ([`crate::trusted_device::device_public_key`]).
+/// this process took as the daemon. `None` when the key is the daemon's in another process: it
+/// answers which key that is ([`crate::trusted_device::device_public_key`]).
+///
+/// A process that is not the daemon never makes the key: the machine's is made before its daemon
+/// starts (`tilo-device-key-init`) or by the daemon itself. One made here would be a second
+/// writer of the device's identity, and on this model only the daemon reads the key.
 fn made_device_key(paths: &IdentityPaths) -> io::Result<Option<[u8; 32]>> {
-    if let Ok(key) = persist::taken_device_key(paths) {
-        return Ok(Some(key.verifying_key().to_bytes()));
+    match persist::taken_device_key(paths) {
+        Ok(key) => Ok(Some(key.verifying_key().to_bytes())),
+        Err(persist::PersistError::NotTheDaemon) => Ok(None),
+        Err(error) => Err(io::Error::other(error.to_string())),
     }
-    if persist::holds_device_key(paths).map_err(|error| io::Error::other(error.to_string()))? {
-        return Ok(None);
-    }
-    let (key, _) = persist::load_or_create_device_key(paths)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    Ok(Some(key.verifying_key().to_bytes()))
 }
 
 /// Ensure this device holds its certificate for `identity`, labelled

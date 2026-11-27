@@ -8,9 +8,9 @@
 //! boot tools that mint and check them.
 //!
 //! The layout under `/var/lib/tilo/` is described in [`persist`]. A device key
-//! is either a group-private file (the OS layout, where the root filesystem
-//! daemon and the session share it) or, where only the user's own runtime
-//! reads it, an item in the platform's secret store (the login Keychain on macOS, the
+//! is either a file only the device daemon's account can read (the OS layout)
+//! or, where only the user's own runtime reads it, an item in the platform's
+//! secret store (the login Keychain on macOS, the
 //! Keystore-wrapped app store on Android). [`persist::load_or_create_device_key`]
 //! is the only entry point that mints one.
 

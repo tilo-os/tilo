@@ -1,8 +1,8 @@
 [Unit]
-Description=Provision the root-owned Tilo machine device identity
+Description=Provision the Tilo machine device identity
 # Early boot, before sysinit.target: tilo-device-branch.service records which
 # machine the key belongs to right after this mints it, and both precede
-# everything that reads the key. Ordered after sysinit.target, as its default
+# everything that uses the key. Ordered after sysinit.target, as its default
 # dependencies had it, the two closed a cycle and systemd dropped the branch
 # unit from every boot.
 DefaultDependencies=no
@@ -11,10 +11,10 @@ Before=sysinit.target
 Before=tilo-firstboot.service greetd.service fs.service
 Conflicts=shutdown.target
 Before=shutdown.target
-# This unit is ordered before login to mint the key, but an established
-# machine should not start a process merely to read the same persistent key on
-# every boot.
-ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin
+# Every boot, not only the first: the key is the device daemon's, which runs as
+# the account that owns its directory, so this gives it that owner and 0600
+# each time. A re-key, an installer's copy or an install from before this rule
+# can have left another owner or mode, and the daemon reads just the one.
 
 [Service]
 Type=oneshot
@@ -47,11 +47,16 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
-CapabilityBoundingSet=
+# Reaching the key in the daemon account's 0700 directory, and giving it that
+# account and 0600: DAC override for the directory, chown and chmod for the file.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@mount @network-io @privileged @resources @obsolete @debug @swap
+# `@chown` is in `@privileged`, which this program needs for the one syscall
+# that gives the key its directory's owner; the capability bounding set above,
+# not the filter, is what keeps root from doing anything else privileged here.
+SystemCallFilter=~@mount @network-io @resources @obsolete @debug @swap
 
 [Install]
 WantedBy=sysinit.target

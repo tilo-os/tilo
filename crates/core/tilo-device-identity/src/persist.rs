@@ -17,17 +17,15 @@
 //! can be inspected with `hexdump` and does not depend
 //! on `serde_json` at boot.
 //!
-//! Secret files must not be reachable by users who are not entitled to
-//! them, and the mode is checked at read time — a permissive secret file
-//! returns [`PersistError::InsecurePermissions`] rather than being read.
+//! Secret files must not be reachable by anyone else, and the mode is checked
+//! at read time — a permissive secret file returns
+//! [`PersistError::InsecurePermissions`] rather than being read.
 //! The person's root is never here: it lives in their identity store.
-//! `keypair.bin` is the
-//! device key, read by two components running as two uids, so it may
-//! additionally be group-readable ([`DEVICE_KEY_MODE`]) but must be owned by
-//! root (or the reader for an injected/test store) and never reachable by
-//! anyone outside that group. One process writes as the device, its daemon,
-//! which takes the key with [`take_device_key`]: a second one that takes it is
-//! refused ([`PersistError::KeyInUse`]).
+//! `keypair.bin` is the device key, owner-only ([`DEVICE_KEY_MODE`]) in a
+//! directory only the daemon's account may enter: one process writes as the
+//! device, its daemon, which takes the key with [`take_device_key`], and a
+//! second one that takes it is refused ([`PersistError::KeyInUse`]). Every
+//! other program of the computer asks the daemon to sign with it.
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 #[cfg(target_os = "linux")]
@@ -247,8 +245,9 @@ pub struct IdentityPaths {
 /// Where a layout keeps this device's private key.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DeviceKeyOwnership {
-    /// A group-private file at [`IdentityPaths::device_privkey`]: the Tilo OS
-    /// layout, where the root filesystem daemon and the session share it.
+    /// A file at [`IdentityPaths::device_privkey`]: the Tilo OS layout, where
+    /// the device's daemon keeps the key owner-only and every other program
+    /// asks it to sign.
     #[default]
     File,
     /// The platform's secret store, under this device's own app namespace: the
@@ -374,10 +373,7 @@ pub enum PersistError {
     Io(#[from] io::Error),
     /// A secret file was reachable by users not entitled to it.
     /// Refused to proceed rather than expose the key.
-    #[error(
-        "secret file {path} has permissions {mode:o}; a user-scoped secret must be 0600 and \
-         the device key at most 0640"
-    )]
+    #[error("secret file {path} has permissions {mode:o}; a private key must be owner-only (0600)")]
     InsecurePermissions {
         /// File path that triggered the check.
         path: String,
@@ -706,7 +702,7 @@ pub fn read_device_key_from_file(file: &fs::File) -> Result<SigningKey, PersistE
     signing_key_from_open_file(
         file,
         Path::new("<held device key>"),
-        0o007,
+        0o077,
         SecretOwner::RootOrReader,
     )
 }
@@ -815,10 +811,9 @@ fn admit_secret_file(
             SecretOwner::RootOrReader => Some("root or uid"),
         };
         if let Some(accepted_owner) = accepted_owner {
-            // The installed key is provisioned by root and then shared
-            // read-only with the device-identity group. Custom/test stores may
-            // be owned by the caller, but a third account may never substitute
-            // the signing identity merely by matching its mode.
+            // The device key is the daemon's own file, and a store a test injects
+            // may be the caller's. A third account may never substitute the
+            // signing identity merely by matching its mode.
             let reader = rustix::process::geteuid().as_raw();
             if !secret_key_owner_is_accepted(owner_policy, metadata.uid(), reader) {
                 return Err(PersistError::InsecureOwner {
@@ -850,7 +845,10 @@ fn secret_key_owner_is_accepted(policy: SecretOwner, owner: u32, reader: u32) ->
     match policy {
         SecretOwner::Any => true,
         SecretOwner::Reader => owner == reader,
-        SecretOwner::RootOrReader => owner == 0 || owner == reader,
+        // Root reads a key of any owner: the key is the daemon account's, and
+        // the root units that must read it (the re-key at boot) are not the
+        // substitution this refuses, which is another account's.
+        SecretOwner::RootOrReader => owner == 0 || reader == 0 || owner == reader,
     }
 }
 
@@ -869,19 +867,16 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), 0o600)
 }
 
-/// Mode the device key is stored with: owner read/write, group read,
-/// nothing for anyone else.
+/// Mode the device key is stored with: owner read/write, nothing for anyone
+/// else.
 ///
-/// Group-readable because the device key is read by more than one
-/// process running as more than one uid — the filesystem daemon runs as
-/// root, the compositor in the user's session — and they are the *same*
-/// device, so they must present the same identity. The group is the
-/// device-trust boundary; its membership is the session user, and the
-/// containing directory is `setgid` so the group is inherited whichever
-/// component creates the key first.
-///
-/// `other` gets nothing, and that is enforced on read.
-pub const DEVICE_KEY_MODE: u32 = 0o640;
+/// Only the device's daemon reads the key. It runs as the account that owns
+/// the key's directory — `tilo` on a desktop, `tilo-server` on a server image
+/// — never as root, so the key is that account's and nobody else's; the
+/// directory is that account's alone, so a program of any other account cannot
+/// even reach the file. Every other program signs through the daemon
+/// (`devices#sign`) and never opens the key.
+pub const DEVICE_KEY_MODE: u32 = 0o600;
 
 /// Mode of the public identity files: the person's public key and the device
 /// certificates. Pinned rather than left to the writer's umask: a root-run
@@ -901,15 +896,14 @@ fn write_public_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
-/// Read the device key, requiring that it not be accessible to users
-/// outside the device-trust group.
+/// Read the device key, requiring that nobody but its owner can access it.
 ///
 /// # Errors
 ///
-/// Returns [`PersistError::InsecurePermissions`] if the file is
-/// accessible to users outside the device-trust group,
+/// Returns [`PersistError::InsecurePermissions`] if the file is readable or
+/// writable by anyone but its owner (a group-readable key is refused),
 /// [`PersistError::InsecureOwner`] if it is owned by neither root nor the
-/// reader,
+/// reader (root, which may always read it, is never refused),
 /// [`PersistError::Io`] if it cannot be read, or
 /// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
@@ -917,7 +911,7 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
     if let Some(key) = one_writer::taken_here(path) {
         return Ok(key);
     }
-    let key = signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)?;
+    let key = signing_key_from_file(path, 0o077, SecretOwner::RootOrReader)?;
     // Reading the key made this process non-dumpable, so the person's Secret
     // Service can no longer read its executable to know who is calling. The
     // process proves it holds the device key instead.
@@ -1003,6 +997,52 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     return tilo_files::native::private::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
     tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
+}
+
+/// Give the key at `path` the owner and group of its directory, and
+/// [`DEVICE_KEY_MODE`].
+///
+/// The directory is the daemon's: the image makes it for the account the
+/// device's daemon runs as, and that account is the one process that reads the
+/// key. Whoever writes the key as another account — root at first boot, a
+/// re-key, an installer's copy — gives it back to the directory's owner here,
+/// on every boot, so an install from any earlier state settles on the one state
+/// the daemon reads. A process running as that account itself needs no
+/// privilege for this, and one that runs as root needs only `CAP_CHOWN` and
+/// `CAP_FOWNER`.
+///
+/// # Errors
+///
+/// The key or its directory cannot be read, the key is not a regular file, or
+/// it cannot be given its owner and mode.
+pub fn enforce_device_key_owner_and_mode(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let directory = path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("the device key {} has no directory", path.display()),
+            )
+        })?;
+        let directory = fs::metadata(directory)?;
+        let key = fs::symlink_metadata(path)?;
+        if !key.file_type().is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("the device key {} is not a regular file", path.display()),
+            ));
+        }
+        if (key.uid(), key.gid()) != (directory.uid(), directory.gid()) {
+            std::os::unix::fs::chown(path, Some(directory.uid()), Some(directory.gid()))?;
+        }
+        if key.permissions().mode() & 0o777 != DEVICE_KEY_MODE {
+            fs::set_permissions(path, fs::Permissions::from_mode(DEVICE_KEY_MODE))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// Whether [`load_or_create_device_key`] found a key or minted one.
@@ -2526,18 +2566,17 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// The device key permits the trust group and nobody else and rejects a multiply-named inode; a
-        /// user-scoped secret still refuses group read; the device key is created once then reloaded,
-        /// simultaneous creation persists one key, an unreadable key raises instead of rotating, and
-        /// adopting a key seeds a new device but never replaces one.
-        fn device_keys_are_group_private_created_once_and_never_rotated_silently;
+        /// The device key is owner-only and refuses a group-readable one, and rejects a
+        /// multiply-named inode; its creation writes it so, a user-scoped secret still refuses
+        /// group read; the device key is created once then reloaded, simultaneous creation
+        /// persists one key, an unreadable key raises instead of rotating, and adopting a key
+        /// seeds a new device but never replaces one.
+        fn device_keys_are_owner_only_created_once_and_never_rotated_silently;
 
-        phase device_key_permits_the_trust_group_and_nobody_else;
-        // The device key is deliberately group-readable — two components
-        // running as two uids present the one device identity — but a user
-        // outside that group must not be able to read it, and that is
-        // enforced on every read rather than trusted to whoever set the
-        // mode.
+        phase device_key_is_owner_only_and_refuses_a_group_readable_key;
+        // Only the device's daemon reads the key, as the account that owns its
+        // directory. A key anyone else can reach — its group included — is
+        // refused on every read rather than trusted to whoever set the mode.
         {
             #[cfg(unix)]
             {
@@ -2549,23 +2588,40 @@ mod tests {
 
                 let written = fs::metadata(path).unwrap().permissions().mode() & 0o777;
                 assert_eq!(written, DEVICE_KEY_MODE);
-                assert_eq!(written & 0o007, 0, "no bits for users outside the group");
+                assert_eq!(written, 0o600, "owner read and write only");
 
-                // Group read: accepted.
+                // Owner-only: accepted.
+                assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
+
+                // A group read: refused, whether read by path or from an opened file.
                 fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
-                assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
-                // Owner only: also fine.
-                fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
-                assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
+                match read_device_key(path) {
+                    Err(PersistError::InsecurePermissions { mode, .. }) => assert_eq!(mode, 0o640),
+                    other => panic!("a group-readable device key must be refused, got {other:?}"),
+                }
+                let file = fs::File::open(path).unwrap();
+                assert!(matches!(
+                    read_device_key_from_file(&file),
+                    Err(PersistError::InsecurePermissions { .. })
+                ));
 
-                // Any bit for `other`: refused.
-                for mode in [0o644u32, 0o604, 0o601, 0o666] {
+                // Any bit for the group or for `other`: refused.
+                for mode in [0o644u32, 0o604, 0o601, 0o666, 0o660, 0o620] {
                     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
                     match read_device_key(path) {
                         Err(PersistError::InsecurePermissions { .. }) => {}
                         other => panic!("mode {mode:o} must be refused, got {other:?}"),
                     }
                 }
+
+                // Giving the key back its state, as the machine's boot does, makes it readable
+                // again: the mode is the daemon's, and the owner is the directory's.
+                enforce_device_key_owner_and_mode(path).unwrap();
+                assert_eq!(
+                    fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    DEVICE_KEY_MODE
+                );
+                assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
             }
         }
 
@@ -2587,10 +2643,9 @@ mod tests {
             }
         }
 
-        phase user_scoped_secret_still_refuses_group_read;
-        // The relaxation is scoped to the device key. A user-scoped secret
-        // still has to be owner-only — the group that reads the device key
-        // has no business reading the user's own signing key.
+        phase user_scoped_secret_refuses_group_read;
+        // A person's own signing key is owner-only too: a group has no business
+        // reading it either.
         {
             #[cfg(unix)]
             {

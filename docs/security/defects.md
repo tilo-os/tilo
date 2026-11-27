@@ -823,7 +823,7 @@ machine's one device key, so the compositor no longer keeps a network identity o
 The write goes through an atomic write-with-mode, closing the TOCTOU window. The compositor no
 longer reads the key at all: its peer ids are folded from the endpoint key, and the device key is
 the device daemon's alone, taken under an exclusive lock that refuses a second process. Tested by
-`crates/core/tilo-device-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`
+`crates/core/tilo-device-identity/src/persist.rs::tests::device_keys_are_owner_only_created_once_and_never_rotated_silently`
 and `crates/core/tilo-device-identity/src/persist/one_writer.rs::tests::a_second_process_taking_the_key_is_refused_naming_the_first`.
 
 ## P2-3 — Revocation is modelled but undeliverable

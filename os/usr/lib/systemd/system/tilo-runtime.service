@@ -8,9 +8,9 @@ Documentation=https://code.tilo.so/tilo/tilo/src/branch/main/docs/architecture/c
 # its own copy of them under /var/lib/tilo/state, and is never handed a
 # person's own key.
 #
-# The key is made before sysinit by tilo-device-key-init.service, since the
-# filesystem daemon and the greeter read it before this starts, and a disk
-# copied from another machine is re-keyed by tilo-device-branch.service first.
+# The key is made before sysinit by tilo-device-key-init.service, which also
+# gives it this daemon's account and 0600, and a disk copied from another
+# machine is re-keyed by tilo-device-branch.service first.
 After=tilo-device-key-init.service tilo-device-branch.service network.target
 After=systemd-tmpfiles-setup.service
 ConditionPathExists=/usr/libexec/tilo/tilo-runtime
@@ -20,7 +20,8 @@ ConditionPathExists=/var/lib/tilo/device-private/keypair.bin
 Type=exec
 User=tilo
 Group=tilo
-# Read access to the device key, and the certificates people give it.
+# The key is this account's own file; the group gives the certificates people
+# give it, and the enrollment paths its person's session shares with it.
 SupplementaryGroups=tilo-identity
 Environment=HOME=/var/lib/tilo/state
 Environment=TILO_RUNTIME_PROFILE=/var/lib/tilo/state

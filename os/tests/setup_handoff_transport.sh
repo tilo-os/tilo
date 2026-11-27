@@ -43,7 +43,7 @@ TILO_INSTALLER_PROFILE_ALLOW_FILE=1 \
 TILO_INSTALLER_PROFILE_OUT_DIR="$out" \
   "$extractor"
 test "$(cat "$out/setup-handoff/etc/marker")" = wifi
-test "$(stat -c %a "$out/setup-handoff/var/lib/tilo/device-private/keypair.bin")" = 640
+test "$(stat -c %a "$out/setup-handoff/var/lib/tilo/device-private/keypair.bin")" = 600
 test "$(stat -c %a "$out/setup-handoff/etc/NetworkManager/system-connections/tilo-setup.nmconnection")" = 600
 python3 - "$media" <<'PY'
 import sys

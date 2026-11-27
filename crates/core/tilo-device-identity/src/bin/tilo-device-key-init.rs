@@ -5,16 +5,20 @@
 //! `TILO_NODE_SESSION_DEVICE=<hex>`, a systemd `EnvironmentFile` the node's
 //! server names the session with (`--session-device`).
 //!
-//! The key is made here and handed to the device's daemon in its file, which the daemon takes as
-//! the one process that writes as the device: this program keeps no copy, and a device whose
-//! daemon has the key already is refused.
+//! The machine's key is the device daemon's, which runs as the account that
+//! owns the key's directory, never as root. This program makes it when the
+//! computer has none and gives it that account and `0600` every boot, so an
+//! install from any earlier state settles on the one state the daemon reads.
+//! Nothing here keeps a copy, and a device whose daemon has the key already is
+//! refused rather than read beside it.
 //!
 //! `--branch` runs at every boot before anything uses the machine's key: it
 //! records which machine the key belongs to and re-keys a machine whose disk
 //! was copied from another (`tilo_device_identity::branch`).
 
 use tilo_device_identity::persist::{
-    DeviceKeyOutcome, IdentityPaths, load_or_create_device_key, take_device_key,
+    DeviceKeyOutcome, IdentityPaths, enforce_device_key_owner_and_mode, holds_device_key,
+    load_or_create_device_key, take_device_key,
 };
 
 fn main() {
@@ -30,7 +34,7 @@ fn provision(args: &[String]) -> Result<(), String> {
             if rustix::process::geteuid().as_raw() != 0 {
                 return Err("must run as root".into());
             }
-            create(&IdentityPaths::default_system(), "machine").map(drop)
+            maintain(&IdentityPaths::default_system())
         }
         #[cfg(unix)]
         [flag] if flag == "--branch" => {
@@ -55,15 +59,29 @@ fn provision(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// The machine's key in the one state its daemon reads: the owner of its directory and `0600`.
+/// Every boot, since a re-key, an installer's copy or a build from before this rule can have left
+/// another owner or mode; when the computer has no key yet it is made first.
+fn maintain(paths: &IdentityPaths) -> Result<(), String> {
+    if holds_device_key(paths).map_err(|error| error.to_string())? {
+        return enforce_device_key_owner_and_mode(&paths.device_privkey)
+            .map_err(|error| error.to_string());
+    }
+    create(paths, "machine").map(drop)
+}
+
 /// Make the device key under `paths` when there is none, before the daemon that writes as the
 /// device starts: it is handed over in the file, which the daemon takes. Nothing here keeps it,
 /// and a device whose daemon took the key already is refused rather than read beside it.
 fn create(paths: &IdentityPaths, what: &str) -> Result<ed25519_dalek::VerifyingKey, String> {
     let (_, outcome) = load_or_create_device_key(paths).map_err(|error| error.to_string())?;
-    // Taken and let go at once: a running daemon refuses it, naming itself.
+    // Taken and let go at once, while it is still root's: a running daemon refuses it, naming
+    // itself.
     let taken = take_device_key(paths).map_err(|error| error.to_string())?;
     let public = taken.key().verifying_key();
     drop(taken);
+    // Root made it here; the directory is the daemon account's, so the key is too.
+    enforce_device_key_owner_and_mode(&paths.device_privkey).map_err(|error| error.to_string())?;
     if outcome == DeviceKeyOutcome::Created {
         eprintln!("created {what} device identity");
     }
@@ -453,9 +471,20 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../../os/usr/lib/systemd/system/tilo-device-key-init.service"
         ));
+        // Every boot, not only when the key is missing: the key is given its owner and mode
+        // again, so an install from any earlier state settles on the one state the daemon reads.
+        assert!(
+            !unit
+                .lines()
+                .any(|line| line.starts_with("ConditionPathExists="))
+        );
         assert!(
             unit.lines()
-                .any(|line| line == "ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin")
+                .any(|line| line == "Before=tilo-firstboot.service greetd.service fs.service")
+        );
+        assert!(
+            unit.lines()
+                .any(|line| line == "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER")
         );
         // The branch check runs at every boot, before the services that act
         // as the device and the names a copy shares are first read.

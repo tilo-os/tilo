@@ -54,23 +54,23 @@ else
   bad 'background root growth can expose a sysroot remount or lacks resize access'
 fi
 
-# The session must be able to use the machine identity without being able to
-# unlink or replace its private key. Root provisions it before login in a
-# non-writable group-readable directory; public certificates remain separate.
-if grep -Eq '^d[[:space:]]+/var/lib/tilo/device-private[[:space:]]+2750[[:space:]]+root[[:space:]]+tilo-identity' "$tmpfiles" \
+# The device key is the daemon's own: it runs as `tilo`, not root, so the key
+# lives in that account's 0700 directory, owner-only, and no login session can
+# read it. tilo-device-key-init gives it that owner and mode every boot.
+if grep -Eq '^d[[:space:]]+/var/lib/tilo/device-private[[:space:]]+0700[[:space:]]+tilo[[:space:]]+tilo' "$tmpfiles" \
+   && ! grep -q '^ConditionPathExists=' "$device_key_unit" \
    && exactly_once "$device_key_unit" 'Before=tilo-firstboot.service greetd.service fs.service' \
-   && exactly_once "$device_key_unit" 'ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin' \
    && exactly_once "$device_key_unit" 'ReadWritePaths=/var/lib/tilo/device-private' \
    && exactly_once "$device_key_unit" 'PrivateNetwork=yes' \
    && exactly_once "$device_key_unit" 'ProtectProc=invisible' \
    && exactly_once "$device_key_unit" 'RestrictNamespaces=yes' \
    && exactly_once "$device_key_unit" 'MemoryDenyWriteExecute=yes' \
-   && exactly_once "$device_key_unit" 'CapabilityBoundingSet=' \
+   && exactly_once "$device_key_unit" 'CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER' \
    && containerfile_installs_output "$containerfile" tilo-device-key-init /usr/libexec/tilo/tilo-device-key-init \
    && grep -Fq 'systemctl enable tilo-device-key-init.service' "$containerfile"; then
-  ok 'device private key is provisioned before login only when creation or migration is needed'
+  ok 'device private key is given the daemon account and owner-only mode before login, every boot'
 else
-  bad 'device private key remains replaceable by the session or is not provisioned before login'
+  bad 'device private key is replaceable by the session or is not provisioned before login'
 fi
 
 # Public certificate publication must work for every authorized login user.
