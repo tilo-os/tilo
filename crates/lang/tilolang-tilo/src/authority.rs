@@ -410,11 +410,14 @@ impl Authority for TiloAuthority {
                 let own = authorship::code_grants(workspace, &writer_grantee, trusted);
                 (Author::Block(writer_grantee), own)
             } else {
-                let app = state
-                    .apps
-                    .get(module)
-                    .cloned()
-                    .unwrap_or_else(|| format!("tl-module:{}", module.0));
+                // The module that declares the action is the action's app, loaded here or not.
+                let app = state.apps.get(module).cloned().unwrap_or_else(|| {
+                    if *module == action.module {
+                        action.app.to_string()
+                    } else {
+                        format!("tl-module:{}", module.0)
+                    }
+                });
                 let mut own = authorship::code_grants(workspace, &runner, trusted);
                 if action.own && *module == action.module {
                     own.push(package_records(workspace, &app, &runner));
