@@ -92,8 +92,9 @@ struct Session {
     caller: Caller,
 }
 
-/// The sessions open, by workspace and key.
-type OpenSessions = std::sync::Mutex<HashMap<(WorkspaceId, [u8; 32]), Session>>;
+/// The sessions open, by workspace, key and whose run it is: a key's own calls and the pages its
+/// browser opens are runs apart.
+type OpenSessions = std::sync::Mutex<HashMap<(WorkspaceId, [u8; 32], Whose), Session>>;
 
 /// What the session a key works in needs, to be opened: a key's first call, or its first under
 /// a renewed certificate.
@@ -123,7 +124,7 @@ impl Opening {
             .open(&self.workspace, &self.key, self.whose)
             .map_err(|reason| ActionCallError::Refused { reason })?;
         let mut open = open.lock_recover();
-        let at = (self.workspace_id, self.key.device_public_key);
+        let at = (self.workspace_id, self.key.device_public_key, self.whose);
         if let Some(run) = open.get(&at)
             && run.cert == self.key
         {
@@ -186,11 +187,15 @@ impl Runs {
     /// reaches the workspace and the key is the person's, or a member's asking for what is the
     /// workspace's (`own_only` says it asks for what is this device's own): `caller` is who the
     /// workspace's roster admitted it as on the link.
+    ///
+    /// A page (`page`) is its person at their browser, never an agent of theirs: its key runs as
+    /// that person on that device, the workspace deciding for them as for any member's device,
+    /// this device's own person included.
     fn run(
         &self,
         workspace_id: WorkspaceId,
         (caller, key): (&Caller, &DeviceCert),
-        own_only: bool,
+        (own_only, page): (bool, bool),
     ) -> Result<Run, ActionCallError> {
         let Serving { devices, sessions } =
             self.serving
@@ -202,6 +207,7 @@ impl Runs {
             .workspace(workspace_id)
             .ok_or(ActionCallError::UnknownAction)?;
         let whose = match devices.admit(key.device_public_key, key) {
+            Ok(_) if page => Whose::Member,
             Ok(whose) => whose,
             Err(refusal) => {
                 self.end(workspace_id, &key.device_public_key);
@@ -242,7 +248,8 @@ impl Runs {
             });
         }
         let mut open = self.open.lock_recover();
-        if let Some(run) = open.get(&(workspace_id, key.device_public_key))
+        let at = (workspace_id, key.device_public_key, whose);
+        if let Some(run) = open.get(&at)
             && run.cert == *key
         {
             return Ok(Run::Open(Box::new((
@@ -252,7 +259,7 @@ impl Runs {
         }
         // A key that renewed its certificate starts its run again under the
         // one it shows now.
-        let renewed = open.remove(&(workspace_id, key.device_public_key));
+        let renewed = open.remove(&at);
         if let Some(run) = renewed {
             run.host.retire_execution(&run.caller);
         }
@@ -278,23 +285,34 @@ impl Runs {
         Ok(Run::Open(Box::new((host, caller))))
     }
 
-    /// [`Self::run`], opened here for a caller on a thread of its own, which may wait on the
-    /// workspaces: the host the key's calls go through and the caller they go as.
+    /// The run of a page `key`'s browser opens ([`Self::run`]), opened here for a caller on a
+    /// thread of its own, which may wait on the workspaces: the host the page's calls go through
+    /// and the caller they go as.
     fn opened(
         &self,
         workspace_id: WorkspaceId,
         (caller, key): (&Caller, &DeviceCert),
     ) -> Result<(SessionHost, Caller), ActionCallError> {
-        match self.run(workspace_id, (caller, key), false)? {
+        match self.run(workspace_id, (caller, key), (false, true))? {
             Run::Open(open) => Ok(*open),
             Run::Opening(opening) => opening.open(&self.open),
         }
     }
 
-    /// End the run `device` works in on `workspace_id`, if it has one.
+    /// End the runs `device` works in on `workspace_id`, if it has any.
     fn end(&self, workspace_id: WorkspaceId, device: &[u8; 32]) {
-        let ended = self.open.lock_recover().remove(&(workspace_id, *device));
-        if let Some(run) = ended {
+        let ended: Vec<Session> = {
+            let mut open = self.open.lock_recover();
+            let keys: Vec<_> = open
+                .keys()
+                .filter(|(workspace, key, _)| *workspace == workspace_id && key == device)
+                .copied()
+                .collect();
+            let ended = keys.iter().filter_map(|key| open.remove(key)).collect();
+            drop(open);
+            ended
+        };
+        for run in ended {
             run.host.retire_execution(&run.caller);
         }
     }
@@ -324,7 +342,10 @@ impl AppActionServer for KeySessions {
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
         let own_only = crate::personal_devices::own_devices_only(&message);
-        match self.runs.run(workspace_id, (caller, certificate), own_only) {
+        match self
+            .runs
+            .run(workspace_id, (caller, certificate), (own_only, false))
+        {
             Ok(Run::Open(open)) => {
                 let (host, caller) = *open;
                 tilo_action_calls::serve(&host, &caller, message)
@@ -366,7 +387,7 @@ impl AppActionServer for KeySessions {
             let mut open = self.runs.open.lock_recover();
             let keys: Vec<_> = open
                 .keys()
-                .filter(|(workspace, _)| *workspace == workspace_id)
+                .filter(|(workspace, _, _)| *workspace == workspace_id)
                 .copied()
                 .collect();
             let ended = keys.iter().filter_map(|key| open.remove(key)).collect();

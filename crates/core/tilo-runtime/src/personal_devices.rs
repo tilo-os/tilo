@@ -14,7 +14,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tilo_workspace_service::workspaces::Workspaces;
 
 /// Whose a device that this device's host admitted is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Whose {
     /// One of the person's own devices.
     Own,

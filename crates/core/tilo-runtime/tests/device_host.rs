@@ -76,15 +76,21 @@ impl Sessions for DeviceRuns {
         &self,
         workspace: &str,
         key: &DeviceCert,
-        _whose: tilo_runtime::personal_devices::Whose,
+        whose: tilo_runtime::personal_devices::Whose,
     ) -> Result<(SessionHost, Caller), String> {
         if workspace != self.workspace {
             return Err(format!("no workspace {workspace} here"));
         }
         self.opened.lock().unwrap().push(key.clone());
-        let caller = Caller::local_person("ada")
-            .delegated_to(tilo_mcp::devices::agent_id("agent", key))
-            .in_workspace(workspace.to_owned());
+        // A key of the person's runs as their agent; a member's device, and a page in any
+        // browser, as its person.
+        let caller = match whose {
+            tilo_runtime::personal_devices::Whose::Own => {
+                Caller::local_person("ada").delegated_to(tilo_mcp::devices::agent_id("agent", key))
+            }
+            tilo_runtime::personal_devices::Whose::Member => Caller::local_person("ada"),
+        }
+        .in_workspace(workspace.to_owned());
         Ok((Arc::new(self.broker.clone()), caller))
     }
 }
@@ -674,9 +680,11 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
         }));
     let pages = device.key_sessions.pages().unwrap();
     let workspace_id = WorkspaceId::parse(&device.workspace).unwrap();
-    let ada = Caller::local_person("ada").in_workspace(device.workspace.clone());
-    // Her browser, which proved this certificate on the page's link.
+    // Her browser, which proved this certificate on the page's link, and the caller the link
+    // takes it as.
     let (_, browser) = certified(&root, 3, "Ada's browser", DeviceCapabilities::member());
+    let ada = tilo_workspace_service::service::local_caller(&browser)
+        .in_workspace(device.workspace.clone());
     let ada = (&ada, &browser);
     let act = |id, action| tilo_workspace_service::app_serving::PageAct {
         id,

@@ -12,8 +12,8 @@
 //! pointer's gestures on the shell reach the view's widgets as a device's do, so a window is
 //! moved and resized here through the same arranging actions as on a device.
 //!
-//! Every page runs in the run of the key that opened it, admitted by the certificate the page's
-//! link verified, as every call of that key's is ([`super::KeySessions`]): the view acts as that
+//! Every page runs in a run of the key that opened it, admitted by the certificate the page's
+//! link verified as its person on that browser ([`super::KeySessions`]): the view acts as that
 //! run's caller, and what the page asks the device goes through its run.
 //!
 //! The workspace's front page and its search are the device's own pages, and everything they
