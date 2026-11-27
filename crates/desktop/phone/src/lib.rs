@@ -62,12 +62,50 @@ fn worker() -> Result<&'static worker::Worker, String> {
             let runs_apps = declare_carried_runtimes().inspect_err(|why| {
                 tracing::error!(why, "this phone runs no workspace apps");
             });
-            let wake = ui::wake::WakeHandle::new();
-            worker::Worker::start(&profile(), notifier(), runs_apps, move || wake.wake())
-                .map_err(|e| format!("{e:#}"))
+            worker::Worker::start(&profile(), notifier(), runs_apps, || {
+                window_wake()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .wake();
+            })
+            .map_err(|e| format!("{e:#}"))
         })
         .as_ref()
         .map_err(Clone::clone)
+}
+
+/// What wakes the phone's window when its device moved: the window open now, which takes its
+/// place here as it opens ([`opened`]). The worker starts before any window, and outlives each
+/// one a rebuild replaces.
+fn window_wake() -> &'static std::sync::Mutex<ui::wake::WakeHandle> {
+    static WAKE: OnceLock<std::sync::Mutex<ui::wake::WakeHandle>> = OnceLock::new();
+    WAKE.get_or_init(|| std::sync::Mutex::new(ui::wake::WakeHandle::detached()))
+}
+
+/// The open window's place in [`window_wake`], for as long as it is open: when it closes, the
+/// device wakes no window until the next one opens.
+pub struct WindowWake(Option<usize>);
+
+impl WindowWake {
+    fn take_place(wake: ui::wake::WakeHandle) -> Self {
+        let key = wake.scope_key();
+        *window_wake()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = wake;
+        Self(key)
+    }
+}
+
+impl Drop for WindowWake {
+    fn drop(&mut self) {
+        let mut held = window_wake()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A window built since holds the place now: it stays.
+        if held.scope_key() == self.0 {
+            *held = ui::wake::WakeHandle::detached();
+        }
+    }
 }
 
 /// Start this device's daemon in the app's own process, as the app's launch does before its window
@@ -327,11 +365,13 @@ fn opened(_cx: &ViewCx<Workspace>) -> Result<view::PhoneView, String> {
     let worker = worker()?.clone();
     let storage = storage_dir();
     let wake = ui::wake::WakeHandle::new();
+    let woken = WindowWake::take_place(wake.clone());
     view::PhoneView::new(
         worker,
         bundles()?,
         storage,
         std::sync::Arc::new(move || wake.wake()),
+        woken,
     )
 }
 

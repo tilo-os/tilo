@@ -54,6 +54,8 @@ pub struct PhoneView {
     joined: Option<String>,
     /// Whether the window asked to join another workspace, and gives its place.
     rejoining: bool,
+    /// The window's place as what the device wakes.
+    _woken: crate::WindowWake,
 }
 
 impl PhoneView {
@@ -67,6 +69,7 @@ impl PhoneView {
         bundles: BTreeMap<String, Arc<Bundle>>,
         storage: Option<PathBuf>,
         waker: Waker,
+        woken: crate::WindowWake,
     ) -> Result<Self, String> {
         let compiled = tilolang_tilo::shell::compile()?;
         let platform = tilolang_tilo::platform::platform_packages()?;
@@ -118,6 +121,7 @@ impl PhoneView {
             storage,
             joined: ui::process::environment().identity.workspace_id.clone(),
             rejoining: false,
+            _woken: woken,
         };
         view.exchange();
         Ok(view)
