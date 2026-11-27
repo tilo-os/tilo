@@ -199,7 +199,6 @@ pub fn workspace_founded_on_this_device_then(
             tilo_workspace_service::own_device::vault_key(key),
             endpoint.clone(),
             Arc::new(tilo_workspace_keys::NoSealChecks),
-            None,
             |config| tilo_workspace_service::service::ServiceConfig {
                 // The service names no address of its own until something needs it
                 // reachable, as the session's own service does: nothing here waits for a

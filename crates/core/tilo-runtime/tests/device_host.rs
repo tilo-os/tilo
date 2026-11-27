@@ -134,7 +134,6 @@ async fn as_its_device(
         own_device::vault_key(key),
         endpoint.clone(),
         Arc::new(tilo_workspace_keys::NoSealChecks),
-        None,
         |config| ServiceConfig {
             apps: Some(apps),
             reaching: tilo_workspace_service::Reaching::OnItsOwn,

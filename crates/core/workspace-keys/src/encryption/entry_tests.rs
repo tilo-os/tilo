@@ -105,3 +105,45 @@ fn a_device_entering_opens_the_desktop_before_the_workspace_governance_arrives()
         KeyAccess::Ready(_)
     ));
 }
+
+/// A device that takes part in the workspace's group but holds none of its keys yet admits no
+/// one into it: there is nothing it could commit another device in with. Once it founds the
+/// group, the same request admits the device at once, and the frames it joins from are ready.
+#[test]
+fn a_device_with_no_keys_of_the_group_admits_no_one() {
+    let workspace_id = WorkspaceId::new();
+    let policy = Policy::readers([1, 2]);
+    let (host_dir, server_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut host = service(
+        Box::new(Directory::new(policy)),
+        1,
+        KeyRole::Committer,
+        host_dir.path(),
+    );
+    let mut server = service(Box::new(Unknown), 2, KeyRole::Committer, server_dir.path());
+    let now = tilo_clock::now();
+    let request = pollster::block_on(server.ask_on_entry(workspace_id, now, 1_000))
+        .expect("the server asks for the workspace's keys");
+
+    // The host takes part in the group, which no one founded yet.
+    assert!(matches!(host.access(workspace_id, now), KeyAccess::Waiting));
+    assert_eq!(
+        host.admit_now(workspace_id, request.clone(), now, 1_000),
+        Err("this device holds no keys of the workspace to admit another with".to_owned()),
+    );
+
+    host.found(workspace_id, now, 1_000);
+    assert!(matches!(
+        host.access(workspace_id, now),
+        KeyAccess::Ready(_)
+    ));
+    host.admit_now(workspace_id, request, now, 1_000)
+        .expect("a device that holds the group's keys admits the server");
+    let frames = host
+        .admitted_frames(workspace_id, &public(2))
+        .expect("the server is in the group, its commit signed");
+    assert!(
+        !frames.is_empty(),
+        "the server joins from the frames handed it"
+    );
+}

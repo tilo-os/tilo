@@ -110,9 +110,7 @@ pub fn vault_key(key: &ed25519_dalek::SigningKey) -> key_group::VaultKey {
 /// Open `device`'s workspace service and the key service beside it in the device's directory
 /// `dir`, on `endpoint`, its group state sealed with `vault` ([`vault_key`]) and what the groups'
 /// members seal checked against `seal_checks`. Every device keeps them in this one layout, a
-/// server among them; `handed` answers the group keys a host handed this device before its key
-/// service takes part in the group, as [`HandedKeys`] describes; `configure` is as [`open`] takes
-/// it.
+/// server among them; `configure` is as [`open`] takes it.
 ///
 /// # Errors
 /// The key service's state or the service's store cannot be opened.
@@ -122,7 +120,6 @@ pub async fn open_in(
     vault: key_group::VaultKey,
     endpoint: iroh::Endpoint,
     seal_checks: Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
-    handed: Option<HandedKeys>,
     configure: impl FnOnce(ServiceConfig) -> ServiceConfig,
 ) -> Result<Opened, ServiceError> {
     let keys = KeyService::open(
@@ -132,19 +129,21 @@ pub async fn open_in(
         Arc::clone(device.signer),
         seal_checks,
     )?;
-    let groups = match handed {
-        Some(handed) => key_groups(keys.keys(), Some(handed), keys.groups().sink, None),
-        None => keys.groups(),
-    };
-    let service = open(dir.join(SERVICE), device, endpoint, groups, |config| {
-        // The revocation log sits beside the identity in the device's own directory, where
-        // the daemon reads it back on its next start; the service's state is the
-        // directory below.
-        configure(ServiceConfig {
-            revocation_log_root: dir.to_path_buf(),
-            ..config
-        })
-    })
+    let service = open(
+        dir.join(SERVICE),
+        device,
+        endpoint,
+        keys.groups(),
+        |config| {
+            // The revocation log sits beside the identity in the device's own directory, where
+            // the daemon reads it back on its next start; the service's state is the
+            // directory below.
+            configure(ServiceConfig {
+                revocation_log_root: dir.to_path_buf(),
+                ..config
+            })
+        },
+    )
     .await?;
     Ok(Opened { service, keys })
 }
@@ -161,8 +160,8 @@ fn app_files() -> Vec<PathBuf> {
     Vec::new()
 }
 
-/// Keys a workspace's host handed this device for what every member reads, by workspace: a
-/// member copy opens with them before the device's key service takes part in the group.
+/// Keys a workspace's host handed a session that takes no part in the workspace's group, by
+/// workspace: what it reads every member's records with.
 pub type HandedKeys = Box<dyn Fn(&str) -> Option<key_group::ContentKeys> + Send + Sync>;
 
 /// The device's key service as its workspace service asks it, answering first from `handed`,
@@ -256,9 +255,16 @@ impl GroupKeys for DeviceGroupKeys {
     ) -> KeysFuture<'_, Result<Vec<neighbour_wire::NeighbourMsg>, String>> {
         Box::pin(async move {
             // The group exists before anyone is committed into it: the device that founded the
-            // workspace opens it on its first use.
+            // workspace opens it on its first use. Only the key service's own part in the group
+            // commits another in: keys a host handed this device admit no one.
             match self
-                .group_keys(&workspace.to_string(), collab_types::EVERY_MEMBER, true)
+                .keys
+                .group_keys(
+                    &workspace.to_string(),
+                    collab_types::EVERY_MEMBER,
+                    true,
+                    OPEN_WAIT,
+                )
                 .await
             {
                 Some(Ok(_)) => {}

@@ -2,9 +2,9 @@
 //! who made the workspace, and two of a coworker, who joined from an
 //! invitation. Every desktop opens its own workspace service in process, as
 //! each desktop does; the workspace is placed on the service of the desktop it
-//! was made on, and every desktop takes part in it as a member over its own
-//! direct link, or through its own service where that service keeps the
-//! workspace: one device writes from the one place that signs as it. What any
+//! was made on, and every other desktop's service holds it as a member of it,
+//! as a desktop holds every workspace it joins: one device writes from the one
+//! place that signs as it, sealed with the keys its own key service holds. What any
 //! one writes reaches all five, a lease-held job is done on one device at a time and moves when its device goes, and a device that
 //! leaves takes nothing of the rest with it.
 #![allow(
@@ -15,10 +15,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::common::{device, localhost_endpoint, members_keys, opened, write_sealed};
+use crate::common::{device, localhost_endpoint};
 
-use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
-use collab_types::CommitNamed as _;
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use iroh::protocol::Router;
@@ -26,12 +25,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::{self, Role, TransportHint};
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
-use tilo_peer_state::owner::enroll::{prepare_and_complete, prove_membership};
+use tilo_peer_state::owner::enroll::prepare_and_complete;
 use tilo_peer_state::owner::session::{
     CannotDial, Connect, Holder, Link, Linked, OwnHost, Reach, Scope,
 };
@@ -42,15 +40,12 @@ use tilo_workspace_service::Reaching;
 use tilo_workspace_service::own_device::{self, KeyService, Opened};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
 use tilo_workspace_service::workspaces::IssueInvitationRequest;
+use tilo_workspace_service::workspaces::fixtures::{declare_record_kind, write_record};
 use web_time::SystemTime;
 
 const WORKSPACE: &str = "a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0";
 const APP: &str = "test.app";
 const DOCUMENT: &str = "tab:1";
-
-/// The keys the workspace's members seal its resources under.
-static KEYS: std::sync::LazyLock<key_group::ContentKeys> =
-    std::sync::LazyLock::new(|| members_keys(WORKSPACE));
 
 /// The job whose side effects only one device at a time may do.
 const JOB: &str = "bot:ticker";
@@ -61,9 +56,8 @@ fn workspace() -> tilo_desktop_model::WorkspaceId {
 }
 
 /// One desktop: its key and certificate, its own workspace service on its
-/// endpoint (as every desktop opens one, taking no one else's work), the owner
-/// that keeps its member's copy of the workspace, and its link to the
-/// workspace.
+/// endpoint (as every desktop opens one, taking no one else's work), and the
+/// owner its enrollment in the workspace it made is installed in.
 struct Desktop {
     cert: DeviceCert,
     key: SigningKey,
@@ -71,10 +65,8 @@ struct Desktop {
     endpoint: Endpoint,
     service: Arc<WorkspaceService>,
     /// The device's key service, kept open beside its workspace service.
-    keys: KeyService,
+    _keys: KeyService,
     router: Router,
-    link: Option<DirectSync>,
-    syncing: Option<tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>>,
     /// How many times this device did the leased job: the side effect the
     /// lease makes happen once.
     done: AtomicU32,
@@ -99,12 +91,6 @@ impl Desktop {
             own_device::vault_key(&key),
             endpoint.clone(),
             Arc::new(tilo_app_host::workspace_keys::NoSealChecks),
-            // Every device of the workspace holds the keys its members seal under, as the
-            // devices of a real workspace do: the fixture writes with those same keys, so the
-            // service opens what it takes in and hands over.
-            Some(Box::new(|workspace: &str| {
-                (workspace == WORKSPACE).then(|| (*KEYS).clone())
-            })),
             |config| ServiceConfig {
                 // The group's endpoints reach each other on this machine alone: no other
                 // machine names where they are reached.
@@ -114,6 +100,8 @@ impl Desktop {
         )
         .await
         .expect("this desktop's workspace service opens");
+        // The app the group writes with runs on every desktop: its records' kind is declared.
+        declare_record_kind(service.workspaces(), APP);
         let mut router = Router::builder(endpoint.clone());
         for (alpn, handler) in service.protocols() {
             router = router.accept(alpn, handler);
@@ -124,10 +112,8 @@ impl Desktop {
             key,
             endpoint,
             service: Arc::new(service),
-            keys,
+            _keys: keys,
             router: router.spawn(),
-            link: None,
-            syncing: None,
             done: AtomicU32::new(0),
         }
     }
@@ -171,27 +157,6 @@ impl Desktop {
             .expect("this desktop holds the workspace")
     }
 
-    /// Take part in the workspace's own key group, as the desktop's key service
-    /// does the first time it seals or opens one of the workspace's records: the
-    /// desktop that made the workspace founds the group, and a desktop hands the
-    /// group over with the workspace only once it holds it.
-    async fn founds_the_group(&self) {
-        let opened = self
-            .keys
-            .keys()
-            .group_keys(
-                WORKSPACE,
-                collab_types::EVERY_MEMBER,
-                true,
-                Duration::from_secs(30),
-            )
-            .await;
-        assert!(
-            matches!(opened, Some(Ok(_))),
-            "this desktop's service founds the workspace's key group: {opened:?}"
-        );
-    }
-
     /// Where the workspace is held: the signed address of each of its holders.
     async fn holders(&self) -> Vec<TransportHint> {
         self.service
@@ -233,97 +198,54 @@ impl Desktop {
         join::encode_invitation_text(&issued.signed_invitation)
     }
 
-    /// Redeem `invitation` with the workspace's holder over the network: what
-    /// a device does with a link a person hands it, and nothing else.
+    /// Redeem `invitation` with the desktop that issued it over the network and
+    /// hold the workspace in this desktop's service: what a device does with a
+    /// link a person hands it, and nothing else.
     async fn joins(&self, invitation: String) {
-        let enrollment = prepare_and_complete(
-            WorkspaceJoinClient::new(self.endpoint.clone()),
-            self.identity(),
-            workspace(),
-            None,
-            invitation,
-            self.owner.clone(),
-        )
-        .await
-        .expect("the workspace's holder admits this device");
-        self.owner
-            .install(&enrollment, SystemTime::now())
-            .expect("the join installs here");
-    }
-
-    /// Enter as one of its person's further devices at the holder `at`: no
-    /// invitation, and no server to ask.
-    async fn enters_as_member(&self, at: TransportHint) {
-        let (host, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&at)
-            .expect("the holder's signed address");
-        let (bootstrap, _) = prove_membership(
-            &WorkspaceJoinClient::new(self.endpoint.clone()),
-            &host.endpoint_addr,
-            workspace(),
-            &self.cert,
-            &self.key,
-            &[],
-        )
-        .await
-        .expect("the workspace admits this person's further device");
-        self.owner
-            .install_member(workspace(), &bootstrap, at, &self.cert, SystemTime::now())
-            .expect("the workspace's copy installs here");
-    }
-
-    /// Link this device's copy of the workspace to the holder `via`: in
-    /// process when it is this desktop's own service, over the holder's
-    /// endpoint otherwise, as a desktop's session reaches every holder.
-    async fn links_to(&mut self, via: &TransportHint) {
-        let connect = Connect::new(self.owner.clone(), workspace()).expect("enrolled here");
-        let reach = Reach {
-            endpoint: self.endpoint.clone(),
-            own_host: Some(Arc::clone(&self.service) as Arc<dyn OwnHost>),
-        };
-        let linked = reach
-            .session(&connect, via, Arc::new(self.key.clone()))
+        self.service
+            .workspaces()
+            .join_member(&invitation)
             .await
-            .expect("this device reaches the holder");
-        self.link = Some(linked.link.clone());
-        self.syncing = Some(tokio::spawn(linked.run()));
+            .expect("the desktop that issued the invitation admits this device");
     }
 
-    /// Link to the holder this device's enrollment names.
-    async fn takes_part(&mut self) {
-        let connect = Connect::new(self.owner.clone(), workspace()).expect("enrolled here");
-        let enrolled = connect
-            .holders(&self.id())
-            .expect("the workspace names its holders")
-            .into_iter()
-            .next()
-            .expect("the enrollment names a holder");
-        self.links_to(&enrolled).await;
+    /// Hold the workspace in this desktop's service as one of its person's
+    /// further devices, served by the desktop `at` names: no invitation, and no server
+    /// to ask. Asked again, the workspace is served by `at` from then on.
+    async fn enters_as_member(&self, at: &TransportHint) {
+        self.service
+            .workspaces()
+            .hold_as_member(workspace(), at)
+            .await
+            .expect("the workspace admits this person's further device");
     }
 
-    /// This device's end of the workspace. Where its own service keeps the workspace, that is
-    /// the service's: the device writes as itself from the one place that signs as it, never
-    /// from a second copy numbering its changes beside it. Elsewhere it is its member copy's link.
+    /// This device's end of the workspace: the link its service keeps it on,
+    /// the one place that signs as this device.
     fn link(&self) -> DirectSync {
-        let own = Arc::clone(&self.service) as Arc<dyn OwnHost>;
-        own.direct(workspace()).unwrap_or_else(|| {
-            self.link
-                .clone()
-                .expect("this device takes part in the workspace")
-        })
+        let workspaces = self.service.workspaces();
+        (Arc::clone(&self.service) as Arc<dyn OwnHost>)
+            .direct(workspace())
+            .or_else(|| workspaces.member_link(workspace()))
+            .expect("this device takes part in the workspace")
     }
 
-    /// The resource `resource` as this device has it.
+    /// The resource `resource` as this device's service reads it, opened with
+    /// the keys its key service holds.
     fn loaded(&self, resource: &str) -> Option<AutoCommit> {
         let doc = self
-            .link()
-            .read(|peer| opened(peer, &KEYS, (APP, resource)))?;
+            .service
+            .workspaces()
+            .stored_record(WORKSPACE, APP, resource)
+            .ok()??;
         Some(AutoCommit::load(&doc).unwrap())
     }
 
     /// What this device's copy of the document holds under `field`.
     fn value(&self, field: &str) -> Option<String> {
         let doc = self.loaded(DOCUMENT)?;
-        doc.get(ROOT, field)
+        let (_, values) = doc.get(ROOT, "value").unwrap()?;
+        doc.get(values, field)
             .unwrap()
             .map(|(value, _)| value.into_string().unwrap_or_default())
     }
@@ -340,28 +262,47 @@ impl Desktop {
         )
     }
 
-    /// Start the document the group writes to, as this device.
-    fn starts_document(&self) {
-        self.starts(DOCUMENT);
+    /// Start the resource `resource`, as this device: the map its fields are
+    /// written into.
+    async fn starts(&self, resource: &str) {
+        write_record(
+            self.service.workspaces(),
+            WORKSPACE,
+            (APP, resource),
+            |doc| {
+                doc.put_object(ROOT, "value", ObjType::Map)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .expect("this device starts the resource");
     }
 
-    /// Start the resource `resource`, as this device.
-    fn starts(&self, resource: &str) {
-        write_sealed(&self.link(), &KEYS, &self.key, (APP, resource), |_| {});
-    }
-
-    /// Write `value` under `field` as this device, and publish it on its link.
-    fn write(&self, field: &str, value: &str) {
-        self.writes(DOCUMENT, field, value);
+    /// Write `value` under `field` as this device.
+    async fn write(&self, field: &str, value: &str) {
+        self.writes(DOCUMENT, field, value).await;
     }
 
     /// Write `value` under `field` of the resource `resource` as this device,
-    /// and send it on its link.
-    fn writes(&self, resource: &str, field: &str, value: &str) {
-        write_sealed(&self.link(), &KEYS, &self.key, (APP, resource), |edit| {
-            edit.put(ROOT, field, value).unwrap();
-            edit.commit_edit("fixture", field, &self.cert.user_public_key);
-        });
+    /// as an app on it writes its records: its service seals the write with
+    /// the keys its key service holds, and carries it to the workspace.
+    async fn writes(&self, resource: &str, field: &str, value: &str) {
+        write_record(
+            self.service.workspaces(),
+            WORKSPACE,
+            (APP, resource),
+            |doc| {
+                let (_, values) = doc
+                    .get(ROOT, "value")
+                    .map_err(|error| error.to_string())?
+                    .ok_or("the resource was started")?;
+                doc.put(values, field, value)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .expect("this device writes the resource");
     }
 
     /// Take the job's lease here at `now`, answering whether this device holds
@@ -403,54 +344,35 @@ impl Desktop {
             .map(|claim| claim.device)
     }
 
-    /// End its link and stop its service and endpoint: what a device going
-    /// away looks like to the rest of the group.
-    async fn leaves(mut self) {
-        self.drops_link().await;
+    /// Stop its service and endpoint: what a device going away looks like to
+    /// the rest of the group.
+    async fn leaves(self) {
         self.router.shutdown().await.unwrap();
         if let Ok(service) = Arc::try_unwrap(self.service) {
             service.shutdown().await;
         }
         self.endpoint.close().await;
     }
-
-    async fn drops_link(&mut self) {
-        if let Some(syncing) = self.syncing.take() {
-            syncing.abort();
-            let _ = syncing.await;
-        }
-        self.link = None;
-    }
 }
 
 /// Wait until `done` holds of every desktop in `desktops`.
 async fn until(desktops: &[&Desktop], step: &str, done: impl Fn(&Desktop) -> bool + Sync) {
-    let mut waits: Vec<_> = desktops
-        .iter()
-        .enumerate()
-        .map(|(position, desktop)| (position, *desktop, desktop.link().changes()))
-        .collect();
-    let timeout = tokio::time::timeout(Duration::from_secs(30), async {
-        while !waits.is_empty() {
-            for index in (0..waits.len()).rev() {
-                let (_, desktop, changes) = waits.get_mut(index).expect("a desktop still waits");
-                if done(desktop) {
-                    waits.swap_remove(index);
-                } else {
-                    changes.changed().await.expect("the device stays up");
-                }
-            }
+    let left = || -> Vec<usize> {
+        (0..desktops.len())
+            .filter(|&position| !done(desktops[position]))
+            .collect()
+    };
+    let converged = tokio::time::timeout(Duration::from_secs(30), async {
+        while !left().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
-    if timeout.is_err() {
-        let left: Vec<_> = waits
-            .iter()
-            .filter(|(_, desktop, _)| !done(desktop))
-            .map(|(position, _, _)| *position)
-            .collect();
-        panic!("every device converges: {step} (waiting on {left:?})");
-    }
+    assert!(
+        converged.is_ok(),
+        "every device converges: {step} (waiting on {:?})",
+        left()
+    );
 }
 
 /// Five desktops of two people in one workspace, made on `a1`, each linked to
@@ -463,49 +385,31 @@ async fn held_by_five(directory: &Path) -> [Desktop; 5] {
     let (a3_key, a3_cert) = device(&root_a, 0x54);
     let (b1_key, b1_cert) = device(&root_b, 0x62);
     let (b2_key, b2_cert) = device(&root_b, 0x63);
-    let mut a1 = Desktop::start(directory, "a1", a1_key, a1_cert).await;
-    let mut a2 = Desktop::start(directory, "a2", a2_key, a2_cert).await;
-    let mut a3 = Desktop::start(directory, "a3", a3_key, a3_cert).await;
-    let mut b1 = Desktop::start(directory, "b1", b1_key, b1_cert).await;
-    let mut b2 = Desktop::start(directory, "b2", b2_key, b2_cert).await;
+    let a1 = Desktop::start(directory, "a1", a1_key, a1_cert).await;
+    let a2 = Desktop::start(directory, "a2", a2_key, a2_cert).await;
+    let a3 = Desktop::start(directory, "a3", a3_key, a3_cert).await;
+    let b1 = Desktop::start(directory, "b1", b1_key, b1_cert).await;
+    let b2 = Desktop::start(directory, "b2", b2_key, b2_cert).await;
 
     // A's first desktop makes the workspace on its own service and starts the
     // document its apps write to. No server and no admin workspace is made for
     // any of this.
     a1.founds().await;
-    // Its key service takes part in the workspace's group, as it does the first
-    // time it seals a record: a desktop that hands the workspace over hands the
-    // group with it.
-    a1.founds_the_group().await;
-    a1.takes_part().await;
-    a1.starts_document();
-    let at_a1 = a1
-        .holders()
-        .await
-        .into_iter()
-        .next()
-        .expect("the workspace is held where it was made");
+    a1.starts(DOCUMENT).await;
+    let at_a1 = a1.own_address().await;
     // A's other desktops are A's own devices: the workspace admits them as
     // such, with no invitation.
-    a2.enters_as_member(at_a1.clone()).await;
-    a3.enters_as_member(at_a1.clone()).await;
+    a2.enters_as_member(&at_a1).await;
+    a3.enters_as_member(&at_a1).await;
     // B joins from the invitation with nothing else to do, and B's second
     // desktop enters as B's further device.
     b1.joins(a1.invitation([1; 32]).await).await;
-    b2.enters_as_member(at_a1).await;
-    for desktop in [&mut a2, &mut a3, &mut b1, &mut b2] {
-        desktop.takes_part().await;
-    }
+    b2.enters_as_member(&at_a1).await;
     let desktops = [a1, a2, a3, b1, b2];
     until(
         &desktops.each_ref(),
-        "every desktop holds the document",
-        |desktop| {
-            desktop
-                .link()
-                .read(|peer| peer.document(APP, DOCUMENT))
-                .is_some()
-        },
+        "every desktop opens the document",
+        |desktop| desktop.loaded(DOCUMENT).is_some(),
     )
     .await;
     desktops
@@ -518,7 +422,12 @@ async fn five_desktops_hold_one_workspace_with_no_server_in_it() {
     let all: [&Desktop; 5] = [&a1, &a2, &a3, &b1, &b2];
     for desktop in &all {
         assert!(
-            desktop.owner.contains_workspace(workspace()),
+            desktop
+                .service
+                .workspaces()
+                .records(WORKSPACE)
+                .await
+                .is_some(),
             "every desktop of the group holds the workspace"
         );
     }
@@ -527,7 +436,7 @@ async fn five_desktops_hold_one_workspace_with_no_server_in_it() {
     // writes under its own field, and every copy ends with all of them.
     let writers = [("a2", &a2), ("a3", &a3), ("b1", &b1), ("b2", &b2)];
     for (name, desktop) in writers {
-        desktop.write(name, name);
+        desktop.write(name, name).await;
     }
     until(&all, "every write reaches all five", |desktop| {
         writers
@@ -589,7 +498,7 @@ async fn five_desktops_hold_one_workspace_with_no_server_in_it() {
 
     // A device leaving takes nothing of the rest with it: what the others
     // write still reaches each of them.
-    b2.write("after-a2", "written with a2 gone");
+    b2.write("after-a2", "written with a2 gone").await;
     until(&remaining, "the rest keep carrying writes", |desktop| {
         desktop.value("after-a2").as_deref() == Some("written with a2 gone")
     })
@@ -615,12 +524,15 @@ async fn the_desktop_a_workspace_was_made_on_founds_its_key_group() {
     ];
     let [a1, a2] = &desktops;
     a1.founds().await;
-    a2.enters_as_member(a1.own_address().await).await;
+    a2.enters_as_member(&a1.own_address().await).await;
     assert!(
         a1.founds_group(),
         "the desktop it was made on founds the group"
     );
-    assert!(!a2.founds_group(), "a further desktop joins the group");
+    assert!(
+        !a2.service.workspaces().hosts_here(workspace()).await,
+        "a further desktop joins the group, served by the desktop it was made on"
+    );
     for desktop in desktops {
         desktop.leaves().await;
     }
@@ -633,7 +545,8 @@ async fn the_desktop_a_workspace_was_made_on_writes_to_it_after_the_others_linke
     let directory = tempfile::tempdir().unwrap();
     let desktops = Box::pin(held_by_five(directory.path())).await;
     let [a1, ..] = &desktops;
-    a1.write("a1", "from the desktop the workspace was made on");
+    a1.write("a1", "from the desktop the workspace was made on")
+        .await;
     until(
         &desktops.each_ref(),
         "the write reaches all five",
@@ -655,7 +568,7 @@ async fn the_desktop_a_workspace_was_made_on_writes_to_it_after_the_others_linke
 #[tokio::test(flavor = "multi_thread")]
 async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
     let directory = tempfile::tempdir().unwrap();
-    let [a1, mut a2, mut a3, mut b1, mut b2] = Box::pin(held_by_five(directory.path())).await;
+    let [a1, a2, a3, b1, b2] = Box::pin(held_by_five(directory.path())).await;
 
     // The workspace's person has their other desktops hold it too.
     for holder in [&a2, &a3] {
@@ -685,35 +598,26 @@ async fn the_rest_keep_the_workspace_when_the_desktop_it_was_made_on_leaves() {
             .is_err(),
         "a desktop of someone who does not govern the workspace holds none of it"
     );
-    a2.write("before", "written while every desktop was up");
+    a2.write("before", "written while every desktop was up")
+        .await;
     let all: [&Desktop; 5] = [&a1, &a2, &a3, &b1, &b2];
     until(&all, "every desktop has the first write", |desktop| {
         desktop.value("before").as_deref() == Some("written while every desktop was up")
     })
     .await;
 
-    // The desktop the workspace was made on goes away. Each of the others
-    // links to a holder still up: A's desktops to their own service, B's to
-    // one of A's.
+    // The desktop the workspace was made on goes away. A's desktops hold it
+    // themselves; B's are served by one of A's from then on.
     a1.leaves().await;
-    let at_a2 = a2.own_address().await;
-    let at_a3 = a3.own_address().await;
-    for (desktop, at) in [
-        (&mut a2, &at_a2),
-        (&mut a3, &at_a3),
-        (&mut b1, &at_a2),
-        (&mut b2, &at_a3),
-    ] {
-        desktop.drops_link().await;
-        desktop.links_to(at).await;
-    }
+    b1.enters_as_member(&a2.own_address().await).await;
+    b2.enters_as_member(&a3.own_address().await).await;
 
-    a3.write("after-a1", "written with the founder gone");
-    b2.write("from-b2", "through another holder");
+    a3.write("after-a1", "written with the founder gone").await;
+    b2.write("from-b2", "through another desktop").await;
     let rest: [&Desktop; 4] = [&a2, &a3, &b1, &b2];
     until(&rest, "the rest keep carrying writes", |desktop| {
         desktop.value("after-a1").as_deref() == Some("written with the founder gone")
-            && desktop.value("from-b2").as_deref() == Some("through another holder")
+            && desktop.value("from-b2").as_deref() == Some("through another desktop")
     })
     .await;
 
@@ -735,17 +639,15 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
     let root = SigningKey::from_bytes(&[0x81; 32]);
     let (a1_key, a1_cert) = device(&root, 0x82);
     let (a2_key, a2_cert) = device(&root, 0x83);
-    let mut a1 = Desktop::start(directory.path(), "a1", a1_key, a1_cert).await;
+    let a1 = Desktop::start(directory.path(), "a1", a1_key, a1_cert).await;
     let a2 = Desktop::start(directory.path(), "a2", a2_key.clone(), a2_cert.clone()).await;
     a1.founds().await;
-    // Its key service takes part in the workspace's group before the workspace is
-    // handed over, as it does the first time it seals a record.
-    a1.founds_the_group().await;
-    a1.takes_part().await;
     for (at, resource) in RESOURCES.iter().enumerate() {
-        a1.starts(resource);
-        a1.writes(resource, "title", &format!("resource {at}"));
-        a1.writes(resource, "body", &format!("what resource {at} says"));
+        a1.starts(resource).await;
+        a1.writes(resource, "title", &format!("resource {at}"))
+            .await;
+        a1.writes(resource, "body", &format!("what resource {at} says"))
+            .await;
     }
     let made: Vec<_> = RESOURCES
         .iter()
@@ -761,9 +663,8 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
     // Another desktop of the person reads every resource from the desktop it
     // was made on, whose service has them all. It goes away then.
     let (seen_key, seen_cert) = device(&root, 0x84);
-    let mut seen = Desktop::start(directory.path(), "seen", seen_key, seen_cert).await;
-    seen.enters_as_member(a1.own_address().await).await;
-    seen.takes_part().await;
+    let seen = Desktop::start(directory.path(), "seen", seen_key, seen_cert).await;
+    seen.enters_as_member(&a1.own_address().await).await;
     until(
         &[&seen],
         "the desktop it was made on serves all of it",
@@ -826,9 +727,8 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
     .await;
 
     let (later_key, later_cert) = device(&root, 0x85);
-    let mut later = Desktop::start(directory.path(), "later", later_key, later_cert).await;
-    later.enters_as_member(a2.own_address().await).await;
-    later.takes_part().await;
+    let later = Desktop::start(directory.path(), "later", later_key, later_cert).await;
+    later.enters_as_member(&a2.own_address().await).await;
     until(
         &[&later],
         "the desktop handed the workspace serves all of it",
@@ -841,9 +741,8 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
     a2.leaves().await;
     let a2 = Desktop::start(directory.path(), "a2", a2_key, a2_cert).await;
     let (after_key, after_cert) = device(&root, 0x86);
-    let mut after = Desktop::start(directory.path(), "after", after_key, after_cert).await;
-    after.enters_as_member(a2.own_address().await).await;
-    after.takes_part().await;
+    let after = Desktop::start(directory.path(), "after", after_key, after_cert).await;
+    after.enters_as_member(&a2.own_address().await).await;
     until(&[&after], "the restarted desktop serves all of it", has_all).await;
     after.leaves().await;
     a2.leaves().await;
