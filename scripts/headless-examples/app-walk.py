@@ -1644,7 +1644,7 @@ class Walk:
         if self.appearance is None:
             self.appearance = until_value(
                 "the appearance action",
-                lambda: next((a for a in self.session.actions("")
+                lambda: next((a for a in self.session.actions("set-dark-mode")
                               if (address(a) or ("", ""))[1] == "set-dark-mode"), None), 30)
         self.session.invoke_row(self.appearance, {"on": dark})
 
@@ -2320,7 +2320,10 @@ class Walk:
         resource, action = (pick(item, self.variant) for item in parts[:2])
         args = self.resolve(pick(parts[2], self.variant) if len(parts) > 2 else None)
         def find():
-            rows = self.session.actions("")
+            # The rows that name the action, as a person's palette asks for it: the
+            # device's whole catalogue is many pages, each read anew, and a press
+            # never waits on all of them.
+            rows = self.session.actions(action)
             return row_for(rows, resource, action) or row_for(
                 rows, resource, action, kind=resource)
 
@@ -2890,7 +2893,7 @@ class Walk:
                     # Several rows of one operation (a pane's `open-pane`): the one
                     # whose parameters take the arguments named.
                     names = set(args)
-                    row = next((a for a in self.session.actions("")
+                    row = next((a for a in self.session.actions(operation)
                                 if a.get("app_id") == app and address(a)
                                 and address(a)[1] == operation
                                 and names <= {p.get("name") for p in
@@ -2940,7 +2943,7 @@ class Walk:
         app, operation = value["app"], value["operation"]
         args = value.get("args")
         names = set(args or ())
-        rows = [a for a in self.session.actions("")
+        rows = [a for a in self.session.actions(operation)
                 if a.get("app_id") == app and address(a) and address(a)[1] == operation]
         if names:
             rows = [a for a in rows if names <= {p.get("name") for p in
