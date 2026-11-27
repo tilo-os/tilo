@@ -197,11 +197,13 @@ pub fn verify_invocation(
 /// Check `request`, one of a host's own operations signed for no workspace, as
 /// [`verify_invocation`] does, and return its signer's certificate. An agent's grant proves its
 /// key here whatever workspaces it reaches: what it asks of the host beyond them is the
-/// operation's to judge, which asks the agent's person before it does it.
+/// operation's to judge, which asks the agent's person before it does it. A device confined to
+/// one workspace (a workspace's VM, or one placed for its records) asks the host for nothing.
 ///
 /// # Errors
 ///
-/// As [`verify_invocation`], never [`InvocationError::OutOfScope`].
+/// As [`verify_invocation`]; [`InvocationError::OutOfScope`] for a device confined to one
+/// workspace.
 pub fn verify_host_invocation(
     request: &InvokeRequest,
     revocations: &RevocationList,
@@ -213,7 +215,11 @@ pub fn verify_host_invocation(
     if !signed.statement().fresh_at(now_ns) {
         return Err(InvocationError::Stale);
     }
-    proven_signer(signed, revocations, (now_ns, None))
+    let cert = proven_signer(signed, revocations, (now_ns, None))?;
+    if cert.capabilities.workspace_name().is_some() {
+        return Err(InvocationError::OutOfScope);
+    }
+    Ok(cert)
 }
 
 /// Check the invocation `request` serves ([`SignedInvocation::serves`]): a call an app makes while
@@ -944,11 +950,14 @@ fn signer_of(
     (at_ns, revoked_from): (u64, Option<u64>),
 ) -> Result<DeviceCert, InvocationError> {
     let cert = proven_signer(signed, revocations, (at_ns, revoked_from))?;
-    if cert
-        .capabilities
-        .agent
-        .as_ref()
-        .is_some_and(|scope| !scope.reaches(workspace))
+    // An agent's grant reaches what its scope names; a device confined to one workspace (a
+    // workspace's VM, or one placed for its records) reaches that one alone.
+    if !cert.capabilities.reaches_workspace(workspace)
+        || cert
+            .capabilities
+            .agent
+            .as_ref()
+            .is_some_and(|scope| !scope.reaches(workspace))
     {
         return Err(InvocationError::OutOfScope);
     }
@@ -1257,6 +1266,37 @@ mod tests {
                 verify_invocation(other, &elsewhere, &none, NOW),
                 Err(InvocationError::OutOfScope)
             );
+        }
+
+        phase a_workspaces_vm_signs_for_its_workspace_alone;
+        {
+            let (root, _) = UserIdentity::generate("Alice", 1);
+            let key = SigningKey::from_bytes(&[12; 32]);
+            let workspace = *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes();
+            let mut vm = cert_of(&root, &key, None);
+            vm.capabilities = DeviceCapabilities::workspace_device(workspace);
+            sign_device_cert(&mut vm, &root).unwrap();
+            let none = RevocationList::new();
+            let asked = signed(&request(), &vm, &key, NOW);
+            assert_eq!(verify_invocation(WORKSPACE, &asked, &none, NOW), Ok(vm.clone()));
+            for elsewhere in ["0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", ""] {
+                let mut there = request();
+                there.signed = Some(Box::new(
+                    sign_invocation_now(elsewhere, &there, &vm, &key, NOW).unwrap(),
+                ));
+                assert_eq!(
+                    verify_invocation(elsewhere, &there, &none, NOW),
+                    Err(InvocationError::OutOfScope),
+                    "a VM signs for no workspace but its own: {elsewhere:?}"
+                );
+                if elsewhere.is_empty() {
+                    assert_eq!(
+                        verify_host_invocation(&there, &none, NOW),
+                        Err(InvocationError::OutOfScope),
+                        "a VM asks its host for nothing"
+                    );
+                }
+            }
         }
 
         phase an_agent_asks_only_under_the_key_its_person_certified_for_it;
