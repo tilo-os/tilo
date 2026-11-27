@@ -632,12 +632,10 @@ fn titled(answer: &mut Json, titles: &HashMap<String, String>) {
     match answer {
         Json::Array(items) => items.iter_mut().for_each(|item| titled(item, titles)),
         Json::Object(fields) => {
-            let title = fields
-                .get("kind")
-                .and(fields.get("id"))
-                .and_then(Json::as_str)
-                .and_then(|id| titles.get(id))
-                .cloned();
+            let title = match (fields.get("kind"), fields.get("id").and_then(Json::as_str)) {
+                (Some(_), Some(id)) => titles.get(id).cloned(),
+                _ => None,
+            };
             if let (Some(title), Some(Json::String(label))) = (title, fields.get_mut("label"))
                 && label.is_empty()
             {
@@ -703,8 +701,10 @@ fn answer_json(
                 "name": file.name,
                 "media": file.media,
             });
-            if file.size >= 0 {
-                answered["size"] = Json::from(file.size);
+            if file.size >= 0
+                && let Some(fields) = answered.as_object_mut()
+            {
+                fields.insert("size".to_owned(), Json::from(file.size));
             }
             Ok(answered)
         }
