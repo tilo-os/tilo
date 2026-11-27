@@ -2,6 +2,7 @@
 //! enums, actions with their effect class and what they reach, views and fns, by id and name, with
 //! their doc comments. Tools, the runtime, the platform and agents read it.
 
+pub use crate::types::Confirms;
 use crate::types::{EffectClass, MergeKind};
 use serde::{Deserialize, Serialize};
 
@@ -890,46 +891,6 @@ pub struct ShownCall {
 /// secret, which the person never reads.
 pub const SHOWN_AS: [&str; 4] = ["text", "addresses", "long", "secret"];
 
-/// What a person's own press of an action waits for before it runs ([`ActionMeta::confirms`]).
-/// A call an agent, an automation or another app makes is decided by its grants alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Confirms {
-    /// It acts on the press: copying, opening, playing, refreshing, making a new thing.
-    Never,
-    /// It confirms first, and Shift held on the press skips that: an action its app marks
-    /// `destructive` that undo takes back (a delete).
-    UnlessShift,
-    /// It confirms first, Shift held or not: it leaves the system ([`ActionMeta::leaves`]),
-    /// which nothing takes back.
-    Always,
-}
-
-impl Confirms {
-    /// Whether a press, with Shift held when `shift`, waits for the person's yes.
-    #[must_use]
-    pub const fn on_press(self, shift: bool) -> bool {
-        match self {
-            Self::Never => false,
-            Self::UnlessShift => !shift,
-            Self::Always => true,
-        }
-    }
-
-    /// Whether a call of it that the run of another action the person pressed makes waits for
-    /// their yes: only what leaves the system. Marked destructive, it confirms where the person
-    /// presses it, not where an action they pressed calls it.
-    #[must_use]
-    pub const fn on_step(self) -> bool {
-        matches!(self, Self::Always)
-    }
-
-    /// Whether a plain press confirms: what the action's contract and the catalogue publish.
-    #[must_use]
-    pub const fn by_default(self) -> bool {
-        self.on_press(false)
-    }
-}
-
 impl ActionMeta {
     /// What a person's own press of it waits for: the one reading of its declaration that the
     /// runtime decides a press by, and its published contract and catalogue offer say.
@@ -937,10 +898,9 @@ impl ActionMeta {
     pub fn confirms(&self) -> Confirms {
         if self.leaves {
             Confirms::Always
-        } else if self.role.as_deref() == Some("destructive") {
-            Confirms::UnlessShift
         } else {
-            Confirms::Never
+            self.class
+                .confirms(self.role.as_deref() == Some("destructive"))
         }
     }
 

@@ -631,7 +631,7 @@ action refresh(g: Repository) {
     if s.path == "" {
         return
     }
-    asks(g, s, "load", json.encode(PathAsk(path: s.path, whitespace: s.whitespace)))
+    loads(g, s, json.encode(PathAsk(path: s.path, whitespace: s.whitespace)))
 }
 
 /// Opens the repository at `path` on this device.
@@ -644,7 +644,7 @@ action open_repository(g: Repository, path: Text) {
         return
     }
     s.path = typed
-    asks(g, s, "load", json.encode(PathAsk(path: typed, whitespace: s.whitespace)))
+    loads(g, s, json.encode(PathAsk(path: typed, whitespace: s.whitespace)))
     if s.trouble == "" {
         s.notice = "Opened the repository {typed}"
     } else {
@@ -1116,52 +1116,69 @@ action clear_notice(g: Repository) {
     s.notice = ""
 }
 
-/// Runs `op` with `ask` and keeps the answer: the repository as it now stands, and the working
-/// tree as the device read it.
+/// Runs `op` with `ask`, which changes the repository on the device, and keeps the answer: the
+/// repository as it now stands, and the working tree as the device read it. Undo cannot take a
+/// change on the device back.
 // ---------------------------------------------------------------- the one way an answer is kept
 action asks(g: Repository, s: Session, op: Text, ask: Text) {
-    match engine.call(op, ask) {
+    match engine.call(device: true, op, ask) {
         .err(why) => {
             s.trouble = why
         }
-        .ok(text) => match json.decode<Loaded>(text) {
-            .err(why) => {
-                s.trouble = why
+        .ok(text) => keep(g, s, text),
+    }
+}
+
+/// Reads the repository on the device with `ask`, changing nothing there, and keeps the answer.
+action loads(g: Repository, s: Session, ask: Text) {
+    match engine.call("load", ask) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
+}
+
+/// Keeps what the device answered: the repository as it now stands, and the working tree as the
+/// device read it.
+action keep(g: Repository, s: Session, text: Text) {
+    match json.decode<Loaded>(text) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(loaded) => {
+            s.trouble = ""
+            g.path = s.path
+            g.snapshot = text
+            g.name = loaded.name
+            g.head = loaded.head
+            g.workdir = loaded.workdir
+            g.author_name = loaded.author_name
+            g.author_email = loaded.author_email
+            let wire = changes_of(loaded.changes)
+            let old = s.changes
+            for c in old {
+                if not wire.any(w -> change_key_of(w) == change_key(c)) { s.changes.remove(c) }
             }
-            .ok(loaded) => {
-                s.trouble = ""
-                g.path = s.path
-                g.snapshot = text
-                g.name = loaded.name
-                g.head = loaded.head
-                g.workdir = loaded.workdir
-                g.author_name = loaded.author_name
-                g.author_email = loaded.author_email
-                let wire = changes_of(loaded.changes)
-                let old = s.changes
-                for c in old {
-                    if not wire.any(w -> change_key_of(w) == change_key(c)) { s.changes.remove(c) }
-                }
-                for w in wire {
-                    let c = s.changes.find(x -> change_key(x) == change_key_of(w))
-                        ?? s.changes.insert(Change())
-                    c.path = w.path
-                    c.old_path = w.old_path
-                    c.area = w.area
-                    c.kind = w.kind
-                    c.additions = w.additions
-                    c.deletions = w.deletions
-                    c.binary = w.binary
-                    c.ours = w.ours
-                    c.theirs = w.theirs
-                    c.language = w.language
-                    c.unified = w.unified
-                    c.left = w.left
-                    c.right = w.right
-                    c.hunks = json.encode(w.hunks)
-                }
+            for w in wire {
+                let c = s.changes.find(x -> change_key(x) == change_key_of(w))
+                    ?? s.changes.insert(Change())
+                c.path = w.path
+                c.old_path = w.old_path
+                c.area = w.area
+                c.kind = w.kind
+                c.additions = w.additions
+                c.deletions = w.deletions
+                c.binary = w.binary
+                c.ours = w.ours
+                c.theirs = w.theirs
+                c.language = w.language
+                c.unified = w.unified
+                c.left = w.left
+                c.right = w.right
+                c.hunks = json.encode(w.hunks)
             }
-        },
+        }
     }
 }
 

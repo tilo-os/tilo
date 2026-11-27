@@ -508,8 +508,12 @@ the person is asked before it runs. An op whose effect leaves the system for goo
 in the workspace takes back (that message, sent), says `leaves: true` instead, as `post`,
 `smtp.send`, `caldav.answer` and `imap.purge` do of themselves: a person's own press of an action
 that leaves, itself or through an action of its own it calls, always confirms first, Shift held
-or not. A `destructive` action confirms a press too, unless Shift is held; every other action
-acts on the press.
+or not. An op that changes the device (a repository on its disk, a running shell) says
+`device: true`: the workspace's undo cannot take that back, so the action is never undoable. A
+`destructive` action undo takes back confirms a press unless Shift is held; one undo cannot take
+back always confirms. Every other action acts on the press, and a press confirms once, at the
+first destructive action its run reaches: what that one calls, and the destructive actions the
+run reaches after it, ask nothing more.
 
 `engine.stream(op, input)` starts a job that keeps sending frames, which a view shows by
 `tilo-live://<job>`, and says of itself what `engine.state(job)` reads: whether it is connecting,

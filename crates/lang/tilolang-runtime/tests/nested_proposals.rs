@@ -70,6 +70,13 @@ destructive action discard(b: Box, l: Letter) {
     b.letters.remove(l)
 }
 
+/// Throws every letter away, each with the destructive action that does.
+action tidy(b: Box) {
+    for l in b.letters {
+        discard(b, l)
+    }
+}
+
 view compose(l: Letter) {
     ui.Text(l.to)
 }
@@ -103,6 +110,13 @@ view discarding(b: Box) {
         ui.Button("Discard") {
             on press: discard(b, l)
         }
+    }
+}
+
+/// The box tidied with one press.
+view tidying(b: Box) {
+    ui.Button("Tidy") {
+        on press: tidy(b)
     }
 }
 
@@ -519,6 +533,42 @@ default view letters for Box
             let out = press(&view, true);
             assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
             assert_eq!(letters(), 0, "Shift is the yes to a delete undo takes back");
+        }
+
+        phase a_press_of_what_deletes_twice_asks_once;
+        {
+            let p = post();
+            let Value::Ref(root) = &p.root else {
+                panic!("the box is a resource")
+            };
+            p.rt.invoke_action(
+                &me(),
+                (
+                    p.app.action("write").as_str(),
+                    vec![p.root.clone(), Value::text("cy@example.org")],
+                ),
+            )
+            .unwrap();
+            let letters = || {
+                let Value::List(held) = p.rt.read(&root.target, "letters").unwrap() else {
+                    panic!("the box holds its letters")
+                };
+                held.len()
+            };
+            assert_eq!(letters(), 2);
+            let view = p
+                .rt
+                .open_view(&me(), &p.app.view("tidying"), vec![p.root.clone()])
+                .unwrap();
+            let InvokeOutcome::Waits { run, .. } = press(&view, false) else {
+                panic!("the first delete the press reaches confirms");
+            };
+            assert_eq!(p.dispatch.asked().0, p.app.action("discard"));
+            assert_eq!(letters(), 2, "nothing is thrown away before the yes");
+            let out = p.dispatch.allow(&p.rt, &run);
+            assert!(matches!(out, RunOutcome::Done(_)), "{out:?}");
+            assert_eq!(letters(), 0, "both letters went on the one yes");
+            assert_eq!(p.dispatch.len(), 1, "the press asked once");
         }
 
         phase shift_is_the_yes_to_what_can_be_undone;

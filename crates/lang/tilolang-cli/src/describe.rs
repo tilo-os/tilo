@@ -1076,8 +1076,9 @@ mod tests {
         );
     }
 
-    /// A copy, a pause and a new event act on a click; a send, and a purge from the server,
-    /// always confirm; deleting a branch confirms unless Shift is held, and undo takes it back.
+    /// A copy, a pause, a new event and running a command again act on a click; a send, a purge
+    /// from the server and deleting a branch on the device always confirm; deleting a table row
+    /// confirms unless Shift is held, and undo takes it back.
     #[test]
     fn a_press_confirms_by_what_the_action_does() {
         use tilolang::meta::Confirms;
@@ -1097,6 +1098,9 @@ mod tests {
             "chat.copy_text",
             "music.remote_pause",
             "calendar.new_event",
+            "terminal.rerun",
+            "terminal.clear",
+            "terminal.run",
         ] {
             assert_eq!(
                 of(just_acts).0,
@@ -1104,16 +1108,22 @@ mod tests {
                 "{just_acts} acts on a click"
             );
         }
-        for leaves in ["mail.send", "mail.purge", "messages.send"] {
+        for leaves in [
+            "mail.send",
+            "mail.purge",
+            "messages.send",
+            "git-client.delete_branch",
+            "terminal.restart",
+        ] {
             assert_eq!(of(leaves).0, Confirms::Always, "{leaves} always confirms");
         }
         assert_eq!(
-            of("git-client.delete_branch"),
+            of("word-processor.delete_row"),
             (
                 Confirms::UnlessShift,
                 tilolang::types::EffectClass::Undoable
             ),
-            "deleting a branch confirms unless Shift is held, and undo takes it back"
+            "deleting a table row confirms unless Shift is held, and undo takes it back"
         );
     }
 

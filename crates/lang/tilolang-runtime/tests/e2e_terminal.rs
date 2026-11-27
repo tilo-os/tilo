@@ -824,6 +824,20 @@ mod cases {
                 "the row says how the command ended: {}",
                 dump(window.tree())
             );
+            // Run again runs the command once more on the press: it asks nothing.
+            let ran = t.engine.count("run");
+            let menu = of_kind(window.tree(), "ui.MenuItem")
+                .into_iter()
+                .find(|item| prop(item, "label").as_deref() == Some("Run again"))
+                .expect("the row offers its command again")
+                .key
+                .clone();
+            assert!(matches!(
+                window.fire(&menu, "choose").unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            assert_eq!(t.engine.count("run"), ran + 1, "the command ran again");
+            assert_eq!(t.dispatch.len(), 0, "nobody was asked");
             let again = node_with(window.tree(), "ui.Button", "label", "Run this test again").key.clone();
             assert!(matches!(
                 window.fire(&again, "press").unwrap(),

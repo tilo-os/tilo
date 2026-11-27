@@ -3241,9 +3241,11 @@ impl Checker<'_> {
                 // `outside(...)` is, and a caller other than the person is asked first.
                 // `leaves: true`: what the op does leaves the system for good (that message,
                 // sent): it reaches outside too, and a person's own press of the action that asks
-                // it always confirms first.
+                // it always confirms first. `device: true`: the op changes the device (a
+                // repository, a running shell), which the workspace's undo cannot take back, so
+                // the action that asks it is never undoable.
                 if matches!(name.name.as_str(), "start" | "call")
-                    && matches!(named.name.as_str(), "outside" | "leaves")
+                    && matches!(named.name.as_str(), "outside" | "leaves" | "device")
                 {
                     if matches!(a.value.kind, ExprKind::Bool(true)) {
                         self.st.facts.outside = true;
@@ -3256,10 +3258,10 @@ impl Checker<'_> {
                                 "{what} says `{}: true` where its op {}, and nothing where it \
                                  does not",
                                 named.name,
-                                if named.name == "leaves" {
-                                    "leaves the system for good"
-                                } else {
-                                    "reaches outside Tilo"
+                                match named.name.as_str() {
+                                    "leaves" => "leaves the system for good",
+                                    "device" => "changes the device",
+                                    _ => "reaches outside Tilo",
                                 }
                             ),
                         );

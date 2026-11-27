@@ -32,6 +32,55 @@ pub enum EffectClass {
     Outside,
 }
 
+impl EffectClass {
+    /// What a person's own press of an action of this class waits for, `destructive` when its
+    /// app marks it so: a destructive action undo takes back confirms unless Shift is held, one
+    /// undo cannot take back (it changes the device, or reaches outside) always confirms, and
+    /// the rest acts on the press. What leaves the system always confirms whatever its class
+    /// ([`crate::meta::ActionMeta::confirms`]).
+    #[must_use]
+    pub const fn confirms(self, destructive: bool) -> Confirms {
+        match (destructive, self) {
+            (false, _) => Confirms::Never,
+            (true, Self::Undoable) => Confirms::UnlessShift,
+            (true, Self::Read | Self::Outside) => Confirms::Always,
+        }
+    }
+}
+
+/// What a person's own press of an action waits for before it runs
+/// ([`crate::meta::ActionMeta::confirms`]). A call an agent, an automation or another app makes
+/// is decided by its grants alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Confirms {
+    /// It acts on the press: copying, opening, playing, refreshing, making a new thing.
+    Never,
+    /// It confirms first, and Shift held on the press skips that: an action its app marks
+    /// `destructive` that undo takes back (a delete).
+    UnlessShift,
+    /// It confirms first, Shift held or not: it leaves the system, or is destructive and undo
+    /// cannot take it back.
+    Always,
+}
+
+impl Confirms {
+    /// Whether a press, with Shift held when `shift`, waits for the person's yes.
+    #[must_use]
+    pub const fn on_press(self, shift: bool) -> bool {
+        match self {
+            Self::Never => false,
+            Self::UnlessShift => !shift,
+            Self::Always => true,
+        }
+    }
+
+    /// Whether a plain press confirms: what the action's contract and the catalogue publish.
+    #[must_use]
+    pub const fn by_default(self) -> bool {
+        self.on_press(false)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LengthUnit {
     Rem,

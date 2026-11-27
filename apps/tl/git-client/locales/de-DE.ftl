@@ -989,13 +989,27 @@ d-eqtvrcxw = Hinweis ausblenden
     .doc = Blendet den Hinweis aus.
 
 d-pfjepyyc = Fragt
-    .doc = Führt `op` mit `ask` aus und behält die Antwort: das Repository, wie es jetzt steht, und das Arbeitsverzeichnis, wie das Gerät es gelesen hat.
+    .doc = Führt `op` mit `ask` aus, was das Repository auf dem Gerät ändert, und behält die Antwort: das Repository, wie es jetzt steht, und das Arbeitsverzeichnis, wie das Gerät es gelesen hat. Rückgängig nimmt eine Änderung auf dem Gerät nicht zurück.
 
 d-pfjepyyc-s = F
 
 d-pfjepyyc-op = Aufruf
 
 d-pfjepyyc-ask = Anfrage
+
+d-db3bvtrd = Liest
+    .doc = Liest das Repository auf dem Gerät mit `ask`, ohne dort etwas zu ändern, und behält die Antwort.
+
+d-db3bvtrd-s = F
+
+d-db3bvtrd-ask = Anfrage
+
+d-73f5j5d6 = Behält
+    .doc = Behält, was das Gerät geantwortet hat: das Repository, wie es jetzt steht, und das Arbeitsverzeichnis, wie das Gerät es gelesen hat.
+
+d-73f5j5d6-s = F
+
+d-73f5j5d6-text = Text
 
 d-ipe3wuqn = Dauer als Text
     .w-ms = { $ms } ms

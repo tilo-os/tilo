@@ -534,7 +534,7 @@ fn relay_fits(id: Text) -> Bool {
 /// marked it finished. With no window open the app opens the session's shell for it, so an
 /// agent's command runs and is recorded the same; one that can run no shell (a page) is answered
 /// by the device that keeps the session.
-destructive action run(s: Session, command: Text) uses shell (
+action run(s: Session, command: Text) uses shell (
     icon: .play,
     label: "Run command",
     keywords: ["execute", "command", "type", "shell"],
@@ -551,6 +551,7 @@ action run_in_shell(s: Session, command: Text) {
     require s.shell != "" or s.trouble == "" "the session's shell did not open: {s.trouble}"
     require s.shell != "" "the session's shell runs on the device that keeps it"
     match engine.start(
+        device: true,
         "run",
         json.encode(
             ShellAsk(shell: s.shell, text: command.trim(), agent: invoker.kind() == .agent),
