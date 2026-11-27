@@ -803,7 +803,13 @@ fn as_a_field(ty: &Ty, value: Value) -> Value {
 /// Whether `target` is a resource of an app this runtime does not run.
 #[must_use]
 pub fn is_foreign(target: &ResourceRef) -> bool {
-    target.ty.contains('#')
+    is_foreign_type(&target.ty)
+}
+
+/// Whether `ty` is a type of an app this runtime does not run (`<app>#<Type>`).
+#[must_use]
+pub fn is_foreign_type(ty: &str) -> bool {
+    ty.contains('#')
 }
 
 /// What a field of a record whose reading has not come in reads as: its declared value, or

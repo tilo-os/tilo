@@ -63,14 +63,23 @@ impl ResourceRef {
     /// answer names it by (`tl:<app>:<id>`). The caller supplies the type and is responsible for
     /// checking it against the stored one.
     ///
+    /// A resource of another app (its type `<app>#<Type>`) is named here by its published
+    /// address, which is what its reading is kept and asked for under: a reference to one keeps
+    /// the address, so an item listed in a reading is the item that reading's app publishes.
+    ///
     /// A reference written before items were stored by id names the path down to the item
     /// (`doc/field:item/field:item`); it reads as the item its last step names.
     pub fn parse_id(text: &str, ty: impl Into<TypeId>) -> Option<Self> {
-        let (doc, item) = split_id(text)?;
+        let ty = ty.into();
+        let (doc, item) = if crate::foreign::is_foreign_type(&ty) {
+            split_path(text)?
+        } else {
+            split_id(text)?
+        };
         Some(Self {
             doc: doc.to_owned(),
             item: item.map(str::to_owned),
-            ty: ty.into(),
+            ty,
         })
     }
 
@@ -96,6 +105,11 @@ pub fn split_id(text: &str) -> Option<(&str, Option<&str>)> {
         },
         None => text,
     };
+    split_path(text)
+}
+
+/// [`split_id`] of `text` as it is written, a published address kept whole as the document.
+fn split_path(text: &str) -> Option<(&str, Option<&str>)> {
     // A device's resource is kept under the device (`devices/<device>/<app>/…`), so its document
     // is every step up to its last: an item of it follows that. Any other document is one step.
     if text.starts_with("devices/") {
@@ -1218,6 +1232,12 @@ mod tests {
                 ResourceRef::parse_id("tl:so.tilo.notes:root-abc", "T"),
                 Some(ResourceRef::root("root-abc", "T"))
             );
+            // Another app's resource is named here by its published address, which its
+            // reading is kept under: an item listed in that reading keeps it too.
+            let listed = ResourceRef::parse_id("tl:so.tilo.notes:root-abc/i-1", "so.tilo.notes#U")
+                .expect("an address");
+            assert_eq!(listed.doc, "tl:so.tilo.notes:root-abc");
+            assert_eq!(listed.id_string(), "tl:so.tilo.notes:root-abc/i-1");
         }
     }
 }
