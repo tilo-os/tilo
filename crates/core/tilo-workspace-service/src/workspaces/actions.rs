@@ -175,6 +175,10 @@ pub(crate) const PUBLICATION: &str = "publication";
 /// No longer choosing which version of an app the workspace runs
 /// (`install-app`, the governance action of that name, chooses one).
 pub(crate) const UNINSTALL_APP: &str = "uninstall-app";
+/// `install-app`'s flag that installs the release it names only where the workspace runs no
+/// version of the app yet, answering the version it runs otherwise: how opening an app the
+/// device holds installs it without moving the workspace off a version it chose.
+pub const IF_ABSENT: &str = "if_absent";
 /// Keeping the version of an app the workspace runs: an update is refused until it is unpinned.
 pub(crate) const PIN_APP: &str = "app.pin";
 /// Letting the version of an app the workspace runs be updated again.
@@ -901,6 +905,11 @@ fn app_release_params() -> Vec<ActionParam> {
             "dev",
             ParamType::Boolean,
             "A developer's own build, never reviewed by a registry.",
+        ),
+        ActionParam::optional(
+            IF_ABSENT,
+            ParamType::Boolean,
+            "Install it only where the workspace runs no version of this app yet; else leave the version it runs.",
         ),
         ActionParam::optional(
             "file",
@@ -2927,6 +2936,13 @@ impl Workspaces {
             release.pinned = action == PIN_APP;
             WorkspaceMembershipCommand::InstallApp(release)
         } else if action == governance::INSTALL_APP {
+            // Opening an app installs it only where the workspace runs no version of it: the
+            // version the workspace chose stays.
+            if args.flag(IF_ABSENT)?
+                && let Some(running) = running
+            {
+                return Ok(json!({ "running": running }));
+            }
             if let Some(running) = running.as_ref().filter(|running| running.release.pinned) {
                 return Err(ActionCallError::refused(format!(
                     "the workspace keeps version {} of this app: unpin it first",

@@ -1280,6 +1280,22 @@ async fn the_developers_next_push_replaces_its_build(
     assert_eq!(running.len(), 1, "{running:?}");
     assert_eq!(running[0].release.version, "1.5.0-dev.2");
     assert_eq!(running[0].release.surface, hex::encode([2; 32]));
+    // An install only where the workspace runs no version, as opening an app the device holds
+    // asks, leaves the version it chose.
+    let mut held = dev_release(publisher, "1.4.0", 4);
+    held[super::IF_ABSENT] = json!(true);
+    let answer = invoke(
+        host,
+        workspace_id,
+        &caller(developer),
+        request(workspace, governance::INSTALL_APP, held),
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.2");
+    let running = workspaces.app_versions(workspace).await.unwrap();
+    assert_eq!(running.len(), 1, "{running:?}");
+    assert_eq!(running[0].release.version, "1.5.0-dev.2");
 }
 
 /// The app is a resource of the workspace's apps, which offers updating, pinning and uninstalling

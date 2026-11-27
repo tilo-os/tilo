@@ -43,6 +43,7 @@ mod connection;
 pub(super) mod delivering;
 mod directory;
 mod hosted;
+mod install_on_open;
 mod launch_child;
 mod own_device;
 mod publishers;

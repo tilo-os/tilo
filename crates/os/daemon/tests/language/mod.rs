@@ -10,6 +10,7 @@ mod declared_kinds_tests;
 mod disk_unlock_tests;
 mod founded_apps_tests;
 mod hosted_own_agent_tests;
+mod install_on_open;
 mod mail_bridge_tests;
 mod moderation_history_tests;
 mod own_agent_tests;

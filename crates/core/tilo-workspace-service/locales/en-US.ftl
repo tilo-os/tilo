@@ -42,6 +42,10 @@ workspace-default-name = My workspace
 app-records-taken-back = { $app } can't keep its records in this workspace any more, so it stopped. A member took back its permission; installing { $app } again, or giving it back under the workspace's Permissions, lets it carry on.
 app-records-not-installed = { $app } isn't installed in this workspace, so it can't keep records here. Install { $app } in the workspace to use it.
 
+# Said where an app opens when the workspace runs no version of it and opening it could not
+# add it there: adding apps to the workspace is up to its owners.
+app-open-not-added = { $app } isn't in this workspace yet, and only its owners can add apps here. Ask an owner to add { $app }.
+
 # Why a person's own model gave no answer to work done for them, said where
 # they read it, with what they can do about it.
 model-none-linked = No model is linked for this kind of work. Choose one in Settings, under Agent models.

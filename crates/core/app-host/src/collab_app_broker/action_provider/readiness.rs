@@ -119,17 +119,23 @@ impl AppBrokerState {
                 request,
             },
         )?;
-        self.launch_application(
-            (caller, origin, workspace_id),
-            admitted,
-            app_id,
-            crate::services::LaunchContent {
-                hash: &launch_content_hash(argument),
-                caller: launch,
-                author,
-            },
-            &self.launch_place(caller, workspace_id, launch),
-        )
-        .map(Some)
+        let open = super::install_on_open::HeldOpen {
+            caller: caller.clone(),
+            origin: origin.cloned(),
+            workspace: workspace_id.to_owned(),
+            app: app_id.to_owned(),
+            hash: launch_content_hash(argument).into_owned(),
+            scope: launch.cloned(),
+            author: author.map(str::to_owned),
+            place: self.launch_place(caller, workspace_id, launch),
+        };
+        // Opening an app the workspace runs no version of is the person asking to use it here:
+        // it is installed as them first, and the open answers once it launched or was refused.
+        if let Some(release) = Self::install_before_open(caller, &workspace, &app) {
+            let id = admitted.id;
+            self.install_then_open(&release, admitted, open, app.display_name);
+            return Ok(Some(id));
+        }
+        open.launch(self, admitted).map(Some)
     }
 }

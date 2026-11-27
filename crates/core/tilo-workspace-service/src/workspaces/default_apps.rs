@@ -169,6 +169,15 @@ fn from_cache(app: &str, cached: &dyn Fn(&str) -> Option<AppRelease>) -> Option<
     }
 }
 
+/// The release of `app` this device's package store holds, as the workspace's `install` records
+/// one: what opening an app the device has but the workspace does not run yet installs. `None`
+/// when the store holds no signed package of it.
+#[must_use]
+pub fn held_release(app: &str) -> Option<AppRelease> {
+    let catalog = package_store::Catalog::from_env().ok()?;
+    from_cache(app, &|app| cached(&catalog, app))
+}
+
 /// The release of `app` this device's package cache holds: the version installed, its signed
 /// package root and publisher, and the compiled surface its signed payload ships.
 fn cached(catalog: &package_store::Catalog, app: &str) -> Option<AppRelease> {

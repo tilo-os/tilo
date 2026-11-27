@@ -42,6 +42,10 @@ workspace-default-name = Mein Arbeitsbereich
 app-records-taken-back = { $app } kann seine Einträge in diesem Arbeitsbereich nicht mehr führen und hat angehalten. Ein Mitglied hat ihm die Berechtigung entzogen; installiere { $app } erneut oder gib sie unter „Berechtigungen“ des Arbeitsbereichs zurück, damit es weitermacht.
 app-records-not-installed = { $app } ist in diesem Arbeitsbereich nicht installiert und kann hier keine Einträge führen. Installiere { $app } im Arbeitsbereich, um es zu nutzen.
 
+# Said where an app opens when the workspace runs no version of it and opening it could not
+# add it there: adding apps to the workspace is up to its owners.
+app-open-not-added = { $app } ist noch nicht in diesem Arbeitsbereich, und nur seine Eigentümer können hier Apps hinzufügen. Bitte einen Eigentümer, { $app } hinzuzufügen.
+
 # Why a person's own model gave no answer to work done for them, said where
 # they read it, with what they can do about it.
 model-none-linked = Für diese Art von Arbeit ist kein Modell verknüpft. Wähle eines in den Einstellungen unter Agentenmodelle.
