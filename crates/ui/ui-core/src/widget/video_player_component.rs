@@ -737,6 +737,21 @@ impl tilo_ui_base::widget::Widget for DeclaredVideo {
         self.player.needs_animation_frame()
     }
 
+    /// The player is the leaf this view draws, so the motion setting and the frames it waits for
+    /// are the player's: a host walking the tree reaches them here.
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.player.set_motion_reduced(reduced);
+    }
+
+    /// The next picture of what plays, and the fade of its controls.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        self.player.next_wake_deadline()
+    }
+
+    fn serve_deadline(&mut self, now: crate::time::Instant) -> bool {
+        self.player.serve_deadline(now)
+    }
+
     fn is_layout_dirty(&self) -> bool {
         tilo_ui_base::widget::Widget::is_layout_dirty(&self.player)
     }
@@ -978,5 +993,47 @@ mod tests {
             "it is a control that runs when pressed: {:?}",
             setting.control
         );
+    }
+
+    /// A person's reduced-motion setting reaches the player the view draws: the host walking the
+    /// tree hands it to the view, and the view draws no leaf but the player.
+    #[test]
+    fn a_views_player_hears_the_persons_reduced_motion() {
+        use tilo_ui_base::widget::Widget as _;
+        let mut video = DeclaredVideo::new(VideoPlayerProps::default());
+        video.player.rect = crate::kurbo::Rect::new(0.0, 0.0, 640.0, 360.0);
+        video.player.show_controls();
+        // A frame drew them, so what stands is what its opacity fades.
+        video.player.reveal_unpainted = false;
+        let until = video
+            .player
+            .controls_visible_until
+            .expect("the show names when they go");
+        let fading = tilo_ui_base::motion::Transient::exit_starts(
+            tilo_ui_base::motion::Transient::CONFIRMATION,
+            until,
+            tilo_ui_base::tokens::EffectiveMotion::default(),
+        );
+        assert!(fading < until, "the controls fade before they go");
+        let into_the_fade = until
+            .checked_sub(crate::time::Duration::from_millis(5))
+            .expect("the last moments of the fade");
+        crate::time::testing::with_monotonic_time(into_the_fade, || {
+            assert!(
+                video.player.controls_opacity() < 0.9,
+                "mid-fade, the controls are mostly gone"
+            );
+            assert!(video.needs_animation_frame(), "the fade moves them");
+            video.set_motion_reduced(true);
+            assert_eq!(
+                video.player.controls_opacity(),
+                1.0,
+                "reduced motion shows them whole, with no fade to animate"
+            );
+            assert!(
+                !video.needs_animation_frame(),
+                "and asks for no frames to fade them"
+            );
+        });
     }
 }

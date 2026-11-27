@@ -682,12 +682,13 @@ impl Widget for EmbeddedApp {
         self.app.layout.structure_dirty |= self.app.take_root_structure_dirty();
         let visible = presentation_changed
             || self.app.unsettled()
-            // A wake from outside may be an authority that moved what the
-            // app paints (a grant, a policy clock): that frame draws again.
-            || (woken
+            // A deadline that came due may have taken up content the app draws — a video's next
+            // picture — as a wake from outside may have moved what it paints (a grant, a policy
+            // clock): that frame draws again.
+            || ((due || woken)
                 && (self.app.root_widget.needs_redraw()
                     || self.app.root_widget.needs_animation_frame()
-                    || self.app.permissions_moved()))
+                    || (woken && self.app.permissions_moved())))
             || self.app.permissions_walk_due(crate::time::now())
             || tilo_ui_base::motion::frames_wanted(crate::time::now());
         if visible {

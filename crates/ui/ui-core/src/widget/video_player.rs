@@ -36,6 +36,10 @@ use tilo_ui_base::{widget::FullscreenProvider, widget::Widget};
 /// The shape a player stands at where nothing gives it a height: a video's usual 16:9.
 const NATURAL_ASPECT: f32 = 16.0 / 9.0;
 const CONTROLS_AUTO_HIDE: Duration = Duration::from_secs(3);
+/// The beat a playing picture is taken up on: its frames are content, arriving from the engine,
+/// so the window is woken for the next one ([`Widget::next_wake_deadline`]) rather than asked for
+/// animation frames as a widget's motion.
+const PICTURE_BEAT: Duration = Duration::from_millis(16);
 const CONTROLS_BAR_HEIGHT: f64 = 44.0;
 const PLAY_BUTTON_SIZE: f64 = 20.0;
 /// Minimum pointer target for every control in the bar (HIG §9.6: a 20 px
@@ -942,6 +946,65 @@ impl VideoPlayer {
         self.reveal_unpainted = true;
     }
 
+    /// Whether the controls themselves move at `now`: only their exit fade does. The span between
+    /// their arrival (instant) and that fade is still, so it asks for no animation frames
+    /// ([`Self::controls_wake`] wakes the frame that starts the fade).
+    fn controls_moving(&self) -> bool {
+        if self.motion_reduced
+            || self.open_menu.is_some()
+            || self.controls_pinned()
+            || self.reveal_unpainted
+        {
+            return false;
+        }
+        let Some(deadline) = self.controls_visible_until else {
+            return false;
+        };
+        let now = crate::time::now();
+        tilo_ui_base::motion::Transient::is_moving(
+            tilo_ui_base::motion::Transient::CONFIRMATION,
+            (now, deadline),
+            now,
+            tilo_ui_base::tokens::EffectiveMotion::default(),
+        )
+    }
+
+    /// The moment the shown controls next need a frame: the start of their fade, or the instant
+    /// they go under reduced motion, which has no fade.
+    fn controls_wake(&self) -> Option<Instant> {
+        if self.open_menu.is_some() || self.controls_pinned() || self.reveal_unpainted {
+            return None;
+        }
+        let deadline = self.controls_visible_until?;
+        let now = crate::time::now();
+        if self.motion_reduced {
+            return (now < deadline).then_some(deadline);
+        }
+        let fade_from = tilo_ui_base::motion::Transient::exit_starts(
+            tilo_ui_base::motion::Transient::CONFIRMATION,
+            deadline,
+            tilo_ui_base::tokens::EffectiveMotion::default(),
+        );
+        if now < fade_from {
+            Some(fade_from)
+        } else {
+            (now < deadline).then_some(deadline)
+        }
+    }
+
+    /// Whether a picture plays here: what it shows comes from the engine, one frame of content at
+    /// a time, not from a widget that moves.
+    fn picture_playing(&self) -> bool {
+        self.engine.is_some() && self.is_playing()
+    }
+
+    /// When the next picture is taken up: a beat while one plays.
+    fn picture_wake(&self) -> Option<Instant> {
+        self.picture_playing()
+            .then(|| crate::time::now().checked_add(PICTURE_BEAT))
+            .flatten()
+    }
+
     /// The controls Panel: floating over the bottom of the picture, one
     /// `spacing.s2` in from the sides and the bottom edge.
     /// Where the transport stands over the picture, shown or not: what an
@@ -1021,7 +1084,9 @@ impl VideoPlayer {
         }
     }
 
-    fn pump_engine(&mut self) {
+    /// Take up what the engine has since the last frame: its playhead, its state, its length and
+    /// the newest picture. Whether the frame it draws changed.
+    fn pump_engine(&mut self) -> bool {
         let last_pts = self.last_frame_pts;
         let have_frame = self.latest_frame.is_some();
         let snapshot = self.engine.as_mut().map(|engine| {
@@ -1050,12 +1115,14 @@ impl VideoPlayer {
             )
         });
         let Some((pos, dur, buffering, playing, frame, element_picture, events)) = snapshot else {
-            return;
+            return false;
         };
+        let mut changed = false;
         self.record_terminal_media_events(events);
         if self.position_ms != pos {
             self.position_ms = pos;
             self.dirty = true;
+            changed = true;
         }
         if let Some(d) = dur
             && d > 0
@@ -1063,10 +1130,12 @@ impl VideoPlayer {
         {
             self.duration_ms = d;
             self.dirty = true;
+            changed = true;
         }
         if self.buffering != buffering {
             self.buffering = buffering;
             self.dirty = true;
+            changed = true;
         }
         let new_state = if playing {
             PlaybackState::Playing
@@ -1079,6 +1148,7 @@ impl VideoPlayer {
             }
             self.state = new_state;
             self.dirty = true;
+            changed = true;
         }
         if let Some((w, h, rgba, pts)) = frame
             && (self.last_frame_pts != Some(pts) || self.latest_frame.is_none())
@@ -1086,10 +1156,13 @@ impl VideoPlayer {
             self.last_frame_pts = Some(pts);
             self.latest_frame = Some(rgba_image(w, h, rgba));
             self.dirty = true;
+            changed = true;
         }
         if let Some(picture) = element_picture {
             self.show_element_picture(picture);
+            changed = true;
         }
+        changed
     }
 
     fn show_element_picture(&mut self, picture: media::ElementPicture) {
@@ -2542,7 +2615,30 @@ impl Widget for VideoPlayer {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.is_playing() || self.controls_shown_for_a_while()
+        // A playing picture is content, and the controls' shown span is still: only their fade is
+        // a widget's motion.
+        self.controls_moving()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.controls_wake()
+            .into_iter()
+            .chain(self.picture_wake())
+            .min()
+    }
+
+    /// Take up the next picture, or the instant the shown controls go: a frame then draws what
+    /// the engine has and takes expired controls off the picture.
+    fn serve_deadline(&mut self, now: Instant) -> bool {
+        let mut changed = self.pump_engine();
+        if self
+            .controls_visible_until
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.dirty = true;
+            changed = true;
+        }
+        changed
     }
 
     fn needs_redraw(&self) -> bool {

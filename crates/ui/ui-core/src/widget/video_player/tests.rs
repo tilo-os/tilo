@@ -315,6 +315,14 @@ tilo_test_env::scenario! {
             vp.play_button_rect.width() > 0.0,
             "playback starting shows the controls"
         );
+        assert!(
+            !vp.needs_animation_frame(),
+            "a playing picture is content, woken at its beat, not a widget's motion"
+        );
+        assert!(
+            vp.next_wake_deadline().is_some(),
+            "the next picture is waited for"
+        );
         assert_eq!(vp.progress_line_painted, Rect::ZERO);
 
         vp.seek_to_ms(vp.duration_ms() / 2);
@@ -330,6 +338,58 @@ tilo_test_env::scenario! {
             (line.width() - vp.rect.width() / 2.0).abs() < 2.0,
             "it is filled as far as the video has played: {line:?}"
         );
+    }
+
+    phase a_playing_picture_is_taken_up_on_its_beat_and_shown_controls_are_still_until_they_fade;
+    {
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote {
+            url: "v.mp4".into(),
+        });
+        let mut vp = VideoPlayer::new().with_engine(engine);
+        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+        let doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        vp.engine_mut().unwrap().play();
+        vp.sync(&doc, &root);
+        draw_once(&mut vp);
+        assert!(!vp.needs_animation_frame(), "playback is content, not motion");
+        let beat = vp.next_wake_deadline().expect("its next picture is waited for");
+
+        // The controls showed when playback started: still while they stand, moving through
+        // their exit fade, and gone at the deadline.
+        let until = vp.controls_visible_until.expect("playback showed the controls");
+        assert!(
+            beat < until,
+            "a picture's beat comes well before the shown controls' deadline: {beat:?}"
+        );
+        assert!(!vp.needs_animation_frame(), "shown controls ask for no frames");
+        let fade_from = tilo_ui_base::motion::Transient::exit_starts(
+            tilo_ui_base::motion::Transient::CONFIRMATION,
+            until,
+            tilo_ui_base::tokens::EffectiveMotion::default(),
+        );
+        assert!(fade_from < until, "the fade starts before the controls go");
+        crate::time::testing::with_monotonic_time(fade_from, || {
+            assert!(vp.needs_animation_frame(), "their fade is motion");
+            assert_eq!(
+                vp.next_wake_deadline(),
+                fade_from.checked_add(PICTURE_BEAT),
+                "the fade's frames run while the picture is taken up on its beat"
+            );
+        });
+
+        // Reduced motion snaps them gone instead: no fade to animate, and the picture's beat is
+        // all there is to wait for.
+        vp.set_motion_reduced(true);
+        crate::time::testing::with_monotonic_time(until, || {
+            assert!(
+                !vp.needs_animation_frame(),
+                "reduced motion has no fade, so no frames for it"
+            );
+            assert_eq!(vp.next_wake_deadline(), until.checked_add(PICTURE_BEAT));
+            assert!(vp.serve_deadline(until), "the frame that takes them off is owed");
+        });
     }
 
     phase a_reveal_reaches_the_screen_even_when_the_next_frame_comes_after_its_deadline;
