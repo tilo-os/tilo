@@ -88,7 +88,8 @@ LIB = """pub fn answer() -> u32 {{
 # describes, rustfmt is always happy, and Clippy takes a moment and then answers
 # with the status the test asked for. Each compiling call records when it
 # started and ended, so a test can tell whether two ran at the same time; the
-# workspace remark is what a failure report must leave out. STUB_DURING_LINT names a
+# workspace remark is what a failure report must leave out. Each also records the host crate's
+# files it found and where it ran (`read`), which says whose tree it read. STUB_DURING_LINT names a
 # script the first compiling call runs: another person landing on main while the lint runs.
 CARGO_STUB = """#!/bin/sh
 case "$1" in
@@ -96,6 +97,7 @@ case "$1" in
   fmt) printf 'fmt %s\\n' "$*" >> "$HOOK_LOG"; [ "$2" = "--version" ] && exit 0; exit "${STUB_FMT_STATUS:-0}" ;;
 esac
 printf 'start %s %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
+printf 'read %s %s\\n' "$(ls native/src | tr '\\n' ,)" "$PWD" >> "$HOOK_LOG"
 if [ -n "${STUB_DURING_LINT:-}" ] && [ ! -e "$STUB_DURING_LINT.ran" ]; then
   : > "$STUB_DURING_LINT.ran"; sh "$STUB_DURING_LINT" >&2
 fi
@@ -1362,15 +1364,59 @@ class PrePushLintTests(unittest.TestCase):
         self.write(".claude/scratch/notes.md", "mine\n")
         self.stands_after_a_rebase()
 
-    def test_an_untracked_file_in_a_package_lints_again(self):
+    def reads(self):
+        """Where each lint run ran, and the host crate's files it found there."""
+        if not self.log.exists():
+            return []
+        return [tuple(line.split(" ", 2)[1:]) for line in self.log.read_text().splitlines()
+                if line.startswith("read ")]
+
+    def test_an_untracked_file_in_a_package_keeps_the_pass(self):
+        # A scratch file beside the change is never pushed: the retry stands on the pass, and
+        # checks nothing out to find that out.
         self.write("native/src/lib.rs", LIB.format(answer=53))
         self.commit("feat: answer 53")
         self.assertEqual(self.push().returncode, 0)
         main = self.rebase({"docs/notes.md": "words\n"})
         self.write("native/src/stray.rs", "pub fn stray() {}\n")
         retry = self.push(remote_oid=main)
-        self.assertNotIn("reusing the clippy pass", retry.stderr)
-        self.assertIn("uncommitted changes", retry.stderr)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], retry.stderr)
+        self.assertIn("reusing the clippy pass", retry.stderr)
+        self.assertNotIn("checkout of", retry.stderr)
+
+    def test_a_push_beside_an_untracked_file_lints_the_pushed_commit_and_keeps_its_pass(self):
+        # The lint reads a checkout of the pushed commit, without the file, removes it after,
+        # and remembers the pass for the retry.
+        self.write("native/src/lib.rs", LIB.format(answer=57))
+        self.commit("feat: answer 57")
+        self.write("native/src/stray.rs", "pub fn stray() {}\n")
+        first = self.push()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("native/src/stray.rs here is not in the pushed commit, so the lint reads a "
+                      f"checkout of {self.head()[:12]} of its own", first.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        [(found, where)] = self.reads()
+        self.assertEqual(found, "lib.rs,", "the lint read the pushed files, not the stray one")
+        self.assertNotEqual(Path(where).resolve(), self.root.resolve())
+        self.assertFalse(Path(where).exists(), "the checkout is removed after the lint")
+        self.assertEqual(self.git("worktree", "list", "--porcelain").count("worktree "), 1)
+        self.assertTrue((self.root / "native/src/stray.rs").exists(), "the stray file stays")
+        main = self.rebase({"docs/notes.md": "words\n"})
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], retry.stderr)
+        self.assertIn("reusing the clippy pass", retry.stderr)
+
+    def test_a_push_beside_an_uncommitted_edit_lints_the_committed_file(self):
+        self.write("native/src/lib.rs", LIB.format(answer=58))
+        self.commit("feat: answer 58")
+        self.write("native/src/lib.rs", LIB.format(answer=59))
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [(_found, where)] = self.reads()
+        self.assertNotEqual(Path(where).resolve(), self.root.resolve())
+        self.assertIn("59", (self.root / "native/src/lib.rs").read_text(), "the edit stays")
 
     def test_a_rebase_onto_a_change_to_the_pushed_package_reuses_the_pass(self):
         # t's clippy families lint the push with main's changes on main, so a clean
@@ -1492,14 +1538,25 @@ printf '%s' '{text}' > {name}
         self.assertFalse((self.root / ".git/rebase-merge").exists())
         self.assertEqual(self.calls(), [], "nothing was linted")
 
-    def test_landing_refuses_a_checkout_with_uncommitted_changes(self):
-        self.origin()
+    def test_landing_leaves_untracked_files_alone(self):
+        remote = self.origin()
         self.write("native/src/lib.rs", LIB.format(answer=74))
         self.commit("feat: answer 74")
         self.write("native/src/stray.rs", "pub fn stray() {}\n")
         result = self.land()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        self.assertEqual(self.remote_log(remote)[0], "feat: answer 74")
+        self.assertTrue((self.root / "native/src/stray.rs").exists())
+
+    def test_landing_refuses_an_edit_that_is_not_committed(self):
+        self.origin()
+        self.write("native/src/lib.rs", LIB.format(answer=75))
+        self.commit("feat: answer 75")
+        self.write("native/src/lib.rs", LIB.format(answer=76))
+        result = self.land()
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn("untracked files in the checkout", result.stderr)
+        self.assertIn("have changes that are not committed", result.stderr)
         self.assertEqual(self.calls(), [])
 
     def test_each_runs_whole_output_and_time_can_be_kept(self):

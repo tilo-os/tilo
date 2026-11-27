@@ -13,9 +13,9 @@ same files is linted again, and t answers each check whose reads main left alone
 
 A round ends the landing when the push lands, when the hook refuses the change itself (its lint
 failed: fix it and land again), when the rebase meets a conflict (the rebase is aborted, and the
-branch is left as it was), or when the push fails for anything but main having moved. The pushed
-commits are those checked out, so a change on disk that is not committed is refused first: the
-lint reads the files on disk, and a pass of files the push does not send speaks for nothing.
+branch is left as it was), or when the push fails for anything but main having moved. An edit to
+a tracked file that is not committed is refused first, as the rebase would refuse it; untracked
+files stay where they are, and the hook lints the pushed commit's files without them.
 """
 from __future__ import annotations
 
@@ -24,11 +24,6 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-
-TOOLS = Path(__file__).resolve().parent
-if str(TOOLS) not in sys.path:
-    sys.path.append(str(TOOLS))
-from ci.pre_push_lint import worktree_differs  # noqa: E402
 
 MAIN = "main"
 # What the push hook writes when it refuses the change itself: another round would refuse it
@@ -80,13 +75,8 @@ def push(root: Path, remote: str) -> tuple[int, str]:
 
 def land(root: Path, remote: str, attempts: int) -> int:
     if git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip():
-        say("the checkout has changes that are not committed; commit or drop them first: the "
-            "rebase needs a clean tree, and the lint reads the files on disk")
-        return 1
-    if worktree_differs(root):
-        say("there are untracked files in the checkout that a package may read; the lint would "
-            "read them and its pass would speak for files the push does not send. Commit, move "
-            "or remove them first")
+        say("tracked files here have changes that are not committed; commit or drop them "
+            "first: the rebase needs them clean")
         return 1
     started = time.monotonic()
     for attempt in range(1, attempts + 1):

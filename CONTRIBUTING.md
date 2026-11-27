@@ -207,6 +207,11 @@ conflict is sent without linting again, however wide the push and whatever
 `main` changed elsewhere. What only the combination with `main`'s new commits
 breaks is found by t's clippy families on `main` and fixed by the next commit.
 
+The lint reads the pushed commits' files, not the ones beside them. A file you
+have not committed is not sent, so it is neither linted nor in the way: where the
+checkout holds one, the hook lints a checkout of the pushed commit of its own and
+removes it after, and the pass is remembered all the same.
+
 Without t, or with `CARGO` naming a cargo drop-in (which may build on another
 machine), the lint compiles with that cargo, or the `cargo` on your `PATH`.
 

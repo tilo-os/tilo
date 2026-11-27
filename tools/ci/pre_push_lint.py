@@ -89,10 +89,14 @@ only the combination breaks is t's clippy families' to find on main. A rebase th
 conflict into another change writes another patch, so it is linted. The passes are kept in the
 repository's git directory.
 
-The lint reads the files on disk, so a push is refused when what it sends is not
-the tree checked out here: a lint that spoke for another commit would say
-nothing about this one. A push whose changed packages the check cannot name is
-refused too, rather than passed unread.
+The lint reads the pushed commit's files, never the ones beside them: an untracked file or an
+edit not committed is not sent, so it neither changes what is linted nor keeps the pass from being
+remembered. Where the checkout holds such files, the lint checks the pushed commit out in the
+repository's git directory and reads that, which is what t uploads and builds, and removes it
+after; where it holds none, the lint reads the checkout itself, and a push standing on a
+remembered pass checks nothing out. A push is refused when what it sends is not the commit
+checked out here. A push whose changed packages the check cannot name is refused too, rather
+than passed unread.
 
 The catalogues a push changes are judged over its whole range before any lint,
 by `tools/policy/check_catalogue_coverage.py --range`: the commit hook judges
@@ -965,9 +969,14 @@ def landing_env(root: Path) -> dict[str, str]:
     return env
 
 
-def run_together(root: Path, runs: list[Lint],
-                 keep: Path | None = None) -> tuple[list[tuple[Lint, int, str]], float]:
+def run_together(root: Path, runs: list[Lint], keep: Path | None = None,
+                 tree: Path | None = None) -> tuple[list[tuple[Lint, int, str]], float]:
     """Start every run at once and collect them, so the wall time is the slowest one.
+
+    With `tree`, the runs read the pushed commit's files from that checkout of it, in this
+    checkout's t session. A cargo of this machine builds into this checkout's own target
+    directory: the checkout is new for every push, and a target of its own would build the whole
+    workspace from nothing each time.
 
     With `keep`, each run's whole output is written there, headed by its command and how long
     it took: what tells a lint that compiled everything from one that compiled what changed.
@@ -978,8 +987,12 @@ def run_together(root: Path, runs: list[Lint],
         # A file, not a pipe: a run whose output outgrows the pipe buffer must
         # not wait on a reader that is still waiting on another run.
         log = tempfile.TemporaryFile(mode="w+")
-        process = subprocess.Popen(run.command, cwd=root, stdout=log, stderr=subprocess.STDOUT, text=True,
-                                   env=landing_env(root))
+        env = landing_env(root)
+        if tree is not None:
+            env["TILO_REPO_ROOT"] = str(tree)
+            env.setdefault("CARGO_TARGET_DIR", str(root / "target"))
+        process = subprocess.Popen(run.command, cwd=tree or root, stdout=log,
+                                   stderr=subprocess.STDOUT, text=True, env=env)
         running.append((run, process, log))
     finished: dict[int, float] = {}
     while len(finished) < len(running):
@@ -1830,21 +1843,90 @@ def formatting_run(root: Path, push: Push) -> list[str]:
     return ["bash", str(TOOLS / "ci/check-changed-rustfmt.sh"), base, head]
 
 
-def worktree_differs(root: Path) -> bool:
-    """Whether the files on disk differ from the pushed commit in what a lint could read.
+def unpushed_files(root: Path) -> list[str]:
+    """The files on disk that are not the pushed commit's and a lint could read.
 
-    Any change to a tracked file does. An untracked file does unless it is a file at the top of the
-    checkout or under `.claude/`: no package reads a stray file there, and one left behind (a
-    shell's mangled redirect, an agent's notes) must not cost every later push its remembered pass.
+    Every changed tracked file, and every untracked file but one at the top of the checkout or
+    under `.claude/`: no package reads a stray file there (a shell's mangled redirect, an agent's
+    notes), so such a file needs no checkout of the pushed commit to lint around it.
     """
-    status = git(root, "status", "--porcelain", "-z").stdout
+    status = git(root, "status", "--porcelain", "-z", "--no-renames",
+                 "--untracked-files=all").stdout
+    files = []
     for entry in filter(None, status.split("\0")):
-        if not entry.startswith("?? "):
-            return True
         path = entry[3:]
-        if "/" in path and not path.startswith(".claude/"):
-            return True
-    return False
+        if entry.startswith("?? ") and ("/" not in path or path.startswith(".claude/")):
+            continue
+        files.append(path)
+    return files
+
+
+# What a pass's key reads from the files on disk rather than from git: the manifests cargo names
+# the packages and their directories from, and the files that say which checks lint them and how.
+KEY_INPUT_NAMES = ("Cargo.toml", "Cargo.lock")
+KEY_INPUT_PATHS = (T_TOML, UNIFY_MANIFEST.as_posix(), "tools/ci/suites.toml", "rust-toolchain.toml")
+
+
+def reads_key_input(files: list[str]) -> bool:
+    """Whether a pass's key would read one of these files, which the push does not send."""
+    return any(Path(path).name in KEY_INPUT_NAMES or path in KEY_INPUT_PATHS for path in files)
+
+
+# Where the lint checks out the pushed commit when the files on disk are not its own, in the
+# repository's git directory.
+TREES = "tilo-pre-push-trees"
+
+
+class PushedTree:
+    """The pushed commit's files, which the lint reads, where the checkout's own are not them.
+
+    A push sends commits, never the files beside them: an untracked file, an edit not committed.
+    A lint of the files on disk spoke for a tree nobody pushes, so its pass could not be kept for
+    a retry, and one refused on them sent people to `--no-verify`. Where the files on disk differ
+    from the pushed commit, the lint reads a checkout of the commit of its own, which t uploads as
+    the state it builds, and which is removed when the lint ends. Where they do not, it reads the
+    checkout itself, and a push standing on a remembered pass checks nothing out at all.
+    """
+
+    def __init__(self, root: Path, tip: str, unpushed: list[str]):
+        self.root, self.tip, self.unpushed = root, tip, unpushed
+        self.path: Path | None = None
+
+    def __enter__(self) -> "PushedTree":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        if self.path is not None:
+            self.remove(self.path)
+
+    def where(self) -> Path:
+        """The directory whose files are the pushed commit's: the checkout, or one made for it."""
+        if not self.unpushed:
+            return self.root
+        if self.path is None:
+            checkout = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.root.resolve().name)
+            common = git(self.root, "rev-parse", "--path-format=absolute",
+                         "--git-common-dir").stdout.strip()
+            path = Path(common) / TREES / checkout
+            self.remove(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            added = git(self.root, "worktree", "add", "--detach", "--quiet", str(path), self.tip)
+            if added.returncode != 0:
+                say(f"pre-push: cannot check out {self.tip[:12]} to lint it: "
+                    f"{added.stderr.strip()}")
+                raise SystemExit(1)
+            shown = ", ".join(self.unpushed[:3]) + (" and more" if len(self.unpushed) > 3 else "")
+            say(f"pre-push: {shown} here {'is' if len(self.unpushed) == 1 else 'are'} not in the "
+                f"pushed commit, so the lint reads a checkout of {self.tip[:12]} of its own")
+            self.path = path
+        return self.path
+
+    def remove(self, path: Path) -> None:
+        """Remove a checkout the lint made, and one a lint that was stopped left behind."""
+        if path.exists():
+            git(self.root, "worktree", "remove", "--force", str(path))
+            shutil.rmtree(path, ignore_errors=True)
+        git(self.root, "worktree", "prune")
 
 
 def earlier_pass(root: Path, push: Push, selection: Selection, runs: list[Lint],
@@ -1852,14 +1934,10 @@ def earlier_pass(root: Path, push: Push, selection: Selection, runs: list[Lint],
     """The key to remember this lint under, and whether the push stands on a pass already.
 
     A pass is remembered by the push's own patch, the packages it lints, and the kinds of run
-    it makes; a rebase that resolves nothing keeps all of them. A worktree with uncommitted
-    changes is not the pushed commit's tree and speaks for no change to stand on later.
+    it makes; a rebase that resolves nothing keeps all of them. The lint reads the pushed
+    commit's files (`PushedTree`), so files on disk that are not pushed change neither.
     """
-    dirty = worktree_differs(root)
-    if dirty:
-        say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, "
-            "which is not quite the pushed commit")
-    if options.range or dirty:
+    if options.range:
         return None, False
     naming = own_key(root, push, selection, runs)
     if naming is None:
@@ -1877,7 +1955,8 @@ def earlier_pass(root: Path, push: Push, selection: Selection, runs: list[Lint],
     return None, True
 
 
-def surface_only(root: Path, push: Push, options: argparse.Namespace) -> int:
+def surface_only(root: Path, push: Push, options: argparse.Namespace,
+                 tree: PushedTree | None = None) -> int:
     """Lint a push that changes an app's published surface and nothing Rust or Cargo.
 
     An app's sources and surface file move its committed catalogue entry without a crate of
@@ -1900,7 +1979,9 @@ def surface_only(root: Path, push: Push, options: argparse.Namespace) -> int:
     key, reused = earlier_pass(root, push, Selection([], {}), runs, options, "surface")
     if reused:
         return 0
-    results, elapsed = run_together(root, runs, options.keep_logs)
+    lint_tree = tree.where() if tree is not None else root
+    results, elapsed = run_together(root, runs, options.keep_logs,
+                                    None if lint_tree == root else lint_tree)
     status = report(results, elapsed, f"the app surface's generated files ({' '.join(checks)})",
                     t_fixes(root), root, push, {})
     if status == 0 and key is not None:
@@ -1951,7 +2032,9 @@ def main(argv: list[str]) -> int:
                 say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads "
                     "the files on disk: check it out and push again")
                 return 1
-            return surface_only(root, push, options)
+            with PushedTree(root, push.tips[0],
+                            [] if options.plan else unpushed_files(root)) as tree:
+                return surface_only(root, push, options, tree)
         if options.plan:
             catalogue_plan(push)
         if push.comparisons:
@@ -1963,8 +2046,21 @@ def main(argv: list[str]) -> int:
         say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "
             "on disk: check it out and push again")
         return 1
+    with PushedTree(root, push.tips[0], [] if options.plan else unpushed_files(root)) as tree:
+        return lint_packages(root, push, files, options, tree)
+
+
+def lint_packages(root: Path, push: Push, files: set[str], options: argparse.Namespace,
+                  tree: PushedTree) -> int:
+    """Lint the packages the push changes, from the pushed commit's files.
+
+    The pass's key is computed where the files it reads are the pushed commit's: the checkout
+    itself unless what is not pushed there includes a manifest or a file naming the checks, so a
+    push standing on a remembered pass checks nothing out.
+    """
+    work = tree.where() if reads_key_input(tree.unpushed) else root
     try:
-        selection = select(root, push, files)
+        selection = select(work, push, files)
     except (subprocess.CalledProcessError, RuntimeError) as error:
         say(f"pre-push: cargo metadata could not name the packages this push touches: {error}")
         return 1
@@ -1982,7 +2078,7 @@ def main(argv: list[str]) -> int:
         # Running the surface checks needs no package of the workspace, and a .tl source can
         # belong to none while still moving a committed catalogue entry.
         if surface_change(push.files) and lints_through_t():
-            return surface_only(root, push, options)
+            return surface_only(root, push, options, tree)
         say("pre-push: the changed Rust files belong to no workspace package; CI builds them outside it")
         return 0
     if options.plan:
@@ -1990,11 +2086,11 @@ def main(argv: list[str]) -> int:
         if selection.dependants:
             print(f"dependants: {' '.join(selection.dependants)}")
         if lints_through_t():
-            members = set(package_maps(selection.metadata, root)[0])
-            named = t_checks(root, selection.linted, members)[0]
-            scoped = scoped_checks(root, push)
+            members = set(package_maps(selection.metadata, work)[0])
+            named = t_checks(work, selection.linted, members)[0]
+            scoped = scoped_checks(work, push)
             extra = [*surface_checks(push, scoped), *catalogue_checks(push), *shell_checks(push),
-                     *policy_checks(root, push, scoped)]
+                     *policy_checks(work, push, scoped)]
             named += [name for name in extra if name not in named]
             print(f"t: {' '.join(named)}")
         catalogue_plan(push)
@@ -2002,11 +2098,11 @@ def main(argv: list[str]) -> int:
     checks = None
     if lints_through_t():
         try:
-            members = set(package_maps(selection.metadata, root)[0])
-            checks, uncovered = t_checks(root, selection.linted, members)
-            scoped = scoped_checks(root, push)
+            members = set(package_maps(selection.metadata, work)[0])
+            checks, uncovered = t_checks(work, selection.linted, members)
+            scoped = scoped_checks(work, push)
             extra = [*surface_checks(push, scoped), *catalogue_checks(push), *shell_checks(push),
-                     *policy_checks(root, push, scoped)]
+                     *policy_checks(work, push, scoped)]
             checks += [name for name in extra if name not in checks]
         except (OSError, ValueError, KeyError) as error:
             say(f"pre-push: cannot read which of t's checks lint these packages from {T_TOML}: {error}")
@@ -2019,10 +2115,10 @@ def main(argv: list[str]) -> int:
         return 1
     # A machine without rustfmt of its own formats through t, whose `fmt` check runs the
     # pinned toolchain; one with a rustfmt must hold the pinned version (the run below).
-    formatting = formatting_run(root, push) if rustfmt_available() else ["t", "test", "fmt"]
-    runs = lint_runs(root, selection, formatting, checks)
+    formatting = formatting_run(work, push) if rustfmt_available() else ["t", "test", "fmt"]
+    runs = lint_runs(work, selection, formatting, checks)
     # A lint of files that are not the pushed commit's speaks for no change to stand on later.
-    key, reused = earlier_pass(root, push, selection, runs, options, "clippy")
+    key, reused = earlier_pass(work, push, selection, runs, options, "clippy")
     if reused:
         return 0
     say(f"pre-push: linting {packages(len(selection.linted))}"
@@ -2033,11 +2129,13 @@ def main(argv: list[str]) -> int:
                f"for {packages(len(selection.linted))}"
                + (f", a compile of {packages(len(selection.dependants))} built on them"
                   if selection.dependants else ""))
-    results, elapsed = run_together(root, runs, options.keep_logs)
-    status = report(results, elapsed, checked, t_fixes(root) if lints_through_t() else set(),
-                    root, push, selection.metadata)
+    lint_tree = tree.where()
+    results, elapsed = run_together(root, runs, options.keep_logs,
+                                    None if lint_tree == root else lint_tree)
+    status = report(results, elapsed, checked, t_fixes(work) if lints_through_t() else set(),
+                    work, push, selection.metadata)
     if status == 0 and key is not None:
-        remember_pass(root, key, push.tips[0])
+        remember_pass(work, key, push.tips[0])
     return status
 
 
