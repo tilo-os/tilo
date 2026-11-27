@@ -41,6 +41,9 @@ pub struct BrokerActor {
     /// The bound the agent's own record narrows it to on its turn, as grants
     /// ([`Caller::granted`]): what every host adds to the delegation's preset.
     bound: Vec<tilo_action_policy::Grant>,
+    /// The rules its person saved with the Shortcut whose run this actor's call is
+    /// ([`Caller::shortcut_grant`]): every action it takes here is decided within them.
+    shortcut: Option<Vec<tilo_action_policy::Rule>>,
     /// The app the person acts through, when their session runs one: what it
     /// may reach is bounded by the kinds it declares.
     pub app: Option<AppId>,
@@ -89,6 +92,7 @@ impl BrokerActor {
             session_delegated: false,
             turn: None,
             bound: Vec::new(),
+            shortcut: None,
             app: None,
             app_kinds: None,
             session: None,
@@ -112,6 +116,7 @@ impl BrokerActor {
             .on_turn(caller.turn().cloned())
             .within(caller.ceiling());
         actor.bound = caller.granted();
+        actor.shortcut = caller.shortcut_grant().map(<[_]>::to_vec);
         actor.own_connection = caller.is_own_connection();
         actor
     }
@@ -350,7 +355,8 @@ impl BrokerActor {
     #[must_use]
     pub fn access_in(&self, workspace: &Workspace) -> MemberAccess {
         let mut access = MemberAccess::new(workspace.policy.clone(), self.acting())
-            .granted(self.bound.iter().cloned());
+            .granted(self.bound.iter().cloned())
+            .within_shortcut(self.shortcut.as_deref());
         if let Some(kinds) = &self.app_kinds {
             access = access.in_app(kinds.clone());
         }
@@ -617,6 +623,45 @@ mod tests {
                 "{who} through an app acts for nobody"
             );
         }
+    }
+
+    /// The broker admits a Shortcut's call as its person, and within the rules they saved with it:
+    /// an action those rules do not name is refused, though the person may take it.
+    #[test]
+    fn a_shortcuts_run_is_admitted_within_its_saved_rules() {
+        use tilo_action_policy::{Answer, Level, Rule, TreePath, WorkspacePolicy};
+        let id = "6f1c2d3e-4b5a-4c6d-8e7f-8091a2b3c4d5";
+        let mut workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId::parse(id).unwrap(),
+            "Home",
+        );
+        workspace.policy = WorkspacePolicy::new(id, "ada");
+        let ada = tilo_actions::remote::Caller::local_person("ada").in_workspace(id);
+        let run = ada
+            .clone()
+            .running_shortcut("morning")
+            .within_shortcut(vec![Rule::new(
+                TreePath::root().any(Level::Workspace).app("so.tilo.notes"),
+                tilo_action_types::KindSet::ALL,
+                Answer::Allow,
+            )]);
+        let need = tilo_actions::ActionNeed::of(tilo_action_types::ActionKind::Undoable);
+        let answer = |caller: &tilo_actions::remote::Caller, app: &str| {
+            BrokerActor::for_caller(caller).action_answer_in(
+                &workspace,
+                app,
+                ("message", "m1", "remove"),
+                &need,
+                0,
+            )
+        };
+        assert_eq!(answer(&ada, "so.tilo.chat"), Answer::Allow, "she may");
+        assert_eq!(answer(&run, "so.tilo.notes"), Answer::Allow);
+        assert_eq!(
+            answer(&run, "so.tilo.chat"),
+            Answer::Deny,
+            "her run reaches nothing beyond the rules she saved with it"
+        );
     }
 
     /// A change an agent session makes records the session beside the agent and the person it
