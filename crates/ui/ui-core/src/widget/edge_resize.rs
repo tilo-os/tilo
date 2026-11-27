@@ -1,9 +1,8 @@
 //! Resizing windows from their edges: which edge an edge drag changes, and how.
 //!
 //! The strip is infinitely wide, so a resize is never zero-sum unless the person asks for
-//! it. Every pointer path goes through the same few rules: [`crate::widget::GroupRow`]'s
-//! hover, press and drag for a window on a strip, [`crate::widget::FloatingWindow`]'s for a
-//! free one.
+//! it. Every pointer path goes through the same few rules, as
+//! [`crate::widget::FloatingWindow`]'s hover, press and drag do for a free window.
 
 use vello::kurbo::{Point, Rect};
 

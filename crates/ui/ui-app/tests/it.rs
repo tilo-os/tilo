@@ -113,8 +113,6 @@ mod fractional_scale_render;
 mod fullscreen_way_out;
 #[path = "ghost_cursor_render_test.rs"]
 mod ghost_cursor_render_test;
-#[path = "group_row_visual_journey.rs"]
-mod group_row_visual_journey;
 #[path = "headless_app_test.rs"]
 mod headless_app_test;
 #[path = "immersive_widget_geometry.rs"]
@@ -171,10 +169,6 @@ mod undo_per_author;
 mod undo_the_agents_work;
 #[path = "wake_scope_host.rs"]
 mod wake_scope_host;
-#[path = "window_group_test.rs"]
-mod window_group_test;
-#[path = "window_group_visual_journey.rs"]
-mod window_group_visual_journey;
 
 #[path = "finish_render.rs"]
 mod finish_render;
@@ -226,8 +220,6 @@ mod document_viewport_layers_tests;
 mod drop_zone_tests;
 #[path = "widgets/graph_canvas_tests.rs"]
 mod graph_canvas_tests;
-#[path = "widgets/group_row_keyboard_tests.rs"]
-mod group_row_keyboard_tests;
 
 // The toolkit's own tests that drive it through the app runner above it.
 #[path = "a11y_child_route.rs"]
@@ -332,8 +324,6 @@ mod find_bar_hosted_tests;
 mod form_composition_tests;
 #[path = "widgets/form_labels_tests.rs"]
 mod form_labels_tests;
-#[path = "widgets/group_row_presence_tests.rs"]
-mod group_row_presence_tests;
 #[path = "widgets/image_bounds.rs"]
 mod image_bounds;
 #[path = "widgets/list_row_actions_tests.rs"]
@@ -362,8 +352,6 @@ mod tree_component_tests;
 mod virtual_list_component_tests;
 #[path = "widgets/virtual_list_copy_tests.rs"]
 mod virtual_list_copy_tests;
-#[path = "widgets/window_group_window_bar_tests.rs"]
-mod window_group_window_bar_tests;
 
 #[path = "profiling_tests.rs"]
 mod profiling_tests;

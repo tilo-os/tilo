@@ -5,9 +5,8 @@ use std::collections::HashMap;
 use tilo_rich_edit::BlockEditor;
 use tilo_ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use tilo_ui::{
-    widget::AppKind, widget::AppWidget, widget::GroupRow, widget::IconDescriptor,
-    widget::Scrollable, widget::TabDescriptor, widget::TileContent, widget::WindowGroup,
-    widget::WindowWidth,
+    widget::AppKind, widget::AppWidget, widget::IconDescriptor, widget::Scrollable,
+    widget::TileContent, widget::TileHost,
 };
 use tilo_ui_app::headless::Driver;
 use tilo_ui_base::theme::Theme;
@@ -118,18 +117,9 @@ fn note_window() -> (Driver, RetainedFrames, TargetKey, Rect) {
         page: Scrollable::new(ScrollAxis::Vertical)
             .with_child(Box::new(BlockEditor::from_markdown(&markdown))),
     };
-    let window = WindowGroup::new(
-        100,
-        vec![(
-            TabDescriptor::new(1, "Note"),
-            TileContent::App(Box::new(note)),
-        )],
-        1,
-        WindowWidth::Normal,
-    );
     let mut harness = Driver::for_root(
         tilo_ui::State::new(),
-        GroupRow::new(vec![window]),
+        TileHost::new(TileContent::App(Box::new(note))),
         SIZE,
         Theme::dark(),
     );

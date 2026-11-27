@@ -384,17 +384,18 @@ pub use {
     data_table_component::DataTableProps, data_table_component::DataTableRowProps,
     data_table_component::DescribedTable,
 };
-// The shell's window groups and strips, laid out over the desktop model's geometry.
+// The measures a strip of windows is laid out with.
 #[cfg(feature = "model")]
-mod window_group;
+mod strip_geometry;
 #[cfg(feature = "model")]
 pub use {
-    window_group::DEFAULT_STRIP_USABLE_PX, window_group::RESIZE_HANDLE_PX,
-    window_group::WIDTH_FLOOR_PX, window_group::WIDTH_MAX_PERMILLE,
-    window_group::WIDTH_MIN_PERMILLE, window_group::WIDTH_NARROW_PERMILLE,
-    window_group::WIDTH_NORMAL_PERMILLE, window_group::WIDTH_WIDE_PERMILLE,
-    window_group::WindowGroup, window_group::WindowGroupBounds, window_group::WindowWidth,
-    window_group::max_group_px, window_group::min_group_px, window_group::permille_for_px,
+    strip_geometry::DEFAULT_STRIP_USABLE_PX, strip_geometry::HANDLE_SLOT_PX,
+    strip_geometry::STRIP_BOTTOM_GUTTER_PX, strip_geometry::STRIP_EDGE_GUTTER_PX,
+    strip_geometry::STRIP_TOP_GAP_PX, strip_geometry::StripSection, strip_geometry::WIDTH_FLOOR_PX,
+    strip_geometry::WIDTH_MAX_PERMILLE, strip_geometry::WIDTH_MIN_PERMILLE,
+    strip_geometry::WIDTH_NARROW_PERMILLE, strip_geometry::WIDTH_NORMAL_PERMILLE,
+    strip_geometry::WIDTH_WIDE_PERMILLE, strip_geometry::WindowWidth, strip_geometry::max_group_px,
+    strip_geometry::min_group_px, strip_geometry::permille_for_px,
 };
 pub mod edge_resize;
 pub use {
@@ -407,27 +408,9 @@ pub use {
     edge_feedback::ResizeFeedback, edge_feedback::Side as EdgeSide, edge_feedback::paint_edge,
     edge_feedback::paint_size_chip, edge_feedback::size_label,
 };
-#[cfg(feature = "model")]
-mod resize_handle;
-#[cfg(feature = "model")]
-pub use {
-    resize_handle::HANDLE_HIT_HALF_PX, resize_handle::HANDLE_SLOT_PX,
-    resize_handle::HANDLE_VISIBLE_PX, resize_handle::ResizeHandle,
-};
 mod overflow_button;
 pub(crate) use overflow_button::give_way;
 pub use {overflow_button::OverflowButton, overflow_button::plan as plan_overflow};
-#[cfg(feature = "model")]
-mod group_row;
-#[cfg(feature = "model")]
-pub use {
-    group_row::CANVAS_ZOOM_MAX, group_row::CANVAS_ZOOM_MIN, group_row::CanvasView,
-    group_row::CrossStripDetach, group_row::FloatAsk, group_row::GroupRow,
-    group_row::GroupTopology, group_row::JUMP_PX_PER_DETENT, group_row::OutputSpan, group_row::Pan,
-    group_row::STRIP_BOTTOM_GUTTER_PX, group_row::STRIP_EDGE_GUTTER_PX,
-    group_row::STRIP_TOP_GAP_PX, group_row::StripSection, group_row::TabDropTarget,
-    group_row::WheelJumpAccum, group_row::pan_within_canvas, group_row::wheel_jump_detents,
-};
 mod finger_path;
 pub mod tooltip;
 pub use {tooltip::Tooltip, tooltip::TooltipHost};
@@ -1072,11 +1055,6 @@ pub mod internals {
     }
     pub mod tree_component {
         pub use crate::widget::tree_component::*;
-    }
-    pub mod window_group {
-        pub use crate::widget::window_group::*;
-        pub use crate::widget::window_toolbar_row::ToolbarRow;
-        pub use crate::widget::window_toolbar_row::layout::Parts as ToolbarRowParts;
     }
 }
 /// The fixtures and measures a test outside this crate reaches.

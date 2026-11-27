@@ -1,15 +1,9 @@
-//! The path a direct-manipulation gesture's fingers took along one axis: what a strip pan
-//! (sideways) and the strip deck (up and down) follow frame by frame, and read their throw
-//! from when the fingers lift.
+//! The path a direct-manipulation gesture's fingers took along one axis: what a sheet dragged by
+//! the fingers reads its throw from when they lift.
 
 use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 
-const RESAMPLE_LATENCY: Duration = Duration::from_millis(5);
-/// Furthest a direct pan extrapolates past the newest report, when the next
-/// one is late; never more than half the last report interval either.
-const MAX_PREDICTION: Duration = Duration::from_millis(8);
-const MAX_REPORT_GAP: Duration = Duration::from_millis(20);
 /// Shortest time a report is taken to span when reading a release velocity:
 /// a burst of reports drained together must not read as an instant throw.
 const MIN_REPORT_INTERVAL: Duration = Duration::from_millis(8);
@@ -28,11 +22,6 @@ pub(crate) struct FingerPath {
 }
 
 impl FingerPath {
-    /// Forget the path: a new gesture, or the fingers lifted.
-    pub(crate) fn clear(&mut self) {
-        self.reports.clear();
-    }
-
     /// Record the fingers' total `travel` reported `at`.
     pub(crate) fn push(&mut self, at: Instant, travel: f64) {
         let at = self.reports.back().map_or(at, |&(last, _)| at.max(last));
@@ -45,55 +34,6 @@ impl FingerPath {
         {
             self.reports.pop_front();
         }
-    }
-
-    /// The total travel where the fingers were [`RESAMPLE_LATENCY`] before
-    /// `now`: interpolated between the two reports around that moment,
-    /// extrapolated a little past the newest when the next is late, or the
-    /// first report before the path has history. Fingers that stopped
-    /// reporting for [`MAX_REPORT_GAP`] rest, so the newest report is where
-    /// they are. `None` without a report.
-    pub(crate) fn resampled(&self, now: Instant) -> Option<f64> {
-        let &(last_at, last) = self.reports.back()?;
-        let at = now.checked_sub(RESAMPLE_LATENCY).unwrap_or(now);
-        if at >= last_at {
-            let Some(&(prev_at, prev)) = self.reports.iter().rev().nth(1) else {
-                return Some(last);
-            };
-            let interval = last_at.saturating_duration_since(prev_at);
-            if interval.is_zero()
-                || interval > MAX_REPORT_GAP
-                || at.saturating_duration_since(last_at) > MAX_REPORT_GAP
-            {
-                return Some(last);
-            }
-            let ahead = at
-                .saturating_duration_since(last_at)
-                .min(interval / 2)
-                .min(MAX_PREDICTION);
-            return Some(last + (last - prev) * ahead.as_secs_f64() / interval.as_secs_f64());
-        }
-        let mut later = (last_at, last);
-        for &(sample_at, travel) in self.reports.iter().rev().skip(1) {
-            if sample_at <= at {
-                let span = later.0.saturating_duration_since(sample_at).as_secs_f64();
-                let into = at.saturating_duration_since(sample_at).as_secs_f64();
-                return Some(if span > 0.0 {
-                    travel + (later.1 - travel) * into / span
-                } else {
-                    later.1
-                });
-            }
-            later = (sample_at, travel);
-        }
-        Some(later.1)
-    }
-
-    /// Whether a frame at `now` reads the fingers ahead of their newest report: a later
-    /// frame still has to bring the path back to it should they have stopped.
-    pub(crate) fn predicting(&self, now: Instant) -> bool {
-        let newest = self.reports.back().map(|&(_, travel)| travel);
-        self.resampled(now) != newest
     }
 
     /// Velocity (travel px/s) of the fingers as they lift at `now`: the

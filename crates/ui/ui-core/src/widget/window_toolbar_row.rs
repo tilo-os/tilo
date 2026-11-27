@@ -400,10 +400,6 @@ impl ToolbarRow {
         self.touched = None;
     }
 
-    pub(crate) fn popup_area(&self) -> Rect {
-        self.popup_area
-    }
-
     pub(crate) fn set_popup_area(&mut self, area: Rect) {
         self.popup_area = area;
         self.place_suggestions();
@@ -1013,7 +1009,7 @@ impl ToolbarRow {
             if host_section
                 && action
                     .id
-                    .starts_with(crate::window_parts::HOST_ACTION_PREFIX)
+                    .starts_with(crate::window_toolbar::HOST_ACTION_PREFIX)
             {
                 host_section = false;
                 if !items.is_empty() {

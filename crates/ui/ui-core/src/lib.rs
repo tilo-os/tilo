@@ -288,8 +288,6 @@ pub mod undo;
 pub mod view;
 pub mod window_link;
 pub mod window_name;
-pub mod window_parts;
-pub mod window_pictures;
 pub mod window_share;
 pub mod window_targets;
 pub mod window_toolbar;

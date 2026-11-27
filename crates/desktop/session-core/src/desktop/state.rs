@@ -1,5 +1,5 @@
-//! The desktop as a widget: the active workspace's active strip presented as the toolkit's
-//! [`GroupRow`] of [`WindowGroup`]s, with the model as the source of truth.
+//! The desktop's live state: the active workspace's windows and their applications, with the
+//! model as the source of truth.
 //! Local changes flow both ways without diffing. Gestures inside the row (tab drags, splits,
 //! closes, activation, resize, maximize, the new-tab control) are harvested into the tree on the
 //! next update pass, exactly as the shell's overlay host harvests them. Navigation commands are

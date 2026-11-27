@@ -204,8 +204,7 @@ pub fn offer_window_bar(root: &mut dyn Widget, bar: Option<WindowBar>) -> bool {
 /// content that draws no row at all, leaves the window its bar.
 ///
 /// Every window asks this of its content, whatever draws it: a frame of the shell's preset
-/// ([`crate::widget::WindowFrame`]), a window of the shell's strips
-/// ([`crate::widget::WindowGroup`]) and the frame the layout check stages
+/// ([`crate::widget::WindowFrame`]) and the frame the layout check stages
 /// (the headless `Driver`), so a window shows one bar, never two stacked, and no two
 /// of them can disagree about which.
 #[must_use]
@@ -270,18 +269,6 @@ impl RowFurniture {
         }
     }
 
-    pub(crate) fn shift(&mut self, dx: f64) {
-        let shift = vello::kurbo::Vec2::new(dx, 0.0);
-        self.row = self.row + shift;
-        self.trailing = self.trailing + shift;
-        self.controls.pill = self.controls.pill + shift;
-        self.controls.minimize = self.controls.minimize + shift;
-        self.controls.maximize = self.controls.maximize + shift;
-        self.controls.close = self.controls.close + shift;
-        self.search = self.search + shift;
-        self.new_tab = self.new_tab + shift;
-    }
-
     pub fn paint(
         &self,
         ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
@@ -334,36 +321,12 @@ pub enum RowControl {
     Close,
 }
 
-pub(crate) const ROW_CONTROLS: [RowControl; 3] =
-    [RowControl::NewTab, RowControl::Maximize, RowControl::Close];
-
 impl RowControl {
     pub(crate) fn rect(self, furniture: &RowFurniture) -> Rect {
         match self {
             RowControl::NewTab => furniture.new_tab,
             RowControl::Maximize => furniture.controls.maximize,
             RowControl::Close => furniture.controls.close,
-        }
-    }
-
-    pub(crate) fn target(self) -> &'static str {
-        match self {
-            RowControl::NewTab => crate::widget::tabs::NEW_TAB_TARGET,
-            RowControl::Maximize => crate::widget::tabs::WINDOW_MAXIMIZE_TARGET,
-            RowControl::Close => crate::widget::tabs::WINDOW_CLOSE_TARGET,
-        }
-    }
-
-    pub(crate) fn name(self, resize: crate::widget::window_controls::Resize) -> String {
-        use crate::widget::window_controls::WindowControl;
-        match self {
-            RowControl::NewTab => crate::widget::tabs::new_tab_name(),
-            RowControl::Maximize => tilo_ui_base::i18n::I18nManager::lookup_plain(
-                WindowControl::Maximize.name_key(resize),
-            ),
-            RowControl::Close => {
-                tilo_ui_base::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(resize))
-            }
         }
     }
 }

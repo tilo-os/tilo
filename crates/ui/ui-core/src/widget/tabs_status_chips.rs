@@ -17,7 +17,6 @@ pub(super) struct OpenedByChip {
     /// The person each window's agent opened it for, by the name this page knows them by.
     opened_for: std::collections::HashMap<u64, String>,
     painted: Option<Rect>,
-    focused: bool,
     pressed: Option<(u64, String)>,
 }
 
@@ -117,14 +116,7 @@ impl TabBar {
         }
     }
 
-    pub(crate) fn set_opened_by_focused(&mut self, focused: bool) {
-        if self.opened.focused != focused {
-            self.touch();
-            self.opened.focused = focused;
-        }
-    }
-
-    pub(crate) fn opened_by_stop(&self) -> Option<(Rect, AccessNode)> {
+    pub(super) fn opened_by_stop(&self) -> Option<(Rect, AccessNode)> {
         let rect = self.opened.painted?;
         let run = self.opened_by(self.active_id)?;
         let node = AccessNode::new(tilo_ui_base::a11y::Role::Button)
@@ -133,38 +125,6 @@ impl TabBar {
             .with_action_target(OPENED_BY_TARGET)
             .with_bounds(rect);
         Some((rect, node))
-    }
-
-    pub(crate) fn draw_opened_by_tip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        spare: Rect,
-    ) {
-        let keyboard = self.opened.focused && tilo_ui_base::focus_visible::shown();
-        let Some(rect) = self
-            .opened
-            .painted
-            .filter(|rect| keyboard || rect.contains(self.last_cursor))
-        else {
-            return;
-        };
-        let Some(run) = self.opened_by(self.active_id) else {
-            return;
-        };
-        let colour = theme.tokens.colors.presence.of(agent_colour(run));
-        let tip = self.opened_tip(self.active_id).unwrap_or_default();
-        crate::widget::tooltip::draw_person_tooltip_on(
-            scene,
-            transform,
-            tr,
-            theme,
-            (rect, tilo_ui_base::widget::TooltipSide::Below),
-            (&tip, colour),
-            spare,
-        );
     }
 
     pub(super) fn opened_by_chip(
@@ -239,13 +199,11 @@ impl TabBar {
             return;
         };
         let colour = agent_colour(run);
-        let focused = self.opened.focused && tilo_ui_base::focus_visible::shown();
-        let lifted = focused || rect.contains(self.last_cursor);
+        let lifted = rect.contains(self.last_cursor);
         let face = ChipFace::new(rect, &label)
             .lead(ChipLead::Agent(colour))
             .style(ChipStyle::Identity(colour))
-            .hovered(lifted)
-            .focused(focused);
+            .hovered(lifted);
         if lifted { face } else { face.bare() }.paint(scene, transform, tr, theme);
         self.opened.painted = Some(rect);
     }

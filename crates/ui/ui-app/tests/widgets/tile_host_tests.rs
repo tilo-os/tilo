@@ -68,106 +68,11 @@ fn harness(root: Box<dyn Widget>) -> tilo_ui_app::app::driver::Driver {
     )
 }
 
-fn window_history_control(driver: &tilo_ui_app::app::driver::Driver) -> Option<bool> {
-    fn find(node: &tilo_ui_base::a11y::AccessNode, target: &str) -> Option<bool> {
-        if node.action_target.as_deref() == Some(target) {
-            return Some(node.state.checked == Some(true));
-        }
-        node.children.iter().find_map(|child| find(child, target))
-    }
-    fn walk(node: &tilo_ui_app::headless::InspectionNode, target: &str) -> Option<bool> {
-        node.semantics
-            .as_ref()
-            .and_then(|access| find(access, target))
-            .or_else(|| node.children.iter().find_map(|child| walk(child, target)))
-    }
-    walk(
-        &driver.inspection().root,
-        tilo_ui_app::widget::tabs::WINDOW_HISTORY_TARGET,
-    )
-}
-
 #[test]
-fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
-    use tilo_ui_app::widget::{TabDescriptor, WindowGroup, WindowWidth};
-    let history_tile = || {
-        let (host, component) = component_with_history();
-        (host, TileHost::from_component(component))
-    };
-
-    let (_alone_host, alone_tile) = history_tile();
-    let alone = harness(Box::new(alone_tile));
+fn a_tile_of_its_own_offers_its_apps_history() {
+    let (_host, component) = component_with_history();
+    let alone = harness(Box::new(TileHost::from_component(component)));
     assert!(alone.targets().contains_key("history-open"));
-
-    let (_host, tile) = history_tile();
-    let group = WindowGroup::from_hosts(
-        1,
-        vec![(TabDescriptor::new(7, "Chat"), tile)],
-        7,
-        WindowWidth::Normal,
-    );
-    let mut driver = harness(Box::new(group));
-    let targets = driver.targets();
-    // The tab bar's own History press shares the band's id, so the band is looked for inside the
-    // hosted tile: nothing there may offer History.
-    let band = targets.keys().find(|key| {
-        key.as_str() == "history-open"
-            || (key.starts_with("WindowGroup[0]/TileHost")
-                && (key.ends_with("/history-open")
-                    || key.ends_with(&format!("/{}", tilo_ui_app::widget::HISTORY_CONTROL_ID))))
-    });
-    assert!(
-        band.is_none(),
-        "a hosted tile draws no History band: {band:?} among {:?}",
-        targets.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        targets.contains_key(&format!(
-            "WindowGroup[0]/TabBar[0]/{}",
-            tilo_ui_app::widget::tabs::WINDOW_HISTORY_TARGET
-        )),
-        "the window's tab offers History instead"
-    );
-    assert_eq!(window_history_control(&driver), Some(false));
-
-    driver
-        .perform_semantic_named(
-            "tabs",
-            Some(tilo_ui_app::widget::tabs::WINDOW_HISTORY_TARGET),
-            &tilo_ui_base::a11y::Action::Activate,
-        )
-        .unwrap();
-    driver.relayout();
-    assert!(driver.targets().contains_key("activity_timeline"));
-    assert_eq!(window_history_control(&driver), Some(true));
-    assert!(
-        !driver.targets().contains_key("history-open")
-            && !driver.targets().contains_key("history-back-live"),
-        "open, History draws no toggle or close of its own: the tab's closes it"
-    );
-    let press_tab = |driver: &mut tilo_ui_app::app::driver::Driver| {
-        driver
-            .perform_semantic_named(
-                "tabs",
-                Some(tilo_ui_app::widget::tabs::WINDOW_HISTORY_TARGET),
-                &tilo_ui_base::a11y::Action::Activate,
-            )
-            .unwrap();
-        driver.relayout();
-    };
-    press_tab(&mut driver);
-    assert!(!driver.targets().contains_key("activity_timeline"));
-    assert_eq!(window_history_control(&driver), Some(false));
-
-    press_tab(&mut driver);
-    assert!(driver.targets().contains_key("activity_timeline"));
-    driver.click_named("activity_timeline").unwrap();
-    driver.send(&tilo_ui_base::synthetic_input::named_key(
-        winit::keyboard::NamedKey::Escape,
-    ));
-    driver.relayout();
-    assert!(!driver.targets().contains_key("activity_timeline"));
-    assert_eq!(window_history_control(&driver), Some(false));
 }
 
 struct Restless;

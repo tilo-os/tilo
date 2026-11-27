@@ -77,14 +77,6 @@ pub fn resource_owners<W: Widget + ?Sized>(widget: &W) -> Vec<HistoryOwner> {
     capability::<dyn BoundWidget>(widget).map_or_else(Vec::new, BoundWidget::resource_owners)
 }
 
-/// [`BoundWidget::keyboard_input_scope`] of `widget`.
-#[cfg(test)]
-pub(crate) fn keyboard_input_scope<W: Widget + ?Sized>(
-    widget: &W,
-) -> Option<crate::application::InstanceId> {
-    capability::<dyn BoundWidget>(widget).and_then(BoundWidget::keyboard_input_scope)
-}
-
 /// [`BoundTraversal::visit_components`] of `widget`, or of its retained
 /// children when it is no bound component.
 pub fn visit_components<W: Widget + ?Sized>(

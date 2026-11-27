@@ -640,20 +640,6 @@ impl WindowSearch {
         self.ground = Some(ground);
     }
 
-    pub(crate) fn offset_layout(&mut self, dx: f64) {
-        let shift = vello::kurbo::Vec2::new(dx, 0.0);
-        self.anchor = self.anchor + shift;
-        self.limit += dx;
-        self.cramped += dx;
-        self.field_rect = self.field_rect + shift;
-        for (_, rect) in &mut self.parts {
-            *rect = *rect + shift;
-        }
-        let field = self.field_rect;
-        let theme = self.layout_theme.clone();
-        self.field.apply_layout_external(field, &theme);
-    }
-
     #[must_use]
     pub fn anchor(&self) -> Rect {
         self.anchor

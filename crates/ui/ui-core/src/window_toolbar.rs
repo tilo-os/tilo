@@ -7,6 +7,10 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+/// What the ids of the shell's own menu items start with: an app's never do, so a
+/// choice of one reaches the shell alone.
+pub const HOST_ACTION_PREFIX: &str = "tilo.shell.";
+
 /// The most actions the row shows as buttons; the rest go in its overflow menu.
 pub const MAX_ACTIONS: usize = 3;
 
@@ -1820,5 +1824,53 @@ mod tests {
         show_reactions(Some(ToolbarReactions::default()));
         assert_eq!(reactions(), None, "nothing to show is none");
         declare(None);
+    }
+
+    fn location(label: &str) -> WindowToolbar {
+        WindowToolbar {
+            sidebar: None,
+            location: Some(ToolbarLocation {
+                label: label.into(),
+                editable: true,
+                ..ToolbarLocation::default()
+            }),
+            ..WindowToolbar::default()
+        }
+    }
+
+    fn new_contact() -> WindowToolbar {
+        WindowToolbar {
+            actions: vec![ToolbarAction::new("new", "plus", "New contact")],
+            ..WindowToolbar::default()
+        }
+    }
+
+    #[test]
+    fn apps_sharing_a_thread_each_declare_on_their_own_window() {
+        let contacts = crate::hosted_window::HostedWindow::new();
+        let mail = crate::hosted_window::HostedWindow::new();
+        assert!(!super::is_hosted());
+        {
+            let _running = super::enter(Some(&contacts));
+            assert!(super::is_hosted(), "a bar shows its parts");
+            super::declare(Some(new_contact()));
+            {
+                let _running = super::enter(Some(&mail));
+                super::declare(Some(location("Inbox")));
+            }
+            assert_eq!(super::declared(), Some(new_contact()));
+        }
+        assert_eq!(contacts.declared(), Some(new_contact()));
+        assert_eq!(mail.declared(), Some(location("Inbox")));
+        assert_eq!(super::declared(), None, "the thread's own");
+        assert!(!super::is_hosted());
+
+        contacts.deliver(ToolbarEvent::Action { id: "new".into() });
+        assert!(super::take_events().is_empty());
+        let _running = super::enter(Some(&contacts));
+        assert_eq!(
+            super::take_events(),
+            vec![ToolbarEvent::Action { id: "new".into() }]
+        );
     }
 }

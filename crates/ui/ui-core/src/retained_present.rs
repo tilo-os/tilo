@@ -49,7 +49,7 @@ thread_local! {
 }
 
 /// What the frame being drawn lets a strip drawn in screen space do with the drawings it keeps of its
-/// windows ([`crate::widget::GroupRow`]).
+/// windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanFrame {
     /// Anything may have changed: every window is drawn, and the drawings are dropped.

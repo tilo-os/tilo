@@ -17,3 +17,35 @@ fn a_tab_names_its_whole_title_in_a_tooltip() {
     assert_eq!(title, long);
     assert_eq!(rect, b.tab_rects()[0]);
 }
+
+#[test]
+fn a_tab_someone_else_opened_names_them_in_its_tooltip() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
+    let mut b = TabBar::new(
+        "g1",
+        vec![
+            TabDescriptor::new(1, "Plan"),
+            TabDescriptor::new(2, "Notes"),
+        ],
+        1,
+    );
+    b.set_holder(
+        2,
+        Some(super::super::TabHolder {
+            name: "Ada".into(),
+            rgb: (200, 80, 40),
+            keeps: false,
+        }),
+    );
+    lay_out_at_width_with(&mut b, 900.0, &theme);
+    let (_, own) = b
+        .tooltip_target_at(b.tab_rects()[0].center())
+        .expect("the pill names its tab");
+    assert_eq!(own, "Plan", "a tab of this person's says its title");
+    let (rect, opener) = b
+        .tooltip_target_at(b.tab_rects()[1].center())
+        .expect("the pill names whoever opened it");
+    assert_eq!(opener, "Ada opened this window");
+    assert_eq!(rect, b.tab_rects()[1]);
+}

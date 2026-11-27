@@ -7,7 +7,6 @@ use vello::kurbo::{Affine, Rect, Vec2};
 
 use super::{Ask, Embed, EmbedState, OpenWindow, ResourceView, SharedWindow};
 use crate::time::{Duration, Instant};
-use crate::window_parts::{TabId, WindowParts};
 use crate::window_toolbar::ToolbarAction;
 
 // The stage hosts each shared window's app in a tile, which only Tilo's model runs.
@@ -55,29 +54,11 @@ pub fn menu_item(window: &OpenWindow, shared: &[SharedWindow]) -> ToolbarAction 
     }
 }
 
-/// Put each of `windows`' share item in its menu, and take it out of the menus of the
-/// windows in `offered` (the ones it replaced) that are no longer among them.
-pub fn offer<S: std::hash::BuildHasher + Default>(
-    parts: &mut WindowParts,
-    windows: &[OpenWindow],
-    shared: &[SharedWindow],
-    offered: &mut HashSet<TabId, S>,
-) {
-    let now: HashSet<TabId, S> = windows.iter().map(|window| window.tab).collect();
-    for window in windows {
-        parts.set_host_items(window.tab, vec![menu_item(window, shared)]);
-    }
-    for gone in offered.difference(&now) {
-        parts.set_host_items(*gone, Vec::new());
-    }
-    *offered = now;
-}
-
-/// What the person's `chosen` items of the shell's own (by tab, as
-/// [`WindowParts::take_host_actions`] hands them) ask of the sharing app, oldest first.
+/// What the person's `chosen` items of the shell's own (by tab) ask of the sharing app, oldest
+/// first.
 #[must_use]
 pub fn asks(
-    chosen: Vec<(TabId, String)>,
+    chosen: Vec<(u64, String)>,
     windows: &[OpenWindow],
     shared: &[SharedWindow],
 ) -> Vec<Ask> {
@@ -304,7 +285,7 @@ mod tests {
         }
     }
 
-    fn window(tab: TabId, record: &str) -> OpenWindow {
+    fn window(tab: u64, record: &str) -> OpenWindow {
         OpenWindow {
             tab,
             app: "so.tilo.notes".into(),
@@ -383,8 +364,6 @@ mod tests {
 
     #[test]
     fn the_menus_offer_sharing_until_shared_and_choices_become_asks() {
-        let mut parts = WindowParts::default();
-        let mut offered = HashSet::new();
         let windows = vec![window(1, "plan"), window(2, "notes")];
         let shared = vec![SharedWindow {
             message: "m1".into(),
@@ -394,14 +373,6 @@ mod tests {
         }];
         assert_eq!(menu_item(&windows[0], &shared).id, STOP_ITEM);
         assert_eq!(menu_item(&windows[1], &shared).id, SHARE_ITEM);
-        offer(&mut parts, &windows, &shared, &mut offered);
-        assert_eq!(offered, HashSet::from([1, 2]));
-        offer(&mut parts, &windows[1..], &shared, &mut offered);
-        assert_eq!(
-            offered,
-            HashSet::from([2]),
-            "a closed window loses its item"
-        );
 
         let asked = asks(
             vec![

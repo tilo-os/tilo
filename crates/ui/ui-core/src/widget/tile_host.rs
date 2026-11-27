@@ -389,19 +389,9 @@ pub struct TileHost {
     hosted_window: Option<crate::hosted_window::HostedWindow>,
     rect: Rect,
     declared_arrival_shape: Option<tilo_ui_base::widget::SkeletonShape>,
-    /// How far [`Self::offset_layout`] moved the tile from where layout put
-    /// it. The content keeps its own layout rect, so it is drawn this much
-    /// further right instead.
-    content_shift: f64,
     content_damage: ContentDamage,
     pub focused: bool,
     pointer: Option<Point>,
-    flush_edges: bool,
-    /// The window's frame is growing past what this tile last drew (a
-    /// window maximizing keeps its last layout until its frame rests): the
-    /// frame's ground continues the tile, so no edge marks where it ends.
-    inside_growing_frame: bool,
-    edge_by_card: bool,
     full_bleed: bool,
     square_bottom: bool,
     spawned_at: Option<Instant>,
@@ -422,22 +412,6 @@ struct Running {
 }
 
 impl TileHost {
-    /// Move the tile by `dx`; see
-    /// [`super::window_group::WindowGroup::offset_layout`]. The content keeps
-    /// the rect it was laid out at and is drawn translated instead.
-    pub(crate) fn offset_layout(&mut self, dx: f64) {
-        if dx == 0.0 {
-            return;
-        }
-        self.rect = self.rect + vello::kurbo::Vec2::new(dx, 0.0);
-        self.content_shift += dx;
-    }
-
-    #[must_use]
-    pub fn content_shift(&self) -> f64 {
-        self.content_shift
-    }
-
     fn attach_live(&mut self, attachment: tilo_ui_base::control_domain::DomainAttachment) {
         let Some(parent) = self.ownership_parent.clone() else {
             return;
@@ -649,15 +623,6 @@ impl TileHost {
         Some(child)
     }
 
-    pub(crate) fn discard_layout_nodes(&mut self) {
-        self.live_callback_node = None;
-        self.node = None;
-        self.structure_dirty |= std::mem::take(&mut self.remount);
-        #[cfg(feature = "model")]
-        if let Some(history) = &mut self.history {
-            history.discard_layout_nodes();
-        }
-    }
     #[cfg(feature = "model")]
     pub fn register_document_history(
         &mut self,
@@ -729,13 +694,9 @@ impl TileHost {
             hosted_window: None,
             rect: Rect::ZERO,
             declared_arrival_shape: None,
-            content_shift: 0.0,
             content_damage: ContentDamage::new(),
             focused: false,
             pointer: None,
-            flush_edges: false,
-            inside_growing_frame: false,
-            edge_by_card: false,
             full_bleed: false,
             square_bottom: false,
             spawned_at: None,
@@ -766,11 +727,10 @@ impl TileHost {
         let TileContent::App(app) = &self.content else {
             return None;
         };
-        let shift = vello::kurbo::Vec2::new(self.content_shift, 0.0);
         let ink = crate::control_hints::ink::of(&**app)?;
         Some(
             ink.into_iter()
-                .map(|rect| (rect + shift).intersect(self.rect))
+                .map(|rect| rect.intersect(self.rect))
                 .filter(|rect| !rect.is_zero_area())
                 .collect(),
         )
@@ -898,18 +858,6 @@ impl TileHost {
             .as_ref()
             .filter(|arrival| !arrival.revealed())
             .and_then(|arrival| arrival.clock().holds_frame_until(now))
-    }
-
-    pub(crate) fn set_flush_edges(&mut self, flush: bool) {
-        self.flush_edges = flush;
-    }
-
-    pub(crate) fn set_inside_growing_frame(&mut self, inside: bool) {
-        self.inside_growing_frame = inside;
-    }
-
-    pub(crate) fn set_edge_by_card(&mut self, by_card: bool) {
-        self.edge_by_card = by_card;
     }
 
     /// Name `tab` to a panic hook while this tile's application runs: see
@@ -1223,9 +1171,7 @@ impl TileHost {
         if !painted {
             return None;
         }
-        if !self.inside_growing_frame && !self.edge_by_card {
-            self.draw_edge_at(scene, transform, theme, radius, rect);
-        }
+        self.draw_edge_at(scene, transform, theme, radius, rect);
         Some(rect)
     }
 
@@ -2518,7 +2464,7 @@ impl TileHost {
         } else {
             EDGE_STROKE_WIDTH
         };
-        let outer_offset = if self.flush_edges { 0.0 } else { edge_width };
+        let outer_offset = edge_width;
         let inner_offset = outer_offset - edge_width;
         let outer = RoundedRect::from_rect(
             rect.inflate(outer_offset, outer_offset),
@@ -2648,11 +2594,9 @@ impl TileHost {
             .into_iter()
             .map(|band| transform.transform_rect_bbox(band))
             .collect();
-        if !self.inside_growing_frame && !self.edge_by_card {
-            tilo_ui_base::scene_parts::part(scene, edge, bounds, |scene| {
-                self.draw_edge(scene, transform, theme, radius);
-            });
-        }
+        tilo_ui_base::scene_parts::part(scene, edge, bounds, |scene| {
+            self.draw_edge(scene, transform, theme, radius);
+        });
     }
 
     fn draw_full_bleed(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
@@ -2813,24 +2757,19 @@ impl TileHost {
                 card.draw_child(scene, transform, tr, theme, &env);
             }
         } else {
-            let content_transform = if self.content_shift == 0.0 {
-                transform
-            } else {
-                transform.pre_translate(vello::kurbo::Vec2::new(self.content_shift, 0.0))
-            };
             let composes_live = self.composes_live_app();
             match &mut self.content {
                 TileContent::App(w) => {
                     if composes_live {
                         let key = tilo_ui_base::scene_parts::PartKey::new("ui.tile-app", ());
                         tilo_ui_base::scene_parts::begin(scene, key);
-                        w.draw_child(scene, content_transform, tr, theme, &env);
+                        w.draw_child(scene, transform, tr, theme, &env);
                         let copies = (tilo_ui_base::scroll_copy::host_copies()
                             && theme.tokens.colors.surfaces.content.components[3] >= 1.0)
                             .then(tilo_ui_base::scroll_copy::host_device_scale);
                         let hint = self.content_damage.hint(
                             &**w,
-                            content_transform,
+                            transform,
                             transform.transform_rect_bbox(self.rect),
                             &env,
                             copies,
@@ -2841,7 +2780,7 @@ impl TileHost {
                     }
                     #[cfg(feature = "model")]
                     if let Some(history) = &mut self.history {
-                        history.draw_child(scene, content_transform, tr, theme, &env);
+                        history.draw_child(scene, transform, tr, theme, &env);
                     }
                 }
                 TileContent::Stub { kind, label } => {

@@ -152,20 +152,11 @@ impl crate::widget::app_widget::AppWidget for ScopeProbe {
 #[test]
 fn a_windows_application_runs_under_its_tab_for_a_panic_hook() {
     let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let host = TileHost::new(TileContent::App(Box::new(ScopeProbe(seen.clone()))));
-    let mut group = crate::widget::WindowGroup::from_hosts(
-        3,
-        vec![(crate::widget::TabDescriptor::new(41, "Probe"), host)],
-        41,
-        crate::widget::WindowWidth::Fraction(500),
-    );
-    *group.host_for_tab_mut(41).unwrap() =
-        TileHost::new(TileContent::App(Box::new(ScopeProbe(seen.clone()))));
+    let mut host = TileHost::new(TileContent::App(Box::new(ScopeProbe(seen.clone()))));
+    host.set_panic_scope(41);
     let mut taffy = TaffyTree::new();
     let mut nodes = std::collections::HashMap::new();
-    for child in group.children_mut() {
-        child.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-    }
+    host.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
     assert_eq!(*seen.borrow(), [Some(41)]);
     assert_eq!(super::super::panic_scope::current(), None);
 }
@@ -226,77 +217,6 @@ impl crate::widget::app_widget::AppWidget for Starting {
     fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
         crate::widget::app_widget::IconDescriptor::Glyph("S")
     }
-}
-
-struct TransformProbe {
-    rect: Rect,
-    drawn_with: std::rc::Rc<std::cell::Cell<Option<Affine>>>,
-}
-
-impl Widget for TransformProbe {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _t: &Theme,
-        _m: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy.leaf_node(Style::default())
-    }
-    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
-        let (_scene, transform, _tr, _th, mut env) = ctx.parts();
-        self.drawn_with.set(Some(transform));
-    }
-    fn name(&self) -> &'static str {
-        "TransformProbe"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
-impl crate::widget::app_widget::AppWidget for TransformProbe {
-    fn app_kind(&self) -> AppKind {
-        AppKind::Files
-    }
-    fn app_title(&self) -> &'static str {
-        "Transform probe"
-    }
-    fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
-        crate::widget::app_widget::IconDescriptor::Glyph("T")
-    }
-}
-
-#[test]
-fn a_moved_tile_draws_its_app_where_the_tile_went() {
-    let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
-    let drawn_with = std::rc::Rc::new(std::cell::Cell::new(None));
-    let mut host = TileHost::new(TileContent::App(Box::new(TransformProbe {
-        rect,
-        drawn_with: std::rc::Rc::clone(&drawn_with),
-    })));
-    host.rect = rect;
-    let theme = Theme::default();
-    let _ = paint(&mut host, &theme);
-    assert_eq!(drawn_with.get(), Some(Affine::IDENTITY));
-
-    host.offset_layout(40.0);
-    assert_eq!(host.rect, rect + vello::kurbo::Vec2::new(40.0, 0.0));
-    let _ = paint(&mut host, &theme);
-    assert_eq!(
-        drawn_with.get(),
-        Some(Affine::translate((40.0, 0.0))),
-        "the app keeps its layout rect and is drawn translated with the tile"
-    );
-
-    host.offset_layout(-40.0);
-    assert_eq!(host.rect, rect);
-    let _ = paint(&mut host, &theme);
-    assert_eq!(drawn_with.get(), Some(Affine::IDENTITY));
 }
 
 /// Loud and unmistakable, so a single sampled pixel says whether the

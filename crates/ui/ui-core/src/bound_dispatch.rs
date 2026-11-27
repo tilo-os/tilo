@@ -7,9 +7,6 @@ pub use bound_widget::history_owner;
 #[doc(hidden)]
 pub use bound_widget::history_owner;
 #[cfg(feature = "model")]
-#[cfg(test)]
-pub(crate) use bound_widget::keyboard_input_scope;
-#[cfg(feature = "model")]
 pub use bound_widget::{BoundTraversal, visit_components, visit_resource_owners};
 #[cfg(feature = "model")]
 pub use bound_widget::{BoundWidget, callback_binding, resource_owners};

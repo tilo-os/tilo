@@ -37,8 +37,6 @@ mod bar_layout;
 #[cfg(test)]
 #[path = "tabs_close_tests.rs"]
 mod close_tests;
-#[path = "tabs_holder_chip.rs"]
-mod holder_chip;
 #[path = "tabs_new_tab.rs"]
 mod new_tab;
 #[path = "tabs_paint.rs"]
@@ -494,9 +492,6 @@ pub struct TabBar {
     interaction: tilo_ui_base::interaction::InteractionEnvironment,
     /// Last theme fast-duration, for animation scheduling outside `draw`.
     drag_lift_duration: Duration,
-    /// Window groups paint the lifted handle with the app preview in the floating pass, above strip
-    /// clips; standalone bars keep the inline overlay for their own embedders.
-    drag_overlay_owned_by_parent: bool,
     /// The bar is a window's: the window's controls stand at its trailing end, and a window showing
     /// one tab shows it as its title rather than as a tab.
     window_controls: bool,
@@ -552,58 +547,7 @@ pub struct TabBar {
     painted_labels: std::cell::RefCell<Vec<crate::window_toolbar::BarLabel>>,
 }
 
-/// Geometry shared by the tab handle and the window-content preview attached to it while the
-/// pointer carries a tab, kept independent of paint so a parent can draw the lifted object above
-/// strip clips.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct TabDragVisual {
-    pub tab_id: u64,
-    pub lifted_handle: Rect,
-    pub lift_progress: f64,
-}
-
 impl TabBar {
-    /// Move the bar and every rectangle laid out in it by `dx`; see
-    /// [`super::window_group::WindowGroup::offset_layout`].
-    pub(crate) fn offset_layout(&mut self, dx: f64) {
-        self.touch();
-        if dx == 0.0 {
-            return;
-        }
-        let shift = vello::kurbo::Vec2::new(dx, 0.0);
-        self.rect = shift_rect(self.rect, shift);
-        for rect in &mut self.tab_rects {
-            *rect = shift_rect(*rect, shift);
-        }
-        for rect in &mut self.close_rects {
-            *rect = shift_rect(*rect, shift);
-        }
-        for rect in &mut self.close_hit_rects {
-            *rect = shift_rect(*rect, shift);
-        }
-        for rect in &mut self.max_rects {
-            *rect = shift_rect(*rect, shift);
-        }
-        for rect in &mut self.search_rects {
-            *rect = shift_rect(*rect, shift);
-        }
-        for rect in &mut self.history_rects {
-            *rect = shift_rect(*rect, shift);
-        }
-        self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
-        self.controls.offset(shift);
-        let area = self.toolbar_row.popup_area();
-        if area.area() > 0.0 {
-            self.toolbar_row.set_popup_area(shift_rect(area, shift));
-        }
-        let row = shift_rect(self.toolbar_row.row(), shift);
-        self.toolbar_row.lay_out(row);
-        let strip = self.toolbar_row.strip_rect();
-        if strip.area() > 0.0 {
-            self.toolbar_row.place_strip(shift_rect(strip, shift));
-        }
-    }
-
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
     /// inactive but the part still holds its place (no neighbour reflow).
     pub const SOURCE_PILL_DIM_ALPHA: f32 = 0.35;
@@ -692,7 +636,6 @@ impl TabBar {
             host_reduced_motion: false,
             motion_source: tilo_ui_base::tokens::MotionSource::default(),
             drag_lift_duration: tilo_ui_base::tokens::motion::Durations::default().fast(),
-            drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target),
             interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             window_controls: false,
@@ -1260,21 +1203,6 @@ impl TabBar {
         self.touch();
         self.shows_group_focus = true;
         self.group_focus = focus;
-    }
-
-    pub(crate) fn set_drag_overlay_owned_by_parent(&mut self, owned: bool) {
-        self.touch();
-        self.drag_overlay_owned_by_parent = owned;
-    }
-
-    /// What starts the changes laid out next; see
-    /// [`GroupRow::set_motion_source`](super::GroupRow::set_motion_source).
-    pub(crate) fn set_motion_source(&mut self, source: tilo_ui_base::tokens::MotionSource) {
-        self.touch();
-        self.motion_source = source;
-        if source.lands_at_once() {
-            self.layout_anim_started = None;
-        }
     }
 
     fn snapshot_layout_for_spring(&mut self) {
@@ -2072,34 +2000,6 @@ impl TabBar {
         let x0 = self.last_cursor.x - offset.x;
         let y0 = self.last_cursor.y - offset.y;
         Some(Rect::new(x0, y0, x0 + w, y0 + h))
-    }
-
-    /// The complete visual description of the tab being carried; reduced motion snaps to the tucked
-    /// end state while keeping the spatial cue.
-    pub(crate) fn drag_visual(&self, theme: &Theme) -> Option<TabDragVisual> {
-        let tab_id = match &self.pending_drag {
-            Some(DragPayload::Tab { tab, .. }) => *tab,
-            _ => return None,
-        };
-        let source_idx = self.tabs.iter().position(|tab| tab.id == tab_id)?;
-        self.tab_rects.get(source_idx)?;
-        let lifted_handle = self.compute_ghost_rect()?;
-        let lift_progress = if theme.reduce_motion {
-            1.0
-        } else {
-            self.drag_lifted_at.map_or(1.0, |started| {
-                tab_progress(
-                    ListChange::FADE,
-                    Direction::Enter,
-                    crate::time::now().saturating_duration_since(started),
-                )
-            })
-        };
-        Some(TabDragVisual {
-            tab_id,
-            lifted_handle,
-            lift_progress,
-        })
     }
 
     #[cfg(test)]
@@ -3205,9 +3105,6 @@ impl TabBar {
     pub fn bar_rect(&self) -> Rect {
         self.rect
     }
-    pub(crate) fn max_rects_internal(&self) -> &[Rect] {
-        &self.max_rects
-    }
     pub fn tab_rects(&self) -> &[Rect] {
         &self.tab_rects
     }
@@ -4200,6 +4097,13 @@ impl Widget for TabBar {
                 node
             })
             .collect();
+        // The mark of the agent that opened the window: named, said whom for, and pressed here.
+        if let Some((_, mark)) = self.opened_by_stop() {
+            tab_children.push(mark.with_state(AccessState {
+                focusable: true,
+                ..Default::default()
+            }));
+        }
         if self.new_tab {
             let new_tab = AccessNode::new(Role::Button).with_name(new_tab_name());
             let new_tab = if self.new_tab_rect.area() > 0.0 {
@@ -5322,13 +5226,6 @@ mod tests {
                         TabBar::GHOST_PILL_ALPHA,
                         0.5,
                         "the lifted handle must remain half-transparent",
-                    );
-                    let reduced = b
-                        .drag_visual(&Theme::dark().with_reduce_motion(true))
-                        .expect("the same in-flight drag has a visual");
-                    assert_eq!(
-                        reduced.lift_progress, 1.0,
-                        "reduced motion keeps the tucked end state without animating to it",
                     );
                 }
 

@@ -1,8 +1,7 @@
 //! The parts the apps this desktop runs put in their windows' bars.
 //! Every app here runs in the host's process, each on the window its tile is shown in
 //! ([`ui::hosted_window::HostedWindow`], given as the tile is built): the desktop shows what each
-//! declared in its tab's bar and hands it what the person did there, through the toolkit's
-//! [`ui::window_parts::WindowParts`], as the session's shell does.
+//! declared in its tab's bar and hands it what the person did there.
 //! An app in a process of its own reaches the same bar over its `shell-ui` connection: the session
 //! passes on what it asked ([`DesktopHandle::declare_bar`] and its siblings), and takes back what
 //! the person did there for the app's connection ([`DesktopHandle::take_bar_events`]).
@@ -13,7 +12,7 @@ use ui::window_toolbar::{SearchOpening, ToolbarEvent, WindowOffer, WindowToolbar
 
 /// What the apps in processes of their own asked of their windows' bars since the last update pass,
 /// and what the person did there for them.
-/// An app reaches its window's bar over its `shell-ui` connection ([`ui::window_parts`]): the
+/// An app reaches its window's bar over its `shell-ui` connection: the
 /// session passes on what it declared and what it offers, its asks to edit the location or open the
 /// search, and takes back what the person did there, to write on the same connection.
 #[derive(Default)]
