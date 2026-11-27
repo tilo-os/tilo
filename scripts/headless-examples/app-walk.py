@@ -1711,16 +1711,29 @@ class Walk:
     def theme_shot(self, name: str, dark: bool, spent=None) -> str:
         """The state `name` again, in the theme named: the person switches it and
         looks at what they had. `spent`, when given, hears how long the switch took."""
+        if self.v.get("id") is None:
+            # A walk of the shell has no app window to count frames of: the session itself
+            # says how many frames it has presented, and the frame after the switch is the
+            # one that shows the theme. Read once after the switch so a frame already under
+            # way cannot be taken for it, then wait past it.
+            switch_began = time.monotonic()
+            switched = self.set_dark(dark)
+            if spent is not None:
+                spent("dark_switch", switch_began)
+            if switched:
+                drawn = self.session.presented_frames()
+                try:
+                    until_value(
+                        f"the session to draw the {'dark' if dark else 'light'} theme",
+                        lambda: self.session.presented_frames() > drawn, 20, 0.02)
+                except Failed:
+                    pass
+            return self.shot(f"{name}-{'dark' if dark else 'light'}")
         before = (self.window_of() or {}).get("frames") or 0
         switch_began = time.monotonic()
         switched = self.set_dark(dark)
         if spent is not None:
             spent("dark_switch", switch_began)
-        if self.v.get("id") is None:
-            # A walk of the shell has no app window to count frames of: the
-            # shell restyles on its next frame, which a snapshot waits for.
-            time.sleep(0.3)
-            return self.shot(f"{name}-{'dark' if dark else 'light'}")
         # A new theme reaches a window on the next frame it draws: wait for the
         # app's own frame count to move, then shoot what it drew. A theme that was
         # already shown draws nothing again for it.
@@ -2718,15 +2731,18 @@ class Walk:
 
     def op_windows(self, value) -> dict:
         """How many windows the desktop holds must be `value` (or at least
-        `{"at_least": n}`), within ten seconds."""
+        `{"at_least": n}`), within ten seconds. The count the wait found is the one
+        kept: reading every window once more would only repeat the look it ended on."""
         def count() -> int:
             return len(self.session.windows())
         if isinstance(value, dict):
             wanted = int(value["at_least"])
-            until_value(f"at least {wanted} windows", lambda: count() >= wanted, 10)
+            found = until_value(f"at least {wanted} windows",
+                                lambda: (n := count()) if n >= wanted else None, 10)
         else:
-            until_value(f"{value} windows", lambda: count() == int(value), 10)
-        return {"windows": count()}
+            found = until_value(f"{value} windows",
+                                lambda: (n := count()) if n == int(value) else None, 10)
+        return {"windows": found}
 
     def op_focused(self, value) -> dict:
         """The window of `value` (an app's directory name or id) has the
@@ -2734,7 +2750,7 @@ class Walk:
         ident = value if "." in value else real_apps.app_id(value)
 
         def front():
-            return next((w for w in self.session.windows()
+            return next((w for w in self.session.windows(ident)
                          if w.get("app_id") == ident and w.get("window") and w.get("active")),
                         None)
         until_value(f"the window of {ident} to have the keyboard", front, 10)
@@ -2772,13 +2788,13 @@ class Walk:
         """A window of the app `value` (directory name or id) is on the desktop."""
         ident = value if "." in value else real_apps.app_id(value)
         until_value(f"a window of {ident}",
-                    lambda: any(w.get("app_id") == ident for w in self.session.windows()), 15)
+                    lambda: any(w.get("app_id") == ident for w in self.session.windows(ident)), 15)
         return {"window_of": ident}
 
     def op_close_app(self, value) -> dict:
         """Close the window of the app `value`, by the tab it holds."""
         ident = value if "." in value else real_apps.app_id(value)
-        window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+        window = next((w for w in self.session.windows(ident) if w.get("app_id") == ident), None)
         if window is None:
             raise Failed(f"no window of {ident} to close")
         self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab", {"tab": str(window["tab"])})
@@ -2867,12 +2883,12 @@ class Walk:
         ident = self.v["id"] if value is True else (
             value if "." in value else real_apps.app_id(value))
         began = time.monotonic()
-        window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+        window = next((w for w in self.session.windows(ident) if w.get("app_id") == ident), None)
         if window is not None:
             self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab",
                                 {"tab": str(window["tab"])})
             until_value(f"the window of {ident} to close",
-                        lambda: all(w.get("app_id") != ident for w in self.session.windows()), 30)
+                        lambda: all(w.get("app_id") != ident for w in self.session.windows(ident)), 30)
         # An app exits with its last window; one that stays is ended the way a
         # person ends an app that will not.
         try:
@@ -2888,7 +2904,7 @@ class Walk:
             self.asking()
         self.session.launch(ident, 120)
         until_value(f"the window of {ident}",
-                    lambda: next((w for w in self.session.windows()
+                    lambda: next((w for w in self.session.windows(ident)
                                   if w.get("app_id") == ident), None), 60)
         return {"restarted": ident, "forced": forced,
                 "took_ms": round((time.monotonic() - began) * 1000)}
@@ -2903,7 +2919,8 @@ class Walk:
             value if "." in value else real_apps.app_id(value))
 
         def frames() -> int | None:
-            window = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+            window = next((w for w in self.session.windows(ident) if w.get("app_id") == ident),
+                          None)
             return None if window is None else window.get("frames")
 
         drawn = frames()

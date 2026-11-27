@@ -1112,6 +1112,11 @@ class Session:
             request["app_id"] = app
         return self.control(request)["answer"]["windows"]
 
+    def presented_frames(self) -> int:
+        """How many frames the session has presented, asked without window rows: the frame
+        signal a walk of the shell waits on for the theme it switched to be drawn."""
+        return self.control({"op": "windows", "rows": False})["answer"]["frames"]
+
     def state_dump(self) -> dict:
         return self.control({"op": "state_dump"})["state"]
 

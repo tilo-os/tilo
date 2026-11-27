@@ -559,7 +559,8 @@ class AskingOnlyForTheControlsAStepNames(unittest.TestCase):
         session = self.Session([{"name": "Save", "rect": [0, 0, 10, 10]},
                                 {"name": "Close", "rect": [0, 20, 10, 10]}])
         found = self.walked(session).op({"must": ["Save", "Close"]})
-        self.assertEqual(found, {"saw": ["Save", "Close"]})
+        self.assertEqual(found["saw"], ["Save", "Close"])
+        self.assertEqual(found["reads"], 1)
         self.assertEqual(len(session.asks), 1)
         self.assertEqual(sorted(session.asks[0]["names"]), ["Close", "Save"])
 
@@ -633,6 +634,53 @@ class AThemeThatIsAlreadySet(unittest.TestCase):
                                             "resource": "settings/appearance",
                                             "action": "set-dark-mode",
                                             "arguments": {"on": True}}])
+
+
+class AShellThemeShotWaitsForItsFrame(unittest.TestCase):
+    """A walk of the shell has no window frames to count: it waits on the session's own
+    presented-frame count for the frame that shows the theme it switched to, not on a timer."""
+
+    class Session:
+        def __init__(self, mode="light"):
+            self.mode = mode
+            self.frames = 0
+            self.frames_read = 0
+            self.invoked = []
+            self.shot_at = None
+
+        def control(self, request):
+            if request["op"] == "settings":
+                return {"answer": {"appearance": {"mode": self.mode}}}
+            raise AssertionError(f"unexpected request {request}")
+
+        def presented_frames(self):
+            self.frames_read += 1
+            self.frames += 1
+            return self.frames
+
+        def invoke(self, provider, resource, action, arguments=None):
+            self.invoked.append(action)
+
+        def snapshot(self, path):
+            self.shot_at = Path(path).stem
+
+    def walked(self, session):
+        return walk.Walk({"tl": {"id": None}, "steps": []}, "tl",
+                         Path("/nonexistent"), Path("/nonexistent"), session=session)
+
+    def test_a_shell_theme_shot_waits_for_the_frame_after_the_switch(self):
+        session = self.Session("light")
+        self.walked(session).theme_shot("01-signed-in", True)
+        self.assertEqual(session.invoked, ["set-dark-mode"])
+        self.assertGreaterEqual(session.frames_read, 2)
+        self.assertEqual(session.shot_at, "01-signed-in-dark")
+
+    def test_a_theme_already_shown_waits_for_no_frame(self):
+        session = self.Session("dark")
+        self.walked(session).theme_shot("01-signed-in", True)
+        self.assertEqual(session.invoked, [])
+        self.assertEqual(session.frames_read, 0)
+        self.assertEqual(session.shot_at, "01-signed-in-dark")
 
 
 class AWindowThatShowsNothing(unittest.TestCase):
@@ -751,8 +799,8 @@ class OpsOnAnotherDevice(unittest.TestCase):
 
     def test_an_op_runs_on_the_first_device_unless_it_names_another(self):
         walked, laptop, _phone = self.walk_of()
-        self.assertEqual(walked.op({"must": ["Files"]}), {"saw": ["Files"]})
-        self.assertEqual(walked.op({"on": "phone", "must": ["Accept"]}), {"saw": ["Accept"]})
+        self.assertEqual(walked.op({"must": ["Files"]})["saw"], ["Files"])
+        self.assertEqual(walked.op({"on": "phone", "must": ["Accept"]})["saw"], ["Accept"])
         with self.assertRaises(walk.Failed):
             walked.op({"on": "phone", "must": {"see": ["Files"], "within": 0}})
         self.assertIs(walked.session, laptop)
@@ -767,8 +815,8 @@ class OpsOnAnotherDevice(unittest.TestCase):
     def test_a_step_on_a_device_runs_each_op_there_unless_one_names_the_first(self):
         walked, laptop, _phone = self.walk_of()
         walked.step_on = "phone"
-        self.assertEqual(walked.op({"must": ["Accept"]}), {"saw": ["Accept"]})
-        self.assertEqual(walked.op({"on": "laptop", "must": ["Files"]}), {"saw": ["Files"]})
+        self.assertEqual(walked.op({"must": ["Accept"]})["saw"], ["Accept"])
+        self.assertEqual(walked.op({"on": "laptop", "must": ["Files"]})["saw"], ["Files"])
         self.assertIs(walked.session, laptop)
 
     def test_each_device_keeps_its_own_theme(self):
@@ -922,7 +970,7 @@ class HoldingAReadToWhatWasChosen(unittest.TestCase):
     to the paths that carry them, or to words in a document it reads."""
 
     class Session:
-        def windows(self):
+        def windows(self, app=None):
             return []
 
         def invoke(self, provider, resource, action, args=None):
@@ -965,7 +1013,9 @@ class CountingAnOpenWindowsFrames(unittest.TestCase):
             self.app_id = app_id
             self.drawn = 4
 
-        def windows(self):
+        def windows(self, app=None):
+            if app is not None and app != self.app_id:
+                return []
             return [{"app_id": self.app_id, "frames": self.drawn}]
 
     def walker(self, session):

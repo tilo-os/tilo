@@ -1083,7 +1083,10 @@ fn windows_answer(
     // application are not built, nor read of, so waiting for one window's map does not cost every
     // window on the desktop.
     let app = request.get("app_id").and_then(Json::as_str);
-    let rows = if ctx.who != Audience::Dev && session.locked.yes() {
+    // A caller that asks for no rows reads the frame count alone, which is the signal a
+    // restyle is seen by: the shell draws the new theme on the next frame the session presents.
+    let rows_asked = request.get("rows").and_then(Json::as_bool).unwrap_or(true);
+    let rows = if !rows_asked || (ctx.who != Audience::Dev && session.locked.yes()) {
         Vec::new()
     } else {
         // Where each window is drawn, read off the frame's own layout: a row says what a tool
@@ -1112,7 +1115,12 @@ fn windows_answer(
                 .read(|tree| window_rows(&within(tree, scope), shown, app)),
         }
     };
-    json!({"answer": {"windows": rows}})
+    json!({"answer": {
+        "windows": rows,
+        // How many frames the session has presented: a caller with no window frames of its own
+        // (a walk of the shell) counts these to know the theme it switched has been drawn.
+        "frames": compositor.frames_presented(),
+    }})
 }
 
 /// What the search shows now: the query, its rows, and whether it still owes more.
