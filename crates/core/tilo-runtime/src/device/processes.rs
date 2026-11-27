@@ -605,20 +605,17 @@ impl Processes {
             }
             contents.insert(workspace.to_owned(), reading.clone());
         }
-        for (key, process) in self.running().iter() {
-            if key.workspace != workspace || key.alone.is_some() {
-                continue;
-            }
+        for (app, socket) in self.sockets(|key| key.workspace == workspace) {
             if let Err(error) = ToProcess::Content(runtime_portal::process_link::WorkspaceContent {
                 workspace: workspace.to_owned(),
                 content: reading.clone(),
             })
-            .send(&process.socket)
+            .send(&socket)
             {
                 tracing::warn!(
                     %error,
                     workspace,
-                    app = %key.app,
+                    app,
                     "a tilolang process was not told the workspace's content changed"
                 );
             }
@@ -660,6 +657,18 @@ impl Processes {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The app and link of every process running windows (not a task's host) that `which` picks.
+    /// A send to a process blocks while its link is full, and a process may be waiting on this
+    /// daemon to answer before it reads again: what is told to several processes is sent with
+    /// the lock on the running ones let go, so no start waits behind one busy process.
+    fn sockets(&self, which: impl Fn(&HostKey) -> bool) -> Vec<(String, Arc<Descriptor>)> {
+        self.running()
+            .iter()
+            .filter(|(key, _)| key.alone.is_none() && which(key))
+            .map(|(key, process)| (key.app.clone(), Arc::clone(&process.socket)))
+            .collect()
+    }
+
     /// The processes running now, each by its workspace and app, with the calls it runs.
     #[must_use]
     pub fn instances(&self) -> Vec<Running> {
@@ -687,14 +696,13 @@ impl Processes {
     /// language, where they stand. A process started later is handed them with its first instance.
     pub fn locale_changed(&self, locale: &runtime_portal::process_link::Locale) {
         // A task's host takes nothing after its task.
-        for (key, process) in self.running().iter().filter(|(key, _)| key.alone.is_none()) {
-            if let Err(error) = ToProcess::Locale(locale.clone()).send(&process.socket) {
+        for (app, socket) in self.sockets(|_| true) {
+            if let Err(error) = ToProcess::Locale(locale.clone()).send(&socket) {
                 // Its follow thread reads the end of the socket and forgets it: the next instance
                 // starts another.
                 tracing::warn!(
                     %error,
-                    workspace = %key.workspace,
-                    app = %key.app,
+                    app,
                     "a tilolang process was not told the person's formats or language changed"
                 );
             }
@@ -706,20 +714,16 @@ impl Processes {
     /// enables or disables what the windows already open offer. A process started later is handed
     /// it with each instance.
     pub fn policy_changed(&self, workspace: &str, apps: &[AppAccess]) {
-        for (key, process) in self.running().iter() {
-            if key.workspace != workspace || key.alone.is_some() {
-                continue;
-            }
-            let Some(access) = apps.iter().find(|access| access.app == key.app) else {
+        for (app, socket) in self.sockets(|key| key.workspace == workspace) {
+            let Some(access) = apps.iter().find(|access| access.app == app) else {
                 continue;
             };
-            let app = key.app.clone();
-            if let Err(error) = ToProcess::Access(access.clone()).send(&process.socket) {
+            if let Err(error) = ToProcess::Access(access.clone()).send(&socket) {
                 // Its follow thread reads the end of the socket and forgets it: the next
                 // instance starts another.
                 tracing::warn!(
                     %error,
-                    workspace = %key.workspace,
+                    workspace,
                     app,
                     "a tilolang process was not told what the person may now do"
                 );
@@ -1771,22 +1775,21 @@ impl super::jobs::JobProcesses for Processes {
             || job.to_owned(),
             |jobs| tilo_actions::remote::device_job_path(&jobs.device(), job),
         );
-        let sent = {
-            let running = self.running();
-            running
-                .iter()
-                .find(|(key, host)| {
-                    key.workspace == process.workspace
-                        && key.app == process.app
-                        && host.generation == process.generation
-                })
-                .map(|(_, host)| {
-                    ToProcess::CancelJob {
-                        job: job.to_owned(),
-                    }
-                    .send(&host.socket)
-                })
-        };
+        let socket = self
+            .running()
+            .iter()
+            .find(|(key, host)| {
+                key.workspace == process.workspace
+                    && key.app == process.app
+                    && host.generation == process.generation
+            })
+            .map(|(_, host)| Arc::clone(&host.socket));
+        let sent = socket.map(|socket| {
+            ToProcess::CancelJob {
+                job: job.to_owned(),
+            }
+            .send(&socket)
+        });
         if let Some(Err(error)) = sent {
             tracing::warn!(%error, job, "the process running a cancelled job was not told");
         }
