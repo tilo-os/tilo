@@ -9,11 +9,34 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 /// What the store of an account is not brought up with: the accounts' own stores, and the lock
 /// of the directory they sit in.
 const NOT_CARRIED: [&str; 2] = ["accounts", ".identity.lock"];
+
+/// The account stores this process has looked above for, so a lookup of where an account's store
+/// is does not walk the identity directory again: the take-up happens once, when the store is
+/// first read, on the thread that reads it, and never on a loop that asks where it is.
+static LOOKED_ABOVE: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+
+/// Whether this process has already looked above `account`.
+fn looked_above(account: &Path) -> bool {
+    LOOKED_ABOVE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|looked| looked.iter().any(|seen| seen == account))
+}
+
+/// Keep that this process has looked above `account`, whatever it found.
+fn keep_looked_above(account: &Path) {
+    let mut looked = LOOKED_ABOVE.lock().unwrap_or_else(PoisonError::into_inner);
+    looked
+        .get_or_insert_with(Vec::new)
+        .push(account.to_path_buf());
+}
 
 /// Bring the person kept in the identity directory above `account` into `account`, the store of
 /// the account this process serves, when `account` keeps no identity and that directory keeps
@@ -26,6 +49,17 @@ const NOT_CARRIED: [&str; 2] = ["accounts", ".identity.lock"];
 /// # Errors
 /// What is above cannot be read, or the store cannot be written.
 pub fn take_up_person_kept_above(account: &Path) -> io::Result<bool> {
+    // The directory above is read at most once per account in this process: a store taken up is
+    // the account's from then on, and one with nothing above it stays so for this process's life.
+    if looked_above(account) {
+        return Ok(false);
+    }
+    let brought = bring_up_person_kept_above(account)?;
+    keep_looked_above(account);
+    Ok(brought)
+}
+
+fn bring_up_person_kept_above(account: &Path) -> io::Result<bool> {
     let Some(above) = account
         .parent()
         .filter(|accounts| accounts.file_name().is_some_and(|name| name == "accounts"))
