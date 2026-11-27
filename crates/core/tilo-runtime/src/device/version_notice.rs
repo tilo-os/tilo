@@ -212,9 +212,9 @@ mod tests {
         for theirs in [ours.wrapping_add(2), ours.wrapping_sub(2)] {
             for device in [Some("Framework 16"), None] {
                 let (title, body) = text(theirs, device);
-                let mut text = tilo_ui_base::TextRenderer::new();
-                let theme = tilo_ui_base::Theme::dark();
-                let words = |text: &mut tilo_ui_base::TextRenderer, width| {
+                let mut text = ui::TextRenderer::new();
+                let theme = ui::Theme::dark();
+                let words = |text: &mut ui::TextRenderer, width| {
                     ui::widget::toast::painted_words(text, &theme, &title, &body, "Updates", width)
                 };
                 // A banner card is 360 points wide; at 2000 points nothing needs eliding or

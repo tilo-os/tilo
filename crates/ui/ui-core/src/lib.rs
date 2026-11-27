@@ -102,6 +102,11 @@
     )
 )]
 
+// The toolkit's base, under the toolkit's own name: a program that depends on tilo-ui alone
+// reaches every widget, state, text and theme type through it.
+pub use tilo_ui_base::*;
+pub mod surface_services;
+
 pub mod a11y_tree;
 mod action_locus;
 /// The document action host behind the framework's dispatcher. Apps submit edits through the framework,

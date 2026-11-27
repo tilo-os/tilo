@@ -147,8 +147,7 @@ mod tests {
 }
 
 /// The app's settings channel served from a real settings source by the session's own
-/// server, for headless app tests: the device's settings app holds every setter, as the image
-/// grants it.
+/// server, for headless app tests. The app holds no other app's setters.
 #[cfg(all(
     feature = "broker-transport",
     feature = "model",
@@ -172,20 +171,11 @@ impl TestSettings {
         channel.linked();
         let previous =
             crate::collaboration::channel_settings::replace_for_test(Some(channel.clone()));
-        let grants = if app == tilo_app_id::apps::SETTINGS {
-            settings_store::workspace::EVERY_SETTER
-                .iter()
-                .map(|&grant| grant.to_owned())
-                .collect()
-        } else {
-            Vec::new()
-        };
         let server = runtime_collab::settings::host::AppSettingsServer::new(
             app,
             source,
             Arc::new(|| Ok(())),
-        )
-        .with_grants(grants);
+        );
         let (revision, view) = server.view();
         channel.received(revision, view);
         Self {

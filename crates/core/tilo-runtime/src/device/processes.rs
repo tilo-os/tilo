@@ -2316,19 +2316,19 @@ mod tests {
 
         // Every process running says what the person's formats now are, so the instances it runs
         // write their weeks and times again; a process that is not running hears nothing.
-        let before = tilo_ui_base::format::region::current();
-        let sunday = tilo_ui_base::format::region::RegionFormats {
-            first_day: tilo_ui_base::format::region::FirstDayOfWeek::Sunday,
+        let before = ui::format::region::current();
+        let sunday = ui::format::region::RegionFormats {
+            first_day: ui::format::region::FirstDayOfWeek::Sunday,
             ..before
         };
-        tilo_ui_base::format::region::install(sunday);
+        ui::format::region::install(sunday);
         let locale = runtime_portal::process_link::Locale {
-            formats: tilo_ui_base::format::region::current(),
-            language: tilo_ui_base::i18n::preferred_language().unwrap_or_default(),
+            formats: ui::format::region::current(),
+            language: ui::i18n::preferred_language().unwrap_or_default(),
         };
         processes.locale_changed(&locale);
         let handed = ToProcess::receive(&theirs).unwrap();
-        tilo_ui_base::format::region::install(before);
+        ui::format::region::install(before);
         let Some(ToProcess::Locale(locale)) = handed else {
             panic!("a runtime process's socket carries the formats as formats: {handed:?}");
         };

@@ -64,7 +64,7 @@ lazy-painter = ["dep:tilo-engine-loader"]
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration?/local-daemons", "tilo-webview/local-daemons"]
+local-daemons = ["dep:tilo-identity-client", "collaboration?/local-daemons", "tilo-webview/local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's
 # client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
@@ -203,10 +203,7 @@ runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = ".
 # the local identity boundary, local action reports and the history a document
 # keeps, under their toolkit paths.
 collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", optional = true }
-runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../../core/runtime-portal", optional = true }
 tilo-identity-client = { version = "0.1.0", path = "../../core/tilo-identity-client", optional = true }
-# The typed id of the app a record set belongs to.
-tilo-app-id.workspace = true
 automerge.workspace = true
 tilo-automerge = { workspace = true, optional = true }
 tilo-spellcheck = { version = "0.1.0", path = "../spellcheck" }

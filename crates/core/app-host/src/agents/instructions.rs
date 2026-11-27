@@ -61,11 +61,11 @@ pub(super) fn for_turn(turn: &Turn) -> String {
 /// or "tonight" is about their day, not the server's, and an answer that names a date names
 /// theirs.
 fn clock() -> String {
-    let now = tilo_ui_base::clock::local_now();
+    let now = ui::clock::local_now();
     let today = now.date();
     format!(
         " Today is {} where the person is ({today}); it is {} there now.",
-        tilo_ui_base::format::day_heading(today, true),
+        ui::format::day_heading(today, true),
         now.datetime().strftime("%H:%M")
     )
 }

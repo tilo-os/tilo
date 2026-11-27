@@ -87,8 +87,6 @@ pub mod animation;
 pub mod arriving;
 pub mod capability;
 pub mod motion;
-/// The actions the host publishes itself, named for apps to call through `ui`.
-pub use {tilo_app_id::apps, tilo_app_id::chat};
 extern crate self as tilo_ui_base;
 /// The app surface an app's changes are decided against, kept with the collab client that names it on
 /// every signed op.

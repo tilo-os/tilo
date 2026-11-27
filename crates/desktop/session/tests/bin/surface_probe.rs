@@ -47,7 +47,7 @@ const SETTLING: Duration = Duration::from_millis(250);
 fn main() {
     // What every surface app does before its window opens. From here on the session's published
     // resources are this app's, as they are any app's.
-    tilo_ui_base::surface_services::connect();
+    ui::surface_services::connect();
     if let Ok(report) = std::env::var(REPORT) {
         // Written whole and then put in place, so the test reads a report or nothing rather than
         // the middle of one.

@@ -648,7 +648,7 @@ fn run_parsed(
     // A surface app reads what its session publishes over the connection the
     // session's broker admits for its launch, as any app does; it is made
     // before the window opens, so the first frame already shows it.
-    tilo_ui_base::surface_services::connect();
+    crate::surface_services::connect();
     // Threads may start from here on; startup marks are written from their
     // own, never by the thread that marks.
     tilo_startup_metrics::start_writer();

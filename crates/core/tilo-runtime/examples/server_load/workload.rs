@@ -550,13 +550,10 @@ impl Member {
             user,
             // The toolkit's key for a text field and the shell's for a
             // pointer over a tile, serialised as they are sent.
-            caret_key: serde_json::to_vec(&tilo_ui_base::PresenceKey::Widget {
-                path: vec![tilo_ui_base::PathSegment::Field("body".into())],
+            caret_key: serde_json::to_vec(&ui::PresenceKey::Widget {
+                path: vec![ui::PathSegment::Field("body".into())],
             })?,
-            pointer_key: serde_json::to_string(&tilo_ui_base::PresenceKey::tile_pointer(
-                &workspace.uuid,
-                1,
-            ))?,
+            pointer_key: serde_json::to_string(&ui::PresenceKey::tile_pointer(&workspace.uuid, 1))?,
             _dialer: dialer,
             _running: running,
         })

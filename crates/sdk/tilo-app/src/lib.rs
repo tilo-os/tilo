@@ -24,7 +24,6 @@
 //! Shell and framework internals may depend on the lower `tilo-ui` package directly;
 //! ordinary applications should use this facade.
 
-pub use tilo_ui_base::*;
 pub use ui_core::*;
 
 /// The widgets: the contract, layout and identity every widget shares, and the controls built on them.
