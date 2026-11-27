@@ -111,7 +111,20 @@ impl RichText {
     #[must_use]
     pub fn text(&self) -> String {
         if let Some(initial) = &self.initial {
-            return initial.clone();
+            // A value holding only the markdown it will be written as reads as
+            // the paragraphs that markdown makes, one per line, as the same
+            // value read back from its document does: its verbs see the text
+            // it holds, not the blank lines between its paragraphs.
+            return tilo_doc_codecs::rich::blocks_of_markdown(initial).map_or_else(
+                |_| initial.clone(),
+                |blocks| {
+                    blocks
+                        .iter()
+                        .map(|block| block.text.clone())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                },
+            );
         }
         let Some(state) = &self.state else {
             return String::new();
