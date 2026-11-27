@@ -953,6 +953,8 @@ mod tests {
         std::fs::set_permissions(app_wire, std::fs::Permissions::from_mode(0o700))
             .expect("the actions directory is this user's");
         let profile = tempfile::tempdir().expect("a profile for the daemon");
+        std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("the profile is this user's");
         let (daemon, mut session) = crate::shell_session::start_in_process(
             profile.path(),
             crate::Options {

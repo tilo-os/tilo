@@ -29,6 +29,7 @@ use tilo_workspace_keys::{
 };
 
 use super::*;
+use crate::daemon_fixture::TestDaemon;
 use crate::sync::{Client, OwnPresence};
 use crate::{AppSocket, Options, Session};
 use tilo_live::live_session::Join;
@@ -195,13 +196,17 @@ async fn founded(keys: &KeyProvider) {
     }
 }
 
-/// A session taking part in the workspace through `sync` , showing the shell.
-fn session(sync: &std::rc::Rc<Client>, socket: &std::path::Path) -> Session {
+/// A session taking part in the workspace through `sync` , showing the shell, on the link the
+/// device's daemon `daemon` made for it: what a desktop a person signed in on runs with, whose
+/// apps it serves.
+fn session(daemon: &TestDaemon, sync: &std::rc::Rc<Client>, socket: &std::path::Path) -> Session {
     let session = Session::headless(
         Options {
+            person: hex::encode(daemon.certificate().user_public_key),
             presentation: ui::headless::fixture_runner_inputs,
             sync: Some(std::rc::Rc::clone(sync)),
             app_socket: AppSocket::At(socket.to_path_buf()),
+            shell_link: Some(daemon.shell_link()),
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -1114,7 +1119,10 @@ async fn a_session_that_cannot_carry_a_call_ends_it_and_says_why() {
             ..OwnPresence::default()
         },
     ));
-    let mut session = session(&sync, &socket);
+    // The device's daemon made this session's link, as the daemon of the desktop a person
+    // signed in on does: the session serves its apps, while its calls have no transport to go on.
+    let daemon = TestDaemon::start();
+    let mut session = session(&daemon, &sync, &socket);
     step(&mut session);
     let media = session
         .media_service()

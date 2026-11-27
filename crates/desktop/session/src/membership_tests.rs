@@ -1376,11 +1376,6 @@ fn her_device_takes(
 fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs() {
     let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
     let (_identity, cert, key) = provisioned_identity(&mut home);
-    let me = crate::sync::device_identity().expect("this computer is a device");
-    assert_eq!(
-        me.device_cert, cert,
-        "the session reads this computer's own device"
-    );
     let state = tempfile::tempdir().expect("a state directory");
     let workspace_id = a_workspace_on_the_shell(state.path());
     let now = tilo_clock::wall();
@@ -1412,6 +1407,16 @@ fn a_person_changes_a_workspaces_people_through_the_session_this_computer_runs()
             _ => None,
         };
         let mut session = session_serving(state.path());
+        // The session's daemon holds this computer's key, and every other program reads the
+        // device from it: what the session reads as the device is the one this computer's
+        // daemon took.
+        assert_eq!(
+            crate::sync::device_identity()
+                .expect("this computer is a device")
+                .device_cert,
+            cert,
+            "the session reads this computer's own device"
+        );
         change_people(&session, workspace_id, &change);
         // What the session shows is the workspace the device's daemon holds: the role is hers, or
         // she is gone from it.
@@ -1516,14 +1521,13 @@ fn an_agent_cannot_change_a_workspaces_people() {
         an_agent_is_refused_a_role(&session, &cert, workspace_id, &hex::encode(stranger)),
         "an agent is refused the workspace's people"
     );
+    // The device is read while the daemon holding its key runs; the session holds that daemon,
+    // and lets go of it below.
+    let identity = crate::sync::device_identity().expect("this computer is a device");
     // And nobody was added to the workspace it asked for.
     drop(session);
-    let mine = Engine::open(
-        crate::sync::device_identity().expect("this computer is a device"),
-        Some(state.path()),
-        [workspace_id],
-    )
-    .expect("this computer's engine opens");
+    let mine = Engine::open(identity, Some(state.path()), [workspace_id])
+        .expect("this computer's engine opens");
     assert!(
         mine.people(&workspace_id.to_string())
             .expect("the workspace's people")
