@@ -219,6 +219,7 @@ pub(crate) fn carry(
         replayed.unadmitted |= !op_effect(&mut replayed.policy, &op, &mut log);
         log.record_entry(&op);
         replayed.owner_moved |= replayed.policy.owner != owner;
+        note_grant_times(&op, &mut replayed.grant_times);
         replayed.heads = BTreeSet::from([id]);
     }
     order(&mut replayed.policy);
@@ -233,6 +234,10 @@ pub(crate) fn carry(
         assert_eq!(
             whole.owner_moved, replayed.owner_moved,
             "a carried membership moved the owner as its state replays to"
+        );
+        assert_eq!(
+            whole.grant_times, replayed.grant_times,
+            "a carried membership names the grants' times as its state replays to"
         );
     }
     keep(workspace, after.base_heads(), replayed);
@@ -278,19 +283,25 @@ fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
 fn grant_times_of(held: &HeldOps) -> BTreeMap<GrantId, u64> {
     let mut times: BTreeMap<GrantId, u64> = BTreeMap::new();
     for op in held.values() {
-        let MembershipOpCommand::Project { changes } = &op.command else {
-            continue;
-        };
-        for change in changes {
-            if let Change::Grant(grant) = change {
-                times
-                    .entry(grant.id.clone())
-                    .and_modify(|at| *at = (*at).max(op.at_ns))
-                    .or_insert(op.at_ns);
-            }
-        }
+        note_grant_times(op, &mut times);
     }
     times
+}
+
+/// Note in `times` when each grant `op` writes was given, by its id: the latest time an operation
+/// wrote one is the time it was last given.
+fn note_grant_times(op: &SignedMembershipOp, times: &mut BTreeMap<GrantId, u64>) {
+    let MembershipOpCommand::Project { changes } = &op.command else {
+        return;
+    };
+    for change in changes {
+        if let Change::Grant(grant) = change {
+            times
+                .entry(grant.id.clone())
+                .and_modify(|at| *at = (*at).max(op.at_ns))
+                .or_insert(op.at_ns);
+        }
+    }
 }
 
 /// When each grant the workspace `doc`'s operations write was given, in nanoseconds since the Unix

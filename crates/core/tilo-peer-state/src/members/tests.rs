@@ -263,11 +263,26 @@ tilo_test_env::scenario! {
         doc.commit();
         let _ = replay(&doc, WORKSPACE);
         let before = doc.get_heads();
-        let first = op(&owner, Vec::new(), 1, vec![adding(&ada.1, Role::Editor)]);
+        let granted = roles::administrator_grant(
+            WORKSPACE,
+            &person(&ada.1),
+            tilo_action_policy::Grantee::person(person(&owner.1)),
+        );
+        let first = op(
+            &owner,
+            Vec::new(),
+            1,
+            vec![adding(&ada.1, Role::Editor), Change::Grant(granted.clone())],
+        );
         put_op(&mut doc, &first).unwrap();
         let written = doc.get_changes(&before);
         replay::carry(&before, &doc, &written, WORKSPACE);
         let carried = replay(&doc, WORKSPACE);
         assert_eq!(carried.members.get(&person(&ada.1)), Some(&Role::Editor));
+        assert_eq!(
+            grant_times(&doc, WORKSPACE).get(&granted.id),
+            Some(&(AT_NS + 1)),
+            "a carried membership names the times of the grants its operations wrote"
+        );
     }
 }
