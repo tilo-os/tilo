@@ -56,9 +56,6 @@ pub(crate) struct Offered {
     surface: SurfaceTable,
     /// Each resource's declaration, in the order the resources were first published.
     specs: Vec<ResourceSpec>,
-    /// Each resource's actions together, in that same order: read from the surface when first
-    /// asked for after a change, which only a reader of the descriptors does.
-    actions: std::cell::OnceCell<Vec<ActionDescriptor>>,
     /// The type of each action as the window offers it, by its shape: every resource of a kind
     /// offers the same one, bound to itself, so a row coming into view builds none of it.
     /// Keyed by the shape's content hash ([`SurfaceDelta::shapes`]).
@@ -78,16 +75,6 @@ struct ShapeTypes {
 type TypeKey = (Option<String>, Option<(String, String)>);
 
 impl Offered {
-    pub(crate) fn actions(&self) -> &[ActionDescriptor] {
-        self.actions.get_or_init(|| {
-            self.specs
-                .iter()
-                .flat_map(|spec| self.surface.actions_of(spec.id.as_str()))
-                .map(|action| action.descriptor(ExecutionLocus::default()))
-                .collect()
-        })
-    }
-
     pub(crate) fn specs(&self) -> &[ResourceSpec] {
         &self.specs
     }
@@ -108,7 +95,6 @@ impl Offered {
         let delta: SurfaceDelta = serde_json::from_slice(bytes)
             .map_err(|error| format!("the app's action catalogue did not read back: {error}"))?;
         self.surface.apply(&delta)?;
-        self.actions = std::cell::OnceCell::new();
         let surface = &self.surface;
         self.types.retain(|id, _| surface.holds(id));
         let changed: HashSet<&str> = (delta.resources.iter())

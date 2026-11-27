@@ -203,13 +203,6 @@ pub mod host {
             self
         }
 
-        /// Hold every granted write to `check` as well.
-        #[must_use]
-        pub fn with_check(mut self, check: Check) -> Self {
-            self.check = Some(check);
-            self
-        }
-
         /// Let the device's settings app reach the displays' own transactions.
         #[must_use]
         pub fn with_display(mut self, display: Option<DisplayControl>) -> Self {

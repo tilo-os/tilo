@@ -1375,14 +1375,6 @@ impl ActionContract {
         }
     }
 
-    /// Whether an invocation with `argument` asks the person an agent acts
-    /// for, whatever their broader answers allow: it needs a confirmation
-    /// ([`Self::confirmation_for_argument`]) or its person attending
-    /// ([`Self::is_attended`]).
-    pub fn asks_for_argument(&self, argument: Option<&str>) -> bool {
-        self.is_attended() || self.confirmation_for_argument(argument) != ConfirmationPolicy::None
-    }
-
     /// The confirmation an invocation with `argument` (the wire argument:
     /// typed JSON behind [`ARGUMENTS_JSON_PREFIX`](crate::ARGUMENTS_JSON_PREFIX))
     /// needs, decided without the publishing app's code: the declared

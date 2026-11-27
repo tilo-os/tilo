@@ -452,15 +452,6 @@ pub fn workspace_governance_child(workspace: &str, child: Option<&str>) -> Strin
     }
 }
 
-/// The resource of the grant `grant` (its id) among `workspace`'s permissions.
-#[must_use]
-pub fn workspace_permission(workspace: &str, grant: &str) -> String {
-    format!(
-        "{}/{grant}",
-        workspace_governance_child(workspace, Some(WORKSPACE_PERMISSIONS))
-    )
-}
-
 /// The resource of the person `person` (their user public key in hex) among `workspace`'s people.
 #[must_use]
 pub fn workspace_member(workspace: &str, person: &str) -> String {

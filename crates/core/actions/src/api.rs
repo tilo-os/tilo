@@ -76,20 +76,6 @@ impl ActionDescriptor {
         Some(format!("Writes: {}.", steps.join(", ")))
     }
 
-    /// Whether this action changes only a document: a document operation, or
-    /// one carried out on another document than the one its resource is kept
-    /// in ([`crate::ROUTED_CHANGE_TAG`]). Such an action reads none of the
-    /// content its resource refers to.
-    #[must_use]
-    pub fn changes_only_a_document(&self) -> bool {
-        self.kind == OperationKind::Document
-            || self
-                .contract
-                .tags
-                .iter()
-                .any(|tag| tag == crate::ROUTED_CHANGE_TAG)
-    }
-
     /// The parameter this action's one line of typed text goes into, when it
     /// is a prompted action: what an agent or a host holding only the
     /// descriptor learns instead of assuming a name.
@@ -585,17 +571,6 @@ pub fn survey_placed_level_items(
             )
         })
     })
-}
-
-/// [`survey_placed_each`] for one resource's subtree, as a child of
-/// `parent`: the items a listing keeps past the published page, walked as
-/// the tree would walk them.
-pub fn survey_placed_under(
-    resource: &ResourceSpec,
-    parent: &str,
-    visit: &mut dyn FnMut(PlacedAction) -> bool,
-) -> bool {
-    placed_each(resource, parent, visit)
 }
 
 fn placed_each(

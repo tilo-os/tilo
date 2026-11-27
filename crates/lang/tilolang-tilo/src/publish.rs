@@ -24,7 +24,7 @@ use tilo_resource::Effect as _;
 use tilolang_runtime::ids::Actor;
 use tilolang_runtime::meta::{ActionMeta, FieldKind, Meta, Ty, TypeMeta};
 use tilolang_runtime::store::{
-    ANY_FIELD, BytesData, ChangeNote, FieldSpec, FieldValue, Listing, Mutation, Scalar, Store as _,
+    BytesData, ChangeNote, FieldSpec, FieldValue, Listing, Mutation, Scalar, Store as _,
 };
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
@@ -1463,98 +1463,6 @@ impl Moved {
     }
 }
 
-/// What the updates since a revision moved of the documents' text, as a reader that keeps one
-/// entry per resource (the search index) reads it: the documents a change was written in, each
-/// read again whole, whatever else the workspace holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TextMoves {
-    /// What moved, by resource id (`doc` or `doc/item`).
-    These {
-        /// The resources whose text may have moved: every resource the documents in `whole`
-        /// hold now.
-        texts: BTreeSet<String>,
-        /// The documents that are gone, with everything they held.
-        gone: BTreeSet<String>,
-        /// The documents read again whole: `texts` names every resource each holds now, so an
-        /// entry under one of them that `texts` does not name is of an item that is gone.
-        whole: BTreeSet<String>,
-    },
-    /// Every resource: an update since read them all again.
-    Everything,
-}
-
-/// What a change in the documents `moved` names may have moved of their text: the resources
-/// whose text a change wrote, and those it made or removed, read from the fields the store's
-/// watch names rather than the documents whole, so a change to one task of ten thousand touches
-/// one entry. A document whose change names no fields is read whole, as is one whose own
-/// resource was replaced or removed: what it held came or went with it.
-fn text_moves(store: &ResourceStore, moved: &crate::resources::Moved) -> TextMoves {
-    let mut texts = BTreeSet::new();
-    let mut gone = BTreeSet::new();
-    let mut whole = BTreeSet::new();
-    for doc in &moved.docs {
-        let named: Option<&BTreeSet<(String, String)>> = moved
-            .fields
-            .get(doc)
-            .filter(|fields| !fields.is_empty())
-            .filter(|fields| {
-                !fields
-                    .iter()
-                    .any(|(resource, field)| resource == doc && field == ANY_FIELD)
-            });
-        let Some(fields) = named else {
-            let Some(ty) = store.type_of_id(doc) else {
-                gone.insert(doc.clone());
-                continue;
-            };
-            texts.insert(doc.clone());
-            whole.insert(doc.clone());
-            every_item(store, &ResourceRef::root(doc.as_str(), ty), &mut texts);
-            continue;
-        };
-        let kinds = store.kinds();
-        for (resource, field) in fields {
-            let Some(ty) = store.type_of_id(resource) else {
-                gone.insert(resource.clone());
-                continue;
-            };
-            // What a search entry holds of a resource is its text: a change to any other field
-            // moves no entry.
-            let text = field == ANY_FIELD
-                || kinds.get(&ty).is_some_and(|entry| {
-                    entry.fields.get(field).is_some_and(|field| {
-                        matches!(field.kind, FieldKind::Text | FieldKind::RichText)
-                    })
-                });
-            if text {
-                texts.insert(resource.clone());
-            }
-        }
-    }
-    TextMoves::These { texts, gone, whole }
-}
-
-/// The id of every item `at` holds, its items' items included, into `out`.
-fn every_item(store: &ResourceStore, at: &ResourceRef, out: &mut BTreeSet<String>) {
-    for (field, items) in collections_of(store, None, &at.ty) {
-        let spec = FieldSpec {
-            id: field,
-            kind: FieldKind::Collection,
-        };
-        let Ok(listing) = store.listing(at, &spec) else {
-            continue;
-        };
-        for id in listing.iter() {
-            let Some(item) = item_of(store, at, &id, &items) else {
-                continue;
-            };
-            if out.insert(item.id_string()) {
-                every_item(store, &item, out);
-            }
-        }
-    }
-}
-
 /// What a workspace publishes of its resources, kept up to date by reading again only the
 /// documents a change was written in.
 ///
@@ -1602,10 +1510,6 @@ pub struct Publications {
     /// for an update that read everything again: what a reader holding an earlier count reads
     /// the requirements of again.
     motions: VecDeque<(u64, Option<Vec<Field>>)>,
-    /// What each recent update moved of the documents' text, by [`Self::moved`], oldest first:
-    /// what a reader that keeps one entry per resource (the search index) replaces, and what it
-    /// drops, instead of reading every document again.
-    text_moves: VecDeque<(u64, TextMoves)>,
     /// The documents published as what a window reaches of them, each with that reach: every
     /// other document in [`Self::trees`] is whole.
     reached: BTreeMap<String, Reached>,
@@ -1698,7 +1602,6 @@ impl Publications {
             sweeps: 0,
             moved: 0,
             motions: VecDeque::new(),
-            text_moves: VecDeque::new(),
             reached: BTreeMap::new(),
             shown: None,
         }
@@ -2062,50 +1965,6 @@ impl Publications {
         Some(Moved::These(out))
     }
 
-    /// What the updates since `since` moved of the documents' text, each once: the entries a
-    /// reader that keeps one per resource reads again, and those it drops. `None` when what
-    /// moved that long ago is no longer kept, which reads everything too.
-    #[must_use]
-    pub fn text_since(&self, since: u64) -> Option<TextMoves> {
-        let mut texts = BTreeSet::new();
-        let mut gone = BTreeSet::new();
-        let mut whole = BTreeSet::new();
-        if since == self.moved {
-            return Some(TextMoves::These { texts, gone, whole });
-        }
-        if since > self.moved {
-            return None;
-        }
-        let first = self.text_moves.iter().position(|(at, _)| *at > since)?;
-        if self.text_moves.get(first)?.0 != since.wrapping_add(1) {
-            return None;
-        }
-        // In the order they happened: a document gone and made again is there, one read and
-        // then gone is gone.
-        for (_, moved) in self.text_moves.iter().skip(first) {
-            match moved {
-                TextMoves::Everything => return Some(TextMoves::Everything),
-                TextMoves::These {
-                    texts: these_texts,
-                    gone: these_gone,
-                    whole: these_whole,
-                } => {
-                    for doc in these_gone {
-                        texts.remove(doc);
-                        whole.remove(doc);
-                        gone.insert(doc.clone());
-                    }
-                    for doc in these_whole {
-                        gone.remove(doc);
-                        whole.insert(doc.clone());
-                    }
-                    texts.extend(these_texts.iter().cloned());
-                }
-            }
-        }
-        Some(TextMoves::These { texts, gone, whole })
-    }
-
     /// How many times the updates so far have read every document in full: only the first
     /// update, and one after the workspace moved on in a way the store could not name.
     #[must_use]
@@ -2211,12 +2070,6 @@ impl Publications {
                     .collect()
             });
             keep(&mut self.motions, (self.moved, fields), MOTIONS_KEPT);
-            let text = if all {
-                TextMoves::Everything
-            } else {
-                text_moves(host.store(), &moved)
-            };
-            keep(&mut self.text_moves, (self.moved, text), MOTIONS_KEPT);
         }
         touched.sort();
         touched.dedup();

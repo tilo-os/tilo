@@ -245,18 +245,9 @@ impl SurfaceTable {
             .collect()
     }
 
-    /// The actions the published resource `resource` offers, as [`Self::actions`] carries them.
-    #[must_use]
-    pub fn actions_of(&self, resource: &str) -> Vec<ExportedAction> {
-        self.resources
-            .get(resource)
-            .map(|(_, held)| self.offered(held))
-            .unwrap_or_default()
-    }
-
     /// The published resource `resource` and the shapes of its template, in order, each with
-    /// where it stands in the template and its id: what [`Self::actions_of`] expands, for a
-    /// reader that keeps what the resources of one shape share instead of a copy per resource.
+    /// where it stands in the template and its id, for a reader that keeps what the resources of
+    /// one shape share instead of a copy per resource.
     #[must_use]
     pub fn shapes_of(&self, resource: &str) -> Option<ShapesOf<'_>> {
         let (_, held) = self.resources.get(resource)?;

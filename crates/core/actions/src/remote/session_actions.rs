@@ -101,14 +101,3 @@ pub fn target(action: &str) -> crate::remote::RemoteActionTarget {
 
 /// The resource the session publishes the agents it runs on.
 pub const AGENTS_RESOURCE: &str = "session:agents";
-
-/// The target the agents' action `action` is invoked at: the session's own provider, on
-/// [`AGENTS_RESOURCE`]. An app invokes one of these as the person using it, through the action
-/// API.
-#[must_use]
-pub fn agents_target(action: &str) -> crate::remote::RemoteActionTarget {
-    crate::remote::RemoteActionTarget {
-        provider: PROVIDER.to_owned(),
-        address: crate::ActionAddress::new(AGENTS_RESOURCE, action),
-    }
-}

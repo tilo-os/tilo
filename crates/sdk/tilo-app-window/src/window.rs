@@ -587,8 +587,8 @@ impl AppWindow {
     /// ([`ToUi::Actions`]): labels, keys, icons and what they act on, for the window to offer them
     /// the way it offers its own.
     #[must_use]
-    pub fn actions(&self) -> &[tilo_actions::ActionDescriptor] {
-        self.offered.actions()
+    pub fn actions(&self) -> Vec<tilo_actions::ActionDescriptor> {
+        tilo_actions::api::survey(self.catalogue())
     }
 
     /// The app whose window this is, as its package names it: a picture-in-picture surface the

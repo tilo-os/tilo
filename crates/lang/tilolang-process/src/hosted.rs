@@ -1779,7 +1779,7 @@ pub struct Hosted {
     surface: SurfaceSlot,
     builds: BuildsSlot,
     /// What the broker holds of the instance's surface, and the descriptors it was built from.
-    published: Option<(Vec<ActionDescriptor>, SurfacePublication)>,
+    published: Option<(Rc<Vec<ActionDescriptor>>, SurfacePublication)>,
     /// The directory the instance answers its connection's directory requests from: what it
     /// last published, browsable by level and name, as the API and agents read it.
     directory: PublishedDirectory,
@@ -1796,7 +1796,7 @@ pub struct Hosted {
     /// The descriptors each surface surveyed into, by the inputs it was surveyed from: what the
     /// window offers, kept for [`SURVEYED`] of them, so a window that goes back to what it
     /// showed reads the actions it read then rather than surveying the surface again.
-    surveyed: BTreeMap<(u64, SurfaceInputs), Vec<ActionDescriptor>>,
+    surveyed: BTreeMap<(u64, SurfaceInputs), Rc<Vec<ActionDescriptor>>>,
     /// Why the surface was last refused instead of published: empty once it publishes.
     refused: Vec<tilo_actions::ContractViolation>,
     /// What can run on the rows the window shows, and what reading each answer read: a scroll or
@@ -4677,7 +4677,7 @@ impl Hosted {
         if self
             .published
             .as_ref()
-            .is_some_and(|(held, _)| *held == descriptors)
+            .is_some_and(|(held, _)| Rc::ptr_eq(held, &descriptors) || *held == descriptors)
         {
             self.published_from = Some((surface, inputs));
             return;
@@ -4708,10 +4708,10 @@ impl Hosted {
         inputs: &SurfaceInputs,
         rows: &BTreeSet<String>,
         shown: &[String],
-    ) -> Result<Vec<ActionDescriptor>, Vec<tilo_actions::ContractViolation>> {
+    ) -> Result<Rc<Vec<ActionDescriptor>>, Vec<tilo_actions::ContractViolation>> {
         let key = (surface.generation, inputs.clone());
         if let Some(descriptors) = self.surveyed.get(&key) {
-            return Ok(descriptors.clone());
+            return Ok(Rc::clone(descriptors));
         }
         let resources = surface.resources((!surface.everything).then_some(shown));
         let mut handlers: HashSet<String> = HashSet::from([
@@ -4753,7 +4753,8 @@ impl Hosted {
         {
             self.surveyed.remove(&oldest);
         }
-        self.surveyed.insert(key, descriptors.clone());
+        let descriptors = Rc::new(descriptors);
+        self.surveyed.insert(key, Rc::clone(&descriptors));
         Ok(descriptors)
     }
 
@@ -4791,7 +4792,7 @@ impl Hosted {
                 &[],
             );
             if self.send_surface(delta) {
-                self.published = Some((Vec::new(), state));
+                self.published = Some((Rc::default(), state));
                 self.published_from = None;
             }
         }
@@ -4971,9 +4972,12 @@ impl Hosted {
             self.published = Some((held, state));
             return false;
         }
-        let mut descriptors = held;
+        // The survey the patched descriptors were read of stands for inputs no publication reads
+        // again: they are patched in place rather than copied.
+        self.surveyed.retain(|_, kept| !Rc::ptr_eq(kept, &held));
         // What the answers were read of, to send only the resources whose descriptors moved.
-        let before = answered.then(|| descriptors.clone());
+        let before = answered.then(|| Rc::clone(&held));
+        let mut descriptors = Rc::unwrap_or_clone(held);
         let _phase = tilo_resource::profiling::Phase::start("tl.host.relabel");
         for (resource, label) in &labels {
             for index in state.indices(resource).unwrap_or_default() {
@@ -5016,7 +5020,7 @@ impl Hosted {
             self.published_from = None;
             return true;
         }
-        self.published = Some((descriptors, state));
+        self.published = Some((Rc::new(descriptors), state));
         self.published_from = Some((Rc::clone(surface), inputs));
         true
     }

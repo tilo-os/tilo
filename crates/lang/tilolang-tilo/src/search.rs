@@ -135,12 +135,6 @@ pub fn split_anchor(anchor: &str) -> (&str, Option<Block>) {
     }
 }
 
-/// Whether the index key `key` is the entry of the resource `resource` or of a paragraph of it.
-#[must_use]
-pub fn keys_resource(key: &str, resource: &str) -> bool {
-    split_anchor(key).0 == resource
-}
-
 /// What a resource's type says it is to search (`kind`), who it is with (`people`: who made it,
 /// then the people its type's `people` fields name, each once) and when it was made, in seconds
 /// since the Unix epoch.
