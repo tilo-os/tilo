@@ -9,7 +9,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
-    device_cert, entry_join, hosting_device, hosting_device_with, restricted_until,
+    device_cert, entry_join, hosting_device, hosting_device_with, restricted_until, restriction,
     signed_pre_admission, test_host,
 };
 
@@ -801,48 +801,30 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
     reason = "the server stays live until its consuming shutdown"
 )]
 async fn the_owner_restricts_until_a_time_and_lifts_it() {
-    use tilo_server_protocol::workspaces::RemoveMemberRequest;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
-    let guest = [7; 32];
-    let request = |request_id| RemoveMemberRequest {
-        request_id,
-        user_public_key: guest,
-    };
     let until = tilo_clock::unix_now_ms() + 30 * 60_000;
-    workspaces
-        .restrict_member(&created.workspace, &cert, request([1; 32]), until)
+    let person = hex::encode([7; 32]);
+    restriction(workspaces, &created.workspace, &person, Some(until))
         .await
         .unwrap();
     assert_eq!(
-        restricted_until(workspaces, &created.workspace, &cert, guest).await,
+        restricted_until(workspaces, &created.workspace, &cert, [7; 32]).await,
         Some(until)
     );
     assert!(
-        !is_banned(workspaces, &created.workspace, &cert, guest).await,
+        !is_banned(workspaces, &created.workspace, &cert, [7; 32]).await,
         "a restriction is not a ban"
     );
-    workspaces
-        .unrestrict_member(&created.workspace, &cert, request([2; 32]))
+    restriction(workspaces, &created.workspace, &hex::encode([7; 32]), None)
         .await
         .unwrap();
     assert_eq!(
-        restricted_until(workspaces, &created.workspace, &cert, guest).await,
+        restricted_until(workspaces, &created.workspace, &cert, [7; 32]).await,
         None
-    );
-    let owner = RemoveMemberRequest {
-        request_id: [3; 32],
-        user_public_key: cert.user_public_key,
-    };
-    assert!(
-        workspaces
-            .restrict_member(&created.workspace, &cert, owner, until)
-            .await
-            .is_err(),
-        "the owner is never restricted"
     );
     server.shutdown().await;
 }

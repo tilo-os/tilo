@@ -19,7 +19,9 @@ use key_group::{KeyGroup, MemberKey};
 /// The content keys a fixture's device seals its records under
 /// ([`GroupKeys`]): what a test that builds its own documents hands the service.
 pub use key_group::ContentKeys;
+use tilo_action_policy::Change;
 use tilo_actions::remote::ActionProvider as _;
+use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -750,15 +752,44 @@ pub async fn revoke_grant(
     workspace: &str,
     id: tilo_action_policy::GrantId,
 ) -> Result<(), String> {
-    workspaces
-        .commit_own_change(
-            workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                change: tilo_action_policy::Change::Revoke(id),
-            },
-            None,
-        )
-        .await
+    commit_member_change(workspaces, workspace, Change::Revoke(id)).await
+}
+
+/// Make `change` to `workspace`'s members as the person this service's device acts for: the
+/// workspace's own `Change`, which its policy decides.
+///
+/// # Errors
+/// Why the workspace refused it.
+pub async fn commit_member_change(
+    workspaces: &Workspaces,
+    workspace: &str,
+    change: Change,
+) -> Result<(), String> {
+    let command = WorkspaceMembershipCommand::Member { change };
+    workspaces.commit_own_change(workspace, command, None).await
+}
+
+/// Restrict `person` in `workspace` until `until_ms`, or lift it when that is `None`, as the
+/// person this service's device acts for: the workspace's own `Change`.
+///
+/// # Errors
+/// Why the workspace refused it.
+pub async fn restriction(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &str,
+    until_ms: Option<u64>,
+) -> Result<(), String> {
+    let change = match until_ms {
+        Some(until_ms) => Change::Restrict {
+            person: person.to_owned(),
+            until_ms,
+        },
+        None => Change::Unrestrict {
+            person: person.to_owned(),
+        },
+    };
+    commit_member_change(workspaces, workspace, change).await
 }
 
 /// Take `grant` into `workspace`'s policy as the person this service's device acts for: the
@@ -772,15 +803,7 @@ pub async fn answer_grant(
     workspace: &str,
     grant: tilo_action_policy::Grant,
 ) -> Result<(), String> {
-    workspaces
-        .commit_own_change(
-            workspace,
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                change: tilo_action_policy::Change::Grant(grant),
-            },
-            None,
-        )
-        .await
+    commit_member_change(workspaces, workspace, Change::Grant(grant)).await
 }
 
 /// The same host, keeping `grants` pre-admissions per workspace

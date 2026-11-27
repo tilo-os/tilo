@@ -804,3 +804,8 @@ reason = "read only from a server's TOML configuration, by name, never by positi
 file = "crates/core/tilo-server-protocol/src/page/window.rs"
 enum = "WindowAsk"
 reason = "JSON frames on the stream between a device and the page's window process it started, both from one build and live only as long as the page; no byte of them is kept, and the desktop's wells now come with its layout"
+
+[[break]]
+file = "crates/core/tilo-workspace-service/src/workspaces/collaboration.rs"
+enum = "Membership"
+reason = "serialized only into the digest that names a membership request, never decoded back: the restriction entries it loses are constructed by no action, and the entries before them keep their places, so no stored or sent bytes read differently"

@@ -937,63 +937,6 @@ impl Workspaces {
         Ok(cursors)
     }
 
-    /// Have the holder `device` of `workspace` hold it as `role` from now on,
-    /// as its owners chose: its signed entry among the workspace's holders
-    /// says so, and every device reads who gets the workspace's keys from it.
-    /// Made a store, it leaves the workspace's key group, whose commit
-    /// removing it rotates the keys, so it reads nothing written after; made a
-    /// key holder, the group admits it. Another device is handed the
-    /// workspace afresh in its new role at the address it is named at; this
-    /// device signs its own entry. Answers the holder's address.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is not held here or does not name `device` among its
-    /// holders, or the holder refused or could not be reached.
-    pub async fn set_holder_role(
-        &self,
-        workspace: &str,
-        device: [u8; 32],
-        role: CopyRole,
-    ) -> Result<TransportHint, String> {
-        let (named, own) = {
-            let hosted = self
-                .workspace(workspace)
-                .await
-                .map_err(|error| error.to_string())?;
-            let hosted = hosted.lock().await;
-            let named = hosted
-                .peer()
-                .governance()
-                .keeping_devices()
-                .into_iter()
-                .find(|hint| host_device(hint) == device);
-            let own = (device == self.inner.host.cert.device_public_key)
-                .then(|| self.transport_hint_as(&hosted, role))
-                .transpose();
-            drop(hosted);
-            (named, own.map_err(|error| error.to_string())?)
-        };
-        let named =
-            named.ok_or_else(|| format!("{} does not hold the workspace", hex::encode(device)))?;
-        if tilo_peer_state::holder_role(&named) == role {
-            return Ok(named);
-        }
-        let Some(own) = own else {
-            let addr = WorkspaceDeviceHintV1::from_transport_hint(&named)
-                .map_err(|error| error.to_string())?
-                .endpoint_addr;
-            return self.attach_server(workspace, device, addr, role).await;
-        };
-        self.name_host(workspace, |governance, key, now| {
-            governance.author_keeping_device(&own, key, now)
-        })
-        .await?;
-        tracing::info!(%workspace, ?role, "this device holds the workspace in another role");
-        let _ = self.inner.changes.send(workspace.to_owned());
-        Ok(own)
-    }
-
     /// Hand `workspace` to the device `reached` is, to hold it as `role`: this
     /// device's change naming it among the workspace's holders, the workspace as
     /// a joining member gets it, and this device's own signed address, under the

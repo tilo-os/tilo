@@ -21,7 +21,7 @@ use tilo_user_identity::DeviceCert;
 use super::ServiceWorkspaceActions;
 use super::tests::{admit, caller, hosted, request, settled};
 use crate::workspaces::Workspaces;
-use crate::workspaces::tests::{guest_device, hosting_device, test_host};
+use crate::workspaces::tests::{guest_device, hosting_device, restriction, test_host};
 
 /// One workspace this host serves, and how its members ask it.
 struct Asked<'a> {
@@ -160,14 +160,9 @@ async fn the_owner_shares_one_note_with_everyone_until_they_take_it_back() {
     );
     // Restricted, Bo writes nothing, the note shared to edit included, nor hands it out; the
     // page's action API decides the same. Lifted, the share lets him write again.
-    let bo_key = bo.user_public_key;
-    let request = |request_id| crate::workspaces::RemoveMemberRequest {
-        request_id,
-        user_public_key: bo_key,
-    };
+    let bo_person = hex::encode(bo.user_public_key);
     let until = tilo_clock::unix_now_ms() + 30 * 60_000;
-    workspaces
-        .restrict_member(&workspace, &owner, request([41; 32]), until)
+    restriction(workspaces, &workspace, &bo_person, Some(until))
         .await
         .unwrap();
     assert!(asked.may(&bo, &p1, ActionKind::Read).await);
@@ -181,8 +176,7 @@ async fn the_owner_shares_one_note_with_everyone_until_they_take_it_back() {
         WorkspacesReply::Permits(false)
     );
     refused(asked.set(&bo, "everyone", &p1, Some("viewer")).await);
-    workspaces
-        .unrestrict_member(&workspace, &owner, request([42; 32]))
+    restriction(workspaces, &workspace, &bo_person, None)
         .await
         .unwrap();
     assert!(asked.may(&bo, &p1, writes).await);

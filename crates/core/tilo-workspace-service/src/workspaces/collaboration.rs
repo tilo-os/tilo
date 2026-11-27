@@ -81,9 +81,6 @@ pub(super) enum Membership {
     Remove,
     Ban,
     Unban,
-    /// No changes until this Unix millisecond; reading stays allowed.
-    Restrict(u64),
-    Unrestrict,
 }
 
 impl Membership {
@@ -96,8 +93,6 @@ impl Membership {
             Self::Remove => Change::RemoveMember { person },
             Self::Ban => Change::Ban { person },
             Self::Unban => Change::Unban { person },
-            Self::Restrict(until_ms) => Change::Restrict { person, until_ms },
-            Self::Unrestrict => Change::Unrestrict { person },
         }
     }
 }
@@ -1115,38 +1110,6 @@ impl Workspaces {
             .await
     }
 
-    /// Stop `request.user_public_key` changing anything in `workspace` until
-    /// `until_ms` (Unix milliseconds): the workspace's expiring
-    /// `restrict:<person>` Deny, which lapses by itself and leaves reading
-    /// alone. A newer restriction replaces an older one.
-    pub async fn restrict_member(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request: RemoveMemberRequest,
-        until_ms: u64,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        self.change_membership(
-            workspace,
-            administrator,
-            request,
-            Membership::Restrict(until_ms),
-        )
-        .await
-    }
-
-    /// Lift `request.user_public_key`'s restriction in `workspace` before it
-    /// lapses.
-    pub async fn unrestrict_member(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request: RemoveMemberRequest,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        self.change_membership(workspace, administrator, request, Membership::Unrestrict)
-            .await
-    }
-
     /// Remove, ban or unban, decided by who asks: a device of the server's
     /// user administers its workspaces, and any other member by the
     /// workspace's grants on the action (the Moderator role has them).
@@ -1162,7 +1125,6 @@ impl Workspaces {
         let mut workspace = workspace.lock().await;
         let person = hex::encode(request.user_public_key);
         let change = membership.change(request.user_public_key);
-        let identity = workspace.workspace().to_owned();
         let by = self.authorize(
             administrator,
             Some(&workspace),
@@ -1177,7 +1139,6 @@ impl Workspaces {
             Membership::Remove => stamped(governance::REMOVE_MEMBER, actor_of(&by)),
             Membership::Ban => stamped(governance::BAN, actor_of(&by)),
             Membership::Unban => stamped(governance::UNBAN, actor_of(&by)),
-            Membership::Restrict(_) | Membership::Unrestrict => None,
         };
         let completion = self
             .administer_as(
@@ -1197,21 +1158,6 @@ impl Workspaces {
                         peer.governance_mut()
                             .unban_member(target, &key, system_time(now))
                     }
-                    Membership::Restrict(until_ms) => peer.governance_mut().put_member_grants(
-                        &[tilo_action_policy::roles::restriction_grant(
-                            &identity,
-                            &person,
-                            until_ms,
-                            tilo_action_policy::Grantee::person(by.clone()),
-                        )],
-                        &key,
-                        system_time(now),
-                    ),
-                    Membership::Unrestrict => peer.governance_mut().remove_member_grants(
-                        &[tilo_action_policy::roles::restriction_grant_id(&person)],
-                        &key,
-                        system_time(now),
-                    ),
                 },
                 stamp,
                 now,

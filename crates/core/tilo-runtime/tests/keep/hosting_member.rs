@@ -1560,8 +1560,9 @@ async fn a_servers_role_and_the_base_it_makes_move_together() {
         .await;
     }
 
+    let (ws, nas) = (&workspace.workspace, one.host.node_addr());
     let hint = made_on
-        .set_holder_role(&workspace.workspace, device, CopyRole::Store)
+        .attach_server(ws, device, nas.clone(), CopyRole::Store)
         .await
         .unwrap();
     assert_eq!(tilo_peer_state::holder_role(&hint), CopyRole::Store);
@@ -1585,7 +1586,7 @@ async fn a_servers_role_and_the_base_it_makes_move_together() {
     );
 
     let hint = made_on
-        .set_holder_role(&workspace.workspace, device, CopyRole::KeyHolder)
+        .attach_server(ws, device, nas.clone(), CopyRole::KeyHolder)
         .await
         .unwrap();
     assert_eq!(tilo_peer_state::holder_role(&hint), CopyRole::KeyHolder);
