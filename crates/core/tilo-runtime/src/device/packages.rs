@@ -592,8 +592,9 @@ pub fn compile_installed_at(root: &Path, data_home: &Path) {
     let Ok(packages) = catalog.list() else {
         return;
     };
-    // The runtime bundles the device's own store keeps.
-    let runtimes = runtime_bundle::bundle_root().unwrap_or_default();
+    // The runtime bundles the store keeps, beside its packages: the store handed here is the
+    // one the device will run from, which is not always this process's own.
+    let runtimes = runtime_bundle::bundles_in_store(root);
     for package in packages {
         super::compiled::compile_package(
             &compiler,

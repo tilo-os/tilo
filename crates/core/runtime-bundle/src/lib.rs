@@ -343,6 +343,15 @@ pub const RUNTIME_DIR_ENV: &str = "TILO_RUNTIME_BUNDLE_DIR";
 /// bundles: `runtimes/<version>/`.
 const BUNDLES_IN_STORE: &str = "runtimes";
 
+/// Where the device store at `store` keeps its runtime bundles: `runtimes/` beside its packages.
+///
+/// A program compiling or verifying against a store it was handed needs this rather than
+/// [`bundle_root`], which reads the store of the process it runs in.
+#[must_use]
+pub fn bundles_in_store(store: &Path) -> PathBuf {
+    store.join(BUNDLES_IN_STORE)
+}
+
 /// Root holding the bundles, before the version is appended: [`RUNTIME_DIR_ENV`] when set and
 /// non-empty, else `runtimes` in the device's own store.
 ///
@@ -360,9 +369,8 @@ pub fn bundle_root_from(root_override: Option<std::ffi::OsString>) -> Result<Pat
     {
         return Ok(PathBuf::from(dir));
     }
-    Ok(tilo_paths::device_data_dir()
-        .ok_or(BundleError::NoDataDir)?
-        .join(BUNDLES_IN_STORE))
+    let store = tilo_paths::device_data_dir().ok_or(BundleError::NoDataDir)?;
+    Ok(bundles_in_store(&store))
 }
 
 /// Default bundle directory: `runtimes/<v>/` in the device's own store
