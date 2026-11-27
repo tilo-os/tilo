@@ -1456,6 +1456,38 @@ impl WindowFrame {
     }
 }
 
+/// Where the bar of the window frame named `name` stands, in the layout's logical coordinates:
+/// the first frame under `root` that reads as that window in front of a person's attention
+/// (`WindowFrame::accessibility`), its bar as the frame laid it out last
+/// ([`WindowFrame::bar_rect`]).
+///
+/// A shell that moves a strip under a gesture aims at the bar of the window in front, and finds
+/// it here: a walk of the tree the layout already placed, never the accessibility tree, which is
+/// built for a reader and costs every widget's name, role and bounds.
+#[must_use]
+pub fn bar_named(root: &dyn Widget, name: &str) -> Option<Rect> {
+    fn walk(widget: &dyn Widget, name: &str) -> Option<Rect> {
+        if let Some(frame) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<WindowFrame>())
+            && frame.name.as_deref() == Some(name)
+        {
+            let bar = frame.bar_rect();
+            if bar.width() > 0.0 && bar.height() > 0.0 {
+                return Some(bar);
+            }
+        }
+        let mut found = None;
+        widget.for_each_child(&mut |child| {
+            if found.is_none() {
+                found = walk(child, name);
+            }
+        });
+        found
+    }
+    walk(root, name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

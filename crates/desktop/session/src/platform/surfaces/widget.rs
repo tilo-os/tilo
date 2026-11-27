@@ -470,6 +470,20 @@ impl WidgetSurface {
         ))
     }
 
+    /// Where the bar of the window frame named `name` stands, in the desktop's logical layout
+    /// `(x, y, width, height)`: a gesture carrying the strip under that window aims there, and
+    /// finds it from the tree the layout placed, without building the accessibility tree.
+    pub fn bar_bounds(&mut self, name: &str) -> Option<(f64, f64, f64, f64)> {
+        let rect = self.host.window_bar(name)?;
+        let (ox, oy) = self.placement.origin;
+        Some((
+            f64::from(ox) + rect.x0,
+            f64::from(oy) + rect.y0,
+            rect.width(),
+            rect.height(),
+        ))
+    }
+
     /// Where what the tree publishes stands: it may have changed only when
     /// this moved since it was last read.
     #[must_use]

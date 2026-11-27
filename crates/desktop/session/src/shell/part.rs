@@ -1045,6 +1045,13 @@ impl ShellPart {
         self.widgets.control_bounds(name)
     }
 
+    /// Where the bar of the window frame named `name` stands, in the desktop's logical layout
+    /// `(x, y, width, height)`: what a gesture carrying the strip under that window aims at,
+    /// read from the tree the frame laid out, never the accessibility tree.
+    pub fn bar_bounds(&mut self, name: &str) -> Option<(f64, f64, f64, f64)> {
+        self.widgets.bar_bounds(name)
+    }
+
     /// The middle of this part's own place, when it takes the pointer there: where a strip carried
     /// by the fingers is handed when the front window's bar has scrolled out of the part, the row
     /// filling it.

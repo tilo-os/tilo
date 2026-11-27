@@ -1800,6 +1800,18 @@ impl Driver {
             .collect()
     }
 
+    /// Where the bar of the window frame named `name` stands, in the layout's logical pixels:
+    /// the frame the tree holds, read where its layout put it
+    /// ([`tilo_ui_base::widget::Widget::get_rect`]'s coordinates).
+    ///
+    /// A gesture that carries the strip under the window in front aims at its bar every frame it
+    /// moves; this walks the laid-out tree for it, never the accessibility tree, which is built
+    /// for a reader and collects every widget's role, name and bounds.
+    #[must_use]
+    pub fn window_bar(&self, name: &str) -> Option<vello::kurbo::Rect> {
+        crate::widget::window_frame::bar_named(self.app.root_widget.as_ref(), name)
+    }
+
     /// The accessibility node of the focused widget: what a screen reader says when Tab lands there.
     #[must_use]
     pub fn focused_access_node(&self) -> Option<AccessNode> {
