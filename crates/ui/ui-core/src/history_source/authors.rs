@@ -350,7 +350,10 @@ impl AuthorDirectory {
             return presented;
         }
         let short = short_id(key);
-        let Some(handle) = actor_handle(key) else {
+        // The handle the actor's own bytes spell: a name a process declared ([`actor_handle`]),
+        // or an agent's `agent:<person>/<id>`, which names its person's key and so runs longer
+        // than a handle a reader is shown, and still names the agent.
+        let Some(handle) = actor_handle(key).or_else(|| long_agent_handle(key)) else {
             return self.author_from_identity(UNKNOWN_AUTHOR_NAME, key, short);
         };
         match tilo_actions::Actor::of_actor_bytes(handle.as_bytes()) {
@@ -624,6 +627,27 @@ pub fn read_as(member: &tilo_actions::MemberId) {
 fn person_label(person: &str) -> String {
     tilo_ui_base::presence::shown_name(person)
         .map_or_else(tilo_ui_base::presence::unnamed_person_label, str::to_owned)
+}
+
+/// The handle an agent's own actor bytes spell (`MemberId::actor_bytes`, `agent:<person>/<id>`)
+/// when they are longer than [`actor_handle`] reads back to show: the person's key names the
+/// agent, so it is structure, not a blob a reader has to be spared.
+fn long_agent_handle(actor_hex: &str) -> Option<String> {
+    let bytes = hex::decode(actor_hex).ok()?;
+    let own = match bytes
+        .iter()
+        .position(|byte| *byte == collab_types::history::authors::DEVICE_SEPARATOR as u8)
+    {
+        Some(at) => bytes.get(..at)?,
+        None => bytes.as_slice(),
+    };
+    if !matches!(
+        tilo_actions::MemberId::of_actor_bytes(own),
+        Some(tilo_actions::MemberId::Agent { .. })
+    ) {
+        return None;
+    }
+    String::from_utf8(own.to_vec()).ok()
 }
 
 /// What `actor` is called in history and audit: an agent, a bot or an automation by its name, an
