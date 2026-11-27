@@ -36,8 +36,7 @@ use tilo_workspace_service::workspaces::{
 };
 
 use crate::keep::common::{
-    Hosted, Linked, TestDevice, TestUser, copy_says, device_endpoint, host_writes, reaches_host,
-    receives, serve_configured, serve_on, write,
+    Hosted, Linked, TestDevice, TestUser, device_endpoint, serve_configured, serve_on,
 };
 
 /// The host's own operations, asked as `device` over an endpoint of its own: the link a device
@@ -338,52 +337,6 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
         );
     }
     drop((bobs, phone_link));
-    hosted.stop().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_in_process_member_shares_deltas_with_a_remote_one() {
-    let alice = TestUser::fresh("Alice");
-    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
-    let phone = alice.enrol("phone", DeviceCapabilities::primary());
-    let hosted = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    // The laptop makes the workspace, so its server holds it and the laptop
-    // administers it; the phone enters it as any other device of hers does.
-    let home = hosted.host.workspaces().create("Home").await.unwrap();
-    assert_eq!(
-        hosted.host.device_cert(),
-        &laptop.cert,
-        "the host is this device"
-    );
-    let remote = own_device_enters(&alice, &phone, &hosted, &home).await;
-
-    // What the device serving the workspace writes in process reaches the
-    // remote member's link.
-    host_writes(&hosted, home.workspace_id, "note:laptop", "from the laptop").await;
-    receives(&remote, |peer| {
-        copy_says(peer, "note:laptop", "from the laptop")
-    })
-    .await;
-    // And what the remote member writes is the host's own copy's.
-    write(&remote, &phone, "note:phone", "from the phone").unwrap();
-    reaches_host(&hosted, home.workspace_id, "note:phone", "from the phone").await;
-    assert!(
-        hosted
-            .host
-            .workspaces()
-            .state(&home.workspace)
-            .await
-            .is_some(),
-        "the host's own copy is the workspace's first member"
-    );
-    assert!(
-        hosted
-            .host
-            .is_subscribed(home.workspace_id, &phone.device_pubkey())
-            .await,
-        "the remote member holds its link"
-    );
-    drop(remote);
     hosted.stop().await;
 }
 

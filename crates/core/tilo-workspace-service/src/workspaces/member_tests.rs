@@ -1424,6 +1424,30 @@ async fn a_serving_devices_write_reaches_a_member_copys_followers() {
     .await;
     assert_eq!(told.app, "test.app");
     assert_eq!(told.record, "record");
+    // The copy took the serving device's write into its own record, which reads it back.
+    assert_eq!(
+        served_value(&copies, &workspace, ("test.app", "record"), "value")
+            .await
+            .as_deref(),
+        Some("from-the-serving-device"),
+        "the copy's replica holds the serving device's write"
+    );
+    // The serving device's own copy is the workspace's first member, and the copy's link to it
+    // is up.
+    assert!(
+        serving.workspaces().state(&workspace).await.is_some(),
+        "the serving device holds the workspace"
+    );
+    assert!(
+        serving
+            .host()
+            .is_subscribed(
+                workspace_id,
+                &member.workspaces().device_cert().device_public_key
+            )
+            .await,
+        "the copy's link to the serving device is up"
+    );
     drop(copies);
     member.shutdown().await;
 }
