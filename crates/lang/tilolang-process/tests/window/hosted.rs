@@ -685,12 +685,6 @@ impl Session {
         Self::on_bus_window(&bus, &route, spec, Window::in_harness)
     }
 
-    /// The action the window's Ask bar asks the person about, when it is up.
-    fn ask_bar(&mut self) -> Option<String> {
-        let view = self.hosted().view()?;
-        tilo_app_window::AppWindow::asks(view).map(|ask| ask.action.clone())
-    }
-
     /// [`Self::brokered`] of the instance `spec` names: a workspace of its own.
     fn brokered_as(
         route: &RouteSpec,

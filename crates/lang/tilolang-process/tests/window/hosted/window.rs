@@ -1018,8 +1018,8 @@ fn a_person_approves_an_agents_suggested_send_through_the_api_and_it_leaves_once
     let suggested = agent_runs(&mut session, "Run a block", &json!({ "source": source })).unwrap();
     assert_eq!(suggested["kind"], "invocation", "{suggested}");
     assert_eq!(
-        suggested["state"], "suggested",
-        "an agent's send asks first: {suggested}"
+        suggested["state"], "asked",
+        "an agent's send waits for the person: {suggested}"
     );
     let id = suggested["invocation"].as_str().unwrap().to_owned();
     let host = session.instance_host();
@@ -1064,9 +1064,10 @@ fn a_person_approves_an_agents_suggested_send_through_the_api_and_it_leaves_once
     );
 }
 
-/// The person's own Send asks them first, showing the letter, and goes once they allow it.
+/// The person's own Send asks them first, waiting for their answer on the system's asking view,
+/// and goes once they allow it.
 #[test]
-fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
+fn approving_a_pressed_send_through_the_asking_view_sends_the_letter_once() {
     let mut session = staged(LETTERS, "a mailbox of letters");
     let draft = opened(&mut session).expect("the scenario opens its letter");
     let draft = items_of(&mut session, LETTERS, "drafts")
@@ -1075,24 +1076,12 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
         .expect("the open letter is on the shell");
     let send = key_of(&composed(&mut session), "ui.MenuItem", "label", "Send");
     fire(&mut session, &send, "choose", None);
-    assert!(
-        session
-            .hosted()
-            .view()
-            .and_then(tilo_app_window::AppWindow::asks)
-            .is_some(),
-        "a send asks the person first"
-    );
+    assert_eq!(session.asked(), ["send"], "a send asks the person first");
     assert!(
         !sent(&mut session, &draft),
         "nothing leaves before they say so"
     );
-    session
-        .hosted()
-        .view()
-        .expect("the window is connected")
-        .answer(tilo_render_protocol::patch::Answer::Allow);
-    session.settle();
+    assert_eq!(session.allow_asked(), 1, "the person allows it once");
     assert!(sent(&mut session, &draft), "the letter went");
     session.settle();
     assert!(
@@ -1121,38 +1110,29 @@ fn bo_editing_letters() -> Session {
     session
 }
 
-/// Bo's own Send asks on their window's Ask bar, as a press of the letter's control does, and
-/// goes once they allow it; run again once it went, it is refused with the letter's own reason.
-/// An ask is never left as a record nobody shows.
+/// Bo's own Send asks them first on the system's asking view, as a press of the letter's control
+/// does, and goes once they allow it; run again once it went, it is refused with the letter's own
+/// reason. An ask is never left as a record nobody shows.
 #[test]
-fn an_editors_send_asks_on_the_ask_bar_and_a_refused_one_says_why() {
+fn an_editors_send_asks_the_person_and_a_refused_one_says_why() {
     let mut session = bo_editing_letters();
     let draft = first_draft(&mut session);
     run_send(&mut session, &draft).expect("the send is taken, to ask first");
-    assert_eq!(
-        session.ask_bar().as_deref(),
-        Some("Send"),
-        "the press asks the person first"
-    );
+    assert_eq!(session.asked(), ["send"], "the press asks the person first");
     assert!(
         !sent(&mut session, &draft),
         "nothing leaves before they say so"
     );
-    session
-        .hosted()
-        .view()
-        .expect("the window is connected")
-        .answer(tilo_render_protocol::patch::Answer::Allow);
-    session.settle();
+    assert_eq!(session.allow_asked(), 1, "the person allows it once");
     assert!(sent(&mut session, &draft), "the letter went");
-    assert_eq!(session.ask_bar(), None, "the answered ask is gone");
+    assert!(session.asked().is_empty(), "the answered ask is gone");
 
     let refused = run_send(&mut session, &draft).expect_err("a letter goes once");
     assert!(
         refused.contains("This letter went already"),
         "the refusal says why: {refused}"
     );
-    assert_eq!(session.ask_bar(), None, "a refused press asks nothing");
+    assert!(session.asked().is_empty(), "a refused press asks nothing");
 }
 
 // ----- an app's own window ----------------------------------------------------------------
