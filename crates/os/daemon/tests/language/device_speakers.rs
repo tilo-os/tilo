@@ -51,12 +51,12 @@ async fn record(host: &Host, invoke: &tilo_resource::Invoke<Devices>) {
         ActionAddress::new(<Devices as tilo_resource::Resource>::KIND, invoke.id),
         &Value::Object(invoke.arguments.clone()),
     );
-    // The session's own way to the record: the shell link, which the daemon answers as its
-    // person.
-    let stream = host
-        .daemon()
-        .shell_link()
-        .expect("the daemon hands its shell a link");
+    // The session's own way to the record: a link the daemon answers as its person, on no seat,
+    // so the second record a test keeps does not wait on this process's one seat.
+    let daemon = host.daemon();
+    let stream = daemon
+        .link_with(&daemon.shell_token())
+        .expect("the daemon hands its person a link");
     stream
         .set_nonblocking(true)
         .expect("the link is made nonblocking");

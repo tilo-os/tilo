@@ -8,6 +8,8 @@
 //!   changes the built-in apps through;
 //! - the device VPN, which carries a route through another of the person's devices and answers
 //!   this one's exit on the daemon's endpoint;
+//! - the person's devices' fabric, which checks the envelopes their speakers travel in between
+//!   their devices;
 //! - on Linux, the hold on suspend a request from another of the person's devices takes, and
 //!   whether a Wi-Fi radio wakes its machine, as the OS actions read it.
 
@@ -20,6 +22,8 @@ use tilo_runtime::device::capabilities::Mounting;
 use tilo_workspace_service::workspaces::providers::Reach;
 
 #[cfg(target_os = "linux")]
+#[cfg(not(target_os = "android"))]
+mod fabric;
 mod stay_awake;
 mod vpn;
 
@@ -53,6 +57,12 @@ pub fn capabilities() -> Capabilities {
         alarms: None,
         // The tunnel the person's other devices route through, and the route this one dials.
         vpn: Some(Arc::new(vpn::serving)),
+        // The envelopes the person's speakers travel in between their devices: the desktop
+        // network's model, which a phone's daemon carries none of.
+        #[cfg(not(target_os = "android"))]
+        fabric: Some(Arc::new(fabric::Envelopes)),
+        #[cfg(target_os = "android")]
+        fabric: None,
     }
 }
 

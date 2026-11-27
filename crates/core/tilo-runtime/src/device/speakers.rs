@@ -15,10 +15,11 @@ use std::sync::{Arc, Mutex};
 use iroh::endpoint::{Connection, RecvStream, SendStream, VarInt};
 use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
 use tilo_lock::MutexRecover as _;
-use tilo_network_actor::fabric::{DeviceId, MAX_FABRIC_ACTION_BYTES, PersonalFabricActionEnvelope};
 use tilo_session_client::speakers::{self, Frame};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::person_workspace::devices;
+
+use super::capabilities::DeviceFabric;
 
 /// The person's speakers and audio routes, served on the device's endpoint and asked for over a
 /// shell's link.
@@ -28,6 +29,8 @@ pub(crate) struct Speakers {
     person: [u8; 32],
     /// This device, as the others name it.
     own: [u8; 32],
+    /// The person's devices' fabric, which checks the envelopes a route travels in.
+    fabric: Arc<dyn DeviceFabric>,
     /// The record of the person's devices, where a peer is reached and who may take part.
     copies: Workspaces,
     /// The connection to each of the person's other devices, by key.
@@ -73,11 +76,13 @@ impl Speakers {
         own: [u8; 32],
         person: [u8; 32],
         copies: Workspaces,
+        fabric: Arc<dyn DeviceFabric>,
     ) -> Arc<Self> {
         Arc::new(Self {
             endpoint,
             person,
             own,
+            fabric,
             copies,
             peers: tokio::sync::Mutex::default(),
             link: Mutex::default(),
@@ -121,9 +126,7 @@ impl Speakers {
     /// Take `envelope`, one device of the person's, to `peer`, on the connection this daemon
     /// keeps to it.
     async fn send(self: Arc<Self>, peer: [u8; 32], envelope: Vec<u8>) -> Result<(), String> {
-        let checked = self.checked(&peer, &envelope)?;
-        let envelope = postcard::to_allocvec(&checked)
-            .map_err(|error| format!("the envelope does not encode: {error}"))?;
+        let envelope = self.checked(peer, &envelope)?;
         let target = peer;
         let peer = self.peer(peer).await?;
         let mut send = peer.send.lock().await;
@@ -138,24 +141,11 @@ impl Speakers {
         .map_err(|error| error.to_string())
     }
 
-    /// `envelope`, read and checked to be this device's to `target`: what is written, so a shell
+    /// `envelope`, read and checked as this device's to `target`: what is written, so a shell
     /// cannot hand another device's words on.
-    fn checked(
-        &self,
-        target: &[u8; 32],
-        envelope: &[u8],
-    ) -> Result<PersonalFabricActionEnvelope, String> {
-        if envelope.len() > MAX_FABRIC_ACTION_BYTES {
-            return Err("an envelope is larger than one link carries".to_owned());
-        }
-        let envelope: PersonalFabricActionEnvelope =
-            postcard::from_bytes(envelope).map_err(|error| error.to_string())?;
-        let own = DeviceId::new(hex::encode(self.own)).map_err(|_| "this device has no key")?;
-        let target = DeviceId::new(hex::encode(target)).map_err(|_| "that is not a device")?;
-        envelope
-            .validate_at(&own, &target, tilo_clock::unix_now_ms())
-            .map_err(|error| error.to_string())?;
-        Ok(envelope)
+    fn checked(&self, target: [u8; 32], envelope: &[u8]) -> Result<Vec<u8>, String> {
+        self.fabric
+            .check(self.own, target, tilo_clock::unix_now_ms(), envelope)
     }
 
     /// The connection to `device`, dialled where its record says it answers when this device
@@ -259,17 +249,22 @@ impl Speakers {
             let Frame::Send { envelope, .. } = frame else {
                 continue;
             };
-            let received_us = tilo_network_actor::fabric::clock::fabric_monotonic_us();
-            let Some(envelope) = checked_from(self.own, device, &envelope) else {
-                tracing::debug!(
-                    device = %hex::encode(device),
-                    "an envelope another device sent was refused"
-                );
-                continue;
-            };
-            let Ok(bytes) = postcard::to_allocvec(&envelope) else {
-                continue;
-            };
+            let received_us = self.fabric.now_us();
+            let bytes =
+                match self
+                    .fabric
+                    .check(device, self.own, tilo_clock::unix_now_ms(), &envelope)
+                {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        tracing::debug!(
+                            %error,
+                            device = %hex::encode(device),
+                            "an envelope another device sent was refused"
+                        );
+                        continue;
+                    }
+                };
             let Some(inbound) = inbound.as_ref() else {
                 tracing::debug!("no shell of this device reads its speakers now");
                 continue;
@@ -291,21 +286,6 @@ impl Speakers {
             }
         }
     }
-}
-
-/// `envelope`, read as the action `source` sent this device `own`: `None` when it is not.
-fn checked_from(
-    own: [u8; 32],
-    source: [u8; 32],
-    envelope: &[u8],
-) -> Option<PersonalFabricActionEnvelope> {
-    let own = DeviceId::new(hex::encode(own)).ok()?;
-    let source = DeviceId::new(hex::encode(source)).ok()?;
-    let envelope: PersonalFabricActionEnvelope = postcard::from_bytes(envelope).ok()?;
-    envelope
-        .validate_at(&source, &own, tilo_clock::unix_now_ms())
-        .ok()?;
-    Some(envelope)
 }
 
 #[cfg(test)]

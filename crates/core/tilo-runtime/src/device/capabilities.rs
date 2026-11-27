@@ -57,6 +57,31 @@ pub struct VpnServing {
 /// Serves a device VPN on the endpoint, admitting the person's devices.
 pub type DeviceVpn = Arc<dyn Fn(iroh::Endpoint, Devices) -> VpnServing + Send + Sync>;
 
+/// The person's devices' fabric, as the daemon's speakers travel reaches it: the envelope one of
+/// their devices sends another, the check that it is that device's to that one, and the clock
+/// both time it by. The envelope model lives with the desktop's network stack, so the program
+/// that runs the daemon mounts its implementation ([`Capabilities::fabric`]): the core names the
+/// interface alone.
+pub trait DeviceFabric: Send + Sync {
+    /// When a frame reached this device, in microseconds on the monotonic clock both the person's
+    /// devices are on.
+    fn now_us(&self) -> u64;
+
+    /// `envelope`, read and checked as the one `source` sent `target` at `now_ms`: the bytes a
+    /// link carries on, when it is; what is wrong with it otherwise.
+    ///
+    /// # Errors
+    /// The envelope does not read, is larger than one link carries, or is not `source`'s to
+    /// `target`.
+    fn check(
+        &self,
+        source: [u8; 32],
+        target: [u8; 32],
+        now_ms: u64,
+        envelope: &[u8],
+    ) -> Result<Vec<u8>, String>;
+}
+
 /// What the daemon's program mounts.
 #[derive(Default)]
 pub struct Capabilities {
@@ -77,6 +102,10 @@ pub struct Capabilities {
     /// The device VPN, which answers the person's other devices on the endpoint: the daemon is
     /// the one process with the device key.
     pub vpn: Option<DeviceVpn>,
+    /// The person's devices' fabric, which checks the envelopes their speakers travel in: the
+    /// desktop network's model, which a daemon nothing was mounted on (a phone's) carries none
+    /// of, and then serves no speakers travel.
+    pub fabric: Option<Arc<dyn DeviceFabric>>,
 }
 
 static MOUNTED: OnceLock<Capabilities> = OnceLock::new();
@@ -119,6 +148,11 @@ pub(crate) fn alarms() -> Option<Arc<dyn tilo_app_host::wakeups::Notifier>> {
 /// The device VPN the program mounted, where it mounted one.
 pub(crate) fn vpn() -> Option<DeviceVpn> {
     mounted()?.vpn.clone()
+}
+
+/// The person's devices' fabric the program mounted, where it mounted one.
+pub(crate) fn fabric() -> Option<Arc<dyn DeviceFabric>> {
+    mounted()?.fabric.clone()
 }
 
 /// The person's devices as their record lists them, for a mounted device VPN to admit: certified

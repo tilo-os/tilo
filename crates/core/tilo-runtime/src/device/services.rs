@@ -2778,13 +2778,17 @@ impl Daemon {
         };
         // The person's speakers and remote audio: the daemon holds the endpoint, so it is the one
         // that carries a route's envelopes to the device they are for, and answers the person's
-        // other devices' routes on this one.
-        let speakers = super::speakers::Speakers::new(
-            workspaces.endpoint(),
-            identity.cert.device_public_key,
-            identity.cert.user_public_key,
-            workspaces.copies().clone(),
-        );
+        // other devices' routes on this one. A daemon whose program mounted no fabric carries
+        // none of it.
+        let speakers = super::capabilities::fabric().map(|fabric| {
+            super::speakers::Speakers::new(
+                workspaces.endpoint(),
+                identity.cert.device_public_key,
+                identity.cert.user_public_key,
+                workspaces.copies().clone(),
+                fabric,
+            )
+        });
         // The person's devices that hold a session with this one now, published for their shell:
         // what is theirs lasts in the record, and being reachable is this.
         let online = {
@@ -2822,7 +2826,7 @@ impl Daemon {
             terminals: terminals.into_iter().chain(live.protocols()).collect(),
             unlock: unlocking,
             vpn,
-            speakers: &speakers,
+            speakers: speakers.as_ref(),
         });
         // A founding call that asked for the person's first tickets is answered them from here
         // on, once their own workspace is kept in this device's workspace service: the first
@@ -3023,7 +3027,7 @@ impl Daemon {
                 identity: identity_broker.handover(),
                 live: &live,
                 vpn: vpn_links,
-                speakers: &speakers,
+                speakers: speakers.as_ref(),
                 fanout: &fanout,
             },
             brokers,
@@ -3778,8 +3782,9 @@ struct BrokerParts<'a> {
     live: &'a Arc<super::live_relay::Live>,
     /// What carries those shells' device-VPN links.
     vpn: Option<tilo_app_host::shell::DeviceVpnLinks>,
-    /// The person's speakers, which carries those shells' links to the person's other devices.
-    speakers: &'a Arc<super::speakers::Speakers>,
+    /// The person's speakers, which carries those shells' links to the person's other devices,
+    /// where this daemon's program mounted the fabric they travel on.
+    speakers: Option<&'a Arc<super::speakers::Speakers>>,
     /// The broker's fanout, which serves the broker the windows connect to: what the daemon
     /// publishes what those windows hold of.
     fanout: &'a Arc<FanoutState>,
@@ -4149,7 +4154,7 @@ fn shell_services(
             identity: Arc::clone(&parts.identity),
             live: Some(live_links(parts.live)),
             vpn: parts.vpn.clone(),
-            speakers: Some(speaker_links(parts.speakers)),
+            speakers: parts.speakers.map(speaker_links),
             speaking: Arc::clone(parts.live) as Arc<dyn tilo_app_host::shell::ShellSpeaking>,
         },
     )));
@@ -7995,8 +8000,9 @@ struct EndpointServing<'a> {
     unlock: Option<Arc<super::unlock::Unlock>>,
     /// The device VPN, which answers the person's other devices on the endpoint.
     vpn: Option<super::capabilities::VpnServing>,
-    /// The person's speakers, which carries their routes to their other devices on the endpoint.
-    speakers: &'a Arc<super::speakers::Speakers>,
+    /// The person's speakers, which carries their routes to their other devices on the endpoint,
+    /// where this daemon's program mounted the fabric they travel on.
+    speakers: Option<&'a Arc<super::speakers::Speakers>>,
 }
 
 /// Serve what this runtime answers on the endpoint its workspaces run, from one router: the
@@ -8034,11 +8040,15 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
     for (alpn, handler) in kept {
         router = router.accept(alpn, handler);
     }
-    for (alpn, handler) in terminals
+    let protocols = terminals
         .into_iter()
         .chain(vpn.into_iter().flat_map(|vpn| vpn.protocols))
-        .chain(speakers.protocols())
-    {
+        .chain(
+            speakers
+                .into_iter()
+                .flat_map(super::speakers::Speakers::protocols),
+        );
+    for (alpn, handler) in protocols {
         router = router.accept(alpn, handler);
     }
     if let Some(unlock) = unlock {

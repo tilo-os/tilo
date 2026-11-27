@@ -98,9 +98,14 @@ zbus = { workspace = true, features = ["tokio"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
 
+# The person's devices' fabric, which the daemon's speakers travel is checked by: the desktop
+# network stack's envelope model, which a phone's daemon does not carry.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tilo-network-actor = { path = "../../desktop/network-actor" }
+postcard.workspace = true
+
 [dev-dependencies]
 tilo-action-types.workspace = true
-tilo-network-actor = { path = "../../desktop/network-actor" }
 # The runtime's own seams for a test that serves a connector's connection as the app it runs, and
 # the developer overrides a debug build honours anyway: the timed tests run an optimized build,
 # whose daemon finds the launcher the run built where `TILO_LAUNCHER_BIN` names it.

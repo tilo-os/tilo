@@ -19914,7 +19914,6 @@ dependencies = [
  "tilo-migrate",
  "tilo-neighbour-wire",
  "tilo-net",
- "tilo-network-actor",
  "tilo-os-search",
  "tilo-package-store",
  "tilo-paths",
