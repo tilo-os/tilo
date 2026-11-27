@@ -1012,13 +1012,13 @@ fn catalog() -> tilo_automation::ActionCatalog {
     let chat = chat_record();
     let mut guild = TestApp::<Discord>::new().unwrap();
     guild
-        .invoke(Guild::BIND.with(discord::guild::guild::Bind {
+        .effect(&discord::effects::DiscordEffect::Connect {
             guild_id: "1".into(),
             name: "Tilo".into(),
             only_channel: None,
             mirror_channels: None,
             map_roles: None,
-        }))
+        })
         .unwrap();
     let mut rows: Vec<CatalogueRow> = chat.rows();
     rows.extend(
@@ -1083,14 +1083,6 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
     let mut ada = Replica::<Guild>::new()
         .in_app("so.tilo.model", "Model")
         .as_author("u_ada");
-    ada.apply(Guild::BIND.with(guild::Bind {
-        guild_id: "1".into(),
-        name: "Tilo".into(),
-        only_channel: None,
-        mirror_channels: None,
-        map_roles: None,
-    }))
-    .unwrap();
     let mut bot = ada.fork().as_bot_for("b1", "u_ada");
     for (tilo, discord, persona) in [
         ("m1", "dm1", "d_spam"),
