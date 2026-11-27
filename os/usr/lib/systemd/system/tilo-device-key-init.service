@@ -58,8 +58,10 @@ SystemCallFilter=@system-service
 SystemCallFilter=~@mount @network-io @privileged @resources @obsolete @debug @swap
 # `@chown` is part of `@privileged`, which the line above denies. The first allow
 # list fixes the default action and a later allow list adds back what it names:
-# the chown family the key's owner and mode take, and nothing else.
-SystemCallFilter=chown fchown fchownat lchown
+# the one call that gives the key its owner. It is `chown(2)` on x86_64 and
+# `fchownat(2)` on the generic syscall table (arm64), where the kernel has no
+# `chown`; systemd logs a name it does not know for that architecture and goes on.
+SystemCallFilter=chown fchownat
 
 [Install]
 WantedBy=sysinit.target

@@ -494,8 +494,8 @@ mod tests {
             .expect("the filter denies @privileged");
         let allow = unit
             .lines()
-            .position(|line| line == "SystemCallFilter=chown fchown fchownat lchown")
-            .expect("the chown family is allowed after the deny list");
+            .position(|line| line == "SystemCallFilter=chown fchownat")
+            .expect("the chown call is allowed after the deny list");
         assert!(
             allow > deny,
             "the chown family is added after `@privileged` is denied"
