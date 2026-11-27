@@ -1631,15 +1631,14 @@ impl Core {
         let mut resolved = ResourceRef::clone(target);
         if resolved.ty.is_empty() {
             // A record this runtime holds, by the id it holds it by; a tilolang app's resource
-            // is held elsewhere, by the reading its app published of it, found below.
+            // is held elsewhere, by the reading its app published of it, found below under the
+            // reference that reading is kept by.
             resolved.ty = self.stored_type(&resolved);
         }
-        if resolved.ty.is_empty()
-            && let Some(ty) = self.foreign.borrow().type_of(&resolved.id_string())
-        {
-            resolved.ty = ty;
+        if resolved.ty.is_empty() {
+            return self.foreign.borrow().named(&resolved.id_string());
         }
-        (!resolved.ty.is_empty()).then_some(resolved)
+        Some(resolved)
     }
 
     /// `resource(id)`: the resource the store keeps under `id`, read as its own type; `.none`

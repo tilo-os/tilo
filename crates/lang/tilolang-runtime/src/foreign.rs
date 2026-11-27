@@ -269,22 +269,29 @@ impl Foreign {
             .map_or_else(|| (target.clone(), Vec::new()), |root| (root, steps))
     }
 
-    /// The type of the resource of another app whose id is `id`, as its reading came in:
-    /// `None` until one did.
+    /// The resource of another app whose id is `id`, as its reading came in, named as that
+    /// reading's key names it: its type, and its published address where the key keeps one.
+    /// `None` until a reading came in.
     ///
-    /// The id is read as the reference it names ([`ResourceRef::parse_id`]) and compared in the
-    /// one canonical form a reading's key holds ([`ResourceRef::id_string`], which
-    /// [`Foreign::key`] writes): a place names its resource by the path the session publishes it
-    /// at (`chat.workspace/channels/<id>`), whose canonical id is that path's document and item
-    /// (`chat.workspace/<id>`), so matching the raw text would find no reading and a place would
+    /// The id and each key are read as the references they name ([`ResourceRef::parse_id`]) and
+    /// compared in the one form both reduce to ([`ResourceRef::id_string`] of the id alone): a
+    /// place names its resource by the path the session publishes it at
+    /// (`chat.workspace/channels/<id>`), or by its published address (`tl:<app>:<id>`), while
+    /// the reading's key holds the address a reference of that app's type keeps. Matching the
+    /// raw text, or dropping the address the key holds, would find no reading, and a place would
     /// draw nothing.
-    pub(crate) fn type_of(&self, id: &str) -> Option<String> {
-        let at = ResourceRef::parse_id(id, String::new())
-            .map_or_else(|| id.to_owned(), |at| at.id_string());
-        let suffix = format!("@{at}");
-        self.readings
-            .keys()
-            .find_map(|key| key.strip_suffix(&suffix).map(str::to_owned))
+    pub(crate) fn named(&self, id: &str) -> Option<ResourceRef> {
+        let plain = |text: &str| {
+            ResourceRef::parse_id(text, String::new())
+                .map_or_else(|| text.to_owned(), |at| at.id_string())
+        };
+        let wanted = plain(id);
+        self.readings.keys().find_map(|key| {
+            let (ty, held) = key.split_once('@')?;
+            (plain(held) == wanted)
+                .then(|| ResourceRef::parse_id(held, ty))
+                .flatten()
+        })
     }
 
     /// How many resources of other apps have a reading here.
@@ -908,7 +915,7 @@ pub fn arrived_key() -> StateKey {
 }
 
 /// The view state slot that moves when a resource of another app is first known here: a view
-/// that looked one up by id ([`Foreign::type_of`]) and found nothing runs again.
+/// that looked one up by id ([`Foreign::named`]) and found nothing runs again.
 #[must_use]
 pub fn known_key() -> StateKey {
     StateKey::runtime(crate::view_state::LENS_WINDOW, None, "$readings")
@@ -1512,20 +1519,41 @@ mod tests {
         // A view asks for the type by the path it was handed (`resource(p.record)`), not the
         // canonical form: both find the one reading.
         assert_eq!(
-            foreign.type_of("chat.workspace/channels/c_1"),
-            Some("chat#Channel".to_owned()),
+            foreign.named("chat.workspace/channels/c_1"),
+            Some(published.clone()),
             "the path a place names finds the reading its canonical id holds"
         );
         assert_eq!(
-            foreign.type_of("chat.workspace/c_1"),
-            Some("chat#Channel".to_owned()),
+            foreign.named("chat.workspace/c_1"),
+            Some(published),
             "the canonical id finds it too"
         );
         assert_eq!(
-            foreign.type_of("chat.workspace/channels/none"),
+            foreign.named("chat.workspace/channels/none"),
             None,
             "a resource with no reading finds none"
         );
+    }
+
+    /// A tilolang app's resource is kept by its published address (`tl:<app>:<id>`), and a place
+    /// names it by that address: `named` finds its reading and hands back the reference that
+    /// reading is kept under, address and all, so the place draws the app's view of it.
+    #[test]
+    fn a_resource_named_by_its_published_address_is_found_under_that_address() {
+        let mut foreign = Foreign::default();
+        let published = ResourceRef::parse_id("tl:so.tilo.tube:root-a1", "so.tilo.tube#Root")
+            .expect("the published address is an id");
+        assert!(foreign.set_reading(&published, serde_json::json!({"title": "YouTube"})));
+        let named = foreign
+            .named("tl:so.tilo.tube:root-a1")
+            .expect("the address a place names finds the reading");
+        assert_eq!(named, published, "the reference the reading is kept under");
+        assert_eq!(
+            Foreign::key(&named),
+            Foreign::key(&published),
+            "a read of it asks the reading that came in"
+        );
+        assert_eq!(foreign.named("tl:so.tilo.tube:root-none"), None);
     }
 
     /// A root nothing published is unknown, in words, rather than a read that fails: a device
