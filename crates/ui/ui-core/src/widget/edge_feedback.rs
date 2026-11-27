@@ -20,7 +20,7 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 
 use crate::time::{Duration, Instant};
-use crate::widget::primitives::{SurfaceLevel, TextLineFace, paint_surface};
+use crate::widget::primitives::{SurfaceLevel, TextLineFace};
 
 /// Which edge of a window a pointer is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,7 +134,9 @@ pub fn size_label(width: f64, height: f64) -> String {
 
 /// Paint the window's size in a chip beside its `side` edge of `rect`, centred on the edge's
 /// middle: a piece of the floating material, so it reads over the window and its surroundings
-/// alike.
+/// alike. It stands on the window's own ground, so its body clears that ground by the material's
+/// spread in both themes, never only by the step between the panel and the window level
+/// ([`crate::widget::floating_surface::card_ground_over`]).
 pub fn paint_size_chip(
     scene: &mut Scene,
     transform: Affine,
@@ -159,7 +161,15 @@ pub fn paint_size_chip(
         _ => rect.x1 - CHIP_GAP - w,
     };
     let chip = Rect::new(x, y, x + w, y + h);
-    paint_surface(scene, transform, chip, SurfaceLevel::Floating, theme);
+    let ground = SurfaceLevel::Window.color(theme);
+    crate::widget::floating_surface::paint_card_shadow(scene, transform, chip, opacity, theme);
+    crate::widget::floating_surface::paint_card_body_with(
+        scene,
+        transform,
+        chip,
+        crate::widget::floating_surface::card_ground_over(ground, theme),
+        theme,
+    );
     let mut ctx = PaintCtx::new(scene, transform, text, theme);
     face.paint(
         &mut ctx,
@@ -318,4 +328,41 @@ pub fn edge_point(rect: Rect, side: Side, along: f64) -> Point {
         line.p0.x + (line.p1.x - line.p0.x) * along,
         line.p0.y + (line.p1.y - line.p0.y) * along,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_ui_base::a11y::{contrast_ratio, relative_luminance};
+    use tilo_ui_base::tokens::finish::material_spread;
+
+    /// The size chip is a piece of the floating material standing on a window: in either theme
+    /// its body clears the window it stands over by the material's own spread, and its ink reads
+    /// on that body. A chip lit only by the step between the panel and the window level (a
+    /// thirty-second of a lightness in dark, an eighth of one in light) reads as the window.
+    #[test]
+    fn the_size_chip_clears_the_window_it_stands_over_in_both_themes() {
+        for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+            let window = SurfaceLevel::Window.color(&theme);
+            let chip = crate::widget::floating_surface::card_ground_over(window, &theme);
+            let spread = material_spread(&theme.tokens.colors, window);
+            let body = contrast_ratio(chip, window);
+            // The band steps toward the spread until it reaches it, so its answer stands a
+            // search step under the spread at most.
+            assert!(
+                body >= spread - 0.02,
+                "in {name} the chip's body clears the window by {body}, the material's spread \
+                 there {spread}: {chip:?} on {window:?}"
+            );
+            let ink = contrast_ratio(theme.tokens.colors.text_primary, chip);
+            assert!(
+                ink >= 3.0,
+                "in {name} the chip's ink reads on its body: {ink} on {chip:?}"
+            );
+            assert!(
+                relative_luminance(chip) != relative_luminance(window),
+                "in {name} the chip is not the window's own tone"
+            );
+        }
+    }
 }

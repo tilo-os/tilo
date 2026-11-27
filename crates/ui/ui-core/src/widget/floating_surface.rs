@@ -64,6 +64,24 @@ pub fn card_ground(theme: &Theme) -> Color {
     tilo_ui_base::chrome::panel_ground(theme)
 }
 
+/// A floating card's ground standing on `ground`: the end of the floating material's band over
+/// `ground` that the card's ink stands on ([`tilo_ui_base::tokens::finish::material_band`]), so
+/// a card that stands on a window clears it by the material's own spread in any theme, as the
+/// same piece of material reads over the shell. The panel level alone is no guarantee there: a
+/// theme's floating level may sit a hair above its window's (`docs/design-language.md`,
+/// "Surfaces"), which a card the size of a menu separates from by its shadow and edge but the
+/// size of a chip does not.
+#[must_use]
+pub fn card_ground_over(ground: Color, theme: &Theme) -> Color {
+    use tilo_ui_base::a11y::relative_luminance;
+    let (dark, light) = tilo_ui_base::tokens::finish::material_band(&theme.tokens.colors, ground);
+    if relative_luminance(theme.tokens.colors.text_primary) > relative_luminance(ground) {
+        light
+    } else {
+        dark
+    }
+}
+
 /// Paint a floating card's shadow, `alpha` of its strength (a card that is still arriving).
 pub fn paint_card_shadow(
     scene: &mut Scene,
