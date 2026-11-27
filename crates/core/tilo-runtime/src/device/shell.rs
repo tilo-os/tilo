@@ -654,10 +654,10 @@ fn named(argument: InvokeArgument) -> Result<Map<String, Value>, String> {
 
 /// The person's workspace list's `action` with `arguments`: [`CREATE`] founds a workspace where
 /// the person's are founded ([`super::founding_create::found`]), [`JOIN`] joins the workspace an
-/// invitation is to, [`BRANCH`] copies one of the person's own into a new one, and [`DELETE`]
+/// invitation is to, or one through its open entry, [`BRANCH`] copies one of the person's own into a new one, and [`DELETE`]
 /// deletes one where this device keeps it. Answers the workspace the action made, when it makes
 /// one.
-async fn listed(
+pub(super) async fn listed(
     workspaces: &ServiceWorkspaces,
     action: &str,
     arguments: &Map<String, Value>,
@@ -673,6 +673,27 @@ async fn listed(
             let workspace = WorkspaceId::parse(text("id")?).ok_or("that is not a workspace")?;
             super::founding_create::found(workspaces, workspace, text("name")?).await?;
             Ok(Value::String(workspace.to_string()))
+        }
+        // A workspace whose entry is open is joined through it, as its directory publishes its
+        // host: this device signs its own admission. Any other is joined by its invitation.
+        JOIN if arguments.contains_key("workspace") => {
+            let workspace = tilo_server_protocol::WorkspaceId::parse(text("workspace")?)
+                .ok_or("that is not a workspace")?;
+            let host = arguments
+                .get("host")
+                .cloned()
+                .ok_or_else(|| format!("`{action}` names its `host`"))?;
+            let host: tilo_server_protocol::web::PageHost =
+                serde_json::from_value(host).map_err(|error| {
+                    format!("`host` is not a host as a directory publishes one: {error}")
+                })?;
+            let joined = Box::pin(workspaces.copies().join_entry(
+                workspace,
+                &host,
+                super::services::person_name().as_deref(),
+            ))
+            .await?;
+            Ok(Value::String(joined.to_string()))
         }
         JOIN => Ok(Value::String(
             Box::pin(workspaces.copies().join_member(text("invite")?))

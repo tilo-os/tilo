@@ -3701,7 +3701,7 @@ pub(crate) fn port_from(
 
 /// The name this computer's person gave themself, as its identity keeps it: what a workspace
 /// they join shows them by. `None` before they named themself.
-fn person_name() -> Option<String> {
+pub(super) fn person_name() -> Option<String> {
     let dir = tilo_identity::store::identity_dir_from_env().ok()?;
     let active = tilo_identity::store::resolve_active_identity(&dir)?;
     tilo_identity::store::load_metadata_from_path(&active)

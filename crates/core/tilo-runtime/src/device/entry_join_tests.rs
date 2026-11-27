@@ -80,11 +80,26 @@ async fn a_computer_joins_a_public_workspace_through_its_open_entry() {
     .await
     .expect("the laptop's own service opens");
     let copies = own.copies();
-    let joining = || {
+    // The join the person's session asks of the daemon, with the host its directory published.
+    let asked = serde_json::Map::from_iter([
+        (
+            "workspace".to_owned(),
+            serde_json::Value::from(lounge.clone()),
+        ),
+        ("host".to_owned(), serde_json::to_value(&host).unwrap()),
+    ]);
+    let joining = || async {
         tilo_test_env::within(
             "the entry answers",
-            copies.join_entry(id, &host, Some("Ada")),
+            crate::device::shell::listed(&own, tilo_peer_state::workspace_view::JOIN, &asked),
         )
+        .await
+        .map(|joined| {
+            let joined = joined
+                .as_str()
+                .expect("the join answers the workspace's id");
+            tilo_server_protocol::WorkspaceId::parse(joined).expect("a workspace's id")
+        })
     };
 
     // An entry the workspace has not opened refuses, in its own words, and leaves nothing here.
