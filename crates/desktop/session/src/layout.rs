@@ -79,6 +79,21 @@ impl Route {
             document: person_view::resource_of(person),
         }
     }
+
+    /// Commit `person`'s edit of this record in `doc`, under the message that names this record's
+    /// kind: the workspace refuses a change of the person's view that claims the shared layout's.
+    fn commit(&self, doc: &mut automerge::AutoCommit, person: &str) {
+        let now = crate::activity::now_seconds();
+        if self.document == DESKTOP_DOCUMENT {
+            shared_resource::commit_change(doc, person, now, None);
+        } else {
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(person_view::change_message(person))
+                    .with_time(now),
+            );
+        }
+    }
 }
 
 /// A record of a workspace this device reads and writes.
@@ -2149,12 +2164,7 @@ impl Layouts {
                     doc.rollback();
                     continue;
                 }
-                shared_resource::commit_change(
-                    &mut doc,
-                    person,
-                    crate::activity::now_seconds(),
-                    None,
-                );
+                key.1.commit(&mut doc, person);
                 // The person's own undo reads the record afresh.
                 self.held(&key, |layout| layout.undo = None);
                 self.show_step(workspace_id, handle, &key, doc, revision, &before);
@@ -2331,7 +2341,7 @@ impl Layouts {
             doc.rollback();
             return false;
         }
-        shared_resource::commit_change(&mut doc, person, crate::activity::now_seconds(), None);
+        key.1.commit(&mut doc, person);
         let written = PersonView::read(&doc);
         self.keep(&key, doc.clone(), revision);
         self.publish(&key, doc, Some(Written::View(written)), &before, revision);
