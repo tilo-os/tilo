@@ -14,7 +14,7 @@
 //! the workspaces keep apart.
 
 use automerge::transaction::{CommitOptions, Transactable as _};
-use automerge::{AutoCommit, ObjType, ROOT};
+use automerge::{AutoCommit, Change, ChangeHash, ChangeMetadata, ObjType, ROOT};
 use tilo_actions::surface::{FieldType, Surface};
 use tilo_automerge::ApplyIncoming as _;
 
@@ -133,15 +133,96 @@ pub fn chain(
     containers: &[(String, ObjType)],
 ) -> Result<Vec<automerge::Change>, automerge::AutomergeError> {
     let founding = structure(scope, containers)?;
+    chain_on(&founding, scope, version)
+}
+
+/// The steps that bring `founding`, the founding a record `scope` names stands on, to `version`.
+/// Derived on the founding the record itself holds, so a record founded by an older type — its
+/// containers those its type then declared — steps to the same version on every holder of it, and
+/// the steps a newer type derives on top of a founding it no longer has are never applied over it.
+///
+/// # Errors
+/// When a step cannot be made.
+pub fn chain_on(
+    founding: &automerge::Change,
+    scope: Scope<'_>,
+    version: u32,
+) -> Result<Vec<automerge::Change>, automerge::AutomergeError> {
     let mut doc = AutoCommit::new();
     doc.apply_incoming([founding.clone()])?;
-    let mut chain = vec![founding];
+    let mut chain = vec![founding.clone()];
     for version in 1..=version {
         let step = crate::evolution::step(scope, version, &doc)?;
         doc.apply_incoming([step.clone()])?;
         chain.push(step);
     }
     Ok(chain)
+}
+
+/// A document whose founding and steps a holder reads: a [`AutoCommit`] a record is written
+/// through, or the [`automerge::Automerge`] a store keeps.
+pub trait FoundingDoc {
+    /// The metadata of every change it holds.
+    fn change_metas(&mut self) -> Vec<ChangeMetadata<'_>>;
+
+    /// The change `hash` names.
+    fn change_by_hash(&mut self, hash: &ChangeHash) -> Option<Change>;
+}
+
+impl FoundingDoc for AutoCommit {
+    fn change_metas(&mut self) -> Vec<ChangeMetadata<'_>> {
+        self.get_changes_meta(&[])
+    }
+
+    fn change_by_hash(&mut self, hash: &ChangeHash) -> Option<Change> {
+        self.get_change_by_hash(hash)
+    }
+}
+
+impl FoundingDoc for automerge::Automerge {
+    fn change_metas(&mut self) -> Vec<ChangeMetadata<'_>> {
+        self.get_changes_meta(&[])
+    }
+
+    fn change_by_hash(&mut self, hash: &ChangeHash) -> Option<Change> {
+        automerge::ReadDoc::get_change_by_hash(self, hash)
+    }
+}
+
+/// The founding change `doc` holds for `scope`: the one the record's derived founding actor made,
+/// whatever containers its type declared then. `None` for a record founded before foundings were
+/// derived (its own devices' changes alone), which takes the one its type derives now ([`found`]).
+#[must_use]
+pub fn founding_of(doc: &mut impl FoundingDoc, scope: Scope<'_>) -> Option<automerge::Change> {
+    let actor = scope.founding_actor();
+    let hash = doc
+        .change_metas()
+        .into_iter()
+        .find(|change| change.actor.as_ref() == &actor && change.seq == 1)?
+        .hash;
+    doc.change_by_hash(&hash)
+}
+
+/// The step that brings the record `scope` names to `version`, derived on the founding the record
+/// `doc` holds (or the one its type derives, for a record founded before foundings were derived):
+/// [`migrate`], for a holder that has the record.
+///
+/// # Errors
+/// When the founding or the step cannot be made, or `version` is no version a record steps to (0).
+pub fn migrate_on(
+    doc: &mut impl FoundingDoc,
+    scope: Scope<'_>,
+    version: u32,
+    containers: &[(String, ObjType)],
+) -> Result<automerge::Change, automerge::AutomergeError> {
+    let founding = match founding_of(doc, scope) {
+        Some(founding) => founding,
+        None => structure(scope, containers)?,
+    };
+    chain_on(&founding, scope, version)?
+        .pop()
+        .filter(|_| version > 0)
+        .ok_or(automerge::AutomergeError::Fail)
 }
 
 /// The step that brings the record `scope` names to `version`, on the chain [`chain`] derives:
@@ -181,7 +262,11 @@ pub fn bring_up(
 ) -> Result<bool, crate::ModelError> {
     let from = crate::evolution::stored_version(doc);
     let mut changed = found((scope, app), containers, doc)?;
-    let chain = chain(scope, version, containers)?;
+    // The chain follows the founding this record stands on, not the one its type derives now:
+    // a newer type's founding names containers an older record never had, and applying it over
+    // the record's own would be a second change under one founding's actor and number.
+    let founding = founding_of(doc, scope).ok_or(automerge::AutomergeError::Fail)?;
+    let chain = chain_on(&founding, scope, version)?;
     let missing: Vec<automerge::Change> = chain
         .into_iter()
         .filter(|link| doc.get_change_by_hash(&link.hash()).is_none())
@@ -207,6 +292,12 @@ pub fn found(
     containers: &[(String, ObjType)],
     doc: &mut AutoCommit,
 ) -> Result<bool, automerge::AutomergeError> {
+    // A record already founded by its derived founding keeps it, whatever containers its type
+    // declared then: a later type's founding holds another container set, under the same actor
+    // and number, and applying it over the record's own is a conflicting change.
+    if founding_of(doc, scope).is_some() {
+        return Ok(false);
+    }
     let founding = structure(scope, containers)?;
     if doc.get_change_by_hash(&founding.hash()).is_some() {
         return Ok(false);

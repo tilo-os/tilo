@@ -2880,7 +2880,8 @@ impl Store {
     /// whole: `false` for the app's rewrite of its content for a version, decided as any write of
     /// the record's.
     fn judge_migration(
-        &self,
+        &mut self,
+        doc_id: &str,
         schema: Option<&Schema>,
         (kind, id): (&str, &str),
         named: Option<(u32, bool)>,
@@ -2898,17 +2899,31 @@ impl Store {
         if rewrite {
             return Ok(false);
         }
-        let derived = ty
-            .map(|ty| {
-                collab_types::document::founding::migrate(self.scope(kind, id), to, &ty.founding)
-            })
-            .transpose()
-            .map_err(|error| {
-                Refusal::Undeclared(format!(
-                    "the step `{kind}` derives to version {to} cannot be made: {error}"
-                ))
-            })?;
-        if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
+        // Derived on the founding the record holds, so a record founded by an older type takes
+        // the same step every holder of it derives, whatever containers the type declares now.
+        let Some(containers) = ty.map(|ty| ty.founding.clone()) else {
+            return Err(Refusal::Undeclared(format!(
+                "a migration of `{id}` to no kind this store declares"
+            )));
+        };
+        let workspace = self.workspace.clone();
+        let doc = self.doc(doc_id).map_err(|_| Refusal::Unplaced)?;
+        let derived = collab_types::document::founding::migrate_on(
+            doc,
+            collab_types::document::founding::Scope {
+                workspace: &workspace,
+                kind,
+                id,
+            },
+            to,
+            &containers,
+        )
+        .map_err(|error| {
+            Refusal::Undeclared(format!(
+                "the step `{kind}` derives to version {to} cannot be made: {error}"
+            ))
+        })?;
+        if derived.hash() == received.change.hash() {
             Ok(true)
         } else {
             Err(Refusal::Undeclared(format!(
@@ -2997,7 +3012,7 @@ impl Store {
                 .map(migration_of),
         );
         if let Some(((kind, id), named)) = &migration
-            && self.judge_migration(schema, (*kind, *id), *named, received)?
+            && self.judge_migration(doc_id, schema, (*kind, *id), *named, received)?
         {
             return Ok(());
         }

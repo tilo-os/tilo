@@ -349,8 +349,18 @@ impl<R: Resource, A> Replica<R, A> {
         let Invoke { id, arguments, .. } = invoke;
         // The action's declaration is what the write is dispatched against, and a type declares
         // its actions: the tree is built from them alone, so a write costs what it changed, not
-        // a read of the whole record (which is what publishing its state would take).
-        let tree = resource::publish_actions::<R>(R::KIND, R::LABEL);
+        // a read of the whole record (which is what publishing its state would take). A field
+        // edit is the one whose contract reads the record: whether it weakens security depends
+        // on the value now, so its tree is published from this record's state.
+        let tree = if id == resource::FIELD_EDIT {
+            resource::publish::<R>(
+                R::KIND,
+                R::LABEL,
+                &R::read(&self.doc).map_err(|error| ApiError::Failed(error.to_string()))?,
+            )
+        } else {
+            resource::publish_actions::<R>(R::KIND, R::LABEL)
+        };
         let address = ActionAddress::new(tree.id.as_str(), id);
         // Without an author, the replica's own actor: every replica is a
         // device of its own.
