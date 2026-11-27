@@ -696,9 +696,6 @@ export TILO_CONSOLE_LOG=$out/console.log TILO_CONSOLE_USER=$TILO_USER TILO_CONSO
 # check on a service that is still fetching its guest; the script's own waits
 # are the bound on those, not the console runner's default for one command.
 export TILO_CONSOLE_DEADLINE=1800
-# A secret sent before the prompt draws stays in the line buffer until it reads
-# it, so the unlock is tried often rather than waited for.
-export TILO_UNLOCK_DELAY=5
 mkdir -p "$TILO_RUN"
 # The machine under test boots with the TPM the install guest had: a keyslot the
 # image carries a signed boot chain for is sealed to this one device. Its firmware

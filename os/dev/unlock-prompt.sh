@@ -13,9 +13,11 @@
 # --serial-socket serves it): the secret is sent there, as a person at the
 # serial console would type it.
 #
-# It sends blindly, like os/dev/test-encrypted-install.sh: the prompt's arrival
-# is not observable from here, and a secret sent slightly early stays in the
-# tty's line buffer until the prompt reads it. Callers repeat it (the
+# Over the serial line it sends only once this boot has printed its unlock
+# prompt (`vm.sh this-boot`), and otherwise exits 1 for the caller to try again:
+# the boot loader's menu reads the same line, and a secret typed into it early
+# is taken as menu keys (`e`, `t`, arrows, Enter) that can pick "Reboot Into
+# Firmware Interface" instead of the system. Callers repeat it (the
 # boot-assessment harness's UNLOCK does, every few seconds) and stop once the
 # guest answers. Each call also keeps what the guest said in TILO_CONSOLE_LOG.
 #
@@ -32,21 +34,26 @@
 # prompt when the guest puts /dev/console on the screen.
 #
 # TILO_UNLOCK_SECRET, TILO_CONSOLE_LOG, TILO_SERIAL_SOCKET and the harness's
-# variables come with it, as for every vm.sh action. TILO_UNLOCK_DELAY is how many
-# seconds a call waits for the boot to reach its prompt before sending.
+# variables come with it, as for every vm.sh action.
 set -euo pipefail
 secret=${1:-${TILO_UNLOCK_SECRET:-}}
 [ -n "$secret" ] || { echo 'unlock-prompt: no secret (argument or TILO_UNLOCK_SECRET)' >&2; exit 2; }
 log=${TILO_CONSOLE_LOG:-}
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-case "$("$here/vm.sh" this-boot 2>/dev/null || true)" in
+booted=$("$here/vm.sh" this-boot 2>/dev/null || true)
+case "$booted" in
   *login:*) exit 0 ;;
 esac
 socket=${TILO_SERIAL_SOCKET:-}
 if [ -n "$socket" ] && [ -S "$socket" ]; then
+  # systemd's prompt: "Please enter passphrase for disk …", or "recovery key".
+  case "$booted" in
+    *'Please enter passphrase for disk'*|*'Please enter recovery key for disk'*) ;;
+    *) exit 1 ;;
+  esac
   exec python3 -I "$here/serial-console.py" "$socket" \
     --log "${log:-/dev/null}" \
-    "timeout:10" "sleep:${TILO_UNLOCK_DELAY:-20}" "send:$secret"
+    "timeout:10" "send:$secret"
 fi
 printf '%s' "$secret" | "$here/vm.sh" type - >/dev/null 2>&1 || exit 1
 "$here/vm.sh" keys ret >/dev/null 2>&1 || true
