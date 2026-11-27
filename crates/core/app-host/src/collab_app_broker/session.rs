@@ -413,6 +413,15 @@ impl JoinedChannel {
             .and_then(|local| local.opened_for.clone())
     }
 
+    /// The certificate the link that opened this connection's view verified, when a page of a
+    /// person's browser opened it ([`app_process::LocalAppConnection::opened_with`]).
+    pub(super) fn opened_with(&self) -> Option<tilo_user_identity::DeviceCert> {
+        self.lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .and_then(|local| local.opened_with.clone())
+    }
+
     /// What this host says of the `actions` the window shows, as the person this channel was
     /// admitted for would run them: now, and again on each change.
     pub(super) fn shown_actions(

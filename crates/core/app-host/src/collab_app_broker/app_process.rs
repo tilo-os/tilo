@@ -23,6 +23,9 @@ pub(super) struct LocalAppConnection {
     /// The caller the host opened this instance's view for
     /// ([`crate::services::AuthenticatedApplicationLaunch::opened_for`]).
     pub(super) opened_for: Option<tilo_actions::remote::Caller>,
+    /// The certificate the link that opened that view verified
+    /// ([`crate::services::AuthenticatedApplicationLaunch::opened_with`]).
+    pub(super) opened_with: Option<tilo_user_identity::DeviceCert>,
     /// The workspace agent the launch named, which the app acts as; `None` for the person.
     pub(super) member: Option<String>,
     process: PeerProcess,
@@ -239,6 +242,7 @@ impl LocalAppConnection {
                 continuation_instance: launch.continuation_instance,
                 windowless: launch.windowless,
                 opened_for: launch.opened_for,
+                opened_with: launch.opened_with,
                 member,
                 process,
                 connected: AtomicBool::new(true),

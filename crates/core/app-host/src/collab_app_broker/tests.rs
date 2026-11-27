@@ -144,6 +144,7 @@ impl crate::services::LauncherServices for RecordedLaunches {
                 launch_ticket: Some(31),
                 windowless: false,
                 opened_for: None,
+                opened_with: None,
             },
         ))
     }

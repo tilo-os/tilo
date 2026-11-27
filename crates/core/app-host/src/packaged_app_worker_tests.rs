@@ -40,6 +40,7 @@ impl crate::services::LauncherServices for LaunchedHere {
                 launch_ticket: None,
                 windowless: false,
                 opened_for: self.opened_for.lock().unwrap().clone(),
+                opened_with: None,
             },
         ))
     }

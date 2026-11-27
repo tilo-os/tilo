@@ -41,8 +41,9 @@ pub(super) enum Shows {
     /// A window the daemon launched, or one whose instance runs in the daemon's own process (a
     /// phone's), for the member the device acts as.
     Window,
-    /// A view opened for a caller the dispatch admitted.
-    View(Box<Caller>),
+    /// A view opened for a caller the dispatch admitted, with the certificate the link of the
+    /// page that opened it verified, when a page did.
+    View(Box<(Caller, Option<tilo_user_identity::DeviceCert>)>),
 }
 
 /// A connection the daemon made for an instance, until its collaboration service attests it.
@@ -507,7 +508,7 @@ impl Instances {
     /// instance could not be started.
     pub(crate) fn open_view(
         &self,
-        caller: &Caller,
+        (caller, certificate): (&Caller, Option<&tilo_user_identity::DeviceCert>),
         (app, workspace, origin): (&str, &str, Option<Descriptor>),
         record: Option<String>,
         reveal: Option<String>,
@@ -531,7 +532,7 @@ impl Instances {
         self.start(
             (app, workspace, origin),
             person,
-            Shows::View(Box::new(caller.clone())),
+            Shows::View(Box::new((caller.clone(), certificate.cloned()))),
             Some(patch),
             (record, reveal),
             None,
@@ -719,16 +720,20 @@ impl Instances {
             })?;
             made.remove(at)
         };
-        let (windowless, opened_for) = match made.shows {
-            Shows::Nothing => (true, None),
-            Shows::Window => (false, None),
-            Shows::View(caller) => (false, Some(*caller)),
+        let (windowless, opened_for, opened_with) = match made.shows {
+            Shows::Nothing => (true, None, None),
+            Shows::Window => (false, None, None),
+            Shows::View(view) => {
+                let (caller, certificate) = *view;
+                (false, Some(caller), certificate)
+            }
         };
         Some(AuthenticatedApplicationLaunch {
             continuation_instance: Some(instance),
             launch_ticket: None,
             windowless,
             opened_for,
+            opened_with,
         })
     }
 }

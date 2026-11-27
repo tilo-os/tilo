@@ -43,6 +43,7 @@ mod workspace_document_ownership {
                 launch_ticket: None,
                 windowless: false,
                 opened_for: None,
+                opened_with: None,
             },
         )
         .unwrap();

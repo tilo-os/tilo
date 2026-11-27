@@ -645,6 +645,10 @@ impl JoinedChannel {
         // A view the device opened for a caller of its dispatch acts as that caller, never as
         // the device's own person: what a press in it asks is theirs, within what they may do.
         let viewed = self.opened_for().filter(|_| current.agent_id.is_none());
+        // A view a page opened carries the certificate its person's link verified: its calls are
+        // that person's on that key, decided on their grants, never this connection's own
+        // admission, which is the host's.
+        let evidence = viewed.as_ref().and_then(|_| self.opened_with());
         let person = viewed.unwrap_or_else(|| current.caller(&route.cluster_id));
         let press = request.press;
         // Where the control the press answered stands, as the app's window says: its word places
@@ -744,16 +748,36 @@ impl JoinedChannel {
                 && state
                     .pressed_own_call(peer_id, &route.app_id, &person, &request.message, press)
                     .await;
-            let provider = action_provider::ConnectionActionProvider {
-                state: Arc::clone(&state),
-                own_peer: peer_id,
-                serving,
-                origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
+            let origin = match (continued_origin, &evidence) {
+                (Some(continued), _) => continued,
+                // Checked again as the call is made: a certificate revoked, or a person no
+                // longer in the workspace, since the page opened makes nothing here.
+                (None, Some(certificate)) => {
+                    match state.certified_origin(&person, certificate, pressed) {
+                        Ok(origin) => origin,
+                        Err(reason) => {
+                            return match refusal(
+                                &request.message,
+                                tilo_actions::remote::ActionCallError::Refused { reason },
+                            ) {
+                                Ok(answer) => answer.await,
+                                Err(error) => Err(error),
+                            };
+                        }
+                    }
+                }
+                (None, None) => InvocationCaller::Local {
                     route,
                     time: original_time,
                     admitted: Box::new(current),
                     pressed,
-                }),
+                },
+            };
+            let provider = action_provider::ConnectionActionProvider {
+                state: Arc::clone(&state),
+                own_peer: peer_id,
+                serving,
+                origin,
             };
             let asking = match &request.message {
                 tilo_actions::remote::RemoteActionMessage::Invoke(invoke) if keeps => {

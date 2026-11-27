@@ -1690,7 +1690,8 @@ impl Daemon {
         record: Option<String>,
         reveal: Option<String>,
     ) -> Result<tilo_socket::Stream, String> {
-        self.apps.open_view(caller, app, workspace, record, reveal)
+        self.apps
+            .open_view((caller, None), app, workspace, record, reveal)
     }
 
     /// What shows this device's workspaces' apps as web pages: what a page's session asks once
@@ -8462,13 +8463,13 @@ impl crate::key_sessions::PageViews for AppViews {
         &self,
         workspace: &str,
         app: &str,
-        caller: &Caller,
+        (caller, certificate): (&Caller, &DeviceCert),
     ) -> Result<
         tilo_server_protocol::page::window::WindowLink,
         tilo_server_protocol::page::PageRefusal,
     > {
         self.0
-            .open_view(caller, app, workspace, None, None)
+            .open_view((caller, Some(certificate)), app, workspace, None, None)
             .map(tilo_server_protocol::page::window::WindowLink::over)
             .map_err(tilo_server_protocol::page::PageRefusal::Unavailable)
     }

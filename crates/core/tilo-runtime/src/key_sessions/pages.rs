@@ -61,11 +61,17 @@ const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 /// The windows a device shows on web pages: a view of an app, opened for the page's person.
 pub trait PageViews: Send + Sync {
     /// A window of the app `app` (its id, among the apps the catalogue lists `caller`) in
-    /// `workspace`, shown for `caller` and acting as them, started as any window of the app is.
+    /// `workspace`, shown for `caller` and acting as them on the key `certificate` certifies, as
+    /// the page's link verified it, started as any window of the app is.
     ///
     /// # Errors
     /// The workspace has no such app, or its window could not be started.
-    fn open(&self, workspace: &str, app: &str, caller: &Caller) -> Result<WindowLink, PageRefusal>;
+    fn open(
+        &self,
+        workspace: &str,
+        app: &str,
+        opened_for: (&Caller, &DeviceCert),
+    ) -> Result<WindowLink, PageRefusal>;
 }
 
 /// The notifications the person of a page is shown on their devices, as the record of their
@@ -266,7 +272,7 @@ impl Inner {
         } else {
             app_named(&dispatch, caller, &address.app)?
         };
-        let mut window = views.open(&workspace, &app_id, caller)?;
+        let mut window = views.open(&workspace, &app_id, (caller, reader.1))?;
         let mut wells = desktop.then(|| {
             Box::new(DesktopWells {
                 workspace_id,

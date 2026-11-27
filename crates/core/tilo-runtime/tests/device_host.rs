@@ -602,7 +602,7 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
         &self,
         workspace: &str,
         app: &str,
-        caller: &Caller,
+        (caller, _): (&Caller, &tilo_user_identity::DeviceCert),
     ) -> Result<
         tilo_server_protocol::page::window::WindowLink,
         tilo_server_protocol::page::PageRefusal,

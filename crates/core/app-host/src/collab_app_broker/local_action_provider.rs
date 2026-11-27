@@ -285,6 +285,26 @@ impl AppBrokerState {
         caller: &Caller,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<Arc<dyn ActionProvider + Send + Sync>, String> {
+        let origin = self.certified_origin(caller, certificate, false)?;
+        Ok(Arc::new(super::action_provider::BrokerApi::for_run(
+            Arc::clone(self),
+            Some(origin),
+        )))
+    }
+
+    /// The origin a call of the person whose key `certificate` certifies carries, as the link
+    /// that carries their calls verified it ([`Self::certified_key_run`]): them on that key in
+    /// `caller`'s workspace, `pressed` when their own press asked for it.
+    ///
+    /// # Errors
+    /// `caller` is not the person the certificate names on its key, or the workspace does not
+    /// admit them now.
+    pub(super) fn certified_origin(
+        &self,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        pressed: bool,
+    ) -> Result<InvocationCaller, String> {
         let workspace = caller
             .workspace()
             .ok_or("an exact admitted workspace is required")?;
@@ -302,16 +322,12 @@ impl AppBrokerState {
         let admitted = self
             .admit_certificate(&route, certificate, caller.is_foreign_device())
             .map_err(|error| error.to_string())?;
-        let origin = InvocationCaller::Local {
+        Ok(InvocationCaller::Local {
             route,
             admitted: Box::new(admitted),
             time: Some(time),
-            pressed: false,
-        };
-        Ok(Arc::new(super::action_provider::BrokerApi::for_run(
-            Arc::clone(self),
-            Some(origin),
-        )))
+            pressed,
+        })
     }
 
     /// Preserve native physical intent without dropping the signed session.

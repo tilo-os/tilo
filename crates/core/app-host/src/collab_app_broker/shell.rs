@@ -174,6 +174,7 @@ impl Handed {
             launch_ticket: vouch.ticket,
             windowless: vouch.windowless,
             opened_for: None,
+            opened_with: None,
         };
         let opened = vouch
             .ticket

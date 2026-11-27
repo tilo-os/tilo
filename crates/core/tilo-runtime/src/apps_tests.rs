@@ -1647,7 +1647,12 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
 
     let _view = apps
         .instances
-        .connect(VIEWER, WORKSPACE, 7, Shows::View(Box::new(visitor.clone())))
+        .connect(
+            VIEWER,
+            WORKSPACE,
+            7,
+            Shows::View(Box::new((visitor.clone(), None))),
+        )
         .unwrap();
     let (mut broker_end, _) = listener.accept().unwrap();
     let mut named = [0; 256];
@@ -1708,7 +1713,7 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
     );
 
     let refused = apps
-        .open_view(&visitor, VIEWER, WORKSPACE, None, None)
+        .open_view((&visitor, None), VIEWER, WORKSPACE, None, None)
         .unwrap_err();
     assert!(refused.contains("no tilolang app"), "{refused}");
     assert!(

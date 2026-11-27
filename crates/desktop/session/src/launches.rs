@@ -493,6 +493,7 @@ impl Launches {
             launch_ticket: None,
             windowless: record.no_view,
             opened_for: None,
+            opened_with: None,
         })
     }
 }
@@ -646,6 +647,7 @@ impl LauncherServices for Launches {
                 launch_ticket: None,
                 windowless,
                 opened_for: None,
+                opened_with: None,
             }));
         }
         Ok(self.take_window(pid, app, workspace, window_instance))

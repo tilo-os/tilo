@@ -425,21 +425,25 @@ impl Apps {
     /// view is the caller's, limited to what they may do. Its window, which lays the view out
     /// and draws nothing, runs sandboxed as every tilolang process here does; the answer is the
     /// device's end of its page link (`tilo_server_protocol::page::window`), and closing it ends
-    /// the window.
+    /// the window. A page of a person's browser opens it with the certificate its link verified
+    /// (`certificate`): the view's calls carry it, so what they reach is that person's on that key.
     ///
     /// # Errors
     /// The app is no tilolang app installed here, no launcher can start its process, or its
     /// instance or its window did not start.
     pub fn open_view(
         &self,
-        caller: &tilo_actions::remote::Caller,
+        (caller, certificate): (
+            &tilo_actions::remote::Caller,
+            Option<&tilo_user_identity::DeviceCert>,
+        ),
         app: &str,
         workspace: &str,
         record: Option<String>,
         reveal: Option<String>,
     ) -> Result<tilo_socket::Stream, String> {
         let view = self.instances.open_view(
-            caller,
+            (caller, certificate),
             (app, workspace, self.origin_connection(app, workspace)?),
             record,
             reveal,
@@ -1609,6 +1613,7 @@ impl LauncherServices for Apps {
                 launch_ticket: None,
                 windowless: false,
                 opened_for: None,
+                opened_with: None,
             }));
         }
         if self.serves(pid, app, workspace) {
@@ -1617,6 +1622,7 @@ impl LauncherServices for Apps {
                 launch_ticket: None,
                 windowless: true,
                 opened_for: None,
+                opened_with: None,
             }));
         }
         if !self.launched.attest(pid, app, workspace) {
@@ -1628,6 +1634,7 @@ impl LauncherServices for Apps {
             // A launch with no window takes the app's actions and is never handed an `open`.
             windowless: self.launched.no_window(pid, app, workspace),
             opened_for: None,
+            opened_with: None,
         }))
     }
     #[cfg(target_os = "linux")]

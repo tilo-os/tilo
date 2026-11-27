@@ -129,6 +129,7 @@ fn app_in(
             launch_ticket: None,
             windowless: false,
             opened_for: None,
+            opened_with: None,
         },
     )
     .unwrap();

@@ -275,6 +275,11 @@ pub struct AuthenticatedApplicationLaunch {
     /// caller's, limited to what they may do, and it reads only what they may read. The connection
     /// itself is the instance's, which the device runs for the workspace.
     pub opened_for: Option<tilo_actions::remote::Caller>,
+    /// The certificate the link that opened the view for [`Self::opened_for`] verified, when a
+    /// page of a person's browser opened it: the evidence the view's calls carry, so a host action
+    /// it reaches is that person's on that key, never the host's own. `None` keeps the view's
+    /// calls on the connection's own admission.
+    pub opened_with: Option<tilo_user_identity::DeviceCert>,
 }
 
 /// What [`LauncherServices::launch_content`] started.
@@ -395,6 +400,7 @@ pub trait LauncherServices: Send + Sync {
             launch_ticket: None,
             windowless: false,
             opened_for: None,
+            opened_with: None,
         }))
     }
 

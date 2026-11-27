@@ -116,6 +116,7 @@ impl crate::services::LauncherServices for Launched {
                 launch_ticket: None,
                 windowless: false,
                 opened_for: None,
+                opened_with: None,
             },
         ))
     }

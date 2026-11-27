@@ -31,6 +31,7 @@ async fn checkout_channel(
                 launch_ticket: None,
                 windowless: false,
                 opened_for: None,
+                opened_with: None,
             },
         )
         .unwrap()
@@ -267,6 +268,7 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                     launch_ticket: None,
                     windowless: false,
                     opened_for: None,
+                    opened_with: None,
                 },
             )
             .unwrap();
