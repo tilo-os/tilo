@@ -1173,6 +1173,17 @@ DEVICE_TICKET = ("tilo.device", "devices", "issue")
 TICKET_CREDENTIAL = "tilo.ticket"
 
 
+def profile_socket(runtime: str, profile: Path) -> Path:
+    """The native socket of the daemon serving `profile` on a computer whose daemon is the
+    system's: `tilo_device_identity::login::daemon::profile_sockets` names it by an FNV-1a hash
+    of the profile's path in the account's runtime directory."""
+    held = 0xCBF2_9CE4_8422_2325
+    for byte in str(profile).encode():
+        held ^= byte
+        held = (held * 0x0000_0100_0000_01B3) & 0xFFFF_FFFF_FFFF_FFFF
+    return Path(runtime) / "tilo" / f"profile-{held:016x}" / "native.sock"
+
+
 def devices_of(spec: dict) -> list[dict]:
     """The devices a walk names, in order, each `{"name", "session_args"?}`: `"devices":
     ["laptop", "phone"]`, or an entry as an object where one device starts differently (the
@@ -1303,6 +1314,9 @@ class Devices:
     def __init__(self, first: str, session: Session):
         self.order = [first]
         self.sessions: dict[str, Session] = {first: session}
+        #: The device daemons each further device started: the session's, as a device's own
+        #: service is, and stopped with the walk.
+        self.daemons: list[subprocess.Popen] = []
         # What fell short of making the devices one person's in one workspace: every step after
         # it says what that leaves out, so the walk goes on and this is kept in its report.
         self.trouble: list[str] = []
@@ -1361,10 +1375,42 @@ class Devices:
         ticket_file.touch(mode=0o600)
         ticket_file.write_text(str(ticket))
         began = self.lap(name, "pair", began)
+        # The device's own daemon, as a device's service is: it serves the profile named in its
+        # environment, under this login's runtime directory, and spends the ticket at its start.
+        account = real_apps.session_account()
+        real_apps.hand_over(state, account)
+        daemon_env = {**os.environ, **real_apps.account_env(account, state),
+                      "TILO_RUNTIME_PROFILE": str(state / "profile"),
+                      "CREDENTIALS_DIRECTORY": str(credentials),
+                      "TILO_APPS_DATA_DIR": str(state / "apps"),
+                      "TILO_APPS_SYSTEM_DIR": str(state / "system"),
+                      "TILO_RUNTIME_BUNDLE_DIR": str(state / "apps/runtimes"),
+                      "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE":
+                          str(state / "keys/runtime-publishers.txt"),
+                      "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_runtime=info")}
+        daemon_log = (logs / f"device-daemon-{tag}.log").open("w")
+        daemon = subprocess.Popen(
+            [*as_account(account), str(BUILD / "bin/tilo-runtime")],
+            stdout=daemon_log, stderr=subprocess.STDOUT, env=daemon_env,
+            start_new_session=True)
+        self.daemons.append(daemon)
+        socket = profile_socket(daemon_env["XDG_RUNTIME_DIR"], state / "profile")
+
+        def daemon_died():
+            said = ""
+            with contextlib.suppress(OSError):
+                said = (logs / f"device-daemon-{tag}.log").read_text(errors="replace")[-1200:]
+            raise Failed(f"the {name}'s device daemon ended ({daemon.returncode}): {said}")
+
+        until(f"the {name}'s device daemon",
+              lambda: socket.exists()
+              or (daemon.poll() is not None and daemon_died()), 120, 0.1)
         session = Session(state)
         session.start(apps=apps, fresh=True, out=logs, tag=tag, tapps=tapps,
                       session_args=session_args,
-                      env={**(env or {}), "CREDENTIALS_DIRECTORY": str(credentials)})
+                      env={**(env or {}),
+                           "TILO_SESSION_MACHINE_DAEMON": "1",
+                           "TILO_RUNTIME_PROFILE": str(state / "profile")})
         began = self.lap(name, "start", began)
         root = "identity/user-identity/pubkey.bin"
         if (state / root).read_bytes() != (first.state / root).read_bytes():
@@ -1416,9 +1462,15 @@ class Devices:
         return workspace
 
     def stop(self) -> None:
-        """Stop every further device's session; the first is the walk's to stop."""
+        """Stop every further device's session and its daemon; the first is the walk's to stop."""
         for name in self.further():
             self.sessions[name].stop()
+        for daemon in self.daemons:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(daemon.pid, signal.SIGTERM)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                daemon.wait(30)
+        self.daemons.clear()
 
 
 def start_devices(spec: dict, variant: str, session: Session, state: Path, out: Path,
