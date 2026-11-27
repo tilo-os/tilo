@@ -3583,6 +3583,132 @@ fn a_shell_link_whose_persons_services_did_not_start_answers_why() {
     );
 }
 
+/// A computer whose person's part cannot start at all — the store their workspaces are kept in
+/// cannot be opened — answers the shell link that waited for it with that failure: a real daemon
+/// starts, its part fails, and the seat that asked before asks again on the next start.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "a first start that founds the person, the store it cannot open, and the next start's link, read top to bottom"
+)]
+fn a_shell_link_answers_why_the_persons_part_did_not_start() {
+    use io::{BufRead as _, Write as _};
+    use serde_json::json;
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let private = |path: &std::path::Path| {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .unwrap();
+    };
+    let (home, run, profile) = (
+        dir.path().join("home"),
+        dir.path().join("run"),
+        dir.path().join("profile"),
+    );
+    for path in [&home, &run, &profile] {
+        private(path);
+    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", &home)
+        .set("XDG_RUNTIME_DIR", &run)
+        .set("TILO_IDENTITY_ROOT", dir.path().join("identity"))
+        .remove("CREDENTIALS_DIRECTORY")
+        .remove("TILO_RUNTIME_PROFILE");
+    // One request on the daemon's own endpoint, from this process, answered on a line.
+    let ask = |socket: &std::path::Path, request: &serde_json::Value| {
+        let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .unwrap();
+        writeln!(&stream, "{request}").unwrap();
+        let mut line = String::new();
+        io::BufReader::new(stream).read_line(&mut line).unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()
+    };
+
+    // A first start founds this computer's person, as its first boot does, and stops: what they
+    // read and write is kept for the start that follows.
+    let first = super::Running::start(&profile).unwrap();
+    let socket = first.native_socket().to_owned();
+    let found = ask(
+        &socket,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tilo_do", "arguments": {"path": "devices#found"}}}),
+    );
+    assert_ne!(found["result"]["isError"], true, "{found}");
+    let who = ask(&socket, &json!({"native": "account#who"}));
+    let person = who["person"]
+        .as_str()
+        .expect("the account that founded the person acts as them")
+        .to_owned();
+    first.stop().unwrap();
+    // The seat this process held a link on before the daemon restarted: what a session asks with
+    // again once its link ended.
+    let uid = rustix::process::geteuid().as_raw();
+    let pid = std::process::id();
+    let start = crate::apps::process_start_time(pid).expect("this process's start");
+    let seats = profile.join("seats");
+    std::fs::create_dir_all(&seats).unwrap();
+    let record = json!({"uid": uid, "pid": pid, "start": start, "person": person});
+    tilo_files::native::atomic::write_private(
+        &seats.join(format!("{uid}-{pid}.json")),
+        record.to_string().as_bytes(),
+    )
+    .unwrap();
+    // The store this device keeps its workspaces in cannot be opened: where its directory belongs
+    // stands a file, as a disk damaged or restored over it leaves.
+    let store = tilo_device_identity::login::Place::here(tilo_api::calls::device_keys())
+        .unwrap()
+        .dir()
+        .join("own");
+    match std::fs::remove_dir_all(&store) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => panic!("the store this device keeps: {error}"),
+    }
+    std::fs::write(&store, b"").unwrap();
+
+    // Its person's part cannot start, and the link asked while it would have is answered that
+    // failure rather than held for a part that will not come.
+    let second = super::Running::start(&profile).unwrap();
+    let socket = second.native_socket().to_owned();
+    let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    writeln!(&stream, "{}", json!({"native": "shells#link"})).unwrap();
+    let (said, link) =
+        runtime_portal::fd_transport::recv_with_fd(&stream).expect("the daemon answers the link");
+    let answer: serde_json::Value = serde_json::from_slice(&said).unwrap();
+    assert!(link.is_none(), "no link is handed: {answer}");
+    let why = answer["error"]
+        .as_str()
+        .expect("the link is answered why it is not made");
+    assert!(
+        why.contains("did not start"),
+        "the answer says the person's services did not start: {why}"
+    );
+    assert!(
+        why.contains("this device's workspace service"),
+        "the answer is the daemon's own words for the store it could not open: {why}"
+    );
+    assert!(
+        !why.contains("ask again in a moment"),
+        "the link is not told to ask again: {why}"
+    );
+    let ended = second
+        .stop()
+        .expect_err("the daemon ends when its person's part cannot start");
+    assert!(
+        format!("{ended}").contains("this device's workspace service"),
+        "its end says which store could not be opened: {ended}"
+    );
+}
+
 /// A call a person's program made over the action wire, still running as the person's part
 /// ends, is answered on the connection it was made on; a call made on it while the part changes
 /// waits there and is answered by the part that starts next. Nothing the caller sent is lost,

@@ -138,7 +138,11 @@ fn main() -> std::process::ExitCode {
     // this process only stands in for it.
     if tilo_session::shell_start::asks_the_service(
         host_desktop,
-        !matches!(&launch_link, tilo_session::shell_start::Launch::None),
+        !matches!(
+            &launch_link,
+            tilo_session::shell_start::Launch::None
+                | tilo_session::shell_start::Launch::Refused { .. }
+        ),
     ) {
         return tilo_session::shell_start::through_the_service(&args);
     }
@@ -178,13 +182,37 @@ fn main() -> std::process::ExitCode {
     // The sign-in answered this session a founding link, not a shell's: the person it made or
     // joined is here now, so the session asks its service for their link before it starts. A
     // service that never answers leaves the session reading no workspace, as any other the
-    // daemon did not start.
-    let launch_link = match launch_link {
-        tilo_session::shell_start::Launch::Founding => tilo_session::shell_start::founding_link(),
-        tilo_session::shell_start::Launch::Shell(handed) => Some(handed),
-        tilo_session::shell_start::Launch::None => None,
-    };
-    start(ours, command, line, host_desktop, &identity, launch_link)
+    // daemon did not start; the words it answered with go to the screen in front of the session.
+    let (launch_link, refusal) = session_link(launch_link);
+    start(
+        ours,
+        command,
+        line,
+        host_desktop,
+        &identity,
+        launch_link,
+        refusal,
+    )
+}
+
+/// The link this session reads and writes its person's workspaces on, and the service's words for
+/// why it has none. A founding link is asked for the person's link the sign-in made or joined, a
+/// shell's link is taken as it was handed, and a refusal keeps its words for the screen that says
+/// this login keeps nothing.
+#[cfg(target_os = "linux")]
+fn session_link(
+    launch: tilo_session::shell_start::Launch,
+) -> (Option<std::os::fd::OwnedFd>, Option<String>) {
+    use tilo_session::shell_start::Launch;
+    match launch {
+        Launch::Founding => match tilo_session::shell_start::founding_link() {
+            Ok(linked) => (Some(linked), None),
+            Err(why) => (None, Some(why)),
+        },
+        Launch::Shell(handed) => (Some(handed), None),
+        Launch::None => (None, None),
+        Launch::Refused { why } => (None, Some(why)),
+    }
 }
 
 /// The session's own arguments and the command it starts, split at `--` .
@@ -614,6 +642,7 @@ fn start(
     host_desktop: bool,
     identity: &tilo_session::startup::Identity,
     launch_link: Option<std::os::fd::OwnedFd>,
+    refusal: Option<String>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
     use std::sync::Arc;
@@ -749,8 +778,11 @@ fn start(
         ..device_options(machine, config)
     };
     options.host_desktop = host_desktop;
-    // The link this computer's service handed this session, which its reads and writes go over.
+    // The link this computer's service handed this session, which its reads and writes go over;
+    // when the service refused one, the words it refused with, for the screen that says this
+    // login keeps nothing.
     options.shell_link = launch_link;
+    options.shell_link_refusal = refusal;
     // The person's files: the files daemon mounts them as the Files app's endpoint, so the
     // session records its process before the daemon's connections arrive.
     // The login runs the daemon on a machine this session owns; a session anywhere else serves

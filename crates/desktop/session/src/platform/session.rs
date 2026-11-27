@@ -141,6 +141,9 @@ impl Session {
         // session's own reads and writes go there, the workspace resources it shows itself are
         // followed there, and its apps are vouched for on it. When the link ends, the session asks
         // the daemon at its own socket for another for the same seat, and goes on.
+        // Why the device's daemon answered this session no link, when it said so: a login it did
+        // not start shows those words, rather than only saying that it did not start.
+        let refusal = options.shell_link_refusal.take();
         let daemon_link = tilo_session_client::daemon_documents::inherited_link(
             options.shell_link.take(),
             tilo_rt::app().handle(),
@@ -157,6 +160,7 @@ impl Session {
             Err(why) => Err(why),
         };
         if let Err(reason) = &daemon_link {
+            let reason = refusal.unwrap_or_else(|| reason.clone());
             tracing::error!(%reason, "this session reads and writes no workspace");
             // On a computer whose system daemon starts every login's shell, a login it did not
             // start keeps nothing the person does: say so in front of everything, rather than open
@@ -167,7 +171,7 @@ impl Session {
                 && options.machine.is_owned()
                 && tilo_api::daemon::this_computer().is_ok_and(|place| place.system())
             {
-                options.setup = Some(BeforeShell::NotStarted);
+                options.setup = Some(BeforeShell::NotStarted { why: Some(reason) });
             }
         }
         // The device's tilolang processes, which the daemon runs: each window's instance is

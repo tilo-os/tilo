@@ -207,6 +207,10 @@ pub struct Options {
     /// its own instead. `None`: that one.
     #[cfg(unix)]
     pub shell_link: Option<std::os::fd::OwnedFd>,
+    /// Why the device's daemon answered this session no link, when it said so: what the screen in
+    /// front of a login it did not start shows as the cause. `None`: no refusal to show.
+    #[cfg(unix)]
+    pub shell_link_refusal: Option<String>,
     /// What keeps the daemon that made [`Self::shell_link`] running, ended only after the session
     /// is: a test's daemon in its own process, with the profile it serves. `None` for a session
     /// the daemon started.
@@ -403,6 +407,8 @@ impl Default for Options {
             drives: None,
             #[cfg(unix)]
             shell_link: None,
+            #[cfg(unix)]
+            shell_link_refusal: None,
             #[cfg(unix)]
             shell_daemon: None,
             #[cfg(target_os = "linux")]

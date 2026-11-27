@@ -83,8 +83,9 @@ pub enum BeforeShell {
     WaitForClock(ClockWait),
     /// A login on a computer whose system daemon starts every person's shell, which it did not
     /// start: nothing done here would be kept, so the person logs out and in again, or restarts
-    /// into Repair Mode. It stays until they do.
-    NotStarted,
+    /// into Repair Mode. It stays until they do, showing `why` as the cause when the daemon said
+    /// one.
+    NotStarted { why: Option<String> },
 }
 
 /// What the layer shows, while it shows anything.
@@ -395,8 +396,8 @@ impl Setup {
                     wait,
                 }
             }
-            BeforeShell::NotStarted => Surface::NotStarted {
-                widgets: covering(Box::new(not_started(commands)), placement),
+            BeforeShell::NotStarted { why } => Surface::NotStarted {
+                widgets: covering(Box::new(not_started(commands, why.as_deref())), placement),
             },
         };
         let mut setup = Self {
@@ -421,7 +422,7 @@ impl Setup {
             size: (1, 1),
             scale: self.scale,
         };
-        let mut widgets = covering(Box::new(not_started(&self.commands)), placement);
+        let mut widgets = covering(Box::new(not_started(&self.commands, None)), placement);
         if !self.outputs.is_empty() {
             widgets.outputs_changed(&self.outputs);
         }
@@ -492,14 +493,22 @@ impl Setup {
 }
 
 /// What a login the daemon did not start shows: that nothing here would be kept, logging out to
-/// sign in again, and restarting to reach Repair Mode from the boot menu.
-fn not_started(commands: &Rc<RefCell<Vec<SessionCommand>>>) -> ui::widget::Container {
+/// sign in again, and restarting to reach Repair Mode from the boot menu. `why`, the daemon's own
+/// words for what kept it from starting, stands above the title when it said them.
+fn not_started(
+    commands: &Rc<RefCell<Vec<SessionCommand>>>,
+    why: Option<&str>,
+) -> ui::widget::Container {
     let log_out = Rc::clone(commands);
     let restart = Rc::clone(commands);
     let face = ui::widget::arrival_failure(
         t("session-not-started-title"),
         t("session-not-started-body"),
-    )
+    );
+    let face = match why {
+        Some(why) => face.with_source(why),
+        None => face,
+    }
     .with_action(
         ui::widget::Button::new("session-not-started-log-out", &t("session-power-log-out"))
             .on_click(move || log_out.borrow_mut().push(SessionCommand::LogOut)),

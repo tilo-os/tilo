@@ -1840,7 +1840,7 @@ fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
 fn a_login_the_daemon_did_not_start_says_so_and_logs_out() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
-        setup: Some(tilo_session::BeforeShell::NotStarted),
+        setup: Some(tilo_session::BeforeShell::NotStarted { why: None }),
         collab: false,
         ..Options::default()
     });
@@ -1923,6 +1923,59 @@ fn a_login_the_daemon_did_not_start_says_so_and_logs_out() {
         .expect("a press by name");
     session.step(Duration::from_millis(1)).unwrap();
     assert!(session.ended(), "logging out ends the session");
+}
+
+/// A login whose daemon answered no link carries the daemon's own words for what kept the person's
+/// services from starting: the screen in front of the desktop reads them above its advice to log
+/// out and in again, so the person reads the cause rather than only "Tilo didn't start".
+#[test]
+fn a_login_the_daemon_did_not_start_shows_the_daemons_words() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let why = "this computer's person's services did not start: this device's workspace service: \
+               io: Not a directory (os error 20)";
+    let mut session = crate::common::headless(Options {
+        setup: Some(tilo_session::BeforeShell::NotStarted {
+            why: Some(why.to_owned()),
+        }),
+        collab: false,
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(
+        session.setup_up(),
+        "the screen stands in front of the desktop"
+    );
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label == "Tilo didn't start"),
+        "it says Tilo didn't start: {labels:?}"
+    );
+    // What assistive technology reads carries the daemon's words with the advice the screen gives.
+    let read: Vec<String> = session
+        .a11y_windows()
+        .into_iter()
+        .flat_map(|(_, _, tree)| tree.nodes)
+        .flat_map(|(_, node)| {
+            [
+                node.label().map(str::to_owned),
+                node.description().map(str::to_owned),
+            ]
+        })
+        .flatten()
+        .collect();
+    assert!(
+        read.iter().any(|said| said.contains(why)),
+        "it carries the daemon's own words for why: {read:?}"
+    );
+    assert!(
+        read.iter()
+            .any(|said| said.contains("Log out, then log in again")),
+        "and the advice it always gives: {read:?}"
+    );
+    for _ in 0..3 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert!(session.setup_up(), "nothing takes it down but the person");
 }
 
 tilo_test_env::scenario! {

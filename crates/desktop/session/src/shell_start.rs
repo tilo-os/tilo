@@ -34,6 +34,10 @@ pub enum Launch {
     /// The sign-in's founding link: this account has no person yet, and this session may make one
     /// or join one, and asks again for its person's link once it has.
     Founding,
+    /// The service refused this session's link, saying why: the person's services did not start,
+    /// or the secret it was given was spent. The words are the ones the screen in front of the
+    /// session shows when it has no workspace to open.
+    Refused { why: String },
 }
 
 /// The link this session is the shell of this computer's service by: the one-use secret the
@@ -71,33 +75,29 @@ pub fn take_launch_link() -> Launch {
         Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Founding) => Launch::Founding,
         Err(error) => {
             eprintln!("tilo-session: the link this computer's service gave this session: {error}");
-            Launch::None
+            Launch::Refused { why: error }
         }
     }
 }
 
 /// The person's link for the session a sign-in answered a founding link: asked of this computer's
 /// service once the person exists. The daemon answers it once their services run, so the session
-/// waits there rather than asking again. `None` when the service answers no link, and the session
-/// then reads no workspace, as any session the daemon did not start.
-#[must_use]
-pub fn founding_link() -> Option<std::os::fd::OwnedFd> {
+/// waits there rather than asking again. It says why when the service answers no link, and the
+/// session then reads no workspace, as any session the daemon did not start.
+///
+/// # Errors
+/// The service is not placed, answers no link, or answers with the failure that kept it from
+/// starting the person's part.
+pub fn founding_link() -> Result<std::os::fd::OwnedFd, String> {
     let socket = tilo_api::daemon::this_computer()
-        .ok()
-        .map(|place| place.native())?;
+        .map(|place| place.native())
+        .map_err(|error| format!("this computer's service is not placed: {error}"))?;
     match tilo_session_client::daemon_documents::link_with(&socket, None) {
-        Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Shell(link)) => Some(link),
+        Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Shell(link)) => Ok(link),
         Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Founding) => {
-            eprintln!(
-                "tilo-session: this session's person's link: this computer is still setting its \
-                 person up"
-            );
-            None
+            Err("this computer is still setting its person up".to_owned())
         }
-        Err(error) => {
-            eprintln!("tilo-session: this session's person's link: {error}");
-            None
-        }
+        Err(error) => Err(error),
     }
 }
 
