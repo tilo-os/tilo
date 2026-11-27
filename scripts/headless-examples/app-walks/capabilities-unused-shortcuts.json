@@ -63,7 +63,10 @@
           "wait_for": "Add trigger"
         },
         {
-          "click": "App to watch"
+          "press": "App opened"
+        },
+        {
+          "click": "so.tilo.notes"
         },
         {
           "type": "so.tilo.chat"
@@ -75,7 +78,8 @@
           "must": [
             {
               "see": [
-                "when the app opens \"so.tilo.chat\""
+                "An app opens",
+                "so.tilo.chat"
               ]
             }
           ]

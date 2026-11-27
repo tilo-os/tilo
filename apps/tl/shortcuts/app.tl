@@ -416,6 +416,9 @@ type Workbench (untitled: "Shortcuts") {
     picker: Collection<Offer>
     picker_for: Option<Draft>
     picker_block: Text = ""
+    /// The draft New shortcut last made, which the window shows: a press of that button runs the
+    /// action itself, so the draft it makes is opened here and never only listed in the sidebar.
+    opened: Text = ""
 }
 
 root workbench: Workbench
@@ -1878,12 +1881,18 @@ fn free_draft_name(w: Workbench, base: Text, number: Int) -> Text {
     } else { candidate }
 }
 
+/// Put the open draft away: the overview stands again, and the window names no draft.
+action close_draft(w: Workbench) (icon: .x, label: "Close the draft") {
+    w.opened = ""
+}
+
 primary action new_draft(w: Workbench, name: Text = "New shortcut") (
     icon: .plus,
     label: "New shortcut",
 ) {
     let draft = w.drafts.insert(Draft(name: unused_name(w, name)))
     draft.shortcut_id = "s" + draft.id().slice(0, 16)
+    w.opened = draft.shortcut_id
     w.notice = ""
     w.failure = ""
 }
@@ -3399,7 +3408,7 @@ action dismiss_notice(w: Workbench) (icon: .x, label: "Dismiss") {
 // The window
 // ---------------------------------------------------------------------------
 fn nav_key(showing: Text, open_draft: Option<Draft>, saved: Option<Saved>) -> Text {
-    if showing == "draft" {
+    if open_draft != .none {
         if let d = open_draft { "draft:{d.id()}" } else { "overview" }
     } else if showing == "saved" {
         if let s = saved { "saved:{s.id}" } else { "overview" }
@@ -3477,11 +3486,13 @@ view window(w: Workbench) {
     state saved: Option<Saved> = .none
     let open_draft: Option<Draft> = if let chosen = draft {
         .some(chosen)
+    } else if w.opened != "" {
+        w.drafts.find(one -> one.shortcut_id == w.opened)
     } else if showing == "draft" { w.drafts.last() } else { .none }
     ui.NavShell(
         content_kind: .page,
-        title: if showing == "draft" {
-            if let d = open_draft { draft_label(d.name) } else { "Shortcuts" }
+        title: if let d = open_draft {
+            draft_label(d.name)
         } else if showing == "saved" {
             if let s = saved { s.name } else { "Shortcuts" }
         } else { "Overview" },
@@ -3500,7 +3511,7 @@ view window(w: Workbench) {
         sidebar: {
             ui.NavList(selected: nav_key(showing, open_draft, saved)) {
                 ui.NavItem("overview", "Overview", icon: .layout_dashboard) {
-                    on select: set(showing, "overview").then(set(draft, .none))
+                    on select: set(showing, "overview").then(set(draft, .none)).then(close_draft(w))
                 }
                 if not w.drafts.is_empty() {
                     ui.NavSection("Drafts") {
@@ -3515,7 +3526,9 @@ view window(w: Workbench) {
                     ui.NavSection("Saved") {
                         for s in w.saved {
                             ui.NavItem("saved:{s.id}", s.name, icon: .play) {
-                                on select: set(showing, "saved").then(set(saved, .some(s)))
+                                on select: set(showing, "saved")
+                                    .then(set(saved, .some(s)))
+                                    .then(close_draft(w))
                             }
                         }
                     }
@@ -3543,17 +3556,8 @@ view window(w: Workbench) {
                                 on dismiss: dismiss_notice(w)
                             }
                         }
-                        if showing == "draft" {
-                            if let d = open_draft {
-                                editor(w, d)
-                            } else {
-                                ui.EmptyState(
-                                    "No drafts yet",
-                                    message: "Press New shortcut to start one.",
-                                    icon: .pencil,
-                                    inline: true,
-                                )
-                            }
+                        if let d = open_draft {
+                            editor(w, d)
                         } else if showing == "saved" {
                             if let s = saved {
                                 saved_page(w, s)
@@ -3569,7 +3573,7 @@ view window(w: Workbench) {
         }
     }
     if let d = open_draft {
-        if showing == "draft" and w.sheet == "save" {
+        if w.sheet == "save" {
             save_sheet(w, d)
         }
     }
