@@ -1050,6 +1050,8 @@ impl tilo_broker_core::workspace_commits::WorkspaceCommits for DaemonReceipts {
 #[derive(Clone)]
 pub struct DaemonWritesFeed {
     told: tokio::sync::broadcast::Sender<DocumentWritten>,
+    /// Held by every copy of the feed: while one is, a follower may still subscribe.
+    kept: std::sync::Arc<()>,
 }
 
 /// How many writes a follower may fall behind by before it reads everything again.
@@ -1059,23 +1061,28 @@ const FOLLOWED_WRITES: usize = 256;
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl DaemonWritesFeed {
-    /// Tell every follower of `shell`'s writes, for as long as the feed is followed.
+    /// Tell every follower of `shell`'s writes, for as long as the feed is followed: a follower
+    /// is told each write whether or not anything still holds the feed it subscribed from.
     #[must_use]
     pub fn start(shell: &DaemonShell) -> Self {
         let (told, _) = tokio::sync::broadcast::channel(FOLLOWED_WRITES);
-        let feed = Self { told: told.clone() };
+        let feed = Self {
+            told: told.clone(),
+            kept: std::sync::Arc::default(),
+        };
         // A desktop with no link hears of no write: there is no daemon to tell it one.
         if shell.inner.link.is_err() {
             return feed;
         }
         let shell = shell.clone();
-        let told = told.downgrade();
+        let kept = std::sync::Arc::downgrade(&feed.kept);
         shell.inner.runtime.clone().spawn(async move {
             loop {
                 let answer = shell.next_writes().await;
-                let Some(told) = told.upgrade() else {
+                // Nobody follows the writes any more, and nobody can start to.
+                if told.receiver_count() == 0 && kept.strong_count() == 0 {
                     return;
-                };
+                }
                 match answer {
                     Ok(Some(writes)) => {
                         for write in writes {

@@ -347,6 +347,8 @@ fn the_desktop_reads_and_writes_its_workspaces_through_the_daemon() {
     assert_eq!(served, "the serving device refused the layout");
 }
 
+/// Each write the daemon takes reaches a follower, for as long as it follows: also once nothing
+/// holds the feed it subscribed from, as a desktop's followers outlive the feed its start made.
 #[test]
 fn the_desktop_hears_each_write_the_daemon_took() {
     let runtime = runtime();
@@ -355,6 +357,7 @@ fn the_desktop_hears_each_write_the_daemon_took() {
     let shell = DaemonShell::new(Ok(link), runtime.handle().clone());
     let feed = DaemonWritesFeed::start(&shell);
     let mut followed = feed.follow();
+    drop(feed);
     runtime.block_on(async {
         // The shell's connection follows the daemon's writes from the moment it opened: one taken
         // before the desktop asked is told too.
@@ -362,27 +365,29 @@ fn the_desktop_hears_each_write_the_daemon_took() {
             .ask(runtime_collab::wire::shell::ShellCall::Workspaces)
             .await
             .unwrap();
-        daemon
-            .writes
-            .send(ResourceWrite {
-                workspace: WORKSPACE.to_owned(),
-                app: DESKTOP_APP.to_owned(),
-                record: DESKTOP_DOCUMENT.to_owned(),
-                together: std::sync::Arc::default(),
-            })
-            .unwrap();
-        let told = tokio::time::timeout(std::time::Duration::from_secs(10), followed.recv())
-            .await
-            .expect("the write is told")
-            .unwrap();
-        assert_eq!(
-            (
-                told.workspace.as_str(),
-                told.app.as_str(),
-                told.record.as_str()
-            ),
-            (WORKSPACE, DESKTOP_APP, DESKTOP_DOCUMENT)
-        );
+        for record in [DESKTOP_DOCUMENT, "a later document"] {
+            daemon
+                .writes
+                .send(ResourceWrite {
+                    workspace: WORKSPACE.to_owned(),
+                    app: DESKTOP_APP.to_owned(),
+                    record: record.to_owned(),
+                    together: std::sync::Arc::default(),
+                })
+                .unwrap();
+            let told = tokio::time::timeout(std::time::Duration::from_secs(10), followed.recv())
+                .await
+                .expect("the write is told")
+                .unwrap();
+            assert_eq!(
+                (
+                    told.workspace.as_str(),
+                    told.app.as_str(),
+                    told.record.as_str()
+                ),
+                (WORKSPACE, DESKTOP_APP, record)
+            );
+        }
     });
 }
 
