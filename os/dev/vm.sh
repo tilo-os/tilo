@@ -535,7 +535,6 @@ cmd_greeter_acceptance() {
 GUEST_TESTS=(
   "tools/atspi_external_client.py atspi-external-client.py"
   "os/tests/installed_atspi_apps.sh installed-atspi-apps.sh"
-  "apps/file-explorer/tests/atspi_smoke.sh files-atspi-smoke.sh"
   "os/tests/collaborative-files-image-contract.sh collaborative-files-image-contract.sh"
   "os/tests/boot_performance_check.sh boot-performance-check.sh"
   "os/tests/h264-boot-check.py h264-boot-check.py"

@@ -8,9 +8,10 @@
 # The image mode runs during os/Containerfile itself.  Runtime mode is driven
 # over SSH by the installed-desktop check (t's os-acceptance-{arch}) after bootc
 # installation and graphical login, through `os/dev/vm.sh test`, which copies
-# this script, the Files AT-SPI smoke
-# and the external AT-SPI client (test tooling the image does not ship) into
-# the guest and names their directory in TILO_GUEST_TESTS.
+# this script and the external AT-SPI client (test tooling the image does not
+# ship) into the guest and names their directory in TILO_GUEST_TESTS. The
+# Files accessibility scenario is data in the package's signed manifest, not a
+# script of its own.
 # It intentionally does not turn missing FUSE/session facilities into skips.
 set -euo pipefail
 
@@ -211,7 +212,31 @@ case "$manifest" in
   *) die "Files manifest $manifest is not the signed record" ;;
 esac
 require_file "$manifest"
-require_exec "$payload/bin/file-explorer"
+# Files is a tilolang package: its tree is the compiled module, not an ELF
+# binary, and the program that draws it is the tilolang runtime's own binary,
+# which the package's entrypoint names and the image ships beside the Tilo
+# runtime. Read both from the signed record rather than assuming its paths.
+for part in app.wasm app.ids surface.json; do
+  require_file "$payload/$part"
+done
+tl_entry="$(python3 - "$(at "$manifest")" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+entry = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["entrypoint"]
+print(entry.get("runtime", ""))
+print(entry.get("bin", ""))
+PY
+)"
+tl_runtime="$(sed -n '1p' <<<"$tl_entry")"
+tl_bin="$(sed -n '2p' <<<"$tl_entry")"
+case "$tl_runtime" in
+  tilolang/?*) ;;
+  *) die "Files does not run on the tilolang runtime: $tl_runtime" ;;
+esac
+[ -n "$tl_bin" ] || die "Files' entrypoint names no program in its runtime"
+require_exec "/usr/lib/tilo-runtime/$tl_runtime/$tl_bin"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
@@ -368,11 +393,11 @@ if [ "$mode" = runtime ]; then
 
   # Exercise the installed package the way a user opens it: the session's
   # app palette, driven over AT-SPI, launches it through the launcher, in its
-  # sandbox, attached to the session's runtime host.
+  # sandbox, attached to the session's runtime host. The scenario is the one
+  # the package's signed manifest declares, so a renamed control fails here.
   guest_tests="${TILO_GUEST_TESTS:?runtime mode runs through os/dev/vm.sh test, which sets TILO_GUEST_TESTS}"
-  TILO_FILES_SESSION_OPENER="$guest_tests/atspi-external-client.py" \
-    "$guest_tests/files-atspi-smoke.sh" \
-    || die "installed Files AT-SPI smoke failed"
+  "$guest_tests/installed-atspi-apps.sh" scenario so.tilo.file-explorer \
+    || die "installed Files AT-SPI scenario failed"
 fi
 
 echo "collaborative-files-image-contract: PASS ($mode)"

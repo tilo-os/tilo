@@ -25,6 +25,10 @@ the address field holds keyboard focus it prints ``ready URL``; the caller
 types that address on the real keyboard. The check passes when Browser's engine fetched
 the page and Browser names the loaded document after its title.
 
+``scenario APP_ID`` runs one installed package's certified accessibility
+scenario by its package id, when a check must prove one app rather than every
+installed one; with no command, every installed scenario runs.
+
 ``settings-network`` opens Settings' Network pane and requires what it reads
 out to match ``nmcli`` on the same device: the connected Wi-Fi network, the
 wired link, NetworkManager's connectivity verdict, and no read error.
@@ -107,6 +111,9 @@ class Scenario:
     required: tuple[str, ...]
     action: str
     after_action: tuple[str, ...]
+    # The runtime bundle the entrypoint's binary is in, as `<name>/<version>`;
+    # empty when the binary is in the package's own payload.
+    runtime: str = ""
 
 
 def command(*args: str, check: bool = True) -> str:
@@ -158,10 +165,20 @@ def scenario_from_manifest(path: Path) -> Scenario | None:
         app_id=values["app_id"], app_name=values["app_name"], binary=values["binary"],
         root=values["root"], required=tuple(required), action=values["action"],
         after_action=tuple(after_action),
+        runtime=entrypoint.get("runtime", ""),
     )
 
 
-def installed_scenarios(payload_root: Path) -> list[tuple[Scenario, Path]]:
+def is_tilolang(runtime: str) -> bool:
+    """Whether an entrypoint's runtime is a tilolang one (`tilolang/<version>`),
+    whose bundle holds the binary that runs a package."""
+    name, separator, version = runtime.partition("/")
+    return name == "tilolang" and bool(separator) and bool(version)
+
+
+def installed_scenarios(
+    payload_root: Path, runtime_root: Path = Path("/usr/lib/tilo-runtime")
+) -> list[tuple[Scenario, Path]]:
     scenarios: list[tuple[Scenario, Path]] = []
     for manifest in sorted(payload_root.glob("*/manifest.toml")):
         scenario = scenario_from_manifest(manifest)
@@ -179,7 +196,13 @@ def installed_scenarios(payload_root: Path) -> list[tuple[Scenario, Path]]:
                 if not tree.is_dir() and signed.is_file():
                     tree = payload.parent.parent / "trees" / signed.read_bytes()[44:76].hex()
                 payload = tree
-            binary = payload / scenario.binary
+            # A tilolang package's payload is its module; the program that
+            # runs it is the runtime bundle's binary, which its entrypoint
+            # names beside the payload.
+            if is_tilolang(scenario.runtime):
+                binary = runtime_root / scenario.runtime / scenario.binary
+            else:
+                binary = payload / scenario.binary
             if not binary.is_file() or not os.access(binary, os.X_OK):
                 raise CheckError(f"{scenario.app_id}: certified binary is absent: {binary}")
             scenarios.append((scenario, binary))
@@ -1517,7 +1540,17 @@ def main() -> int:
         "--payload-root", type=Path, default=Path("/usr/share/tilo-apps/pkgs"),
         help="installed app package directory containing <content-hash>.pkg/manifest.toml",
     )
+    parser.add_argument(
+        "--runtime-root", type=Path, default=Path("/usr/lib/tilo-runtime"),
+        help="where runtime bundles ship, each at <name>/<version>/ (a tilolang "
+             "package's entrypoint binary is in its runtime bundle, not its payload)",
+    )
     sub = parser.add_subparsers(dest="command")
+    scenario = sub.add_parser(
+        "scenario",
+        help="run one installed app's [accessibility.atspi_acceptance] scenario by its package id",
+    )
+    scenario.add_argument("app_id")
     opener = sub.add_parser(
         "open",
         help="open an installed app in the session; print its window (BUS@PATH) and pid",
@@ -1657,7 +1690,16 @@ def main() -> int:
             close_app(pid)
             print(f"AT-SPI external client passed: launchpad card {args.card_name!r} opened {args.app_name}")
             return 0
-        for scenario, _binary in installed_scenarios(args.payload_root):
+        if args.command == "scenario":
+            for candidate, _binary in installed_scenarios(args.payload_root, args.runtime_root):
+                if candidate.app_id == args.app_id:
+                    exercise(candidate, address)
+                    return 0
+            raise CheckError(
+                f"no installed [accessibility.atspi_acceptance] scenario for {args.app_id} "
+                f"under {args.payload_root}"
+            )
+        for scenario, _binary in installed_scenarios(args.payload_root, args.runtime_root):
             exercise(scenario, address)
     except CheckError as error:
         print(f"AT-SPI external-client failed: {error}", file=sys.stderr)
