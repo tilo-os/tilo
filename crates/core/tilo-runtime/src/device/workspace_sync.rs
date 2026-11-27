@@ -14,9 +14,7 @@ use serde_json::Value;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::sync::{
-    RESOURCE, Status, Workspace, Workspaces as Reading,
-};
+use tilo_workspace_service::workspaces::sync::{RESOURCE, Status, Workspace};
 
 use super::reading::{Changes, Read, Served};
 
@@ -53,7 +51,7 @@ impl WorkspaceSync {
 
     /// Follow each member workspace this device keeps now, and each taken in later.
     fn follow(self: &Arc<Self>, copies: &Workspaces) {
-        self.watch_held(copies);
+        self.watch_kept(copies);
         let copies = copies.clone();
         let sync = Arc::downgrade(self);
         let mut kept = copies.holds_changed();
@@ -62,19 +60,19 @@ impl WorkspaceSync {
                 let Some(sync) = sync.upgrade() else {
                     return;
                 };
-                sync.watch_held(&copies);
+                sync.watch_kept(&copies);
             }
         });
     }
 
     /// Follow the link of every member workspace in `copies` that no watcher follows yet.
-    fn watch_held(self: &Arc<Self>, copies: &Workspaces) {
+    fn watch_kept(self: &Arc<Self>, copies: &Workspaces) {
         for workspace in copies.held_workspaces() {
             let Some(id) = WorkspaceId::parse(&workspace) else {
                 continue;
             };
-            // A workspace this device hosts is no member workspace and has no link: its apps' states are
-            // their own.
+            // A workspace this device hosts is no member workspace and has no link: its apps'
+            // states are their own.
             let Ok(mut up) = copies.member_up(id) else {
                 continue;
             };
@@ -97,24 +95,24 @@ impl WorkspaceSync {
 
     /// Say whether `workspace`'s link is `up`, and publish the reading if it moved.
     fn note(&self, workspace: &str, up: bool) {
-        let mut held = self.states.lock_recover();
-        let tracked = held.entry(workspace.to_owned()).or_insert(Tracked {
+        let mut states = self.states.lock_recover();
+        let tracked = states.entry(workspace.to_owned()).or_insert(Tracked {
             linked_before: up,
             status: Status::Connecting,
         });
         tracked.linked_before |= up;
-        let status = if up {
+        let now = if up {
             Status::Synced
         } else if tracked.linked_before {
             Status::Unreachable
         } else {
             Status::Connecting
         };
-        if tracked.status == status {
+        if tracked.status == now {
             return;
         }
-        tracked.status = status;
-        drop(held);
+        tracked.status = now;
+        drop(states);
         self.moved
             .send_modify(|moved| *moved = moved.wrapping_add(1));
     }
@@ -130,8 +128,9 @@ impl WorkspaceSync {
     }
 
     fn reading(&self) -> Value {
-        let states = self.states.lock_recover();
-        let workspaces: BTreeMap<String, Workspace> = states
+        let workspaces: BTreeMap<String, Workspace> = self
+            .states
+            .lock_recover()
             .iter()
             .map(|(workspace, tracked)| {
                 (
@@ -143,11 +142,7 @@ impl WorkspaceSync {
                 )
             })
             .collect();
-        drop(states);
-        serde_json::to_value(Reading { workspaces }).unwrap_or_else(|error| {
-            tracing::warn!(%error, "where the member workspaces stand does not encode");
-            Value::Null
-        })
+        serde_json::json!({ "workspaces": workspaces })
     }
 }
 
