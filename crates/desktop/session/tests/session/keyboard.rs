@@ -873,6 +873,33 @@ fn return_and_marks_end_the_word() {
     });
 }
 
+/// French elides an article into the word after it: on the French keys, `l`, the apostrophe and
+/// `homme` compose one word, `l'homme`, with no space after the apostrophe, and the keys are
+/// letters again right after it. Space puts the word in.
+#[test]
+fn an_elided_article_composes_one_word_with_the_next() {
+    use zwp_text_input_v3::{ContentHint, ContentPurpose};
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (_home, mut session, mut client) = typing_for(ContentHint::empty(), ContentPurpose::Normal);
+
+    press(&mut session, &mut client, "Switch to French (AZERTY)");
+    pump(&mut session, &mut [&mut client], |session, _| {
+        reading(session)["layout"] == "azerty"
+    });
+    tap_word(&mut session, &mut client, "l");
+    press(&mut session, &mut client, "Numbers and symbols");
+    press(&mut session, &mut client, "'");
+    tap_word(&mut session, &mut client, "homme");
+    until_typed(&mut session, &mut client, |committed, composed| {
+        committed.is_empty() && composed == "l'homme"
+    });
+
+    press(&mut session, &mut client, "Space");
+    until_typed(&mut session, &mut client, |committed, composed| {
+        committed == "l'homme " && composed.is_empty()
+    });
+}
+
 /// A password's field is typed as it is: no word composes in it and nothing is offered.
 #[test]
 fn a_secret_field_is_typed_as_it_is() {

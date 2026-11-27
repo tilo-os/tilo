@@ -725,8 +725,11 @@ action press(k: session.Keyboard, typing: Typing, key: Text) -> Typing {
         and composes(k)
         and continues(k, t, t.word) {
         // An apostrophe in a word goes on composing it where some word goes on past it:
-        // `don't`, `l'homme`.
+        // `don't`, `l'homme`. The rest of the word is letters, so the keys go back to them.
         t.word = t.word + "'"
+        if t.page == "symbols" {
+            t.page = "letters"
+        }
         session.preedit(k, text: t.word)
         return offer(k, t)
     }
