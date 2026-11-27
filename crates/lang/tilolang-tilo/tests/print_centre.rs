@@ -12,7 +12,7 @@ use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
-use crate::invoker::{Answered as _, Sent};
+use crate::fixtures::invoker::{Answered as _, Sent};
 
 const SOURCE: &str = include_str!("../../../../apps/tl/print-centre/app.tl");
 
@@ -261,7 +261,7 @@ impl Installed {
             .iter()
             .find(|(asked, _)| asked == name)
             .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
-        match crate::invoker::invoke_confirmed(&self.host, &me(), (id.as_str(), args))
+        match crate::fixtures::invoker::invoke_confirmed(&self.host, &me(), (id.as_str(), args))
             .unwrap_or_else(|why| panic!("{name} runs: {why}"))
         {
             tilolang_runtime::InvokeOutcome::Done(value) => value,
@@ -278,7 +278,7 @@ impl Installed {
                 || Err(format!("no action {name}")),
                 |(_, id)| Ok(id.clone()),
             )?;
-        match crate::invoker::invoke_confirmed(&self.host, &me(), (id.as_str(), args))? {
+        match crate::fixtures::invoker::invoke_confirmed(&self.host, &me(), (id.as_str(), args))? {
             tilolang_runtime::InvokeOutcome::Done(value) => Ok(value),
             other => Err(format!("{name} answers {other:?}")),
         }
@@ -313,7 +313,8 @@ impl Installed {
             .runtime()
             .job_call(&kept, record)
             .expect("the handler's call");
-        crate::invoker::invoke_confirmed(&self.host, &me(), call).expect("the handler runs");
+        crate::fixtures::invoker::invoke_confirmed(&self.host, &me(), call)
+            .expect("the handler runs");
     }
 }
 

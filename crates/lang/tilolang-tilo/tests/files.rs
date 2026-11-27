@@ -17,7 +17,7 @@ use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
-use crate::invoker::{Answered as _, Sent};
+use crate::fixtures::invoker::{Answered as _, Sent};
 
 const SOURCE: &str = concat!(
     include_str!("../../../../apps/tl/files/app.tl"),
@@ -610,7 +610,7 @@ impl Files {
             .iter()
             .find(|(asked, _)| asked == name)
             .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
-        match crate::invoker::invoke_confirmed(&self.host, &me(), (id.as_str(), args))
+        match crate::fixtures::invoker::invoke_confirmed(&self.host, &me(), (id.as_str(), args))
             .unwrap_or_else(|why| panic!("{name} runs: {why}"))
         {
             InvokeOutcome::Done(value) => value,
@@ -982,7 +982,7 @@ fn a_mounted_workspace_a_drive_and_the_apps_are_places_the_sidebar_offers() {
         .event_action(&row.key, "activate")
         .expect("the row opens its app");
     // Opening an app leaves the system, so the person is asked first, and their yes runs it.
-    let ran = crate::invoker::invoke_confirmed(
+    let ran = crate::fixtures::invoker::invoke_confirmed(
         &app.host,
         &me(),
         (fired.action.as_str(), fired.args.clone()),

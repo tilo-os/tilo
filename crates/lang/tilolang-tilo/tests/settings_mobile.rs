@@ -15,7 +15,7 @@ use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
 
-use crate::invoker::{Answered as _, Sent};
+use crate::fixtures::invoker::{Answered as _, Sent};
 
 const TETHERING: &str = r#"{"available": false, "hotspot": false, "name": null, "band": "automatic", "clients": [], "pending": [], "problem": null}"#;
 

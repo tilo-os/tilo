@@ -7,8 +7,8 @@
 use serde_json::json;
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 
+use crate::fixtures::invoker::{Answered as _, Sent};
 use crate::fixtures::{Replica, Workspace, target};
-use crate::invoker::{Answered as _, Sent};
 
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");

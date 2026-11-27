@@ -13,7 +13,7 @@
 )]
 
 use crate::fixtures::Sent;
-use crate::invoker::Answered as _;
+use crate::fixtures::invoker::Answered as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 

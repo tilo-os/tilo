@@ -10,7 +10,7 @@ use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{ActionRef, Actor, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
-use crate::invoker::{Sent, invoke_confirmed};
+use crate::fixtures::invoker::{Sent, invoke_confirmed};
 
 const SOURCE: &str = include_str!("../../../../apps/tl/containers/app.tl");
 const APP: &str = "so.tilo.containers";

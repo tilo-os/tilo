@@ -12,7 +12,7 @@ use tilolang_tilo::host::Host;
 pub(crate) const SHELL: &str = "so.tilo.shell";
 
 /// What the shell's views called, in order.
-pub(crate) use crate::invoker::Sent as Called;
+pub(crate) use crate::fixtures::invoker::Sent as Called;
 
 pub(crate) fn ada() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))

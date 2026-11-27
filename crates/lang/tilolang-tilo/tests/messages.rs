@@ -18,8 +18,8 @@ use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
 use tilolang_tilo::host::Host;
 
+use crate::fixtures::invoker::{Sent, press, press_confirmed};
 use crate::fixtures::{drawn, set_reading};
-use crate::invoker::{Sent, press, press_confirmed};
 
 const APP: &str = "so.tilo.messages";
 const CHAT: &str = "so.tilo.chat";

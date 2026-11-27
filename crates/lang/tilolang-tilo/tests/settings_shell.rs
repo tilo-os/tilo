@@ -22,7 +22,7 @@ fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
 }
 
-use crate::invoker::{Answered as _, Sent};
+use crate::fixtures::invoker::{Answered as _, Sent};
 
 /// The app as it ships, with the platform's packages it reads through loaded, as a window's
 /// process loads them.

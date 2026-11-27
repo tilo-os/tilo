@@ -6,7 +6,7 @@ use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::host::Host;
 
-use crate::invoker::Sent as Asked;
+use crate::fixtures::invoker::Sent as Asked;
 
 /// The shell's package, over a host that runs it, with two windows of one workspace published
 /// and nothing asked of the session yet.
@@ -123,8 +123,12 @@ fn invoke(host: &Host, root: &ResourceRef, name: &str, args: Vec<Value>) -> Valu
     let mut all = vec![Value::resource(root)];
     all.extend(args);
     let person = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));
-    match crate::invoker::invoke_confirmed(host, &person, (action(host, name).as_str(), all))
-        .unwrap_or_else(|why| panic!("{name}: {why}"))
+    match crate::fixtures::invoker::invoke_confirmed(
+        host,
+        &person,
+        (action(host, name).as_str(), all),
+    )
+    .unwrap_or_else(|why| panic!("{name}: {why}"))
     {
         tilolang_runtime::InvokeOutcome::Done(value) => value,
         other => panic!("{name}: {other:?}"),

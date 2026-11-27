@@ -10,8 +10,8 @@ use tilolang_runtime::value::same_value;
 use tilolang_tilo::runtime::Value;
 
 use crate::fixtures::Sent;
+use crate::fixtures::invoker::Answered as _;
 use crate::fixtures::{control_under, labelled, set_reading};
-use crate::invoker::Answered as _;
 use crate::settings_panes::{invoke, open_window, settings};
 
 /// The person at the settings window.

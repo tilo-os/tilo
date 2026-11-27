@@ -9,8 +9,8 @@ use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::runtime::Value;
 
 use crate::fixtures::Sent;
+use crate::fixtures::invoker::Answered as _;
 use crate::fixtures::{drawn, set_reading};
-use crate::invoker::Answered as _;
 use crate::settings_panes::{invoke, open_window, settings};
 
 /// The person at the settings window.

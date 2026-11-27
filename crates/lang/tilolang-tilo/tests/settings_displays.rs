@@ -11,7 +11,7 @@ use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
 
-use crate::invoker::{Answered as _, Sent};
+use crate::fixtures::invoker::{Answered as _, Sent};
 
 /// The person at the settings window.
 fn me() -> Actor {

@@ -115,7 +115,7 @@ fn try_call(r: &Replica, action: &str, args: Vec<Value>) -> Result<Value, String
     ));
     // A card's sharing, and any other call that leaves the system, asks the person first: the
     // test's person says yes, and what the action did is what is read here.
-    match crate::invoker::invoke_confirmed(&r.host, &who, (id.as_str(), args))? {
+    match crate::fixtures::invoker::invoke_confirmed(&r.host, &who, (id.as_str(), args))? {
         InvokeOutcome::Done(value) => Ok(value),
         other => Err(format!("{other:?}")),
     }
@@ -701,7 +701,7 @@ fn a_card_the_apps_do_not_know_is_shared_as_a_person_of_its_own() {
         .runtime()
         .set_reading(&directory, r#"{"people": []}"#)
         .expect("the directory reads as empty");
-    let sent = crate::invoker::Sent::default();
+    let sent = crate::fixtures::invoker::Sent::default();
     ada.host.runtime().set_invoker(sent.clone());
 
     call(

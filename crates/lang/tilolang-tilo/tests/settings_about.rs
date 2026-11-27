@@ -19,8 +19,8 @@ fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
 }
 
+use crate::fixtures::invoker::{Answered as _, Sent};
 use crate::fixtures::settings_host as settings;
-use crate::invoker::{Answered as _, Sent};
 
 /// The resource `doc` of `ty`, as a view of a platform package reads it.
 fn resource(doc: &str, ty: &str) -> ResourceRef {

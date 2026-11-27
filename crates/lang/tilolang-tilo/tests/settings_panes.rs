@@ -12,8 +12,8 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::fixtures::invoker::Answered as _;
 use crate::fixtures::{Sent, labelled};
-use crate::invoker::Answered as _;
 use tilo_action_policy::MemberAccess;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::host::Host;

@@ -16,7 +16,7 @@ use tilolang_tilo::host::Host;
 
 const APP: &str = "so.tilo.settings";
 
-use crate::invoker::{Answered as _, Sent};
+use crate::fixtures::invoker::{Answered as _, Sent};
 
 /// This device's `network` reading: two radios, a network it keeps that asks for no password,
 /// and whether it asks before joining one.

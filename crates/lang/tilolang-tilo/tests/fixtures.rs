@@ -886,7 +886,10 @@ pub fn stage_people(host: &Host, policy: &tilo_action_policy::WorkspacePolicy) {
 }
 
 /// What a window sent to other apps, in order: the invocations the shell would carry out.
-pub use crate::invoker::Sent;
+#[path = "support/invoker.rs"]
+pub mod invoker;
+
+pub use invoker::Sent;
 
 /// An app that shows a window over what the device reads, on a host of its own: the platform
 /// packages it `use`s loaded, its `window` view found, and what it asks of other apps recorded.

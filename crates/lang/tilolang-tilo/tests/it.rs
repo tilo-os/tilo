@@ -68,8 +68,6 @@ mod gallery;
 mod headings;
 mod held_records;
 mod inline_views;
-#[path = "support/invoker.rs"]
-mod invoker;
 mod layers;
 mod legibility;
 mod levels;
