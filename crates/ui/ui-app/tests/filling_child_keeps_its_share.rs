@@ -163,10 +163,12 @@ fn a_filling_child_of_a_row_takes_the_area_beside_its_strip() {
         .with_padding(0.0, 0.0)
         .with_gap(0.0)
         .push(Box::new(
+            // A rail beside the page, as tall as the room the row stands in: it has a place of
+            // its own, so it is a target by name.
             Container::new()
                 .with_no_padding()
                 .with_id("strip")
-                .with_width(40.0),
+                .with_size(40.0, 200.0),
         ))
         .push(Box::new(
             Container::new()

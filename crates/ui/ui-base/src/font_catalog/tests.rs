@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
                 .iter()
                 .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
                 .sum::<u64>(),
-            406_096
+            405_820
         );
         assert_eq!(fonts.db().len(), 2);
         let mut read = super::test_font_files(&root);
