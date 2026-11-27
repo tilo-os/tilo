@@ -20,8 +20,9 @@ use crate::keep::common::{
     Hosted, Linked, RECORDS_APP as APP, TestDevice, TestUser, copy_says, host_holds, host_writes,
     keys_of, next, reaches_host, receives, serve_on, write, write_sealed,
 };
+use tilo_actions::remote::ActionCallError;
 use tilo_server_protocol::WorkspaceId;
-use tilo_workspace_service::workspaces::AdmittedWrite;
+use tilo_workspace_service::workspaces::{AdmittedWrite, Refusal};
 
 /// How long the holders are watched doing nothing: longer than the holder's
 /// first two waits before dialing again, so a link that kept ending would show.
@@ -964,6 +965,14 @@ async fn a_handed_workspace_is_held_and_moved_between_servers() {
     .await
     .expect("the laptop admits the server as Alice's device");
     assert!(at_server.is_member(&workspace.workspace).await.unwrap());
+    // A call Alice makes on the server now runs admitted to the server's copy.
+    let actor = at_server
+        .member_actor(workspace.workspace_id)
+        .await
+        .expect("the server acts for Alice");
+    let admit = || at_server.admit_execution(&workspace.workspace, &actor, &nas.cert, Vec::new());
+    let run = admit().await.expect("the run is admitted");
+    run.check(at_server).expect("the run's copy holds");
 
     // Handed the workspace, the server holds it: the hand-over answers only once the server
     // said it keeps every change the laptop keeps.
@@ -990,6 +999,27 @@ async fn a_handed_workspace_is_held_and_moved_between_servers() {
         !at_server.is_member(&workspace.workspace).await.unwrap(),
         "the server holds the workspace itself, not as a member copy"
     );
+    // That run hears the workspace moved here, never a refusal of Alice's permissions; made
+    // again, the call is admitted to the workspace kept here. A stranger is still not permitted.
+    let moved = run.check(at_server).expect_err("the run's copy is gone");
+    assert_eq!(moved, Refusal::Moved);
+    assert!(
+        matches!(ActionCallError::from(moved), ActionCallError::Unavailable { reason }
+            if reason.contains("moved while your call waited") && reason.contains("Nothing was done")),
+        "a run whose workspace moved is told so, as a call to make again"
+    );
+    let again = admit().await.expect("the call made again is admitted");
+    again
+        .check(at_server)
+        .expect("it runs on the workspace kept here");
+    assert!(
+        !again.caller().is_foreign_device(),
+        "on the device that keeps it, as its own"
+    );
+    assert!(matches!(
+        ActionCallError::from(Refusal::Stranger),
+        ActionCallError::NotPermitted
+    ));
     // The server carries the laptop's sealed writes from before the hand-over and after it.
     host_holds(&server, workspace.workspace_id, (APP, "note:1"), &before).await;
     let after = write_sealed_at(

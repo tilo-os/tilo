@@ -37,6 +37,9 @@ pub enum Refusal {
     /// The run ended: an ownership change this run was admitted for, or the
     /// caller's own request to end it.
     Ended,
+    /// The workspace this run was admitted to moved to this device while the call waited:
+    /// nothing was done, and the call run again is admitted to it here.
+    Moved,
     /// This call could not be checked because the identity material could
     /// not be read. Nothing changed; the run stays live and the call may be
     /// retried.
@@ -55,6 +58,7 @@ impl Refusal {
     pub fn message(&self) -> String {
         match self {
             Self::Ended => "execution session ended".into(),
+            Self::Moved => "this workspace moved while your call waited; it is kept on this device now. Nothing was done; run it again.".into(),
             Self::Unavailable { reason } => format!(
                 "the caller's ownership could not be verified, so this call was not run: {reason}; nothing changed, retry the call"
             ),
@@ -69,6 +73,9 @@ impl From<Refusal> for tilo_actions::remote::ActionCallError {
     /// check that could not be made names itself as retryable.
     fn from(refusal: Refusal) -> Self {
         match refusal {
+            Refusal::Moved => Self::Unavailable {
+                reason: refusal.message(),
+            },
             Refusal::Unavailable { reason } => Self::Unavailable { reason },
             Refusal::Revoked { reason } => Self::Refused { reason },
             Refusal::Ended | Refusal::Stranger => Self::NotPermitted,
@@ -133,7 +140,7 @@ impl SessionAdmission {
     /// Whether this call may run as the run's caller, now.
     pub fn check(&self, workspaces: &Workspaces) -> Result<(), Refusal> {
         if !self.caller.execution_is_live() {
-            return Err(Refusal::Ended);
+            return Err(self.ended(workspaces));
         }
         // A key its person revoked acts no more: the run ends with its key, however long it
         // was admitted before the revocation answered.
@@ -151,9 +158,17 @@ impl SessionAdmission {
                 "an admitted run's workspace or device identity changed; ending the run"
             );
             self.caller.retire_execution();
-            return Err(Refusal::Ended);
+            return Err(self.ended(workspaces));
         }
         Ok(())
+    }
+
+    /// Why this run ended: the workspace moved here from the copy it was admitted to, or not.
+    fn ended(&self, workspaces: &Workspaces) -> Refusal {
+        match (&self.pinned, self.current(workspaces)) {
+            (Pinned::Member { .. }, Pinned::Own) => Refusal::Moved,
+            _ => Refusal::Ended,
+        }
     }
 
     /// What `workspace`'s ownership is now: the member copy's material, or a
@@ -351,8 +366,10 @@ impl Workspaces {
             // An execution may end normally after the snapshot. Its lifetime
             // says nothing about the workspace's ownership, so only the pinned
             // material is compared; a retired run stays retired.
-            if admission.check_original_ownership(self) == Err(Refusal::Ended) {
-                result = Err(Refusal::Ended.message());
+            if let Err(refusal @ (Refusal::Ended | Refusal::Moved)) =
+                admission.check_original_ownership(self)
+            {
+                result = Err(refusal.message());
             }
         }
         result

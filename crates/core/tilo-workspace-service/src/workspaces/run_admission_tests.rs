@@ -150,31 +150,6 @@ async fn a_run_admitted_for_another_person_is_refused() {
     );
 }
 
-#[tokio::test]
-async fn a_workspace_this_device_governs_admits_a_run_of_its_own_device() {
-    let state = tempfile::tempdir().unwrap();
-    let (key, cert) = hosting_device();
-    let host = test_host(state.path(), &key, &cert).await;
-    let created = host
-        .workspaces()
-        .create("Mine")
-        .await
-        .expect("a workspace is created");
-    let actor = hex::encode(cert.user_public_key);
-    let admission = host
-        .workspaces()
-        .admit_execution(&created.workspace, &actor, &cert, Vec::new())
-        .await
-        .expect("the workspace's own device is admitted");
-    admission
-        .check(host.workspaces())
-        .expect("the run's material holds");
-    assert!(
-        !admission.caller().is_foreign_device(),
-        "a run of the person whose root certifies this device is on their own device"
-    );
-}
-
 /// A run admitted under any certificate but this device's own is a foreign device's: another
 /// device of the same person, or this device certified as a foreign one.
 #[tokio::test]
