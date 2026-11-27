@@ -436,16 +436,21 @@ impl<P: Resource> FollowedResource<P> {
                 .invoke_receipt_blocking(Some(&core.workspace), request),
         )
         .result()?;
-        core.refresh();
+        self.changed();
         Ok(())
     }
 
-    /// Ask for its reading again now, rather than when the follow next reads it: what a change
-    /// just made shows as soon as the daemon answers, and the session is woken then. The caller
-    /// never waits for the daemon, whose store may be slow; until the answer comes, the last
-    /// reading stands.
-    pub(crate) fn refresh(&self) {
-        self.shared.core.refresh();
+    /// Read it again now, after a change this session just made, and wait for the answer: the
+    /// caller reads what it changed next, and the follow hears of the write only a moment later.
+    pub(crate) fn changed(&self) {
+        let core = &self.shared.core;
+        if let Err(error) = core.read_now() {
+            tilo_failure::ignored!(
+                "the follow reads the change when the daemon answers it",
+                tracing::debug!(%error, "a resource just changed did not read")
+            );
+            core.refresh();
+        }
     }
 }
 
@@ -606,7 +611,10 @@ impl Core {
         }
     }
 
-    /// Ask for the reading again now; see [`FollowedResource::refresh`].
+    /// Ask for its reading again now, rather than when the follow next reads it: what a change
+    /// just made shows as soon as the daemon answers, and the session is woken then. The caller
+    /// never waits for the daemon, whose store may be slow; until the answer comes, the last
+    /// reading stands.
     fn refresh(&self) {
         if self
             .refreshing
@@ -638,9 +646,8 @@ impl Core {
         });
     }
 
-    /// Read it again now and wait for the answer: what failed, so a test that waits on the
-    /// daemon fails saying which reading never came instead of timing out later.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Read it again now and wait for the answer: what failed, so a caller that waits on the
+    /// daemon says which reading never came instead of timing out later.
     fn read_now(&self) -> Result<(), String> {
         let answer = self
             .daemon

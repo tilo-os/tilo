@@ -318,13 +318,9 @@ impl Agents {
                 Arc::clone(&self.wake),
             ),
         });
-        // The record as it stands, not as the follow last read it: the MCP server and the
-        // person's Settings write it between passes, and the pass that reads it is what the
-        // broker and the windows act on. A session with no link to a daemon reads no record
-        // at all, and asks for none each pass.
-        if self.daemon.link().is_ok() {
-            opened.followed.refresh();
-        }
+        // A write to it (the MCP server's, the person's Settings') reaches the follow, which
+        // wakes the session to read it: a pass asks the daemon for nothing, so an idle session
+        // keeps the broker asleep.
         opened.followed.clone()
     }
 }

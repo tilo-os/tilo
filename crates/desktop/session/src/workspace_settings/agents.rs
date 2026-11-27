@@ -845,7 +845,7 @@ impl Agents {
         let answer = self.daemon.dispatch_blocking(None, &message)?;
         // What it wrote shows at once, not once the follow next reads it.
         if let Some(open) = self.open.borrow().as_ref() {
-            open.record.refresh();
+            open.record.changed();
         }
         Ok(made(&answer))
     }
