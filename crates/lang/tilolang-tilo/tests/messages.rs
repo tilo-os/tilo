@@ -237,6 +237,11 @@ struct Asked(Rc<RefCell<Vec<Invocation>>>);
 impl Invoker for Asked {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         self.0.borrow_mut().push(invocation.clone());
+        // A call the system asks the person about first is no verb of the platform's: it waits for
+        // their yes, which the test answers as the dispatch delivers it.
+        if matches!(invocation, Invocation::Action { asks: true, .. }) {
+            return Invoked::Pending(format!("asked-{}", self.0.borrow().len()));
+        }
         Invoked::Done(Value::Unit)
     }
 }
@@ -561,9 +566,9 @@ fn nodes_of<'a>(node: &'a UiNode, kind: &str, into: &mut Vec<&'a UiNode>) {
     into.extend(node.of_kind(&format!("ui.{kind}")));
 }
 
-/// Press the control of `kind` labelled `label` (a button's press, a row's or a place's
-/// activation), as a person does.
-fn press(window: &ViewInstance, kind: &str, label: &str) {
+/// The control of `kind` labelled `label` in `window`: its key and the event a person's press of
+/// it fires.
+fn control(window: &ViewInstance, kind: &str, label: &str) -> (String, &'static str) {
     let mut found = Vec::new();
     nodes_of(window.tree(), kind, &mut found);
     let labelled = |node: &&&UiNode| {
@@ -584,7 +589,56 @@ fn press(window: &ViewInstance, kind: &str, label: &str) {
         "NavItem" => "select",
         _ => "activate",
     };
-    let outcome = window.fire(&node.key, event).expect("the control acts");
+    (node.key.clone(), event)
+}
+
+/// Press the control of `kind` labelled `label` (a button's press, a row's or a place's
+/// activation), as a person does.
+fn press(window: &ViewInstance, kind: &str, label: &str) {
+    let (key, event) = control(window, kind, label);
+    let outcome = window.fire(&key, event).expect("the control acts");
+    assert!(
+        matches!(outcome, InvokeOutcome::Done(_)),
+        "{label}: {outcome:?}"
+    );
+}
+
+/// Press the control of `kind` labelled `label` where the system confirms it first, because what
+/// it does leaves the system, and answer the system's confirm as the person does: the asked call
+/// runs as the dispatch delivers their yes. What the action answered.
+fn try_press_confirmed(
+    host: &Host,
+    window: &ViewInstance,
+    kind: &str,
+    label: &str,
+) -> Result<InvokeOutcome, String> {
+    let (key, event) = control(window, kind, label);
+    let asked = match window
+        .fire(&key, event)
+        .map_err(|why| format!("{label}: {why}"))?
+    {
+        InvokeOutcome::Asked(asked) => asked,
+        other => {
+            return Err(format!(
+                "{label} waits for the person's yes first: {other:?}"
+            ));
+        }
+    };
+    if asked.is_empty() {
+        return Err(format!("{label} names no call the person is asked about"));
+    }
+    let action = window
+        .event_action(&key, event)
+        .ok_or_else(|| format!("{label} names the action it presses"))?;
+    host.runtime()
+        .invoke_approved_through(&person(ADA), None, action, None)
+        .map_err(|why| why.to_string())
+}
+
+/// [`try_press_confirmed`] of a press the action takes: the person pressed and said yes.
+fn press_confirmed(host: &Host, window: &ViewInstance, kind: &str, label: &str) {
+    let outcome = try_press_confirmed(host, window, kind, label)
+        .unwrap_or_else(|why| panic!("{label}: {why}"));
     assert!(
         matches!(outcome, InvokeOutcome::Done(_)),
         "{label}: {outcome:?}"
@@ -813,7 +867,7 @@ fn a_press_sends_one_operation(window: &Window) -> (String, String) {
     type_in(&shown, "On my way");
     let shown = window.window();
     assert_shows(&shown, "Draft: On my way");
-    press(&shown, "Button", "Send");
+    press_confirmed(&window.host, &shown, "Button", "Send");
     let (sending, asked) = window.device.last("send");
     assert_eq!(asked["text"], "On my way", "{asked}");
     assert_eq!(asked["route"]["recipient"], BO_SIGNAL, "{asked}");
@@ -830,7 +884,7 @@ fn a_press_sends_one_operation(window: &Window) -> (String, String) {
         .find(|node| node.props.get("label") == Some(&Value::text("Send")))
         .expect("the send button");
     assert!(
-        window_refuses(&shown, &send.key),
+        window_refuses(&window.host, &shown, &send.key),
         "a second press waits for the first"
     );
     assert_eq!(window.device.started("send").len(), 1, "sent once");
@@ -848,7 +902,8 @@ fn an_uncertain_send_keeps_the_words(window: &Window, sending: &str) {
 
 /// A send that lands empties the draft and reads the conversation again.
 fn a_send_lands_once_and_reads_again(window: &Window, operation: &str) {
-    press(&window.window(), "Button", "Send");
+    let shown = window.window();
+    press_confirmed(&window.host, &shown, "Button", "Send");
     let (sending, asked) = window.device.last("send");
     assert_ne!(
         asked["operation"], operation,
@@ -929,9 +984,23 @@ fn a_changed_identity_retires_the_route(window: &Window) {
     assert_eq!(window.device.started("history").len(), old);
 }
 
-/// Whether pressing `key` is refused: its action's requirement does not hold.
-fn window_refuses(window: &ViewInstance, key: &str) -> bool {
-    !matches!(window.fire(key, "press"), Ok(InvokeOutcome::Done(_)))
+/// Whether pressing `key` is refused: its action's requirement does not hold. What leaves the
+/// system is confirmed first, so the person's yes is answered too, and the action that runs on it
+/// is what refuses.
+fn window_refuses(host: &Host, window: &ViewInstance, key: &str) -> bool {
+    match window.fire(key, "press") {
+        Ok(InvokeOutcome::Asked(_)) => {
+            let action = window
+                .event_action(key, "press")
+                .expect("the control names its action");
+            !matches!(
+                host.runtime()
+                    .invoke_approved_through(&person(ADA), None, action, None),
+                Ok(InvokeOutcome::Done(_))
+            )
+        }
+        other => !matches!(other, Ok(InvokeOutcome::Done(_))),
+    }
 }
 
 /// An address two people claim, or one confirmed under another identity, reaches nobody: the
@@ -1048,7 +1117,8 @@ fn a_member_is_written_to_through_chat() {
     press(&window.window(), "Button", "Write a message");
     let shown = window.window();
     type_in(&shown, "Lunch at one?");
-    press(&window.window(), "Button", "Send");
+    let shown = window.window();
+    press_confirmed(&window.host, &shown, "Button", "Send");
     assert!(
         window.device.started("send").is_empty(),
         "a member is written to through Chat"
@@ -1344,7 +1414,7 @@ fn private_groups_are_listed_opened_written_to_and_changed() {
         "Add Bo Diaz using WhatsApp from Ada's WhatsApp to 4915550100@s.whatsapp.net",
     );
 
-    press(&shown, "Button", "Remove cy@s.whatsapp.net");
+    press_confirmed(&window.host, &shown, "Button", "Remove cy@s.whatsapp.net");
     let (_, asked) = window.device.last("group_change");
     assert_eq!(asked["change"], "remove", "{asked}");
     assert_eq!(asked["member"], "cy@s.whatsapp.net", "{asked}");
@@ -1353,8 +1423,10 @@ fn private_groups_are_listed_opened_written_to_and_changed() {
         "the change names the membership reviewed: {asked}"
     );
 
-    press(
-        &window.window(),
+    let shown = window.window();
+    press_confirmed(
+        &window.host,
+        &shown,
         "Button",
         "Add Bo Diaz using WhatsApp from Ada's WhatsApp to 4915550100@s.whatsapp.net",
     );
@@ -1368,12 +1440,14 @@ fn private_groups_are_listed_opened_written_to_and_changed() {
 
     press(&window.window(), "Button", "Write a message");
     type_in(&window.window(), "See you there");
-    press(&window.window(), "Button", "Send");
+    let shown = window.window();
+    press_confirmed(&window.host, &shown, "Button", "Send");
     let (_, asked) = window.device.last("group_send");
     assert_eq!(asked["text"], "See you there", "{asked}");
     assert_eq!(asked["review"], "review-1", "{asked}");
 
-    press(&window.window(), "Button", "Leave this group");
+    let shown = window.window();
+    press_confirmed(&window.host, &shown, "Button", "Leave this group");
     let (_, asked) = window.device.last("group_change");
     assert_eq!(asked["change"], "leave", "{asked}");
 }
