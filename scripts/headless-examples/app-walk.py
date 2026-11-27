@@ -63,6 +63,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -812,6 +813,40 @@ class MachineDaemon:
         if self.log is not None:
             self.log.close()
             self.log = None
+
+
+def start_signed_in(session: Session, state: Path, out: Path, *, apps: str, tapps: list[Path],
+                    tag: str, env: dict, session_args: list[str] | None = None,
+                    then: Callable[[], None] | None = None) -> tuple["MachineFiles",
+                                                                      "MachineDaemon"]:
+    """Start `session` on `state` as a device's login starts it: the machine's device daemon and
+    files daemon beside it, the person signed in through the daemon before the desktop starts,
+    as Tilo OS signs a person in. `then` runs once the desktop is up, still under the same
+    cleanup (a walk's further devices). A start that fails stops all three.
+
+    A session started any other way has no person signed in to the machine, and the machine's
+    daemon offers it none of the person's apps."""
+    machine = MachineFiles(state, out)
+    daemon = MachineDaemon(state, out, apps, tapps)
+    env = {**env, **daemon.start()}
+    trouble = lambda: machine.failure() or daemon.failure()  # noqa: E731
+
+    # The person signs in before the machine's files daemon asks the device anything: what it
+    # serves is the person's, and a daemon with no person signed in has none.
+    def logged_in():
+        added, fds = daemon.login(env)
+        return {**machine.start(), **added}, fds
+    try:
+        session.start(apps=apps, fresh=True, out=out / "logs", tag=tag, tapps=tapps,
+                      session_args=session_args, env=env, abort=trouble, prepare=logged_in)
+        if then is not None:
+            then()
+    except BaseException:
+        session.stop()
+        machine.stop()
+        daemon.stop()
+        raise
+    return machine, daemon
 
 
 # --- what the app holds, read back ------------------------------------------------------------
@@ -3559,27 +3594,14 @@ class Walk:
         if not self.shared:
             tapps = self.tapps()
             began = time.monotonic()
-            machine = MachineFiles(self.state, self.out)
-            daemon = MachineDaemon(self.state, self.out, apps_of(spec, self.variant), tapps)
-            env = {**first_device_env(self.state, spec), **daemon.start()}
-            trouble = lambda: machine.failure() or daemon.failure()  # noqa: E731
-            # The person signs in before the machine's files daemon asks the device anything:
-            # what it serves is the person's, and a daemon with no person signed in has none.
-            def logged_in():
-                added, fds = daemon.login(env)
-                return {**machine.start(), **added}, fds
-            try:
-                self.session.start(apps=apps_of(spec, self.variant),
-                                   fresh=True, out=self.out / "logs", tag=self.variant,
-                                   tapps=tapps, session_args=session_args_of(spec, self.variant),
-                                   env=env, abort=trouble, prepare=logged_in)
+
+            def further_devices():
                 self.devices = start_devices(spec, self.variant, self.session, self.state,
                                              self.out, apps_of(spec, self.variant), tapps)
-            except BaseException:
-                self.session.stop()
-                machine.stop()
-                daemon.stop()
-                raise
+            machine, daemon = start_signed_in(
+                self.session, self.state, self.out, apps=apps_of(spec, self.variant),
+                tapps=tapps, tag=self.variant, env=first_device_env(self.state, spec),
+                session_args=session_args_of(spec, self.variant), then=further_devices)
             self.machine = machine
             self.daemon = daemon
             started = round((time.monotonic() - began) * 1000)
@@ -4312,27 +4334,15 @@ def main() -> int:
                             packages.append(package)
                 tapps = [build_tapp(package, out / "build" / variant, state) for package in packages]
                 session = Session(state)
-                machine = MachineFiles(state, out)
-                daemon = MachineDaemon(state, out, apps, tapps)
-                env = {**first_device_env(state, first), **daemon.start()}
-                trouble = lambda: machine.failure() or daemon.failure()  # noqa: E731
-                # The person signs in before the machine's files daemon asks the device
-                # anything: what it serves is the person's, and a daemon with no person
-                # signed in has none.
-                def logged_in():
-                    added, fds = daemon.login(env)
-                    return {**machine.start(), **added}, fds
                 began = time.monotonic()
-                try:
-                    session.start(apps=apps, fresh=True, out=out / "logs", tag=variant,
-                                  tapps=tapps, session_args=session_args_of(first, variant), env=env,
-                                  abort=trouble, prepare=logged_in)
+
+                def further_devices():
+                    nonlocal devices
                     devices = start_devices(first, variant, session, state, out, apps, tapps)
-                except BaseException:
-                    session.stop()
-                    machine.stop()
-                    daemon.stop()
-                    raise
+                machine, daemon = start_signed_in(
+                    session, state, out, apps=apps, tapps=tapps, tag=variant,
+                    env=first_device_env(state, first),
+                    session_args=session_args_of(first, variant), then=further_devices)
                 started = round((time.monotonic() - began) * 1000)
                 print(f"==> {name}: the {variant} session up in {started} ms", file=sys.stderr)
             try:

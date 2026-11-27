@@ -88,6 +88,17 @@ def real_apps():
     return module
 
 
+def app_walk():
+    """The app walks' driver, whose start signs the person in through the machine's daemon as
+    a device's login does: a session started otherwise is offered none of the person's apps."""
+    sys.path.insert(0, str(REPO / "scripts/headless-examples"))
+    spec = importlib.util.spec_from_file_location(
+        "app_walk", REPO / "scripts/headless-examples/app-walk.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def percentile(ordered: list[float], p: float) -> float:
     return ordered[max(0, math.ceil(len(ordered) * p / 100) - 1)]
 
@@ -207,13 +218,19 @@ def open_something(session, app: str, title: str, arguments: dict, timeout: floa
     keys change. A window publishes its actions after it shows, so the run waits for it."""
     deadline = time.monotonic() + timeout
     while True:
-        found = [row for row in session.actions(app)
-                 if (row.get("action") or {}).get("action_label") == title]
+        # The catalogue is searched by what a row says, as a person's palette is, not by the
+        # app's id: the app's own rows are kept from what the words find.
+        found = [row for row in session.actions(title)
+                 if row.get("app_id") == app
+                 and (row.get("action") or {}).get("action_label") == title]
         if found or time.monotonic() > deadline:
             break
         time.sleep(0.2)
     if not found:
-        sys.exit(f"[key-latency] {app} offers no action {title!r} to --open")
+        offered = sorted({(row.get("action") or {}).get("action_label") or "?"
+                          for row in session.actions("") if row.get("app_id") == app})
+        sys.exit(f"[key-latency] {app} offers no action {title!r} to --open; it offers: "
+                 f"{', '.join(offered) or 'nothing'}")
     status = session.invoke_row(found[0], arguments or None)
     if not (isinstance(status, dict) and "Completed" in status):
         sys.exit(f"[key-latency] {app}'s {title!r} did not succeed: {status}")
@@ -259,12 +276,15 @@ def measure(args: argparse.Namespace) -> dict:
     env = {"TILO_HEADLESS_SIZE": args.size}
     if args.scale:
         env["TILO_HEADLESS_SCALE"] = str(args.scale)
-    session = apps_module.Session(args.state)
+    walks = app_walk()
+    session = walks.Session(args.state)
     client = None
+    machine = daemon = None
     app = args.app or CLIENT_APP
     try:
-        session.start(apps=args.apps, fresh=True, out=out, tag=args.label, env=env,
-                      tapps=args.tapp or None)
+        machine, daemon = walks.start_signed_in(
+            session, args.state, out, apps=args.apps, tapps=args.tapp or [], tag=args.label,
+            env={**walks.session_env(args.state), **env})
         dismiss_first_login(session)
         if args.app:
             window = session.launch(args.app, deadline=args.app_timeout)
@@ -301,6 +321,9 @@ def measure(args: argparse.Namespace) -> dict:
         client_output = stop_client(client) if client is not None else ""
         session_log = session.log()
         session.stop()
+        for service in (machine, daemon):
+            if service is not None:
+                service.stop()
 
     rows = parse_samples(session_log, app)[args.warmup:]
     unanswered = sum(1 for match in UNANSWERED_LINE.finditer(session_log) if match["app"] == app)
