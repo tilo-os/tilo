@@ -9842,6 +9842,18 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "resizable",
+          "doc": "Whether the window's trailing edge resizes it: a strip's window, whose row shares its width out among the windows beside it. A window on a canvas or a lone floating window takes its size from the shell's own gesture there.",
+          "type": "bool"
+        },
+        {
+          "name": "narrowest",
+          "doc": "The least width the edge may leave the window, in logical pixels: the room its row keeps every window it shares out (a strip's `44rem`). Unset leaves the toolkit's own least.",
+          "type": {
+            "option": "float"
+          }
         }
       ],
       "parts": [
@@ -9867,6 +9879,12 @@
           "name": "press",
           "doc": "A press on the window's bar, where nothing on it took the press: the person reaching for the window, which the shell answers by bringing it forward with the keyboard in it.",
           "press": true
+        },
+        {
+          "name": "resize",
+          "doc": "The window's trailing edge was dragged and let go: the width it is taking, in logical pixels, then the width it had when it was grabbed. The shell turns that into the share its row gives it.",
+          "value": "int",
+          "at": "int"
         }
       ],
       "semantics": {

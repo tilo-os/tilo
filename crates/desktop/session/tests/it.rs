@@ -298,6 +298,9 @@ mod speaker_groups;
 mod startup_timeline;
 #[path = "strips_tabs.rs"]
 mod strips_tabs;
+
+#[path = "strips_gestures.rs"]
+mod strips_gestures;
 #[path = "style_packages.rs"]
 mod style_packages;
 #[path = "styles.rs"]

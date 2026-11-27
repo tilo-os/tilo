@@ -212,6 +212,8 @@ struct Tabs {
 /// in the strip or let go outside it.
 #[derive(Clone, Default)]
 struct Events {
+    /// The strip's own key, as the drag bus names what a tab drag carries.
+    source: String,
     activate: Event,
     close: Event,
     reorder: Event,
@@ -221,6 +223,7 @@ struct Events {
 impl Events {
     fn of(props: &TabStripProps) -> Self {
         Self {
+            source: props.key.clone(),
             activate: props.activate.clone(),
             close: props.close.clone(),
             reorder: props.reorder.clone(),
@@ -336,6 +339,16 @@ pub struct TabStrip {
     bar: TabBar,
     /// Its tabs, as its view gave them.
     tabs: Tabs,
+    /// The tab this strip carries on the drag bus while the pointer is outside its bar: the
+    /// resource it stands for, and whether it was published already.
+    carried: Option<String>,
+    /// A tab let go outside the bar whose drop no frame took, and the point it was let go at:
+    /// the strip waits a moment for a frame under the pointer to take it, then reports the
+    /// `detach` its view answers (a window of its own).
+    fallback: Option<(String, i64, crate::time::Instant)>,
+    /// Where the last detach let its tab go, in the strip's coordinates: the point the drop
+    /// lands at.
+    detach_point: Option<vello::kurbo::Point>,
 }
 
 impl tilo_ui_base::widget::identity::concrete::Decorator for TabStrip {
@@ -414,6 +427,12 @@ impl tilo_ui_base::widget::identity::concrete::Decorator for TabStrip {
         self.report();
         changed
     }
+
+    /// A tab let go over nothing waits a moment to find out that no frame took it: the frames
+    /// that tell are the ones this asks for.
+    fn needs_animation_frame(&self) -> bool {
+        self.fallback.is_some() || tilo_ui_base::widget::Widget::needs_animation_frame(&self.bar)
+    }
 }
 
 /// The strip's props again: what its view last said, its events left out.
@@ -447,7 +466,13 @@ impl Described for TabStrip {
         );
         bar = bar.without_new_tab();
         bar.set_show_maximize(false);
-        let mut strip = Self { bar, tabs };
+        let mut strip = Self {
+            bar,
+            tabs,
+            carried: None,
+            fallback: None,
+            detach_point: None,
+        };
         strip.draw();
         strip
     }
@@ -495,11 +520,97 @@ impl TabStrip {
         }
     }
 
-    /// Tell the view what the pills reported since the last call.
+    /// Tell the view what the pills reported since the last call, and keep the drag bus in step
+    /// while a pill is carried: a tab dragged out of its strip is over the frames the pointer
+    /// crosses, which say so, and the frame it is let go over takes it.
     pub fn report(&mut self) {
-        for (what, resource, at) in self.take_reported() {
+        let reported = self.take_reported();
+        let point = self.detach_point.take();
+        let mut landed_here = false;
+        for (what, resource, at) in reported {
+            if what == "detach"
+                && let Some(carried) = self.carried.take()
+            {
+                if let Some(point) = point {
+                    self.land(&carried, point);
+                }
+                // A frame under the pointer may take the drop on this frame or the next; the
+                // strip gives it a moment before its own `detach` makes a window of the tab.
+                self.fallback = Some((resource, at, crate::time::now()));
+                landed_here = true;
+                continue;
+            }
             self.tabs.events.fire(what, &resource, at);
         }
+        self.carry_on_the_bus();
+        if self.carried.is_some() && self.bar.carrying().is_none() && !landed_here {
+            // The carry was cancelled (Escape, the window losing the pointer): nothing lands.
+            self.carried = None;
+            crate::widget::drag_bus::end(None);
+        }
+        let waited = crate::time::Duration::from_millis(50);
+        if let Some((resource, at, let_go)) = self.fallback.take() {
+            let now = crate::time::now();
+            if now.saturating_duration_since(let_go) < waited {
+                self.fallback = Some((resource, at, let_go));
+            } else if crate::widget::drag_bus::landed().is_some() {
+                // Nothing under the pointer took the drop: the view's own `detach` gives the
+                // tab a window of its own.
+                crate::widget::drag_bus::end(None);
+                self.tabs.events.fire("detach", &resource, at);
+            }
+        }
+    }
+
+    /// Publish the pill a person carries on the drag bus once it leaves the strip, so every
+    /// frame under the pointer says it takes it, and move it with the pointer.
+    fn carry_on_the_bus(&mut self) {
+        let Some((id, point)) = self.bar.carrying() else {
+            return;
+        };
+        let Some(resource) = self.tabs.resources.get(&id).cloned() else {
+            return;
+        };
+        let inside = self.bar.bar_rect().contains(point);
+        if self.carried.is_none() && inside {
+            return;
+        }
+        let title = self
+            .tabs
+            .order
+            .iter()
+            .find(|(held, _)| *held == id)
+            .and_then(|(_, tab)| tab.title.clone())
+            .unwrap_or_default();
+        let rect = self.bar.bar_rect();
+        if self.carried.as_deref() == Some(resource.as_str()) {
+            crate::widget::drag_bus::moved(point, (self.tabs.events.source.clone(), rect));
+            return;
+        }
+        let payload = tilo_ui_base::dnd::DragPayload::Custom {
+            kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
+            blob: resource.clone().into_bytes(),
+        };
+        self.carried = Some(resource);
+        crate::widget::drag_bus::carry_payload(
+            self.tabs.events.source.clone(),
+            payload,
+            title,
+            point,
+            rect,
+        );
+    }
+
+    /// Let the carried tab go at `point`: the drop the frame there takes.
+    fn land(&mut self, resource: &str, point: vello::kurbo::Point) {
+        crate::widget::drag_bus::end(Some(crate::widget::drag_bus::Landed {
+            source: self.tabs.events.source.clone(),
+            payload: tilo_ui_base::dnd::DragPayload::Custom {
+                kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
+                blob: resource.as_bytes().to_vec(),
+            },
+            pointer: point,
+        }));
     }
 
     /// What the pills reported since the last call: the event's name, the
@@ -525,6 +636,7 @@ impl TabStrip {
         if let Some((id, point)) = self.bar.take_detach()
             && let Some(resource) = self.tabs.resources.get(&id)
         {
+            self.detach_point = Some(point);
             out.push(("detach", resource.clone(), pack_point(point.x, point.y)));
         }
         out

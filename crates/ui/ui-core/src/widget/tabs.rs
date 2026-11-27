@@ -3182,6 +3182,19 @@ impl TabBar {
     pub fn take_detach(&mut self) -> Option<(u64, Point)> {
         self.pending_detach.take()
     }
+
+    /// The tab a person is carrying and where the pointer is, while a pill is lifted: the
+    /// strip's host hands it to the drag bus, so the frames the pointer crosses say what they
+    /// would take, before the person lets go.
+    #[must_use]
+    pub fn carrying(&self) -> Option<(u64, Point)> {
+        let DragPayload::Tab { tab, .. } = self.pending_drag.as_ref()? else {
+            return None;
+        };
+        self.drag_lifted_at
+            .is_some()
+            .then(|| (*tab, self.last_cursor))
+    }
     pub fn bar_rect(&self) -> Rect {
         self.rect
     }

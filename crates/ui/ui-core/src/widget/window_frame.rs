@@ -99,10 +99,22 @@ pub struct WindowFrameProps {
     /// Why it cannot be pressed now, where the name does not say (an action whose requirement
     /// does not hold): spoken as its description beside the name.
     pub description: Option<String>,
+    /// Whether the window's trailing edge resizes it: a strip's window, whose row shares its
+    /// width out among the windows beside it. A window on a canvas or a lone floating window
+    /// takes its size from the shell's own gesture there.
+    pub resizable: bool,
+    /// The least width the edge may leave the window, in logical pixels: the room its row keeps
+    /// every window it shares out (a strip's `44rem`). Unset leaves the toolkit's own least.
+    pub narrowest: Option<f64>,
     /// A press on the window's bar, where nothing on it took the press: the person reaching for
     /// the window, which the shell answers by bringing it forward with the keyboard in it.
     #[component(event(press))]
     pub press: Event,
+    /// The window's trailing edge was dragged and let go: the width it is taking, in logical
+    /// pixels, then the width it had when it was grabbed. The shell turns that into the share its
+    /// row gives it.
+    #[component(event(value = i64, at = i64))]
+    pub resize: Event,
     /// The window's content, filling the window.
     #[component(part(default))]
     pub body: Option<Element>,
@@ -125,7 +137,10 @@ impl Default for WindowFrameProps {
             control: Vec::new(),
             enabled: true,
             description: None,
+            resizable: false,
+            narrowest: None,
             press: Event::None,
+            resize: Event::None,
             body: None,
         }
     }
@@ -202,9 +217,44 @@ pub struct WindowFrame {
     cursor: Point,
     /// The pointer rests on the bar.
     on_bar: bool,
+    /// Whether the window's trailing edge resizes it, and what a resize reports.
+    resizable: bool,
+    /// The least width a carried edge leaves it, in logical pixels.
+    narrowest: Option<f64>,
+    resize: Event,
+    /// A press on the trailing edge being carried.
+    grip: Option<Grip>,
+    /// The edge light and the size chip the resize shows.
+    feedback: crate::widget::ResizeFeedback,
+    /// The motion the theme allows, sampled by the latest layout: the pace the chip fades at.
+    motion: tilo_ui_base::tokens::EffectiveMotion,
+    /// The edge's light or chip changed since the last draw: the frame repaints where it stands.
+    resize_dirty: bool,
     /// Where the window stands for the shell's control hints ([`crate::control_hints`]).
     anchor: crate::control_hints::anchors::WindowAnchor,
+    /// The window's resizing edge, for the hint that teaches it beside the window.
+    hint_edges: crate::control_hints::anchors::EdgesAnchor,
 }
+
+/// A press on a window's trailing edge, carried: the width the window had when it was grabbed
+/// and where the pointer pressed, so every move says the width the edge is taking.
+#[derive(Clone, Copy, Debug)]
+struct Grip {
+    press_x: f64,
+    width: f64,
+    height: f64,
+    /// The width the pointer has carried the edge to, which the chip says.
+    taking: f64,
+}
+
+/// How deep the band along a window's edge is where a press carries it: the same grip every
+/// window edge in the shell offers (`tokens::Layout::resize_grip`).
+fn edge_grip() -> f64 {
+    f64::from(tilo_ui_base::tokens::Layout::BASE.resize_grip)
+}
+
+/// The least width an edge drag leaves a window: enough for its bar and its controls.
+const LEAST_WIDTH: f64 = 160.0;
 
 /// A press on the bar that may become a drag of the window's own bar.
 #[derive(Clone, Copy, Debug)]
@@ -337,7 +387,10 @@ impl Described for WindowFrame {
             control,
             enabled,
             description,
+            resizable,
+            narrowest,
             press,
+            resize,
             body,
         } = props;
         let tabbed = tabs.as_deref().is_some_and(holds_tabs);
@@ -406,7 +459,15 @@ impl Described for WindowFrame {
             description,
             cursor: Point::ZERO,
             on_bar: false,
+            resizable,
+            narrowest,
+            resize,
+            grip: None,
+            feedback: crate::widget::ResizeFeedback::new(),
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
+            resize_dirty: false,
             anchor: crate::control_hints::anchors::WindowAnchor::new(),
+            hint_edges: crate::control_hints::anchors::EdgesAnchor::new(),
         }
     }
 
@@ -429,6 +490,9 @@ impl Described for WindowFrame {
         self.placed.set_control(control_of(&props.control));
         self.enabled = props.enabled;
         self.description = props.description;
+        self.resizable = props.resizable;
+        self.narrowest = props.narrowest;
+        self.resize = props.resize;
         self.press = tilo_ui_base::widget::Press::of(props.press);
         true
     }
@@ -760,6 +824,148 @@ impl WindowFrame {
         }
         Some(lift.active)
     }
+
+    /// The edge of the window a press at `p` would carry, while the window is one a row shares
+    /// its width out among: the trailing edge alone, since a border between two windows belongs
+    /// to the window before it, which is the one whose width it changes.
+    fn edge_at(&self, p: Point) -> Option<crate::widget::EdgeSide> {
+        if !self.resizable
+            || self.leaving
+            || self.rect.width() <= 2.0 * edge_grip()
+            || self.pill.contains(p)
+        {
+            return None;
+        }
+        let inside = p.x <= self.rect.x1
+            && p.x >= self.rect.x1 - edge_grip()
+            && p.y >= self.rect.y0
+            && p.y <= self.rect.y1;
+        inside.then_some(crate::widget::EdgeSide::Trailing)
+    }
+
+    /// The width the carried edge is taking at `x`: the pointer's travel from the press added to
+    /// the width it had, never below [`LEAST_WIDTH`].
+    fn carried_width(&self, x: f64) -> f64 {
+        let Some(grip) = self.grip else {
+            return self.rect.width();
+        };
+        let least = self.narrowest.unwrap_or(LEAST_WIDTH);
+        (grip.width + (x - grip.press_x)).max(least)
+    }
+
+    /// The pointer moved while the edge is carried: the chip says the size it is taking.
+    fn carry_edge(&mut self, point: Point) {
+        let taking = self.carried_width(point.x);
+        if let Some(grip) = &mut self.grip {
+            grip.taking = taking;
+            self.feedback.carrying((taking, grip.height));
+        }
+    }
+
+    /// The carried edge was let go: the width it is taking goes to whoever shares the row out,
+    /// as one typed change. Let go where it was grabbed, it reports nothing.
+    fn release_edge(&mut self, now: crate::time::Instant) {
+        let Some(grip) = self.grip.take() else {
+            return;
+        };
+        self.feedback.carrying((grip.taking, grip.height));
+        self.feedback.end(now);
+        if (grip.taking - grip.width).abs() >= 0.5 {
+            crate::control_hints::performed::note(
+                crate::control_hints::performed::Performed::ResizedWindow,
+            );
+            let (taking, width) = (grip.taking.round() as i64, grip.width.round() as i64);
+            self.resize
+                .fire(Some(tilo_ui_base::component::Value::List(vec![
+                    tilo_ui_base::component::Value::Int(taking),
+                    tilo_ui_base::component::Value::Int(width),
+                ])));
+        }
+    }
+
+    /// The edge's own pointer input: hover, press, carry and let go, and Escape to leave it
+    /// where it was. Returns whether the edge took the event.
+    fn handle_edge(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
+        if !self.resizable || self.leaving {
+            return false;
+        }
+        let now = tilo_ui_base::motion::frame_now();
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = ctx.logical(position);
+                self.cursor = point;
+                if self.grip.is_some() {
+                    self.carry_edge(point);
+                    *ctx.handled = true;
+                    return true;
+                }
+                let side = self.edge_at(point);
+                if side.is_some() || self.feedback.lit(now).is_some() {
+                    self.resize_dirty = true;
+                }
+                self.feedback.hover(side, now);
+                false
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if self.feedback.lit(now).is_some() {
+                    self.resize_dirty = true;
+                }
+                self.feedback.hover(None, now);
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.grip.is_none() => {
+                let Some(side) = self.edge_at(self.cursor) else {
+                    return false;
+                };
+                self.grip = Some(Grip {
+                    press_x: self.cursor.x,
+                    width: self.rect.width(),
+                    height: self.rect.height(),
+                    taking: self.rect.width(),
+                });
+                self.feedback
+                    .begin(side, (self.rect.width(), self.rect.height()));
+                self.lift = None;
+                crate::widget::drag_bus::end(None);
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.grip.is_some() => {
+                self.release_edge(now);
+                *ctx.handled = true;
+                true
+            }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if self.grip.is_some()
+                    && key.state == ElementState::Pressed
+                    && key.logical_key == Key::Named(NamedKey::Escape) =>
+            {
+                self.grip = None;
+                self.feedback.cancel();
+                *ctx.handled = true;
+                true
+            }
+            WindowEvent::Focused(false) if self.grip.is_some() => {
+                self.grip = None;
+                self.feedback.cancel();
+                false
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Decorator for WindowFrame {
@@ -777,6 +983,11 @@ impl Decorator for WindowFrame {
         // A window on its way out takes nothing: its place is gone from the layout, so a press on
         // its bar or in its content would reach an action that cannot run.
         if self.leaving {
+            return;
+        }
+        // Its edge comes first: a press there carries the width the window takes, and reaches
+        // neither its bar nor its content.
+        if self.handle_edge(event, ctx) {
             return;
         }
         if self.carries.is_none() {
@@ -881,7 +1092,16 @@ impl Decorator for WindowFrame {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.lift.is_some()
+        self.lift.is_some() || self.grip.is_some()
+    }
+
+    /// Over a window's trailing edge the pointer shows the width can be dragged; over its bar
+    /// or its content, whatever is there says.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.edge_at(point).is_some() || self.grip.is_some() {
+            return Some(winit::window::CursorIcon::EResize);
+        }
+        self.layers.cursor_shape(point)
     }
 
     fn build_layout(
@@ -890,6 +1110,7 @@ impl Decorator for WindowFrame {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         let m = HeaderRowMetrics::resolve(theme);
         self.offer_bar(&m);
         self.build_bar(self.shape(), &m);
@@ -954,14 +1175,40 @@ impl Decorator for WindowFrame {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.layers.needs_redraw() || self.layers.needs_animation_frame()
+        self.layers.needs_redraw()
+            || self.layers.needs_animation_frame()
+            || self.resize_dirty
+            || self.grip.is_some()
+            || self
+                .feedback
+                .lit(tilo_ui_base::motion::frame_now())
+                .is_some()
+            || self
+                .feedback
+                .needs_frame(tilo_ui_base::motion::frame_now(), self.motion.fast())
     }
 
     /// Whether the window is arriving, going or moving: what asks for frames while it does,
-    /// and what its own content asks for.
+    /// and what its own content asks for, and the edge light coming up or the size chip fading.
     fn needs_animation_frame(&self) -> bool {
         self.placed.is_moving(tilo_ui_base::motion::frame_now())
             || self.layers.needs_animation_frame()
+            || self
+                .feedback
+                .needs_frame(tilo_ui_base::motion::frame_now(), self.motion.fast())
+    }
+
+    /// A row of windows a scroll view scrolls offers the scroll each window's leading edge to
+    /// settle on, so a fling or a wheel leaves a whole window at the row's edge rather than half
+    /// of two.
+    fn snap_points(&self, axis: tilo_ui_base::widget::ScrollAxis, out: &mut Vec<f32>) {
+        if matches!(axis, tilo_ui_base::widget::ScrollAxis::Horizontal)
+            && self.resizable
+            && !self.leaving
+            && self.rect.width() > 0.0
+        {
+            out.push(0.0);
+        }
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -1000,6 +1247,17 @@ impl Decorator for WindowFrame {
                 rect,
             );
         });
+        // The edge light and the size the window is taking, over the window itself
+        // (`docs/design-language.md`, "Window edge resize"): nothing at rest, quiet ink when
+        // the pointer rests on an edge, primary ink while it is carried.
+        let fade = theme.motion().fast();
+        if let Some((side, lit)) = self.feedback.lit(now) {
+            let alpha = self.feedback.light_alpha(now, fade);
+            crate::widget::paint_edge(scene, transform, theme, rect, side, lit, alpha);
+        }
+        if let Some((size, side, alpha)) = self.feedback.chip(now, fade) {
+            crate::widget::paint_size_chip(scene, transform, text, theme, rect, side, size, alpha);
+        }
         // Where the window stands for the shell's control hints, and while a hint may show,
         // where it shows text and controls: what a hint never covers. Content too much to read
         // counts whole.
@@ -1008,12 +1266,29 @@ impl Decorator for WindowFrame {
         self.anchor
             .state(self.focused, self.on_bar, self.carries.is_some());
         self.anchor.drawn(transform, rect, self.bar, ink);
+        // The edge a person resizes this window by, so the hint that teaches it stands beside
+        // that edge rather than beside a canvas's places.
+        let edges: Vec<vello::kurbo::Line> = if self.resizable && !self.resize.is_none() {
+            vec![crate::widget::edge_feedback::edge_line(
+                rect,
+                crate::widget::EdgeSide::Trailing,
+            )]
+        } else {
+            Vec::new()
+        };
+        self.hint_edges.drawn(transform, edges);
     }
 
     /// What the window holds is cut at its edge: a list scrolled past its top is not seen over
     /// the window behind it, and a press there does not reach it.
     fn child_clip_rect(&self) -> Option<Rect> {
         (self.rect.width() > 0.0).then_some(self.rect)
+    }
+
+    /// The frame was drawn: the edge light and chip it painted are its last frame's.
+    fn mark_drawn(&mut self) {
+        self.resize_dirty = false;
+        tilo_ui_base::widget::Widget::mark_drawn(&mut self.layers);
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1061,16 +1336,31 @@ impl Decorator for WindowFrame {
                 Some(why) => node.with_description(why.clone()),
                 None => node,
             };
+            // The size the window is taking while its edge is carried: a status a screen reader
+            // reads as the person drags, from the same words the chip shows.
+            let chip = self
+                .feedback
+                .chip(tilo_ui_base::motion::frame_now(), self.motion.fast())
+                .map(|(size, _, _)| {
+                    let words = format!("{} by {}", size.0.round() as i64, size.1.round() as i64);
+                    tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::StaticText)
+                        .with_optional_name(Some(words))
+                });
             // The window's bar, named for the window as its frame is: where a press takes the
             // window and where a gesture that moves the strip aims, whatever its tabs report.
             if self.bar.area() > 0.0 {
-                return node.with_children(vec![
+                let mut children = vec![
                     tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                         .with_optional_name(Some(name.clone()))
                         .with_bounds(self.bar),
-                ]);
+                ];
+                children.extend(chip);
+                return node.with_children(children);
             }
-            node
+            match chip {
+                Some(chip) => node.with_children(vec![chip]),
+                None => node,
+            }
         })
     }
 }
@@ -1132,7 +1422,7 @@ impl WindowFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{TabItemProps, TabStrip, TabStripProps};
+    use crate::widget::{Row, TabItemProps, TabStrip, TabStripProps};
     use tilo_ui_base::{component::Described, component::Event, component::ResourceId};
     use vello::Scene;
     use vello::kurbo::Affine;
@@ -1809,6 +2099,161 @@ mod tests {
             String::from_utf8(blob).expect("an address"),
             "notes.workspace/notes/n_groceries",
             "the drop carries the resource the window shows"
+        );
+    }
+
+    /// A window in a row is resized by carrying its trailing edge: the press takes the edge, the
+    /// chip says the size it is taking while it is held, and letting go reports the width the row
+    /// shares out — one change, which the shell records as one arranging action.
+    #[test]
+    fn a_carried_edge_reports_the_width_it_is_taking() {
+        use tilo_ui_base::component::{Fired, Intent};
+        let queue = tilo_ui_base::Intents::<Fired>::default();
+        let mut frame = Box::new(WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                key: "w".to_owned(),
+                name: Some("A window".to_owned()),
+                resizable: true,
+                resize: Event::View(Intent::new(&queue, "w", "resize")),
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        ));
+        let theme = Theme::dark();
+        let rect = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = Widget::build_layout(frame.as_mut(), &mut taffy, &theme, &mut nodes);
+        if let Ok(mut style) = taffy.style(node).cloned() {
+            style.size = taffy::Size::from_lengths(480.0_f32, 360.0_f32);
+            let _ = taffy.set_style(node, style);
+        }
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(480.0),
+                    height: taffy::AvailableSpace::Definite(360.0),
+                },
+            )
+            .expect("the window solves its layout");
+        Widget::apply_layout(frame.as_mut(), &taffy, node, rect.origin());
+        fn send(frame: &mut dyn Widget, taffy: &TaffyTree<()>, node: NodeId, event: &WindowEvent) {
+            let mut doc = automerge::AutoCommit::new();
+            crate::testing::Dispatch::new()
+                .doc(&mut doc)
+                .layout(taffy, node)
+                .send(frame, event);
+        }
+        // A point on the trailing edge, below the bar: where a person grabs the window's width.
+        let (x, y) = (rect.x1 - 2.0, 300.0);
+        send(
+            frame.as_mut(),
+            &taffy,
+            node,
+            &tilo_ui_base::synthetic_input::cursor_moved(x, y),
+        );
+        send(
+            frame.as_mut(),
+            &taffy,
+            node,
+            &tilo_ui_base::synthetic_input::mouse_press(),
+        );
+        assert!(
+            queue.take().is_empty(),
+            "a press on the edge reaches for the width, never the bar's press"
+        );
+        for step in 1..=4 {
+            send(
+                frame.as_mut(),
+                &taffy,
+                node,
+                &tilo_ui_base::synthetic_input::cursor_moved(x - 15.0 * f64::from(step), y),
+            );
+        }
+        let chip = Widget::accessibility(frame.as_mut())
+            .and_then(|node| {
+                node.children.into_iter().find_map(|child| {
+                    (child.role == tilo_ui_base::a11y::Role::StaticText).then_some(child.name?)
+                })
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            chip, "420 by 360",
+            "the chip says the size the edge is taking"
+        );
+        send(
+            frame.as_mut(),
+            &taffy,
+            node,
+            &tilo_ui_base::synthetic_input::mouse_release(),
+        );
+        let fired = queue.take();
+        let resize = fired
+            .iter()
+            .find(|fired| fired.event == "resize")
+            .expect("letting the edge go resizes the window");
+        assert_eq!(
+            resize.value,
+            Some(tilo_ui_base::component::Value::List(vec![
+                tilo_ui_base::component::Value::Int(420),
+                tilo_ui_base::component::Value::Int(480),
+            ])),
+            "the width it is taking, then the width it had"
+        );
+    }
+
+    /// A row of a shell's windows offers the scroll around it each window's leading edge to settle
+    /// on: a fling or a wheel leaves a whole window at the row's edge, never half of two.
+    #[test]
+    fn a_row_of_windows_offers_each_windows_edge_to_the_scroll() {
+        let frame = |key: &str| {
+            // A spacer of a token's size, so the window has a width of its own in the row.
+            let body: Element = Box::new(Spacer::token(SpacingStep::S16));
+            let frame: Element = Box::new(WindowFrame::from_props(
+                key,
+                WindowFrameProps {
+                    key: key.to_owned(),
+                    name: Some(key.to_owned()),
+                    resizable: true,
+                    body: Some(body),
+                    ..WindowFrameProps::default()
+                },
+            ));
+            frame
+        };
+        let mut row = Row::new().with_gap(12.0);
+        row = row.push(frame("a"));
+        row = row.push(frame("b"));
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = Widget::build_layout(&mut row, &mut taffy, &theme, &mut nodes);
+        if let Ok(mut style) = taffy.style(node).cloned() {
+            style.size = taffy::Size::from_lengths(1000.0_f32, 400.0_f32);
+            let _ = taffy.set_style(node, style);
+        }
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1000.0),
+                    height: taffy::AvailableSpace::Definite(400.0),
+                },
+            )
+            .expect("the row solves its layout");
+        Widget::apply_layout(&mut row, &taffy, node, Point::ZERO);
+        let mut points = Vec::new();
+        Widget::snap_points(
+            &row,
+            tilo_ui_base::widget::ScrollAxis::Horizontal,
+            &mut points,
+        );
+        assert_eq!(points.len(), 2, "one detent per window: {points:?}");
+        assert!(
+            points[0] < points[1],
+            "the second window's edge is where the scroll settles: {points:?}"
         );
     }
 }

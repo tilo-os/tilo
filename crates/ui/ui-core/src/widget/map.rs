@@ -824,6 +824,9 @@ pub struct Map {
     centred: Rc<Cell<Option<MapCamera>>>,
     /// The edge or corner being dragged, until it is let go.
     edge_drag: Option<EdgeDrag>,
+    /// The place edge the pointer rests on, and since when: its outline lights once it rested
+    /// there (`docs/design-language.md`, "Window edge resize").
+    edge_hover: Option<(String, bool, bool, crate::time::Instant)>,
     /// The rectangle the view points at, in canvas pixels, drawn as a light outline.
     outline: Option<Rect>,
     /// The key the map is known by on the drag bus, namespaced from the view that built it: a
@@ -983,6 +986,7 @@ impl Map {
             centre: Rc::default(),
             centred: Rc::default(),
             edge_drag: None,
+            edge_hover: None,
             outline: None,
             key: String::new(),
             items: HashMap::new(),
@@ -2305,17 +2309,108 @@ impl Map {
     /// focus colour (a theme role, never a colour of the map's own): what the person sees of the
     /// frame they are pointing at before they let go (`canvas.md` §1, §5). Nothing is drawn when
     /// no such drag is under way, or while it is still a click.
-    fn draw_frame_outline(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn draw_frame_outline(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut tilo_ui_base::text_render::TextRenderer,
+        theme: &Theme,
+    ) {
         let look = OutlineLook::of(theme);
         let zoom = self.shown.get().zoom;
         let outline = |scene: &mut Scene, rect: &Rect| {
             look.stroke(scene, transform, *rect, zoom);
         };
-        // A place's edge being dragged shows the size it is taking.
+        // A place's edge being dragged shows the size it is taking: the outline of the place, the
+        // edges carried lit, and the size in the chip beside them (a window's edge resize,
+        // `docs/design-language.md`).
         if let Some(drag) = &self.edge_drag {
             let origin = self.rect.origin().to_vec2();
-            outline(scene, &(drag.rect() + origin));
+            let screen = drag.rect() + origin;
+            outline(scene, &screen);
+            let lit = crate::widget::EdgeLit::Dragging;
+            if drag.trailing {
+                crate::widget::paint_edge(
+                    scene,
+                    transform,
+                    theme,
+                    screen,
+                    crate::widget::EdgeSide::Trailing,
+                    lit,
+                    1.0,
+                );
+            }
+            if drag.bottom {
+                crate::widget::paint_edge(
+                    scene,
+                    transform,
+                    theme,
+                    screen,
+                    crate::widget::EdgeSide::Bottom,
+                    lit,
+                    1.0,
+                );
+            }
+            let band = self
+                .pins
+                .iter()
+                .find(|(key, _, _)| *key == drag.key)
+                .map_or(0.0, |(_, place, _)| place.band);
+            let zoom = zoom.max(f64::EPSILON);
+            crate::widget::paint_size_chip(
+                scene,
+                transform,
+                text,
+                theme,
+                screen,
+                crate::widget::EdgeSide::Trailing,
+                (
+                    (screen.width() / zoom).round(),
+                    ((screen.height() - band) / zoom).round(),
+                ),
+                1.0,
+            );
             return;
+        }
+        // Resting on a place's edge lights it, quietly, for as long as the pointer stays.
+        if let Some((key, trailing, bottom, since)) = &self.edge_hover {
+            let fade = theme.motion().fast();
+            let rested = crate::time::now().saturating_duration_since(*since);
+            if rested >= crate::widget::EDGE_DWELL {
+                let alpha = if fade.is_zero() {
+                    1.0
+                } else {
+                    ((rested.saturating_sub(crate::widget::EDGE_DWELL)).as_secs_f64()
+                        / fade.as_secs_f64())
+                    .clamp(0.0, 1.0) as f32
+                };
+                if let Some(rect) = self.laid.borrow().get(key).copied() {
+                    let origin = self.rect.origin().to_vec2();
+                    let screen = rect + origin;
+                    if *trailing {
+                        crate::widget::paint_edge(
+                            scene,
+                            transform,
+                            theme,
+                            screen,
+                            crate::widget::EdgeSide::Trailing,
+                            crate::widget::EdgeLit::Resting,
+                            alpha,
+                        );
+                    }
+                    if *bottom {
+                        crate::widget::paint_edge(
+                            scene,
+                            transform,
+                            theme,
+                            screen,
+                            crate::widget::EdgeSide::Bottom,
+                            crate::widget::EdgeLit::Resting,
+                            alpha,
+                        );
+                    }
+                }
+            }
         }
         // The rectangle the view points at, while no drag draws one of its own.
         if self.free_press.is_none()
@@ -2883,6 +2978,22 @@ impl Map {
                     *ctx.handled = true;
                     return;
                 }
+                // Resting on a place's edge lights it after a moment: the pointer's own
+                // finding of where a place can be sized, before any press.
+                let hovered = self
+                    .edge_at(self.cursor - self.rect.origin().to_vec2())
+                    .map(|(key, _, trailing, bottom)| (key, trailing, bottom, crate::time::now()));
+                if hovered
+                    .as_ref()
+                    .map(|(key, trailing, bottom, _)| (key, trailing, bottom))
+                    != self
+                        .edge_hover
+                        .as_ref()
+                        .map(|(key, trailing, bottom, _)| (key, trailing, bottom))
+                {
+                    self.edge_hover = hovered;
+                    self.dirty = true;
+                }
                 // A drag across the empty canvas draws its rectangle as it goes, so the person
                 // sees what they will point at before they let go (`canvas.md` §1).
                 if let Some(mut press) = self.free_press {
@@ -3236,6 +3347,11 @@ impl Widget for Map {
         let now = tilo_ui_base::motion::frame_now();
         self.moved
             || self.rest_due.is_some()
+            || self.edge_hover.as_ref().is_some_and(|(_, _, _, since)| {
+                now.saturating_duration_since(*since)
+                    < crate::widget::EDGE_DWELL
+                        + tilo_ui_base::tokens::motion::Durations::default().fast()
+            })
             || self.glide.is_some_and(|glide| glide.is_gliding(now))
             || self.pins_moving(now)
             || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
@@ -3361,7 +3477,7 @@ impl Widget for Map {
         self.draw_tracks(scene, transform, theme);
         self.draw_markers(scene, transform, text, theme, &env);
         self.draw_hint(scene, transform, text, theme);
-        self.draw_frame_outline(scene, transform, theme);
+        self.draw_frame_outline(scene, transform, text, theme);
         let windows = crate::control_hints::anchors::windows_drawn();
         self.draw_pins(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,

@@ -292,9 +292,10 @@ fn drag(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
     button(session, false);
 }
 
-/// Dragging a tab pill out of its window's bar gives it a window of its own: the tab strip's own
-/// `detach` reports the pill let go outside the bar, and the shell runs the shell's `split-right`
-/// for the place it carried, so the place leaves the window into one of its own, right after it.
+/// Dragging a tab pill out of its window's bar and letting it go where no window stands gives it a
+/// window of its own: the tab strip's own `detach` reports the pill let go outside the bar over
+/// nothing that takes it, and the shell runs the shell's `split-right` for the place it carried,
+/// so the place leaves the window into one of its own, right after it.
 #[test]
 fn dragging_a_tab_out_gives_it_its_own_window() {
     let _settled = tilo_ui_base::motion::testing::settled();
@@ -307,14 +308,19 @@ fn dragging_a_tab_out_gives_it_its_own_window() {
         "the tab's pill",
         |session| on_screen(session, &second_name),
     ));
-    let window = at(crate::common::wait_for(
+    let _window = at(crate::common::wait_for(
         &mut session,
         "the window's body",
         |session| on_screen(session, &shown_as(session, TITLES[0])),
     ));
-    // The pill is dragged down out of the bar into the window's body: let go outside the bar, the
-    // strip reports it as the tab let go of, which the shell splits into a window of its own.
-    drag(&mut session, pill, (window.0, window.1 + 200.0));
+    // The pill is dragged out of its bar and let go over the shell's own bar, where no window
+    // stands to take it: the strip reports it as the tab let go of, which the shell splits into a
+    // window of its own.
+    drag(
+        &mut session,
+        pill,
+        (f64::from(crate::common::WIDTH) / 2.0, 12.0),
+    );
     until(&mut session, "the tab has a window of its own", |session| {
         strip_of(session, second).is_some_and(|own| own != strip)
     });

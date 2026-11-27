@@ -322,13 +322,29 @@ view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool) {
     }
 }
 
+/// The narrowest a window in a row may be dragged: the `44rem` the row keeps every window it
+/// shares out (`row_window`), in the shell's pixels, so a carried edge stops where the layout
+/// stops shrinking the window.
+fn least_window_width() -> Float {
+    44.0 * 16.0
+}
+
 /// One strip's window as its row stands it: its share of the shell, the per-mille width the person
 /// gave it (a usual window where it names none), so two windows the shell holds stand half each
 /// and a lone window takes the room its neighbours left. Never narrower than 44rem — the room a
 /// window's bar, its tabs and an app's own layout need — so a row of more windows than the shell
 /// holds keeps their width and scrolls along it, as the chrome's own row does.
+///
+/// Every window in a row is resizable by its trailing edge, and the edge between two windows is
+/// the leading window's trailing edge: the border a person drags is the one whose width the drag
+/// changes, so no border belongs to two windows. The row's first window's leading edge is the
+/// row's own start, which has nothing to give: it is no grip.
 view row_window(a: Layout, s: LayoutStrip, lists: Bool) {
-    strip_window(a, s, lists, fill: if s.width <= 0 { 667 } else { s.width }, min: 44rem)
+    if s.leaving {
+        leaving_window(a, s)
+    } else {
+        standing_window(a, s, lists, true)
+    }
 }
 
 /// One strip: the window its places make, filling the room it is given. Its bar runs across its
@@ -342,16 +358,16 @@ view row_window(a: Layout, s: LayoutStrip, lists: Bool) {
 ///
 /// While it shows them, a strip of several places has tabs a person rearranges: choosing one
 /// shows its place and brings the strip forward, a press on its close takes that place out of
-/// the strip, a drag within the bar ranks it among the others, and a drag out of the bar into
-/// the shell gives it a window of its own (or, when the shell is the traditional one, the window
-/// of the place it was let go under). Every one is an arranging action of the session's, so a
-/// press, a key and an agent make the same change, attributed and undoable. A window's bar
-/// likewise carries its place's document, so another window's bar takes it as a tab.
+/// the strip, a drag within the bar ranks it among the others, and a drag out of the bar lands it
+/// on the window it is let go over, which takes it as its tab; let go where no window stands, it
+/// gets a window of its own. Every one is an arranging action of the session's, so a press, a key
+/// and an agent make the same change, attributed and undoable. A window's bar likewise carries
+/// its place's document, so another window's bar takes it as a tab.
 view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
     if s.leaving {
         leaving_window(a, s)
     } else {
-        standing_window(a, s, lists)
+        standing_window(a, s, lists, false)
     }
 }
 
@@ -368,7 +384,7 @@ view leaving_window(a: Layout, s: LayoutStrip) {
 }
 
 /// A window that stands: its places, its bar and its content, drawn as the style shows a window.
-view standing_window(a: Layout, s: LayoutStrip, lists: Bool) {
+view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
     let in_front = s.key == strip_in_front(a)
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
@@ -382,8 +398,17 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool) {
             keep: if in_front { "front" } else { "" },
             lists_actions: lists_the_shown(shown),
             carries: if s.floating { floating_bar(shown) } else { window_resource(shown) },
+            resizable: resizable,
+            narrowest: if resizable { .some(least_window_width()) } else { .none },
             fill,
         ) {
+            // The window's trailing edge carried and let go: one arranging action sets the
+            // share of its row it takes, recorded and undoable, so a press, a script and an
+            // agent resize the same way.
+            on resize(to: Int, was: Int): session.resize(
+                strip: the_strip(s.key),
+                permille: share_for_width(a, s, to, was),
+            )
             // A press on the window's bar brings it forward, the keyboard in it.
             on press: bring_forward(a, s)
             // The window fills the room the drop target around it is given: the target only
@@ -1387,6 +1412,41 @@ action move_right(w: device.Window (label: "The window")) (
             )
         }
     }
+}
+
+/// The share of its row the window of `s` takes when its trailing edge is carried to `to` pixels
+/// from `was`: a row divides its width among its windows by weight, so the weight that leaves this
+/// window `to` pixels wide is `to` against the room the row keeps for the others. A row of one
+/// window has nothing beside it to give: its weight stays what it was.
+///
+/// Weights are whole numbers and widths whole pixels, so the arithmetic stays whole: the row's
+/// width is the width the window had over the share it had, and the share that puts its edge where
+/// the pointer holds it follows. The answer is clamped to the per-mille range a strip stores.
+fn share_for_width(a: Layout, s: LayoutStrip, to: Int, was: Int) -> Int {
+    let own = if s.width <= 0 { 667 } else { s.width }
+    let others = a.strips
+        .filter(
+            x -> x.key != s.key and x.row == s.row and x.display == s.display and not x.floating,
+        )
+        .map(x -> if x.width <= 0 { 667 } else { x.width })
+        .sum()
+    if others <= 0 or was <= 0 or to <= 0 {
+        return own
+    }
+    // The row's width: what the others and this window took, as the layout shared it out.
+    let total = own + others
+    let row = (was * total + own / 2) / own
+    let left = row - to
+    if left <= 1 {
+        return 100000
+    }
+    let share = (others * to + left / 2) / left
+    if share < 1 {
+        return 1
+    } else if share > 100000 {
+        return 100000
+    }
+    return share
 }
 
 /// The share of its strip a wider window takes: the next preset up, and the widest there is.

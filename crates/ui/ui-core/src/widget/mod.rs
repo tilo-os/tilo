@@ -397,6 +397,12 @@ pub use {
     edge_resize::EdgeGrab, edge_resize::ResizeMode, edge_resize::WidthLimits,
     edge_resize::WindowEdge,
 };
+pub mod edge_feedback;
+pub use {
+    edge_feedback::DWELL as EDGE_DWELL, edge_feedback::Lit as EdgeLit,
+    edge_feedback::ResizeFeedback, edge_feedback::Side as EdgeSide, edge_feedback::paint_edge,
+    edge_feedback::paint_size_chip, edge_feedback::size_label,
+};
 #[cfg(feature = "model")]
 mod resize_handle;
 #[cfg(feature = "model")]
