@@ -695,6 +695,7 @@ d-rygoropv = Rahmenteile
     .w-control-hints = Bedienhinweise
     .w-the-shell-s-hints-over-everything = Die Hinweise der Shell über allem, was sie zeigt: eine ihrer Bedienungen, gelehrt neben dem Ort, an dem man sie ausführt, im Moment, in dem sie etwas nützt, und fort, sobald die Person sie getan hat.
     .w-super = Super
+    .w-space = Leertaste
     .w-chrome = Rahmen
     .w-the-ground-a-bar-or-a = Der Grund, auf dem eine Leiste oder ein Dock steht, im Finish des Themes.
     .w-a-bar = Eine Leiste

@@ -2039,6 +2039,7 @@ d-6zyejo5v = Fensterleisten-Aktionen
     .w-history-of-this-window = Verlauf dieses Fensters
     .w-back-in-this-window = Zurück in diesem Fenster
     .w-forward-in-this-window = Vor in diesem Fenster
+    .w-starting = Starte { $title } …
 
 d-vrlwh4vn = Dieses Fenster-Menü
     .w-this-window = Dieses Fenster
