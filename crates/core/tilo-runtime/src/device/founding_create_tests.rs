@@ -174,14 +174,13 @@ async fn mark_root_kept(devices: &TwoDevices) {
     )
     .await
     .expect("the record says where the founding device answers");
-    until("the desk's record names the founding device", || {
+    tilo_test_env::wait_until("the desk's record names the founding device", || {
         marks_founding(
             &devices.second,
             devices.person,
             devices.first_cert.device_public_key,
         )
-    })
-    .await;
+    });
 }
 
 /// The desk's account, as its person's programs reach it.
@@ -249,15 +248,6 @@ fn create_on_desk_meanwhile(
     ))
 }
 
-/// Wait for `done`, a moment at a time, within the hang bound.
-async fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    while !done() {
-        assert!(Instant::now() < deadline, "waited for: {what}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 /// Whether the record `workspaces` holds marks `device` as keeping the person's root.
 fn marks_founding(workspaces: &Arc<ServiceWorkspaces>, person: [u8; 32], device: [u8; 32]) -> bool {
     let copies = workspaces.copies().clone();
@@ -282,15 +272,15 @@ async fn opens(workspaces: &ServiceWorkspaces, workspace: &str) -> bool {
 /// Wait until `workspaces` lists `workspace` and opens it ([`opens`]), which its follower of the
 /// person's list brings about by itself.
 async fn opened(workspaces: &ServiceWorkspaces, workspace: &str, what: &str) {
-    let deadline = tilo_test_env::hang_deadline();
-    while !opens(workspaces, workspace).await {
-        assert!(
-            Instant::now() < deadline,
-            "waited for: {what}; not here: {:?}",
-            workspaces.copies().not_here()
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    tilo_test_env::within(
+        format!("{what}; not here: {:?}", workspaces.copies().not_here()),
+        async {
+            while !opens(workspaces, workspace).await {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
     assert_eq!(
         workspaces.copies().is_member(workspace).await,
         Ok(true),
@@ -300,26 +290,19 @@ async fn opened(workspaces: &ServiceWorkspaces, workspace: &str, what: &str) {
 
 /// The one question waiting on the founding device in the person's own workspace, once it is
 /// there.
-async fn the_question(devices: &TwoDevices) -> tilo_remote_actions::asked::Waiting {
+fn the_question(devices: &TwoDevices) -> tilo_remote_actions::asked::Waiting {
     let store = devices
         .first
         .copies()
         .asked_store()
         .expect("the founding device keeps the person's questions");
     let own = person_workspace_id(&devices.person);
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_for("the founding device to ask the person", move || {
         let mut waiting = store.waiting_in(&own);
-        if let Some(question) = waiting.pop() {
-            assert!(waiting.is_empty(), "one question waits: {waiting:?}");
-            return question;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "waited for the founding device to ask the person"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+        let question = waiting.pop()?;
+        assert!(waiting.is_empty(), "one question waits: {waiting:?}");
+        Some(question)
+    })
 }
 
 /// The person answers `question` with `offer` on the founding device.
@@ -343,7 +326,7 @@ async fn answer(
         arguments,
     );
     let person = Caller::authenticated(devices.person, devices.first_cert.device_public_key)
-        .in_workspace(person_workspace_id(&devices.person));
+        .in_workspace(question.asked.record.workspace.clone());
     let answered = tilo_test_env::within(
         "the founding device takes the person's answer",
         devices.first.copies().resolve_asked(&person, &request),
@@ -506,7 +489,7 @@ async fn a_workspace_a_device_off_tilo_os_asks_for_waits_for_the_persons_yes_on_
     // The person says yes on the founding device: it makes the workspace, and the desk opens it.
     let id = uuid::Uuid::new_v4().to_string();
     let asking = create_on_desk_meanwhile(&devices, json!({"name": "Quarterly plan", "id": id}));
-    let question = the_question(&devices).await;
+    let question = the_question(&devices);
     assert_eq!(question.asked.facts.on.as_deref(), Some("Quarterly plan"));
     assert!(
         question.asked.facts.words.contains("Quarterly plan"),
@@ -535,7 +518,7 @@ async fn a_workspace_a_device_off_tilo_os_asks_for_waits_for_the_persons_yes_on_
     let declined_id = uuid::Uuid::new_v4().to_string();
     let asking =
         create_on_desk_meanwhile(&devices, json!({"name": "Not this one", "id": declined_id}));
-    let question = the_question(&devices).await;
+    let question = the_question(&devices);
     answer(&devices, &question, Offer::Decline).await;
     let declined = tilo_test_env::within("the desk hears the founding device", asking)
         .await
@@ -778,51 +761,44 @@ async fn followed_to(
     invocation: tilo_actions::InvocationId,
     mut seen: Option<tilo_actions::remote::UpdateMark>,
 ) -> tilo_actions::InvocationUpdate {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        assert!(Instant::now() < deadline, "waited for the make to move");
-        let answer = actions
-            .ask_message(tilo_actions::remote::RemoteActionMessage::Observe {
-                correlation: 0,
-                invocation,
-                wait_ms: Some(tilo_peer_state::actions::CHANGE_WAIT_MS),
-                seen,
-            })
-            .await
-            .expect("the device answers")
-            .expect("the device follows the make");
-        let tilo_actions::remote::RemoteActionMessage::Update {
-            state: Some(state), ..
-        } = answer
-        else {
-            panic!("the device knows the make: {answer:?}");
-        };
-        if state.is_terminal()
-            || tilo_actions::remote::asked::RecordRef::waited_in(&state.update).is_some()
-        {
-            return state.update;
+    tilo_test_env::within("the make to move", async {
+        loop {
+            let answer = actions
+                .ask_message(tilo_actions::remote::RemoteActionMessage::Observe {
+                    correlation: 0,
+                    invocation,
+                    wait_ms: Some(tilo_peer_state::actions::CHANGE_WAIT_MS),
+                    seen,
+                })
+                .await
+                .expect("the device answers")
+                .expect("the device follows the make");
+            let tilo_actions::remote::RemoteActionMessage::Update {
+                state: Some(state), ..
+            } = answer
+            else {
+                panic!("the device knows the make: {answer:?}");
+            };
+            if state.is_terminal()
+                || tilo_actions::remote::asked::RecordRef::waited_in(&state.update).is_some()
+            {
+                return state.update;
+            }
+            seen = Some(tilo_actions::remote::UpdateMark::of(&state.update));
         }
-        seen = Some(tilo_actions::remote::UpdateMark::of(&state.update));
-    }
+    })
+    .await
 }
 
 /// The question waiting on the founding device of `devices` for the make `invocation`, among the
 /// person's own workspaces there, once it is there.
-async fn question_for(
+fn question_for(
     devices: &TwoDevices,
     invocation: tilo_actions::InvocationId,
 ) -> tilo_remote_actions::asked::Waiting {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        if let Some(question) = waiting_for(devices, invocation) {
-            return question;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "waited for the founding device to ask the person"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    tilo_test_env::wait_for("the founding device to ask the person", || {
+        waiting_for(devices, invocation)
+    })
 }
 
 /// The question waiting on the founding device of `devices` for the make `invocation`, if any.
@@ -842,41 +818,6 @@ fn waiting_for(
         .iter()
         .flat_map(|workspace| store.waiting_in(workspace))
         .find(|waiting| waiting.invocation == invocation)
-}
-
-/// The person answers `question` with `offer` on the founding device of `devices`.
-async fn answer_there(
-    devices: &TwoDevices,
-    question: &tilo_remote_actions::asked::Waiting,
-    offer: Offer,
-) {
-    let resolving = Resolve {
-        resolution: offer,
-        ..Resolve::default()
-    };
-    let Value::Object(arguments) = serde_json::to_value(resolving).unwrap() else {
-        panic!("an answer is an object");
-    };
-    let request = InvokeRequest::plain(
-        RemoteActionTarget {
-            provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(&question.asked.record.record, RESOLVE),
-        },
-        arguments,
-    );
-    let person = Caller::authenticated(devices.person, devices.first_cert.device_public_key)
-        .in_workspace(question.asked.record.workspace.clone());
-    let answered = tilo_test_env::within(
-        "the founding device takes the person's answer",
-        devices.first.copies().resolve_asked(&person, &request),
-    )
-    .await
-    .expect("answered")
-    .expect("the answer is taken");
-    assert!(
-        matches!(answered.status, ReceiptStatus::Completed { .. }),
-        "{answered:?}"
-    );
 }
 
 /// Whether the person's workspaces on `workspaces` include one named `name`.
@@ -930,7 +871,7 @@ async fn an_agents_make_at_a_site_is_founded_on_the_persons_device_once_they_say
     let waits = followed_to(&at_site, invocation, None).await;
     let ask = tilo_actions::remote::asked::RecordRef::waited_in(&waits)
         .unwrap_or_else(|| panic!("the agent reads that its make waits for its person: {waits:?}"));
-    let question = question_for(&devices, invocation).await;
+    let question = question_for(&devices, invocation);
     assert_eq!(
         question.asked.record, ask,
         "the agent's follow names the question"
@@ -944,7 +885,7 @@ async fn an_agents_make_at_a_site_is_founded_on_the_persons_device_once_they_say
     // The person says yes on their own device, after the agent stopped following: the make goes
     // on there, and a later follow returns the workspace, placed at the site and kept there as
     // the person's own, with the agent's entry naming the site.
-    answer_there(&devices, &question, Offer::Approve).await;
+    answer(&devices, &question, Offer::Approve).await;
     let made = followed_to(
         &at_site,
         invocation,
@@ -1015,8 +956,8 @@ async fn an_agents_make_at_a_site_is_founded_on_the_persons_device_once_they_say
         tilo_actions::remote::asked::RecordRef::waited_in(&waits).is_some(),
         "{waits:?}"
     );
-    let question = question_for(&devices, declined_invocation).await;
-    answer_there(&devices, &question, Offer::Decline).await;
+    let question = question_for(&devices, declined_invocation);
+    answer(&devices, &question, Offer::Decline).await;
     let no = followed_to(
         &at_site,
         declined_invocation,
