@@ -1614,6 +1614,7 @@ fn splice_cli_setenv(
 /// Hand this launch's phase marks to the app, only when the shell asked for startup metrics.
 fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), LaunchError> {
     tilo_startup_metrics::handoff_mark("sandbox-argv-ready");
+    log_launch_phases();
     splice_cli_setenv(
         argv,
         std::env::var_os("TILO_STARTUP_METRICS_PATH").map(|path| {
@@ -1628,6 +1629,21 @@ fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), LaunchError> {
         tilo_startup_metrics::handoff_env_value()
             .map(|marks| (tilo_startup_metrics::LAUNCHER_MARKS_ENV.to_string(), marks)),
     )
+}
+
+/// The launcher's phases in the session's log, in milliseconds from the first mark: a launch that
+/// spends its time before the sandbox names the stage that spent it. Only when the shell measures
+/// its launches.
+fn log_launch_phases() {
+    let phases = tilo_startup_metrics::phase_marks();
+    if phases.is_empty() {
+        return;
+    }
+    let described: Vec<String> = phases
+        .iter()
+        .map(|(name, micros)| format!("{name}:{}", micros / 1_000))
+        .collect();
+    tracing::info!(target: "tilo::launch_phases", phases = %described.join(","), "launch phases");
 }
 
 /// Expose the upstream NT synchronization device only to GUI packages marked as games, where the

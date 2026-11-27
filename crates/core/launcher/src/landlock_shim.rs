@@ -355,6 +355,7 @@ fn spawn_udp_relay(fd: i32, port: u16) {
               return an error to"
 )]
 pub fn run_sandbox_exec(args: &[String]) -> ! {
+    let started = std::time::Instant::now();
     // Bubblewrap's set-up is done once this runs inside the sandbox.
     let entered = tilo_startup_metrics::handoff_entry("sandbox-entered");
     let parsed = match ShimArgs::parse(args) {
@@ -376,12 +377,13 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
 
     let outcome = apply(&parsed);
     eprintln!(
-        "tilo-sandbox-exec: {} ({} ro, {} rw, net_restricted={}, proxy_port={:?})",
+        "tilo-sandbox-exec: {} ({} ro, {} rw, net_restricted={}, proxy_port={:?}, inside_ms={})",
         outcome.describe(),
         parsed.ro.len(),
         parsed.rw.len(),
         parsed.net_restricted,
         parsed.egress_proxy_port,
+        started.elapsed().as_millis(),
     );
 
     if !parsed.no_landlock && !landlock_accepted(outcome, parsed.landlock_best_effort) {
