@@ -2186,65 +2186,6 @@ pub fn band_padding(theme: &Theme) -> taffy::Rect<taffy::LengthPercentage> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn held_activation_keys_do_not_repeat_admitted_toolbar_commands() {
-        use crate::app::driver::Framed;
-        use std::cell::Cell;
-        use std::rc::Rc;
-        let _settled = tilo_ui_base::motion::testing::settled();
-        let press = || WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: tilo_ui_base::synthetic_input::key_event(
-                Key::Named(NamedKey::Enter),
-                None,
-                ElementState::Pressed,
-            ),
-            is_synthetic: true,
-        };
-        for width in [800, 100] {
-            let calls = Rc::new(Cell::new(0));
-            let count = Rc::clone(&calls);
-            let toolbar = Toolbar::new(Orientation::Horizontal)
-                .push_button("Open workspace settings", move || {
-                    count.set(count.get() + 1)
-                });
-            let mut frame = Framed::new(crate::State::new(), toolbar, (width, 480), Theme::dark());
-            assert!(Framed::harness(&frame).native_app_audit().is_certified());
-            if width == 100 {
-                Framed::harness_mut(&mut frame)
-                    .perform_named("toolbar.overflow", &Action::Activate)
-                    .unwrap();
-                Framed::harness_mut(&mut frame).poll_frame().unwrap();
-            }
-            Framed::harness_mut(&mut frame)
-                .perform_named("toolbar.item.0", &Action::Focus)
-                .unwrap();
-            let mut held = press();
-            if let WindowEvent::KeyboardInput { event, .. } = &mut held {
-                event.repeat = true;
-            }
-            Framed::harness_mut(&mut frame).send_host_event(&held);
-            Framed::harness_mut(&mut frame).poll_frame().unwrap();
-            assert_eq!(
-                calls.get(),
-                0,
-                "{width}: a held key cannot start a new command"
-            );
-            Framed::harness_mut(&mut frame).send_host_event(&press());
-            Framed::harness_mut(&mut frame).poll_frame().unwrap();
-            assert_eq!(
-                calls.get(),
-                1,
-                "{width}: one deliberate key press invokes once"
-            );
-            for _ in 0..3 {
-                Framed::harness_mut(&mut frame).send_host_event(&held);
-                Framed::harness_mut(&mut frame).poll_frame().unwrap();
-            }
-            assert_eq!(calls.get(), 1, "{width}: repetition must not invoke again");
-        }
-    }
-
     tilo_test_env::scenario! {
         fn a_toolbar_lays_out_names_and_runs_its_commands;
 

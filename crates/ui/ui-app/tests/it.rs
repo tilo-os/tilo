@@ -306,10 +306,14 @@ mod canvas_place_tests;
 mod card_parts_tests;
 #[path = "widgets/chat_reactions_tests.rs"]
 mod chat_reactions_tests;
+#[path = "widgets/chip_activation_tests.rs"]
+mod chip_activation_tests;
 #[path = "widgets/context_menu_nested_tests.rs"]
 mod context_menu_nested_tests;
 #[path = "widgets/data_table_checkbox_tests.rs"]
 mod data_table_checkbox_tests;
+#[path = "widgets/date_picker_tests.rs"]
+mod date_picker_tests;
 #[path = "widgets/document_viewport_tests.rs"]
 mod document_viewport_tests;
 #[path = "widgets/drag_run_tests.rs"]
@@ -340,7 +344,22 @@ mod nav_list_tests;
 mod nav_shell_tests;
 #[path = "widgets/page_edges_land_on_device_pixels.rs"]
 mod page_edges_land_on_device_pixels;
+#[path = "widgets/scrollable_snap_tests.rs"]
+mod scrollable_snap_tests;
+#[path = "widgets/text_tests.rs"]
+mod text_tests;
+#[path = "widgets/tile_host_tests.rs"]
+mod tile_host_tests;
+#[path = "widgets/toolbar_framed_tests.rs"]
+mod toolbar_framed_tests;
+#[path = "widgets/tree_component_tests.rs"]
+mod tree_component_tests;
+#[path = "widgets/virtual_list_component_tests.rs"]
+mod virtual_list_component_tests;
 #[path = "widgets/virtual_list_copy_tests.rs"]
 mod virtual_list_copy_tests;
 #[path = "widgets/window_group_window_bar_tests.rs"]
 mod window_group_window_bar_tests;
+
+#[path = "profiling_tests.rs"]
+mod profiling_tests;

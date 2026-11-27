@@ -99,7 +99,7 @@ pub(crate) type RouteHeads =
 /// What a closing window's components still wait on: writes they sent as they checkpointed,
 /// not yet answered, and those the workspace refused.
 #[derive(Debug, Default)]
-pub(crate) struct Settling {
+pub struct Settling {
     /// A write is still on its way.
     pub waiting: bool,
     /// Why the workspace refused what it refused.

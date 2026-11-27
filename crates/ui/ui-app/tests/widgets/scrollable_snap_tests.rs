@@ -6,13 +6,13 @@
     reason = "in a test these are the assertion"
 )]
 
-use super::Scrollable;
-use crate::app::driver::Framed;
-use crate::testing::dispatch;
-use crate::time::testing::with_monotonic_time;
-use crate::time::{Duration, Instant};
-use crate::{widget::Board, widget::Container, widget::Text};
 use automerge::AutoCommit;
+use tilo_ui::app::driver::Framed;
+use tilo_ui::testing::dispatch;
+use tilo_ui::time::testing::with_monotonic_time;
+use tilo_ui::time::{Duration, Instant};
+use tilo_ui::widget::Scrollable;
+use tilo_ui::widget::{Board, Container, Text};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::Motion, tokens::Rhythm};
 use tilo_ui_base::{widget::Element, widget::Widget};
@@ -46,7 +46,7 @@ fn board_in_a_scroller(board: Board) -> Scrollable {
 /// `board` laid out in a `pane` wide view, as a page shows it.
 fn board_on_a_pane(board: Board, pane: u32) -> Framed<Scrollable> {
     Framed::new(
-        crate::State::new(),
+        tilo_ui::State::new(),
         board_in_a_scroller(board),
         (pane, 844),
         Theme::dark(),
@@ -55,7 +55,8 @@ fn board_on_a_pane(board: Board, pane: u32) -> Framed<Scrollable> {
 
 fn list_pitch() -> f32 {
     let theme = Theme::dark();
-    Board::lists_width(&theme, 390.0, 1) + theme.tokens.spacing.rhythm.get(Rhythm::Sibling)
+    Board::lists_width_for_tests(&theme, 390.0, 1)
+        + theme.tokens.spacing.rhythm.get(Rhythm::Sibling)
 }
 
 /// Move the content by `dx` over `steps` samples `16 ms` apart, as a finger or
@@ -64,7 +65,7 @@ fn drag(view: &mut Framed<Scrollable>, from: Instant, dx: f32, steps: u32) -> In
     let mut at = from;
     for _ in 0..steps {
         with_monotonic_time(at, || {
-            view.pan(dx / steps as f32, 0.0);
+            view.test_pan(dx / steps as f32, 0.0);
         });
         at += Duration::from_millis(16);
     }
@@ -75,7 +76,7 @@ fn drag(view: &mut Framed<Scrollable>, from: Instant, dx: f32, steps: u32) -> In
 fn let_go(view: &mut Framed<Scrollable>, at: Instant) {
     let lift = MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, 0.0));
     with_monotonic_time(at, || {
-        view.on_wheel(&lift, TouchPhase::Ended, false, 1.0);
+        view.test_on_wheel(&lift, TouchPhase::Ended, false, 1.0);
     });
 }
 
@@ -108,7 +109,7 @@ tilo_test_env::scenario! {
     // a list and its gap apart, the first at the start of the content.
     {
         let view = board_on_a_pane(lists(3), 390);
-        let detents = &view.snap_x;
+        let detents = view.test_snap_x();
         assert_eq!(detents.len(), 3, "one per list: {detents:?}");
         assert!(
             detents[0].abs() < 0.5,
@@ -130,11 +131,11 @@ tilo_test_env::scenario! {
     // the view carries the gesture's speed into the settle.
     {
         let mut view = board_on_a_pane(lists(3), 390);
-        let at = crate::time::now();
+        let at = tilo_ui::time::now();
         let released = drag(&mut view, at, 90.0, 4);
         let_go(&mut view, released);
         let rest = run_out(&mut view, released);
-        let next = view.snap_x[1];
+        let next = view.test_snap_x()[1];
         assert!(
             (f64::from(rest) - f64::from(next)).abs() < 0.5,
             "the fling settled on the next list's edge {next}: {rest}"
@@ -146,10 +147,10 @@ tilo_test_env::scenario! {
     // thrown from: it never left that list far enough to cross into the next.
     {
         let mut view = board_on_a_pane(lists(3), 390);
-        let at = crate::time::now();
-        let list = view.snap_x[1];
+        let at = tilo_ui::time::now();
+        let list = view.test_snap_x()[1];
         with_monotonic_time(at, || {
-            view.move_by(list, 0.0);
+            view.test_move_by(list, 0.0);
         });
         let settled = at + Duration::from_millis(500);
         let released = drag(&mut view, settled, 90.0, 4);
@@ -166,15 +167,15 @@ tilo_test_env::scenario! {
     // detents behind the way the hand went are never where it comes to rest.
     {
         let mut view = board_on_a_pane(lists(3), 390);
-        let at = crate::time::now();
-        let list = view.snap_x[1];
+        let at = tilo_ui::time::now();
+        let list = view.test_snap_x()[1];
         with_monotonic_time(at, || {
-            view.move_by(list, 0.0);
+            view.test_move_by(list, 0.0);
         });
         let released = drag(&mut view, at + Duration::from_millis(500), 90.0, 4);
         let_go(&mut view, released);
         let rest = run_out(&mut view, released);
-        let ahead = *view.snap_x.last().expect("the last list");
+        let ahead = *view.test_snap_x().last().expect("the last list");
         assert!(
             (f64::from(rest) - f64::from(ahead)).abs() < 0.5,
             "the release settled ahead on {ahead}, not back: {rest}"
@@ -190,9 +191,9 @@ tilo_test_env::scenario! {
     // view lands on the next list rather than a line further on.
     {
         let mut view = board_on_a_pane(lists(3), 390);
-        let at = crate::time::now();
+        let at = tilo_ui::time::now();
         view.set_focus(true);
-        let next = view.snap_x[1];
+        let next = view.test_snap_x()[1];
         with_monotonic_time(at, || {
             assert!(
                 dispatch(
@@ -214,11 +215,11 @@ tilo_test_env::scenario! {
     // runs, and the view asks for no frame to run one.
     {
         let mut view = board_on_a_pane(lists(3), 390);
-        view.motion = EffectiveMotion::new(Motion::default(), true);
-        let at = crate::time::now();
+        view.test_set_motion(EffectiveMotion::new(Motion::default(), true));
+        let at = tilo_ui::time::now();
         let released = drag(&mut view, at, 90.0, 4);
         let_go(&mut view, released);
-        let next = view.snap_x[1];
+        let next = view.test_snap_x()[1];
         assert!(
             (view.offset_x() - next).abs() < 0.5,
             "the release landed on the next list's edge {next}: {}",
@@ -236,12 +237,12 @@ tilo_test_env::scenario! {
     {
         let mut view = board_on_a_pane(lists(6), 1280);
         assert!(
-            view.snap_x.is_empty(),
+            view.test_snap_x().is_empty(),
             "a pane showing its lists side by side offers none: {:?}",
-            view.snap_x
+            view.test_snap_x()
         );
-        assert!(!view.snaps(), "and so it does not snap");
-        let at = crate::time::now();
+        assert!(!view.test_snaps(), "and so it does not snap");
+        let at = tilo_ui::time::now();
         let released = drag(&mut view, at, 90.0, 4);
         let paused = released + Duration::from_millis(300);
         let_go(&mut view, paused);

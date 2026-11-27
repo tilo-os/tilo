@@ -3038,7 +3038,7 @@ mod open;
 mod paint;
 
 #[path = "virtual_list_component.rs"]
-mod component;
+pub(crate) mod component;
 pub(crate) use component::by_hand;
 pub use component::{DescribedList, DescribedRows, ItemRow, ListItemProps, VirtualListProps};
 
@@ -3053,6 +3053,12 @@ fn path_safe(key: &str) -> String {
 /// What a list's tests read of it, without widening what a view builds against.
 #[cfg(feature = "test-support")]
 impl VirtualRows {
+    /// The viewport the rows are placed in.
+    #[must_use]
+    pub fn test_viewport(&self) -> &SparseVirtualViewport<ListKey> {
+        &self.viewport
+    }
+
     /// The headings of the groups the rows stand in, in order.
     #[must_use]
     pub fn test_group_headings(&self) -> Vec<String> {

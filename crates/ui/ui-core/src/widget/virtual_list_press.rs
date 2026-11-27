@@ -40,7 +40,7 @@ impl VirtualRows {
         }
     }
 
-    pub(super) fn activate_key(&mut self, key: ListKey) {
+    pub fn activate_key(&mut self, key: ListKey) {
         // A row that opens where it stands opens there, whether or not anything else listens:
         // the list holds the item open, the row grows into its document, and the host hears
         // nothing it must show itself.

@@ -2894,3 +2894,18 @@ mod copy_tests;
 #[cfg(test)]
 #[path = "tile_host_window_tests.rs"]
 mod window_tests;
+
+/// What a tile host's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl TileHost {
+    /// Replace what the tile shows, as a frame that swaps an app does.
+    pub fn test_set_content(&mut self, content: TileContent) {
+        self.content = content;
+    }
+
+    /// The History the tile carries, to drive it as its tab's press does.
+    #[cfg(feature = "model")]
+    pub fn test_history_mut(&mut self) -> Option<&mut crate::history_mode::HistoryHost> {
+        self.history.as_deref_mut()
+    }
+}

@@ -2220,10 +2220,6 @@ impl tilo_ui_base::widget::controls::ActionControls for Scrollable {
     }
 }
 
-#[cfg(test)]
-#[path = "scrollable_snap_tests.rs"]
-mod snap_tests;
-
 mod component;
 pub use component::ScrollProps;
 
@@ -2428,3 +2424,45 @@ mod gutter_tests;
 #[cfg(test)]
 #[path = "scrollable_tests.rs"]
 mod tests;
+
+/// What a scroll view's tests read and drive from outside the module.
+#[cfg(feature = "test-support")]
+impl Scrollable {
+    /// The detents the content snaps to, along x.
+    #[must_use]
+    pub fn test_snap_x(&self) -> &[f32] {
+        &self.snap_x
+    }
+
+    /// Set the motion the view settles with.
+    pub fn test_set_motion(&mut self, motion: tilo_ui_base::tokens::EffectiveMotion) {
+        self.motion = motion;
+    }
+
+    /// Move the content by `dx`, `dy`, as a finger or touchpad reports it.
+    pub fn test_pan(&mut self, dx: f32, dy: f32) -> bool {
+        self.pan(dx, dy)
+    }
+
+    /// Turn a wheel's delta into a scroll.
+    pub fn test_on_wheel(
+        &mut self,
+        delta: &winit::event::MouseScrollDelta,
+        phase: winit::event::TouchPhase,
+        shift: bool,
+        scale_factor: f64,
+    ) -> bool {
+        self.on_wheel(delta, phase, shift, scale_factor)
+    }
+
+    /// Whether the view settles on a detent.
+    #[must_use]
+    pub fn test_snaps(&self) -> bool {
+        self.snaps()
+    }
+
+    /// Move the content by `dx`, `dy`.
+    pub fn test_move_by(&mut self, dx: f32, dy: f32) {
+        self.move_by(dx, dy);
+    }
+}

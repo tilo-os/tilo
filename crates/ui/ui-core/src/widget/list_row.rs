@@ -299,8 +299,8 @@ impl<'a> ListRowFace<'a> {
     /// Who else is at the item, when the row shows them: the identity its presence dot
     /// stands for ([`ListRow::presence`]).
 
-    #[cfg(test)]
-    pub(crate) fn presence_hue(&self) -> Option<PresenceHue> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn presence_hue(&self) -> Option<PresenceHue> {
         match self.status {
             Some(RowStatus::Presence(hue)) => Some(hue),
             _ => None,
@@ -309,8 +309,8 @@ impl<'a> ListRowFace<'a> {
 
     /// Whether the row stands in for an item that was removed ([`ListRow::struck`]): its
     /// title struck through.
-    #[cfg(test)]
-    pub(crate) fn title_struck(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn title_struck(&self) -> bool {
         self.struck
     }
 
@@ -1745,8 +1745,8 @@ impl ListRow {
         self.struck = true;
     }
 
-    #[cfg(test)]
-    pub(crate) const fn is_struck(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn is_struck(&self) -> bool {
         self.struck
     }
 
@@ -2163,7 +2163,8 @@ impl ListRow {
     }
 
     /// The row as the face it draws, read by the list that builds it and by its tests.
-    pub(crate) fn with_face<R>(&self, f: impl FnOnce(&ListRowFace<'_>) -> R) -> R {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_face<R>(&self, f: impl FnOnce(&ListRowFace<'_>) -> R) -> R {
         self.with_face_over(self.trailing_reserve(), self.secondary_shown, f)
     }
 

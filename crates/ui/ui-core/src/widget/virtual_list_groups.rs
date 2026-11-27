@@ -329,7 +329,7 @@ impl VirtualRows {
     /// its own height. The viewport holds a row that starts a group together with the band of
     /// the heading over it, so the band comes off the top: a row's lift, focus ring and
     /// disclosure hang on the row, never on the heading above it.
-    pub(super) fn row_box(&self, index: usize) -> Option<Rect> {
+    pub fn row_box(&self, index: usize) -> Option<Rect> {
         let top = self.viewport.item_view_top(index)?;
         let height = self.viewport.item_height(index)?;
         let band = self.band_gap(index);

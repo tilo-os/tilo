@@ -1062,6 +1062,18 @@ pub mod internals {
     pub mod virtual_list {
         pub use crate::widget::virtual_list::*;
     }
+    pub mod chip {
+        pub use crate::widget::chip::*;
+    }
+    pub mod virtual_list_component {
+        pub use crate::widget::virtual_list::component::*;
+    }
+    pub mod text {
+        pub use crate::widget::text::assert_glyph_run_centred_in_band;
+    }
+    pub mod tree_component {
+        pub use crate::widget::tree_component::*;
+    }
     pub mod window_group {
         pub use crate::widget::window_group::*;
         pub use crate::widget::window_toolbar_row::ToolbarRow;

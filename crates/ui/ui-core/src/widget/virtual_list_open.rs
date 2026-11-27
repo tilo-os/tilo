@@ -89,7 +89,7 @@ impl VirtualRows {
         self.report_open();
     }
 
-    pub(super) fn close_open(&mut self) -> bool {
+    pub fn close_open(&mut self) -> bool {
         self.held_open = None;
         if self.open.is_none() {
             return false;
