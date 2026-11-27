@@ -53,6 +53,11 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
 use tilo_user_identity::DeviceCert;
 
+/// Whether this device takes the work of the server a ticket made it a member through: it runs
+/// the workspaces' shells, which are ush's Linux machines. A phone or a Mac signs in as a member
+/// that takes none, and its server places the work on a device that does.
+pub const TAKES_WORK: bool = cfg!(target_os = "linux");
+
 /// The UDP port a member's endpoint listens on where its device names none
 /// ([`configured_port`](super::services::configured_port)).
 pub const PORT: u16 = 7703;

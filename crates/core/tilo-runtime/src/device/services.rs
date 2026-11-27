@@ -2310,9 +2310,9 @@ impl Daemon {
         // web listener serves.
         let key_sessions =
             (founded.is_some() || keeping.is_some()).then(crate::key_sessions::KeySessions::new);
-        // A device a ticket made takes the work of the server it enters through; a server
-        // keeps the workspaces placed on it and takes none.
-        let member = joined && keeping.is_none();
+        // A device a ticket made takes the work of the server it enters through, when it is one
+        // that takes work at all; a server keeps the workspaces placed on it and takes none.
+        let member = joined && keeping.is_none() && take_work::TAKES_WORK;
         let port = configured_port()?.or_else(|| member.then_some(take_work::PORT));
         // The endpoint the part that ended bound is handed to the part that starts next, so
         // its socket is the port this device is reached at and is never bound a second time,
