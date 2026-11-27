@@ -1035,7 +1035,11 @@ fn real_apps(mut options: Options) -> Options {
         program.display()
     );
     options.render_service = Some(program);
-    options.app_socket = AppSocket::Launcher;
+    // A test that serves its apps on a socket of its own keeps it: the launcher's own socket is
+    // where a session with no test around it serves them.
+    if options.app_socket == AppSocket::Off {
+        options.app_socket = AppSocket::Launcher;
+    }
     options.launch = Some(Rc::new(tilo_session::apps::Apps::with_launcher(
         tilo_app_launch::SessionEnvironment::from_process(),
         Some(options.wake.handle()),
