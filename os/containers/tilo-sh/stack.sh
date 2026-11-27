@@ -1316,10 +1316,11 @@ owner_api_key() {
   local said=$state/owner/keys-create.err status=0
   if [[ ! -s $state/owner/api-key ]]; then
     mkdir -p "$state/owner"
-    # The person's own device asks for the key, and their root here approves it: nobody is
-    # asked. A person named by owner/key but kept on no computer here (a stack another server's
-    # person moves to) approves nothing until they sign in: tilo would wait for a browser
-    # instead. An earlier tilo (TILO_SH_TILO_BIN) keeps them in its state folder instead.
+    # The person's own device asks for the key, and answers its question yes on their own
+    # connection: nobody else is asked. A person named by owner/key but kept on no computer here
+    # (a stack another server's person moves to) approves nothing until they sign in: tilo would
+    # wait for their answer on another device instead. An earlier tilo (TILO_SH_TILO_BIN) keeps
+    # them in its state folder instead.
     [[ -d $state/owner/home/.config/tilo/identity \
       || -f $state/owner/home/.local/state/tilo/identity/user-identity/privkey.bin ]] \
       || die "the stack's person ($(cat "$state/owner/key")) is not signed in here: stack.sh person login --recovery-key, with their 24 words on standard input"

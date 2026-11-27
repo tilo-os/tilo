@@ -24,6 +24,7 @@ mod wakeups_tests;
 /// mounts the one it links.
 mod host;
 
+mod account_keys;
 mod agent_fixture;
 mod agent_keys;
 mod agent_machine;

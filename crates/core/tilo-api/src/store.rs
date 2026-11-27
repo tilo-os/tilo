@@ -962,7 +962,7 @@ pub fn key_token(name: &str, key: &GrantKey) -> io::Result<String> {
 }
 
 /// The grant `token` carries: its name and the key with its certificate.
-pub(crate) fn carried_key(token: &str) -> Option<(String, GrantKey)> {
+pub fn carried_key(token: &str) -> Option<(String, GrantKey)> {
     use base64::Engine as _;
     let encoded = token.strip_prefix(KEY_PREFIX)?;
     let json = base64::engine::general_purpose::URL_SAFE_NO_PAD

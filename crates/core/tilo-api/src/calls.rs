@@ -1035,34 +1035,115 @@ impl Calls {
         action_answer(self.typed(workspace, "tilo_do", call, group).await?)
     }
 
-    /// `answer`, followed while it waits for the person, for a while: it says once where they
-    /// approve it.
+    /// `answer`, followed until it ends: where it waits for the person, it says once where they
+    /// answer it.
     ///
     /// # Errors
     /// The invocation is not one these calls reach.
-    pub async fn follow(&self, workspace: Option<&str>, mut answer: Value) -> Result<Value> {
-        let until = Instant::now().checked_add(ANSWER_DEADLINE);
-        let mut told = false;
-        while answer.get("status").and_then(Value::as_str) == Some("pending")
-            && until.is_some_and(|until| Instant::now() < until)
-        {
+    pub async fn follow(&self, workspace: Option<&str>, answer: Value) -> Result<Value> {
+        self.follow_asked(workspace, answer, async |record: &str| {
+            eprintln!("tilo: waiting for your answer on a device of yours: it waits in {record}");
+            Ok(())
+        })
+        .await
+    }
+
+    /// `answer`, followed until it ends, however long its person takes: where it waits in their
+    /// asked record, `asked` is handed that record (`<workspace>/<record>`) once.
+    ///
+    /// # Errors
+    /// The invocation is not one these calls reach, or `asked` failed.
+    pub async fn follow_asked(
+        &self,
+        workspace: Option<&str>,
+        mut answer: Value,
+        mut asked: impl AsyncFnMut(&str) -> Result<()>,
+    ) -> Result<Value> {
+        let Some(run) = answer
+            .get("invocation")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return Ok(answer);
+        };
+        let (mut told, mut first) = (false, true);
+        let mut record: Option<String> = None;
+        while matches!(
+            answer.get("status").and_then(Value::as_str),
+            Some("pending" | "asked")
+        ) {
             if !told {
-                told = true;
                 if let Some(url) = answer.pointer("/ask/url").and_then(Value::as_str) {
+                    told = true;
                     eprintln!("tilo: waiting for you: approve it at {url}");
+                } else if let Some(record) = &record {
+                    told = true;
+                    asked(record).await?;
                 }
             }
-            let Some(run) = answer
-                .get("invocation")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-            else {
-                break;
-            };
-            tokio::time::sleep(PAUSE).await;
-            answer = self.invocation(workspace, &run, 0).await?;
+            // The first look reads the record a call the person is asked about waits in.
+            if !first {
+                tokio::time::sleep(PAUSE).await;
+            }
+            first = false;
+            // The invocation as it stands, the record it waits in among it: the typed answer
+            // keeps the status alone.
+            let status = self
+                .typed(
+                    workspace,
+                    "tilo_status",
+                    json!({"invocation_id": run}),
+                    None,
+                )
+                .await?;
+            if let Some(waits_in) = status.get("record").and_then(Value::as_str) {
+                record = Some(waits_in.to_owned());
+            }
+            answer = action_answer(status)?;
         }
         Ok(answer)
+    }
+
+    /// Answer the question that waits in `record` (`<workspace>/<record>`) as the person, on
+    /// this computer's own connection to its daemon, as `tilo do`'s own prompt answers one:
+    /// approved, or declined.
+    ///
+    /// # Errors
+    /// These calls are a key's, which answers nothing for its person, or the answer was refused.
+    pub async fn answer_asked(&self, record: &str, approve: bool) -> Result<()> {
+        use tilo_actions::remote::{ActionProvider as _, Caller, InvokeRequest, ReceiptStatus};
+        let At::Daemon { line, person, .. } = &self.at else {
+            bail!("{}", tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM);
+        };
+        let (workspace, record) = record
+            .split_once('/')
+            .ok_or_else(|| anyhow!("{record} names no workspace it waits in"))?;
+        let mut resolution = serde_json::Map::new();
+        resolution.insert(
+            "resolution".into(),
+            json!(if approve { "approve" } else { "decline" }),
+        );
+        let request = InvokeRequest::plain(
+            tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_actions::remote::WORKSPACE_INVOCATIONS_PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    record,
+                    tilo_actions::remote::asked::RESOLVE,
+                ),
+            },
+            resolution,
+        );
+        let caller = Caller::local_person(person).in_workspace(workspace);
+        let receipt = line
+            .invoke(&caller, request)
+            .await
+            .ok_or_else(|| anyhow!("this computer's daemon did not answer"))?
+            .map_err(|refused| anyhow!("{refused}"))?;
+        match receipt.status {
+            ReceiptStatus::Rejected { error } => bail!("{error}"),
+            ReceiptStatus::Failed { error } => bail!("{}", error.message),
+            _ => Ok(()),
+        }
     }
 
     /// Put `bytes` into `workspace`: `{content, size}`, the `tilo.content:` reference actions

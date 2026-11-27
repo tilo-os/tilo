@@ -163,6 +163,79 @@ pub(crate) fn expires_in_of(asked: Option<&Value>) -> Result<Option<u64>, &'stat
     }
 }
 
+/// The provider the device that answers for a person's account certifies the keys they approve
+/// under, in their own workspace, which keeps each ask as their question until they answer it.
+pub const CERTIFY_PROVIDER: &str = "so.tilo.keys";
+/// The resource it certifies them on, as the account names its keys.
+pub const CERTIFY_RESOURCE: &str = "account/keys";
+/// Certify the key a [`KeyAsked`] names, once the person approved it.
+pub const CERTIFY: &str = "certify";
+
+/// A key `account/keys#create` asks the person for, as the device that answers for their
+/// account is asked to certify it: what will use it, what it reaches and until when, and the
+/// public half of the key, whose secret never leaves the API that asked.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct KeyAsked {
+    pub name: String,
+    pub scope: AgentScope,
+    pub expires_at_ns: Option<u64>,
+    pub browser_pages: bool,
+    /// The key's public half, in hex.
+    pub key: String,
+}
+
+impl KeyAsked {
+    /// The key `args` (`{name, workspace?, expires_in?, browser_pages?}`) asks for, `key` its
+    /// public half.
+    ///
+    /// # Errors
+    /// The arguments name no key a person may be asked for.
+    pub fn of(args: &Value, key: [u8; 32]) -> Result<Self, &'static str> {
+        let expires_in = expires_in_of(args.get("expires_in"))?;
+        let browser_pages = browser_pages_of(args.get("browser_pages"))?;
+        let name = name_of(args.get("name").and_then(Value::as_str))?;
+        let workspace = args.get("workspace").and_then(Value::as_str);
+        let grant = key_grant(scope_of(workspace)?, expires_in, browser_pages, now_ms())?;
+        Ok(Self {
+            name,
+            scope: grant.scope,
+            expires_at_ns: grant.expires_ms.map(|ms| ms.saturating_mul(1_000_000)),
+            browser_pages,
+            key: hex::encode(key),
+        })
+    }
+
+    /// The key `secret` made of `cert`, the certificate the person's root gave it, and what
+    /// `account/keys#create` answers for it: the key itself, once, and what it reaches.
+    ///
+    /// # Errors
+    /// The certificate is not for this key, or reaches other than what was asked.
+    pub fn made(
+        &self,
+        secret: ed25519_dalek::SigningKey,
+        cert: tilo_user_identity::DeviceCert,
+    ) -> Result<Value, String> {
+        let now_ns = now_ms().saturating_mul(1_000_000);
+        let key = crate::grant_key::GrantKey::new(
+            secret,
+            cert,
+            &self.scope,
+            true,
+            self.browser_pages,
+            now_ns,
+        )
+        .map_err(|refused| refused.0)?;
+        let token = store::key_token(&self.name, &key).map_err(|error| error.to_string())?;
+        Ok(json!({
+            "key": token,
+            "grant": store::grant_id_of(&key),
+            "name": self.name,
+            "scope": self.scope.name(),
+            "expires_at_ms": key.cert().expires_at_ns.map(|ns| ns / 1_000_000),
+        }))
+    }
+}
+
 fn error(status: StatusCode, code: &str, message: &str, next: &str) -> crate::Reply {
     json_reply(
         status,

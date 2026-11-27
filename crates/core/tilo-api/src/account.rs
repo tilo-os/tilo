@@ -654,6 +654,8 @@ enum Run {
     /// A workspace's host keeps it for its person's yes, as this state says, and the account
     /// follows it there until they answer.
     Awaiting(InvocationState),
+    /// The person is asked for a key on the device that answers for their account.
+    Certifying(Box<Certifying>),
     /// It ended so.
     Ended(InvocationState),
 }
@@ -666,6 +668,8 @@ pub(crate) enum Outcome {
     Ok(Value),
     /// Asked of the person: the poll secret of the key they are asked for.
     Key(String),
+    /// Asked of the person where their account is answered, for a key it certifies.
+    Certifying(Box<Certifying>),
     /// Asked of a workspace's host, which runs it on.
     Asked(SessionActions),
     /// Asked of a workspace's host, which holds it for the person to allow: the caller is
@@ -972,6 +976,10 @@ impl Account {
                 self.keep(id, Run::Key(poll));
                 ReceiptStatus::Accepted
             }
+            Outcome::Certifying(certifying) => {
+                self.keep(id, Run::Certifying(certifying));
+                ReceiptStatus::Accepted
+            }
             Outcome::Asked(actions) => {
                 hand_on(actions);
                 ReceiptStatus::Accepted
@@ -1256,11 +1264,7 @@ impl Account {
                     Err(error) => refused(&error),
                 }
             }
-            Op::CreateKey => failed(
-                "unavailable",
-                "a key is asked for from the device that answers for the account",
-                "create the key with account/keys#mint, or make one in Tilo",
-            ),
+            Op::CreateKey => Certifying::ask(host, key, id, args).await,
             Op::MintKey => Self::here_mint(here, host, &key, grant, &server, args).await,
             Op::RevokeKey => self.here_revoke(host, &key, grant, &server, args).await,
             Op::Usage => failed(
@@ -1872,11 +1876,37 @@ impl ActionProvider for Account {
                 }
                 Some(state)
             }
+            Run::Certifying(certifying) => {
+                let (answers, runs_as) =
+                    (Arc::clone(&certifying.answers), certifying.runs_as.clone());
+                drop(running);
+                let state = answers.observe(&runs_as, id)?;
+                if !state.update.is_terminal() {
+                    return Some(state);
+                }
+                let Some(Run::Certifying(certifying)) =
+                    crate::lock(&self.0.running).by_id.remove(id)
+                else {
+                    return self.observe(caller, id);
+                };
+                let ended = certifying.ended(*id, state);
+                self.keep(*id, Run::Ended(ended.clone()));
+                Some(ended)
+            }
         }
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        self.handed_on(|invocations| invocations.next_change(caller, id))
+        if let Some(change) = self.handed_on(|invocations| invocations.next_change(caller, id)) {
+            return Some(change);
+        }
+        let running = crate::lock(&self.0.running);
+        let Some(Run::Certifying(certifying)) = running.by_id.get(id) else {
+            return None;
+        };
+        let (answers, runs_as) = (Arc::clone(&certifying.answers), certifying.runs_as.clone());
+        drop(running);
+        answers.next_change(&runs_as, id)
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
@@ -1895,6 +1925,143 @@ impl ActionProvider for Account {
             }));
         }
         Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+}
+
+/// A key the person is asked for where their account is answered: that device keeps the ask in
+/// their own workspace, as every question that waits for them is kept, until they answer it on a
+/// device of theirs, and its root certifies the key once they approve. Its secret stays here.
+pub(crate) struct Certifying {
+    secret: ed25519_dalek::SigningKey,
+    asked: crate::keys::KeyAsked,
+    /// Where the ask is followed, and as whom.
+    answers: Provider,
+    runs_as: Caller,
+}
+
+impl Certifying {
+    /// Ask `key`'s person, through `host`, for the key `args` names, under the invocation `id`.
+    async fn ask(
+        host: &dyn crate::session::AccountHere,
+        key: GrantKey,
+        id: InvocationId,
+        args: &Value,
+    ) -> Outcome {
+        let Ok(secret) = GrantKey::generate() else {
+            return failed(
+                "unavailable",
+                "no randomness is available",
+                "try again shortly",
+            );
+        };
+        let asked = match crate::keys::KeyAsked::of(args, secret.verifying_key().to_bytes()) {
+            Ok(asked) => asked,
+            Err(why) => {
+                return failed(
+                    "invalid_arguments",
+                    why,
+                    "pass {name, workspace?, expires_in?, browser_pages?}",
+                );
+            }
+        };
+        let Ok(Value::Object(arguments)) = serde_json::to_value(&asked) else {
+            return failed(
+                "invalid_arguments",
+                "the key's ask could not be written",
+                "pass {name, workspace?, expires_in?, browser_pages?}",
+            );
+        };
+        let request = InvokeRequest {
+            invocation: id,
+            target: RemoteActionTarget {
+                provider: crate::keys::CERTIFY_PROVIDER.to_owned(),
+                address: ActionAddress::new(crate::keys::CERTIFY_RESOURCE, crate::keys::CERTIFY),
+            },
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let own = tilo_server_protocol::servers::person_workspace_id(&key.cert().user_public_key);
+        let Some((receipt, answers, runs_as)) = host.ask(key, own, request).await else {
+            return failed(
+                "unavailable",
+                "the person's own workspace is not open on the device that answers for their account",
+                "try again shortly",
+            );
+        };
+        // The ask always waits for the person: anything else is the device refusing it.
+        match receipt.status {
+            ReceiptStatus::Accepted => Outcome::Certifying(Box::new(Self {
+                secret,
+                asked,
+                answers,
+                runs_as,
+            })),
+            refused => {
+                let why = match refused {
+                    ReceiptStatus::Failed { error } => error.message,
+                    ReceiptStatus::Rejected { error } => error.to_string(),
+                    _ => "the device that answers for the account did not ask the person".into(),
+                };
+                failed("refused", why, "ask again with account/keys#create")
+            }
+        }
+    }
+
+    /// How the key ended, as the ask ended in `state`: made of the certificate the person's
+    /// root gave it, declined, or refused.
+    fn ended(self, id: InvocationId, state: InvocationState) -> InvocationState {
+        let ended = |code: &str, message: String, next: &str| InvocationUpdate::Failed {
+            invocation: id,
+            error: failure(code, message, next),
+        };
+        let update = match state.update {
+            InvocationUpdate::Succeeded { output, .. } => {
+                let cert = output
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.get("cert"))
+                    .and_then(Value::as_str)
+                    .and_then(|cert| hex::decode(cert).ok())
+                    .and_then(|bytes| {
+                        tilo_user_identity::canonical::from_canonical_bytes::<
+                            tilo_user_identity::DeviceCert,
+                        >(&bytes)
+                        .ok()
+                    });
+                match cert.map(|cert| self.asked.made(self.secret, cert)) {
+                    Some(Ok(value)) => InvocationUpdate::Succeeded {
+                        invocation: id,
+                        output: ActionOutput {
+                            value: Some(value),
+                            ..ActionOutput::default()
+                        },
+                    },
+                    Some(Err(why)) => ended("refused", why, "ask again with account/keys#create"),
+                    None => ended(
+                        "refused",
+                        "the person's root gave the key no certificate".to_owned(),
+                        "ask again with account/keys#create",
+                    ),
+                }
+            }
+            InvocationUpdate::Cancelled { message, .. }
+                if message.as_deref() == Some(tilo_actions::remote::asked::DECLINED) =>
+            {
+                ended(
+                    "declined",
+                    "the person declined the key".to_owned(),
+                    "ask again only if they want it",
+                )
+            }
+            update => update,
+        };
+        InvocationState::new(id, update)
     }
 }
 

@@ -20,6 +20,8 @@
 //! History groups its actions under.
 
 pub(crate) mod account;
+/// The keys a person approves for their programs, certified by their root on this device.
+pub(crate) mod account_keys;
 /// The workspace's connected accounts, read by the apps attached here as `accounts`.
 mod accounts;
 #[cfg(target_os = "linux")]

@@ -169,10 +169,10 @@ pub trait AccountHere: Send + Sync {
     ) -> AccountAnswer<Result<serde_json::Value, ServerError>> {
         Box::pin(async { Err(ServerError::NoAccountHere) })
     }
-    /// Ask `workspace`'s model one turn, `request` (its `tilo.models`, `ask`),
-    /// as `key`, and answer where it runs: the receipt, the provider the key's run asks it at, and
-    /// the caller it runs as, which a follower observes it through. `None` where this device keeps
-    /// no model to ask for the workspace.
+    /// Ask `request` of `workspace`'s dispatch as `key` (a turn of its model, or a key the
+    /// person is asked for in their own workspace), and answer where it runs: the receipt, the
+    /// provider the key's run asks it at, and the caller it runs as, which a follower observes it
+    /// through. `None` where this device does not serve the workspace to the key.
     fn ask(
         &self,
         _key: crate::grant_key::GrantKey,

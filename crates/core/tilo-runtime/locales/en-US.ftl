@@ -95,6 +95,13 @@ so-tilo-founding-create = Make a workspace another of your devices asked for
 founding-create-question = Make the workspace “{ $name }” that { $device } asked for?
 founding-create-another-device = another of your devices
 
+## Keys the person approves for their programs, certified by their root here
+
+so-tilo-keys-certify = Make a key for one of your programs
+keys-certify-question = Make the key “{ $name }”, which acts as you in { $reach }?
+keys-certify-every-workspace = all your workspaces
+keys-certify-one-workspace = one of your workspaces
+
 ## The actions of this device's server settings
 
 so-tilo-device-server-set-service = Offer or withdraw a service

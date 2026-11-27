@@ -1,6 +1,4 @@
-//! A person whose root this computer holds (`tilo login --new-identity`),
-//! and what that root lets this computer do without a browser: approve the
-//! key `tilo do account/keys#create` asks for, as the person's Tilo on the web does.
+//! A person whose root this computer holds (`tilo login --new-identity`).
 //!
 //! The person is this account's one Tilo identity, kept where its session
 //! keeps it: their identity in `$XDG_CONFIG_HOME/tilo/identity` with its secret
@@ -9,13 +7,10 @@
 //! device's identity root
 //! ([`collaboration_identity_root`](tilo_identity::provisioning::collaboration_identity_root)).
 //! A Tilo session started on this account is that same person.
-//! Approving a key asks the site only to take the person's proof and the key's
-//! certificate: nothing is read from the site's own entry, and no site's host
-//! is dialled.
 
 use std::path::PathBuf;
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow};
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::read_device_cert;
 use tilo_identity::provisioning::IdentityStorage;
@@ -355,167 +350,6 @@ pub fn new_identity(
     Ok(std::process::ExitCode::SUCCESS)
 }
 
-/// What the person's Tilo is asked to sign at `<site>/sign-in?…`.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Asked {
-    pub audience: String,
-    pub challenge: [u8; 32],
-    pub return_to: String,
-    pub pending: String,
-    pub client: String,
-    pub grant_key: [u8; 32],
-    pub server_key: bool,
-    /// What the key reaches: `all` of the person's workspaces, or one workspace's id.
-    pub scope: String,
-    /// Whether the key operates web pages in Browser without asking each time.
-    pub pages: bool,
-    pub expires_at_ns: Option<u64>,
-}
-
-/// Read the sign-in `location` an approval link leads to.
-pub fn asked(location: &str) -> Result<Asked> {
-    let url = tilo_net::Url::parse(location)
-        .with_context(|| format!("{location} is not a sign-in address"))?;
-    let query: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
-    let field = |name: &str| {
-        query
-            .get(name)
-            .cloned()
-            .with_context(|| format!("the sign-in asks for no {name}"))
-    };
-    let key = |name: &str| -> Result<[u8; 32]> {
-        hex::decode(field(name)?)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .with_context(|| format!("the sign-in's {name} is not 32 bytes of hex"))
-    };
-    let expires_at_ns = match field("grant_expires")?.as_str() {
-        "never" => None,
-        ms => Some(
-            ms.parse::<u64>()
-                .context("the sign-in's grant_expires is no time")?
-                .saturating_mul(1_000_000),
-        ),
-    };
-    Ok(Asked {
-        audience: field("audience")?,
-        challenge: key("challenge")?,
-        return_to: field("return")?,
-        pending: field("pending")?,
-        client: query.get("client").cloned().unwrap_or_default(),
-        grant_key: key("grant_key")?,
-        server_key: query.get("grant_kind").map(String::as_str) == Some("server_key"),
-        scope: query
-            .get("grant_scope")
-            .cloned()
-            .unwrap_or_else(|| "all".to_owned()),
-        pages: query.get("grant_pages").map(String::as_str) == Some("1"),
-        expires_at_ns,
-    })
-}
-
-/// The proof and the grant certificate `person` answers `asked` with, as
-/// the page posts them back: `pending`, `proof` and `grant`, signed by the one
-/// sign-in signer the person's Tilo on the web signs with
-/// ([`answer_sign_in`](tilo_server_client::certification::answer_sign_in)).
-///
-/// # Errors
-/// A scope that is neither `all` nor a workspace id, a key for one workspace
-/// that names no expiry, or a certificate that does not sign.
-pub async fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, String)>> {
-    use tilo_user_identity::AgentScope;
-    // What the key asks to reach, named the way the daemon that signs reads it.
-    AgentScope::parse(&asked.scope).with_context(|| {
-        format!(
-            "the key asks to reach {}, which is no workspace",
-            asked.scope
-        )
-    })?;
-    let asked_args = serde_json::json!({
-        "audience": asked.audience,
-        "challenge": hex::encode(asked.challenge),
-        "client": asked.client,
-        "grant": {
-            "key": hex::encode(asked.grant_key),
-            "scope": asked.scope,
-            "expires_at_ns": asked.expires_at_ns,
-            "server_key": asked.server_key,
-            "browser_pages": asked.pages,
-        },
-    });
-    let pending = asked.pending.clone();
-    let answer = tokio::task::spawn_blocking(move || {
-        tilo_api::daemon::this_computer()?
-            .act(tilo_device_identity::login::ANSWER_SIGN_IN, asked_args)
-    })
-    .await
-    .map_err(|error| anyhow!("the sign-in answer was not awaited: {error}"))?
-    .map_err(anyhow::Error::msg)?;
-    let proof = answer
-        .get("proof")
-        .and_then(serde_json::Value::as_str)
-        .context("this computer's daemon signed no proof")?
-        .to_owned();
-    let grant = answer
-        .get("grant")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    if let Some(grant) = &grant {
-        let grant: DeviceCert =
-            tilo_user_identity::canonical::from_canonical_bytes(&base64_url(grant)?)
-                .map_err(|error| anyhow!("{error}"))?;
-        if grant.user_public_key != person.public_key() {
-            bail!("the key was certified by another person than the one kept here");
-        }
-    }
-    Ok(vec![
-        ("pending", pending),
-        ("proof", proof),
-        ("grant", grant.unwrap_or_default()),
-    ])
-}
-
-/// `text`, the URL-safe canonical bytes the site's page reads, as the bytes.
-fn base64_url(text: &str) -> Result<Vec<u8>> {
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(text)
-        .context("the answer is not URL-safe base64")
-}
-
-/// Approve the key `approve_url` asks for, as `person`'s Tilo on the web
-/// does once they agree: the link leads to the site's sign-in, which this
-/// answers with the person's proof and the key's certificate.
-pub async fn approve(person: &Person, approve_url: &str) -> Result<()> {
-    let http = tilo_net::Client::builder()
-        .redirects(tilo_net::Redirects::None)
-        .build()?;
-    let led = http
-        .get(approve_url)
-        .send()
-        .await
-        .with_context(|| format!("reaching {approve_url}"))?;
-    let location = led
-        .headers()
-        .get("location")
-        .and_then(|value| value.to_str().ok())
-        .with_context(|| format!("{approve_url} leads to no sign-in (HTTP {})", led.status()))?
-        .to_owned();
-    let asked = asked(&location)?;
-    let form = answer(person, &asked).await?;
-    let answered = http
-        .post(&asked.return_to)
-        .form(&form)
-        .send()
-        .await
-        .with_context(|| format!("reaching {}", asked.return_to))?;
-    let status = answered.status();
-    if !(status.is_success() || status.is_redirection()) {
-        bail!("{} refused the approval (HTTP {status})", asked.return_to);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,38 +438,5 @@ mod tests {
         assert_eq!(held().unwrap().unwrap().public_key(), ada.public_key());
         let wrong = restore("abandon ability able").err().expect("three words");
         assert!(wrong.to_string().contains("24 words"), "{wrong:#}");
-    }
-
-    #[test]
-    fn a_sign_in_link_is_read_as_the_ask_it_is() {
-        let location = format!(
-            "http://tilo.localhost:24120/sign-in?audience=http%3A%2F%2Flocalhost%3A24110\
-             &challenge={}&return=http%3A%2F%2Flocalhost%3A24110%2Fsign-in&pending=p1\
-             &client=Operator&grant_key={}&grant_scope=all&grant_expires=never\
-             &grant_kind=server_key",
-            "07".repeat(32),
-            "09".repeat(32),
-        );
-        let read = asked(&location).unwrap();
-        assert_eq!(read.audience, "http://localhost:24110");
-        assert_eq!(read.return_to, "http://localhost:24110/sign-in");
-        assert!(read.server_key);
-        assert_eq!(read.expires_at_ns, None);
-        assert_eq!(read.grant_key, [9; 32]);
-
-        // A key for one workspace until a time, which is narrower than a server key.
-        let workspace = "3ee4a797-1ec0-474b-a3d0-62895d5e15af";
-        let until_ms = tilo_clock::unix_now_ns() / 1_000_000 + 3_600_000;
-        let one = asked(
-            &location
-                .replace("&grant_kind=server_key", "&grant_pages=1")
-                .replace("grant_scope=all", &format!("grant_scope={workspace}"))
-                .replace("grant_expires=never", &format!("grant_expires={until_ms}")),
-        )
-        .unwrap();
-        assert!(!one.server_key);
-        assert!(one.pages);
-        assert_eq!(one.scope, workspace);
-        assert_eq!(one.expires_at_ns, Some(until_ms * 1_000_000));
     }
 }

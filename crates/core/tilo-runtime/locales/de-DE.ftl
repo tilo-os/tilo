@@ -100,6 +100,13 @@ so-tilo-founding-create = Einen Arbeitsbereich anlegen, um den ein anderes deine
 founding-create-question = Den Arbeitsbereich „{ $name }“ anlegen, um den { $device } gebeten hat?
 founding-create-another-device = ein anderes deiner Geräte
 
+## Schlüssel, die die Person für ihre Programme bestätigt, von ihrer Wurzel hier beglaubigt
+
+so-tilo-keys-certify = Einen Schlüssel für eines deiner Programme anlegen
+keys-certify-question = Den Schlüssel „{ $name }“ anlegen, der in { $reach } als du handelt?
+keys-certify-every-workspace = allen deinen Arbeitsbereichen
+keys-certify-one-workspace = einem deiner Arbeitsbereiche
+
 ## Wo dieses Gerät ist
 
 so-tilo-device-location-locate = Wo dieses Gerät gerade ist, als Breiten- und Längengrad

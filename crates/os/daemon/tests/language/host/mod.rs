@@ -623,6 +623,25 @@ impl Host {
         Key { direct }
     }
 
+    /// The key `token` carries, as `account/keys#create` answers one: what a program given it
+    /// calls this daemon's `/v1` and MCP with.
+    ///
+    /// # Panics
+    ///
+    /// `token` carries no key.
+    #[must_use]
+    pub fn key_carried(&self, token: &str) -> Key {
+        let (name, key) = tilo_api::store::carried_key(token).expect("the token carries a key");
+        let direct = tilo_api::direct::Direct::here(
+            self.daemon().api_here(),
+            SigningKey::from_bytes(&key.secret()),
+            key.cert().clone(),
+            &name,
+        )
+        .unwrap();
+        Key { direct }
+    }
+
     /// A server key of the person's reaching `workspace` alone, named `label`: what a backend
     /// keyed for one customer's workspace is.
     ///

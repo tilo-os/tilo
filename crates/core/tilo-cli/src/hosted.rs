@@ -160,14 +160,21 @@ pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String
         let started = client
             .start(workspace.as_deref(), resource, action, &arguments, path)
             .await?;
-        // A key this computer asks for while it holds the person's root is the person's own
-        // call: it approves the key as their Tilo would, and nobody is asked.
-        if let Some(link) = key_approval(&started)
-            && let Some(person) = crate::identity::held()?
-        {
-            crate::identity::approve(&person, link).await?;
-        }
-        let mut answer = client.follow(workspace.as_deref(), started).await?;
+        // A key the person asks for on a computer that holds their identity is their own call:
+        // the question it waits in is answered yes here, on their own connection, as Tilo's own
+        // prompt answers one. Anywhere else it waits for their answer on a device of theirs.
+        let theirs_here = path == "account/keys#create" && crate::identity::held()?.is_some();
+        let mut answer = client
+            .follow_asked(workspace.as_deref(), started, async |record: &str| {
+                if theirs_here {
+                    return client.answer_asked(record, true).await;
+                }
+                eprintln!(
+                    "tilo: waiting for your answer on a device of yours: it waits in {record}"
+                );
+                Ok(())
+            })
+            .await?;
         if let Some(out) = out {
             let secrets = secret_fields(&described);
             let Some(result) = answer.get_mut("result").and_then(Value::as_object_mut) else {
@@ -198,19 +205,6 @@ pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String
         },
     );
     ExitCode::from(code)
-}
-
-/// The link where the person approves the key a pending `answer` waits for, as the account
-/// says it waits.
-fn key_approval(answer: &Value) -> Option<&str> {
-    if answer.get("status").and_then(Value::as_str) != Some("pending") {
-        return None;
-    }
-    answer
-        .get("waiting_for")
-        .and_then(Value::as_str)?
-        .split_whitespace()
-        .find(|word| word.starts_with("http") && word.contains(tilo_api::keys::APPROVE_PREFIX))
 }
 
 /// The parameters an action, as `tilo_ls path#action` describes it, takes as a workspace: those

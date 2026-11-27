@@ -2735,6 +2735,8 @@ impl Daemon {
         if own {
             super::founding_create::FoundingCreate::new(&workspaces)
                 .register(&workspaces.copies().providers());
+            // It answers for their account too: the keys they approve are certified here.
+            super::account_keys::AccountKeys::new().register(&workspaces.copies().providers());
         }
         // The interfaces this computer wakes through are kept there too, and the wakes of the
         // person's devices asked there are answered from here: the packets for a device on one
@@ -5044,9 +5046,10 @@ impl tilo_api::session::AccountHere for Daemon {
             .collect()
     }
 
-    /// Ask `workspace`'s model one turn as `key`: the workspace's own host answers it for the
-    /// device that keeps it, as it answers a page's ask of the same model. `None` for a key this
-    /// device does not know, or a workspace it keeps no model for.
+    /// Ask `request` of `workspace` as `key`: the workspace's own dispatch answers it for the
+    /// device that keeps it, as it answers a page's ask of the same model, and keeps what waits
+    /// for the person as their question. `None` for a key this device does not know, or a
+    /// workspace it does not admit the key to.
     fn ask(
         &self,
         key: GrantKey,
