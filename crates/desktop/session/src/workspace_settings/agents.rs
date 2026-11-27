@@ -369,14 +369,30 @@ impl Agents {
                         label: agent_access::kind_label(cell.kind),
                         answer: answer_index(cell.answer),
                         choices: row.choices(cell),
-                        // Only the person's own account rows say what reaching outside means.
-                        caption: (cell.kind == ActionKind::Outside)
-                            .then(|| row.effects.clone())
-                            .flatten(),
+                        caption: Self::kind_caption(row, *cell),
                     })
                     .collect(),
             })
             .collect()
+    }
+
+    /// What a line says under its name: on the person's own account rows, what reaching outside
+    /// means; and, where the person's answers elsewhere leave this one refused, that they have
+    /// not allowed it, so the line never shows an answer the agent is not held to.
+    fn kind_caption(
+        row: &agent_access::AgentAccessRow,
+        cell: agent_access::AnswerCell,
+    ) -> Option<String> {
+        let effects = (cell.kind == ActionKind::Outside)
+            .then(|| row.effects.clone())
+            .flatten();
+        let refused = cell
+            .narrowed
+            .then(|| t("workspace-settings-agent-access-not-allowed"));
+        match (effects, refused) {
+            (Some(effects), Some(refused)) => Some(format!("{effects}\n{refused}")),
+            (effects, refused) => effects.or(refused),
+        }
     }
 
     /// The mark a row wears: an app's own glyph, and the people's mark where the row covers

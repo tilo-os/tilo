@@ -540,6 +540,7 @@ workspace-settings-agent-access-members-effects = Inviting and removing people, 
 workspace-settings-agent-access-set-here = Set here
 workspace-settings-agent-access-reset = Use defaults
 workspace-settings-agent-access-always = { $count } always allowed
+workspace-settings-agent-access-not-allowed = Not allowed: you haven't allowed this
 workspace-settings-agent-exception = { $action } in { $app }
 workspace-settings-agent-access-stop = Ask again
 workspace-settings-agent-model = Model

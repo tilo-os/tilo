@@ -153,12 +153,9 @@ fn software_party<'a>(
     match member {
         // A person's answer for their agent narrows it to what their answers name, whatever its
         // delegation hands it.
-        MemberId::Agent { id, person } => policy.party_of_agent(id, person.as_str()).narrowed_by(
-            granted,
-            policy
-                .grants_of_agent(id, person.as_str())
-                .filter(|grant| crate::agent_answers::is_answer(grant)),
-        ),
+        MemberId::Agent { id, person } => {
+            policy.party_of_answered_agent(id, person.as_str(), granted)
+        }
         member => policy.party_of(granted_to(member)).with_grants(granted),
     }
 }

@@ -831,6 +831,25 @@ impl WorkspacePolicy {
             .held_off_by(held_off)
     }
 
+    /// The agent `agent` of `person` as every decision about it weighs it: its own grants
+    /// ([`Self::party_of_agent`]) and those a delegation hands it (`granted`: its certificate's,
+    /// the preset its turn carries), which decide nothing once any answer its person gave it
+    /// stands ([`Self::answers_narrow`]): then it takes only what their answers name. Admission
+    /// and the Settings that show what an agent may do both read this one party.
+    #[must_use]
+    pub fn party_of_answered_agent<'a>(
+        &'a self,
+        agent: &str,
+        person: &str,
+        granted: &'a [Grant],
+    ) -> Party<'a> {
+        self.party_of_agent(agent, person).narrowed_by(
+            granted,
+            self.grants_of_agent(agent, person)
+                .filter(|grant| crate::agent_answers::is_answer(grant)),
+        )
+    }
+
     /// The grants naming the agent `agent` of `person`: those `person` gave it, and the
     /// workspace's own denials of it, as [`Self::party_of_agent`] reads them.
     pub fn grants_of_agent<'a>(

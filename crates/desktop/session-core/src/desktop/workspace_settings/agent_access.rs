@@ -8,7 +8,7 @@
 //! take back.
 
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{Answer, Grant, Grantee, PolicyEdit, decide};
+use tilo_action_policy::{Answer, Grant, Grantee, PolicyEdit};
 use tilo_action_types::ActionKind;
 use tilo_desktop_model::Workspace;
 use tilo_sort::CompactSort as _;
@@ -56,6 +56,9 @@ pub struct AnswerCell {
     /// The workspace keeps an answer for the agent at this scope; otherwise it follows the
     /// agent's admission or a broader answer.
     pub explicit: bool,
+    /// Its person answered other scopes for it and none here, so it is refused here though its
+    /// admission alone would give it more: what the person has not allowed, the agent does not do.
+    pub narrowed: bool,
 }
 
 /// One application's row.
@@ -103,9 +106,11 @@ pub struct AgentException {
     pub label: String,
 }
 
-/// The answer `agent` holds for `kind` at `scope`: the turn's own grants (`admission`,
-/// [`tilo_member_types::Acting::handed_preset`]) and the workspace's grants naming it alone,
-/// so a narrower answer the workspace keeps for it wins over what the cap says.
+/// The answer `agent` holds for `kind` at `scope`, as admission decides it
+/// ([`tilo_action_policy::WorkspacePolicy::party_of_answered_agent`]): the turn's own grants
+/// (`admission`, [`tilo_member_types::Acting::handed_preset`]) and the workspace's grants naming
+/// it, until its person answers anything for it. From then on it takes only what their answers
+/// name, and a scope they named nothing for is refused, which the cell says ([`AnswerCell::narrowed`]).
 #[must_use]
 pub fn answer_at(
     ws: &Workspace,
@@ -114,22 +119,31 @@ pub fn answer_at(
     scope: &AnswerScope,
     kind: ActionKind,
 ) -> AnswerCell {
-    let subject = [Grantee::agent(agent.0, agent.1)];
     let cx = tilo_action_policy::Context::at_secs(tilo_clock::unix_now());
     let node = scope.node(&ws.policy.workspace);
-    let decision = decide(
-        admission.iter().chain(ws.policy.grants.iter()),
-        &subject,
-        &node,
-        kind,
-        &cx,
-    );
+    let decision = ws
+        .policy
+        .party_of_answered_agent(agent.0, agent.1, admission)
+        .decide(&node, kind, &cx);
+    let explicit = decision
+        .grant()
+        .is_some_and(|grant| answers(grant, agent) && grant.node == node);
+    // What it would hold had its person answered nothing: more than it holds, only because their
+    // answers name nothing here.
+    let narrowed = !explicit
+        && ws.policy.answers_narrow(agent.0, agent.1, &cx)
+        && ws
+            .policy
+            .party_of_agent(agent.0, agent.1)
+            .with_grants(admission)
+            .decide(&node, kind, &cx)
+            .answer
+            > decision.answer;
     AnswerCell {
         kind,
         answer: decision.answer,
-        explicit: decision
-            .grant()
-            .is_some_and(|grant| answers(grant, agent) && grant.node == node),
+        explicit,
+        narrowed,
     }
 }
 
@@ -443,7 +457,37 @@ mod tests {
                 &AnswerScope::app("so.tilo.notes"),
                 ActionKind::Outside,
             );
-            assert_eq!((notes.answer, notes.explicit), (Answer::Ask, false));
+            // Once its person answered anything for it, the agent takes only what their answers
+            // name: Notes, which they named nothing for, is refused, and the cell says so
+            // rather than showing the Ask the admission alone would give.
+            assert_eq!(
+                (notes.answer, notes.explicit, notes.narrowed),
+                (Answer::Deny, false, true)
+            );
+            let notes_read = answer_at(
+                &ws,
+                (AGENT, OWNER),
+                &admission(&ws),
+                &AnswerScope::app("so.tilo.notes"),
+                ActionKind::Read,
+            );
+            assert_eq!(
+                (notes_read.answer, notes_read.narrowed),
+                (Answer::Deny, true),
+                "even reading where nothing was allowed"
+            );
+            assert!(!outside.narrowed, "the answer they gave is theirs, not a narrowing");
+
+            // Taking their only answer back, the admission decides everywhere again.
+            answers_set(&mut ws, (AGENT, OWNER), OWNER, &[(mail, ActionKind::Outside, None)]);
+            let notes = answer_at(
+                &ws,
+                (AGENT, OWNER),
+                &admission(&ws),
+                &AnswerScope::app("so.tilo.notes"),
+                ActionKind::Outside,
+            );
+            assert_eq!((notes.answer, notes.narrowed), (Answer::Ask, false));
         }
 
         phase setting_again_replaces_and_clearing_returns_to_the_admission;
