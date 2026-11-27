@@ -983,9 +983,10 @@ pub fn queued_effect_surface() -> Surface {
 /// decided against without this host linking an app's model crate.
 const MODERATION_SURFACE: &str = include_str!("../../../../apps/moderation-model/surface.json");
 
-/// The workspace's environments, which the environment model keeps as Terminal's records
-/// (`environment:<key>`), whichever program makes them: Terminal's package declares their kind
-/// beside its own types, so a workspace's store judges their writes once Terminal is installed.
+// The workspace's environments, which the environment model keeps as Terminal's records
+// (`environment:<key>`), whichever program makes them, have no surface file here: Terminal's
+// package declares their kind beside its own types, so a workspace's store judges their writes
+// once Terminal is installed.
 
 /// A committed surface file's resources (`{"resources": […]}`).
 #[derive(serde::Deserialize)]

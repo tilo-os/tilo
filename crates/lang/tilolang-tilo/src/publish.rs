@@ -458,9 +458,7 @@ fn described(
         spec = spec.with_keywords(
             said.split(',')
                 .map(str::trim)
-                .filter(|word| !word.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>(),
+                .filter(|word| !word.is_empty()),
         );
     }
     if is_destructive(action) {

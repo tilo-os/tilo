@@ -199,7 +199,7 @@ impl Lane {
                 .map_err(|_| ActionCallError::Unavailable {
                     reason: "the shell runtime handed back another session than was asked".into(),
                 })?;
-        if said["result"] != "session" {
+        if said.get("result").and_then(Value::as_str) != Some("session") {
             return Err(ActionCallError::Unavailable {
                 reason: "the shell runtime handed back another session than was asked".into(),
             });
@@ -252,7 +252,7 @@ fn carry_output(
         match terminal.read(&mut buffer) {
             Ok(read) if read > 0 => out(frame_line(RemoteActionMessage::ShellOutput(ShellBytes {
                 shell,
-                bytes: buffer[..read].to_vec(),
+                bytes: buffer.get(..read).map(<[u8]>::to_vec).unwrap_or_default(),
             }))),
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             _ => match lease.state() {

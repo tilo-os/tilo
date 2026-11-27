@@ -54,6 +54,11 @@ impl ControlLine {
     ///
     /// # Errors
     /// The runtime is not running, or did not answer in time.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the connection is held from the request's write to its answer: two asks never \
+                  share one line"
+    )]
     pub fn ask(&self, workspace: &str, request: &Value) -> io::Result<Answer> {
         let mut request = request.clone();
         if let Some(fields) = request.as_object_mut() {
@@ -102,11 +107,11 @@ impl ControlLine {
         })?;
         stream.set_read_timeout(Some(ANSWER_WITHIN))?;
         stream.write_all(format!("{{\"op\":\"hello\",\"protocol\":{PROTOCOL}}}\n").as_bytes())?;
-        let ready = answer(&mut stream)?;
+        let ready = answer(&stream)?;
         let said: Value = serde_json::from_slice(&ready.line).map_err(io::Error::other)?;
         if !ready.descriptors.is_empty()
-            || said["result"] != "ready"
-            || said["protocol"] != PROTOCOL
+            || said.get("result").and_then(Value::as_str) != Some("ready")
+            || said.get("protocol").and_then(Value::as_u64) != Some(u64::from(PROTOCOL))
         {
             return Err(io::Error::other(
                 "Tilo's shell runtime speaks another protocol than this daemon",
@@ -118,7 +123,7 @@ impl ControlLine {
 
 /// Read one answer: its line, past a line that says the runtime waits, and the descriptors that
 /// came with it.
-fn answer(stream: &mut UnixStream) -> io::Result<Answer> {
+fn answer(stream: &UnixStream) -> io::Result<Answer> {
     let mut read = Vec::new();
     let mut descriptors = Vec::new();
     loop {
@@ -133,7 +138,7 @@ fn answer(stream: &mut UnixStream) -> io::Result<Answer> {
             stream.set_read_timeout(Some(ANSWER_WITHIN))?;
             return Ok(Answer { line, descriptors });
         }
-        let (bytes, mut came) = runtime_portal::fd_transport::recv_with_fds(&*stream)?;
+        let (bytes, mut came) = runtime_portal::fd_transport::recv_with_fds(stream)?;
         if bytes.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,

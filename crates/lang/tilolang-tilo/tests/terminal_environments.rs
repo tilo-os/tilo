@@ -153,7 +153,7 @@ fn last(sent: &Rc<RefCell<Vec<Invocation>>>) -> (String, String, String, Vec<(St
             name.clone(),
             target
                 .as_ref()
-                .map(|target| target.id_string())
+                .map(tilolang_runtime::ResourceRef::id_string)
                 .unwrap_or_default(),
             // The environment the verb is called on comes first; what the person gave follows.
             args.iter()
