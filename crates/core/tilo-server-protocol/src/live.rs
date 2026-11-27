@@ -18,9 +18,7 @@ use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, EncryptionS
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 mod layout;
-mod pointer;
 pub use layout::{LAYOUT_UNITS, LiveLayout, LiveWindow, MAX_LAYOUT_APP_BYTES, MAX_LAYOUT_WINDOWS};
-pub use pointer::{LivePointer, PointerLayout, ShownStrip};
 
 /// Largest encoded ordered frame.
 pub const MAX_OPS_FRAME_BYTES: usize = 64 * 1024;

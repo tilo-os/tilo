@@ -31,7 +31,6 @@ const FORWARDED: &[&str] = &[
     "TILO_WORKSPACE_ROOTS",
     tilo_paths::APPS_DATA_DIR_ENV,
     "TILO_IDENTITY_ROOT",
-    "TILO_HOME_PEERS_PATH",
     // The registries and runtime of a session started from a build under
     // test, so the apps it launches are the ones that build made. Absent
     // from an installed session, where the installed directories are used.
@@ -267,7 +266,6 @@ mod tests {
             "TILO_APPS_DATA_DIR" => Some("/home/you/.local/share/tilo/apps".into()),
             "TILO_IDENTITY_ROOT" => Some("/home/you/.local/share/tilo/identity".into()),
             "TILO_WORKSPACE_ROOTS" => Some("/home/you/.local/state/tilo/files/mount".into()),
-            "TILO_HOME_PEERS_PATH" => Some("/run/user/1000/tilo/peers".into()),
             // A session started from a build under test: the tree's own
             // declaration, which the launcher judges its launches against.
             "TILO_SYSTEM_INTERFACES" => {
@@ -305,7 +303,6 @@ mod tests {
                 "TILO_WORKSPACE_ROOTS",
                 "/home/you/.local/state/tilo/files/mount",
             ),
-            ("TILO_HOME_PEERS_PATH", "/run/user/1000/tilo/peers"),
             (
                 "TILO_SYSTEM_INTERFACES",
                 "/src/tilo/os/usr/share/tilo/system-interfaces.toml",

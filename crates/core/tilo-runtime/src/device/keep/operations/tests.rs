@@ -8,7 +8,7 @@ use std::time::Duration;
 use tilo_server_protocol::transport::{ServerAnswer, ServerOperation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-use super::{CONTROL_REQUEST, MAX_LOG_LINES, operate_within, parse_answer, valid_service};
+use super::{CONTROL_REQUEST, MAX_LOG_LINES, carry_out, parse_answer, valid_service};
 
 fn own() -> DeviceCert {
     DeviceCert {
@@ -88,7 +88,7 @@ async fn every_mutation_reaches_the_helper_and_is_kept() {
     let ask = |operation| {
         let state_root = state_root.clone();
         async move {
-            operate_within(&state_root, None, &own(), operation, Duration::from_secs(5))
+            carry_out(&state_root, None, &own(), operation, Duration::from_secs(5))
                 .await
                 .unwrap()
         }
@@ -151,7 +151,7 @@ async fn a_stale_answer_is_never_taken_for_the_request() {
         "an-earlier-request 1\nold\n",
     )
     .unwrap();
-    let failed = operate_within(
+    let failed = carry_out(
         &state_root,
         None,
         &own(),
@@ -174,7 +174,7 @@ async fn a_helper_that_refuses_answers_with_why() {
     let _helper = stand_in_helper(&state_root, |_, request| {
         format!("{} 0\nunit not found", identity_of(request))
     });
-    let refused = operate_within(
+    let refused = carry_out(
         &state_root,
         None,
         &own(),

@@ -858,7 +858,6 @@
   "names": [
    "HOME_SERVER",
    "HomeServer",
-   "TILO_HOME_PEERS_PATH",
    "homePeer",
    "home_peer_bundle"
   ],

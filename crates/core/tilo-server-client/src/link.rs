@@ -327,20 +327,6 @@ async fn web_session(
         .map_err(|error| LinkError::Unavailable(error.to_string()))
 }
 
-/// The keying material `connection`'s TLS session exports for an entry
-/// ([`tilo_server_protocol::entering::ENTRY_BINDING_LABEL`]).
-fn exported(connection: &iroh::endpoint::Connection) -> Option<[u8; 32]> {
-    let mut binding = [0u8; 32];
-    connection
-        .export_keying_material(
-            &mut binding,
-            tilo_server_protocol::entering::ENTRY_BINDING_LABEL,
-            &[],
-        )
-        .ok()?;
-    Some(binding)
-}
-
 /// Why an iroh dial failed. TLS `no_application_protocol` (alert 120) means
 /// the server is reached but serves nothing at `alpn`, which says more than
 /// the transport's words.
@@ -383,9 +369,6 @@ pub struct Link {
     /// closes a connection once the last handle on the endpoint it runs on
     /// drops, and a link outlives the dialer that opened it.
     _endpoint: Option<iroh::Endpoint>,
-    /// What an entry on it is bound to, once read ([`Link::binding`]): a
-    /// server offers it once per link.
-    binding: std::sync::Arc<tokio::sync::OnceCell<[u8; 32]>>,
     /// The device at the other end, when the link names it: a WebTransport
     /// session names none until the handshake says which device proved itself
     /// on it ([`Link::web_as`]).
@@ -409,7 +392,6 @@ impl Link {
         Self {
             inner,
             _endpoint: endpoint,
-            binding: std::sync::Arc::default(),
             device: None,
         }
     }
@@ -529,65 +511,6 @@ impl Link {
                 .await
                 .map(|(send, recv)| (LinkSend::Web(send), LinkRecv::Web(recv)))
                 .map_err(|error| gone(error.to_string())),
-        }
-    }
-
-    /// What an entry's proof on this link is bound to, as the server that
-    /// accepted it offers it: unique to the link and known to no one outside
-    /// it, so a proof captured from one link proves nothing on another. Over
-    /// iroh both ends export it from the connection's TLS session; a browser
-    /// exports nothing from a WebTransport session, so there the server writes
-    /// fresh random bytes on a stream of its own as the session opens, which
-    /// reach the device with the session itself. Call it before accepting a
-    /// stream: a device that enters waits for it before it says hello.
-    ///
-    /// `None` when the link carries no binding (then it takes no entry).
-    pub async fn offer_binding(&self) -> Option<[u8; 32]> {
-        match &self.inner {
-            Inner::Iroh(connection) => exported(connection),
-            Inner::Web(session) => {
-                let binding: [u8; 32] = rand::random();
-                let mut send = session.open_uni().await.ok()?;
-                send.write_all(&binding).await.ok()?;
-                send.finish().await.ok()?;
-                Some(binding)
-            }
-        }
-    }
-
-    /// What an entry's proof on this link is bound to, as the device that
-    /// dialed it reads it ([`Self::offer_binding`]).
-    ///
-    /// # Errors
-    ///
-    /// [`LinkError::Unavailable`] when the server offered none.
-    pub async fn binding(&self) -> Result<[u8; 32], LinkError> {
-        self.binding
-            .get_or_try_init(|| self.read_binding())
-            .await
-            .copied()
-    }
-
-    async fn read_binding(&self) -> Result<[u8; 32], LinkError> {
-        let missing =
-            |error: String| LinkError::Unavailable(format!("no binding to enter with: {error}"));
-        match &self.inner {
-            Inner::Iroh(connection) => {
-                exported(connection).ok_or_else(|| missing("the connection exports none".into()))
-            }
-            Inner::Web(session) => {
-                let recv = session
-                    .accept_uni()
-                    .await
-                    .map_err(|error| missing(error.to_string()))?;
-                let bytes = recv
-                    .read_to_end(32)
-                    .await
-                    .map_err(|error| missing(error.to_string()))?;
-                bytes
-                    .try_into()
-                    .map_err(|_| missing("the server's binding is not 32 bytes".into()))
-            }
         }
     }
 

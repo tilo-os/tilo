@@ -899,11 +899,6 @@ impl Server {
         &self.sessions.state_root
     }
 
-    /// Own user identity — for tests.
-    pub fn own_user_public_key(&self) -> [u8; 32] {
-        self.sessions.identity.user_public_key
-    }
-
     /// In-process access to the records of the workspaces this server hosts,
     /// for a service embedded in the host process.
     #[must_use]

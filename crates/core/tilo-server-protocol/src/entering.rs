@@ -22,8 +22,7 @@
 //! challenge, a round trip after its hello. The entry's proof
 //! ([`Entry::proof`]) is the device's signature over what the entry asks
 //! instead: the entry, under keying material both ends export from the TLS
-//! session of the QUIC connection that carries it ([`ENTRY_BINDING_LABEL`],
-//! RFC 5705).
+//! session of the QUIC connection that carries it (RFC 5705).
 //! That material is derived from both ends' handshake randomness and their
 //! key exchange, so it is unique to the connection and nobody outside it
 //! learns it: a captured proof proves nothing on any other connection, as an
@@ -66,10 +65,6 @@ use crate::workspaces::Role;
 /// How long one entry may take, from the hello to the host's answer: the
 /// iroh join service's bound on one exchange.
 pub const ENTERING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// The label both ends export the connection's keying material under
-/// (RFC 5705), with an empty context: what an entry's proof is bound to.
-pub const ENTRY_BINDING_LABEL: &[u8] = b"tilo/session-entry/v1";
 
 /// What a device that is not in the workspace yet asks for in its hello: to
 /// come into `workspace`, through its entry or with an invitation.

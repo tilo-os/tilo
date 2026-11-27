@@ -133,7 +133,7 @@ impl Controls {
     /// Carry out the `server` action `action` with `args`.
     ///
     /// # Errors
-    /// As [`requested`] and [`operate`].
+    /// As [`requested`], or the root helper did not answer in time.
     pub async fn act(&self, action: &str, args: &Value) -> Result<ServerOperationResult, String> {
         let operation = requested(action, args)?;
         carry_out(
@@ -185,37 +185,6 @@ struct ControlAnswer {
     id: String,
     ok: bool,
     text: String,
-}
-
-/// Do `operation` on the server whose state root is `state_root`, held by
-/// `workspaces` when this server keeps its person's admin workspace, answering
-/// with what it found or did.
-///
-/// # Errors
-/// The operation asked for something this server does not serve, or the helper
-/// it asked did not answer in time.
-pub async fn operate(
-    state_root: &Path,
-    workspaces: Option<&Workspaces>,
-    own: &DeviceCert,
-    operation: ServerOperation,
-) -> Result<ServerOperationResult, String> {
-    operate_within(state_root, workspaces, own, operation, CONTROL_WAIT).await
-}
-
-/// [`operate`], waiting at most `wait` for a root helper to answer: what
-/// tests give a stand-in helper, and what a slow machine may need longer for.
-///
-/// # Errors
-/// As [`operate`].
-pub async fn operate_within(
-    state_root: &Path,
-    workspaces: Option<&Workspaces>,
-    own: &DeviceCert,
-    operation: ServerOperation,
-    wait: Duration,
-) -> Result<ServerOperationResult, String> {
-    carry_out(state_root, workspaces, own, operation, wait).await
 }
 
 #[allow(
