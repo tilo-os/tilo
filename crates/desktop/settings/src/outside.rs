@@ -286,7 +286,15 @@ impl SettingsSource for Outside {
 
 /// Run the setter `action` of `resource` with `value` through this login's control socket, as
 /// `tilo do` runs it.
+///
+/// With no socket serving this login at all — no session and no daemon, as on a computer whose
+/// session is not running yet — the change is kept on the device instead, for the session that
+/// runs next, which reads it as it starts.
 fn run_through_control_socket(resource: &str, action: &str, value: &Value) -> Result<(), String> {
+    let sockets = tilo_control::client::sockets_from_env();
+    if !sockets.iter().any(|socket| socket.path().exists()) {
+        return set_on_this_device(resource, action, value);
+    }
     call(
         resource,
         action,
