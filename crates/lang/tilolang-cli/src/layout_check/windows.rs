@@ -721,7 +721,17 @@ fn the_traditional_desktop_stands_as_a_person_reads_it() {
         a_count_stands_on_its_icons_corner_and_over_no_other_control(&controls, width, &at);
     }
     let phone = the_traditional_desktop(&app, &packages, (320, 568), tilo_ui_base::Theme::light());
-    on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock(&phone);
+    let said = {
+        let mut said = Vec::new();
+        read_out(&phone.harness().inspection().root, false, &mut said);
+        said
+    };
+    assert!(
+        said.iter()
+            .any(|(in_window, name)| *in_window && name == "Q3 plan"),
+        "the window is the one in front: {said:?}"
+    );
+    the_window_fills_the_room_between_the_bar_and_the_dock(&phone, 320.0);
 }
 
 fn its_windows_show_their_apps_content_under_one_bar_each(staged: &stage::Staged) {
@@ -879,6 +889,7 @@ fn a_window_alone_in_the_shell_takes_the_shell() {
         "a lone window takes the shell's width at 1280: {window:?}"
     );
     bar_and_content_in(frames[0], window);
+    the_window_fills_the_room_between_the_bar_and_the_dock(&staged, 1280.0);
 }
 
 /// A place is made from the resource it shows (`session.Layout`'s `record`), so a place
@@ -1216,24 +1227,15 @@ fn a_count_stands_on_its_icons_corner_and_over_no_other_control(
     }
 }
 
-fn on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock(
-    staged: &stage::Staged,
-) {
+/// The one window `staged` shows stands between the bar and a dock that keeps its own room at the
+/// foot, and fills that room: on a phone and on a laptop's screen alike, a window is the height
+/// the shell has left it, never a share of it the dock's row took.
+fn the_window_fills_the_room_between_the_bar_and_the_dock(staged: &stage::Staged, width: f64) {
     let root = staged.harness().root_widget();
     let frames = named(root, "WindowFrame");
     let [frame] = frames[..] else {
         panic!("the window in front alone, not {} windows", frames.len());
     };
-    let said = {
-        let mut said = Vec::new();
-        read_out(&staged.harness().inspection().root, false, &mut said);
-        said
-    };
-    assert!(
-        said.iter()
-            .any(|(in_window, name)| *in_window && name == "Q3 plan"),
-        "the window is the one in front: {said:?}"
-    );
     let chrome = named(root, "Chrome");
     let bar = chrome
         .iter()
@@ -1257,7 +1259,7 @@ fn on_a_phone_the_window_in_front_fills_the_room_between_the_bar_and_the_dock(
         "the window {window:?} fills the room between {bar:?} and {dock:?}"
     );
     assert!(
-        window.x0 >= 0.0 && window.x1 <= 320.0 && window.width() >= 320.0 - 2.0 * gap,
+        window.x0 >= 0.0 && window.x1 <= width && window.width() >= width - 2.0 * gap,
         "the window {window:?} spans the output"
     );
 }
