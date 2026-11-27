@@ -26,6 +26,12 @@ fn progress_step(ms: f64) -> i64 {
 /// A declared place within this of the one the band reported is the same place, not a seek.
 const SEEK_TOLERANCE_MS: f64 = 250.0;
 
+/// How often a playing song's playhead moves what the band shows. The elapsed second a person
+/// reads changes within this, and the scrubber's thumb moves under a pixel between ticks on a song
+/// of usual length: a tick, never an animation, so a window showing a playing song settles while a
+/// live one keeps time.
+const PLAYHEAD_TICK: crate::time::Duration = crate::time::Duration::from_millis(250);
+
 /// What is playing and the controls that steer it, as one band: the art and the song, like
 /// and lyrics, shuffle, previous, play/pause, next and repeat over the scrubber, the queue
 /// and the volume.
@@ -556,11 +562,26 @@ impl tilo_ui_base::widget::Widget for DeclaredTransport {
         self.band.take_structure_dirty()
     }
 
+    /// The song's own face animates where it changes (its cross-fade). A playing song's playhead
+    /// ticks ([`Self::next_wake_deadline`]) instead of animating: a window showing one at rest
+    /// settles, and a live one still keeps time.
     fn needs_animation_frame(&self) -> bool {
-        self.engine
+        self.band.needs_animation_frame()
+    }
+
+    /// While the engine plays, the playhead moves what the band shows — the elapsed second and the
+    /// scrubber — so the window comes back for it at the next tick.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let tick = self
+            .engine
             .as_ref()
             .is_some_and(media::MediaEngine::is_playing)
-            || self.band.needs_animation_frame()
+            .then(|| crate::time::now().checked_add(PLAYHEAD_TICK))
+            .flatten();
+        [tick, self.band.next_wake_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     fn needs_redraw(&self) -> bool {

@@ -526,3 +526,51 @@ fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
         "the place the view declares is where the sound stands"
     );
 }
+
+/// A playing song's playhead ticks rather than animating: the window comes back at the next tick
+/// for the elapsed second and the scrubber, and a window showing a song it declares settles. A
+/// stopped playhead asks for neither.
+#[test]
+fn a_playing_song_ticks_its_playhead_rather_than_animating() {
+    use tilo_ui::widget::{DeclaredTransport, MediaTransportProps};
+    use tilo_ui_base::component::Described;
+
+    let declared = |playing| MediaTransportProps {
+        title: "First Light".to_owned(),
+        source: Some("file:///home/person/Music/first-light.wav".to_owned()),
+        playing,
+        engine: Some(media::MediaEngine::new_synthesized()),
+        ..MediaTransportProps::default()
+    };
+    let mut transport = DeclaredTransport::from_props("root/0", declared(true));
+    Widget::sync(&mut transport, &(), &());
+    assert!(
+        transport.shown().playing,
+        "the engine plays what the view declared"
+    );
+    assert!(
+        !transport.needs_animation_frame(),
+        "a playing playhead is no animation: a window showing it settles"
+    );
+    let now = tilo_ui::time::now();
+    let tick = transport
+        .next_wake_deadline()
+        .expect("a playing playhead ticks");
+    assert!(
+        tick > now && tick <= now + tilo_ui::time::Duration::from_secs(1),
+        "the playhead comes back within a tick, not before or long after: {tick:?} at {now:?}"
+    );
+
+    assert!(Described::set_props(&mut transport, declared(false)));
+    Widget::sync(&mut transport, &(), &());
+    assert!(!transport.shown().playing, "the view stopped the sound");
+    assert_eq!(
+        transport.next_wake_deadline(),
+        None,
+        "a stopped playhead asks for no frame"
+    );
+    assert!(
+        !transport.needs_animation_frame(),
+        "and no animation either"
+    );
+}
