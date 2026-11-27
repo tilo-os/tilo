@@ -237,11 +237,10 @@ while IFS=$'\t' read -r id name file; do
     "$arch" "$listing" || failed+=("$id")
 done < "$plan"
 
-# Every language other than English, as its language pack. A pack is data, and either build signs
-# the same bytes, but the registry binds every version to an architecture: each architecture's run
-# publishes the packs for its own, as it does its apps, at the one path both upload identically.
+# Every language other than English, as its language pack: data for every architecture, so one
+# architecture's run publishes them (x86_64's), with the architecture `any`.
 packs=$release/language-packs
-if [[ $everything == true && -f $packs/index.json ]]; then
+if [[ $everything == true && $arch == x86_64 && -f $packs/index.json ]]; then
   : > "$uploads"
   while IFS=$'\t' read -r _id file _listing; do
     "$cli" compress -o "$twins/$file.zst" "$packs/$file" >/dev/null
@@ -250,7 +249,7 @@ if [[ $everything == true && -f $packs/index.json ]]; then
   done < <(jq -r '.packs[] | [.id, .file, .metadata] | @tsv' "$packs/index.json")
   TILO_PACKAGE_UPLOAD_WORKERS=8 tools/upload_immutable_packages.sh "$uploads"
   while IFS=$'\t' read -r id file listing; do
-    publish_entry "$id" "$packs/$file" "$artifacts/tilo-app-language-packs/$version/$file" "$arch" \
+    publish_entry "$id" "$packs/$file" "$artifacts/tilo-app-language-packs/$version/$file" any \
       "$packs/$listing" --keep-releases 3 || failed+=("$id")
   done < <(jq -r '.packs[] | [.id, .file, .metadata] | @tsv' "$packs/index.json")
 fi

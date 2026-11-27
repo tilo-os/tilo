@@ -923,6 +923,11 @@ fn validate_bound_version(
             .all(|byte| byte.is_ascii_hexdigit());
     let target = &tapp.target;
     let target_ok = match target.platform.as_str() {
+        // A data package (a language pack) is the same bytes on every architecture, and binds
+        // the architecture `any` with no runtime, as the target's own validation allows.
+        registry_types::TILO_OS_PLATFORM if target.is_any_architecture() => {
+            target.runtime.is_none() && target.validate().is_ok()
+        }
         registry_types::TILO_OS_PLATFORM => matches!(
             (target.architecture.as_str(), target.isa.as_str()),
             ("x86_64", "x86_64" | "x86_64-v2" | "x86_64-v3" | "x86_64-v4")
@@ -1314,6 +1319,26 @@ mod tests {
                     Err(ModerationError::UnsupportedPackageTarget { .. })
                 ));
             }
+        }
+
+        phase a_data_package_binds_every_architecture_and_no_runtime;
+        {
+            let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+            let official = ArtifactHosts::default();
+            let mut data = entry(&key, 42);
+            let target = &mut data.versions[0].tapp_mut().unwrap().target;
+            target.architecture = registry_types::ANY_ARCHITECTURE.into();
+            target.isa = registry_types::ANY_ARCHITECTURE.into();
+            target.runtime = None;
+            assert!(validate_version_history(&data, None, &official).is_ok());
+
+            let mut linked = data.clone();
+            linked.versions[0].tapp_mut().unwrap().target.runtime =
+                Some("tilo-runtime/2026.07".into());
+            assert!(matches!(
+                validate_version_history(&linked, None, &official),
+                Err(ModerationError::UnsupportedPackageTarget { .. })
+            ));
         }
     }
 
