@@ -59,7 +59,10 @@ view window(p: Project) {
         inspector: {
             if p.selected == "graph" {
                 if let op = chosen_operator(p) {
-                    operator_body(p, op)
+                    // The inspector holds one view: the operator's facts stack as one page.
+                    stack(gap: .group) {
+                        operator_body(p, op)
+                    }
                 }
             }
         }
