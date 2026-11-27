@@ -1008,9 +1008,10 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
 /// key. Whoever writes the key as another account — root at first boot, a
 /// re-key, an installer's copy — gives it back to the directory's owner here,
 /// on every boot, so an install from any earlier state settles on the one state
-/// the daemon reads. A process running as that account itself needs no
-/// privilege for this, and one that runs as root needs only `CAP_CHOWN` and
-/// `CAP_FOWNER`.
+/// the daemon reads. A process running as that account needs no privilege for
+/// this. One running as root needs `CAP_CHOWN` and `CAP_FOWNER` for the key, and
+/// `CAP_DAC_OVERRIDE` (or `CAP_DAC_READ_SEARCH` where it only reads) to reach a
+/// file inside the directory.
 ///
 /// # Errors
 ///

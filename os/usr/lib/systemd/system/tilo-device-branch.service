@@ -51,8 +51,11 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
-# CAP_CHOWN and CAP_FOWNER give the key the re-key wrote as root back to the account that owns its
-# directory, the daemon that reads it.
+# The re-key writes the machine's new key as root, inside the daemon account's 0700
+# directory, and reseals each person's vault as them.
+# CAP_DAC_OVERRIDE: write in that directory and remove the server's channel state.
+# CAP_SETUID/CAP_SETGID: start each person's Secret Service as them.
+# CAP_CHOWN/CAP_FOWNER: give the rewritten key that directory's owner and 0600.
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 AmbientCapabilities=
 SystemCallArchitectures=native

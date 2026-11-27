@@ -486,6 +486,25 @@ mod tests {
             unit.lines()
                 .any(|line| line == "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER")
         );
+        // `@privileged` stays denied; the chown family is added back on a later allow line,
+        // after the deny line, which is the only order systemd's merged filter permits it in.
+        let deny = unit
+            .lines()
+            .position(|line| line.starts_with("SystemCallFilter=~") && line.contains("@privileged"))
+            .expect("the filter denies @privileged");
+        let allow = unit
+            .lines()
+            .position(|line| line == "SystemCallFilter=chown fchown fchownat lchown")
+            .expect("the chown family is allowed after the deny list");
+        assert!(
+            allow > deny,
+            "the chown family is added after `@privileged` is denied"
+        );
+        assert!(
+            !unit.lines().any(|line| line
+                == "SystemCallFilter=~@mount @network-io @resources @obsolete @debug @swap"),
+            "the deny list keeps `@privileged`"
+        );
         // The branch check runs at every boot, before the services that act
         // as the device and the names a copy shares are first read.
         let unit = include_str!(concat!(

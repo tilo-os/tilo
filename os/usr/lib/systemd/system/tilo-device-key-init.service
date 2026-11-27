@@ -47,16 +47,19 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
-# Reaching the key in the daemon account's 0700 directory, and giving it that
-# account and 0600: DAC override for the directory, chown and chmod for the file.
+# The key is the daemon account's file inside that account's 0700 directory.
+# CAP_DAC_OVERRIDE reaches it and, on a computer with no key yet, creates it
+# (a write; reading alone would take CAP_DAC_READ_SEARCH). CAP_CHOWN gives it the
+# directory's owner, CAP_FOWNER its 0600.
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-# `@chown` is in `@privileged`, which this program needs for the one syscall
-# that gives the key its directory's owner; the capability bounding set above,
-# not the filter, is what keeps root from doing anything else privileged here.
-SystemCallFilter=~@mount @network-io @resources @obsolete @debug @swap
+SystemCallFilter=~@mount @network-io @privileged @resources @obsolete @debug @swap
+# `@chown` is part of `@privileged`, which the line above denies. The first allow
+# list fixes the default action and a later allow list adds back what it names:
+# the chown family the key's owner and mode take, and nothing else.
+SystemCallFilter=chown fchown fchownat lchown
 
 [Install]
 WantedBy=sysinit.target
