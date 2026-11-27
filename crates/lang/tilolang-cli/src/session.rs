@@ -165,6 +165,10 @@ const SYSTEM_INTERFACES: &str = "os/usr/share/tilo/system-interfaces.toml";
 pub(crate) struct Peer {
     pub(crate) state: PathBuf,
     pub(crate) control: PathBuf,
+    /// The device's own store the session installs apps and runtimes in, as the session script
+    /// named it (`TILO_APPS_DATA_DIR`): one store per device, which its launcher and its daemon
+    /// read.
+    store: PathBuf,
     interfaces: PathBuf,
 }
 
@@ -173,6 +177,10 @@ struct SessionFile {
     control: PathBuf,
     runtime: PathBuf,
     state: PathBuf,
+    /// The device store the session runs its apps on. A session file without one predates the
+    /// store being named, and its store is its state's own.
+    #[serde(default)]
+    store: Option<PathBuf>,
 }
 
 impl SessionFile {
@@ -219,6 +227,8 @@ pub(crate) struct Running {
     pub(crate) socket: PathBuf,
     /// Its runtime directory, where its daemon listens.
     pub(crate) runtime: PathBuf,
+    /// The device store it installs apps and runtimes in.
+    store: PathBuf,
 }
 
 impl Running {
@@ -238,17 +248,22 @@ impl Running {
                 session.state.display()
             ));
         }
+        let store = session
+            .store
+            .clone()
+            .unwrap_or_else(|| session.state.join("apps"));
         Ok(Self {
             state: session.state,
             socket,
             runtime: session.runtime,
+            store,
         })
     }
 
     /// The environment a program runs in to act in this session: its login, so it reaches the
     /// session's own daemon as `tilo-install` does ([`Session::command`]).
     pub(crate) fn environment(&self) -> Vec<(&'static str, PathBuf)> {
-        let mut environment = login_environment(&self.state);
+        let mut environment = login_environment(&self.state, &self.store);
         environment.push(("XDG_RUNTIME_DIR", self.runtime.clone()));
         environment
     }
@@ -311,6 +326,9 @@ pub(crate) fn start_detached(
         .arg(state)
         .arg("--ready")
         .arg(ready)
+        // The session's store is its state's, where this tool then installs the build's app and
+        // reads the runtime it pins, whatever store the caller's own environment names.
+        .envs(store_environment(state))
         .stdin(Stdio::null())
         .stdout(log.try_clone().map_err(|error| error.to_string())?)
         .stderr(log);
@@ -351,6 +369,7 @@ impl Peer {
     pub(crate) fn new(state: PathBuf, repo: &Path) -> Result<Self, String> {
         Ok(Self {
             control: control_socket(&state)?,
+            store: state.join("apps"),
             state,
             interfaces: repo.join(SYSTEM_INTERFACES),
         })
@@ -359,11 +378,25 @@ impl Peer {
     /// The running session `named` names ([`SessionFile::named`]), run from the checkout `repo`.
     pub(crate) fn attach(named: &Path, repo: &Path) -> Result<Self, String> {
         let session = SessionFile::named(named)?;
+        let store = session
+            .store
+            .clone()
+            .unwrap_or_else(|| session.state.join("apps"));
         Ok(Self {
             state: session.state,
             control: session.control,
+            store,
             interfaces: repo.join(SYSTEM_INTERFACES),
         })
+    }
+
+    /// The store named to the session script: what a session started (or prepared) from this
+    /// peer installs its apps and bakes its runtimes in.
+    pub(crate) fn store_environment(&self) -> [(&'static str, PathBuf); 2] {
+        [
+            ("TILO_APPS_DATA_DIR", self.store.clone()),
+            ("TILO_RUNTIME_BUNDLE_DIR", self.runtimes()),
+        ]
     }
 
     /// The environment `tilo-install` and `tilo-control` act on
@@ -373,7 +406,7 @@ impl Peer {
         let mut command = Command::new(program);
         let state = &self.state;
         command
-            .envs(login_environment(state))
+            .envs(login_environment(state, &self.store))
             .env("TILO_RUNTIME_BUNDLE_DIR", self.runtimes())
             .env(
                 "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
@@ -388,10 +421,10 @@ impl Peer {
         command
     }
 
+    /// The runtime bundles the session baked, in the device store the launcher and the daemon
+    /// resolve them from (`<store>/runtimes`).
     pub(crate) fn runtimes(&self) -> PathBuf {
-        // The device store's runtimes: `nested-session.sh` bakes them where the launcher and
-        // the daemon resolve them (`$TILO_APPS_DATA_DIR/runtimes`).
-        self.state.join("apps/runtimes")
+        self.store.join("runtimes")
     }
 
     /// The Tilo runtime and the tilolang runtime the session baked, as packages name them.
@@ -467,8 +500,20 @@ impl Peer {
     }
 }
 
-/// The login a session on `state` runs in: its home, its directories and its identity.
-fn login_environment(state: &Path) -> Vec<(&'static str, PathBuf)> {
+/// The store a session on `state` installs apps and runtimes in, named to the session script and
+/// to the tools that act on it: the state's own, so a caller's environment never moves the runtime
+/// a build pins away from where its launcher reads it.
+pub(crate) fn store_environment(state: &Path) -> [(&'static str, PathBuf); 2] {
+    let store = state.join("apps");
+    [
+        ("TILO_APPS_DATA_DIR", store.clone()),
+        ("TILO_RUNTIME_BUNDLE_DIR", store.join("runtimes")),
+    ]
+}
+
+/// The login a session on `state` runs in: its home, its directories, its identity and the device
+/// store it installs apps and runtimes in, which the session script names too.
+fn login_environment(state: &Path, store: &Path) -> Vec<(&'static str, PathBuf)> {
     vec![
         ("HOME", state.join("home")),
         ("XDG_CONFIG_HOME", state.join("config")),
@@ -476,7 +521,7 @@ fn login_environment(state: &Path) -> Vec<(&'static str, PathBuf)> {
         ("XDG_STATE_HOME", state.join("state")),
         ("XDG_CACHE_HOME", state.join("cache")),
         ("TILO_IDENTITY_ROOT", state.join("identity")),
-        ("TILO_APPS_DATA_DIR", state.join("apps")),
+        ("TILO_APPS_DATA_DIR", store.to_path_buf()),
     ]
 }
 

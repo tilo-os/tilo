@@ -194,7 +194,9 @@ log=$scratch/session.log
 # own. The person's store starts empty.
 store=$scratch/apps
 user_store=$scratch/user-apps
-runtimes=$scratch/runtimes
+# The person's device store holds the runtimes this session's apps launch on, beside the apps
+# themselves: `runtimes/<version>` below it is where its launcher and its daemon resolve them.
+runtimes=$user_store/runtimes
 keys=$scratch/keys
 # This session's own secret store: a file-backed one, as a headless machine uses
 # (`TILO_SECRETS_DIR`, `crates/platform/tilo-secrets/src/files.rs`). The

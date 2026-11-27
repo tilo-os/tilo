@@ -47,7 +47,9 @@ fn prepare(script: &std::path::Path, peers: &[Peer]) -> Result<(String, String),
             Command::new(script)
                 .args(["--no-build", "--prepare-only", "--apps", ""])
                 .arg("--state")
-                .arg(&peer.state),
+                .arg(&peer.state)
+                // The session bakes its runtimes in the store this tool then reads them from.
+                .envs(peer.store_environment()),
             "preparing the nested session",
         )?;
         let runtimes = peer.runtimes_baked()?;
@@ -75,7 +77,10 @@ fn session_command(
     command
         .args(["--no-build", "--until-stdin-closes", "--apps", ""])
         .arg("--ready")
-        .arg(ready);
+        .arg(ready)
+        // The session's store is the one this tool installs the build into and reads the runtime
+        // it pins from, whatever store the caller's own environment names.
+        .envs(session::store_environment(&base.join("a")));
     if options.headless {
         command.arg("--headless");
     }

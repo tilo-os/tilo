@@ -48,9 +48,9 @@
 #                      as a computer joins tilo.sh's Lounge. Without it
 #                      the session follows this machine's configuration.
 #   --ready FILE       once the session answers on its control socket, write the
-#                      socket, the runtime directory and the state directory to
-#                      FILE as JSON (also kept as session.json in the runtime
-#                      directory)
+#                      socket, the runtime directory, the state directory and the
+#                      device store to FILE as JSON (also kept as session.json in
+#                      the runtime directory)
 #   --until-stdin-closes  end when stdin reaches its end: a tool that starts the
 #                      session on a pipe whose write end only it holds ends it
 #                      however the tool ends, a kill included
@@ -356,11 +356,11 @@ printf '%s\n' "$pubkey" > "$trust"
 # --- 4. Runtime bundle --------------------------------------------------------
 # The device's own store holds the runtimes every session on the device launches apps on;
 # `TILO_APPS_DATA_DIR` names it (the walk shares one across a version's sessions), else the
-# session's state is its own device's store, as a developer's one-command session is.
+# session's state is its own device's store, as a developer's one-command session is. A runtime
+# lives there and nowhere else: the launcher and the daemon resolve `runtimes/<version>` below
+# the store, and a root a caller inherited is not a second place to bake them.
 app_store=${TILO_APPS_DATA_DIR:-$state/apps}
-# A caller may name a bundle root of its own (a check keeps one per session); otherwise the
-# bundles are the device store's, where a launch resolves them.
-runtimes=${TILO_RUNTIME_BUNDLE_DIR:-$app_store/runtimes}
+runtimes=$app_store/runtimes
 mkdir -p "$runtimes"
 needed_std=$(readelf -dW "$thin/libruntime_dylib.so" | sed -n 's/.*Shared library: \[\(libstd-[^]]*\)\].*/\1/p')
 rust_libstd=$thin/$needed_std
@@ -1096,9 +1096,12 @@ session_answers() {
     fi
 }
 # Where this session is, for tools that attach to it by its runtime directory
-# or control socket (`tilolang dev --session`): the same JSON as --ready.
+# or control socket (`tilolang dev --session`): the same JSON as --ready. The store is the
+# device's, where a tool installs a build's app and finds the runtime it pins.
 jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" --arg bin "$bin" \
-    '{control: $control, runtime: $runtime, state: $state, bin: $bin}' > "$runtime/session.json"
+    --arg store "$app_store" \
+    '{control: $control, runtime: $runtime, state: $state, bin: $bin, store: $store}' \
+    > "$runtime/session.json"
 [[ -n $ready_out ]] && rm -f "$ready_out"
 # Once the session answers, tell whoever drives it (--ready), and say which
 # piece of its desktop it could not start: the session logs the surface it

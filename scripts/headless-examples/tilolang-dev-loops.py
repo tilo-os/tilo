@@ -91,7 +91,7 @@ class Session:
             XDG_CACHE_HOME=str(state / "cache"),
             TILO_IDENTITY_ROOT=str(state / "identity"),
             TILO_APPS_DATA_DIR=str(state / "apps"),
-            TILO_RUNTIME_BUNDLE_DIR=str(state / "runtimes"),
+            TILO_RUNTIME_BUNDLE_DIR=str(state / "apps/runtimes"),
             TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=str(state / "keys/runtime-publishers.txt"),
             TILO_TEST_CONTROL=self.control,
             XDG_RUNTIME_DIR=self.runtime,

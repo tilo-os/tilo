@@ -254,7 +254,7 @@ class Session:
             HOME=str(s / "home"), XDG_CONFIG_HOME=str(s / "config"), XDG_DATA_HOME=str(s / "data"),
             XDG_STATE_HOME=str(s / "state"), XDG_CACHE_HOME=str(s / "cache"),
             TILO_IDENTITY_ROOT=str(s / "identity"), TILO_APPS_DATA_DIR=str(s / "apps"),
-            TILO_RUNTIME_BUNDLE_DIR=str(s / "runtimes"), TILO_SECRETS_DIR=str(s / "secrets"),
+            TILO_RUNTIME_BUNDLE_DIR=str(s / "apps/runtimes"), TILO_SECRETS_DIR=str(s / "secrets"),
             TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=str(s / "keys/runtime-publishers.txt"),
         )
         if self.ready:
@@ -841,12 +841,12 @@ def prepare(build: Path, state: Path, out: Path) -> list[Path]:
     (baked again only when the build changed), and the four apps built against that runtime."""
     if state.exists():
         for child in state.iterdir():
-            if child.name not in ("runtimes", "keys"):
+            if child.name not in ("apps", "keys"):
                 shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
     env = {**os.environ, "TILO_NESTED_SESSION_BUILD": str(build)}
     run([SESSION_SH, "--no-build", "--prepare-only", "--headless", "--software", "--apps", NATIVE,
          "--state", state], env=env)
-    runtime = (state / "runtimes/.version").read_text().strip()
+    runtime = (state / "apps/runtimes/.version").read_text().strip()
     built = out / "build"
     tapps = []
     # A read-only (shared) build runs from the session's own copy of its programs; a writable
