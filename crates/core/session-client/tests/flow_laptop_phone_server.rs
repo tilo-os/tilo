@@ -462,52 +462,57 @@ async fn flow_laptop_picks_the_canvas_shell_and_it_is_their_layout() {
     );
 }
 
-/// A chat turn writes a view: an agent asked for "Child mortality in Africa by country since
-/// 2000" answers with a view of that data, backed by a dataset resource.
+/// A chat turn writes a view: the person writes to their agent in Chat from the laptop, as any
+/// device or agent of theirs does, and the agent answers "Child mortality in Africa by country
+/// since 2000" with a view of that data, backed by a dataset resource of the workspace that
+/// reaches every device.
 ///
-/// No action starts such a turn and no data path backs a view yet.
+/// What starts the turn is Chat's `write_to`: a message in the one direct conversation with the
+/// agent, which is the agent's trigger. The turn runs on the server, where the workspace's agents
+/// run, not on the laptop that wrote, and its answer is a message in that conversation, which the
+/// phone reads.
+///
+/// The server writes the message, but runs no app (the flows' server daemon finds no
+/// `tilo-launcher`, so it reads no app's records), and the agent's turn never starts there; and
+/// no data path backs a view yet, so an answer would be words.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_chat_turn_writes_a_view_backed_by_a_dataset() {
+    const QUESTION: &str = "Child mortality in Africa by country since 2000";
     let f = Box::pin(rig()).await;
+    let fake = fake_model_providers::FakeProviders::start().await.unwrap();
     let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
-    let answered = flow::ask(
-        &laptop,
-        f.work_id(),
-        "so.tilo.chat",
-        "chat",
-        "start-turn",
-        json!({"prompt": "Child mortality in Africa by country since 2000"}),
+    flow::run_work_on(&laptop, f.work_id(), &fake.openai_api_url(), "custom-model").await;
+    flow::make_agent(&laptop, &f.work, "Scout", "scout").await;
+
+    let sent = flow::write_to(&laptop, f.work_id(), f.person, "scout", QUESTION)
+        .await
+        .unwrap_or_else(|error| panic!("the laptop writes to the person's agent: {error:?}"));
+    assert_eq!(
+        (&sent["kind"], &sent["label"]),
+        (&json!("tl.so.tilo.chat.Message"), &json!(QUESTION)),
+        "the server's Chat answers the message it wrote to the agent: {sent}"
+    );
+    // The fake model answers with what it was told, so its words in the conversation are the
+    // turn's answer.
+    let held = flow::chat_saying(
+        &f.phone_session,
+        &f.host,
+        &f.work,
+        &format!("You said: {QUESTION}"),
     )
     .await;
-    let answered = answered.unwrap_or_else(|error| {
-        panic!("a chat turn over the workspace's model writes a view: {error:?}")
-    });
     assert!(
-        answered.get("view").is_some(),
-        "the turn answers with a view of the data it asked for: {answered}"
+        fake.requests()
+            .iter()
+            .any(|request| request.json.to_string().contains(QUESTION)),
+        "the agent's turn asked the workspace's model what the laptop wrote: {sent}"
     );
-    let resource = answered["view"]["dataset"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
+
     assert!(
-        !resource.is_empty(),
-        "the view is backed by a dataset resource of the workspace: {answered}"
-    );
-    let route = DocumentRoute {
-        app_id: resource
-            .split_once('/')
-            .map_or("so.tilo.datasets", |(app, _)| app)
-            .to_owned(),
-        cluster_id: f.work.clone(),
-        document: resource
-            .split_once('/')
-            .map_or_else(|| resource.clone(), |(_, document)| document.to_owned()),
-    };
-    flow::open(&f.phone_session, &route);
-    assert!(
-        record_of(&f.phone_session, &route).is_some(),
-        "the dataset the view reads reaches every device: {resource}"
+        held.contains("so.tilo.sheets"),
+        "the agent answers with a view of the data it was asked for, backed by a workbook of \
+         the workspace's that reaches every device: no data path backs a view yet, so the \
+         answer is words"
     );
 }
 

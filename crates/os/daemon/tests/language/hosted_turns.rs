@@ -125,9 +125,9 @@ async fn read_root(host: &Host, workspace: &str, person: &str) -> Value {
     read_item(host, workspace, person, CONVERSATIONS.to_owned()).await
 }
 
-/// Add the person `Bo` as a viewer of the daemon's workspace, with a device of theirs, and
-/// answer the session their device calls with.
-async fn viewer(host: &Host) -> (Caller, String, host::Member) {
+/// Add the person `Bo` to the daemon's workspace as `role`, with a device of theirs, and answer
+/// the session their device calls with.
+async fn member_as(host: &Host, role: Role) -> (Caller, String, host::Member) {
     use ed25519_dalek::SigningKey;
     let (root, _) = tilo_user_identity::UserIdentity::generate("Bo", 1);
     let mut secret = [0_u8; 32];
@@ -154,12 +154,12 @@ async fn viewer(host: &Host) -> (Caller, String, host::Member) {
             AddMemberRequest {
                 request_id: *blake3::hash(format!("Bo {now}").as_bytes()).as_bytes(),
                 user_public_key: root.verifying_key().to_bytes(),
-                place: MemberPlace::Role(Role::Viewer),
+                place: MemberPlace::Role(role),
                 name: Some("Bo".into()),
             },
         )
         .await
-        .expect("the workspace adds its viewer");
+        .expect("the workspace adds Bo");
     workspaces
         .enter(host.workspace(), (&cert, &key))
         .await
@@ -188,7 +188,7 @@ fn workspace_skills_are_shared_and_a_viewers_write_is_refused() {
         );
 
         // A member of the workspace reads what the person wrote.
-        let (_bo_caller, bo, bo_member) = viewer(host).await;
+        let (_bo_caller, bo, bo_member) = member_as(host, Role::Viewer).await;
         let reads = read_root(host, host.workspace(), &bo).await;
         assert!(
             reads.to_string().contains("Weekly report"),
@@ -815,6 +815,72 @@ fn a_message_that_carries_a_file_starts_the_turn_of_the_agent_it_mentions() {
         assert!(
             crate::language::chat::chat_holds_soon(host, "Friday, then.").await,
             "the turn answers in the conversation"
+        );
+    });
+}
+
+/// Writing to an agent starts its turn, and only someone who may write in the conversation
+/// starts one there. The person writes to their assistant with Chat's `write_to`, as another of
+/// their devices or an agent does, and the assistant answers in their direct conversation. An
+/// editor of the workspace who is not in that conversation sends nothing there: the send is
+/// refused, and the assistant's model is not asked again.
+#[test]
+fn writing_to_an_agent_starts_its_turn_and_a_member_outside_the_conversation_is_refused() {
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
+        let host = host.as_ref();
+        start_chat(host, host.workspace()).await;
+        make_scout(host).await;
+        let scripted = scripted(host, [Reply::text("Good morning to you.")]);
+        let scout = tilo_member_types::MemberId::agent(SCOUT_ID, host.person());
+        invoke(
+            host,
+            "write_to",
+            json!({"who": scout, "body": "Good morning."}),
+        )
+        .await
+        .expect("the person writes to their assistant");
+        tokio::time::timeout(Duration::from_secs(90), asked(&scripted, 1))
+            .await
+            .expect("the message starts the assistant's turn");
+        assert!(
+            crate::language::chat::chat_holds_soon(host, "Good morning to you.").await,
+            "the turn answers in the conversation"
+        );
+        let read = read_root(host, host.workspace(), host.person()).await;
+        let (conversation, _) = direct_in(&read, SCOUT_ID)
+            .unwrap_or_else(|| panic!("the person's conversation with their assistant: {read}"));
+
+        // Bo edits the workspace but is not in the person's conversation with their assistant:
+        // to him it does not exist, so neither does its send.
+        let (_bo_caller, _bo, bo_member) = member_as(host, Role::Editor).await;
+        let send = chat_rows(host, host.workspace(), host.person())
+            .into_iter()
+            .filter_map(|row| row.action)
+            .map(|action| action.address)
+            .find(|address| {
+                address.action == "send" && names_channel(&address.resource, &conversation)
+            })
+            .unwrap_or_else(|| panic!("Chat publishes a send on {conversation}"));
+        let refused = bo_member
+            .call(CHAT_PROVIDER, send, &json!({"body": "Bo was here."}))
+            .await;
+        assert!(
+            matches!(
+                &refused,
+                Ok(tilo_actions::InvocationUpdate::Failed { error, .. })
+                    if error.message.contains("publishes no")
+            ),
+            "a member outside the conversation finds no send in it: {refused:?}"
+        );
+        let held = read_item(host, host.workspace(), host.person(), conversation).await;
+        assert!(
+            !held.to_string().contains("Bo was here."),
+            "the refused send left nothing: {held}"
+        );
+        assert_eq!(
+            scripted.asked().len(),
+            1,
+            "the refused send started no turn of the assistant"
         );
     });
 }

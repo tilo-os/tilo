@@ -639,6 +639,127 @@ pub async fn create_workspace(device: &Device, in_workspace: WorkspaceId, name: 
         .to_owned()
 }
 
+/// Run `workspace`'s work on `model` of the OpenAI-compatible API at `endpoint`, as `device` sets
+/// it up through the workspace's model providers: kept as one of its providers, with a key, and
+/// chosen for its work.
+pub async fn run_work_on(device: &Device, workspace: WorkspaceId, endpoint: &str, model: &str) {
+    use tilo_workspace_records::models;
+    let added = ask(
+        device,
+        workspace,
+        models::PROVIDER,
+        models::RESOURCE,
+        models::ADD_PROVIDER,
+        serde_json::json!({"name": "Custom", "protocol": "open-ai-compatible", "endpoint": endpoint}),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the workspace keeps a model provider: {error:?}"));
+    let provider = added["id"].as_str().expect("the provider's id").to_owned();
+    for (action, arguments) in [
+        (
+            models::ADD_MODEL,
+            serde_json::json!({"provider": provider, "model": model}),
+        ),
+        (
+            models::SET_KEY,
+            serde_json::json!({"provider": provider, "key": "sk-fake-api-0123456789abcdef"}),
+        ),
+        (
+            models::SET_DEFAULT,
+            serde_json::json!({"provider": provider, "model": model}),
+        ),
+    ] {
+        ask(
+            device,
+            workspace,
+            models::PROVIDER,
+            models::RESOURCE,
+            action,
+            arguments,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("the workspace's model is set up ({action}): {error:?}"));
+    }
+}
+
+/// Make the person's agent `id`, called `name`, in `workspace` (its UUID) as `device` asks it:
+/// the agent the workspace's host runs, and the member [`write_to`] names.
+pub async fn make_agent(device: &Device, workspace: &str, name: &str, id: &str) {
+    ask_permissions(
+        device,
+        WorkspaceId::parse(workspace).expect("a workspace's id"),
+        workspace,
+        tilo_actions::remote::WORKSPACE_AGENT_CREATE,
+        serde_json::json!({"name": name, "id": id}),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the person makes their agent {name}: {error:?}"));
+}
+
+/// Write `body` to `person`'s agent `agent` in `workspace` as `device`, through Chat's
+/// `write_to` on the workspace's conversations: the message in the one direct conversation with
+/// the agent, which starts its turn where the agent runs. Answers the message it sent.
+pub async fn write_to(
+    device: &Device,
+    workspace: WorkspaceId,
+    person: [u8; 32],
+    agent: &str,
+    body: &str,
+) -> Result<Value, DeviceRefusal> {
+    let who = tilo_member_types::MemberId::agent(agent, hex::encode(person));
+    ask(
+        device,
+        workspace,
+        "record:so.tilo.chat:",
+        "tl:so.tilo.chat:root-lmdoxbnn",
+        "write_to",
+        serde_json::json!({"who": who, "body": body}),
+    )
+    .await
+}
+
+/// What `peer`'s replica of `workspace`'s Chat holds once it says `text`, as JSON: the phone or
+/// any other device reading the conversations it opened. Failing that, it says what the replica
+/// held and what the server `host`, where the workspace's agents run, logged last.
+pub async fn chat_saying(peer: &Link, host: &DaemonHost, workspace: &str, text: &str) -> String {
+    let chat = DocumentRoute {
+        app_id: "so.tilo.chat".to_owned(),
+        cluster_id: workspace.to_owned(),
+        document: String::new(),
+    };
+    open(peer, &chat);
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let held = record_of(peer, &chat)
+            .and_then(|bytes| AutoCommit::load(&bytes).ok())
+            .and_then(|doc| serde_json::to_string(&automerge::AutoSerde::from(&doc)).ok())
+            .unwrap_or_default();
+        if held.contains(text) {
+            return held;
+        }
+        if std::time::Instant::now() > deadline {
+            let log = host.daemon.log();
+            let about: Vec<&str> = log
+                .lines()
+                .filter(|line| {
+                    let line = line.to_ascii_lowercase();
+                    [
+                        "agent", "turn", "trigger", "chat", "launch", "tilolang", "shortcut",
+                    ]
+                    .iter()
+                    .any(|word| line.contains(word))
+                })
+                .collect();
+            panic!(
+                "Chat on this device never said {text:?}; it held {held}\nwhat the server \
+                 logged of its apps and agents:\n{}",
+                about.join("\n")
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// Whether the person's server serves `workspace`, as the host's list of what it serves answers
 /// `device`, asked from the workspace `in_workspace` its session is in.
 pub async fn server_serves(device: &Device, in_workspace: WorkspaceId, workspace: &str) -> bool {

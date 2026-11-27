@@ -512,56 +512,39 @@ async fn flow_window_moved_by_its_move_action_shows_on_the_other_devices_monitor
 /// The laptop falls asleep in the middle of an agent's turn, and the server finishes the
 /// turn: the person's agents carry on while their devices are gone.
 ///
-/// No published action starts a turn the server carries on (the owner of the agent engines
-/// lane takes this step).
+/// The laptop's message to the agent is what starts the turn (Chat's `write_to`), and the turn
+/// runs on the server, where the workspace's agents run: the laptop holds none of it.
+///
+/// The server writes the message, but runs no app (the flows' server daemon finds no
+/// `tilo-launcher`, so it reads no app's records), and the turn never starts there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_laptop_asleep_mid_turn_the_server_finishes_it() {
     let f = Box::pin(four_devices()).await;
+    let fake = fake_model_providers::FakeProviders::start().await.unwrap();
     let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
-    let started = flow::ask(
+    flow::run_work_on(&laptop, f.work_id(), &fake.openai_api_url(), "custom-model").await;
+    flow::make_agent(&laptop, &f.work, "Scout", "scout").await;
+    flow::write_to(
         &laptop,
         f.work_id(),
-        "so.tilo.chat",
-        "chat",
-        "start-turn",
-        json!({"prompt": "Write the standup notes."}),
+        f.person,
+        "scout",
+        "Write the standup notes.",
     )
-    .await;
-    let started = started.unwrap_or_else(|error| {
-        panic!(
-            "a published action starts an agent turn in the workspace so the server can finish \
-             it when the laptop sleeps: {error:?}"
-        )
-    });
-    let turn = started
-        .get("turn")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
+    .await
+    .unwrap_or_else(|error| panic!("the laptop writes to the person's agent: {error:?}"));
 
     // The laptop goes away mid-turn.
     f.laptop_session.close();
 
-    // The turn ends on the server, with what the agent wrote.
-    let turned = crate::support::wait_for("the server to finish the turn", || async {
-        let device = f.client(&f.pi_session, &f.pi, "orange-pi");
-        flow::ask(
-            &device,
-            f.work_id(),
-            "so.tilo.chat",
-            "chat",
-            "turn",
-            json!({ "turn": turn }),
-        )
-        .await
-        .ok()
-        .filter(|state| state.get("state").and_then(Value::as_str) == Some("done"))
-    })
+    // The turn ends on the server, and the Pi reads what the agent wrote.
+    flow::chat_saying(
+        &f.pi_session,
+        &f.host,
+        &f.work,
+        "You said: Write the standup notes.",
+    )
     .await;
-    assert!(
-        turned.get("answer").is_some(),
-        "the server finishes the turn the laptop began and the Pi reads its answer: {turned}"
-    );
 }
 
 /// Five model providers, kept as the workspace's, each answer a turn: Anthropic, Google
