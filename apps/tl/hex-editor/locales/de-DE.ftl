@@ -489,6 +489,14 @@ d-ki2kthjn = Datei öffnen
 
 d-ki2kthjn-file = Datei
 
+d-oatl536b = Bytes öffnen
+    .doc = Öffnet Bytes, die ein Aufrufer übergibt — ein Agent, ein Skript, eine andere App — und legt sie zuerst als Inhalt des Fensters ab: die Datei, die der Dateiauswahl-Dialog der Person antwortet.
+    .did = öffnete Bytes
+
+d-oatl536b-name = Name
+
+d-oatl536b-base64 = Base64
+
 d-gdczru47 = Geöffneter Puffer
     .doc = Der Puffer der Bytes bei `address`: der bereits darauf geöffnete, neu gelesen, oder ein neuer.
 

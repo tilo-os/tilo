@@ -565,6 +565,16 @@ action open_file(lib: Library, file: File) -> Document (
     opened_buffer(lib, file.name, file.url, "", file.size)
 }
 
+/// Opens bytes a caller hands over, kept as the window's own content first.
+action open_bytes(lib: Library, name: Text, base64: Text) -> Document (
+    icon: .file_plus,
+    label: "Open bytes",
+    did: "opened bytes",
+) {
+    let file = File.of_bytes(name, Bytes.from_base64(base64))
+    opened_buffer(lib, file.name, file.url, "", file.size)
+}
+
 /// The buffer of the bytes at `address`: the one already open on them, read afresh, or a new one.
 action opened_buffer(lib: Library, name: Text, address: Text, path: Text, length: Int) -> Document {
     let held = lib.documents.find(d -> d.base == address and address != "")

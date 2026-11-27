@@ -1,30 +1,17 @@
-# Hex editor: file headers seeded into the profile and opened through the app's
-# action, listed in the library; a row pressed opens the bytes' own window.
-
-[[file]]
-path = "sunset.png"
-base64 = "iVBORw0KGgoAAAANSUhEUgAAB4AAAAQ4CAYAAADo08FDAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAACAASURBVHhe7L0HmBzFtfZ9d2Z2Ja1yzjkIIQSSUM45ByFEzgiJHEwwGAw2YBtsMCYa22BjsMEYbGMDNtgYEwwmmBxMMNmAyZhswAZsMDnn"
-
-[[file]]
-path = "hello"
-base64 = "f0VMRgIBAQAAAAAAAAAAAAMAtwABAAAAQBAAAAAAAABAAAAAAAAAAKg2AAAAAAAAAAAAAEAAOAANAEAAHgAdAAYAAAAEAAAAQAAAAAAAAABAAAAAAAAAAEAAAAAAAAAA2AIAAAAAAADYAgAAAAAAAAgAAAAAAAAAAwAAAAQAAAAYAwAAAAAAABgDAAAAAAAAGAMAAAAAAAAbAAAAAAAAABsAAAAAAAAAAQAAAAAAAAAvbGliL2xkLWxpbnV4LWFhcmNoNjQuc28uMQA="
-
-[[file]]
-path = "notes.txt"
-text = "Shopping: oat milk, bread, lemons\nCall the dentist on Monday\nWater the plants\n"
+# Hex editor: bytes a caller hands the app, listed; a row opens its own window.
 
 [[situation]]
 name = "open-files"
 title = "A PNG, an ELF executable and a text file opened"
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/sunset.png" } }
+invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_bytes", args = { name = "sunset.png", base64 = "iVBORw0KGgoAAAANSUhEUgAAB4AAAAQ4CAYAAADo08FDAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAACAASURBVHhe7L0HmBzFtfZ9d2Z2Ja1yzjkIIQSSUM45ByFEzgiJHEwwGAw2YBtsMCYa22BjsMEYbGMDNtgYEwwmmBxMMNmAyZhswAZsMDnn" } }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/hello" } }
+invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_bytes", args = { name = "hello", base64 = "f0VMRgIBAQAAAAAAAAAAAAMAtwABAAAAQBAAAAAAAABAAAAAAAAAAKg2AAAAAAAAAAAAAEAAOAANAEAAHgAdAAYAAAAEAAAAQAAAAAAAAABAAAAAAAAAAEAAAAAAAAAA2AIAAAAAAADYAgAAAAAAAAgAAAAAAAAAAwAAAAQAAAAYAwAAAAAAABgDAAAAAAAAGAMAAAAAAAAbAAAAAAAAABsAAAAAAAAAAQAAAAAAAAAvbGliL2xkLWxpbnV4LWFhcmNoNjQuc28uMQA=" } }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/notes.txt" }, bind = "document" }
+invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_bytes", args = { name = "notes.txt", base64 = "U2hvcHBpbmc6IG9hdCBtaWxrLCBicmVhZCwgbGVtb25zCkNhbGwgdGhlIGRlbnRpc3Qgb24gTW9uZGF5CldhdGVyIHRoZSBwbGFudHMK" }, bind = "document" }
 
 [[situation.steps]]
 invoke = { resource = "{{document.resources.0}}", action = "overwrite_bytes", args = { offset = 10, bytes = "4f 41 54" } }
@@ -37,7 +24,7 @@ name = "bytes"
 title = "A text file's bytes, with an edit"
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/notes.txt" }, bind = "document" }
+invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_bytes", args = { name = "notes.txt", base64 = "U2hvcHBpbmc6IG9hdCBtaWxrLCBicmVhZCwgbGVtb25zCkNhbGwgdGhlIGRlbnRpc3Qgb24gTW9uZGF5CldhdGVyIHRoZSBwbGFudHMK" }, bind = "document" }
 
 [[situation.steps]]
 invoke = { resource = "{{document.resources.0}}", action = "overwrite_bytes", args = { offset = 10, bytes = "4f 41 54" } }
