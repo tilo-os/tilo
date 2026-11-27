@@ -665,31 +665,39 @@ pub fn initials_fill(fill: Color, theme: &Theme) -> Color {
 
 /// The initials ink on `fill`.
 ///
-/// One direction per presence palette (`dark_initials`). The ink takes
-/// the fill's own hue, as deep (or as pale) as it must be to reach
-/// small-text contrast (7:1) on that fill, or the extreme where it cannot.
+/// The direction is chosen against this fill, not the palette as a whole: whichever of black and
+/// white reads better on it, so an initial clears [`ON_FILL_MIN_CONTRAST`] on any hue and
+/// lightness the palette, a theme's presence tone or a member's own colour puts under it. The ink
+/// takes the fill's own hue, as deep (or as pale) as it must be to reach small-text contrast (7:1)
+/// on that fill; where no tinted shade can, it is that extreme, which always clears the on-fill
+/// floor.
 #[must_use]
 pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
     use crate::color::{Oklch, contrast_ratio, oklch};
-    use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
-    let dark = dark_initials(theme);
+    use crate::tokens::colors::{ON_FILL_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST};
+    let _ = theme;
+    let black = oklch(0.0, 0.0, 0.0);
+    let white = oklch(1.0, 0.0, 0.0);
+    let dark = contrast_ratio(black, fill) >= contrast_ratio(white, fill);
     let hue = Oklch::from_color(fill).h;
-    let chroma = 0.04_f32;
-    // Walk from a tinted ink toward black (or white) until it reads.
-    let mut step = 0_u8;
-    loop {
+    // Walk from a shade of the fill's own hue toward the extreme until it reads.
+    for step in 0..=20_u8 {
         let t = f32::from(step) / 20.0;
         let (l, c) = if dark {
-            (0.34 * (1.0 - t), chroma * (1.0 - t))
+            (0.34 * (1.0 - t), 0.04 * (1.0 - t))
         } else {
-            (0.96 + 0.04 * t, chroma * 0.5 * (1.0 - t))
+            (0.96 + 0.04 * t, 0.02 * (1.0 - t))
         };
         let ink = oklch(l, c, hue);
-        if contrast_ratio(ink, fill) >= SMALL_TEXT_MIN_CONTRAST || step >= 20 {
+        if contrast_ratio(ink, fill) >= SMALL_TEXT_MIN_CONTRAST {
             return ink;
         }
-        step += 1;
     }
+    // No shade of the hue reaches small-text contrast: the extreme chosen for this fill reads at
+    // least as well as any other ink, and never below the on-fill floor.
+    let extreme = if dark { black } else { white };
+    debug_assert!(contrast_ratio(extreme, fill) >= ON_FILL_MIN_CONTRAST);
+    extreme
 }
 
 /// Initials are sized by the disc they sit in, not by the reader's text

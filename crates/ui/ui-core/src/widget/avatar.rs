@@ -592,14 +592,44 @@ mod tests {
 
         phase initials_ink_reads_on_every_presence_hue_in_every_preset;
         {
+            use tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST;
+            use vello::peniko::Color;
             for theme in [Theme::dark(), Theme::light()] {
                 for hue in PresenceHue::ALL {
                     let fill = theme.tokens.colors.presence.hue(hue);
                     let ink = initial_ink(fill, &theme);
                     let ratio = crate::color::contrast_ratio(ink, fill);
                     assert!(
-                        ratio >= 3.0,
+                        ratio >= ON_FILL_MIN_CONTRAST,
                         "{}: initials on {hue:?} reach only {ratio:.2}:1",
+                        theme.name
+                    );
+                }
+                // The ink is chosen against the fill it is drawn on, through the fade an idle
+                // face and the fill adjustment a bright hue take, and on fills a workspace or a
+                // member's own colour puts under it: every one clears the on-fill floor.
+                let palette_fills = PresenceHue::ALL.into_iter().flat_map(|hue| {
+                    let fill = theme.tokens.colors.presence.hue(hue);
+                    [
+                        tilo_ui_base::widget::avatar_face::initials_fill(fill, &theme),
+                        theme
+                            .tokens
+                            .colors
+                            .presence
+                            .idle_on(fill, theme.tokens.colors.surfaces.base),
+                    ]
+                });
+                let other_fills = [
+                    Color::from_rgb8(211, 163, 41),
+                    Color::from_rgb8(0, 193, 209),
+                    Color::from_rgb8(128, 128, 128),
+                ];
+                for fill in palette_fills.chain(other_fills) {
+                    let ink = initial_ink(fill, &theme);
+                    let ratio = crate::color::contrast_ratio(ink, fill);
+                    assert!(
+                        ratio >= ON_FILL_MIN_CONTRAST,
+                        "{}: initials on {fill:?} reach only {ratio:.2}:1",
                         theme.name
                     );
                 }
@@ -649,6 +679,7 @@ mod tests {
                 "ab".repeat(32),
                 tilo_ui_base::presence::unnamed_person_label(),
                 tilo_ui_base::presence::unnamed_person_short_label(),
+                tilo_ui_base::presence::UNKNOWN_NAME.to_owned(),
             ] {
                 let face = AvatarFace::member(&name, &person);
                 assert_eq!(face.initials(), "", "no initials from {name:?}");

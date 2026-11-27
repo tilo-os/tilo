@@ -41,8 +41,8 @@ pub use interaction::{
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use labels::{
-    contains_opaque_id, human_label, is_unnamed_person, person_label, shown_name, unnamed_label,
-    unnamed_person_label, unnamed_person_short_label,
+    UNKNOWN_NAME, contains_opaque_id, human_label, is_unnamed_person, person_label, shown_name,
+    unnamed_label, unnamed_person_label, unnamed_person_short_label,
 };
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
