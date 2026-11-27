@@ -458,6 +458,89 @@ fn a_tab_let_go_over_another_window_lands_in_it() {
     );
 }
 
+/// A tab let go in the gap between two windows stands as a window of its own at that place in the
+/// row, before the window that followed the gap, and the window it left keeps the tabs it had
+/// there: one arranging action of the session's, as every drop is.
+#[test]
+fn a_tab_let_go_in_a_gap_stands_alone_there() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let (first, source) = place(&mut session, &notes[0]);
+    let (second, follows) = place(&mut session, &notes[1]);
+    let (third, _own) = place(&mut session, &notes[2]);
+    assert_ne!(source, follows, "the two windows stand apart");
+    // The third place is a tab of the first window, so its bar shows two pills to carry.
+    tab_into(&mut session, third, source);
+    until(&mut session, "the window's tabs", |session| {
+        places_of(session, source) == [first, third]
+    });
+    let carried = tab_of(&session, TITLES[2]);
+    let pill = middle(pill_of(&mut session, &carried));
+    // The window the tab came from wears the tab that moved in, so its bar says that place's
+    // name; the window after the gap says its own.
+    let left_name = shown_as(&session, TITLES[2]);
+    let left = settled_bar(&mut session, &left_name);
+    let right_name = shown_as(&session, TITLES[1]);
+    let right = settled_bar(&mut session, &right_name);
+    // Let go in the gap between the first window and the one after it.
+    let gap = ((left.0 + left.2 + right.0) / 2.0, left.1 + 14.0);
+    drag(&mut session, pill, gap);
+    // The drop either stands the tab in a window of its own or the shell refuses it in words: a
+    // drop the person makes never turns into nothing at all.
+    crate::common::wait_for(
+        &mut session,
+        "the tab stands alone or the shell refuses the drop",
+        |session| {
+            (strip_of(session, third).is_some_and(|own| own != source)
+                || !session.shell_refusals().is_empty())
+            .then_some(())
+        },
+    );
+    let Some(own) = strip_of(&session, third).filter(|own| *own != source) else {
+        panic!(
+            "the drop did nothing and said nothing; the shell refused: {:?}",
+            session.shell_refusals()
+        );
+    };
+    assert_eq!(places_of(&session, own), [third], "the place stands alone");
+    assert_eq!(
+        places_of(&session, source),
+        [first],
+        "the window it left keeps the tabs it had"
+    );
+    // It stands at the place it was let go in: after the window it came from, before the one that
+    // followed the gap.
+    let row = crate::common::strip(&session, source)
+        .expect("the source window reads")
+        .row;
+    let order: Vec<u64> = crate::common::layout(&session)
+        .strips
+        .into_iter()
+        .filter(|strip| strip.row == row)
+        .map(|strip| crate::common::number(&strip.key))
+        .collect();
+    let at = |key: u64| {
+        order
+            .iter()
+            .position(|held| *held == key)
+            .expect("the window is in the row")
+    };
+    assert_eq!(
+        at(source),
+        at(own) - 1,
+        "it stands right after its own window"
+    );
+    assert_eq!(
+        at(own) + 1,
+        at(follows),
+        "and right before the window that followed the gap"
+    );
+    let _ = second;
+}
+
 /// A tab in flight shows where it would land: carried over a window, the floating tab follows
 /// the pointer and that window says it takes it; carried into the gap between two windows, the
 /// gap says the place it would stand in. The captures stand beside the checks that prove the

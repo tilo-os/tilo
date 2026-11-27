@@ -366,6 +366,13 @@ pub enum LayoutEffect {
         /// The place it goes before in that strip
         #[param(resource = "layout.place", "The place it goes before in that strip")]
         before: Option<String>,
+        /// Stand it as a window of its own at that place, its other tabs left behind, instead of
+        /// joining the window `before`
+        #[param(
+            "Stand it as a window of its own at that place, its other tabs left behind, instead \
+             of joining the window `before`"
+        )]
+        window: Option<bool>,
     },
     /// Float a place above its workspace's windows, where every member sees it
     #[effect(on = Place, kind = "undoable", audience = "agents", label = "session-action-float")]
@@ -624,11 +631,13 @@ impl LayoutEffect {
                 row,
                 strip,
                 before,
+                window,
             } => LayoutAction::Move {
                 place: key_of(place),
                 row: named(Some(row), Item::Row).unwrap_or_default(),
                 before: named(before.as_deref(), Item::Place),
                 strip: named(strip.as_deref(), Item::Strip),
+                window: *window,
             },
             Self::Float {
                 place,

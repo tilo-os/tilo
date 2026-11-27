@@ -234,6 +234,7 @@ fn move_to(place: u64, row: u64) -> layout::LayoutAction {
         row,
         before: None,
         strip: None,
+        window: None,
     }
 }
 

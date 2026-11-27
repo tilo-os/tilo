@@ -341,7 +341,7 @@ view row_of_windows(a: Layout, held: LayoutRow, strips: List<LayoutStrip>, lists
             // Only between two windows: the row's last window reaches the shell's edge, as its
             // first reaches the other.
             if strip_after(strips, s) != "" {
-                gap_here(held, strips, s, min: 1.5rem, max: 1.5rem)
+                gap_here(a, strips, s, min: 1.5rem, max: 1.5rem)
             }
         }
         if strips.is_empty() {
@@ -359,31 +359,31 @@ fn strip_after(strips: List<LayoutStrip>, s: LayoutStrip) -> Text {
 /// The gap after the window of `s`, a drop target of its own: a tab carried out of its bar and let
 /// go here stands as a window of its own at this place in the row, before the window that followed
 /// the gap. It takes the room the row's own gap took between two windows.
-view gap_here(held: LayoutRow, strips: List<LayoutStrip>, s: LayoutStrip) {
-    let next = strip_after(strips, s)
-    ui.DropTarget {
-        on drop(target: host.Resource): drop_strip_here(held, next, target)
-        stack()
+view gap_here(a: Layout, strips: List<LayoutStrip>, s: LayoutStrip) {
+    if let next = strips.at((strips.index_of(s) ?? 0) + 1) {
+        ui.DropTarget {
+            on drop(target: host.Resource): drop_place_here(a, next, target)
+            stack()
+        }
     }
 }
 
 /// Drop the carried place in the gap: it stands as a window of its own at that place in the row,
-/// before the window named `before`, or at the row's end when nothing follows. One arranging
-/// action of the session's, so a press, a script and an agent move it the same way.
-action drop_strip_here(held: LayoutRow, before: Text, target: host.Resource) (
+/// before the window `next` that followed the gap, the tabs it leaves behind staying in their
+/// window. One arranging action of the session's, so a press, a script and an agent move it the
+/// same way.
+action drop_place_here(a: Layout, next: LayoutStrip, target: host.Resource) (
     icon: .columns_2,
     label: "Move here",
 ) {
-    if let p = place_showing(target.id()) {
-        session.move_tab(
-            tab: p.key,
-            strip: held.key,
-            before: if before == "" { .none } else { .some(before) },
-            group: .none,
-            workspace: .none,
-            display: .none,
-        )
-    }
+    // The place carried, and the place of the window that followed the gap, before which it
+    // stands. A drop that names neither is still run: the session refuses it in words, so a drop
+    // the person makes is never a silence that did nothing.
+    let p = place_showing(target.id())
+    let q = strip_place(a, next)
+    let carried = if let p = p { the_place(p.key) } else { the_place("") }
+    let before = if let q = q { the_place(q.key) } else { the_place("") }
+    session.move(place: carried, row: the_row(next.row), strip: .none, before: before, window: true)
 }
 
 /// One strip's window as its row stands it: its share of the shell, the per-mille width the person

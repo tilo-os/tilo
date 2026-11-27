@@ -135,6 +135,12 @@ pub enum LayoutAction {
         /// The strip it becomes a tab of; its own when left out.
         #[serde(default)]
         strip: Option<u64>,
+        /// Whether it stands as a window of its own at that place, before the window holding
+        /// `before` (or at the row's end), its other tabs left behind where they were: what a
+        /// place let go in the gap between two windows does. Joined with the place's own window
+        /// when left out.
+        #[serde(default)]
+        window: Option<bool>,
     },
     /// Resize the strip `strip` to `permille` of its row's width.
     Resize { strip: u64, permille: u32 },
@@ -2028,7 +2034,16 @@ fn change(
             row,
             before,
             strip,
-        } => move_place(tree, *place, StripId(*row), *before, *strip, by_the_person),
+            window,
+        } => move_place(
+            tree,
+            *place,
+            StripId(*row),
+            *before,
+            *strip,
+            *window == Some(true),
+            by_the_person,
+        ),
         LayoutAction::Resize { strip, permille } => Ok(resize(tree, *strip, *permille)),
         LayoutAction::Maximize { strip, maximized } => maximize(tree, *strip, *maximized),
         LayoutAction::Size {
@@ -2368,13 +2383,17 @@ fn group_mut(tree: &mut Tree, id: GroupId) -> Option<&mut WindowGroup> {
 /// as arranging does: into the group holding `before` , else the row's last, else one derived from
 /// the row so two devices making one at once agree. When `strip` names a strip of that row, the
 /// window becomes a tab of it, in front (which is how a strip of several places is made: shell.md
-/// §2). A window the person pinned stays where it is unless they moved it themselves.
+/// §2). When `own_window` is set, the tab stands as a window of its own before the window holding
+/// `before` (or at the row's end), its other tabs left behind: the place a person lets a tab go in
+/// the gap between two windows. A window the person pinned stays where it is unless they moved it
+/// themselves.
 fn move_place(
     tree: &mut Tree,
     place: u64,
     row: StripId,
     before: Option<u64>,
     strip: Option<u64>,
+    own_window: bool,
     by_the_person: bool,
 ) -> Result<bool, String> {
     let Some((workspace, from, group, at)) = locate(tree, place) else {
@@ -2417,40 +2436,49 @@ fn move_place(
         // The window left the layout with its last place: its place and float go with it.
         held.forget_gone_places();
     }
-    let holds = |group: &WindowGroup| {
-        strip.is_some_and(|strip| group.id == strip)
-            || before.is_some_and(|before| group.tabs.iter().any(|tab| tab.id == before))
-    };
     let workspace_id = held.id();
     let Some(target) = held.strips.get_mut(row) else {
         return Err("that row is not in the layout".into());
     };
     let groups = &mut target.window_groups;
-    let into = groups
-        .iter()
-        .position(holds)
-        .or_else(|| groups.len().checked_sub(1));
-    let into = if let Some(into) = into {
-        into
+    let into = if own_window {
+        stand_alone(groups, target.id, before, place, group, tab.id)
     } else {
-        groups.push(WindowGroup {
-            id: strip.unwrap_or_else(|| target.id.0.wrapping_mul(31).wrapping_add(1) & PEER_MASK),
-            tabs: Vec::new(),
-            active_tab: tab.id,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        });
-        groups.len().saturating_sub(1)
+        let holds = |group: &WindowGroup| {
+            strip.is_some_and(|strip| group.id == strip)
+                || before.is_some_and(|before| group.tabs.iter().any(|tab| tab.id == before))
+        };
+        let into = groups
+            .iter()
+            .position(holds)
+            .or_else(|| groups.len().checked_sub(1));
+        if let Some(into) = into {
+            into
+        } else {
+            groups.push(WindowGroup {
+                id: strip
+                    .unwrap_or_else(|| target.id.0.wrapping_mul(31).wrapping_add(1) & PEER_MASK),
+                tabs: Vec::new(),
+                active_tab: tab.id,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+            groups.len().saturating_sub(1)
+        }
     };
     let Some(group) = target.window_groups.get_mut(into) else {
         return Err(taken.into());
     };
-    let at = before
-        .and_then(|before| group.tabs.iter().position(|held| held.id == before))
-        .unwrap_or(group.tabs.len());
     let id = tab.id;
-    group.tabs.insert(at, tab);
+    if own_window {
+        group.tabs.push(tab);
+    } else {
+        let at = before
+            .and_then(|before| group.tabs.iter().position(|held| held.id == before))
+            .unwrap_or(group.tabs.len());
+        group.tabs.insert(at, tab);
+    }
     group.activate_tab(id);
     // A place the person moved comes to the front with the window it went into, as one they
     // open does.
@@ -2460,6 +2488,48 @@ fn move_place(
         tree.set_active_group(row, into);
     }
     Ok(true)
+}
+
+/// Stand the place `place` in a window of its own among a row's `groups`: before the window holding
+/// `before` — the window the place it let go names, or where the window it came from stood when a
+/// tab named its own window and went with its last place — else at the row's end. `from` is the
+/// window the place came from, as `groups` stood before it went, and `active` is the place the new
+/// window shows. The window's index.
+fn stand_alone(
+    groups: &mut Vec<WindowGroup>,
+    row: StripId,
+    before: Option<u64>,
+    place: u64,
+    from: usize,
+    active: u64,
+) -> usize {
+    let at = if before.is_some_and(|before| before == place) {
+        from.min(groups.len())
+    } else {
+        before
+            .and_then(|before| {
+                groups
+                    .iter()
+                    .position(|group| group.tabs.iter().any(|held| held.id == before))
+            })
+            .unwrap_or(groups.len())
+    };
+    groups.insert(
+        at,
+        WindowGroup {
+            id: row
+                .0
+                .wrapping_mul(31)
+                .wrapping_add(u64::try_from(groups.len()).unwrap_or(0).wrapping_add(1))
+                & PEER_MASK,
+            tabs: Vec::new(),
+            active_tab: active,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        },
+    );
+    at
 }
 
 /// What [`change`] is asked to place: the resource `resource` , through `view` , as the place

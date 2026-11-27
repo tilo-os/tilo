@@ -1113,12 +1113,12 @@ d-dbsggqsm-s = S
 
 d-dbsggqsm-at = Bei
 
-d-c5bmitfl = Hierher verschieben
-    .doc = Legt den getragenen Ort in die Lücke: Dort steht er als eigenes Fenster der Zeile, vor dem Fenster `before`, oder am Ende der Zeile, wenn nichts folgt.
+d-2wkn5jsq = Hierher verschieben
+    .doc = Legt den getragenen Ort in die Lücke: Dort steht er als eigenes Fenster der Zeile, vor dem Fenster `next`, das der Lücke folgt.
 
-d-c5bmitfl-before = Vor
+d-2wkn5jsq-next = Nächstes Fenster
 
-d-c5bmitfl-target = Ziel
+d-2wkn5jsq-target = Ziel
 
 d-scwczm3e = Lücke
 
