@@ -603,21 +603,21 @@ tilo_test_env::scenario! {
 
     phase an_action_handed_the_job_is_accepted;
     {
-        let src = "type P {\n    n: Int\n    job: Text\n}\naction fin(p: P, j: host.Job) {\n    p.n = j.done\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: j -> fin(p, j), progress: j -> fin(p, j)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        let src = "op \"x\"\ntype P {\n    n: Int\n    job: Text\n}\naction fin(p: P, j: host.Job) {\n    p.n = j.done\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: j -> fin(p, j), progress: j -> fin(p, j)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
         assert_eq!(codes(src), Vec::<String>::new());
     }
 
     phase a_computation_over_the_job_is_refused;
     {
-        let src = "type P {\n    n: Int\n    job: Text\n}\naction keep(p: P, n: Int) {\n    p.n = n\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: j -> keep(p, j.done)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        let src = "op \"x\"\ntype P {\n    n: Int\n    job: Text\n}\naction keep(p: P, n: Int) {\n    p.n = n\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: j -> keep(p, j.done)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
         assert_eq!(codes(src), ["E063"]);
     }
 
     phase a_handler_that_is_no_action_or_no_function_of_the_job_is_refused;
     {
-        let not_a_lambda = "type P {\n    n: Int\n    job: Text\n}\naction fin(p: P) {\n    p.n = 1\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: fin(p)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        let not_a_lambda = "op \"x\"\ntype P {\n    n: Int\n    job: Text\n}\naction fin(p: P) {\n    p.n = 1\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: fin(p)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
         assert_eq!(codes(not_a_lambda), ["E063"]);
-        let a_function = "type P {\n    n: Int\n    job: Text\n}\nfn f(p: P, j: host.Job) -> Int {\n    return j.done\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: j -> f(p, j)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        let a_function = "op \"x\"\ntype P {\n    n: Int\n    job: Text\n}\nfn f(p: P, j: host.Job) -> Int {\n    return j.done\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", done: j -> f(p, j)) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
         assert_eq!(codes(a_function), ["E063"]);
     }
 
@@ -627,8 +627,98 @@ tilo_test_env::scenario! {
         assert_eq!(codes(status), ["E022"], "a job is read, never polled");
         let read = "type P {\n    job: Text\n}\nview v(p: P) {\n    if let j = engine.job(p.job) {\n        text(\"{j.done} of {j.total}\")\n    }\n}\n";
         assert_eq!(codes(read), Vec::<String>::new(), "a view reads a job, and follows it");
-        let named = "type P {\n    job: Text\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", finished: p) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
+        let named = "op \"x\"\ntype P {\n    job: Text\n}\naction go(p: P) {\n    match engine.start(\"x\", \"\", finished: p) {\n        .ok(job) => {\n            p.job = job\n        }\n        .err(why) => {\n            p.job = why\n        }\n    }\n}\n";
         assert_eq!(codes(named), ["E022"]);
+    }
+}
+
+/// The ops of the package's engine, each with what it does besides answering.
+const OPS: &str =
+    "op \"load\"\nop \"delete\" changes device\nop \"post\" reaches outside\nop \"send\" leaves\n";
+
+/// An action `name`, marked `role`, that asks the engine with `call` and keeps what it answers.
+fn asking(role: &str, name: &str, call: &str) -> String {
+    format!(
+        "{role}action {name}(r: R) {{\n    match {call} {{\n        .ok(said) => {{\n            r.said = said\n        }}\n        .err(why) => {{\n            r.said = why\n        }}\n    }}\n}}\n"
+    )
+}
+
+tilo_test_env::scenario! {
+    /// `op "delete" changes device`: what an op of the device's engine does besides answering is
+    /// declared once, on the op, and every action that asks it is classed by that declaration, so
+    /// no call can leave it out.
+    fn an_op_says_what_it_does_and_every_action_asking_it_takes_that_on;
+
+    phase each_action_is_classed_by_the_op_it_asks;
+    {
+        let src = format!(
+            "{OPS}type R {{\n    said: Text\n}}\n{}{}{}{}{}destructive action wipe(r: R) {{\n    delete(r)\n}}\n",
+            asking("", "load", "engine.call(\"load\", \"\")"),
+            asking("destructive ", "delete", "engine.call(\"delete\", \"\")"),
+            asking("", "post", "engine.start(\"post\", \"\")"),
+            asking("", "send", "engine.call(\"send\", \"\")"),
+            asking("destructive ", "forget", "engine.call(\"load\", \"\")"),
+        );
+        assert_eq!(codes(&src), Vec::<String>::new());
+        let compiled = crate::common::compile_body(&src);
+        let meta = |name: &str| {
+            compiled
+                .meta
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("the action {name}"))
+                .clone()
+        };
+        use tilolang::meta::Confirms;
+        use tilolang::types::EffectClass;
+        assert_eq!(meta("load").class, EffectClass::Undoable, "the answer is kept in the record");
+        assert_eq!(meta("forget").confirms(), Confirms::UnlessShift, "undo takes it back");
+        assert_eq!(meta("delete").class, EffectClass::Outside, "undo cannot take the device back");
+        assert_eq!(meta("delete").confirms(), Confirms::Always, "so Shift skips nothing");
+        assert_eq!(meta("wipe").confirms(), Confirms::Always, "nor where an action calls it");
+        assert_eq!(meta("post").class, EffectClass::Outside, "it reaches a service outside Tilo");
+        assert_eq!(meta("post").confirms(), Confirms::Never, "a person's own press acts on it");
+        assert!(!meta("post").leaves);
+        assert!(meta("send").leaves, "what it sends nothing takes back");
+        assert_eq!(meta("send").confirms(), Confirms::Always);
+    }
+
+    phase the_declaration_keeps_its_canonical_form;
+    {
+        let src = format!(
+            "app so.tilo.demo \"Demo\"\n\n{OPS}op \"push\" changes device, leaves\n\n/// Reads the whole repository.\nop \"read\"\n"
+        );
+        let module = parse(&src).unwrap_or_else(|d| panic!("{d:#?}"));
+        assert_eq!(print_module(&module), src);
+    }
+
+    phase a_call_says_nothing_of_what_its_op_does;
+    {
+        for flag in ["device", "outside", "leaves"] {
+            let src = format!(
+                "{OPS}type R {{\n    said: Text\n}}\n{}",
+                asking("", "go", &format!("engine.call({flag}: true, \"load\", \"\")")),
+            );
+            assert_eq!(codes(&src), ["E022"], "`{flag}:` belongs on the op");
+        }
+    }
+
+    phase an_op_is_named_in_quotes_and_declared;
+    {
+        for (call, why) in [
+            ("engine.call(\"other\", \"\")", "an op the package does not declare"),
+            ("engine.call(r.said, \"\")", "an op whose name is known only when it runs"),
+            ("engine.start(\"{r.said}\", \"\")", "an op named by interpolation"),
+            ("engine.stream(\"other\", \"\")", "a stream asks a declared op too"),
+        ] {
+            let src = format!("{OPS}type R {{\n    said: Text\n}}\n{}", asking("", "go", call));
+            assert_eq!(codes(&src), ["E022"], "{why}");
+        }
+        let twice = format!("{OPS}op \"load\" changes device\ntype R {{\n    said: Text\n}}\n");
+        assert_eq!(codes(&twice), ["E011"], "an op is declared once");
+        let stray = codes("op \"load\" undoable\n");
+        assert!(stray.contains(&"E003".to_owned()), "an op does only what it has words for");
     }
 }
 

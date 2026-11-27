@@ -14,6 +14,11 @@ mod cases {
 
     const SOURCE: &str = r#"app so.tilo.engined "Engine"
 
+op "page.decode"
+op "page.paint"
+op "page.render"
+op "page.unknown"
+
 type Page {
     words: Text
     job: Text = ""

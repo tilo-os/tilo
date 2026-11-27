@@ -6,6 +6,16 @@ app so.tilo.db-client "Database Client" (
     splash_budget: 250,
 )
 
+op "open"
+op "close"
+op "query"
+op "keys"
+op "indexes"
+op "browse"
+op "catalog"
+op "tables"
+op "columns"
+
 /// The engine a connection targets.
 enum Engine {
     /// A file on this device.

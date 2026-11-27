@@ -18,6 +18,8 @@ mod cases {
     const SOURCE: &str = r#"
 app so.tilo.screen "Screen"
 
+op "screen"
+
 /// What the window shows: the stream it watches, and why it watches none.
 type Screen {
     /// The stream whose newest frame the window shows.

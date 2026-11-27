@@ -5,6 +5,10 @@ app so.tilo.api-tester "API Tester" (
     keywords: ["postman", "insomnia", "rest", "http", "requests", "endpoint", "graphql", "api", "client", "debug", "test"],
 )
 
+op "keep_credential"
+op "forget_credential"
+op "send" leaves
+
 /// The methods a request is sent with, in the order the chooser lists them.
 enum HttpMethod {
     get
@@ -519,7 +523,7 @@ action send(w: Workspace) -> Text uses time (icon: .send, label: "Send", did: "s
     w.answered = false
     // The history entry this send makes keeps the request as it went out.
     w.sent_replay = json.encode(replay_of(w))
-    match engine.call(leaves: true, "send", send_ask(w)) {
+    match engine.call("send", send_ask(w)) {
         .err(why) => {
             send_failed(w, why)
             ""
@@ -544,7 +548,7 @@ action start_send(w: Workspace) (icon: .send, label: "Send", did: "sent a reques
     w.notice = ""
     w.answered = false
     let replay = json.encode(replay_of(w))
-    match engine.start(leaves: true, "send", send_ask(w), done: j -> send_ended(w, j)) {
+    match engine.start("send", send_ask(w), done: j -> send_ended(w, j)) {
         .err(why) => { send_failed(w, why) }
         .ok(job) => {
             w.job = job

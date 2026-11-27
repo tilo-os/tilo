@@ -7,6 +7,11 @@ app so.tilo.feeds "Feeds" (
     web: ["*"],
 )
 
+op "refresh"
+op "take"
+op "opml"
+op "opml-export"
+
 /// The format a subscription is read in.
 enum FeedFormat {
     /// An RSS feed.

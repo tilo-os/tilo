@@ -124,7 +124,7 @@ pub struct Facts {
     pub mutates: bool,
     pub outside: bool,
     /// What the body does leaves the system for good: it calls a capability that does
-    /// ([`crate::origin::LEAVING`]), or asks an op `leaves: true`.
+    /// ([`crate::origin::LEAVING`]), or asks an op declared `leaves`.
     pub leaves: bool,
     /// The capabilities the body's `outside(...)` calls name (`youtube.search`), as written: what
     /// the action is tagged with ([`crate::meta::ActionMeta::outside`]).

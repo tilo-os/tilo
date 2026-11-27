@@ -789,6 +789,38 @@ d-ra5kasg4 = Registry
 
 d-dvwnjvtj = Vorgang
 
+d-s2i74fh4 = App-Auftrag
+    .doc = Die Aufträge, die eine App auf dem Gerät ändern, jeder die gleichnamige Operation ([`begin`]).
+
+d-vatlgsuc = Installieren
+
+d-roygntem = Aktualisieren
+
+d-bl7tuy7y = Laufzeit installieren
+
+d-jzxfqgr7 = Deinstallieren
+
+d-scwftclo = Behalten
+
+d-oyb2ifdl = Freigeben
+
+d-wymud7qt = Bot hinzufügen
+
+d-ln7l6tcv = Katalog-Auftrag
+    .doc = Die Aufträge, die den Katalog selbst ändern, jeder die gleichnamige Operation ([`begin_reading`]).
+
+d-lncbmzu2 = Quelle hinzufügen
+
+d-xe6r4i3b = Quelle aktivieren
+
+d-2m2y4fmp = Quelle entfernen
+
+d-cfowapzj = Alles aktualisieren
+
+d-ahxuq3w2 = Meldung senden
+
+d-y4hhtvei = Einspruch
+
 d-tdmfwxqo = Herkunft
     .doc = Woher eine App im Katalog kommt.
 
@@ -842,7 +874,7 @@ d-mkrs77sc-j = J
 d-banfx2pr = Lesen beginnen
     .doc = Ein Auftrag, der den Katalog selbst ändert statt einer App, verfolgt wie das Lesen: sein Ende liest die Quellen erneut, sodass ein neues Repository oder eine Aktualisierung von allem ankommt.
 
-d-banfx2pr-op = Vorgang
+d-banfx2pr-job = Auftrag
 
 d-banfx2pr-ask = Anfrage
 
@@ -851,7 +883,7 @@ d-emblroed = Beginnen
 
 d-emblroed-a = A
 
-d-emblroed-op = Vorgang
+d-emblroed-job = Auftrag
 
 d-emblroed-ask = Anfrage
 

@@ -6,6 +6,13 @@ app so.tilo.passwords "Passwords" (
     splash_budget: 250,
 )
 
+op "csv-import"
+op "csv-export"
+op "backup-export"
+op "backup-import"
+op "device-items"
+op "device-remove"
+
 /// What kind of secret an item is: what it is for, which sets the fields it has and the words
 /// that name them.
 enum Kind {

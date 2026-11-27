@@ -6,6 +6,11 @@ app so.tilo.backups "Backups" (
     splash_budget: 250,
 )
 
+op "catalog"
+op "backup"
+op "verify"
+op "restore"
+
 /// Was a snapshot taken by the schedule or by hand?
 enum Taken {
     automatic
@@ -758,10 +763,29 @@ action start_work(b: Backups, kind: Text, ask: Text) {
     b.notice = ""
     b.result = ""
     b.progress = ""
-    let op = if kind == "backup" {
-        "backup"
-    } else if kind == "verify" { "verify" } else { "restore" }
-    match engine.start(op, ask, done: j -> work_ended(b, kind, j), progress: j -> work_moved(b, j)) {
+    let started = if kind == "backup" {
+        engine.start(
+            "backup",
+            ask,
+            done: j -> work_ended(b, kind, j),
+            progress: j -> work_moved(b, j),
+        )
+    } else if kind == "verify" {
+        engine.start(
+            "verify",
+            ask,
+            done: j -> work_ended(b, kind, j),
+            progress: j -> work_moved(b, j),
+        )
+    } else {
+        engine.start(
+            "restore",
+            ask,
+            done: j -> work_ended(b, kind, j),
+            progress: j -> work_moved(b, j),
+        )
+    }
+    match started {
         .err(why) => {
             b.failure = why
         }

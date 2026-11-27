@@ -108,13 +108,19 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
         }
     }
     let mut prev_use = false;
+    let mut prev_op = false;
     for (index, item) in items.iter().enumerate() {
         let is_use = matches!(item, Item::Use(_));
+        // The ops a package asks read as one list: one without a doc comment follows the one
+        // before it with no blank line.
+        let is_op = matches!(item, Item::Op(_));
         p.trailing_comments();
-        if !(is_use && prev_use) && (header.is_some() || index > 0) {
+        let packed = (is_use && prev_use) || (is_op && prev_op && item.doc().is_empty());
+        if !packed && (header.is_some() || index > 0) {
             p.out.push('\n');
         }
         prev_use = is_use;
+        prev_op = is_op;
         p.item(item);
     }
     // Comments after the last item belong to no declaration.
@@ -1193,6 +1199,16 @@ impl Printer<'_> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 self.line(&format!("views {views} for {}", print_type(&d.ty)));
+            }
+            Item::Op(op) => {
+                let facts = op
+                    .facts
+                    .iter()
+                    .map(|(fact, _)| fact.words())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sep = if facts.is_empty() { "" } else { " " };
+                self.line(&format!("op {}{sep}{facts}", quote(&op.name)));
             }
             Item::Scenario(sc) => {
                 let result = sc

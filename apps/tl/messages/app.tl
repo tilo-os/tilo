@@ -11,6 +11,26 @@ use so.tilo.contacts.directory as contacts
 use so.tilo.chat as chat
 use so.tilo.session as session
 
+op "state"
+op "history"
+op "send" leaves
+op "link_begin" reaches outside
+op "link_finish" reaches outside
+op "setup_cancel"
+op "first_prepare" reaches outside
+op "first_begin" reaches outside
+op "first_finish" reaches outside
+op "first_review" reaches outside
+op "first_sims"
+op "first_select_sim" reaches outside
+op "first_cancel"
+op "sims_cancel"
+op "groups"
+op "group"
+op "group_history"
+op "group_send" leaves
+op "group_change" leaves
+
 // Messages reaches people on the services the person's accounts are on: Signal, WhatsApp and
 // SMS through the device's messaging service, and Tilo through the workspace's own Chat. A
 // service's history is the account's, never the workspace's: the device answers it as a job's
@@ -931,7 +951,6 @@ action send(m: Messages, d: Draft) uses random, notify (
         s.operation = random.id()
         s.refused = ""
         match engine.start(
-            leaves: true,
             "send",
             json.encode(SendAsk(route: route, operation: s.operation, text: d.body.text)),
             done: j -> sent(m, d, j),
@@ -1216,7 +1235,6 @@ action begin_link(m: Messages) (icon: .qr_code, label: "Link this device") {
     applies pane_is(m, "setup") "Open the account setup first"
     let s = if let held = session_of(m) { held } else { start_session(m) }
     match engine.start(
-        outside: true,
         "link_begin",
         json.encode(ServiceAccount(service: s.setup_service, account: s.setup_account)),
     ) {
@@ -1237,7 +1255,6 @@ action finish_link(m: Messages) (icon: .check, label: "Finish linking") {
     let s = if let held = session_of(m) { held } else { start_session(m) }
     if let code = link_code(m) {
         match engine.start(
-            outside: true,
             "link_finish",
             json.encode(
                 FinishAsk(
@@ -1305,15 +1322,13 @@ action begin_first_account(m: Messages, service: Text) (
     let s = if let held = session_of(m) { held } else { start_session(m) }
     s.first_service = service
     s.first_reviewed = false
-    let op = if service == "whatsapp" and s.first_review == "" {
-        "first_prepare"
-    } else { "first_begin" }
-    match engine.start(
-        outside: true,
-        op,
-        json.encode(ServiceAsk(service: service)),
-        done: j -> first_moved(m, s, op, j),
-    ) {
+    let ask = json.encode(ServiceAsk(service: service))
+    let started = if service == "whatsapp" and s.first_review == "" {
+        engine.start("first_prepare", ask, done: j -> first_moved(m, s, "first_prepare", j))
+    } else {
+        engine.start("first_begin", ask, done: j -> first_moved(m, s, "first_begin", j))
+    }
+    match started {
         .ok(job) => {
             s.first_job = job
         }
@@ -1330,7 +1345,6 @@ action finish_first_account(m: Messages) (icon: .check, label: "Finish linking")
     let s = if let held = session_of(m) { held } else { start_session(m) }
     if let c = first_code(m) {
         match engine.start(
-            outside: true,
             "first_finish",
             json.encode(FinishAsk(service: c.service, account: c.account, attempt: c.attempt)),
             done: j -> first_moved(m, s, "first_finish", j),
@@ -1353,7 +1367,6 @@ action review_first_account(m: Messages) (icon: .check, label: "Confirm identity
     let s = if let held = session_of(m) { held } else { start_session(m) }
     if let r = first_reviewing(m) {
         match engine.start(
-            outside: true,
             "first_review",
             json.encode(
                 ReviewAsk(
@@ -1397,7 +1410,6 @@ action select_sim(m: Messages, selection: Text) (icon: .smartphone, label: "Use 
     s.first_service = "sms"
     s.first_reviewed = false
     match engine.start(
-        outside: true,
         "first_select_sim",
         json.encode(SimAsk(selection: selection)),
         done: j -> first_moved(m, s, "first_select_sim", j),
@@ -1605,7 +1617,6 @@ action send_to_group(m: Messages, d: Draft) uses random (
     let s = if let held = session_of(m) { held } else { start_session(m) }
     if let g = open_membership(m) {
         match engine.start(
-            leaves: true,
             "group_send",
             json.encode(
                 GroupSendAsk(
@@ -1658,7 +1669,6 @@ action change_group(m: Messages, change: Text, member: Text = "", choice: Text =
     } else { .none }
     if let g = open_membership(m) {
         match engine.start(
-            leaves: true,
             "group_change",
             json.encode(
                 GroupChangeAsk(

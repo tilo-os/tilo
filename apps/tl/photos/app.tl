@@ -7,6 +7,8 @@ app so.tilo.photos "Photos" (
 
 use so.tilo.vision as vision
 
+op "import"
+
 /// A photo in the library: its name, the address of its picture, and what the library knows of
 /// it. The address names the bytes in the workspace's content store, so every member of the
 /// workspace reads the same picture wherever the library reached them.

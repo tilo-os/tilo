@@ -7,6 +7,14 @@ app so.tilo.diffmerge "Diff & Merge" (
     document: library.sessions,
 )
 
+op "open"
+op "diff"
+op "merge"
+op "compose"
+op "compare-folders"
+op "save"
+op "sample"
+
 /// One change of a comparison: the aligned rows it spans, and the first line they touch.
 type Block {
     first: Int = 0

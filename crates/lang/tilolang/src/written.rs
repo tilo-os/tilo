@@ -239,6 +239,7 @@ fn item_span(item: &crate::ast::Item) -> Span {
         Item::DefaultView(d) | Item::RowView(d) | Item::PlaceView(d) => d.span,
         Item::Views(d) => d.span,
         Item::Scenario(s) => s.span,
+        Item::Op(o) => o.span,
         Item::Trigger(t) => t.span,
         Item::Action(a) => a.span,
         Item::View(v) => v.span,

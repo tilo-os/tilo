@@ -8,6 +8,8 @@ app so.tilo.containers "Containers" (
 
 use so.tilo.device as device
 
+op "pull"
+
 /// What a person calls each of the four places.
 fn place_label(p: Text) -> Text {
     if p == "containers" {

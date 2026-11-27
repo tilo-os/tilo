@@ -3231,41 +3231,36 @@ impl Checker<'_> {
             );
         }
         let mut held: Option<Ex> = None;
+        let mut op: Option<&ast::Expr> = None;
         let mut input: Option<Ex> = None;
         let mut done: Option<Ex> = None;
         let mut progress: Option<Ex> = None;
         for a in args {
             if let Some(named) = &a.name {
-                // `outside: true`: the op reaches a service outside Tilo (a message to someone
-                // on Signal), so the action that asks it is an outside effect, as one calling
-                // `outside(...)` is, and a caller other than the person is asked first.
-                // `leaves: true`: what the op does leaves the system for good (that message,
-                // sent): it reaches outside too, and a person's own press of the action that asks
-                // it always confirms first. `device: true`: the op changes the device (a
-                // repository, a running shell), which the workspace's undo cannot take back, so
-                // the action that asks it is never undoable.
-                if matches!(name.name.as_str(), "start" | "call")
-                    && matches!(named.name.as_str(), "outside" | "leaves" | "device")
-                {
-                    if matches!(a.value.kind, ExprKind::Bool(true)) {
-                        self.st.facts.outside = true;
-                        self.st.facts.leaves |= named.name == "leaves";
-                    } else {
-                        self.err(
-                            "E022",
-                            a.value.span,
-                            format!(
-                                "{what} says `{}: true` where its op {}, and nothing where it \
-                                 does not",
-                                named.name,
-                                match named.name.as_str() {
-                                    "leaves" => "leaves the system for good",
-                                    "device" => "changes the device",
-                                    _ => "reaches outside Tilo",
-                                }
-                            ),
-                        );
-                    }
+                // What an op does besides answering is the op's own, said once where the package
+                // declares it, so no call that asks it can leave it out.
+                if let Some(fact) = match named.name.as_str() {
+                    "device" => Some(ast::OpFact::ChangesDevice),
+                    "outside" => Some(ast::OpFact::ReachesOutside),
+                    "leaves" => Some(ast::OpFact::Leaves),
+                    _ => None,
+                } {
+                    let op = args
+                        .iter()
+                        .find(|a| a.name.is_none())
+                        .and_then(|a| op_name(&a.value))
+                        .unwrap_or_else(|| "name".to_owned());
+                    self.err(
+                        "E022",
+                        named.span,
+                        format!(
+                            "{what} takes no `{}:`: what an op does besides answering belongs \
+                             to the op, where the package declares it: `op \"{op}\" {}`",
+                            named.name,
+                            fact.words()
+                        ),
+                    );
+                    let _ = self.expr(&a.value, None);
                     continue;
                 }
                 let slot = match (name.name.as_str(), named.name.as_str()) {
@@ -3298,6 +3293,7 @@ impl Checker<'_> {
                 continue;
             }
             if asks_input && held.is_none() {
+                op = Some(&a.value);
                 held = Some(self.expr_as(&a.value, &Ty::Text));
             } else if asks_input && input.is_none() {
                 input = Some(self.expr_as(&a.value, &Ty::Text));
@@ -3362,6 +3358,9 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
+        if let Some(op) = op {
+            self.engine_op(&what, op);
+        }
         let app = Ex::str(&self.env.app);
         let no_handler = || Ex::host(Imp::NoneV, vec![], Ty::Option(Box::new(Ty::Action)));
         match name.name.as_str() {
@@ -3403,6 +3402,43 @@ impl Checker<'_> {
                 Ex::host(Imp::EngineCheck, vec![app, held], result())
             }
             _ => Ex::host(Imp::EngineCancel, vec![held], Ty::Bool),
+        }
+    }
+
+    /// The op `call`, `start`, `stream` or `picture` asks, which the package declares (`op
+    /// "render"`): named in quotes, so what it does is known where it is asked, and the action
+    /// that asks it takes on what its declaration says. An op that changes the device makes the
+    /// action one the workspace's undo cannot take back; one that reaches outside Tilo makes it
+    /// an outside effect, which a caller other than the person is asked first; and one that leaves
+    /// the system for good does both, and a person's own press of the action always confirms.
+    fn engine_op(&mut self, what: &str, op: &ast::Expr) {
+        let Some(name) = op_name(op) else {
+            self.err(
+                "E022",
+                op.span,
+                format!(
+                    "{what} names its op in quotes, as the package declares it (`op \"render\"`), \
+                     so what the op does is known where it is asked; where an action picks \
+                     between ops, ask each by its name there"
+                ),
+            );
+            return;
+        };
+        let Some(facts) = self.ops.get(&name).cloned() else {
+            self.err(
+                "E022",
+                op.span,
+                format!(
+                    "{what} asks the op `{name}`, which the package does not declare: add `op \
+                     \"{name}\"`, with `changes device`, `reaches outside` or `leaves` where it \
+                     does that besides answering"
+                ),
+            );
+            return;
+        };
+        for fact in facts {
+            self.st.facts.outside = true;
+            self.st.facts.leaves |= fact == ast::OpFact::Leaves;
         }
     }
 
@@ -5017,4 +5053,19 @@ fn parse_ty(name: &str) -> Option<Ty> {
 /// Whether the callee is `json.X`: the one module whose calls take a type argument.
 fn names_json(callee: &ast::Expr) -> bool {
     matches!(&callee.kind, ExprKind::Field { base, .. } if matches!(&base.kind, ExprKind::Ident(ns) if ns == "json"))
+}
+
+/// The name an `engine` call asks its op by, when it is written in quotes with nothing
+/// interpolated.
+fn op_name(op: &ast::Expr) -> Option<String> {
+    match &op.kind {
+        ExprKind::Str(parts) => parts
+            .iter()
+            .map(|part| match part {
+                ast::StrPart::Lit(text) => Some(text.as_str()),
+                ast::StrPart::Interp(_) => None,
+            })
+            .collect(),
+        _ => None,
+    }
 }

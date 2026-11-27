@@ -5,6 +5,27 @@ app so.tilo.git-client "Git" (
     keywords: ["git", "repository", "commit", "branch", "merge", "diff", "stage", "stash", "remote", "version control", "quellcode", "versionierung", "zweig"],
 )
 
+op "stage_file" changes device
+op "unstage_file" changes device
+op "discard_file" changes device
+op "stage_all" changes device
+op "unstage_all" changes device
+op "apply_hunk" changes device
+op "discard_hunk" changes device
+op "commit" changes device
+op "resolve_conflict" changes device
+op "create_branch" changes device
+op "checkout_branch" changes device
+op "delete_branch" changes device
+op "stash_save" changes device
+op "stash_apply" changes device
+op "create_worktree" changes device
+op "fetch" changes device
+op "pull" changes device
+op "push" leaves
+op "commit_detail"
+op "load"
+
 /// Where a change stands: in the next commit, still in the working tree, or not tracked yet.
 enum ChangeArea {
     staged
@@ -701,13 +722,23 @@ action close_picker(g: Repository) {
 // ---------------------------------------------------------------- the working tree
 action stage_file(g: Repository, c: Change) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "stage_file", json.encode(FileAsk(path: s.path, file: c.path)))
+    match engine.call("stage_file", json.encode(FileAsk(path: s.path, file: c.path))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
 }
 
 /// Takes one staged file back out of the next commit.
 action unstage_file(g: Repository, c: Change) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "unstage_file", json.encode(FileAsk(path: s.path, file: c.path)))
+    match engine.call("unstage_file", json.encode(FileAsk(path: s.path, file: c.path))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
 }
 
 /// The key pressed on a file's row: `s` stages it or takes it back out of the next commit, and on
@@ -727,7 +758,12 @@ destructive action discard_file(g: Repository, c: Change) (
 ) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
     let file = c.path
-    asks(g, s, "discard_file", json.encode(FileAsk(path: s.path, file: file)))
+    match engine.call("discard_file", json.encode(FileAsk(path: s.path, file: file))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = "Discarded the changes to {file}"
     }
@@ -736,35 +772,51 @@ destructive action discard_file(g: Repository, c: Change) (
 /// Stages every change.
 action stage_all(g: Repository) (icon: .plus, key: "Shift+S") {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "stage_all", json.encode(PathAsk(path: s.path)))
+    match engine.call("stage_all", json.encode(PathAsk(path: s.path))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
 }
 
 /// Takes every staged change back out of the next commit.
 action unstage_all(g: Repository) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "unstage_all", json.encode(PathAsk(path: s.path)))
+    match engine.call("unstage_all", json.encode(PathAsk(path: s.path))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
 }
 
 /// Stages one hunk of a file.
 action stage_hunk(g: Repository, c: Change, hunk: Int) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(
-        g,
-        s,
+    match engine.call(
         "apply_hunk",
         json.encode(HunkAsk(path: s.path, file: c.path, hunk: hunk, unstage: false)),
-    )
+    ) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
 }
 
 /// Takes one staged hunk back out of the next commit.
 action unstage_hunk(g: Repository, c: Change, hunk: Int) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(
-        g,
-        s,
+    match engine.call(
         "apply_hunk",
         json.encode(HunkAsk(path: s.path, file: c.path, hunk: hunk, unstage: true)),
-    )
+    ) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
 }
 
 /// Discards one hunk of a file's working tree edits.
@@ -773,7 +825,12 @@ destructive action discard_hunk(g: Repository, c: Change, hunk: Int) (
     label: "Discard this change",
 ) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "discard_hunk", json.encode(HunkAsk(path: s.path, file: c.path, hunk: hunk)))
+    match engine.call("discard_hunk", json.encode(HunkAsk(path: s.path, file: c.path, hunk: hunk))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
 }
 
 /// Creates a commit from what is staged.
@@ -785,7 +842,12 @@ action commit(g: Repository, message: Text) (
     require message.trim() != "" "A commit has a message"
     require staged_ready(g) "There are no staged changes to commit"
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "commit", json.encode(CommitAsk(path: s.path, message: message)))
+    match engine.call("commit", json.encode(CommitAsk(path: s.path, message: message))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = "Committed {made(g)}"
     }
@@ -795,7 +857,15 @@ action commit(g: Repository, message: Text) (
 action resolve_conflict(g: Repository, c: Change, ours: Bool) (label: "Keep a side") {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
     let file = c.path
-    asks(g, s, "resolve_conflict", json.encode(ResolveAsk(path: s.path, file: file, ours: ours)))
+    match engine.call(
+        "resolve_conflict",
+        json.encode(ResolveAsk(path: s.path, file: file, ours: ours)),
+    ) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = if ours { "Kept our side of {file}" } else { "Kept their side of {file}" }
     }
@@ -806,12 +876,15 @@ action resolve_conflict(g: Repository, c: Change, ours: Bool) (label: "Keep a si
 action create_branch(g: Repository, name: Text) (icon: .git_branch, label: "Create branch") {
     require name.trim() != "" "A branch has a name"
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(
-        g,
-        s,
+    match engine.call(
         "create_branch",
         json.encode(BranchAsk(path: s.path, name: name.trim(), checkout: true)),
-    )
+    ) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
 }
 
 /// Switches to a branch, asking what becomes of uncommitted work when there is any.
@@ -849,7 +922,15 @@ action cancel_switch(g: Repository) {
 /// Switches to `name`, parking the uncommitted work when `stash` says so.
 action switch_to(g: Repository, name: Text, stash: Bool) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "checkout_branch", json.encode(CheckoutAsk(path: s.path, name: name, stash: stash)))
+    match engine.call(
+        "checkout_branch",
+        json.encode(CheckoutAsk(path: s.path, name: name, stash: stash)),
+    ) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         let carried = made(g)
         s.notice = if carried == "" {
@@ -863,7 +944,12 @@ action switch_to(g: Repository, name: Text, stash: Bool) {
 /// Deletes a local branch.
 destructive action delete_branch(g: Repository, name: Text) (icon: .trash, label: "Delete branch") {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "delete_branch", json.encode(BranchAsk(path: s.path, name: name)))
+    match engine.call("delete_branch", json.encode(BranchAsk(path: s.path, name: name))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = "Deleted the branch {name}"
     }
@@ -883,7 +969,12 @@ action save_stash(g: Repository, message: Text = "") (
     label: "Stash working changes",
 ) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "stash_save", json.encode(StashSaveAsk(path: s.path, message: message)))
+    match engine.call("stash_save", json.encode(StashSaveAsk(path: s.path, message: message))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = "Stashed the changes as {made(g)}"
     }
@@ -892,7 +983,12 @@ action save_stash(g: Repository, message: Text = "") (
 /// Applies a stash, leaving it in the list.
 action apply_stash(g: Repository, index: Int) (icon: .corner_down_left, label: "Apply stash") {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "stash_apply", json.encode(StashApplyAsk(path: s.path, index: index)))
+    match engine.call("stash_apply", json.encode(StashApplyAsk(path: s.path, index: index))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = "Applied the stash"
     }
@@ -907,9 +1003,7 @@ action create_worktree(g: Repository, path: Text, branch: Text, start: Text) (
     require path.trim() != "" "A worktree has a destination path"
     require start.trim() != "" "A worktree starts somewhere"
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(
-        g,
-        s,
+    match engine.call(
         "create_worktree",
         json.encode(
             WorktreeAsk(
@@ -919,7 +1013,12 @@ action create_worktree(g: Repository, path: Text, branch: Text, start: Text) (
                 start: start.trim(),
             ),
         ),
-    )
+    ) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = "Created the worktree {path}"
     }
@@ -929,7 +1028,12 @@ action create_worktree(g: Repository, path: Text, branch: Text, start: Text) (
 // ---------------------------------------------------------------- remotes
 action fetch(g: Repository, remote: Text = "") (icon: .cloud_download, label: "Fetch from remote") {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "fetch", json.encode(RemoteAsk(path: s.path, remote: remote)))
+    match engine.call("fetch", json.encode(RemoteAsk(path: s.path, remote: remote))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = "Fetched from {remote}"
     }
@@ -938,7 +1042,12 @@ action fetch(g: Repository, remote: Text = "") (icon: .cloud_download, label: "F
 /// Fetches, then fast-forwards the current branch to its upstream.
 action pull(g: Repository, remote: Text = "") (icon: .arrow_down, label: "Pull from remote") {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    asks(g, s, "pull", json.encode(RemoteAsk(path: s.path, remote: remote)))
+    match engine.call("pull", json.encode(RemoteAsk(path: s.path, remote: remote))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => keep(g, s, text),
+    }
     if s.trouble == "" {
         s.notice = "Pulled from {remote}"
     }
@@ -948,7 +1057,7 @@ action pull(g: Repository, remote: Text = "") (icon: .arrow_down, label: "Pull f
 /// for good: everyone who reads the remote has it.
 action push(g: Repository, remote: Text = "") (icon: .arrow_up, label: "Push to remote") {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    match engine.call(leaves: true, "push", json.encode(RemoteAsk(path: s.path, remote: remote))) {
+    match engine.call("push", json.encode(RemoteAsk(path: s.path, remote: remote))) {
         .err(why) => {
             s.trouble = why
         }
@@ -1122,20 +1231,8 @@ action clear_notice(g: Repository) {
     s.notice = ""
 }
 
-/// Runs `op` with `ask`, which changes the repository on the device, and keeps the answer: the
-/// repository as it now stands, and the working tree as the device read it. Undo cannot take a
-/// change on the device back.
-// ---------------------------------------------------------------- the one way an answer is kept
-action asks(g: Repository, s: Session, op: Text, ask: Text) {
-    match engine.call(device: true, op, ask) {
-        .err(why) => {
-            s.trouble = why
-        }
-        .ok(text) => keep(g, s, text),
-    }
-}
-
 /// Reads the repository on the device with `ask`, changing nothing there, and keeps the answer.
+// ---------------------------------------------------------------- the one way an answer is kept
 action loads(g: Repository, s: Session, ask: Text) {
     match engine.call("load", ask) {
         .err(why) => {

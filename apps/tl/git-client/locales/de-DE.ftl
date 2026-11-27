@@ -988,15 +988,6 @@ d-247oj4wo = Fehler ausblenden
 d-eqtvrcxw = Hinweis ausblenden
     .doc = Blendet den Hinweis aus.
 
-d-pfjepyyc = Fragt
-    .doc = Führt `op` mit `ask` aus, was das Repository auf dem Gerät ändert, und behält die Antwort: das Repository, wie es jetzt steht, und das Arbeitsverzeichnis, wie das Gerät es gelesen hat. Rückgängig nimmt eine Änderung auf dem Gerät nicht zurück.
-
-d-pfjepyyc-s = F
-
-d-pfjepyyc-op = Aufruf
-
-d-pfjepyyc-ask = Anfrage
-
 d-db3bvtrd = Liest
     .doc = Liest das Repository auf dem Gerät mit `ask`, ohne dort etwas zu ändern, und behält die Antwort.
 

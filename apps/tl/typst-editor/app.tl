@@ -6,6 +6,13 @@ app so.tilo.typst-editor "Typst" (
     document: library.documents,
 )
 
+op "compile"
+op "problems"
+op "pages"
+op "outline"
+op "picture"
+op "text"
+
 /// How much a problem the typesetter found matters.
 enum Severity {
     error

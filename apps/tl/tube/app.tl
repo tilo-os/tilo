@@ -10,6 +10,9 @@ app so.tilo.tube "YouTube" (
 use so.tilo.playback as playback
 use so.tilo.session as session
 
+op "pair"
+op "sync"
+
 /// A channel someone publishes videos on. The service writes what it says (its name, handle and
 /// numbers); the person's own relation to it is a `Subscription`, so subscribing never depends on
 /// what the service last answered.

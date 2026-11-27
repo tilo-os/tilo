@@ -7,6 +7,12 @@ app so.tilo.code-editor "Code Editor" (
     connections: ["lsp"],
 )
 
+op "list"
+op "load"
+op "save"
+op "run"
+op "search"
+
 /// What an entry of the project is: code that is written, or a place that holds entries.
 enum EntryKind {
     file

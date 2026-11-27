@@ -291,6 +291,8 @@ const PAINTER: &str = "so.tilo.painter";
 /// A page the device paints, and the window that shows how far it got.
 const PAINTER_SOURCE: &str = r#"app so.tilo.painter "Painter" (icon: .hash, category: .utility)
 
+op "page.paint"
+
 type Page {
     job: Text = ""
     words: Text = ""
@@ -462,6 +464,8 @@ const CLIPPER: &str = "so.tilo.clipper";
 
 /// A clip an engine opened from a library makes, and what the app keeps once it is made.
 const CLIPPER_SOURCE: &str = r#"app so.tilo.clipper "Clipper" (icon: .hash, category: .utility)
+
+op "clip"
 
 type Clips {
     job: Text = ""

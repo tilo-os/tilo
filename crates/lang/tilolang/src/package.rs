@@ -817,6 +817,7 @@ fn build_meta(
             | Item::RowView(_)
             | Item::PlaceView(_)
             | Item::Views(_)
+            | Item::Op(_)
             | Item::Trigger(_) => {}
             Item::Alias(a) => {
                 let key = crate::types::TypeKey {

@@ -1957,6 +1957,7 @@ impl Resolver<'_> {
                 | Item::RowView(_)
                 | Item::PlaceView(_)
                 | Item::Views(_)
+                | Item::Op(_)
                 | Item::Scenario(_)
                 | Item::Trigger(_) => continue,
             };

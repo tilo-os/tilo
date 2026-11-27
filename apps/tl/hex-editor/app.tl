@@ -6,6 +6,15 @@ app so.tilo.hex-editor "Hex Editor" (
     document: library.documents,
 )
 
+op "rows"
+op "apply"
+op "open"
+op "save"
+op "bytes"
+op "range"
+op "replace"
+op "find"
+
 /// One edit of the bytes: at `at`, `remove` bytes stand as `insert`'s hexadecimal ones.
 // ---------------------------------------------------------------- what a document holds
 type Change {

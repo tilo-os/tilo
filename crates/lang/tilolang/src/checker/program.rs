@@ -60,6 +60,7 @@ pub fn check_program(
         shown_fns: std::collections::HashSet::new(),
         showing_result: false,
         answers: std::collections::HashMap::new(),
+        ops: std::collections::HashMap::new(),
         control_keys: Vec::new(),
         last_shortcut: None,
     };

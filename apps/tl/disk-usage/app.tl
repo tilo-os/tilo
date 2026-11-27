@@ -7,6 +7,9 @@ app so.tilo.disk-usage "Disk Usage Analyzer" (
 
 use so.tilo.session as session
 
+op "scan"
+op "entries"
+
 /// One folder in the folder measured: what it holds, all the way down.
 type Measure {
     name: Text

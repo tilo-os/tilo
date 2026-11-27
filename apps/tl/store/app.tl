@@ -11,6 +11,52 @@ use so.tilo.session as session
 use so.tilo.device as device
 use so.tilo.settings.sections as settings
 
+op "catalogue"
+op "remote-add"
+op "remote-enable"
+op "remote-remove"
+op "update-all"
+op "submit-report"
+op "appeal"
+op "install"
+op "update"
+op "install-runtime"
+op "uninstall"
+op "pin"
+op "unpin"
+op "add-bot"
+op "one"
+op "details"
+op "remotes"
+op "browse"
+op "block"
+op "review"
+op "reference"
+op "runtime"
+op "prepare-report"
+op "report-status"
+
+/// The jobs that change one app on the device, each the op of the same name ([`begin`]).
+enum AppJob {
+    install
+    update
+    install_runtime
+    uninstall
+    pin
+    unpin
+    add_bot
+}
+
+/// The jobs that change the catalogue itself, each the op of the same name ([`begin_reading`]).
+enum CatalogueJob {
+    remote_add
+    remote_enable
+    remote_remove
+    update_all
+    submit_report
+    appeal
+}
+
 /// Where an app in the catalogue comes from.
 enum Origin {
     /// A Tilo registry.
@@ -696,11 +742,49 @@ action change_done(s: Store, a: App, j: host.Job) {
 
 /// A job that changes the catalogue itself rather than one app, followed as the read is: its end
 /// reads the sources again, so a new repository or an update of everything lands.
-action begin_reading(s: Store, op: Text, ask: Text) -> Bool {
+action begin_reading(s: Store, job: CatalogueJob, ask: Text) -> Bool {
     if s.reading != "" {
         return false
     }
-    match engine.start(op, ask, done: j -> reading_done(s, j), progress: j -> reading_moved(s, j)) {
+    let started = match job {
+        .remote_add => engine.start(
+            "remote-add",
+            ask,
+            done: j -> reading_done(s, j),
+            progress: j -> reading_moved(s, j),
+        ),
+        .remote_enable => engine.start(
+            "remote-enable",
+            ask,
+            done: j -> reading_done(s, j),
+            progress: j -> reading_moved(s, j),
+        ),
+        .remote_remove => engine.start(
+            "remote-remove",
+            ask,
+            done: j -> reading_done(s, j),
+            progress: j -> reading_moved(s, j),
+        ),
+        .update_all => engine.start(
+            "update-all",
+            ask,
+            done: j -> reading_done(s, j),
+            progress: j -> reading_moved(s, j),
+        ),
+        .submit_report => engine.start(
+            "submit-report",
+            ask,
+            done: j -> reading_done(s, j),
+            progress: j -> reading_moved(s, j),
+        ),
+        .appeal => engine.start(
+            "appeal",
+            ask,
+            done: j -> reading_done(s, j),
+            progress: j -> reading_moved(s, j),
+        ),
+    }
+    match started {
         .ok(job) => {
             s.reading = job
             s.command_trouble = ""
@@ -714,11 +798,20 @@ action begin_reading(s: Store, op: Text, ask: Text) -> Bool {
 }
 
 /// A job the engine started for `a`, or why it did not start.
-action begin(s: Store, a: App, op: Text, ask: Text) {
+action begin(s: Store, a: App, job: AppJob, ask: Text) {
     if a.job != "" {
         return
     }
-    match engine.start(op, ask, done: j -> change_done(s, a, j)) {
+    let started = match job {
+        .install => engine.start("install", ask, done: j -> change_done(s, a, j)),
+        .update => engine.start("update", ask, done: j -> change_done(s, a, j)),
+        .install_runtime => engine.start("install-runtime", ask, done: j -> change_done(s, a, j)),
+        .uninstall => engine.start("uninstall", ask, done: j -> change_done(s, a, j)),
+        .pin => engine.start("pin", ask, done: j -> change_done(s, a, j)),
+        .unpin => engine.start("unpin", ask, done: j -> change_done(s, a, j)),
+        .add_bot => engine.start("add-bot", ask, done: j -> change_done(s, a, j)),
+    }
+    match started {
         .ok(job) => {
             a.job = job
             a.failed = ""
@@ -1450,7 +1543,7 @@ action add_remote(s: Store, name: Text, url: Text) (label: "Add repository", ico
     require name.len() <= 128 "A repository name holds at most 128 letters"
     require url.starts_with("https://") and url.len() <= 2048 "Repositories must use HTTPS"
     require s.remotes.find(r -> r.name == name) == .none "This repository is already here"
-    begin_reading(s, "remote-add", json.encode(RemoteAsk(name: name, url: url, enabled: true)))
+    begin_reading(s, .remote_add, json.encode(RemoteAsk(name: name, url: url, enabled: true)))
     s.remotes.insert(Remote(name: name, title: name, url: url))
 }
 
@@ -1470,7 +1563,7 @@ action remote_change(s: Store, r: Remote, enabled: Bool) {
     r.enabled = enabled
     begin_reading(
         s,
-        "remote-enable",
+        .remote_enable,
         json.encode(RemoteAsk(name: r.name, url: r.url, enabled: enabled)),
     )
 }
@@ -1483,7 +1576,7 @@ action remove_remote(s: Store, r: Remote) (label: "Remove repository", icon: .tr
     for a in s.apps.filter(x -> x.origin == "remote" and x.registry == name) {
         s.apps.remove(a)
     }
-    begin_reading(s, "remote-remove", json.encode(RemoteAsk(name: name, url: "", enabled: false)))
+    begin_reading(s, .remote_remove, json.encode(RemoteAsk(name: name, url: "", enabled: false)))
 }
 
 /// Browses one repository's apps, through the system Flatpak metadata on this computer.
@@ -1516,14 +1609,14 @@ action browse(s: Store, r: Remote) (icon: .search) {
 action get(a: App) (label: "Get", icon: .download) {
     require a.trouble == "" a.trouble
     let st = root Store
-    begin(st, a, "install", json.encode(change_of(a, "install")))
+    begin(st, a, .install, json.encode(change_of(a, "install")))
 }
 
 /// Updates an app the workspace runs to the newest version its source offers.
 action update(a: App) (label: "Update", icon: .arrow_down) {
     require a.trouble == "" a.trouble
     let st = root Store
-    begin(st, a, "update", json.encode(change_of(a, "update")))
+    begin(st, a, .update, json.encode(change_of(a, "update")))
 }
 
 /// Installs the runtime an app needs, once its page reviewed the exact signed offer.
@@ -1531,14 +1624,14 @@ action install_runtime(a: App) (label: "Install the signed runtime", icon: .down
     require a.runtime != "" "This app names no runtime"
     require a.trouble == "" a.trouble
     let st = root Store
-    begin(st, a, "install-runtime", json.encode(change_of(a, "install-runtime")))
+    begin(st, a, .install_runtime, json.encode(change_of(a, "install-runtime")))
 }
 
 /// Removes an app from this workspace.
 action remove(a: App) (label: "Uninstall", icon: .trash) {
     require a.fetched == "" or a.user_managed "This app belongs to the computer. Ask its administrator to remove it."
     let st = root Store
-    begin(st, a, "uninstall", json.encode(change_of(a, "uninstall")))
+    begin(st, a, .uninstall, json.encode(change_of(a, "uninstall")))
 }
 
 /// Keeps this workspace's version of an app, so it is never cleaned up when unused.
@@ -1546,14 +1639,14 @@ action pin(a: App) (label: "Keep this version", icon: .pin) {
     require can_pin(a) "This app has no version to keep"
     let st = root Store
     a.pinned = true
-    begin(st, a, "pin", json.encode(change_of(a, "pin")))
+    begin(st, a, .pin, json.encode(change_of(a, "pin")))
 }
 
 /// Lets this workspace's unused version of an app be cleaned up again.
 action unpin(a: App) (label: "Allow updates", icon: .pin_off) {
     let st = root Store
     a.pinned = false
-    begin(st, a, "unpin", json.encode(change_of(a, "unpin")))
+    begin(st, a, .unpin, json.encode(change_of(a, "unpin")))
 }
 
 /// Stops the change running for an app, keeping what it did until then.
@@ -1606,7 +1699,7 @@ action update_all(s: Store) (label: "Update all apps", icon: .arrow_down) {
     let updates = browsable(s).filter(a -> newer(a.available, a.installed))
     begin_reading(
         s,
-        "update-all",
+        .update_all,
         json.encode(Changes(list: updates.map(a -> change_of(a, "update")))),
     )
 }
@@ -1616,7 +1709,7 @@ action update_all(s: Store) (label: "Update all apps", icon: .arrow_down) {
 /// the triggers the program declares.
 action add_bot(s: Store, a: App) (label: "Add to this workspace…", icon: .bot) {
     require a.bot "Only a directory bot is added to a workspace"
-    begin(s, a, "add-bot", json.encode(OneAsk(identity: a.identity, registry: a.registry)))
+    begin(s, a, .add_bot, json.encode(OneAsk(identity: a.identity, registry: a.registry)))
 }
 
 /// Blocks an app: it then appears nowhere in the Store or in search, and cannot be opened or
@@ -1699,7 +1792,7 @@ action install_reviewed(s: Store) (label: "Install reviewed package", icon: .dow
         begin(
             s,
             found,
-            "install",
+            .install,
             json.encode(
                 Change(
                     identity: found.identity,
@@ -1863,7 +1956,7 @@ action submit_report(r: Report) (label: "Submit report", icon: .send) {
     // A draft stays a draft until it is on its way: only a started send says it was.
     if begin_reading(
         st,
-        "submit-report",
+        .submit_report,
         json.encode(SendAsk(identity: r.identity, operation: prepared.operation, note: r.note)),
     ) {
         r.status = "Submitted, awaiting verified status"
@@ -1881,7 +1974,7 @@ action appeal(r: Report) (label: "Appeal decision", icon: .arrow_up) {
     }
     begin_reading(
         st,
-        "appeal",
+        .appeal,
         json.encode(SendAsk(identity: r.identity, operation: prepared.operation, note: r.note)),
     )
 }

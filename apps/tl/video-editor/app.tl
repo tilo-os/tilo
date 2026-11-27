@@ -8,6 +8,17 @@ app so.tilo.video-editor "Video Editor" (
 
 use so.tilo.playback as playback
 
+op "probe"
+op "still"
+op "waveform"
+op "render"
+op "mix"
+op "sample"
+op "thumb"
+op "play"
+op "cut"
+op "scrub"
+
 /// What a source is: a picture that moves, a sound, a still, or words this app draws itself.
 enum Form {
     video

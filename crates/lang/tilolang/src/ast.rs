@@ -113,6 +113,9 @@ pub enum Item {
     PlaceView(DefaultViewDecl),
     Views(ViewsDecl),
     Scenario(ScenarioDecl),
+    /// `op "delete_branch" changes device`: work the device's engine does for the app, by the
+    /// name `engine.call` and `engine.start` ask it by, with what it does beyond answering.
+    Op(OpDecl),
     Trigger(TriggerDecl),
     Action(ActionDecl),
     View(ViewDecl),
@@ -126,6 +129,7 @@ impl Item {
             Self::Alias(d) => &d.doc,
             Self::Enum(d) => &d.doc,
             Self::Scenario(d) => &d.doc,
+            Self::Op(d) => &d.doc,
             Self::Trigger(d) => &d.doc,
             Self::Action(d) => &d.doc,
             Self::View(d) => &d.doc,
@@ -147,6 +151,7 @@ impl Item {
             Self::DefaultView(d) | Self::RowView(d) | Self::PlaceView(d) => d.span,
             Self::Views(d) => d.span,
             Self::Scenario(d) => d.span,
+            Self::Op(d) => d.span,
             Self::Trigger(d) => d.span,
             Self::Action(d) => d.span,
             Self::View(d) => d.span,
@@ -344,6 +349,47 @@ pub struct ViewsDecl {
 pub struct ViewsEntry {
     pub view: Ident,
     pub opts: Vec<ActionOpt>,
+}
+
+/// `op "push" leaves`: an op of the device's engine the package asks (`engine.call`,
+/// `engine.start`, `engine.stream`, `engine.picture`), declared with what it does besides
+/// answering, so every action that asks it is classed by it and none can leave it out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    /// The name the engine knows the op by.
+    pub name: String,
+    pub name_span: Span,
+    pub facts: Vec<(OpFact, Span)>,
+    pub span: Span,
+}
+
+/// What an op does besides answering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpFact {
+    /// `changes device`: it changes the device (a repository on its disk, a running shell),
+    /// which the workspace's undo cannot take back, so an action that asks it is never undoable.
+    ChangesDevice,
+    /// `reaches outside`: it reaches a service outside Tilo (a message to someone on Signal):
+    /// an action that asks it is an outside effect, and a caller other than the person is
+    /// asked first.
+    ReachesOutside,
+    /// `leaves`: what it does leaves the system for good (that message, sent): it reaches
+    /// outside too, and a person's own press of an action that asks it always confirms first.
+    Leaves,
+}
+
+impl OpFact {
+    /// The words a declaration says it by.
+    #[must_use]
+    pub const fn words(self) -> &'static str {
+        match self {
+            Self::ChangesDevice => "changes device",
+            Self::ReachesOutside => "reaches outside",
+            Self::Leaves => "leaves",
+        }
+    }
 }
 
 /// `scenario "a week of notes" { ... }`: statements that fill a workspace with sample data for

@@ -11,15 +11,16 @@ pub const KEYWORDS: &[&str] = &[
 ];
 
 /// Words that are keywords only where a declaration starts (`state` at the start of a statement,
-/// `root`, `default`, `row`, `scenario`, `trigger`, `every`, `at`, `primary`, `destructive`,
-/// `migration`, `initial` and `opened` before an item's keyword). Elsewhere they are ordinary
-/// names.
+/// `root`, `default`, `row`, `scenario`, `op`, `trigger`, `every`, `at`, `primary`,
+/// `destructive`, `migration`, `initial` and `opened` before an item's keyword). Elsewhere they
+/// are ordinary names.
 pub const CONTEXTUAL: &[&str] = &[
     "state",
     "root",
     "default",
     "row",
     "scenario",
+    "op",
     "trigger",
     "every",
     "at",

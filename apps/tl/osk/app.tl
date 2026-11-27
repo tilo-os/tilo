@@ -7,6 +7,12 @@ app so.tilo.osk "On-Screen Keyboard" (
 
 use so.tilo.session as session
 
+op "touch"
+op "suggest"
+op "correct"
+op "swipe"
+op "accents"
+
 // The keyboard is a view of the session's keyboard (`session.keyboard`): the field in front, what
 // it asks of typing, and the person's keyboard settings. What it types it asks the session to
 // type, and what typing teaches it it keeps in the person's settings through the same resource,

@@ -8,6 +8,21 @@ app so.tilo.terminal "Terminal" (
 
 use tilo.environment as environment
 
+op "inspect"
+op "open"
+op "close" leaves
+op "environments"
+op "run" changes device
+op "rerun_test"
+op "interrupt"
+op "send"
+op "paste"
+op "clear"
+op "read_screen"
+op "inspect_editor"
+op "replace_editor_selection"
+op "answer_history"
+
 // ---------------------------------------------------------------- what a terminal keeps
 /// How a window's shell stands.
 enum SessionState {
@@ -444,7 +459,7 @@ destructive action restart(s: Session) (
 /// Closes this session's shell on this device, ending for good what runs in it.
 action close_shell(s: Session) {
     if s.shell != "" and s.device == here.device {
-        let _ = engine.call(leaves: true, "close", json.encode(ShellAsk(shell: s.shell)))
+        let _ = engine.call("close", json.encode(ShellAsk(shell: s.shell)))
     }
     s.shell = ""
 }
@@ -563,7 +578,6 @@ action run_in_shell(s: Session, command: Text) {
     require s.shell != "" or s.trouble == "" "the session's shell did not open: {s.trouble}"
     require s.shell != "" "the session's shell runs on the device that keeps it"
     match engine.start(
-        device: true,
         "run",
         json.encode(
             ShellAsk(shell: s.shell, text: command.trim(), agent: invoker.kind() == .agent),

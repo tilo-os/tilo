@@ -9,6 +9,9 @@ use so.tilo.device as device
 use so.tilo.session as session
 use tilo.workspace as workspace
 
+op "transfer"
+op "facts"
+
 /// How a folder's entries read.
 enum SortBy {
     /// By what they are called.

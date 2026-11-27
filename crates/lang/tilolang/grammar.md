@@ -15,7 +15,7 @@ app_opt    = ( "icon" | "category" ) ":" "." ident
 app_id     = ident { "." ident } ;
 
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
-                     | place_view | views | [ role ] action | view | fn | scenario | trigger ) ;
+                     | place_view | views | [ role ] action | view | fn | scenario | op | trigger ) ;
 use        = "use" app_id [ "as" ident ] ;
 root       = "root" [ ident ":" ] type ;                      (* `root notebook: Notebook`, a record type *)
 alias      = "type" Ident "=" type ;                          (* another name for a type *)
@@ -51,6 +51,8 @@ effect     = "web" | "random" | "time" ;
 fn         = "fn" ident params "->" type block ;
 view       = [ "template" ] "view" ident [ "<" Ident { "," Ident } ">" ] params ui_block ;
 scenario   = "scenario" string [ "->" type ] block ;
+op         = "op" string [ op_fact { "," op_fact } ] ;   (* an op of the device's engine, by the name `engine.call` asks *)
+op_fact    = "changes" "device" | "reaches" "outside" | "leaves" ;
 trigger    = "trigger" Ident params ( "every" duration
                                    | "at" ident "." ident ) ":" expr ;   (* the action it runs *)
 params     = "(" [ param { "," param } ] ")" ;
@@ -111,7 +113,7 @@ Tokens:
 
 - `Ident` starts with an uppercase letter (types and enums), `ident` with a lowercase one.
   Keywords: `app use as type enum action view fn let if else match for in return and or not
-  true false try merge proposal`. `window`, `lens`, `root`, `default`, `row`, `scenario`,
+  true false try merge proposal`. `window`, `lens`, `root`, `default`, `row`, `scenario`, `op`,
   `primary`, `destructive`, `migration`, `views` and `template` are keywords only
   where the grammar above uses them.
 - `case` is an `ident`, or a keyword the platform names a case by: the icon `.type` reads the

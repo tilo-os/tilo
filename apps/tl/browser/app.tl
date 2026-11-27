@@ -10,6 +10,8 @@ app so.tilo.browser "Browser" (
 use so.tilo.file-explorer as files
 use so.tilo.print-centre as printing
 
+op "download"
+
 /// A site someone saved: where it is and what it is called.
 type Bookmark (title: title) {
     url: Text

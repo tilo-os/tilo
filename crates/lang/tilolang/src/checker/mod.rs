@@ -367,6 +367,9 @@ pub(crate) struct Checker<'a> {
     /// expression, which a lambda the store answers reads in place of a call to one
     /// ([`crate::search::lambda_pred_with`]).
     answers: std::collections::HashMap<String, (Vec<String>, ast::Expr)>,
+    /// The ops of the device's engine the package declares (`op "render"`), by name, with what
+    /// each does besides answering: what an action that asks one is classed by.
+    ops: std::collections::HashMap<String, Vec<ast::OpFact>>,
     /// Each control's `key:` and where it is written, by the id of the view it stands in, with the
     /// action its press runs when it runs one and the branch arms it stands in: a view's controls
     /// answer the keys while it is shown, so two of them in one view, or a view-state control that
@@ -478,9 +481,25 @@ fn lower(
         protected: BTreeSet::new(),
         view_edges: Vec::new(),
         answers: answers(module),
+        ops: std::collections::HashMap::new(),
         control_keys: Vec::new(),
         last_shortcut: None,
     };
+    for item in &module.items {
+        if let Item::Op(op) = item {
+            let facts = op.facts.iter().map(|(fact, _)| *fact).collect();
+            if c.ops.insert(op.name.clone(), facts).is_some() {
+                c.err(
+                    "E011",
+                    op.name_span,
+                    format!(
+                        "the op `{}` is declared twice; say everything it does on one `op` line",
+                        op.name
+                    ),
+                );
+            }
+        }
+    }
     // A view's `protect capture`, before any body is read: what it shows may be left out of a
     // capture wherever it is.
     for item in &module.items {
@@ -531,7 +550,8 @@ fn lower(
             | Item::DefaultView(_)
             | Item::RowView(_)
             | Item::PlaceView(_)
-            | Item::Views(_) => {
+            | Item::Views(_)
+            | Item::Op(_) => {
                 continue;
             }
         };
@@ -750,6 +770,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         shown_fns: std::collections::HashSet::new(),
         showing_result: false,
         answers: std::collections::HashMap::new(),
+        ops: std::collections::HashMap::new(),
         control_keys: Vec::new(),
         last_shortcut: None,
     };
@@ -813,6 +834,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         shown_fns: std::collections::HashSet::new(),
         showing_result: false,
         answers: std::collections::HashMap::new(),
+        ops: std::collections::HashMap::new(),
         control_keys: Vec::new(),
         last_shortcut: None,
     };

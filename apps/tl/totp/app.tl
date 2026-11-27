@@ -9,6 +9,10 @@ app so.tilo.totp "Authenticator" (
 use so.tilo.vault as vault
 use so.tilo.device as device
 
+op "check"
+op "parse"
+op "scan"
+
 /// One account a service asks a one-time code for: its name, and the vault item that holds the
 /// key the service gave.
 ///

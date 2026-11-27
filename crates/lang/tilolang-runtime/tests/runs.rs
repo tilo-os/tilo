@@ -272,6 +272,8 @@ action take(b: Board, names: List<Text>) -> Int {
     /// read the first time, or it takes the other branch and diverges from its journal.
     const POLLED: &str = r#"app so.tilo.polled "Polled"
 
+op "next"
+
 type Note {
     name: Text
 }

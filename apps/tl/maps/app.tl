@@ -7,6 +7,11 @@ app so.tilo.maps "Maps" (
     schemes: "geo",
 )
 
+op "locate"
+op "forget-area"
+op "save-area"
+op "clear-saved"
+
 /// What a place is: the marker's ink, the card's glyph, and the OpenStreetMap class it maps from.
 enum Category {
     /// A landmark, a monument, a sight.

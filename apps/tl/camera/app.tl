@@ -9,6 +9,17 @@ app so.tilo.camera "Camera" (
 use so.tilo.device as device
 use so.tilo.session as session
 
+op "cameras"
+op "preview"
+op "codes-live"
+op "codes"
+op "still"
+op "record"
+op "stop-record"
+op "scan"
+op "ocr"
+op "pages_pdf"
+
 /// Which lens the viewfinder shows: the rear one, one facing the person, or the wide one.
 enum Facing {
     back

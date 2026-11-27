@@ -8,6 +8,12 @@ app so.tilo.print-centre "Print Centre" (
 
 use so.tilo.device as device
 
+op "options"
+op "print"
+op "scan"
+op "ocr"
+op "pages_pdf"
+
 /// How a person prints and scans unless they choose otherwise for one document: the
 /// workspace's, so every member prints the same way.
 type Defaults {

@@ -477,8 +477,18 @@ write out in full.
 ### The device's work
 
 Work an app cannot do in its sandbox (a render, a scan, a backup, a print) is the device's,
-asked by an op name the app owns. `engine.call(op, input)` answers now. `engine.start` runs a
-job that outlives the action that started it, and names what happens as it moves:
+asked by an op name the app owns. The package declares each op it asks, with what the op does
+besides answering:
+
+```
+op "record"
+op "delete_branch" changes device
+op "send" reaches outside
+op "push" leaves
+```
+
+`engine.call(op, input)` answers now. `engine.start` runs a job that outlives the action that
+started it, and names what happens as it moves:
 
 ```
 action record(c: Camera) {
@@ -501,19 +511,24 @@ resources the starting action has now, because it runs later and elsewhere: neve
 over the job, which the checker refuses. `engine.job(path)` reads the record as a `host.Job`
 (its state, how much of how much is done, its error, and the op's own detail); a view reads it
 too and is drawn again as the job moves, so a progress bar asks nothing. `engine.cancel(path)`
-stops it, and `done:` runs with the job cancelled. An op that reaches a service outside Tilo (a
-message sent to someone on Signal) says `outside: true` on its `engine.call` or `engine.start`:
-the action is then an outside effect, as one calling `outside(...)` is, and a caller other than
-the person is asked before it runs. An op whose effect leaves the system for good, which nothing
-in the workspace takes back (that message, sent), says `leaves: true` instead, as `post`,
-`smtp.send`, `caldav.answer` and `imap.purge` do of themselves: a person's own press of an action
-that leaves, itself or through an action of its own it calls, always confirms first, Shift held
-or not. An op that changes the device (a repository on its disk, a running shell) says
-`device: true`: the workspace's undo cannot take that back, so the action is never undoable. A
-`destructive` action undo takes back confirms a press unless Shift is held; one undo cannot take
-back always confirms. Every other action acts on the press, and a press confirms once, at the
-first destructive action its run reaches: what that one calls, and the destructive actions the
-run reaches after it, ask nothing more.
+stops it, and `done:` runs with the job cancelled.
+
+A call names its op in quotes, and the action that asks it takes on what the op's declaration
+says, so no call can leave it out: the checker refuses an op the package does not declare, one
+whose name is known only when the action runs (an action that picks between ops asks each by
+its name), and a call that says itself what its op does. An op that changes the device (a
+repository on its disk, a running shell) says `changes device`: the workspace's undo cannot take
+that back, so the action is never undoable. An op that reaches a service outside Tilo (a message
+sent to someone on Signal) says `reaches outside`: the action is then an outside effect, as one
+calling `outside(...)` is, and a caller other than the person is asked before it runs. An op
+whose effect leaves the system for good, which nothing in the workspace takes back (that
+message, sent), says `leaves` instead, as `post`, `smtp.send`, `caldav.answer` and `imap.purge`
+do of themselves: a person's own press of an action that leaves, itself or through an action of
+its own it calls, always confirms first, Shift held or not. A `destructive` action undo takes
+back confirms a press unless Shift is held; one undo cannot take back always confirms. Every
+other action acts on the press, and a press confirms once, at the first destructive action its
+run reaches: what that one calls, and the destructive actions the run reaches after it, ask
+nothing more.
 
 `engine.stream(op, input)` starts a job that keeps sending frames, which a view shows by
 `tilo-live://<job>`, and says of itself what `engine.state(job)` reads: whether it is connecting,

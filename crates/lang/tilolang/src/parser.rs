@@ -871,6 +871,59 @@ impl<'a> Parser<'a> {
             && matches!(self.peek_at(1), Tok::Str(_))
     }
 
+    fn at_op(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "op") && matches!(self.peek_at(1), Tok::Str(_))
+    }
+
+    /// `op "name"` and what it does besides answering, on the rest of its line: `changes
+    /// device`, `reaches outside` and `leaves`, separated by commas.
+    fn op_decl(&mut self, doc: Vec<String>, start: Span) -> PResult<crate::ast::OpDecl> {
+        use crate::ast::{OpDecl, OpFact};
+        self.bump();
+        let node = self.node();
+        let name_span = self.span();
+        let name = self.plain_string("the op's name in quotes")?;
+        let mut facts = Vec::new();
+        while !matches!(self.peek(), Tok::Newline | Tok::Eof) {
+            if !facts.is_empty() && !self.eat(&Tok::Comma) {
+                return self.unexpected("`,` before the next thing the op does");
+            }
+            let first = self.span();
+            let (fact, words) = match self.peek() {
+                Tok::Ident(w) if w == "changes" => (OpFact::ChangesDevice, 2),
+                Tok::Ident(w) if w == "reaches" => (OpFact::ReachesOutside, 2),
+                Tok::Ident(w) if w == "leaves" => (OpFact::Leaves, 1),
+                _ => {
+                    return self.unexpected(
+                        "what the op does besides answering: `changes device`, `reaches outside` \
+                         or `leaves`",
+                    );
+                }
+            };
+            self.bump();
+            if words == 2 {
+                let second = if fact == OpFact::ChangesDevice {
+                    "device"
+                } else {
+                    "outside"
+                };
+                if !matches!(self.peek(), Tok::Ident(w) if w == second) {
+                    return self.unexpected(&format!("`{}`", fact.words()));
+                }
+                self.bump();
+            }
+            facts.push((fact, first.to(Span::new(self.prev_end(), self.prev_end()))));
+        }
+        Ok(OpDecl {
+            node,
+            doc,
+            name,
+            name_span,
+            facts,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
     fn at_trigger(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "trigger")
             && matches!(self.peek_at(1), Tok::Ident(_))
@@ -1233,6 +1286,9 @@ impl<'a> Parser<'a> {
                 ty,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }));
+        }
+        if self.at_op() {
+            return self.op_decl(doc, start).map(Item::Op);
         }
         if self.at_scenario() {
             self.bump();

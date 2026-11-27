@@ -9,6 +9,15 @@ app so.tilo.passwords "Passwords" (
 use tilo.actions as actions
 use tilo.invocations as invocations
 
+op "vault-preview-csv"
+op "vault-read-csv"
+op "vault-export-csv"
+op "vault-hold-typed"
+op "vault-export-backup"
+op "vault-read-backup"
+op "vault-device-items"
+op "vault-device-remove"
+
 /// What kind of secret an item is: what it is for, which sets the fields it has and the words
 /// that name them.
 enum Kind {

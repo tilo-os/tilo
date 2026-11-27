@@ -812,7 +812,7 @@ pub struct ActionMeta {
     pub outside: Vec<String>,
     /// Whether what it does leaves the system for good, itself or through an own action it
     /// invokes: it posts, sends or answers to someone outside the workspace, or deletes from a
-    /// server what nothing brings back ([`crate::origin::LEAVING`], an op asked `leaves: true`).
+    /// server what nothing brings back ([`crate::origin::LEAVING`], an op declared `leaves`).
     /// A person's own press of it always confirms ([`Self::confirms`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub leaves: bool,

@@ -7,6 +7,9 @@ app so.tilo.chip-design "Chip Design" (
     document: project,
 )
 
+op "import"
+op "graph"
+
 /// The structural operator kinds a design is built from.
 // ---------------------------------------------------------------------------
 // What the project holds
