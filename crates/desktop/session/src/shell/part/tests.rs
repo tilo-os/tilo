@@ -98,11 +98,16 @@ fn type_into(part: &mut ShellPart, text: &str) {
     }
 }
 
+/// The shell's package files the session does not run: its scenarios (`scenarios.tl`) and the
+/// presets those stage (`presets.tl`), which stand the shell over other apps' records for its
+/// shots and the layout check. The session compiles the shell without them and needs no other
+/// app's package to do so.
+const FIXTURES: [&str; 2] = ["presets.tl", "scenarios.tl"];
+
 /// The shell the session ships is every file of the package the session runs: a file added to
 /// `apps/tl/shell` and not listed here would compile in `tilolang check` and fail only in the
-/// session. `scenarios.tl` is the one file it does not ship, and the only one: the harness the
-/// session runs nothing of, its scenarios staging the shell over other apps' records for its
-/// shots and tests (`SHELL_FILES`).
+/// session. [`FIXTURES`] are the files it does not ship: the harness the session runs nothing
+/// of (`SHELL_FILES`).
 #[test]
 fn the_shell_ships_every_file_of_its_package() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
@@ -112,7 +117,7 @@ fn the_shell_ships_every_file_of_its_package() {
         .iter()
         .filter_map(|path| path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| name != "scenarios.tl")
+        .filter(|name| !FIXTURES.contains(&name.as_str()))
         .collect();
     let shipped: Vec<String> = SHELL_FILES
         .iter()
@@ -124,11 +129,11 @@ fn the_shell_ships_every_file_of_its_package() {
     );
 }
 
-/// The package's scenarios (`scenarios.tl`) are the one file `SHELL_FILES` leaves out, and it
-/// holds declarations the package's ids lock names: the session compiles the shell without it,
-/// so a file that declared anything else there would drift from what the session runs.
+/// The package's fixtures are the only files `SHELL_FILES` leaves out, and they hold declarations
+/// the package's ids lock names: the session compiles the shell without them, so a file that
+/// declared anything else there would drift from what the session runs.
 #[test]
-fn the_scenarios_are_the_only_file_the_session_leaves_out() {
+fn the_fixtures_are_the_only_files_the_session_leaves_out() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
     let on_disk: Vec<String> = tilolang_tilo::tilolang::source::source_paths(&dir)
         .expect("the shell's package")
@@ -136,18 +141,18 @@ fn the_scenarios_are_the_only_file_the_session_leaves_out() {
         .filter_map(|path| path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
         .collect();
-    let left_out: Vec<&String> = on_disk
+    let left_out: Vec<String> = on_disk
         .iter()
         .filter(|name| {
             !SHELL_FILES
                 .iter()
                 .any(|(shipped, _)| shipped == &name.as_str())
         })
+        .cloned()
         .collect();
     assert_eq!(
-        left_out,
-        vec![&"scenarios.tl".to_owned()],
-        "the session compiles the shell without its scenarios, and without nothing else"
+        left_out, FIXTURES,
+        "the session compiles the shell without its fixtures, and without nothing else"
     );
 }
 
