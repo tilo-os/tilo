@@ -1,0 +1,8 @@
+reason = "The first signed app release since the registry moved to package format 4 (efee27481fc) measured two packages over their budgets. Settings, a tilolang package whose bytes are the same on both architectures, is 1,141,248 bytes, 158,208 over the x86_64 budget its port first measured (f3a84b3a361): since then it gained connected accounts beside the workspace's (be2c2bbae78), turning an app's outside capabilities off through the workspace's grant (b230ce84781), plain CalDAV servers (f92c00ddee3) and the German words of those panes. Discord on aarch64 is 1,985,536 bytes, 84,992 over: the bridge now carries Chat's changes to Discord and acts as the person it maps (2d8b096ad48) and its server records migrate nothing (d2a2c772340); on x86_64 the same package is 2,158,592 bytes, within its budget. Each amount is the excess plus the budget's headroom, rounded up to 64 KiB, measured by t runs rcdf25c1f4e (x86_64) and raff9834504 (aarch64)"
+run = "rcdf25c1f4e"
+
+[apps."so.tilo.settings"]
+x86_64 = 196608
+
+[apps."so.tilo.discord"]
+aarch64 = 131072

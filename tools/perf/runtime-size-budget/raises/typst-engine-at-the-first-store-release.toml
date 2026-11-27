@@ -1,0 +1,13 @@
+# The first signed app release since the registry moved to package format 4
+# (efee27481fc) measured Typst's engine library at 35,317,176 bytes on x86_64,
+# 910,776 over the budget it was given when it moved beside the process
+# (85c6fb3fae0, measured then at 34,064,744). Typst's own crate is unchanged
+# since; in the same span the runtime the engine links fell to 148,592,008
+# bytes, 12.7 MB under its budget. The aarch64 engine, 33,427,080 bytes, is
+# within its budget. The amount is the excess plus the ratchet's 1 % headroom,
+# rounded up to 64 KiB, measured by t run rcdf25c1f4e.
+reason = "Typst's engine library is 910,776 bytes over the x86_64 budget it got when it moved beside the process (85c6fb3fae0); its own crate is unchanged since, while the runtime it links fell 12.7 MB under its budget"
+run = "rcdf25c1f4e"
+
+[engines.x86_64]
+"libtilo_typst_engine.so" = 1310720
