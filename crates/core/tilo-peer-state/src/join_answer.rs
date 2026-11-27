@@ -194,6 +194,12 @@ pub fn admit(
     if refusals.iter().all(Option::is_some) {
         return Ok(refusals.into_iter().flatten().map(Err).collect());
     }
+    // Each joiner builds its replica of the workspace the admission commits, and refuses the
+    // workspace when it cannot: that refusal is made here, before the commit, so a redeem the
+    // joiner would refuse never uses up its invitation.
+    candidate
+        .joinable_through(workspace.hosted().host, now)
+        .map_err(|error| JoinError::new(format!("the workspace could not be joined: {error}")))?;
     let mut delivered = Vec::new();
     let log = workspace.log().clone();
     workspace.commit_admission(candidate, now, &mut |hosted| {

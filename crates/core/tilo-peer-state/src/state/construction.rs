@@ -56,6 +56,17 @@ impl StatePeer {
         Ok(peer)
     }
 
+    /// Refuse, as a device joining through `admitter` at `now` (nanoseconds) would refuse it
+    /// building its replica from what this replica holds ([`Self::joined`]), a workspace whose
+    /// admitter is not valid then or is revoked here: the host that admits the device asks
+    /// this before it commits the admission, so a join the device would refuse never uses up
+    /// its invitation. The roster is the host's own, already verified, so it is not checked
+    /// again here.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn joinable_through(&self, admitter: &DeviceCert, now: u64) -> Result<(), String> {
+        valid_origin(admitter.clone(), &self.core.revocations, now).map(drop)
+    }
+
     fn with_roster(
         workspace: &str,
         owner_device: DeviceCert,
@@ -65,18 +76,16 @@ impl StatePeer {
     ) -> Result<Self, String> {
         let workspace = uuid::Uuid::parse_str(workspace).map_err(err)?.to_string();
         let (owner, origin) = (owner_device.user_public_key, owner_device.device_public_key);
-        let mut certificates = BTreeMap::new();
-        for certificate in roster
+        let origin_certificate = valid_origin(owner_device, &revocations, now)?;
+        // A revoked device of the roster is left out of it, and `revocations`, which the
+        // replica keeps, refuses it everywhere: one device a workspace ever revoked refused
+        // the whole roster, so nobody could join that workspace again.
+        let mut certificates = roster
             .into_iter()
-            .map(Ok)
-            .chain([VerifiedCertificate::new(owner_device, now)])
-        {
-            let certificate = certificate?;
-            if revocations.refuses(&certificate) {
-                return Err("device revoked".into());
-            }
-            certificates.insert(certificate.device_public_key, certificate);
-        }
+            .filter(|certificate| !revocations.refuses(certificate))
+            .map(|certificate| (certificate.device_public_key, certificate))
+            .collect::<BTreeMap<_, _>>();
+        certificates.insert(origin_certificate.device_public_key, origin_certificate);
         Ok(Self {
             core: PeerCore {
                 workspace,
@@ -285,4 +294,18 @@ impl StatePeer {
         }
         Ok(wrote)
     }
+}
+
+/// The certificate of `device`, the origin of a replica built at `now`: valid then, and not
+/// revoked by `revocations`.
+fn valid_origin(
+    device: DeviceCert,
+    revocations: &RevocationList,
+    now: u64,
+) -> Result<VerifiedCertificate, String> {
+    let certificate = VerifiedCertificate::new(device, now)?;
+    if revocations.refuses(&certificate) {
+        return Err("device revoked".into());
+    }
+    Ok(certificate)
 }

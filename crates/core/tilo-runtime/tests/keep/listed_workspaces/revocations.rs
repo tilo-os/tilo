@@ -57,7 +57,7 @@ async fn enter(server: &Server, device: &TestDevice, workspace: &str) {
 }
 
 /// `device` of `person` redeems an editor's invitation to `workspace` that
-/// `issuer` issues, and holds what its join alone gave it.
+/// `issuer` issues, and holds what its join alone gave it, built as a joining device builds it.
 async fn join(
     server: &Server,
     issuer: &TestDevice,
@@ -66,33 +66,17 @@ async fn join(
     device: &TestDevice,
 ) -> StatePeer {
     let invitation = invite(server, issuer, workspace, Role::Editor, person.user_pk).await;
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    let bootstrap = WorkspaceJoinClient::new(device_endpoint(device).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            invitation.signed_invitation.clone(),
-            device.cert.clone(),
-            &device.sk,
-            *blake3::hash(&device.device_pubkey()).as_bytes(),
-        )
+    let bootstrap = redeem(&invitation, device)
         .await
-        .unwrap()
-        .bootstrap;
-    let mut peer = StatePeer::new(
+        .expect("the invitation is redeemed");
+    let mut peer = StatePeer::from_join(
         &bootstrap.workspace_id.to_string(),
         bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
-        RevocationList::new(),
+        &bootstrap.revocations,
         SystemTime::now(),
     )
-    .unwrap();
-    peer.select_exact_admissions().unwrap();
+    .expect("the joining device takes the workspace in");
     for bytes in &bootstrap.governance_messages {
         peer.receive_from(
             TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key),
@@ -102,6 +86,32 @@ async fn join(
         .unwrap();
     }
     peer
+}
+
+/// `device` redeems `invitation` through the address it carries: the workspace as its host
+/// answered the device, or why the host refused it.
+async fn redeem(
+    invitation: &IssuedInvitation,
+    device: &TestDevice,
+) -> Result<tilo_peer_state::join::JoinBootstrap, String> {
+    let verified = decode_and_verify_invitation(
+        &invitation.signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    WorkspaceJoinClient::new(device_endpoint(device).await)
+        .redeem_hint(
+            &verified.grant().transport[0],
+            invitation.signed_invitation.clone(),
+            device.cert.clone(),
+            &device.sk,
+            *blake3::hash(&device.device_pubkey()).as_bytes(),
+        )
+        .await
+        .map(|admission| admission.bootstrap)
+        .map_err(|error| error.to_string())
 }
 
 /// Whether `linked`'s device is admitted to `workspace_id`: a link opens from its own
@@ -166,11 +176,14 @@ async fn a_device_of_another_person_opens_no_link() {
 async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_workspace_it_hosts() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
+    let carol = TestUser::fresh("Carol");
     let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("alice-phone", DeviceCapabilities::primary());
     let tablet = bob.enrol("bob-tablet", DeviceCapabilities::member());
     let bob_laptop = bob.enrol("bob-laptop", DeviceCapabilities::member());
+    let bob_desk = bob.enrol("bob-desk", DeviceCapabilities::member());
+    let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server = start(state.path(), &alice, &host).await;
 
@@ -263,7 +276,66 @@ async fn a_revocation_announced_in_one_workspace_reaches_the_server_and_every_wo
     .await;
     assert!(admitted(&tablet_link, &server, plans.workspace_id).await);
 
+    // The workspace still takes newcomers in: Carol joins by invitation, her copy built from a
+    // roster the revoked devices are left out of, and writes; Alice's phone reads it.
+    let carol_copy = join(&server, &phone, &plans.workspace, &carol, &carol_phone).await;
+    let carol_link = Linked::open_seeded(&server, &carol_phone, plans.workspace_id, carol_copy)
+        .await
+        .expect("Plans admits Carol's phone");
+    carol_link
+        .publish(|peer| {
+            Ok(write(
+                peer,
+                "reply",
+                "from Carol",
+                &carol_phone.sk,
+                &carol_phone.cert.user_public_key,
+            ))
+        })
+        .expect("Carol's write goes out on her link");
+    crate::keep::common::receives(&phone_link, |peer| {
+        text(peer, "reply").as_deref() == Some("from Carol")
+    })
+    .await;
+    // Her copy refuses the revoked laptops as every copy does.
+    crate::keep::common::receives(&carol_link, |peer| {
+        [laptop.device_pubkey(), bob_laptop.device_pubkey()]
+            .iter()
+            .all(|device| peer.permissions(*device, SystemTime::now()).is_err())
+    })
+    .await;
+
+    // A redeem the host refuses commits nothing, so the invitation is not used up: an invitation
+    // as a moderator, which Bob's place as an editor does not take, is refused again the same way.
+    let moderating = server
+        .workspaces()
+        .unwrap()
+        .issue(
+            &plans.workspace,
+            &phone.cert,
+            IssueInvitationRequest {
+                request_id: [0x4d; 32],
+                role: Role::Moderator,
+                recipient_user_public_key: Some(bob.user_pk),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: None,
+            },
+        )
+        .await
+        .expect("Alice invites Bob as a moderator");
+    for attempt in ["first", "second"] {
+        let refused = redeem(&moderating, &bob_desk)
+            .await
+            .expect_err("an invitation Bob's place does not take is refused");
+        assert!(
+            refused.contains("does not take the role"),
+            "the {attempt} redeem is refused for Bob's place: {refused}"
+        );
+    }
+
     // The revocations survive a restart of the server.
+    drop(carol_link);
     drop(phone_link);
     drop(tablet_link);
     drop(bob_laptop_link);
