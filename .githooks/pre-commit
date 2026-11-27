@@ -230,6 +230,7 @@ and commit again, or regenerate it with 'cargo run -p tilo-app-window --example 
       fi
       cat_generated=""
       cat_timed_out=""
+      cat_garbled=""
       if [ "${#cat_run[@]}" -gt 0 ]; then
         # A commit lands work, so its build ranks as a person's, not behind the agents' test
         # backlog: the same per-checkout human: session the push lint uses. A commit waits
@@ -242,6 +243,14 @@ and commit again, or regenerate it with 'cargo run -p tilo-app-window --example 
         if [ "$cat_status" -ne 0 ]; then
           cat_generated=""
           [ "$cat_status" -eq 124 ] && cat_timed_out=1
+        fi
+        # Only one JSON document is a catalogue: a cargo that writes its own build messages to
+        # stdout before the program's (a build server's `t cargo run`) would otherwise be
+        # committed as the catalogue.
+        if [ -n "$cat_generated" ] && ! printf '%s' "$cat_generated" \
+          | python3 -c 'import json, sys; json.load(sys.stdin)' 2>/dev/null; then
+          cat_generated=""
+          cat_garbled=1
         fi
       fi
       if [ -n "$cat_generated" ]; then
@@ -261,6 +270,8 @@ and commit again, or regenerate it with 'cargo run -p tilo-app-window --example 
         if [ "$cat_generated" = "$(cat "$root/$catalogue")" ]; then
           printf '%s %s\n' "$sources_id" "$catalogue_id" > "$verified_at"
         fi
+      elif [ -n "$cat_garbled" ]; then
+        note "component catalogue: the generator's output is not one JSON document (cargo's own messages on stdout?); run 't fix ui-graph' and stage $catalogue"
       elif [ -n "$cat_timed_out" ]; then
         note "component catalogue: not generated within a minute; the push checks it, and 't fix ui-graph' writes $catalogue"
       else
