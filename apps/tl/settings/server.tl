@@ -85,11 +85,6 @@ view device_server_pane() {
                 "Browsers outside your workspace will warn that this server's certificate is not trusted.",
                 status: .warning,
             )
-            ui.Text(
-                "Set a domain name for this server to fix that.",
-                role: .caption,
-                secondary: true,
-            )
         }
     }
 }

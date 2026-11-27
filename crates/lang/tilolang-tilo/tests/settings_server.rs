@@ -104,12 +104,6 @@ fn a_server_with_no_domain_name_says_browsers_outside_its_workspace_warn() {
         shown.iter().any(|text| text == WARNING),
         "the pane warns about the certificate: {shown:?}"
     );
-    assert!(
-        shown
-            .iter()
-            .any(|text| text == "Set a domain name for this server to fix that."),
-        "and says what fixes it: {shown:?}"
-    );
 }
 
 #[test]

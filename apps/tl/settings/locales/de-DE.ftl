@@ -1495,7 +1495,6 @@ d-bjlqmfvd = Device server pane
     .w-the-web-page-it-serves = Die Webseite, die es ausliefert
     .w-domain-name = Domainname
     .w-browsers-outside-your-workspace-will-warn = Browser außerhalb deines Arbeitsbereichs warnen, dass sie dem Zertifikat dieses Servers nicht vertrauen.
-    .w-set-a-domain-name-for-this = Vergib einen Domainnamen für diesen Server, um das zu beheben.
 
 d-5cuyhixq = Service row
     .w-offered = Angeboten
