@@ -1094,8 +1094,15 @@ impl Workspaces {
             device
         };
         // The workspace is its maker's: their person owns it from the step
-        // that makes it, and this host administers it for them.
+        // that makes it, and this host administers it for them. Recorded as one
+        // of their own now, so their listings, their branches of it and this
+        // host's member lists know it before the next start claims what this
+        // device keeps.
         let summary = self.found_for((caller, device), name, workspace).await?;
+        if let Some(own) = self.own() {
+            own.record(&device.user_public_key, &summary.workspace)
+                .map_err(ActionCallError::refused)?;
+        }
         let invitation = match first {
             Some((terms, makes_administrator)) => Some(ActionInvitation::of(
                 &self

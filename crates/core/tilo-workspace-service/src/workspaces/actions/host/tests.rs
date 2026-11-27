@@ -200,6 +200,41 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
     server.shutdown().await;
 }
 
+/// A workspace a device of the host's own person makes here is theirs from the step that makes
+/// it: recorded as one of their own at once, so their listings, their branches of it and the
+/// host's member lists name it before any restart claims what this device keeps.
+#[tokio::test]
+async fn a_workspace_a_device_makes_is_recorded_as_its_persons_own_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    assert!(
+        workspaces
+            .offer_own_workspaces(crate::workspaces::OwnWorkspaceOffer::free("tilo.test"))
+            .unwrap(),
+        "this host keeps workspaces of people's own"
+    );
+    let host = super::super::tests::host_dispatch(workspaces);
+    let laptop = owners_laptop();
+    let created: CreatedWorkspace = serde_json::from_value(
+        invoke(
+            &host,
+            &laptop,
+            host_request(CREATE_WORKSPACE, json!({ "name": "Plans" })),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        workspaces.own_workspace_of(&laptop.user_public_key),
+        Some(created.workspace.workspace.clone()),
+        "the workspace is its maker's own from its making"
+    );
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn the_servers_person_creates_a_workspace_with_an_administrators_invitation() {
     let dir = tempfile::tempdir().unwrap();
