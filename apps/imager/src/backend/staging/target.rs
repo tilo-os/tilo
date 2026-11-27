@@ -192,19 +192,12 @@ mod tests {
         std::fs::write(path, value).unwrap();
     }
 
-    fn roots() -> (tempfile::TempDir, Roots) {
-        let work = tempfile::tempdir().unwrap();
-        let roots = Roots {
-            sys_block: work.path().join("sys/block"),
-            dev: work.path().join("dev"),
-        };
-        std::fs::create_dir_all(&roots.sys_block).unwrap();
-        std::fs::create_dir_all(&roots.dev).unwrap();
-        (work, roots)
-    }
-
+    /// One machine's disks: an NVMe disk by its device serial, one by its WWID with a partition
+    /// repeating the serial, two virtio disks reporting their own serials and two disks reporting
+    /// one identity. A plan names a disk only by an identity, which resolves to exactly one whole
+    /// disk or is refused.
     #[test]
-    fn a_disk_is_named_by_a_plan_identity_not_a_device_name() {
+    fn a_disk_is_named_by_a_plan_identity_and_resolves_to_exactly_one_whole_disk() {
         assert_eq!(
             TargetDisk::parse("serial:16Q0A07GTM7J").unwrap(),
             TargetDisk {
@@ -228,14 +221,16 @@ mod tests {
         ] {
             assert!(TargetDisk::parse(bad).is_err(), "{bad}");
         }
-    }
 
-    #[test]
-    fn a_serial_or_wwid_resolves_to_exactly_one_whole_disk() {
-        let (_work, roots) = roots();
+        let work = tempfile::tempdir().unwrap();
+        let roots = Roots {
+            sys_block: work.path().join("sys/block"),
+            dev: work.path().join("dev"),
+        };
         let disk = |name: &str, dev: &str| {
             let sys = roots.sys_block.join(name);
             write(&sys.join("dev"), dev);
+            write(&roots.dev.join(name), "");
             sys
         };
         let serial = disk("nvme0n1", "259:0");
@@ -246,54 +241,29 @@ mod tests {
         let partition = disk("nvme1n1p1", "259:2");
         write(&partition.join("partition"), "1\n");
         write(&partition.join("device/serial"), "16Q0A07GTM7J\n");
-        for name in ["nvme0n1", "nvme1n1", "nvme1n1p1"] {
-            write(&roots.dev.join(name), "");
+        for (name, dev) in [("vda", "252:0"), ("vdb", "252:16")] {
+            write(&disk(name, dev).join("serial"), &format!("disk-{name}\n"));
+        }
+        for name in ["sda", "sdb"] {
+            write(&disk(name, "8:0").join("device/serial"), "SAME");
         }
 
+        let resolved = |target: &str| resolve(&TargetDisk::parse(target).unwrap(), &roots);
         assert_eq!(
-            resolve(&TargetDisk::parse("serial:16Q0A07GTM7J").unwrap(), &roots).unwrap(),
+            resolved("serial:16Q0A07GTM7J").unwrap(),
             roots.dev.join("nvme0n1")
         );
         assert_eq!(
-            resolve(
-                &TargetDisk::parse("wwid:eui.01000000000000008ce38ee30e25a85f").unwrap(),
-                &roots
-            )
-            .unwrap(),
+            resolved("wwid:eui.01000000000000008ce38ee30e25a85f").unwrap(),
             roots.dev.join("nvme1n1")
         );
+        assert_eq!(resolved("serial:disk-vdb").unwrap(), roots.dev.join("vdb"));
         assert!(
-            resolve(&TargetDisk::parse("serial:NOPE").unwrap(), &roots)
+            resolved("serial:NOPE")
                 .unwrap_err()
                 .contains("no disk reports")
         );
-    }
-
-    #[test]
-    fn a_virtio_disk_resolves_by_the_serial_it_reports_itself() {
-        let (_work, roots) = roots();
-        for (name, dev) in [("vda", "252:0"), ("vdb", "252:16")] {
-            let sys = roots.sys_block.join(name);
-            write(&sys.join("dev"), dev);
-            write(&sys.join("serial"), &format!("disk-{name}\n"));
-            write(&roots.dev.join(name), "");
-        }
-        assert_eq!(
-            resolve(&TargetDisk::parse("serial:disk-vdb").unwrap(), &roots).unwrap(),
-            roots.dev.join("vdb")
-        );
-    }
-
-    #[test]
-    fn two_disks_reporting_one_identity_are_never_guessed() {
-        let (_work, roots) = roots();
-        for name in ["sda", "sdb"] {
-            let sys = roots.sys_block.join(name);
-            write(&sys.join("dev"), "8:0");
-            write(&sys.join("device/serial"), "SAME");
-            write(&roots.dev.join(name), "");
-        }
-        let error = resolve(&TargetDisk::parse("serial:SAME").unwrap(), &roots).unwrap_err();
+        let error = resolved("serial:SAME").unwrap_err();
         assert!(error.contains("more than one disk"), "{error}");
         assert!(error.contains("sda") && error.contains("sdb"), "{error}");
     }

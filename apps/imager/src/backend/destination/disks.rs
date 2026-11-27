@@ -236,6 +236,30 @@ impl Disk {
         ]
     }
 
+    /// A disk with no partition table, partitions, identity or flags, for a test to fill in only
+    /// what it reads.
+    #[cfg(test)]
+    pub(crate) fn blank(name: &str, size_bytes: u64) -> Self {
+        Self {
+            name: name.into(),
+            size: String::new(),
+            model: String::new(),
+            size_bytes,
+            partition_table: String::new(),
+            partition_table_uuid: String::new(),
+            logical_sector_size: 512,
+            major_minor: String::new(),
+            wwn: String::new(),
+            serial: String::new(),
+            removable: false,
+            read_only: false,
+            is_system: false,
+            live_system_nodes: Vec::new(),
+            internal_plan: None,
+            partitions: Vec::new(),
+        }
+    }
+
     pub fn label(&self) -> String {
         if self.model.is_empty() {
             format!("{}  —  {}", self.name, self.size)
@@ -896,41 +920,14 @@ mod tests {
         }
         {
             let with = Disk {
-                name: "/dev/sda".into(),
                 size: "238.5G".into(),
                 model: "Samsung SSD".into(),
-                size_bytes: 0,
-                partition_table: String::new(),
-                partition_table_uuid: String::new(),
-                logical_sector_size: 512,
-                major_minor: String::new(),
-                wwn: String::new(),
-                serial: String::new(),
-                removable: false,
-                read_only: false,
-                is_system: false,
-                live_system_nodes: Vec::new(),
-                internal_plan: None,
-                partitions: Vec::new(),
+                ..Disk::blank("/dev/sda", 0)
             };
             assert_eq!(with.label(), "/dev/sda  —  238.5G  —  Samsung SSD");
             let without = Disk {
-                name: "/dev/vda".into(),
                 size: "64G".into(),
-                model: String::new(),
-                size_bytes: 0,
-                partition_table: String::new(),
-                partition_table_uuid: String::new(),
-                logical_sector_size: 512,
-                major_minor: String::new(),
-                wwn: String::new(),
-                serial: String::new(),
-                removable: false,
-                read_only: false,
-                is_system: false,
-                live_system_nodes: Vec::new(),
-                internal_plan: None,
-                partitions: Vec::new(),
+                ..Disk::blank("/dev/vda", 0)
             };
             assert_eq!(without.label(), "/dev/vda  —  64G");
         }
@@ -1105,21 +1102,11 @@ mod tests {
         {
             {
                 let mut disk = Disk {
-                    name: "/dev/sda".into(),
                     size: "100 GiB".into(),
-                    model: String::new(),
-                    size_bytes: 100 * 1024 * 1024 * 1024,
                     partition_table: "gpt".into(),
                     partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
-                    logical_sector_size: 512,
                     major_minor: "8:0".into(),
-                    wwn: String::new(),
                     serial: "efi-diagnostic".into(),
-                    removable: false,
-                    read_only: false,
-                    is_system: false,
-                    live_system_nodes: Vec::new(),
-                    internal_plan: None,
                     partitions: vec![DiskPartition {
                         name: "/dev/sda1".into(),
                         start_bytes: 1024 * 1024,
@@ -1130,6 +1117,7 @@ mod tests {
                         mountpoint: String::new(),
                         part_type: EFI_SYSTEM_GUID.into(),
                     }],
+                    ..Disk::blank("/dev/sda", 100 * 1024 * 1024 * 1024)
                 };
                 assert!(disk.prepared_efi_issue().unwrap().contains("too small"));
 
@@ -1149,21 +1137,11 @@ mod tests {
             }
             {
                 let mut disk = Disk {
-                    name: "/dev/sda".into(),
                     size: "100 GiB".into(),
-                    model: String::new(),
-                    size_bytes: 100 * 1024 * 1024 * 1024,
                     partition_table: "gpt".into(),
                     partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
-                    logical_sector_size: 512,
                     major_minor: "8:0".into(),
-                    wwn: String::new(),
                     serial: "windows-hint".into(),
-                    removable: false,
-                    read_only: false,
-                    is_system: false,
-                    live_system_nodes: Vec::new(),
-                    internal_plan: None,
                     partitions: vec![DiskPartition {
                         name: "/dev/sda1".into(),
                         start_bytes: 1024 * 1024,
@@ -1174,6 +1152,7 @@ mod tests {
                         mountpoint: String::new(),
                         part_type: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".into(),
                     }],
+                    ..Disk::blank("/dev/sda", 100 * 1024 * 1024 * 1024)
                 };
                 assert!(disk.has_windows_storage());
 
@@ -1212,22 +1191,13 @@ mod tests {
         {
             let gib = 1024_u64 * 1024 * 1024;
             let mut disk = Disk {
-                name: "/dev/vda".into(),
                 size: "200 GiB".into(),
                 model: "VM".into(),
-                size_bytes: 200 * gib,
                 partition_table: "dos".into(),
                 partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
-                logical_sector_size: 512,
                 major_minor: "252:0".into(),
-                wwn: String::new(),
                 serial: "guided-test".into(),
-                removable: false,
-                read_only: false,
-                is_system: false,
-                live_system_nodes: Vec::new(),
-                internal_plan: None,
-                partitions: Vec::new(),
+                ..Disk::blank("/dev/vda", 200 * gib)
             };
             assert!(
                 disk.guided_alongside_plan().is_none(),
