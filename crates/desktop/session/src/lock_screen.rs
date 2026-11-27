@@ -298,6 +298,9 @@ impl crate::Session {
             return;
         }
         self.lock_shown = LockShown::View;
+        // Nothing the app drew is the lock any more: the session draws it itself, and what that
+        // view shows is the lock from now on, from the first frame.
+        self.compositor.forget_lock_screen();
         if self.lock_view.is_some() {
             tracing::error!(
                 reason,
@@ -333,6 +336,14 @@ impl crate::Session {
         };
         if self.surfaces.running(&surface.name) {
             return;
+        }
+        // The screen this one replaces drew the lock until now, and is gone: what it drew is not
+        // this screen, so it goes, and the session's own view of the lock stands on every display
+        // until the new screen has drawn. A person who types into the lock meanwhile types into
+        // that view, which keeps what they type, rather than into a screen that is not there.
+        self.compositor.forget_lock_screen();
+        if let Some(view) = &self.lock_view {
+            view.app_shown.set(false);
         }
         self.lock_starts = self.lock_starts.saturating_add(1);
         if let Err(error) = self.start_surface(&surface) {

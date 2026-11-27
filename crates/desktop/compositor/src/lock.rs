@@ -177,12 +177,46 @@ impl State {
     /// screen again, and the lock ends only with the lock the person lifts — while a lock that was
     /// only the client's ends here.
     pub(crate) fn lift_lock_of_departed_client(&mut self) {
+        // What a screen that went drew is not the lock any more, whoever holds it now: a client
+        // that died while another took its place draws nothing, takes no keys, and is no surface
+        // for the outputs or a wait on the lock to read.
+        self.prune_lock_surfaces();
         let Some(holder) = &self.lock.holder else {
             return;
         };
         if !holder.is_alive() {
             self.lift_lock(!self.lock.by_session);
         }
+    }
+
+    /// Forget the lock surfaces whose client is gone: what it drew and the keys it took leave with
+    /// it, so nothing shows, waits on or types into a screen that is no longer there.
+    fn prune_lock_surfaces(&mut self) {
+        let before = self.lock.surfaces.len();
+        self.lock
+            .surfaces
+            .retain(|(_, surface)| surface.wl_surface().is_alive());
+        if self.lock.surfaces.len() == before {
+            return;
+        }
+        let focus = self
+            .lock
+            .surfaces
+            .last()
+            .map(|(_, surface)| surface.wl_surface().clone());
+        self.set_keyboard_focus(focus, SERIAL_COUNTER.next_serial());
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
+    }
+
+    /// Forget every lock surface: the screen that drew the lock is gone, and what it drew is not
+    /// the lock any more. The screen that replaces it draws its own when it takes the lock.
+    pub(crate) fn forget_lock_screen_surfaces(&mut self) {
+        if self.lock.surfaces.is_empty() {
+            return;
+        }
+        self.lock.surfaces.clear();
+        self.set_keyboard_focus(None, SERIAL_COUNTER.next_serial());
+        self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
     }
 
     /// End the client's lock: the client that held it lifted it (`lifted`), or is gone. The scene
@@ -364,6 +398,11 @@ impl SessionLockHandler for State {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
+        // A screen that takes the lock from another shows it from now on: what the one before drew
+        // and the keys it took are not the lock any more, and the screen that was still waiting to
+        // be told it holds the lock hears it is finished when the locker it was given is dropped.
+        self.lock.pending = None;
+        self.forget_lock_screen_surfaces();
         self.lock.holder = Some(confirmation.ext_session_lock().clone());
         self.lock.locked = true;
         self.lock.by_session = self.idle.session.is_locked();

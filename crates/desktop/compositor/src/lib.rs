@@ -862,6 +862,13 @@ impl Compositor {
         self.data.state.lock_drawn() || self.data.state.lock_view_shows()
     }
 
+    /// The screen that drew the lock is gone — its process ended, and the session starts it again:
+    /// what it drew and the keys it took go with it, so nothing shows, waits on or types into a
+    /// screen that is no longer there, and the outputs draw what shows the lock now.
+    pub fn forget_lock_screen(&mut self) {
+        self.data.state.forget_lock_screen_surfaces();
+    }
+
     /// Whether a surface of the session's own takes the keyboard now: a palette, the overview or
     /// the shortcut guide, which see keys before any client does.
     #[must_use]

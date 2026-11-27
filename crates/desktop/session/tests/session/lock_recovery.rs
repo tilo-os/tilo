@@ -64,14 +64,23 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
         "the lock screen's process is gone"
     );
 
-    // The session is still locked, and starts its screen again: the person is not left looking at
-    // their shell, and not let into it either.
+    // The session is still locked, and what shows the lock is there again: the screen it started
+    // again when that screen can stay up, and the session's own view of the lock when it cannot.
+    // This session serves its apps nothing — no device's daemon stands behind it — so the screen
+    // it starts reaches nothing and goes; what a person gets either way is the lock over their
+    // shell, never the shell, and what the screen that went drew is not the lock any more, so
+    // nothing waits for it or types into it.
     pump(&mut session, &mut [], |session, _| {
-        session.surfaces().running("lock")
+        session.compositor().lock_drawn() && !session.compositor().lock_client_drawn()
     });
     assert!(
         session.compositor().locked(),
         "the session is still locked when its screen was started again"
+    );
+    assert!(
+        session.compositor().lock_drawn(),
+        "the lock is on the displays while the screen that shows it is started again, not a frame \
+         of the screen that went and not nothing"
     );
     let again = until_drawn(&mut session, &DISPLAYS, &shots);
     for (index, display) in DISPLAYS.iter().enumerate() {
