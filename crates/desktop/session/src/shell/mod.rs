@@ -634,12 +634,14 @@ impl Shell {
                 }
             }
         }
+        let owner = view.owner_of(workspace).ok();
         let people: Vec<Value> = members
             .members
             .iter()
             .filter(|member| !member.removed)
             .map(|member| {
-                let name = if member.name.trim().is_empty() {
+                let mut row = member.clone();
+                if member.name.trim().is_empty() {
                     let by_person = member.id.person_id().and_then(|person| named.get(person));
                     let by_device = members
                         .devices
@@ -647,27 +649,16 @@ impl Shell {
                         .into_iter()
                         .flatten()
                         .find_map(|device| named.get(&hex::encode(device)));
-                    by_person
-                        .or(by_device)
-                        .map_or(member.name.as_str(), String::as_str)
-                } else {
-                    member.name.as_str()
-                };
-                let mut row = serde_json::Map::new();
-                row.insert(
-                    "actor".to_owned(),
-                    serde_json::to_value(tilo_actions::Actor::Member(member.id.clone()))
-                        .unwrap_or_default(),
-                );
-                row.insert("name".to_owned(), serde_json::json!(name));
-                row.insert("role".to_owned(), serde_json::json!(member.role));
-                row.insert("joined_at".to_owned(), serde_json::json!(member.joined_at));
-                if let Some(avatar) = &member.avatar
-                    && let Some(photo) = collab_types::photo_url(&avatar.0)
-                {
-                    row.insert("photo".to_owned(), serde_json::json!(photo));
+                    if let Some(name) = by_person.or(by_device) {
+                        row.name.clone_from(name);
+                    }
                 }
-                Value::Object(row)
+                row.members_row(
+                    member
+                        .id
+                        .person_id()
+                        .is_some_and(|person| owner.as_deref() == Some(person)),
+                )
             })
             .collect();
         let roots = tilolang_tilo::platform::platform_roots();

@@ -104,8 +104,7 @@ use tilo_server_protocol::WorkspaceId;
 pub const INVITATIONS: &str = "invitation.list";
 /// Cancelling an unredeemed invitation: part of inviting.
 pub const CANCEL_INVITATION: &str = "invitation.cancel";
-/// The people in the workspace and their roles: what whoever invites sees
-/// before and after inviting.
+/// Reading who is in the workspace: its members' resource, which every member reads.
 pub(crate) const MEMBERS: &str = "member.list";
 /// Revoke a key the caller holds or one it minted: the workspace records the
 /// revocation, and every holder and API server refuses the key from then on.
@@ -276,7 +275,8 @@ const VERBS: [Verb; 53] = [
     Verb {
         id: MEMBERS,
         label: "List members",
-        check: governance::ADD_MEMBER,
+        // Every member reads who else is in the workspace, as its members' resource answers it.
+        check: "",
         kind: ActionKind::Read,
         params: Vec::new,
     },
@@ -2369,6 +2369,11 @@ impl Workspaces {
                 .grant_device(workspace_id, caller)
                 .await
                 .ok_or(ActionCallError::UnknownAction)?,
+            None if action == MEMBERS => {
+                return Err(ActionCallError::refused(
+                    "Only the workspace's members read who is in it",
+                ));
+            }
             None => return Err(ActionCallError::UnknownAction),
         };
         let workspace = {
@@ -3231,6 +3236,12 @@ impl Workspaces {
             // Naming themselves is every person's; so is reading what their
             // workspace trusts and where it fetches from, which their Store
             // shows them.
+            // Every member reads who else is in it, and an agent as far as its grants let it.
+            if verb.id == MEMBERS {
+                return grants.is_none_or(|grants| {
+                    grants.answer(&verb.operation(GOVERNANCE), now) != Answer::Deny
+                });
+            }
             return matches!(
                 verb.id,
                 NAME | TRUSTED_ATTESTORS | REVOKED_PUBLISHERS | REGISTRIES
@@ -3304,16 +3315,6 @@ impl Workspaces {
             }
         }
         rows
-    }
-
-    /// The people in `workspace`, one row each, as the members' resource's one builder lists
-    /// them ([`crate::workspaces::resources::member_rows`]).
-    pub(super) async fn members(&self, workspace: &str) -> Result<Vec<Value>, CollaborationError> {
-        let without = self.member_list_without(workspace);
-        let hosted = self.workspace(workspace).await?;
-        let hosted = hosted.lock().await;
-        crate::workspaces::resources::member_rows(&hosted.peer(), without.as_deref())
-            .map_err(CollaborationError::new)
     }
 
     /// An invitation, answered with the link that hands it over.
@@ -3429,7 +3430,7 @@ impl Workspaces {
             MEMBERS => Ok(self
                 .members(workspace)
                 .await
-                .map_err(|error| ActionCallError::refused(error.to_string()))?
+                .map_err(ActionCallError::refused)?
                 .into()),
             NAME => {
                 self.name_self(
@@ -3487,7 +3488,7 @@ impl Workspaces {
         Ok(self
             .members(workspace)
             .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?
+            .map_err(ActionCallError::refused)?
             .into())
     }
 
@@ -3767,7 +3768,7 @@ impl Workspaces {
                 Ok(self
                     .members(workspace)
                     .await
-                    .map_err(|error| ActionCallError::refused(error.to_string()))?
+                    .map_err(ActionCallError::refused)?
                     .into())
             }
             governance::BAN => {

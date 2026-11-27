@@ -149,22 +149,22 @@ async fn invoke(
     }
 }
 
-/// Inviting and what is part of it: the invitations made, who is in the workspace, and the
-/// addresses left at its entry while it takes people by invitation.
-const INVITE_FAMILY: [&str; 7] = [
+/// Inviting and what is part of it: the invitations made, and the addresses left at its entry
+/// while it takes people by invitation.
+const INVITE_FAMILY: [&str; 6] = [
     WORKSPACE_INVITE,
     INVITATIONS,
     CANCEL_INVITATION,
-    MEMBERS,
     WAIT_LIST,
     UNLIST,
     MAIL_INVITATION,
 ];
 
-/// Leaving, naming themselves, and reading what their workspace trusts and
-/// where it fetches from: what every person is offered in a workspace they are
-/// in and no grant gives them.
-const OWN: [&str; 5] = [
+/// Reading who is in it, leaving, naming themselves, and reading what their workspace trusts
+/// and where it fetches from: what every person is offered in a workspace they are in and no
+/// grant gives them.
+const OWN: [&str; 6] = [
+    MEMBERS,
     governance::REMOVE_MEMBER,
     NAME,
     TRUSTED_ATTESTORS,
@@ -251,6 +251,7 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     assert_eq!(
         moderator,
         offered_in_catalogue([
+            MEMBERS,
             governance::REMOVE_MEMBER,
             governance::BAN,
             governance::RENAME,
@@ -864,7 +865,7 @@ async fn a_member_granted_removing_removes_anyone_but_the_owner() {
     assert!(
         removed.as_array().is_some_and(|people| people
             .iter()
-            .all(|row| row["member"]["person"] != person(&ada))),
+            .all(|row| row["actor"]["member"]["person"] != person(&ada) || row["removed"] == true)),
         "{removed}"
     );
     let members = workspaces.summary(&workspace).await.unwrap().members;
@@ -930,9 +931,10 @@ fn roles(listed: &Value) -> Vec<(String, String)> {
         .as_array()
         .unwrap()
         .iter()
+        .filter(|row| row["removed"] != true)
         .filter_map(|row| {
             Some((
-                row["member"]["person"].as_str()?.to_owned(),
+                row["actor"]["member"]["person"].as_str()?.to_owned(),
                 row["role"].as_str()?.to_owned(),
             ))
         })

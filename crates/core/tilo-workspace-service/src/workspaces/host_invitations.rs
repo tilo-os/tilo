@@ -390,7 +390,7 @@ mod tests {
         let members = workspaces.members(&workspace).await.unwrap();
         let row = members
             .iter()
-            .find(|row| row["member"]["person"] == hex::encode(owner))
+            .find(|row| row["actor"]["member"]["person"] == hex::encode(owner))
             .unwrap_or_else(|| panic!("the owner has a row in {members:?}"));
         assert_eq!(row["owner"], true, "{members:?}");
         assert_eq!(row["administrator"], true, "{members:?}");

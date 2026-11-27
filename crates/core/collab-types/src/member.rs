@@ -148,6 +148,40 @@ impl Member {
         Some(member)
     }
 
+    /// This member's row of the workspace's `workspace/members` resource, the one shape every
+    /// surface reads them in ([`Self::from_roster_row`] reads it back): their actor, name and role,
+    /// whether the workspace removed them, whether they own it (`owner`) or administer it, when it
+    /// admitted them and the picture they set.
+    #[must_use]
+    pub fn members_row(&self, owner: bool) -> serde_json::Value {
+        let mut row = serde_json::Map::new();
+        let mut put = |field: &str, value: serde_json::Value| {
+            row.insert(field.to_owned(), value);
+        };
+        put(
+            "actor",
+            serde_json::json!(tilo_member_types::Actor::Member(self.id.clone())),
+        );
+        put("name", serde_json::json!(self.name));
+        put("removed", serde_json::json!(self.removed));
+        put("owner", serde_json::json!(owner));
+        put("administrator", serde_json::json!(self.administrator));
+        if let Some(role) = self.role {
+            put("role", serde_json::json!(role));
+        }
+        if let Some(joined) = self.joined_at {
+            put("joined_at", serde_json::json!(joined));
+        }
+        if let Some(photo) = self
+            .avatar
+            .as_ref()
+            .and_then(|avatar| crate::photo_url(&avatar.0))
+        {
+            put("photo", serde_json::json!(photo));
+        }
+        serde_json::Value::Object(row)
+    }
+
     /// `id`'s row named `name`, with no role the workspace has decided and the colour their kind
     /// gives them.
     #[must_use]

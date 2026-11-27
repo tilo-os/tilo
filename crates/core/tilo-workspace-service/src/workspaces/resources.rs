@@ -1911,13 +1911,8 @@ impl Workspaces {
         // beside it: its names, roles, join times and pictures are read here, where the
         // workspace's profiles and its record of its agents are.
         if is_workspace_members_read(command) {
-            let reading = self
-                .reading_of(workspace)
-                .await
-                .ok_or_else(|| "this device does not have that workspace".to_owned())?;
-            let peer = reading.replica.read(tilo_peer_state::StatePeer::clone);
             return Ok(collab_types::store::wire::Reply::Content(Some(
-                workspace_members(self, workspace, &peer, &agents_named(&reading, workspace))?,
+                serde_json::json!({ "people": self.members(workspace).await? }),
             )));
         }
         if let Some(answer) = self.read_record_now(workspace, reader, command) {
@@ -1930,6 +1925,21 @@ impl Workspaces {
             .await
             .ok_or_else(|| "this device does not have that workspace".to_owned())?;
         read_from(&reading, reader, command)
+    }
+
+    /// Who is in `workspace` now, one row each, as its members' resource lists them
+    /// ([`workspace_members`]): what reading the resource answers, and what reading or changing
+    /// who is in it through its governance answers.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or its governance does not read.
+    pub(super) async fn members(&self, workspace: &str) -> Result<Vec<serde_json::Value>, String> {
+        let reading = self
+            .reading_of(workspace)
+            .await
+            .ok_or_else(|| "this device does not have that workspace".to_owned())?;
+        let peer = reading.replica.read(tilo_peer_state::StatePeer::clone);
+        workspace_members(self, workspace, &peer, &agents_named(&reading, workspace))
     }
 
     /// Answer `command`, a read of `workspace`'s record as `reader` reads it, from the store the
@@ -2048,38 +2058,6 @@ pub(super) fn place(owner: bool, administrator: bool, role: Option<&str>) -> Opt
     }
 }
 
-/// The workspace's members as its governance lists them, one row each: their actor, what it calls
-/// them, their role, and whether they own or administer it. `without` is the one person a listing
-/// leaves out: this host's own person, where it keeps workspaces of people's own and this is no
-/// workspace of theirs, so it serves it without being one of its people. On a person's own
-/// computer that person is the workspace's, and an owner who hands the workspace on stays in it
-/// as an administrator.
-pub(super) fn member_rows(
-    peer: &tilo_peer_state::StatePeer,
-    without: Option<&str>,
-) -> Result<Vec<serde_json::Value>, String> {
-    let owner = peer.owner();
-    let list = peer.governance().member_list(tilo_clock::wall())?;
-    Ok(list
-        .members
-        .iter()
-        .filter(|member| !member.removed)
-        .filter(|member| member.id.person_id() != without)
-        .map(|member| {
-            let owns = member.root().is_some_and(|root| root == owner);
-            let role = member.role.map(tilo_peer_state::join::Role::key);
-            serde_json::json!({
-                "member": member.id,
-                "name": (!member.name.is_empty()).then_some(&member.name),
-                "role": role,
-                "owner": owns,
-                "administrator": member.administrator,
-                "place": place(owns, member.administrator, role),
-            })
-        })
-        .collect())
-}
-
 /// The agents that work in `workspace`, as its record of its agents names them, for the members'
 /// resource: read from the store `reading` shares, never through the workspace's lock. An app
 /// reads the members' resource while it answers a call, and whatever waits on that call may have
@@ -2126,8 +2104,8 @@ fn is_workspace_members_read(command: &collab_types::store::wire::Command) -> bo
 /// The workspace's members' resource as its governance has them: its owner and its members,
 /// none who are blocked (they hold nothing), then the agents its grants admit and the bots they
 /// installed. Each row carries what a view shows of them — the name the workspace keeps, their
-/// role, when they joined and the picture they set — so every surface that shows people reads
-/// them here, through the store. `workspace` is the one whose people it lists: this host's own
+/// role, whether they own or administer it, when they joined and the picture they set — so every
+/// surface that shows people reads them here, through the store. `workspace` is the one whose people it lists: this host's own
 /// person is left out where it serves the workspace without being one of its people
 /// ([`Workspaces::member_list_without`]).
 fn workspace_members(
@@ -2135,11 +2113,12 @@ fn workspace_members(
     workspace: &str,
     peer: &tilo_peer_state::StatePeer,
     agents: &[AgentRow],
-) -> Result<serde_json::Value, String> {
+) -> Result<Vec<serde_json::Value>, String> {
     let now = tilo_clock::unix_now_ns() / 1_000_000_000;
     let policy = peer.governance().member_policy()?;
     let listed = peer.governance().member_list(tilo_clock::wall())?;
     let without = workspaces.member_list_without(workspace);
+    let owner = peer.owner();
     let mut rows: Vec<serde_json::Value> = Vec::new();
     for member in &listed.members {
         let Some(root) = member.root() else {
@@ -2152,32 +2131,11 @@ fn workspace_members(
         if !member.removed && policy.is_blocked(&person) {
             continue;
         }
-        let who = tilo_actions::Actor::Member(tilo_actions::MemberId::Person(
-            tilo_actions::PersonId::from(person.as_str()),
-        ));
-        let mut row = serde_json::Map::new();
-        row.insert(
-            "actor".into(),
-            serde_json::to_value(&who).map_err(|error| error.to_string())?,
-        );
-        row.insert("name".into(), serde_json::json!(member.name));
-        row.insert("removed".into(), serde_json::json!(member.removed));
-        if let Some(role) = member.role {
-            row.insert(
-                "role".into(),
-                serde_json::to_value(role).map_err(|error| error.to_string())?,
-            );
-        }
-        if let Some(joined) = policy.joined_at(&person) {
-            row.insert("joined_at".into(), serde_json::json!(joined));
-        }
-        if let Some(photo) = workspaces
+        let mut row = member.clone().joined_at(policy.joined_at(&person));
+        row.avatar = workspaces
             .person_profile_photo(&root)
-            .and_then(|bytes| collab_types::photo_url(&bytes))
-        {
-            row.insert("photo".into(), serde_json::json!(photo));
-        }
-        rows.push(serde_json::Value::Object(row));
+            .map(collab_types::AvatarBytes);
+        rows.push(row.members_row(root == owner));
     }
     for (agent, _) in policy.agent_members_at(now) {
         let id = agent.id().to_owned();
@@ -2187,25 +2145,14 @@ fn workspace_members(
         let named = agents
             .iter()
             .find(|named| named.id == id && named.acts_for == acts_for);
-        let mut row = serde_json::Map::new();
-        row.insert(
-            "actor".into(),
-            serde_json::to_value(tilo_actions::Actor::Member(agent.clone()))
-                .map_err(|error| error.to_string())?,
+        let mut row = collab_types::member::Member::named(
+            agent.clone(),
+            named.map_or_else(|| id.clone(), |named| named.name.clone()),
         );
-        row.insert(
-            "name".into(),
-            serde_json::json!(named.map_or_else(|| id.clone(), |named| named.name.clone())),
-        );
-        row.insert("removed".into(), serde_json::json!(false));
-        if let Some(photo) = named
+        row.avatar = named
             .and_then(|named| named.avatar.as_deref())
-            .and_then(collab_types::avatar_of)
-            .and_then(|avatar| collab_types::photo_url(&avatar.0))
-        {
-            row.insert("photo".into(), serde_json::json!(photo));
-        }
-        rows.push(serde_json::Value::Object(row));
+            .and_then(collab_types::avatar_of);
+        rows.push(row.members_row(false));
     }
     // The workspace's installed bots: the grants it made them name them, and a bot reads what
     // they allow it through the host that runs it.
@@ -2222,14 +2169,11 @@ fn workspace_members(
     bots.sort_unstable();
     bots.dedup();
     for bot in bots {
-        let who = tilo_actions::Actor::Member(tilo_member_types::MemberId::Bot(bot.clone()));
-        rows.push(serde_json::json!({
-            "actor": serde_json::to_value(&who).map_err(|error| error.to_string())?,
-            "name": bot,
-            "removed": false,
-        }));
+        let row =
+            collab_types::member::Member::named(tilo_member_types::MemberId::Bot(bot.clone()), bot);
+        rows.push(row.members_row(false));
     }
-    Ok(serde_json::json!({ "people": rows }))
+    Ok(rows)
 }
 
 /// An agent as the workspace's record of its agents names it, for the members' resource.

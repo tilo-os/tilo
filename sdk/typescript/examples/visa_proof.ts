@@ -404,11 +404,13 @@ async function main(): Promise<number> {
     "the link lands them in Jane's workspace as an editor",
   );
   const reviewerPerson = accepted.person as string | null;
-  const members = await act<{ person: string; role: string; name?: string | null }[]>(workspace, "workspace/members#list");
-  say("   members", members.map((member) => `${member.name ?? member.person.slice(0, 8)} (${member.role})`).join(", "));
+  type Row = { actor: { member?: { person?: string } }; role?: string; name: string; removed: boolean };
+  const members = (await act<Row[]>(workspace, "workspace/members#list")).filter((member) => !member.removed);
+  const person = (member: Row) => member.actor.member?.person ?? "";
+  say("   members", members.map((member) => `${member.name || person(member).slice(0, 8)} (${member.role})`).join(", "));
   check(
     reviewerPerson === null ||
-      members.some((member) => member.person === reviewerPerson && member.role === "editor"),
+      members.some((member) => person(member) === reviewerPerson && member.role === "editor"),
     "the backend sees the reviewer among Jane's workspace's members",
   );
   check(

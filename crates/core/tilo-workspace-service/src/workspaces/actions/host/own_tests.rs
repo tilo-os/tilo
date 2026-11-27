@@ -1863,7 +1863,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
         .as_array()
         .unwrap()
         .iter()
-        .find(|member| member["member"]["person"] == hex::encode(rosa_person))
+        .find(|member| member["actor"]["member"]["person"] == hex::encode(rosa_person))
         .cloned();
     assert_eq!(rosa_row.unwrap()["role"], "editor", "{members}");
     site.server.shutdown().await;
@@ -2086,7 +2086,7 @@ async fn an_owners_key_administers_nothing_and_a_device_of_theirs_makes_an_admin
         .as_array()
         .unwrap()
         .iter()
-        .find(|member| member["member"]["person"] == hex::encode(grace_person))
+        .find(|member| member["actor"]["member"]["person"] == hex::encode(grace_person))
         .cloned()
         .unwrap_or_else(|| panic!("Grace is listed: {listed}"));
     assert_eq!(
@@ -2272,7 +2272,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     let rows = members.as_array().unwrap();
     let row = |person: &[u8; 32]| {
         rows.iter()
-            .find(|row| row["member"]["person"] == hex::encode(*person))
+            .find(|row| row["actor"]["member"]["person"] == hex::encode(*person))
             .cloned()
             .unwrap_or_else(|| panic!("{person:02x?} has a row in {members}"))
     };
@@ -2288,7 +2288,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     assert!(
         !rows
             .iter()
-            .any(|row| row["member"]["person"] == hex::encode(site.owner.user_public_key)),
+            .any(|row| row["actor"]["member"]["person"] == hex::encode(site.owner.user_public_key)),
         "the host's device runs the workspace without being one of its people: {members}"
     );
     assert!(

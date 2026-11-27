@@ -75,7 +75,7 @@ async fn members(device: &host::Member, workspace: &str) -> Vec<Value> {
 /// The row of the person `person` among `rows`.
 fn row<'a>(rows: &'a [Value], person: &str) -> &'a Value {
     rows.iter()
-        .find(|row| row["member"]["person"] == person)
+        .find(|row| row["actor"]["member"]["person"] == person)
         .unwrap_or_else(|| panic!("{person} has a row: {rows:?}"))
 }
 

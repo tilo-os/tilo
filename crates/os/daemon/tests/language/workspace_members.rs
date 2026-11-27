@@ -40,7 +40,7 @@ fn people(answered: &Result<InvocationUpdate, ActionCallError>) -> Vec<Value> {
 /// The row of `person` among them, while the workspace keeps them.
 fn row_of<'a>(rows: &'a [Value], person: &str) -> Option<&'a Value> {
     rows.iter()
-        .find(|row| row["member"]["person"] == person && row["removed"] != true)
+        .find(|row| row["actor"]["member"]["person"] == person && row["removed"] != true)
 }
 
 /// The people the workspace keeps now, as `device`, one of its owner's, reads them.
