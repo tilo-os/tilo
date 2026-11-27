@@ -484,6 +484,31 @@ async fn refused(fixture: &Fixture, caller: &Caller, arguments: Value, why: &str
     );
 }
 
+/// Once `caller`'s turn ended, its read with `arguments` is refused with the turn's run, and
+/// nothing reaches the folder.
+async fn refused_once_the_turn_ended(fixture: &Fixture, caller: &Caller, arguments: Value) {
+    caller
+        .execution_lease()
+        .expect("the turn runs in a run of its own")
+        .close();
+    let reads = fixture.recorder.0.lock().unwrap().len();
+    let request = read_text(&fixture.workspace, arguments);
+    let answer = tilo_test_env::within(
+        "the broker answers the read",
+        settled(fixture.state.action_invoke(caller, None, None, &request)),
+    )
+    .await;
+    assert!(
+        matches!(answer, Err(ActionCallError::Unavailable { .. })),
+        "a read after the turn ended is refused with the turn's run: {answer:?}"
+    );
+    assert_eq!(
+        fixture.recorder.0.lock().unwrap().len(),
+        reads,
+        "nothing was read after the turn ended"
+    );
+}
+
 /// A file a message sends the agent is shared with the turn the message started: that one
 /// version, by its content hash, labelled as content from outside, while the turn goes. Another
 /// file, another version of the same path and a message that sends none stay refused, as does
@@ -561,26 +586,7 @@ async fn a_turn_reads_the_version_its_message_sends_and_nothing_else() {
     .await;
 
     // Once the turn ended, the file it read is refused.
-    caller
-        .execution_lease()
-        .expect("the turn runs in a run of its own")
-        .close();
-    let reads = fixture.recorder.0.lock().unwrap().len();
-    let request = read_text(&workspace, address(SENT));
-    let answer = tilo_test_env::within(
-        "the broker answers the read",
-        settled(fixture.state.action_invoke(&caller, None, None, &request)),
-    )
-    .await;
-    assert!(
-        matches!(answer, Err(ActionCallError::Unavailable { .. })),
-        "a read after the turn ended is refused with the turn's run: {answer:?}"
-    );
-    assert_eq!(
-        fixture.recorder.0.lock().unwrap().len(),
-        reads,
-        "nothing was read after the turn ended"
-    );
+    refused_once_the_turn_ended(&fixture, &caller, address(SENT)).await;
     // The agent holds no grant of the folder: without a turn, the same read is refused.
     let outside = agent_turn(&workspace, CONVERSATION, "sends");
     refused(
