@@ -22,7 +22,7 @@ use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
 use tilo_session::{Options, Session, SessionConfig};
-use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SEARCH_RESOURCE};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{Guide, Pair};
 use tilo_ui_base::{input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier};
@@ -60,17 +60,23 @@ fn take_turns() -> MutexGuard<'static, ()> {
     guard
 }
 
-/// A session with the person's own settings.
+/// A session with the person's own settings: the sections' own provider, as the session binary
+/// mounts it (`main.rs`), so the shell's hint asks find the actions they name.
 fn session_with(config: SessionConfig, outputs: &[OutputConfig]) -> Session {
     let mut session = crate::common::headless_on(
         outputs,
         Options {
             collab: false,
             config,
+            services: vec![Box::new(settings_sections::service::SettingsService::new())],
             ..Options::default()
         },
     );
     session.step(Duration::from_millis(1)).expect("step");
+    // The workspace the session starts with stands before anything is asked of the desktop: a
+    // test that opens another goes back to this one, and a test that read it earlier would wait
+    // on no workspace at all.
+    until(&mut session, |session| workspace(session).is_some());
     session
 }
 
@@ -234,14 +240,12 @@ fn open_a_workspace(session: &mut Session) -> Option<tilo_desktop_model::Workspa
     before
 }
 
-/// Whether the shell publishes the resource `id` now: the open search, say.
-fn published(session: &Session, id: &str) -> bool {
-    fn find(resources: &[ResourceSpec], id: &str) -> bool {
-        resources
-            .iter()
-            .any(|resource| resource.id.as_str() == id || find(&resource.children, id))
-    }
-    find(&session.resources(), id)
+/// Whether the shell's launcher stands: the search a Super tap opens, which the shell draws
+/// itself (`session.launcher`), where the desktop's own palette once answered it.
+fn launcher_up(session: &Session) -> bool {
+    session
+        .read("desktop:overlays")
+        .is_some_and(|reading| reading["here"] == "launcher")
 }
 
 /// Ask the guide for the new keys of the shortcut `action` , as a person does: the first keycap
@@ -656,8 +660,8 @@ fn the_guide_holds_the_desktops_chords_back_while_it_is_up() {
         "the chord that changes workspaces waits until the guide is gone"
     );
     assert!(
-        !published(&session, SEARCH_RESOURCE),
-        "and search does not open behind the guide"
+        !launcher_up(&session),
+        "and the launcher does not open behind the guide"
     );
     assert!(up(&session), "the guide is still up");
 
@@ -666,5 +670,5 @@ fn the_guide_holds_the_desktops_chords_back_while_it_is_up() {
     chord(&mut session, &[KEY_LEFT_META, KEY_PAGEUP]);
     until(&mut session, |session| workspace(session) == first);
     chord(&mut session, &[KEY_LEFT_META, KEY_SPACE]);
-    until(&mut session, |session| published(session, SEARCH_RESOURCE));
+    until(&mut session, launcher_up);
 }
