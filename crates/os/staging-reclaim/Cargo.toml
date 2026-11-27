@@ -26,6 +26,8 @@ path = "examples/staging-reclaim-fixture.rs"
 rustix = { workspace = true, features = ["fs", "std"] }
 # The disk's exclusive lock, as the partitioning tools take it.
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
+# `sfdisk --json` as a typed partition table.
+block-devices = { path = "../block-devices" }
 serde_json.workspace = true
 # Python's int(), str(), repr() and ==, as the reclaim decisions were defined.
 tilo-pycompat = { path = "../tilo-pycompat" }

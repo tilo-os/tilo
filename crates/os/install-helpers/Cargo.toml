@@ -67,6 +67,8 @@ path = "../firstboot-files/src/main.rs"
 [dependencies]
 # The code refresh daemon's hold on the backend's lock.
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
+# `sfdisk --json` as a typed partition table.
+block-devices = { path = "../block-devices" }
 tilo-firstboot-files = { path = "../firstboot-files" }
 libc.workspace = true
 uuid.workspace = true

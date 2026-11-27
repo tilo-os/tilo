@@ -2,9 +2,11 @@
 //! installer.
 //!
 //! [`lsblk`] runs `lsblk -J -b` with the caller's columns into a typed
-//! [`BlockDevice`] tree, tolerating what older util-linux releases emit; [`udisks`]
-//! maps kernel device names to `UDisks2` object paths and wraps the calls the tools
-//! share. What each tool does with a device stays with the tool.
+//! [`BlockDevice`] tree, tolerating what older util-linux releases emit; [`sfdisk`]
+//! reads `sfdisk --json` into the table's label, disk GUID and partition
+//! identities; [`udisks`] maps kernel device names to `UDisks2` object paths and
+//! wraps the calls the tools share. What each tool does with a device stays with
+//! the tool.
 
 use std::path::Path;
 
@@ -13,6 +15,7 @@ pub mod lsblk;
 pub mod migration_ext4;
 #[cfg_attr(not(unix), path = "root_customization_unsupported.rs")]
 pub mod root_customization;
+pub mod sfdisk;
 pub mod udisks;
 
 pub use lsblk::{BlockDevice, Lsblk};

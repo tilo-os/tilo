@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use advisory_lock::FileLock;
+use block_devices::sfdisk;
 use serde_json::Value;
 use tilo_pycompat as py;
 
@@ -328,18 +329,19 @@ pub fn find_disk(host: &dyn Host, record: &Record) -> Result<String, Error> {
             let name = py::str_of(index(item, "name")?);
             let probe = host.run(&["sfdisk", "--json", &name], None)?;
             if probe.code == 0 {
-                let parsed = json(&probe.stdout)?;
-                let empty = Value::Object(serde_json::Map::new());
-                let table = get(&parsed, "partitiontable")?.unwrap_or(&empty).clone();
-                for (field, source) in [("ptuuid", "id"), ("pttype", "label")] {
-                    let current = get(item, field)?.cloned();
-                    let value = if falsy(current.as_ref()) {
-                        get(&table, source)?.cloned().unwrap_or(Value::Null)
-                    } else {
-                        current.unwrap_or(Value::Null)
-                    };
-                    if let Value::Object(map) = item {
-                        map.insert(field.to_owned(), value);
+                let table = match sfdisk::parse(&probe.stdout) {
+                    Ok(table) => Some(table),
+                    Err(sfdisk::Error::NoTable) => None,
+                    Err(error) => return Err(Error::Incomplete(error.to_string())),
+                };
+                if let Some(table) = table {
+                    for (field, value) in [("ptuuid", table.id), ("pttype", table.label)] {
+                        if falsy(get(item, field)?)
+                            && !value.is_empty()
+                            && let Value::Object(map) = item
+                        {
+                            map.insert(field.to_owned(), Value::String(value));
+                        }
                     }
                 }
             }
@@ -394,39 +396,27 @@ pub fn partition_table(
     disk: &str,
     record: &Record,
 ) -> Result<Vec<Partition>, Error> {
-    let parsed = json(&checked(host, &["sfdisk", "--json", disk])?.stdout)?;
-    let table = index(&parsed, "partitiontable")?;
-    let id = get(table, "id")?.map_or_else(String::new, py::str_of);
-    if get(table, "label")?.and_then(Value::as_str) != Some("gpt")
-        || id.to_lowercase() != record.disk_guid
-    {
+    let output = checked(host, &["sfdisk", "--json", disk])?.stdout;
+    let table = sfdisk::parse(&output).map_err(|error| Error::Incomplete(error.to_string()))?;
+    if table.label != "gpt" || table.id != record.disk_guid {
         return Err(Error::Mismatch(format!(
             "partition table of {disk} is not the recorded GPT"
         )));
     }
-    let sector = get(table, "sectorsize")?;
-    if (match sector {
-        None => 0,
-        Some(value) => int(Some(value))?,
-    }) != record.sector_bytes
-    {
+    if i128::from(table.sector_bytes.unwrap_or(0)) != record.sector_bytes {
         return Err(Error::Mismatch(format!(
             "sector size of {disk} differs from the record"
         )));
     }
     let mut parts = Vec::new();
-    for part in list(get(table, "partitions")?)? {
-        let start = int(Some(index(&part, "start")?))?;
-        let size = int(Some(index(&part, "size")?))?;
-        let text = |key: &str| -> Result<String, Error> {
-            Ok(get(&part, key)?
-                .map_or_else(String::new, py::str_of)
-                .to_lowercase())
-        };
+    for part in &table.partitions {
+        let missing = || Error::Incomplete("incomplete GPT partition identity".to_owned());
+        let start = i128::from(part.start.ok_or_else(missing)?);
+        let size = i128::from(part.size.ok_or_else(missing)?);
         parts.push(Partition {
-            node: py::str_of(index(&part, "node")?),
-            partuuid: text("uuid")?,
-            kind: text("type")?,
+            node: part.node.clone(),
+            partuuid: part.uuid.clone(),
+            kind: part.kind.clone(),
             first_lba: start,
             last_lba: start.saturating_add(size).saturating_sub(1),
         });
@@ -436,17 +426,8 @@ pub fn partition_table(
 
 pub fn partition_number(node: &str) -> Result<u32, Error> {
     let trimmed = node.strip_suffix('\n').unwrap_or(node);
-    let digits: String = trimmed
-        .chars()
-        .rev()
-        .take_while(char::is_ascii_digit)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    digits
-        .parse()
-        .map_err(|_| Error::Mismatch(format!("cannot derive a partition number from {node}")))
+    sfdisk::node_number(trimmed)
+        .ok_or_else(|| Error::Mismatch(format!("cannot derive a partition number from {node}")))
 }
 
 /// A node's holders (device-mapper children) and its mount points.

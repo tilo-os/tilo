@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
-use serde_json::Value;
+use block_devices::sfdisk;
 
 use super::{Fail, Outcome, Result, refuse};
 
@@ -201,99 +201,58 @@ pub fn guided_geometry(args: &[&str]) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// `int(value)` for an sfdisk count: a JSON integer or a decimal string.
-fn sfdisk_int(value: Option<&Value>) -> Option<i128> {
-    match value? {
-        Value::Number(number) => number
-            .as_i64()
-            .map(i128::from)
-            .or_else(|| number.as_u64().map(i128::from)),
-        Value::String(text) => text.trim().parse().ok(),
-        _ => None,
-    }
-}
-
-fn sfdisk_text(value: Option<&Value>) -> String {
-    value
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_lowercase()
-}
-
 /// `gpt`: one fact from `sfdisk --json` on stdin. `Ok(None)` is a quiet "not
 /// found" (exit 1).
 pub fn gpt(query: &str, uuid: Option<&str>, input: impl std::io::Read) -> Result<Option<String>> {
     let mut bytes = Vec::new();
     input.take(SFDISK_MAX_BYTES).read_to_end(&mut bytes)?;
-    let document: Value = serde_json::from_slice(&bytes)
+    let text = std::str::from_utf8(&bytes)
         .map_err(|_| Fail::Refusal("sfdisk output is malformed".into()))?;
-    let table = document
-        .get("partitiontable")
-        .ok_or_else(|| Fail::Refusal("sfdisk output has no partition table".into()))?;
-    let empty = Vec::new();
-    let partitions = match table.get("partitions") {
-        None => &empty,
-        Some(Value::Array(partitions)) => partitions,
-        Some(_) => return refuse("sfdisk partitions are malformed"),
-    };
+    let table = sfdisk::parse(text).map_err(|error| match error {
+        sfdisk::Error::NoTable => Fail::Refusal("sfdisk output has no partition table".into()),
+        _ => Fail::Refusal("sfdisk output is malformed".into()),
+    })?;
     let wanted = uuid.map(str::to_lowercase).unwrap_or_default();
-    let matching = || {
-        partitions
-            .iter()
-            .filter(|part| sfdisk_text(part.get("uuid")) == wanted)
-    };
+    let matching = || table.partitions.iter().filter(|part| part.uuid == wanted);
     match (query, uuid) {
         ("map", None) => {
-            let sector = sfdisk_int(table.get("sectorsize"))
+            let sector = table
+                .sector_bytes
                 .ok_or_else(|| Fail::Refusal("sfdisk reports no sector size".into()))?;
             let mut out = String::new();
-            for part in partitions {
-                let uuid = sfdisk_text(part.get("uuid"));
-                let count = |key: &str| match part.get(key) {
-                    None => Some(0),
-                    value => sfdisk_int(value).and_then(|count| count.checked_mul(sector)),
-                };
-                let (start, size) = (count("start"), count("size"));
+            for part in &table.partitions {
+                let count = |count: Option<u64>| count.unwrap_or(0).checked_mul(sector);
+                let (start, size) = (count(part.start), count(part.size));
                 let (Some(start), Some(size)) = (start, size) else {
                     return refuse("incomplete GPT partition identity");
                 };
-                if uuid.is_empty() || start <= 0 || size <= 0 {
+                if part.uuid.is_empty() || start == 0 || size == 0 {
                     return refuse("incomplete GPT partition identity");
                 }
-                let _ = writeln!(out, "{uuid}:{start}:{size}");
+                let _ = writeln!(out, "{}:{start}:{size}", part.uuid);
             }
             Ok(Some(out))
         }
         ("tilo-roots", None) => {
-            let roots = partitions
+            let roots = table
+                .partitions
                 .iter()
-                .filter(|part| sfdisk_text(part.get("type")) == TILO_ROOT_TYPE)
+                .filter(|part| part.kind == TILO_ROOT_TYPE)
                 .count();
             Ok(Some(format!("{roots}\n")))
         }
         ("number-node", Some(_)) => {
-            let found: Vec<&Value> = matching().collect();
+            let found: Vec<&sfdisk::Partition> = matching().collect();
             let [part] = found.as_slice() else {
                 return Ok(None);
             };
-            let node = part.get("node").and_then(Value::as_str).unwrap_or_default();
-            let digits = node
-                .len()
-                .saturating_sub(node.bytes().rev().take_while(u8::is_ascii_digit).count());
-            let number = node.get(digits..).unwrap_or_default();
-            if number.is_empty() {
+            let Some(number) = sfdisk::node_number(&part.node) else {
                 return Ok(None);
-            }
-            Ok(Some(format!("{number} {node}\n")))
+            };
+            Ok(Some(format!("{number} {}\n", part.node)))
         }
-        ("node", Some(_)) => Ok(matching()
-            .next()
-            .and_then(|part| part.get("node"))
-            .and_then(Value::as_str)
-            .map(|node| format!("{node}\n"))),
-        ("type", Some(_)) => Ok(matching()
-            .next()
-            .map(|part| format!("{}\n", sfdisk_text(part.get("type"))))),
+        ("node", Some(_)) => Ok(matching().next().map(|part| format!("{}\n", part.node))),
+        ("type", Some(_)) => Ok(matching().next().map(|part| format!("{}\n", part.kind))),
         _ => refuse("usage: gpt map|tilo-roots|number-node UUID|node UUID|type UUID"),
     }
 }

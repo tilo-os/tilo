@@ -1,76 +1,26 @@
 //! Pure parsers for the Linux adapter (`sfdisk --json`, `lsblk -J`, `/proc/self/mountinfo`,
 //! `/sys/class/power_supply`), free of I/O so they are tested on every development host.
 
-use block_devices::BlockDevice;
+use block_devices::{BlockDevice, sfdisk};
 use serde_json::Value;
 
 use super::platform::{Disk, Partition};
 
-fn as_u64(v: &Value) -> Option<u64> {
-    v.as_u64().or_else(|| v.as_str()?.trim().parse().ok())
-}
-
-pub fn node_number(node: &str) -> Option<u32> {
-    let digits: String = node
-        .chars()
-        .rev()
-        .take_while(char::is_ascii_digit)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    digits.parse().ok()
-}
-
 /// `sfdisk --json <disk>` for a GPT disk; `sector_bytes` is used when the dump predates the
 /// `sectorsize` field.
 pub fn disk_from_sfdisk(json: &str, size_bytes: u64, sector_bytes: u64) -> Result<Disk, String> {
-    let root: Value = serde_json::from_str(json).map_err(|e| format!("sfdisk JSON: {e}"))?;
-    let table = root
-        .get("partitiontable")
-        .ok_or("sfdisk JSON has no partition table")?;
-    if table.get("label").and_then(Value::as_str) != Some("gpt") {
+    let table = sfdisk::parse(json).map_err(|error| error.to_string())?;
+    if table.label != "gpt" {
         return Err("not-gpt".into());
     }
-    if table
-        .get("unit")
-        .and_then(Value::as_str)
-        .is_some_and(|u| u != "sectors")
-    {
+    if table.unit.as_deref().is_some_and(|unit| unit != "sectors") {
         return Err("sfdisk reported a unit other than sectors".into());
     }
-    let sector = table
-        .get("sectorsize")
-        .and_then(as_u64)
-        .unwrap_or(sector_bytes);
-    let field = |k: &str| {
-        table
-            .get(k)
-            .and_then(as_u64)
-            .ok_or_else(|| format!("sfdisk JSON lacks {k}"))
-    };
+    let sector = table.sector_bytes.unwrap_or(sector_bytes);
     let mut partitions = Vec::new();
-    for p in table
-        .get("partitions")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
-        let text = |k: &str| {
-            p.get(k)
-                .and_then(Value::as_str)
-                .map(str::to_ascii_lowercase)
-                .ok_or_else(|| format!("sfdisk partition lacks {k}"))
-        };
-        let node = p.get("node").and_then(Value::as_str).unwrap_or_default();
-        let start = p
-            .get("start")
-            .and_then(as_u64)
-            .ok_or("partition lacks start")?;
-        let size = p
-            .get("size")
-            .and_then(as_u64)
-            .ok_or("partition lacks size")?;
+    for part in &table.partitions {
+        let start = part.start.ok_or("partition lacks start")?;
+        let size = part.size.ok_or("partition lacks size")?;
         if size == 0 {
             return Err("zero-size partition".into());
         }
@@ -78,28 +28,23 @@ pub fn disk_from_sfdisk(json: &str, size_bytes: u64, sector_bytes: u64) -> Resul
             .checked_add(size.saturating_sub(1))
             .ok_or("partition extent overflows")?;
         partitions.push(Partition {
-            number: node_number(node).ok_or("partition node has no number")?,
-            guid: text("uuid")?,
-            type_guid: text("type")?,
+            number: sfdisk::node_number(&part.node).ok_or("partition node has no number")?,
+            guid: part.uuid.clone(),
+            type_guid: part.kind.clone(),
             first_lba: start,
             last_lba,
         });
     }
+    if table.id.is_empty() {
+        return Err("sfdisk JSON lacks the disk GUID".into());
+    }
     Ok(Disk {
-        id: table
-            .get("device")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into(),
-        guid: table
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or("sfdisk JSON lacks the disk GUID")?
-            .to_ascii_lowercase(),
+        id: table.device,
+        guid: table.id,
         size_bytes,
         sector_bytes: sector,
-        first_usable_lba: field("firstlba")?,
-        last_usable_lba: field("lastlba")?,
+        first_usable_lba: table.first_usable_lba.ok_or("sfdisk JSON lacks firstlba")?,
+        last_usable_lba: table.last_usable_lba.ok_or("sfdisk JSON lacks lastlba")?,
         partitions,
     })
 }
@@ -337,21 +282,8 @@ pub fn efivar_file(payload: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    const SFDISK: &str = r#"{
-   "partitiontable": {
-      "label": "gpt",
-      "id": "A1B2C3D4-0000-4000-8000-00000000AAAA",
-      "device": "/dev/nvme0n1",
-      "unit": "sectors",
-      "firstlba": 34,
-      "lastlba": 1000215182,
-      "sectorsize": 512,
-      "partitions": [
-         {"node": "/dev/nvme0n1p1", "start": 2048, "size": 1228800, "type": "C12A7328-F81F-11D2-BA4B-00A0C93EC93B", "uuid": "0F0E0D0C-0000-4000-8000-000000000001", "name": "EFI System Partition"},
-         {"node": "/dev/nvme0n1p2", "start": 1230848, "size": 2097152, "type": "BC13C2FF-59E6-4262-A352-B275FD6F7172", "uuid": "0F0E0D0C-0000-4000-8000-000000000002"}
-      ]
-   }
-}"#;
+    /// The same captured dump the table reader's tests read.
+    const SFDISK: &str = include_str!("../../block-devices/tests/fixtures/sfdisk.json");
 
     tilo_test_env::scenario! {
         fn linux_tool_output_parses_exactly_and_refuses_overflow;
@@ -493,8 +425,6 @@ mod tests {
                 assert_eq!(file, vec![7, 0, 0, 0, 1, 0]);
                 assert_eq!(efivar_payload(&file).unwrap(), vec![1, 0]);
                 assert!(efivar_payload(&[7, 0]).is_err());
-                assert_eq!(node_number("/dev/nvme0n1p12"), Some(12));
-                assert_eq!(node_number("/dev/sda"), None);
             }
         }
     }

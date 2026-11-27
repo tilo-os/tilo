@@ -1,0 +1,15 @@
+{
+   "partitiontable": {
+      "label": "gpt",
+      "id": "A1B2C3D4-0000-4000-8000-00000000AAAA",
+      "device": "/dev/nvme0n1",
+      "unit": "sectors",
+      "firstlba": 34,
+      "lastlba": 1000215182,
+      "sectorsize": 512,
+      "partitions": [
+         {"node": "/dev/nvme0n1p1", "start": 2048, "size": 1228800, "type": "C12A7328-F81F-11D2-BA4B-00A0C93EC93B", "uuid": "0F0E0D0C-0000-4000-8000-000000000001", "name": "EFI System Partition"},
+         {"node": "/dev/nvme0n1p2", "start": 1230848, "size": 2097152, "type": "BC13C2FF-59E6-4262-A352-B275FD6F7172", "uuid": "0F0E0D0C-0000-4000-8000-000000000002"}
+      ]
+   }
+}

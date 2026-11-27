@@ -32,6 +32,7 @@ use serde_json::{Map, Value, json};
 
 use crate::args::{self, Arg, Command};
 use crate::py::Dumps;
+use block_devices::sfdisk;
 use staging_handoff_model::efi::{self, HardDriveLoadOption};
 
 pub mod backend_commands;
@@ -826,16 +827,9 @@ fn with_gpt_facts(
         return Ok(node);
     }
     let output = checked(host, &["sfdisk", "--json", disk])?;
-    let parsed: Value =
-        serde_json::from_str(&output).map_err(|error| Fail::Os(error.to_string()))?;
-    let table = parsed
-        .as_object()
-        .and_then(|parsed| parsed.get("partitiontable"))
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let fill = |target: &mut Map<String, Value>, key: &str, value: Option<&Value>| -> Result<()> {
-        let value = or_empty(value).to_lowercase();
+    let table = sfdisk::parse(&output).map_err(|error| Fail::Os(error.to_string()))?;
+    let fill = |target: &mut Map<String, Value>, key: &str, value: &str| -> Result<()> {
+        let value = value.to_lowercase();
         let have = or_empty(target.get(key)).to_lowercase();
         if !have.is_empty() && !value.is_empty() && have != value {
             return refuse(format!(
@@ -848,28 +842,24 @@ fn with_gpt_facts(
         }
         Ok(())
     };
-    fill(&mut node, "pttype", table.get("label"))?;
-    fill(&mut node, "ptuuid", table.get("id"))?;
-    let partitions: Vec<Map<String, Value>> = table
-        .get("partitions")
-        .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_object).cloned().collect())
-        .unwrap_or_default();
+    fill(&mut node, "pttype", &table.label)?;
+    fill(&mut node, "ptuuid", &table.id)?;
     for child in &mut kids {
         let name = child.get("name").cloned().unwrap_or(Value::Null);
         // `{part.get('node'): part}`: the last partition of a node wins.
-        let Some(part) = partitions
+        let Some(part) = table
+            .partitions
             .iter()
             .rev()
-            .find(|part| part.get("node").unwrap_or(&Value::Null) == &name)
+            .find(|part| part.node == name.as_str().unwrap_or_default())
         else {
             return refuse(format!(
                 "the GPT of {disk} does not list {}",
                 crate::py::str_of(&name)
             ));
         };
-        fill(child, "partuuid", part.get("uuid"))?;
-        fill(child, "parttype", part.get("type"))?;
+        fill(child, "partuuid", &part.uuid)?;
+        fill(child, "parttype", &part.kind)?;
     }
     if node.contains_key("children") {
         node.insert(
