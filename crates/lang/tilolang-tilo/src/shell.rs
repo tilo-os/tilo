@@ -219,6 +219,30 @@ fn compile_source() -> Result<Vec<Compiled>, String> {
     out.push(shell);
     Ok(out)
 }
+
+/// Make the shell's own roots (`root shell: Shell`, `root viewing: Viewing`, `root picking:
+/// Picking`) in `host`, and so let each type's initial action fill it: the bar's parts and the
+/// dock's items on a shell never arranged. A view over a root nobody made reads as the type
+/// starts, which for a shell is a bar with no part on it and a dock with nothing to open, so a
+/// host that runs the shell makes its roots before its views read them — whether it draws them
+/// under a device's windows (a session) or a workspace's desktop as a page.
+///
+/// Answers how many roots the shell names: none for a package that declares no named root.
+///
+/// # Errors
+/// The package is not loaded, or the store refused a root: in the words the host said.
+pub fn make_roots(app: &str, host: &crate::host::Host) -> Result<usize, String> {
+    let roots = host
+        .package(app)
+        .map(|package| package.meta.named_roots)
+        .unwrap_or_default();
+    for root in &roots {
+        host.root_resource(app, &root.ty)
+            .map_err(|error| format!("`root {}` of {app}: {error}", root.name))?;
+    }
+    Ok(roots.len())
+}
+
 /// What the origin last wrote of an item kept by key (a workspace, a task).
 struct Kept {
     /// Where the insert made it; `None` until the write that inserts it is applied.

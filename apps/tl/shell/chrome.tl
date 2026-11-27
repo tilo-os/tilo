@@ -629,24 +629,25 @@ type Edges {
 }
 
 /// The edges of the display this part draws on: its own row of the device's displays, found by the
-/// connector the part's screen names. A host that publishes no display of its own (a page, a shot)
-/// reads the device's summary, which is the same as the one display's on a device with one.
+/// connector the part's screen names. A surface that draws on no display of the device (a page,
+/// a shot) has nothing of the device's pointer or its windows on it: no pointer reaches its edge
+/// and no window stands where its bar or its dock rides, so its chrome shows as the person set
+/// it. The device's summary is no answer there — it is what some other display says, and a page
+/// has no share of it.
 fn edges_here() -> Edges {
-    let displays = device.displays
-    if let display = displays.displays.find(d -> d.connector == device.screen.connector) {
-        return Edges(
-            bar_reached: display.bar_reached,
-            bar_covered: display.bar_covered,
-            dock_reached: display.dock_reached,
-            dock_covered: display.dock_covered,
-        )
+    let connector = device.screen.connector
+    if connector != "" {
+        let displays = device.displays
+        if let display = displays.displays.find(d -> d.connector == connector) {
+            return Edges(
+                bar_reached: display.bar_reached,
+                bar_covered: display.bar_covered,
+                dock_reached: display.dock_reached,
+                dock_covered: display.dock_covered,
+            )
+        }
     }
-    return Edges(
-        bar_reached: displays.bar_reached,
-        bar_covered: displays.bar_covered,
-        dock_reached: displays.dock_reached,
-        dock_covered: displays.dock_covered,
-    )
+    return Edges(bar_reached: false, bar_covered: false, dock_reached: false, dock_covered: false)
 }
 
 /// Whether the top bar shows now: the person's settings, and what this display says of its edge.

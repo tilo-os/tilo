@@ -134,6 +134,9 @@ pub struct ShellPage {
     /// The layout as the device last handed it, and the apps as last listed.
     layout: Option<Value>,
     apps: Option<Vec<Listed>>,
+    /// Whether the shell's own roots were made in its store: the bar's parts and the dock's
+    /// items are what the package's initial action fills them with.
+    seeded: bool,
     /// The readings changed since the views were told.
     untold: bool,
     /// The press the window counts the desktop it handed last as, answered once the views drew
@@ -165,6 +168,7 @@ impl ShellPage {
             styles_after: None,
             layout: None,
             apps: None,
+            seeded: false,
             untold: true,
             answering: None,
             listing: None,
@@ -303,6 +307,33 @@ impl ShellPage {
             }
         }
         self.answering.is_some()
+    }
+
+    /// Make the shell's own roots in `instance`'s store, so the package's initial actions fill
+    /// them, as a session's part makes them when it runs the shell on a device
+    /// ([`tilolang_tilo::shell::make_roots`]). The host calls it before the first frame runs, so
+    /// the page opens on the bar and the dock the person arranged rather than on the roots'
+    /// starting state. Once.
+    pub fn seed(&mut self, instance: &mut Instance) {
+        if self.seeded {
+            return;
+        }
+        // The host runs before the roots can be made in it: opening it here runs no frame.
+        instance.open_host();
+        let Some(host) = instance.host() else {
+            return;
+        };
+        self.seeded = true;
+        let app = instance.app().to_owned();
+        match tilolang_tilo::shell::make_roots(&app, &host) {
+            Ok(made) => {
+                if made > 0 {
+                    // What the making wrote is the shell's to draw now, not after a move.
+                    instance.store_moved();
+                }
+            }
+            Err(error) => tracing::warn!(%error, "a page's shell roots were not made"),
+        }
     }
 
     /// Send what is queued with `send`. A read the connection does not take is asked again when

@@ -951,24 +951,21 @@ impl ShellPart {
         part
     }
 
-    /// Make the shell's own roots (`root shell: Shell`, `root viewing: Viewing`) and let the
-    /// package's migration seed them — the bar's fields and the dock's items, on a shell never
-    /// arranged — as an app's migration seeds its own, written to the shell's store.
+    /// Make the shell's own roots (`root shell: Shell`, `root viewing: Viewing`) and let each
+    /// type's initial action fill them — the bar's fields and the dock's items, on a shell never
+    /// arranged — as a resource starts the first time it is made. Written to the shell's store.
     fn seed(&mut self) {
         let Some(host) = self.instance.host() else {
             return;
         };
-        let roots = host
-            .package(self.instance.app())
-            .map(|package| package.meta.named_roots)
-            .unwrap_or_default();
-        for root in &roots {
-            if let Err(error) = host.root_resource(self.instance.app(), &root.ty) {
+        let made = match tilolang_tilo::shell::make_roots(self.instance.app(), &host) {
+            Ok(made) => made,
+            Err(error) => {
                 tracing::warn!(%error, "the shell's roots could not be made");
                 return;
             }
-        }
-        if roots.is_empty() {
+        };
+        if made == 0 {
             return;
         }
         // The roots' making first, then the seed that runs once they are had.

@@ -2657,6 +2657,12 @@ impl Hosted {
         let mut events = std::mem::take(&mut self.early);
         events.extend(self.connection.poll());
         let mut changed = !events.is_empty();
+        // The shell's own roots are made before its first frame reads them: a root nobody made
+        // reads as its type starts, so a page would open on a bar with no part on it and a dock
+        // with nothing to open, where a device's session makes them when it runs the shell.
+        if let Some(shell) = &mut self.shell {
+            shell.seed(&mut self.instance);
+        }
         self.instance.sync();
         self.prepare();
         // What the person picked and saw, as their own document keeps it, before the views run.
