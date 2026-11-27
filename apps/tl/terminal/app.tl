@@ -1499,12 +1499,9 @@ view commands_list(s: Session) {
 
 /// One command: who ran it, how it ended, what it printed, and what its parsers found.
 view command_row(s: Session, c: Command) {
-    ui.DisclosureRow(
-        title: "$ {c.command}",
-        secondary: command_line(c),
-        icon: if c.exit == 0 { .check } else { .x },
-        who: c.actor,
-    ) {
+    // The menu belongs to the row it lands on: a layout runs the menu a view places in it, and
+    // the row's own layout is where a right-click, the Menu key or a long press opens it.
+    stack(gap: .related) {
         ui.ContextMenu {
             ui.MenuItem("Run again", icon: .rotate_cw) {
                 on choose: rerun(s, c)
@@ -1513,30 +1510,37 @@ view command_row(s: Session, c: Command) {
                 on choose: copy_command(c)
             }
         }
-        if not c.output.is_empty() {
-            ui.Text(c.output.text(), role: .code)
-        }
-        for item in c.items.take(50) {
-            ui.ListRow(
-                title: item.text,
-                secondary: item_line(item),
-                icon: if item.kind == .error {
-                    .circle_x
-                } else if item.kind == .warning {
-                    .triangle_alert
-                } else if item.kind == .url {
-                    .link
-                } else if item.kind == .test_passed {
-                    .check
-                } else if item.kind == .test_failed {
-                    .x
-                } else if item.kind == .change { .file_code } else { .map_pin },
-            ) {
-                on activate: open_item(s, c, c.items.index_of(item) ?? 0)
+        ui.DisclosureRow(
+            title: "$ {c.command}",
+            secondary: command_line(c),
+            icon: if c.exit == 0 { .check } else { .x },
+            who: c.actor,
+        ) {
+            if not c.output.is_empty() {
+                ui.Text(c.output.text(), role: .code)
             }
-            if item.kind == .test_failed and item.code != "" {
-                ui.Button("Run this test again", icon: .rotate_cw, role: .plain) {
-                    on press: rerun_test(s, c, item.code)
+            for item in c.items.take(50) {
+                ui.ListRow(
+                    title: item.text,
+                    secondary: item_line(item),
+                    icon: if item.kind == .error {
+                        .circle_x
+                    } else if item.kind == .warning {
+                        .triangle_alert
+                    } else if item.kind == .url {
+                        .link
+                    } else if item.kind == .test_passed {
+                        .check
+                    } else if item.kind == .test_failed {
+                        .x
+                    } else if item.kind == .change { .file_code } else { .map_pin },
+                ) {
+                    on activate: open_item(s, c, c.items.index_of(item) ?? 0)
+                }
+                if item.kind == .test_failed and item.code != "" {
+                    ui.Button("Run this test again", icon: .rotate_cw, role: .plain) {
+                        on press: rerun_test(s, c, item.code)
+                    }
                 }
             }
         }
