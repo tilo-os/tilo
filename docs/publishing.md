@@ -290,6 +290,19 @@ the version has to be in the tree it builds. A release sets
 `v<version>`; `sign-cli`, `publish-crates` and `publish-npm-tilolang` refuse a tag naming any
 other version, and `sign-cli` runs the archived programs to check what they say.
 
+The release gate, at the commit the tag will name:
+
+```sh
+t test --rev <commit> publish-crates-dry-run published-crates-proof builder-manifests \
+  builder-licenses toolkit-closure portable check-page cli-x86_64 cli-aarch64 cli-release \
+  cli-rehearsal publish-sdks-dry-run
+```
+
+`portable` builds the toolkit as a program outside Tilo builds it, for wasm32-unknown-unknown
+too (`-p tilo-ui --no-default-features`: the default `native` feature is the native runner,
+whose tokio and mio do not build for the browser), and `check-page` builds tilolang-web and the
+other crates a page runs for wasm32.
+
 A step that stopped is dispatched again on the tag:
 
 ```sh
