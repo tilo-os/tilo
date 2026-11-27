@@ -182,8 +182,8 @@ fn wait_for_agent(device: &Device, site: &Site, name: &str) {
 }
 
 /// Send `text` to `to` (one recipient, or a list of them) from the session's send-to action, as a
-/// window's box does, and answer how it ended.
-fn send(device: &Device, site: &Site, to: &Value, text: &str) -> Value {
+/// window's box does: the send is carried out, or the test fails here with how it ended.
+fn send(device: &Device, site: &Site, to: &Value, text: &str) {
     let to = match to {
         Value::Array(_) => to.clone(),
         one => Value::Array(vec![one.clone()]),
@@ -196,14 +196,13 @@ fn send(device: &Device, site: &Site, to: &Value, text: &str) -> Value {
         || device.offered("session:send-to", "send"),
     );
     let answered = device.act_wait(&send, &json!({ "to": to, "text": text }));
-    // The send is answered when it is carried out: a receipt left accepted is an invocation
-    // nothing settles, which a caller waits out rather than reads.
-    let state = answered["update"]["state"].as_str().unwrap_or_default();
-    assert!(
-        !matches!(state, "accepted" | "progress"),
-        "the send settles: {answered}"
+    assert_eq!(
+        answered["update"]["state"],
+        json!("succeeded"),
+        "{} sends {text:?} to {to}: {answered}\n{}",
+        device.label,
+        device.diagnostic()
     );
-    answered
 }
 
 /// Ada's laptop in a published workspace, Chat open in it.
@@ -241,27 +240,22 @@ fn an_agent_another_device_makes_is_in_the_sessions_copy() {
 
     // The phone makes an agent in the workspace's record of them, and the laptop's workspace holds
     // it.
-    let made = send(
+    send(
         &phone,
         &site,
         &json!({ "kind": "new-agent", "name": "Ranger" }),
         "hello",
     );
-    assert!(
-        made.get("err").is_none(),
-        "the phone makes the agent: {made}"
-    );
     wait_for_agent(&laptop, &site, "Ranger");
 
     // The laptop's session took it into its own copy: an agent it makes under the same name is given
     // an id of its own, never the one the phone's agent holds.
-    let again = send(
+    send(
         &laptop,
         &site,
         &json!({ "kind": "new-agent", "name": "Ranger" }),
         "hello again",
     );
-    assert!(again.get("err").is_none(), "the laptop makes one: {again}");
     wait_until(
         &laptop,
         &site,
@@ -295,8 +289,7 @@ fn a_box_finds_one_agent_of_many_by_name() {
         .iter()
         .map(|name| json!({ "kind": "new-agent", "name": name }))
         .collect();
-    let made = send(&laptop, &site, &Value::Array(to), "start");
-    assert!(made.get("err").is_none(), "the agents are made: {made}");
+    send(&laptop, &site, &Value::Array(to), "start");
     wait_until(&laptop, &site, WAIT_LIMIT, "held fifty-five agents", || {
         held_agents(&laptop).len() >= 55
     });
@@ -306,13 +299,12 @@ fn a_box_finds_one_agent_of_many_by_name() {
         .expect("Helper 42 is made");
 
     // A box naming one of them alone reaches that one.
-    let found = send(
+    send(
         &laptop,
         &site,
         &json!({ "kind": "agent", "name": "Helper 42" }),
         "find the forty-second",
     );
-    assert!(found.get("err").is_none(), "the send is taken: {found}");
     wait_for_chat_holding(&laptop, &site, &[&id, "find the forty-second"]);
 }
 
@@ -323,13 +315,12 @@ fn an_agent_the_session_makes_is_the_workspaces_and_found_by_name() {
     let mut laptop = laptop_with_chat(&ada, &site);
 
     // Made as the Agents tab makes one: the session writes it into the workspace's record.
-    let made = send(
+    send(
         &laptop,
         &site,
         &json!({ "kind": "new-agent", "name": "Scout" }),
         "look around",
     );
-    assert!(made.get("err").is_none(), "the agent is made: {made}");
     wait_for_agent(&laptop, &site, "Scout");
     // The workspace's host holds it too: what the person's other devices read.
     wait_until(
@@ -341,15 +332,11 @@ fn an_agent_the_session_makes_is_the_workspaces_and_found_by_name() {
     );
 
     // The send-to box finds it by its name alone: the search reads the workspace's record.
-    let found = send(
+    send(
         &laptop,
         &site,
         &json!({ "kind": "agent", "name": "Scout" }),
         "again",
-    );
-    assert!(
-        found.get("err").is_none(),
-        "a box finds the agent by name: {found}"
     );
 
     // A session started again reads the one copy, and makes no second agent of it.
@@ -357,15 +344,11 @@ fn an_agent_the_session_makes_is_the_workspaces_and_found_by_name() {
     laptop.start();
     laptop.wait_holding(&site.workspace);
     wait_for_agent(&laptop, &site, "Scout");
-    let again = send(
+    send(
         &laptop,
         &site,
         &json!({ "kind": "agent", "name": "Scout" }),
         "still there",
-    );
-    assert!(
-        again.get("err").is_none(),
-        "the agent is found after a restart: {again}"
     );
     assert_eq!(
         agents_held(&laptop)
