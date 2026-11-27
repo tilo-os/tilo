@@ -2443,8 +2443,6 @@ d-fbr67wmc = Musik-Widget
 d-wfzaobux = Personen-Widget
     .w-show-who-is-here = Zeigen, wer hier ist
 
-d-ehkl2kj3 = Mitgliedsgesicht
-
 d-7deyrm3z = Kalender-Widget
 
 d-6pn3zoo7 = Monatsraster
