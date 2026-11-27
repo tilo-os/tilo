@@ -58,7 +58,6 @@ core = [
     "tilo-cli -> tilo-settings-store",
     "tilo-collab-types -> tilo-app-fleet",
     "tilo-collaboration -> tilo-doc",
-    "tilo-collaboration -> tilo-media",
     "tilo-collaboration -> tilo-settings-model",
     "tilo-collaboration -> tilo-settings-store",
     "tilo-collaboration -> tilo-test-env",
