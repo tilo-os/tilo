@@ -1776,6 +1776,23 @@ def formatting_run(root: Path, push: Push) -> list[str]:
     return ["bash", str(TOOLS / "ci/check-changed-rustfmt.sh"), base, head]
 
 
+def worktree_differs(root: Path) -> bool:
+    """Whether the files on disk differ from the pushed commit in what a lint could read.
+
+    Any change to a tracked file does. An untracked file does unless it is a file at the top of the
+    checkout or under `.claude/`: no package reads a stray file there, and one left behind (a
+    shell's mangled redirect, an agent's notes) must not cost every later push its remembered pass.
+    """
+    status = git(root, "status", "--porcelain", "-z").stdout
+    for entry in filter(None, status.split("\0")):
+        if not entry.startswith("?? "):
+            return True
+        path = entry[3:]
+        if "/" in path and not path.startswith(".claude/"):
+            return True
+    return False
+
+
 def earlier_pass(root: Path, push: Push, runs: list[Lint],
                  options: argparse.Namespace, what: str) -> tuple[str | None, bool]:
     """The key to remember this lint under, and whether the push stands on a pass already.
@@ -1784,7 +1801,7 @@ def earlier_pass(root: Path, push: Push, runs: list[Lint],
     nothing keeps both. A worktree with uncommitted changes is not the pushed commit's tree and
     speaks for no change to stand on later.
     """
-    dirty = bool(git(root, "status", "--porcelain").stdout.strip())
+    dirty = worktree_differs(root)
     if dirty:
         say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, "
             "which is not quite the pushed commit")

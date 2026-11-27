@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 # What the hook runs, copied into a fixture workspace of its own.
 HOOK_SOURCES = [
     ".githooks/pre-push",
+    # How the hook finds Python.
+    ".githooks/python.sh",
     "tools/ci/pre_push_lint.py",
     "tools/ci/package_features.py",
     "tools/ci/package_sets.py",
@@ -1309,6 +1311,22 @@ class PrePushLintTests(unittest.TestCase):
     def test_a_pass_of_ts_checks_stands_after_such_a_rebase_too(self):
         self.with_t()
         self.stands_after_a_rebase()
+
+    def test_a_stray_file_at_the_top_of_the_checkout_keeps_the_pass(self):
+        # A mangled shell redirect leaves an empty file named `{` behind; no package reads it.
+        self.write("{", "")
+        self.write(".claude/scratch/notes.md", "mine\n")
+        self.stands_after_a_rebase()
+
+    def test_an_untracked_file_in_a_package_lints_again(self):
+        self.write("native/src/lib.rs", LIB.format(answer=53))
+        self.commit("feat: answer 53")
+        self.assertEqual(self.push().returncode, 0)
+        main = self.rebase({"docs/notes.md": "words\n"})
+        self.write("native/src/stray.rs", "pub fn stray() {}\n")
+        retry = self.push(remote_oid=main)
+        self.assertNotIn("reusing the clippy pass", retry.stderr)
+        self.assertIn("uncommitted changes", retry.stderr)
 
     def test_a_rebase_onto_a_change_to_the_pushed_package_reuses_the_pass(self):
         # t's clippy families lint the push with main's changes on main, so a clean
