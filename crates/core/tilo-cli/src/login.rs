@@ -25,11 +25,11 @@ use tilo_session_client::device::Device as Entered;
 
 use crate::agent::{self, Agent};
 use crate::api::Calls;
-#[cfg(test)]
-use tilo_api::daemon::enter::enter_said;
 pub(crate) use tilo_api::daemon::enter::{
-    LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, choose_workspace, debug_why, host_of, signed_over_iroh,
+    LOGIN_ENDED, NOT_LOGGED_IN, UNREACHED, debug_why, host_of,
 };
+#[cfg(test)]
+use tilo_api::daemon::enter::{choose_workspace, enter_said};
 pub use tilo_device_identity::login::{Device, Place, served_device_key};
 
 /// What Tilo's tools let the agent do, as it tells the person.

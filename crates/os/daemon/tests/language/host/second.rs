@@ -23,7 +23,7 @@ pub struct Second {
     home: PathBuf,
     /// The person, by their id: the hex of their root.
     pub person: String,
-    /// The workspace the invitation brought it into.
+    /// The workspace the invitation brought it into, or the one it founded.
     pub workspace: String,
 }
 
@@ -53,6 +53,36 @@ impl Second {
         apps: &[&str],
         rust: &[(&str, &str)],
     ) -> Self {
+        let mut second = Self::start(name, apps, rust);
+        // The owner invites them into the workspace, and the link carries the invitation their
+        // daemon redeems.
+        let link = invitation_for(host, role, &second.person).await;
+        second.tilo_until(&["login", &link], 90);
+        second.workspace = host.workspace().to_owned();
+        second
+    }
+
+    /// A computer of a new person, `name`, that founds their identity and their own workspace and
+    /// joins nobody's, with the tilolang apps `apps` and the Rust apps `rust` installed: it holds
+    /// the person's root, and no server keeps anything of theirs.
+    ///
+    /// # Panics
+    ///
+    /// The computer does not start, its person is not founded, or an app does not install.
+    pub fn founded(name: &str, apps: &[&str], rust: &[(&str, &str)]) -> Self {
+        let mut founded = Self::start(name, apps, rust);
+        // Its own workspace, as `tilo device key` names the one its daemon founded.
+        let key = founded.tilo_until(&["device", "key"], 90);
+        founded.workspace = serde_json::from_str::<serde_json::Value>(key.trim())
+            .ok()
+            .and_then(|key| key["workspace"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| panic!("this computer's workspace is named: {key}"));
+        founded
+    }
+
+    /// A computer of a new person, `name`, its daemon started with the apps `apps` and `rust`
+    /// installed and its person founded there, in no workspace yet.
+    fn start(name: &str, apps: &[&str], rust: &[(&str, &str)]) -> Self {
         let root = tempfile::Builder::new()
             .prefix("tilo-2-")
             .tempdir_in("/tmp")
@@ -87,10 +117,7 @@ impl Second {
                 tilo_identity::provisioning::FILE_SECRETS_ENV.into(),
                 "1".into(),
             ),
-            (
-                tilo_machine::DAEMON_PROFILE_VAR.into(),
-                profile.clone().into(),
-            ),
+            (tilo_machine::DAEMON_PROFILE_VAR.into(), profile.into()),
         ];
         // The apps this computer has, as the device's own env names them.
         for (name, value) in super::apps::install(&place("a"), &data, apps) {
@@ -133,12 +160,7 @@ impl Second {
             .as_str()
             .unwrap_or_else(|| panic!("the identity names its key: {made}"))
             .to_owned();
-        // The owner invites them into the workspace, and the link carries the invitation their
-        // daemon redeems.
-        let link = invitation_for(host, role, &person).await;
-        second.tilo_until(&["login", &link], 90);
         second.person = person;
-        second.workspace = host.workspace().to_owned();
         second
     }
 

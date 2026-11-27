@@ -67,6 +67,7 @@ mod hosted_terminal_fresh_tab;
 mod hosted_turns;
 mod hosted_web_call;
 mod import_rate;
+mod in_person;
 mod invocations;
 mod joining;
 mod keeping_pages;

@@ -44,7 +44,6 @@ mod mcp;
 mod migrate;
 mod nouns;
 mod os;
-mod person;
 mod sdk;
 mod server;
 mod status;
@@ -188,14 +187,15 @@ enum Cmd {
                       with no -w (tilo do account/keys#create name=\"My backend\"). An argument\n\
                       taking a workspace takes its name. --out FILE writes a secret the action\n\
                       answers (a key) to FILE, readable by you only, and never prints it.\n\n\
-                      On a computer that holds the person's identity, --in-person does it as the\n\
-                      person themselves rather than as the computer's agent: what only they\n\
-                      answer, such as a call of their agent's that waits for their yes in its\n\
-                      asked record (invocations/workspace/<invocation>#resolve resolution=approve)."
+                      --in-person says it is the person's own act, and is refused unless this\n\
+                      computer holds their identity and no key is named: this computer's daemon\n\
+                      takes it as theirs, so it answers what only they answer, such as a call of\n\
+                      their agent's that waits for their yes in its asked record\n\
+                      (invocations/workspace/<invocation>#resolve resolution=approve)."
     )]
     Do {
-        /// Do it as the person themselves, on a computer that holds their identity, rather
-        /// than as this computer's agent: what only they answer.
+        /// Do it as the person themselves, through this computer's daemon: refused unless
+        /// this computer holds their identity and no key is named.
         #[arg(long)]
         in_person: bool,
         /// The action's name, as `tilo action list` lists it, or words of its title.
@@ -1044,8 +1044,8 @@ fn app_open(args: &[OsString], spelling: &tilo_control::front::Spelling) -> Resu
     Ok(desktop::run_open(&app, &items, spelling))
 }
 
-/// `tilo do`'s option that does the action as the person, not as this computer's agent
-/// ([`person`]).
+/// `tilo do`'s option that says the action is the person's own: refused unless this computer
+/// holds their root and no key is named.
 const IN_PERSON: &str = "--in-person";
 
 /// `tilo do`: in the hosted workspace `-w` names, else on this desktop. A
@@ -1071,6 +1071,16 @@ fn run_do(
     args.retain(|arg| arg != "--json");
     let in_person = in_person || args.iter().any(|arg| arg == IN_PERSON);
     args.retain(|arg| arg != IN_PERSON);
+    // The person's own call is the plain call to this computer's daemon, which takes a
+    // connection from their own account as theirs: the option only makes sure this computer is
+    // theirs, never a second way to reach the workspace.
+    if in_person && (reach.key_file.is_some() || !identity::holds_root()) {
+        eprintln!(
+            "tilo: {IN_PERSON} acts as the person whose identity this computer holds, with no key named; \
+             this computer holds none (tilo login --new-identity), or a key was named"
+        );
+        return ExitCode::FAILURE;
+    }
     let reach = api::Reach { json, ..reach };
     if workspace.is_none() && hosted::on_account(&action) {
         return hosted::act(reach, None, &action, &args);
@@ -1078,16 +1088,6 @@ fn run_do(
     let Some(workspace) = workspace else {
         return desktop::run_action(desktop::ActionCmd::Run { action, args }, json, spelling);
     };
-    if person::answers(reach.key_file.is_some(), in_person) {
-        return person::run(&workspace, &action, &args, json);
-    }
-    if in_person {
-        eprintln!(
-            "tilo: {IN_PERSON} acts as the person whose identity this computer holds, with no key named; \
-             this computer holds none (tilo login --new-identity), or a key was named"
-        );
-        return ExitCode::FAILURE;
-    }
     hosted::act(reach, Some(&workspace), &action, &args)
 }
 

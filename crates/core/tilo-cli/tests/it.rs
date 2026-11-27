@@ -223,3 +223,38 @@ fn tilo_mcp_idles_small() {
          threads, past {MCP_IDLE_KB} kB"
     );
 }
+
+/// `tilo do --in-person` is the person's own act, so a computer that holds no person's root
+/// refuses it before it reaches any daemon or workspace, and says why.
+#[test]
+fn in_person_is_refused_on_a_computer_that_holds_no_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let place = |named: &str| {
+        let dir = tmp.path().join(named);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    };
+    let out = Command::new(tilo_test_env::package_binary!("tilo"))
+        .args([
+            "do",
+            "-w",
+            "home",
+            "--in-person",
+            "so.tilo.chat#new_channel",
+            "name=refused",
+        ])
+        .env("HOME", place("h"))
+        .env("XDG_CONFIG_HOME", place("c"))
+        .env("XDG_DATA_HOME", place("d"))
+        .env("XDG_STATE_HOME", place("s"))
+        .env("XDG_RUNTIME_DIR", place("r"))
+        .env("TILO_IDENTITY_ROOT", place("i"))
+        .output_locked()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("--in-person") && said.contains("holds none"),
+        "it says why: {said}"
+    );
+}
