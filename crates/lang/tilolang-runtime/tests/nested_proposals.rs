@@ -144,6 +144,12 @@ default view letters for Box
 
 use so.tilo.post as post
 
+type Errand {
+    filed: Bool = false
+}
+
+root Errand
+
 /// Stamps the letter through Post's own send, and stamps it outside.
 action stamp(l: post.Letter) {
     post.send(l)
@@ -156,6 +162,27 @@ view stamping(l: post.Letter) {
         on press: stamp(l)
     }
 }
+
+/// Files the job away and posts the letter that closes it: the filing is one undo away, the
+/// letter is not.
+destructive action finish(j: Errand, l: post.Letter) {
+    j.filed = true
+    post.send(l)
+}
+
+/// The job and the letter it closes, finished with one press.
+view finishing(j: Errand, l: post.Letter) {
+    ui.Button("Finish") {
+        on press: finish(j, l)
+    }
+}
+
+/// Whether the job is filed away.
+view errand(j: Errand) {
+    ui.Text(if j.filed { "filed" } else { "open" })
+}
+
+default view errand for Errand
 "#;
 
     struct Post {
@@ -448,6 +475,68 @@ view stamping(l: post.Letter) {
                 2,
                 "Post's send and Other's own outside effect"
             );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn the_persons_yes_to_one_action_is_no_yes_to_a_letter_leaving;
+
+        phase the_send_another_apps_action_makes_asks_though_the_workspace_grants_it;
+        {
+            let p = post();
+            let other = App::compile(OTHER, &[p.app.meta().clone()]);
+            p.auth.trust(&other.load(&p.rt));
+            // The workspace grants Post's outside reach: the policy would let a send run
+            // wherever it is called. The press of Other's own action still asks about it.
+            p.auth.grant_outside(&p.app.action("send"));
+            let job_ref = p.rt.create_root("Errand").unwrap();
+            let job = Value::resource(&job_ref);
+            let view = p
+                .rt
+                .open_view(
+                    &me(),
+                    &other.view("finishing"),
+                    vec![job.clone(), p.letter.clone()],
+                )
+                .unwrap();
+            let InvokeOutcome::Asked(_) = press(&view, false) else {
+                panic!("a press of what sends through Post confirms first");
+            };
+            assert_eq!(
+                p.dispatch.asked().0,
+                other.action("finish"),
+                "the press asks for Other's own action"
+            );
+            assert!(p.rt.pending_effects().is_empty(), "nothing left before the yes");
+            // Their yes runs Other's action, and the send it makes reaches outside: the yes was
+            // for filing a job, so the letter waits for one of its own.
+            let out = p
+                .rt
+                .invoke_approved_through(
+                    &me(),
+                    None,
+                    (
+                        other.action("finish").as_str(),
+                        vec![job.clone(), p.letter.clone()],
+                    ),
+                    None,
+                )
+                .unwrap();
+            let InvokeOutcome::Waits { run, .. } = out else {
+                panic!("the send inside the finished job asks on its own: {out:?}");
+            };
+            assert_eq!(
+                p.dispatch.asked().0,
+                p.app.action("send"),
+                "the send is asked: the yes was for Other's action"
+            );
+            assert_eq!(p.dispatch.len(), 2, "the press asked once, and the send again");
+            assert!(p.rt.pending_effects().is_empty(), "nothing left before that yes");
+            assert_eq!(field(&p.rt, &job, "filed"), Value::Bool(true), "the job ran up to the send");
+            let out = p.dispatch.allow(&p.rt, &run);
+            assert!(matches!(out, RunOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.rt.pending_effects().len(), 1, "the letter goes once, on its own yes");
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
         }
     }
 

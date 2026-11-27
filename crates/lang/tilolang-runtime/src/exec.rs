@@ -574,6 +574,36 @@ impl Core {
         pkg.action(action).map(ActionMeta::confirms)
     }
 
+    /// Whether `action` leaves the system for good, itself or through an own action it calls:
+    /// what nothing brings back, and what a person's yes to another action never covers.
+    fn leaves(&self, action: &str) -> bool {
+        self.registry
+            .borrow()
+            .action_package(action)
+            .and_then(|pkg| pkg.action(action).map(|meta| meta.leaves))
+            .unwrap_or(false)
+    }
+
+    /// Whether the yes that carried `journal` answers the call of `action`: the ask was for an
+    /// action that leaves, and `action` is one its own app's code calls, so their yes was for
+    /// what it reaches. Another app's action is that app's to answer.
+    fn yes_covers(&self, journal: &Journal, action: &str) -> bool {
+        let top = if journal.invoked.is_empty() {
+            journal.action.as_deref().unwrap_or_default()
+        } else {
+            journal.invoked.as_str()
+        };
+        if !self.leaves(top) {
+            return false;
+        }
+        let registry = self.registry.borrow();
+        let package_of = |action: &str| registry.action_package(action).map(|pkg| pkg.hash.clone());
+        match (package_of(top), package_of(action)) {
+            (Some(top), Some(call)) => top == call,
+            _ => false,
+        }
+    }
+
     /// Whether a person's own press of `aref`, with Shift held when `shift`, waits for their yes
     /// whatever the policy decides: what leaves the system always does, and what its app marks
     /// destructive does unless they held Shift ([`ActionMeta::confirms`], which
@@ -2245,15 +2275,22 @@ impl Core {
             // A call that confirms, made in a run the person pressed, waits for their yes even
             // where the policy allows it, as it would pressed alone.
             let confirms = !step.seed && self.step_confirms(journal, &aref);
+            // What leaves the system asks in a run the person's yes carried for something else:
+            // their yes for filing a job is no yes to a letter leaving, and their yes for one
+            // action that leaves answers what its own app's code reaches, not another app's.
+            let outside = !step.seed
+                && journal.asked
+                && self.leaves(&aref.action)
+                && !self.yes_covers(journal, &aref.action);
             match d {
-                Decision::Ask if allowed.is_some() => {
+                Decision::Ask if allowed.is_some() && !outside => {
                     let ctx = ExecCtx {
                         approved_by: allowed,
                         ..ctx
                     };
                     self.run_step(run, journal, &ctx, &aref)
                 }
-                Decision::Allow if confirms => self.sent_step(run, journal, &aref, true),
+                Decision::Allow if confirms || outside => self.sent_step(run, journal, &aref, true),
                 Decision::Allow => self.run_step(run, journal, &ctx, &aref),
                 Decision::Deny => {
                     journal.entries.push(JournalEntry::Denied {
