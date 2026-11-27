@@ -4108,10 +4108,14 @@ fn files_under(root: &Path) -> std::collections::BTreeMap<PathBuf, (u64, std::ti
 /// lets it. The shipped unit keeps the system read-only but for its `ReadWritePaths`, so a file
 /// founding writes anywhere else fails a person's first sign-in on a read-only file system, and
 /// the computer comes up with no person. The founding runs here on the computer's own layout,
-/// under a scratch root, as the unit's account; every file it wrote must fall under a path the
-/// shipped unit names.
+/// under a scratch root, as the unit's account and under its umask; every file it wrote must fall
+/// under a path the shipped unit names, and every file the person's session reads must be one its
+/// account can read: the session is in the identity group, so the group's read bit decides.
+#[cfg(unix)]
 #[test]
 fn founding_writes_only_where_the_daemons_system_unit_lets_it() {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let scratch = tempfile::tempdir().unwrap();
     let on_the_computer = |path: &str| scratch.path().join(path.trim_start_matches('/'));
     let unit_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").join(
@@ -4153,8 +4157,19 @@ fn founding_writes_only_where_the_daemons_system_unit_lets_it() {
     let keys = tilo_identity::provisioning::collaboration_identity_paths();
     let taken = tilo_identity::provisioning::device_key_taken_as_daemon(&keys).unwrap();
 
+    let umask = unit
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("UMask="))
+        .map(|mask| u32::from_str_radix(mask, 8).expect("the unit's umask is octal"))
+        .expect("the unit names the umask the daemon writes under");
+
     let before = files_under(scratch.path());
-    super::found_account_person(&keys, "Ada", 1000).expect("the person is made");
+    // SAFETY: umask only swaps the process's file-creation mask; it is put back at once.
+    let given = unsafe { libc::umask(umask as libc::mode_t) };
+    let founded = super::found_account_person(&keys, "Ada", 1000);
+    // SAFETY: as above, restoring the mask the test started with.
+    unsafe { libc::umask(given) };
+    founded.expect("the person is made");
     drop(taken);
     let after = files_under(scratch.path());
 
@@ -4179,4 +4194,19 @@ fn founding_writes_only_where_the_daemons_system_unit_lets_it() {
          {writable:?})",
         unit_path.display()
     );
+
+    for read_by_the_session in [&keys.user_pubkey, &keys.device_cert] {
+        let mode = std::fs::metadata(read_by_the_session)
+            .unwrap_or_else(|error| {
+                panic!("founding leaves {}: {error}", read_by_the_session.display())
+            })
+            .permissions()
+            .mode();
+        assert!(
+            mode & 0o040 != 0,
+            "the session reads {} as a member of the identity group, but founding left it {:o}",
+            read_by_the_session.display(),
+            mode & 0o777
+        );
+    }
 }

@@ -1274,7 +1274,19 @@ fn create_owner_claim_temp(parent: &Path, root_public: &[u8; 32]) -> io::Result<
             .open(&temp)
         {
             Ok(mut file) => {
-                if let Err(error) = file.write_all(root_public).and_then(|()| file.sync_all()) {
+                // The claim becomes the person's public key, which every session on this
+                // computer reads; pinned, since the daemon that founds runs under a strict umask.
+                #[cfg(unix)]
+                let published = {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    file.set_permissions(fs::Permissions::from_mode(persist::PUBLIC_FILE_MODE))
+                };
+                #[cfg(not(unix))]
+                let published = Ok(());
+                if let Err(error) = published
+                    .and_then(|()| file.write_all(root_public))
+                    .and_then(|()| file.sync_all())
+                {
                     let _ = fs::remove_file(&temp);
                     return Err(error);
                 }
