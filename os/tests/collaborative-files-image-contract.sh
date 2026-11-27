@@ -236,7 +236,9 @@ case "$tl_runtime" in
   *) die "Files does not run on the tilolang runtime: $tl_runtime" ;;
 esac
 [ -n "$tl_bin" ] || die "Files' entrypoint names no program in its runtime"
-require_exec "/usr/lib/tilo-runtime/$tl_runtime/$tl_bin"
+# The launcher finds a runtime bundle by its version alone, under the system
+# runtime root (<runtime>/<version>), whatever name the reference carries.
+require_exec "/usr/lib/tilo-runtime/${tl_runtime#*/}/$tl_bin"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"

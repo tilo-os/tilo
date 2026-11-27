@@ -198,9 +198,11 @@ def installed_scenarios(
                 payload = tree
             # A tilolang package's payload is its module; the program that
             # runs it is the runtime bundle's binary, which its entrypoint
-            # names beside the payload.
+            # names beside the payload. The launcher finds a bundle by its
+            # version alone, under the runtime root.
             if is_tilolang(scenario.runtime):
-                binary = runtime_root / scenario.runtime / scenario.binary
+                version = scenario.runtime.split("/", 1)[1]
+                binary = runtime_root / version / scenario.binary
             else:
                 binary = payload / scenario.binary
             if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -1542,8 +1544,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--runtime-root", type=Path, default=Path("/usr/lib/tilo-runtime"),
-        help="where runtime bundles ship, each at <name>/<version>/ (a tilolang "
-             "package's entrypoint binary is in its runtime bundle, not its payload)",
+        help="where runtime bundles ship, each at <version>/ beside the Tilo runtime "
+             "(a tilolang package's entrypoint binary is in its runtime bundle, not its payload)",
     )
     sub = parser.add_subparsers(dest="command")
     scenario = sub.add_parser(
