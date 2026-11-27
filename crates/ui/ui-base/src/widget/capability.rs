@@ -22,6 +22,16 @@ use std::ptr::NonNull;
 
 use super::Widget;
 
+/// A control that can stand in a narrower form than its natural width — a strip of choices that
+/// folds into a picker of the choice it shows. A row that holds one keeps it, making place for the
+/// width it stands in rather than naming it in a menu of actions, which a control is not: a menu
+/// row that runs nothing is no way to reach it.
+pub trait Narrows: Widget {
+    /// The width this control stands in when it has less room than its natural form takes, or
+    /// `None` when it has no narrower form.
+    fn narrow_width(&self) -> Option<f64>;
+}
+
 pub struct Request<'a, 'r> {
     slot: &'r mut dyn Any,
     widget: PhantomData<&'a mut ()>,

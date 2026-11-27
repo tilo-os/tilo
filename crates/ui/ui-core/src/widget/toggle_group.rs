@@ -1,6 +1,7 @@
 //! The segmented control: a strip of segments of which one is chosen, its choice a thumb
 //! one surface step off the track. `multiple` gives the multi-select form and `Tabs` the
-//! page tabs.
+//! page tabs. Given less room than its choices need, a strip folds into a picker of the choice
+//! it shows, its menu offering the rest (`toggle_group_fold`).
 
 use crate::widget::toolbar::Orientation;
 use std::cell::Cell;
@@ -1035,6 +1036,11 @@ struct StripMetrics {
     track_radius: f64,
     thumb_radius: f64,
     label: TextStyle,
+    /// The face the strip folds into when its words do not fit (a picker): the padding around
+    /// them, the gap before its chevron, and the chevron itself.
+    picker_pad: f64,
+    picker_gap: f64,
+    picker_icon: f64,
 }
 
 impl StripMetrics {
@@ -1052,6 +1058,9 @@ impl StripMetrics {
             track_radius: f64::from(radii.control),
             thumb_radius: f64::from(radii.concentric(radii.control, inset)),
             label,
+            picker_pad: f64::from(theme.tokens.spacing.s2),
+            picker_gap: f64::from(theme.tokens.spacing.s1),
+            picker_icon: super::window_toolbar_row::LOCATION_ICON_PX,
         }
     }
 
@@ -2002,10 +2011,19 @@ impl ToggleGroup {
     }
 }
 
+impl tilo_ui_base::widget::capability::Narrows for ToggleGroup {
+    fn narrow_width(&self) -> Option<f64> {
+        (self.can_fold() && self.naturals.len() == self.segments.len()).then(|| self.folded_width())
+    }
+}
+
 impl Widget for ToggleGroup {
     tilo_ui_base::described!();
 
-    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::capability::Narrows
+    );
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
@@ -2144,15 +2162,24 @@ impl Widget for ToggleGroup {
                 height: f32_of_f64(self.strip_height() + self.caption_height),
             };
         }
-        if !self.fill {
-            self.measured_width = Some(intrinsic);
-        }
         let fitted = match available.width {
             taffy::AvailableSpace::Definite(spare) => intrinsic.min(spare.max(0.0)),
             _ => intrinsic,
         };
+        // A strip with no room for its words folds into its own picker, and stands in the
+        // picker's width rather than in the room it was offered: the row that holds it then makes
+        // place for what it paints. A strip with room keeps its words.
+        let standing =
+            if !self.fill && f64::from(fitted) + 0.5 < f64::from(intrinsic) && self.can_fold() {
+                f32_of_f64(f64::from(fitted).min(self.folded_width()))
+            } else {
+                fitted
+            };
+        if !self.fill {
+            self.measured_width = Some(standing);
+        }
         Size {
-            width: known.width.unwrap_or(fitted),
+            width: known.width.unwrap_or(standing),
             height: known
                 .height
                 .unwrap_or(f32_of_f64(self.strip_height() + self.caption_height)),
@@ -2170,6 +2197,11 @@ impl Widget for ToggleGroup {
         }
         self.measure_naturals(text);
         if self.fill || self.chosen.is_some() {
+            return;
+        }
+        // A strip whose choices do not fit folds into its own picker, and the room it is given
+        // decides that: its width is what its own measure answers, never a width pinned for it.
+        if self.can_fold() {
             return;
         }
         if self.measured_width.is_none() {

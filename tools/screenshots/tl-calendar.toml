@@ -48,31 +48,36 @@ perform = { target = "key:item:agenda", action = "activate" }
 
 [[situation]]
 name = "tasks"
-title = "Tasks coming up, and two finished"
+title = "Tasks in a project, some done"
 
-# A task's own action runs on the row the window shows it in: the tasks are made, the window goes
-# to the list that holds them, and two are checked off there. The finished ones are shown in the
-# list they stand in then.
+# The window goes to its Tasks place, whose sidebar lists the projects: the tasks are made in one,
+# the window narrows to it, and one is checked off on the row the list shows.
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Book the room for the offsite", due = "${TODAY+2}" }, bind = "room" }
-
-[[situation.steps]]
-invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Send the agenda to the team", due = "${TODAY+3}" }, bind = "agenda" }
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "show-tasks" }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Order lunch for twelve", due = "${TODAY+6}" } }
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_project", bind = "project" }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "show-upcoming", bind = "listed" }
+invoke = { resource = "{{project.resources.0}}", action = "rename_project", args = { name = "Offsite" } }
 
 [[situation.steps]]
-invoke = { resource = "{{room.resources.0}}", action = "check_task", args = { done = true }, bind = "checked" }
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Book the room for the offsite", due = "${TODAY+2}", p = { resource = "{{project.resources.0}}" } } }
 
 [[situation.steps]]
-invoke = { resource = "{{agenda.resources.0}}", action = "check_task", args = { done = true }, bind = "checked" }
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Send the agenda to the team", due = "${TODAY+3}", p = { resource = "{{project.resources.0}}" } } }
 
 [[situation.steps]]
-invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "show-done" }
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Order lunch for twelve", due = "${TODAY+6}", p = { resource = "{{project.resources.0}}" } } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Collect feedback from last offsite", p = { resource = "{{project.resources.0}}" } }, bind = "feedback" }
+
+[[situation.steps]]
+invoke = { resource = "{{project.resources.0}}", action = "open", bind = "shown" }
+
+[[situation.steps]]
+invoke = { resource = "{{feedback.resources.0}}", action = "check_task", args = { done = true }, bind = "checked" }
 
 [[situation]]
 name = "month"

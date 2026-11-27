@@ -364,11 +364,14 @@ tilo_test_env::scenario! {
     }
 
     // A control the app hosts in its row — a view switcher — has no row of its own in the menu,
-    // so the row keeps it and the buttons before it give way instead. The row shrinks its
-    // buttons to their icons and keeps the switcher, where its shares stand.
+    // so the row keeps it and the buttons before it give way instead, shrinking to their icons.
+    // At a phone's width the switcher stands in its own narrow form: a picker that says what is
+    // chosen and opens the choices, which still switch the window.
     phase a_control_in_the_row_keeps_its_place_as_the_buttons_give_way;
     {
+        let chosen = SharedRc::new(Cell::new(None));
         let actions = || {
+            let chosen = SharedRc::clone(&chosen);
             vec![
                 labelled("add", "Add a book", Icon::FilePlus),
                 labelled("sort", "Sort", Icon::ArrowDownWideNarrow),
@@ -382,15 +385,19 @@ tilo_test_env::scenario! {
                         ],
                         usize::MAX,
                     )
-                    .on_choose("showing", |_| {}),
+                    .with_accessible_name("What the library shows")
+                    .on_choose("showing", move |index| chosen.set(Some(index))),
                 ) as Element,
             ]
+        };
+        let switcher_of = |h: &Driver| {
+            part_rect(h, Part::Action(Column::Content, 3))
         };
         let mut h = harness(titled_content(actions()), 1280, 700, Theme::dark());
         settle(&mut h, 1280, 700);
         assert!(
-            part_rect(&h, Part::Action(Column::Content, 3)).width() > 0.0,
-            "the switcher stands in the row"
+            switcher_of(&h).width() > switcher_of(&h).height() * 3.0,
+            "the switcher stands in the row as its choices"
         );
         assert!(
             part_rect(&h, Part::More(Column::Content)).width() <= 0.0,
@@ -399,17 +406,82 @@ tilo_test_env::scenario! {
 
         let mut h = harness(titled_content(actions()), 660, 700, Theme::dark());
         settle(&mut h, 660, 700);
-        let switcher = part_rect(&h, Part::Action(Column::Content, 3));
+        let switcher = switcher_of(&h);
         assert!(
             switcher.width() > switcher.height(),
             "the switcher keeps its place in a narrow row ({switcher:?})"
         );
         let shown = h.root::<NavShell>().test_shown_actions(Column::Content);
-        assert_eq!(shown, 4, "the row gave its buttons' labels up before it gave up the switcher");
+        assert_eq!(
+            shown, 4,
+            "the row gave its buttons' labels up before it gave up the switcher"
+        );
         let add = part_rect(&h, Part::Action(Column::Content, 0));
         assert!(
             (add.width() - add.height()).abs() < 1.0,
             "a button gave its label up instead ({add:?})"
+        );
+
+        // A phone's row holds the switcher too, in the form it takes when its choices do not
+        // fit: a picker that names what is chosen, standing alone with the buttons in the row's
+        // menu. What it picks still switches the window.
+        let mut h = harness(titled_content(actions()), 420, 700, Theme::dark());
+        settle(&mut h, 420, 700);
+        let folded = h
+            .root::<NavShell>()
+            .test_part(Part::Action(Column::Content, 3))
+            .and_then(Widget::as_any)
+            .and_then(|any| any.downcast_ref::<ToggleGroup>())
+            .expect("the row's switcher")
+            .is_folded();
+        assert!(
+            folded,
+            "the switcher folds into its own picker: {:?}",
+            switcher_of(&h)
+        );
+        assert_eq!(
+            h.root::<NavShell>().test_shown_actions(Column::Content),
+            1,
+            "the row stands the switcher alone and names its buttons in the menu"
+        );
+        assert!(
+            part_rect(&h, Part::More(Column::Content)).width() > 0.0,
+            "the buttons are behind the row's menu"
+        );
+        h.perform_semantic_named(
+            "What the library shows",
+            None,
+            &tilo_ui_base::a11y::Action::Activate,
+        )
+        .expect("the picker opens its choices");
+        settle(&mut h, 420, 700);
+        h.perform_semantic_named("Settings", None, &tilo_ui_base::a11y::Action::Activate)
+            .expect("the choice is one the picker offers");
+        assert_eq!(
+            chosen.get(),
+            Some(1),
+            "the picker's choice switches what the window shows"
+        );
+        settle(&mut h, 420, 700);
+        let picker = switcher_of(&h);
+        assert!(
+            picker.width() > 0.0 && picker.width() < switcher.width(),
+            "the folded switcher stands in the picker's width ({picker:?})"
+        );
+
+        // The row a phone has with the window's own search beside the switcher, as the reader's
+        // header has it: the picker stands wide enough to say the choice it shows.
+        let with_search = || {
+            let mut all = actions();
+            all.push(icon("search", Icon::Search, "Search"));
+            all
+        };
+        let mut h = harness(titled_content(with_search()), 420, 700, Theme::dark());
+        settle(&mut h, 420, 700);
+        let picker = switcher_of(&h);
+        assert!(
+            picker.width() >= 80.0,
+            "the picker says the choice it shows ({picker:?})"
         );
     }
 }

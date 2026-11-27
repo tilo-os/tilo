@@ -407,9 +407,16 @@ struct ColumnFit {
     /// action that is a control rather than a button, or the first that stands in the row rather
     /// than in its menu.
     primary: Option<usize>,
+    /// The indices of the actions that are controls the app hosts in the row (a strip of
+    /// choices, a stepper) rather than buttons: the row fits each to the room it has left
+    /// instead of naming it in a menu that cannot run it.
+    controls: Vec<usize>,
     /// How many actions stand in the row; the rest are in the More menu.
     /// `None` until the first layout decides.
     shown: Option<usize>,
+    /// The one control the row stands alone, every button waiting in its menu: `None` unless
+    /// the column had no room for a button beside it.
+    control_only: Option<usize>,
     header: Option<HeaderRowFacts>,
 }
 
@@ -1529,21 +1536,25 @@ impl NavShell {
         let inputs = self.inputs.borrow();
         let mut fit = inputs.fit.borrow_mut();
         for (part, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
-            let (capable, compact_now, menu_from, primary) = fit_of(header);
-            if part.full.len() == capable.len() {
-                part.capable = capable;
-                part.compact_now = compact_now;
-                part.menu_from = menu_from;
-                part.primary = primary;
+            let fitted = fit_of(header);
+            let count = fitted.capable.len();
+            if part.full.len() == count {
+                part.capable = fitted.capable;
+                part.compact_now = fitted.compact_now;
+                part.menu_from = fitted.menu_from;
+                part.primary = fitted.primary;
+                part.controls = fitted.controls;
             } else {
                 *part = ColumnFit {
-                    full: vec![None; capable.len()],
-                    capable,
-                    compact_now,
+                    full: vec![None; count],
+                    capable: fitted.capable,
+                    compact_now: fitted.compact_now,
                     compact: false,
-                    menu_from,
-                    primary,
+                    menu_from: fitted.menu_from,
+                    primary: fitted.primary,
+                    controls: fitted.controls,
                     shown: None,
+                    control_only: None,
                     header: None,
                 };
             }
@@ -2063,14 +2074,32 @@ impl NavShell {
     /// How many of `column`'s actions stand in the row.
     fn shown_actions(&self, column: Column) -> usize {
         let count = at(&self.headers, column).actions.len();
-        at(&self.inputs.borrow().fit.borrow(), column)
-            .shown
-            .map_or(count, |shown| shown.min(count))
+        let (shown, control_only) = self.row_actions(column);
+        (0..count)
+            .filter(|index| !action_in_menu(shown, control_only, count, *index))
+            .count()
+    }
+
+    /// What a column's row decides it stands: how many of its actions it keeps from the start
+    /// (`None` until the first layout decides), and the one control it stands alone.
+    fn row_actions(&self, column: Column) -> (usize, Option<usize>) {
+        let count = at(&self.headers, column).actions.len();
+        let inputs = self.inputs.borrow();
+        let fit = inputs.fit.borrow();
+        let part = at(&fit, column);
+        (part.shown.unwrap_or(count).min(count), part.control_only)
+    }
+
+    /// Whether the action at `index` waits in the column's menu rather than standing in its row.
+    fn action_in_menu(&self, column: Column, index: usize) -> bool {
+        let count = at(&self.headers, column).actions.len();
+        let (shown, control_only) = self.row_actions(column);
+        action_in_menu(shown, control_only, count, index)
     }
 
     fn part_hidden(&self, part: Part) -> bool {
         match part {
-            Part::Action(column, i) => i >= self.shown_actions(column),
+            Part::Action(column, i) => self.action_in_menu(column, i),
             Part::More(column) => {
                 self.inputs.borrow().actions_listed
                     || self.shown_actions(column) >= at(&self.headers, column).actions.len()
@@ -2156,7 +2185,8 @@ impl NavShell {
     fn open_more_menus(&mut self) {
         let viewport = self.rect;
         for column in Column::ALL {
-            let shown = self.shown_actions(column);
+            let count = at(&self.headers, column).actions.len();
+            let (shown, control_only) = self.row_actions(column);
             let header = at_mut(&mut self.headers, column);
             if !header.more.take_open_request() {
                 continue;
@@ -2164,8 +2194,8 @@ impl NavShell {
             let items = header
                 .actions
                 .iter()
-                .skip(shown)
                 .enumerate()
+                .filter(|(index, _)| action_in_menu(shown, control_only, count, *index))
                 .map(|(index, action)| {
                     let node = action_node(&**action);
                     let name = node
@@ -2212,10 +2242,9 @@ impl NavShell {
     ) -> bool {
         let mut acted = false;
         for column in Column::ALL {
-            let shown = self.shown_actions(column);
             let header = at_mut(&mut self.headers, column);
             if let Some(row) = header.more.take_choice()
-                && let Some(action) = header.actions.get_mut(shown.saturating_add(row))
+                && let Some(action) = header.actions.get_mut(row)
             {
                 action.perform_action(&tilo_ui_base::a11y::Action::Activate, &[], state, path);
                 acted = true;
@@ -2589,7 +2618,14 @@ impl NavShell {
         let mut fit = fit.borrow_mut();
         let mut gave = false;
         for (part, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
-            let (capable, compact_now, menu_from, primary) = fit_of(header);
+            let fitted = fit_of(header);
+            let HeaderFit {
+                capable,
+                compact_now,
+                menu_from,
+                primary,
+                controls,
+            } = fitted;
             gave |= part.capable != capable
                 || part.compact_now != compact_now
                 || part.primary != primary;
@@ -2597,15 +2633,20 @@ impl NavShell {
                 part.full = vec![None; capable.len()];
                 part.compact = false;
                 part.shown = None;
+                part.control_only = None;
             }
             part.capable = capable;
             part.compact_now = compact_now;
             part.menu_from = menu_from;
             part.primary = primary;
-            let shown = part.shown.unwrap_or(header.actions.len());
-            header
-                .more
-                .set_shown(!listed && shown < header.actions.len());
+            part.controls = controls;
+            let count = header.actions.len();
+            let shown = part.shown.unwrap_or(count);
+            let standing = match part.control_only {
+                Some(_) => 1,
+                None => shown.min(count),
+            };
+            header.more.set_shown(!listed && standing < count);
             for (i, action) in header.actions.iter_mut().enumerate() {
                 if !part.capable.get(i).copied().unwrap_or(false) {
                     continue;
@@ -3660,9 +3701,28 @@ impl Widget for NavShell {
 }
 
 /// What a header's actions can do as they stand now: which give up their label when the row is
-/// short, which have already done so, where the row's menu begins, and the one action the row
-/// never gives up.
-fn fit_of(header: &Header) -> (Vec<bool>, Vec<bool>, Option<usize>, Option<usize>) {
+/// short, which have already done so, where the row's menu begins, the one action the row never
+/// gives up, and the controls it hosts among them.
+struct HeaderFit {
+    capable: Vec<bool>,
+    compact_now: Vec<bool>,
+    menu_from: Option<usize>,
+    primary: Option<usize>,
+    controls: Vec<usize>,
+}
+
+/// Whether action `index` of a row of `count` action waits in its menu: a row that stands its
+/// control alone names every button there, and one that keeps `shown` actions names those after
+/// them.
+fn action_in_menu(shown: usize, control_only: Option<usize>, count: usize, index: usize) -> bool {
+    match control_only {
+        Some(control) => index != control,
+        None => index >= shown.min(count),
+    }
+}
+
+/// [`HeaderFit`] of `header`'s actions as they stand now.
+fn fit_of(header: &Header) -> HeaderFit {
     let capable: Vec<bool> = header
         .actions
         .iter()
@@ -3693,16 +3753,26 @@ fn fit_of(header: &Header) -> (Vec<bool>, Vec<bool>, Option<usize>, Option<usize
                 .iter()
                 .position(|action| button_of(&**action).is_none_or(|button| !button.is_menu_only()))
         });
-    // A control — a view switcher, a stepper, anything the app hosts in the row rather than a
-    // button — has no row of its own in the menu: it fits itself to the row instead, so it keeps
-    // its place and the buttons before it give way first. The row stands its controls from the
-    // start, so keeping the last one keeps every one before it.
-    let control = header
+    let controls: Vec<usize> = header
         .actions
         .iter()
-        .rposition(|action| button_of(&**action).is_none());
-    let primary = [primary, control].into_iter().flatten().max();
-    (capable, compact_now, menu_from, primary)
+        .enumerate()
+        .filter_map(|(index, action)| button_of(&**action).is_none().then_some(index))
+        .collect();
+    // A control has no row of its own in the menu: it fits itself to the row instead, so it keeps
+    // its place and the buttons before it give way first. The row stands its controls from the
+    // start, so keeping the last one keeps every one before it.
+    let primary = [primary, controls.last().copied()]
+        .into_iter()
+        .flatten()
+        .max();
+    HeaderFit {
+        capable,
+        compact_now,
+        menu_from,
+        primary,
+        controls,
+    }
 }
 
 /// The button a header action is: the action itself, the control under the view a decorator

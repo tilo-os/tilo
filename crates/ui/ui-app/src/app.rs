@@ -130,6 +130,8 @@ mod driver_owner_tests;
 #[cfg(test)]
 mod driver_palette_tests;
 #[cfg(test)]
+mod driver_resource_arguments_tests;
+#[cfg(test)]
 mod driver_tests;
 #[cfg(test)]
 mod driver_uicore_tests;

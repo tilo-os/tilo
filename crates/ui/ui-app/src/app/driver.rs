@@ -3387,6 +3387,7 @@ impl Driver {
             return Err("invocation arguments must stay an object".into());
         };
         invocation.args = args;
+        self.reference_arguments(&mut invocation.args)?;
         let answer = self.perform_invocation(&invocation)?;
         if let Some(name) = &invocation.bind {
             let answer = answer.ok_or_else(|| {
@@ -3414,6 +3415,58 @@ impl Driver {
             "{}#{}: invoking a published action needs Tilo's model",
             invocation.resource, invocation.action
         ))
+    }
+
+    /// The invocation's arguments with each resource a plan names (`{"resource": "<address>"}`)
+    /// answered as the reference its action takes: the published resource's app, kind, id and
+    /// label. The address is the published one, so it names the app the run installed, a
+    /// development build's included — what a plan writes without knowing the run.
+    ///
+    /// # Errors
+    /// No resource this window publishes has that address.
+    fn reference_arguments(
+        &self,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        // The published tree is read once a step, and only when one of its arguments is a resource.
+        let mut published: Option<Vec<tilo_actions::ResourceSpec>> = None;
+        for (name, value) in args.iter_mut() {
+            let Some(named) = value
+                .as_object()
+                .filter(|fields| fields.len() == 1)
+                .and_then(|fields| fields.get("resource"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let address = named.to_owned();
+            let resources = published.get_or_insert_with(|| self.resources());
+            let spec = find_resource(resources, &address).ok_or_else(|| {
+                format!(
+                    "argument `{name}` names {address:?}, which this window publishes nothing of"
+                )
+            })?;
+            let app = spec
+                .app_id
+                .clone()
+                .or_else(|| {
+                    address
+                        .strip_prefix("tl:")
+                        .and_then(|rest| rest.split_once(':'))
+                        .map(|(app, _)| app.to_owned())
+                })
+                .filter(|app| !app.is_empty())
+                .ok_or_else(|| {
+                    format!("argument `{name}` names {address:?}, which no app publishes")
+                })?;
+            *value = serde_json::json!({
+                "app": app,
+                "kind": spec.kind,
+                "id": address,
+                "label": spec.label,
+            });
+        }
+        Ok(())
     }
 
     /// Invoke what `invocation` names; what a completed action returned (`None` when it runs on or
@@ -3530,6 +3583,29 @@ impl Driver {
             .take_window_invocation_answer(invocation)
             .ok_or_else(unanswered)
     }
+}
+
+/// The published resource `address` names in `resources`, at any depth: a document's items stand
+/// under it as children, and a window publishes each action on the resource it is about.
+fn find_resource<'a>(
+    resources: &'a [tilo_actions::ResourceSpec],
+    address: &str,
+) -> Option<&'a tilo_actions::ResourceSpec> {
+    fn walk<'a>(
+        resource: &'a tilo_actions::ResourceSpec,
+        address: &str,
+    ) -> Option<&'a tilo_actions::ResourceSpec> {
+        if resource.id.as_str() == address {
+            return Some(resource);
+        }
+        resource
+            .children
+            .iter()
+            .find_map(|child| walk(child, address))
+    }
+    resources
+        .iter()
+        .find_map(|resource| walk(resource, address))
 }
 
 /// A logical `(width, height)` as a viewport: fractions truncate and negative or NaN sizes

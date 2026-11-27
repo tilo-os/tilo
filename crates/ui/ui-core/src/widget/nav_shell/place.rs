@@ -230,8 +230,8 @@ fn place_header(
         }
         width
     };
-    // The actions the row never gives up: the column's primary one and those before it, since a
-    // row stands its controls from the start.
+    // The actions the row never gives up: the column's primary one, every control it hosts, and
+    // those before them, since a row stands its controls from the start.
     let never = if inputs.actions_listed {
         0
     } else {
@@ -246,6 +246,36 @@ fn place_header(
     } else {
         0
     };
+    // A column too narrow for any of its buttons beside the control it hosts stands the control
+    // alone, in the narrow form it fits itself to (a strip of choices folds into a picker), and
+    // every button waits in the row's menu, which runs them. A control itself waits there for
+    // nobody: its row would run nothing.
+    let mut alone: Option<(usize, f64)> = None;
+    if must == 0
+        && !inputs.actions_listed
+        && let Some(control) = fit.controls.last().copied()
+        && let Some((part, _, _)) = items.get(control)
+    {
+        let narrow = ctx
+            .widget(*part)
+            .and_then(|widget| {
+                tilo_ui_base::widget::capability::capability::<
+                    dyn tilo_ui_base::widget::capability::Narrows,
+                >(widget)
+            })
+            .and_then(|narrows| narrows.narrow_width());
+        if let Some(width) = narrow
+            && width + gap + more_w <= avail
+        {
+            if let Some(slot) = full.get_mut(control) {
+                *slot = width;
+            }
+            if let Some(slot) = compact.get_mut(control) {
+                *slot = width;
+            }
+            alone = Some((control, width));
+        }
+    }
     let kept = if inputs.actions_listed {
         0
     } else {
@@ -273,7 +303,10 @@ fn place_header(
             .map_or(0.0, super::header_parts::HeaderTitle::least_width)
     });
     if let Some((index, tw, th)) = measured_title {
-        let floor = trailing(&compact, must);
+        let floor = alone.map_or_else(
+            || trailing(&compact, must),
+            |(_, width)| width + gap + more_w,
+        );
         let spare = if floor > 0.0 {
             (avail - floor - gap).max(0.0)
         } else {
@@ -294,7 +327,11 @@ fn place_header(
     }
     let band = (trail - start).max(0.0);
 
-    let (use_compact, shown) = if trailing(&full, kept) <= band {
+    let (use_compact, shown) = if let Some((control, _)) = alone {
+        // The control stands alone: it is the only action the row keeps.
+        let _ = control;
+        (false, 0)
+    } else if trailing(&full, kept) <= band {
         (false, kept)
     } else if trailing(&compact, kept) <= band {
         (true, kept)
@@ -307,17 +344,29 @@ fn place_header(
     };
     fit.compact = use_compact;
     fit.shown = Some(shown);
-    let keeps = (0..shown).any(|i| fit.capable.get(i).copied().unwrap_or(false));
+    fit.control_only = alone.map(|(control, _)| control);
     let primary = fit.primary;
     let widths = if use_compact { &compact } else { &full };
-    let overflow = shown < items.len();
+    // The actions the row stands, in their order: the control it hosts alone, or those it keeps.
+    let standing: Vec<usize> = match alone {
+        Some((control, _)) => vec![control],
+        None => (0..shown).collect(),
+    };
+    let keeps = standing
+        .iter()
+        .any(|index| fit.capable.get(*index).copied().unwrap_or(false));
+    let overflow = standing.len() < items.len();
     let more_size = match (overflow, more_control) {
         (true, Some(index)) => Some((index, measure(ctx, index, None)?)),
         _ => None,
     };
-    let mut total = run(widths.get(..shown).unwrap_or(&[]));
+    let mut total: f64 = standing
+        .iter()
+        .map(|index| widths.get(*index).copied().unwrap_or(0.0))
+        .sum::<f64>()
+        + gap * f64_of_usize(standing.len().saturating_sub(1));
     if let Some((_, (mw, _))) = more_size {
-        total += if shown > 0 { gap + mw } else { mw };
+        total += if standing.is_empty() { mw } else { gap + mw };
     }
     let mut x = (trail - total).max(start.min(trail));
     let actions_x0 = if total > 0.0 { x } else { trail };
@@ -344,7 +393,7 @@ fn place_header(
         }
     }
     for (k, (index, _, h)) in items.iter().enumerate() {
-        let rect = if k < shown {
+        let rect = if standing.contains(&k) {
             let w = widths.get(k).copied().unwrap_or(0.0);
             let rect = centred(x, w, *h);
             x += w + gap;
@@ -402,7 +451,9 @@ fn place_header(
                 title_has: has,
                 free_beside_title: free,
                 labelled_action: !use_compact && keeps,
-                primary_shown: must == 0 || primary.is_none_or(|primary| primary < shown),
+                primary_shown: alone.is_some()
+                    || must == 0
+                    || primary.is_none_or(|primary| standing.contains(&primary)),
             }),
         );
     }

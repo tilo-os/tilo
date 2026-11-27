@@ -62,7 +62,7 @@ pub const NOTICE_TARGET_PREFIX: &str = "window-toolbar-notice:";
 const VIEWS_SIZE: super::ControlSize = super::ControlSize::Small;
 
 const SECTION_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
-const LOCATION_ICON_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.icon_control as f64;
+pub(crate) const LOCATION_ICON_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.icon_control as f64;
 /// The least a location that names nothing takes: below it the bar keeps its buttons.
 pub(crate) const MIN_LOCATION_PX: f64 =
     tilo_ui_base::tokens::Metrics::BASE.location_min_width as f64;

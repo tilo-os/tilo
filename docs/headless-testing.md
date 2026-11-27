@@ -400,6 +400,14 @@ Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, 
 
 `confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/ui/ui-app/src/app/driver/jobs.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
 
+An argument that takes a resource names it by its published address, which the step answers with the reference the action's parameter asks for (the app, kind, id and label this window publishes it under):
+
+```json
+{"invoke": {"resource": "tl:so.tilo.calendar:root-53uahg6d", "action": "new_task", "args": {"title": "Book the room", "p": {"resource": "tl:so.tilo.calendar:root-53uahg6d/i01a21"}}}}
+```
+
+The address is the one `bind` hands back (`{{project.resources.0}}`), so a plan writes no identity it cannot know: a development build's app id is the run's.
+
 The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`tilo_app::framework::testing`) mounts a component in one `Driver`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the driver, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
 
 Assert on the record, not the widget: the body the store holds, the history entry's author, the undo that reaches the starting state. A test that reads internal fields of the widget proves nothing a user, a script or an agent can observe.
@@ -485,7 +493,7 @@ invoke = { resource = "calendar.calendar", action = "new-event", args = { event 
 invoke = { resource = "calendar.calendar", action = "show-week" }
 ```
 
-Dates are written relative to the day of the run (`${TODAY}`, `${TODAY+3}`, `${MON+2}`, this week's Wednesday), so a week or an agenda has content whenever the shots are taken.
+Dates are written relative to the day of the run (`${TODAY}`, `${TODAY+3}`, `${MON+2}`, this week's Wednesday), so a week or an agenda has content whenever the shots are taken. A resource an action takes as an argument is named by its address, which the step answers with the reference the action's parameter asks for: `args = { p = { resource = "{{project.resources.0}}" } }`.
 
 Each app runs headless in a fresh profile (its own HOME, XDG directories and runtime directory, no display, no session bus), founded, built and installed once; situations built from a scenario share it and run side by side, and one whose steps write into the workspace gets a profile of its own. Each situation takes four pictures: dark and light, wide (1280x800) and compact (420x800). A daemon in that profile installs the build as the device's own development build and starts the app on the capture (`tilo-runtime --run-app … --headless-drive`), with the connectors the device runs for the app's origins: no app binary is started by the runner, so a picture shows what a person's app reaches. The app runs in its own sandbox: the daemon binds writable only the directories the spec's pictures and reports go to, for that one launch, and only when the device's own person starts a development build this device made, into existing directories they own that hold neither their home nor the workspace's files. A situation with `workspace = true` runs over the workspace the device serves: its instance joins over connections the daemon made for it, attested as that instance, so what it calls (a video's playback) goes through the device's dispatch; the daemon allows it only on the same terms as the directories. An app without a plan is photographed as it opens.
 

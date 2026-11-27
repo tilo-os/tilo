@@ -221,6 +221,23 @@ impl ToggleGroup {
         }
     }
 
+    /// The width the strip stands in folded: the picker's padding, the words of the choice it
+    /// shows, the gap, and the chevron. A strip laid out in less room than its words need stands
+    /// in this width, so the row that holds it makes place for the picker it paints.
+    pub(super) fn folded_width(&self) -> f64 {
+        let words = self.naturals.get(self.selected).map_or_else(
+            || {
+                self.naturals
+                    .iter()
+                    .map(|(full, short)| full.min(*short))
+                    .fold(0.0, f64::max)
+            },
+            |(full, short)| full.min(*short),
+        );
+        (self.metrics.picker_pad * 2.0 + words + self.metrics.picker_gap + self.metrics.picker_icon)
+            .ceil()
+    }
+
     #[must_use]
     pub fn is_folded(&self) -> bool {
         self.folded
