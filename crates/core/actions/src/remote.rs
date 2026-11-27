@@ -125,7 +125,7 @@ pub use resource_read::{
     DEVICE_JOBS, DEVICE_SETTINGS, DEVICE_SETTINGS_REFUSED, Decided, HeldCopies, ListedResource,
     RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS, RESOURCE_READS_UNAVAILABLE,
     RESOURCE_WRITE_REFUSED, ReadingAnswer, ReadsAnswer, ResourceAddress, ResourceAsk, ResourceCopy,
-    ResourceReadings, ResourceReads, ResourceWake, device_job_address, device_job_path,
+    ResourceReadings, ResourceReads, ResourceWake, answered, device_job_address, device_job_path,
     device_record_address, device_record_space, parse_device_record_space, parse_job_path,
     reads_answer, unanswered,
 };
@@ -1386,6 +1386,18 @@ impl Drop for RunningTool {
         }
     }
 }
+
+/// What answers one request to a provider, as the provider's host answers a request that
+/// arrives on a connection: `tilo_action_calls::serve`.
+///
+/// A crate that hands requests to a provider takes this as a value from whoever runs it, so it
+/// links none of the machinery that answers calls: the toolkit's in-process windows, and a shell
+/// that serves its own providers on the device's dispatch.
+pub type Serve = fn(
+    &std::sync::Arc<dyn ActionProvider + Send + Sync>,
+    &Caller,
+    RemoteActionMessage,
+) -> Option<Pending<RemoteActionMessage>>;
 
 /// A peer that runs actions on behalf of authenticated remote callers.
 ///

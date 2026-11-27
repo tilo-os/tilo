@@ -34,13 +34,13 @@ tilo-resource = { version = "0.1.0", path = "../tilo-resource", optional = true 
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
-# A step that reads a record is answered through the call API's reading.
-tilo-action-calls = { version = "0.1.0", path = "../action-calls" }
 
 [features]
 model = ["dep:tilo-resource"]
 
 [dev-dependencies]
+# The invocation log the tests run shortcuts under, as a host runs them.
+tilo-action-calls = { path = "../action-calls" }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

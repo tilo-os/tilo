@@ -801,6 +801,7 @@ pub(crate) fn serve_services(
                 SERVICES_PROVIDER,
                 &page,
                 provider as std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+                tilo_action_calls::serve,
             )
             .await
         {

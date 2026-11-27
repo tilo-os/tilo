@@ -15,8 +15,7 @@ mod wait;
 
 pub use log::{Admission, DEFAULT_LOG_CAPACITY, InvocationLog, Reservation};
 pub use reads::{
-    answer_read, answered, copies_readable, read_answered, read_resources, readings_from,
-    readings_of,
+    answer_read, copies_readable, read_answered, read_resources, readings_from, readings_of,
 };
 pub use serve::serve;
 pub use wait::settle_with;

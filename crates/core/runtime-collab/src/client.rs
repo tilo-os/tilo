@@ -1412,6 +1412,8 @@ struct ShellShared {
 pub(crate) struct Served {
     catalogue: CataloguePage,
     answers: Arc<dyn ActionProvider + Send + Sync>,
+    /// How `answers` answers a request: the serving process's own ([`ShellClient::provide`]).
+    serve: tilo_actions::remote::Serve,
     handle: Option<Handle>,
 }
 
@@ -1951,7 +1953,12 @@ async fn replay(
             .clone();
         match shell_dispatch::offer_on(&client, provider, &entry.catalogue).await {
             Ok(handle) => {
-                shell_dispatch::answer_provider(&client, handle, Arc::clone(&entry.answers));
+                shell_dispatch::answer_provider(
+                    &client,
+                    handle,
+                    Arc::clone(&entry.answers),
+                    entry.serve,
+                );
                 entry.handle = Some(handle);
             }
             Err(error) => {

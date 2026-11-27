@@ -121,6 +121,7 @@ impl SessionActions {
                     wire::PROVIDER,
                     &actions.page(),
                     Arc::clone(&actions) as Arc<dyn ActionProvider + Send + Sync>,
+                    tilo_action_calls::serve,
                 )
                 .await
             {

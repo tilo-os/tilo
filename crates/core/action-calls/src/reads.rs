@@ -291,27 +291,6 @@ pub async fn answer_read<Reads: ResourceReads + ?Sized>(
     }
 }
 
-/// What `reads` answers `read` for `caller` through the record API's read message, as JSON
-/// ([`ResourceReadings::readable`], or a listing): wherever the record is, and with `after`
-/// once it moves past that revision or the wait went by.
-///
-/// # Errors
-///
-/// The reader's refusal, or an answer that is no reading.
-pub async fn answered(
-    reads: std::sync::Arc<dyn ResourceReads>,
-    caller: &Caller,
-    read: ResourceReadRequest,
-) -> Result<serde_json::Value, ActionCallError> {
-    match reads.answer_read(caller, 0, read).await {
-        RemoteActionMessage::ResourceReading { result, .. } => serde_json::from_str(&result?)
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: format!("the reading does not read: {error}"),
-            }),
-        _ => Err(ActionCallError::Unanswered),
-    }
-}
-
 /// `reading`, answered where it is completed: polled first in the call that asked, so a reader
 /// that has the record answers it there, and again on the thread each wait of it ends on, so a
 /// reader that answers on its own turn — the desktop reading its windows' records — is delivered

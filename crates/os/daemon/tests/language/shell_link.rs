@@ -170,6 +170,7 @@ fn the_shell_and_the_daemon_call_each_other_through_the_one_dispatch() {
                 ASKS,
                 &offered(ASKS, "so.tilo.shell", "asks/one", "answer"),
                 Arc::clone(&asks) as _,
+                tilo_action_calls::serve,
             )
             .await
             .unwrap();
@@ -218,14 +219,24 @@ fn the_shell_and_the_daemon_call_each_other_through_the_one_dispatch() {
 
         // Another provider by the same name is refused; so is one that is not the shell's own.
         let taken = shell
-            .provide(ASKS, &CataloguePage::default(), Arc::clone(&asks) as _)
+            .provide(
+                ASKS,
+                &CataloguePage::default(),
+                Arc::clone(&asks) as _,
+                tilo_action_calls::serve,
+            )
             .await;
         assert!(
             taken.is_err(),
             "a provider served already is not taken over"
         );
         let foreign = shell
-            .provide(PROBE, &CataloguePage::default(), Arc::clone(&asks) as _)
+            .provide(
+                PROBE,
+                &CataloguePage::default(),
+                Arc::clone(&asks) as _,
+                tilo_action_calls::serve,
+            )
             .await;
         assert!(foreign.is_err(), "the shell serves its own providers alone");
     });
@@ -259,6 +270,7 @@ fn a_closed_link_takes_the_shells_providers_and_fails_their_calls() {
                 WAITS,
                 &offered(WAITS, "so.tilo.shell", "waits/one", "answer"),
                 Arc::clone(&waits) as _,
+                tilo_action_calls::serve,
             )
             .await
             .unwrap();
@@ -323,6 +335,7 @@ fn the_sessions_own_actions_are_answered_through_the_daemons_dispatch() {
                 SESSION,
                 &offered(SESSION, SESSION, "shell:layout", "place"),
                 Arc::clone(&layout) as _,
+                tilo_action_calls::serve,
             )
             .await
             .unwrap();
@@ -508,6 +521,7 @@ fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
                 ASKS,
                 &offered(ASKS, "so.tilo.shell", "board/notes", "pin-note"),
                 Arc::clone(&board) as _,
+                tilo_action_calls::serve,
             ))
             .unwrap();
 
@@ -528,6 +542,7 @@ fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
                     "reveal-token",
                 ),
                 Arc::clone(&account) as _,
+                tilo_action_calls::serve,
             ))
             .unwrap();
 

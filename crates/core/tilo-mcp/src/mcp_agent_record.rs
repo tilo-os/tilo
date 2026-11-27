@@ -4,8 +4,8 @@
 //! `record:<app>` lists the records of the app the agent may read, each by that path.
 
 use super::{ActionProvider, Failure, McpServer, Reply};
-use tilo_action_calls::answered;
 use tilo_actions::remote::ResourceReadRequest;
+use tilo_actions::remote::answered;
 
 /// How long a document read waits for a write past the revision it was given.
 const RECORD_WAIT_MS: u32 = 25_000;

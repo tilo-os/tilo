@@ -87,7 +87,7 @@ fn provide<T: Admits + Send + Sync + 'static>(
     runtime.spawn(async move {
         let answers = Arc::clone(&provider) as Arc<dyn ActionProvider + Send + Sync>;
         let listing = match shell
-            .provide(T::PROVIDER, &page(provider.as_ref(), 0), answers)
+            .provide(T::PROVIDER, &page(provider.as_ref(), 0), answers, tilo_action_calls::serve)
             .await
         {
             Ok(listing) => listing,

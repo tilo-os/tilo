@@ -50,7 +50,6 @@ collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../co
 # The typed action vocabulary the exported surface and directory rows hold;
 # only this crate's codec turns it into wire text.
 tilo-actions = { version = "0.1.0", path = "../actions", features = ["answer-reads"] }
-tilo-action-calls = { version = "0.1.0", path = "../action-calls", features = ["answer-reads"] }
 # Where content a record references has got to, as collaboration events say.
 tilo-content = { version = "0.1.0", path = "../content", default-features = false }
 runtime-portal = { package = "tilo-runtime-portal", version = "0.1.0", path = "../runtime-portal", optional = true }
@@ -68,6 +67,8 @@ wire-frame = { package = "tilo-wire-frame", version = "0.1.0", path = "../../pla
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+# What a provider the shell serves answers with, as a serving process passes it in.
+tilo-action-calls = { path = "../action-calls", features = ["answer-reads"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [target.'cfg(unix)'.dev-dependencies]

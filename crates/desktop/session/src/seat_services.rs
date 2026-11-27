@@ -120,7 +120,12 @@ pub(crate) fn serve_on(shell: runtime_collab::ShellClient, parts: SeatParts) {
     });
     runtime.spawn(async move {
         if let Err(error) = shell
-            .provide(seat::PROVIDER, &CataloguePage::default(), provider)
+            .provide(
+                seat::PROVIDER,
+                &CataloguePage::default(),
+                provider,
+                tilo_action_calls::serve,
+            )
             .await
         {
             tracing::warn!(%error, "the device's daemon reaches none of this session's seat");

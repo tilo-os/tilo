@@ -1546,7 +1546,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // A document is answered as one, so a reading tells itself apart.
             answer: tilo_actions::remote::ReadAnswer::Document,
         };
-        match tilo_action_calls::answered(reads, &caller, read).await {
+        match tilo_actions::remote::answered(reads, &caller, read).await {
             // An app's record is read through the record API, never as one of the session's
             // readings, as a resource no service publishes is none of its.
             Ok(answer) => match answer.pointer("/records/0/value") {
@@ -1707,7 +1707,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             wait_ms: None,
             answer: tilo_actions::remote::ReadAnswer::Reading,
         };
-        let answer = tilo_action_calls::answered(reads, &caller, read)
+        let answer = tilo_actions::remote::answered(reads, &caller, read)
             .await
             .map_err(|error| error.to_string())?;
         let Some(value) = answer.pointer("/records/0/value") else {

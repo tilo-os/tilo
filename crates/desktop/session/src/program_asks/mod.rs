@@ -133,6 +133,7 @@ impl ProgramAsks {
                     PROVIDER,
                     &CataloguePage::default(),
                     Arc::new(asks.clone()) as Arc<dyn ActionProvider + Send + Sync>,
+                    tilo_action_calls::serve,
                 )
                 .await;
             if let Err(error) = served {

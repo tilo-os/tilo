@@ -22,17 +22,12 @@ use tilo_ui_base::widget::Collaborative;
 
 type Served = (Arc<dyn ActionProvider + Send + Sync>, Caller);
 
-/// What answers a request a client sends to a provider in this process, as the provider's host
-/// answers one that arrives on a connection: `tilo_action_calls::serve`.
+/// What answers a request a client sends to a provider in this process ([`Serve`]).
 ///
 /// The toolkit knows only this seam, so it links none of the machinery that answers calls. The
 /// runner that starts an app installs it before the app runs; a host or a test that serves its own
 /// provider to a window installs it the same way.
-pub type Serve = fn(
-    &Arc<dyn ActionProvider + Send + Sync>,
-    &Caller,
-    RemoteActionMessage,
-) -> Option<Pending<RemoteActionMessage>>;
+pub use tilo_actions::remote::Serve;
 
 static SERVE: OnceLock<Serve> = OnceLock::new();
 

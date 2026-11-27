@@ -13,7 +13,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     InvocationReceipt, InvocationState, InvokeRequest, MAX_REMOTE_WAIT, Pending, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, ResourceReadRequest, ResourceReads, UpdateMark,
+    RemoteActionFrame, RemoteActionMessage, ResourceReadRequest, ResourceReads, Serve, UpdateMark,
 };
 
 use super::Served;
@@ -695,8 +695,9 @@ impl ShellClient {
 
     /// Serve `provider`, a provider of the shell's own ([`crate::wire::shell::serves`]), on the
     /// device's dispatch with `answers`, offering what `catalogue` lists: each call the dispatch
-    /// admits reaches `answers` as the caller it admitted it for, until the link closes or the
-    /// shell withdraws it. It is offered again on each new link.
+    /// admits reaches `answers` as the caller it admitted it for, answered by `serve` (the
+    /// serving process's `tilo_action_calls::serve`), until the link closes or the shell
+    /// withdraws it. It is offered again on each new link.
     ///
     /// # Errors
     /// The daemon refused the provider: not the shell's own, or served by another already.
@@ -705,6 +706,7 @@ impl ShellClient {
         provider: &str,
         catalogue: &CataloguePage,
         answers: Arc<dyn ActionProvider + Send + Sync>,
+        serve: Serve,
     ) -> Result<Provided, NotAvailable> {
         // A provider this shell served already is its own: it is not taken over in its place,
         // and the handle it has offers what it lists from now on.
@@ -717,12 +719,13 @@ impl ShellClient {
             Ok(handle) => handle,
             Err(refused) => return Err(refused),
         };
-        answer_provider(&self.current(), handle, Arc::clone(&answers));
+        answer_provider(&self.current(), handle, Arc::clone(&answers), serve);
         self.served.lock().await.insert(
             provider.to_owned(),
             Served {
                 catalogue: catalogue.clone(),
                 answers,
+                serve,
                 handle: Some(handle),
             },
         );
@@ -739,7 +742,7 @@ impl ShellClient {
         provider: &str,
         catalogue: &CataloguePage,
     ) -> Result<(), NotAvailable> {
-        let answers = {
+        let (answers, serve) = {
             let mut served = self.served.lock().await;
             let Some(entry) = served.get_mut(provider) else {
                 return Err(NotAvailable::Refused(format!(
@@ -747,9 +750,9 @@ impl ShellClient {
                 )));
             };
             entry.catalogue = catalogue.clone();
-            let answers = Arc::clone(&entry.answers);
+            let answered = (Arc::clone(&entry.answers), entry.serve);
             drop(served);
-            answers
+            answered
         };
         // A link that ended offers it again when it comes back, with what this last said.
         if !matches!(self.link_status(), super::ShellLink::Linked) {
@@ -773,7 +776,7 @@ impl ShellClient {
             renewed
         };
         if renewed {
-            answer_provider(&self.current(), handle, answers);
+            answer_provider(&self.current(), handle, answers, serve);
         }
         Ok(())
     }
@@ -790,17 +793,18 @@ impl ShellClient {
 }
 
 /// Hand `client` the answers of `provider`, which the daemon reaches under `handle`: each call
-/// the dispatch admits reaches `answers` as the caller it admitted it for.
+/// the dispatch admits reaches `answers` as the caller it admitted it for, answered by `serve`.
 pub(crate) fn answer_provider(
     client: &crate::CollabClient,
     handle: Handle,
     answers: Arc<dyn ActionProvider + Send + Sync>,
+    serve: Serve,
 ) {
     client.client.answer(
         crate::wire::client::Answering::Served(handle),
         Arc::new(move |ask| {
             let answers = Arc::clone(&answers);
-            Box::pin(async move { serve(&answers, ask).await })
+            Box::pin(async move { answered(&answers, serve, ask).await })
         }),
     );
 }
@@ -830,8 +834,9 @@ pub(crate) async fn offer_on(
 }
 
 /// `ask`, a call of a provider the shell serves, answered by `answers` as the caller it names.
-async fn serve(
+async fn answered(
     answers: &Arc<dyn ActionProvider + Send + Sync>,
+    serve: Serve,
     ask: Ask,
 ) -> Result<Answer, String> {
     let Ask::Action {
@@ -860,7 +865,7 @@ async fn serve(
         };
         approval.typed = typed.0;
     }
-    let answer = tilo_action_calls::serve(answers, &caller, message)
+    let answer = serve(answers, &caller, message)
         .ok_or("a provider answers requests, and that frame is none")?
         .await
         .ok_or("the provider dropped the call")?;
