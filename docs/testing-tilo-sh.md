@@ -28,7 +28,10 @@ the build container there: every program in one incremental build of the
 release's code without its whole-program link (Cargo's `lounge-local`). The web
 bundle is t's `web-entry-bundle` check, the one the web entry's image ships
 (compiled, bound, split and wasm-opt'd on t), fetched with `t outputs`, so the
-stack serves the bundle the check defines. A change recompiles the parts of the
+stack serves the bundle the check defines. The thin tilolang runtime the apps
+execute on is t's `tilolang-runtime` check: its size wrapper is Cargo
+configuration that a front end forwarding to `t cargo` refuses, so it runs
+where t's jobs take it. A change recompiles the parts of the
 crates it touched; what did not change is kept, and `stack.sh restart NAME`
 rebuilds and restarts one service while the others keep running. The server lets
 the turns its agents are taking end before it stops, so a restart never cuts an

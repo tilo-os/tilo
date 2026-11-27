@@ -1855,17 +1855,27 @@ lay_out_lounge() {
       "$container/entrypoint.sh" "$container/install-apps.sh" "$repo/apps/discord/bridge/program.json")
     if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-runtime ]]; then
       # The apps the workspace runs: the launcher, the runtimes and the signed packages
-      # (lounge-apps.sh), which a caller may hand over, else t builds beside the programs.
+      # (lounge-apps.sh), which a caller may hand over. TILO_SH_BUILD=t takes the whole layer
+      # from t's check; the default takes its thin runtime from t's and builds the packages
+      # here, on the programs' warm builds.
       if [[ -z $apps ]]; then
         if [[ $build == t ]]; then
           t_build "the apps the workspace runs" lounge-check-apps
           apps=$t_fetched/target/publish/lounge-check/apps
         else
-          [[ -f $repo/target/thin-dev/tilolang-process ]] \
-            || bash "$repo/dist/dev/tilolang-runtime-build.sh" >&2 \
-              || die 'could not build the thin tilolang runtime the apps run on'
+          # The thin runtime the apps execute on, built with the size wrapper. The wrapper is
+          # Cargo configuration a cargo front end that forwards to `t cargo` refuses, so the
+          # default takes the shape t's `tilolang-runtime` check builds: the runtime in a t job,
+          # where the job's cargo takes the setting. A tree that built it already (a developer's
+          # nested session) keeps its own.
+          local thin=$repo/target/thin-dev runtime_check=tilolang-runtime
+          if [[ $(uname -m) == aarch64 ]]; then runtime_check=tilolang-runtime-arm64; fi
+          if [[ ! -f $thin/tilolang-process ]]; then
+            t_build "the thin tilolang runtime" "$runtime_check"
+            thin=$t_fetched/target/tilolang-runtime
+          fi
           apps=$native/apps
-          bash "$repo/tools/ci/publish/lounge-apps.sh" "$apps" "$repo/target/thin-dev" "$fonts" lounge-check >&2 \
+          bash "$repo/tools/ci/publish/lounge-apps.sh" "$apps" "$thin" "$fonts" lounge-check >&2 \
             || die 'could not build the apps the workspace runs (lounge-apps.sh)'
         fi
       fi

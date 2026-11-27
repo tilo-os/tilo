@@ -36,6 +36,28 @@ BUILD_PHASE="${BUILD_PHASE:-all}"
 case "$BUILD_PHASE" in all|build|verify) ;; *) echo "invalid thin build phase" >&2; exit 1 ;; esac
 TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
 THIN_APP_WRAPPER=/proc/self/cwd/tools/ci/rustc-thin-app-wrapper.sh
+# Whether this runs in a t job, which gives every compile its own wrapper and the compiler cache
+# (RUSTC_WRAPPER, with T_CACHE_SOCKET). The job's cargo is plain cargo behind that wrapper, and
+# takes the size wrapper below as configuration; `t cargo`'s own front end refuses it before any
+# job starts.
+t_job=0
+if [[ ${RUSTC_WRAPPER:-} == /run/t/wrapper && -n ${T_CACHE_SOCKET:-} ]]; then
+    t_job=1
+fi
+# The size wrapper is Cargo configuration on the command line. A front end that forwards to
+# `t cargo` refuses it (build.rustc-wrapper and build.rustc-workspace-wrapper) as a usage error:
+# t runs every compile of a job through its own wrapper and resolves the build's unit graph from
+# the workspace's manifests alone, where no program of the checkout is. Only the build at the end
+# of this script would say so, after every metadata scan and after whatever the caller built
+# before it. Ask the front end first, with cargo's help, which builds nothing and finds the
+# refusal now: a t job takes the settings, a front end that forwards to `t cargo` does not.
+if [ "$t_job" -eq 0 ] && [ "$BUILD_PHASE" != verify ] && ! refusal=$(cd "$REPO" && "${CARGO:-cargo}" build --help \
+        --config 'build.rustc-workspace-wrapper=""' 2>&1 >/dev/null); then
+    echo "build-thin-apps: the cargo front end (${CARGO:-cargo}) refuses the compiler wrapper this build sets:" >&2
+    printf '%s\n' "$refusal" | sed 's/^/  /' >&2
+    echo 'run the thin build as a t job, where its compiles run through t'"'"'s own wrapper ("t test tilolang-runtime" builds the runtime; the local stack'"'"'s TILO_SH_BUILD=t takes its apps from the checks), not through a front end that forwards to `t cargo`' >&2
+    exit 1
+fi
 
 # TILO_THIN_KEEP_SYMBOLS=1 keeps the symbol tables of the apps, the runtime and its engines, for
 # reading what makes an app large (the app-binaries check); every package is built the same way
@@ -248,13 +270,10 @@ read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
 # goes through thin-app/rustc-wrapper. Outside this order, sccache 0.17 rejects
 # an absolute compiler as a second input.
 #
-# A t job already gives every compile its own wrapper and refuses a
-# `build.rustc-wrapper` of ours: that cache is the one outer wrapper, and the
-# workspace wrapper below it is still ours to name.
-under_t=0
-if [[ ${RUSTC_WRAPPER:-} == /run/t/wrapper && -n ${T_CACHE_SOCKET:-} ]]; then
-    under_t=1
-fi
+# A t job already gives every compile its own wrapper and the compiler cache:
+# that cache is the one outer wrapper, and the workspace wrapper below it is
+# still ours to name.
+under_t=$t_job
 if [ "$under_t" -eq 0 ] && [[ -n ${RUSTC_WRAPPER:-} && ${RUSTC_WRAPPER} != "$REPO"/tools/ci/thin-app/* ]]; then
     cache_path=$RUSTC_WRAPPER
     cache_config=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$cache_path")
