@@ -18,6 +18,9 @@ press = "Page"
 [[situation.steps]]
 press = "Bookmarks"
 
+[[situation.steps]]
+press = "Bookmarks"
+
 [[situation]]
 name = "history"
 title = "The pages visited, newest first"
