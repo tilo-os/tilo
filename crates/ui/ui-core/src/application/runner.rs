@@ -42,6 +42,15 @@ fn connected_documents() -> Result<Rc<dyn crate::resource::DocumentPort>, Launch
     Err(LaunchError::NotConnected)
 }
 
+/// Whether this process is the session's own lock screen: a surface the session starts before
+/// the person's services, which shows whether or not they answer yet.
+fn lock_surface() -> bool {
+    std::env::var("TILO_SURFACE_LOCK").is_ok_and(|value| {
+        let value = value.trim();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    })
+}
+
 /// The host inputs a normal application process receives from the trusted launcher.
 pub struct NativeProcess {
     host: ApplicationOwner,
@@ -94,13 +103,19 @@ impl NativeProcess {
         }
         // The window's records are the workspace's: read over the connection the window joins,
         // and what it changes published on the records' routes. Without one nothing it does
-        // would be kept, which the person is told rather than finding out later.
+        // would be kept, which the person is told rather than finding out later. The session's
+        // lock screen is the one window that keeps nothing and cannot wait: it draws in memory
+        // and follows the session when the person's services answer.
         let documents = match resolved.documents {
-            Some(documents) => documents,
-            None => (connected_documents()?, false),
+            Some(documents) => Some(documents),
+            None => match connected_documents() {
+                Ok(documents) => Some((documents, false)),
+                Err(error) if lock_surface() => None,
+                Err(error) => return Err(error),
+            },
         };
         let mut host = ApplicationOwner::with_port(
-            Some(documents),
+            documents,
             &resolved.package_id,
             resolved.device_id,
             &resolved.workspace_id,
