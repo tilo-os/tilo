@@ -658,7 +658,10 @@ impl AppBrokerState {
             request.confirmation.as_ref(),
             approved,
         ) {
-            return Err(abandon(ActionCallError::confirmation_required()));
+            // The dispatch keeps this refusal as the person's asked record, whichever transport
+            // brought the call, so the question names the action as its app publishes it.
+            let facts = super::approval::asked_of(caller, descriptor, request);
+            return Err(abandon(ActionCallError::asks(facts)));
         }
         // What a step of an agent session does in turn goes through the session's own api.
         let through = match (&session, origin) {

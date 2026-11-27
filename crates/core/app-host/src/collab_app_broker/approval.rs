@@ -269,6 +269,21 @@ impl AppBrokerState {
     }
 }
 
+/// What the person is shown of `descriptor`, the action of `request` their answer runs: the
+/// action's label on the resource it acts on, what it would run with, and whether Undo takes
+/// the change back, asked of `caller`, whoever carries the call.
+pub(super) fn asked_of(
+    caller: &Caller,
+    descriptor: tilo_actions::ActionDescriptor,
+    request: &InvokeRequest,
+) -> AskedFacts {
+    described(
+        AskedFacts::by(tilo_workspace_service::workspaces::asking::asked_by(caller)),
+        descriptor,
+        &request.argument,
+    )
+}
+
 /// `facts`, stating what `descriptor`, the action as the person is offered it, does with
 /// `argument`: the arguments it would run with, and what a grant given with their answer allows.
 pub(super) fn described(

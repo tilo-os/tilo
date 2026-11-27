@@ -408,11 +408,22 @@ impl WidgetSurface {
 
     /// Where the control assistive technology names `name` stands, in the desktop's logical
     /// layout `(x, y, width, height)`: what a test or a tool presses it by.
+    ///
+    /// A name may also be a line of text: a question names the action it asks about above the
+    /// answer that runs it, and the two say the same words. Pressing by that name is pressing
+    /// the control, so the pressable node is the one answered where there is one.
     pub fn control_bounds(&mut self, name: &str) -> Option<(f64, f64, f64, f64)> {
-        let rect = self
+        let named: Vec<ui::accesskit::Node> = self
             .host
-            .a11y_node(self.host.a11y_node_named(name)?)?
-            .bounds()?;
+            .a11y_nodes_named(name)
+            .into_iter()
+            .filter_map(|id| self.host.a11y_node(id))
+            .collect();
+        let node = named
+            .iter()
+            .find(|node| ui::a11y::pressable_role(node.role()))
+            .or_else(|| named.first())?;
+        let rect = node.bounds()?;
         let (ox, oy) = self.placement.origin;
         Some((
             f64::from(ox) + rect.x0,
