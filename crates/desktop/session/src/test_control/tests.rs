@@ -153,6 +153,7 @@ tilo_test_env::scenario! {
             [
                 "click_at",
                 "click_named",
+                "daemon_link",
                 "drag",
                 "keeping_devices",
                 "key",
@@ -172,6 +173,8 @@ tilo_test_env::scenario! {
                 "scroll",
                 "search_rows",
                 "settings",
+                "shell_action",
+                "shell_setting",
                 "snapshot",
                 "state_dump",
                 "swipe",
