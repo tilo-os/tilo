@@ -403,6 +403,10 @@ impl KeptContent {
     /// the host keeps of it and who holds it, so a restart opens it as the
     /// host left it; then let go of the holds of whoever is no member any
     /// more.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the records read back are merged in one turn of the map, and the guard's scope ends before the members are read again"
+    )]
     async fn open_workspace(&self, workspace: &str) {
         self.policy_of(workspace).await;
         // The people known before count too: a member just removed is no
@@ -429,13 +433,19 @@ impl KeptContent {
             .map(|refusal| (refusal.hash.clone(), refusal))
             .collect();
         // What the workspace's records say joins what this host refused since:
-        // a refusal whose record is still being written stands meanwhile.
-        self.state
-            .lock_recover()
-            .refused
-            .entry(workspace.to_owned())
-            .or_default()
-            .extend(refused);
+        // a refusal whose record is still being written stands meanwhile. A
+        // withdrawal this host already made is kept, so a record read back
+        // from before it does not put the refusal back.
+        {
+            let mut state = self.state.lock_recover();
+            let recorded = state.refused.entry(workspace.to_owned()).or_default();
+            for (hash, refusal) in refused {
+                recorded
+                    .entry(hash)
+                    .and_modify(|held| held.withdrawn |= refusal.withdrawn)
+                    .or_insert(refusal);
+            }
+        }
         self.open_ledger(workspace);
         if let Some(members) = self.workspaces.member_people(workspace).await {
             self.drop_departed(workspace, &known, &members);
@@ -1203,12 +1213,13 @@ impl KeptContent {
             }
             {
                 let mut state = self.state.lock_recover();
-                // A refusal of this content no longer stands: its limit was
-                // raised and the content is kept now.
+                // The content a refusal named is kept now, whoever pushed it:
+                // the refusal no longer stands, and its record says so to
+                // every reader.
                 if let Some(held) = state.refused.get_mut(workspace)
-                    && let Some(refusal) = held.remove(&blob.hash)
-                    && refusal.withdrawn
+                    && let Some(mut refusal) = held.remove(&blob.hash)
                 {
+                    refusal.withdrawn = true;
                     withdrawn.push(refusal);
                 }
             }
