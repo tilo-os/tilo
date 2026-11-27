@@ -289,17 +289,28 @@ pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {
 }
 
 /// The surface a native app directory publishes: its manifest's id and name, and its compiled
-/// surface, compiled here from the `surface.toml` beside its manifest. `None` for a directory
-/// that is not a native app with an authored surface.
+/// surface, compiled here from the `surface.toml` beside its manifest, or read from the
+/// `surface.json` an app whose code writes its description commits instead (the session's).
+/// `None` for a directory that is not a native app with a surface.
 pub fn native_surface(dir: &Path) -> Result<Option<NativeSurface>, String> {
-    let (manifest, surface) = (dir.join(MANIFEST_FILE), dir.join(SURFACE_FILE));
-    if !manifest.is_file() || !surface.is_file() {
-        return Ok(None);
-    }
     let read = |path: &Path| {
         std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))
     };
-    let compiled = tilo_surface_compile::compile_file(&surface)?;
+    let (manifest, authored, compiled) = (
+        dir.join(MANIFEST_FILE),
+        dir.join(SURFACE_FILE),
+        dir.join(COMPILED_SURFACE_FILE),
+    );
+    if !manifest.is_file() {
+        return Ok(None);
+    }
+    let compiled = if authored.is_file() {
+        tilo_surface_compile::compile_file(&authored)?
+    } else if compiled.is_file() {
+        read(&compiled)?
+    } else {
+        return Ok(None);
+    };
     NativeSurface::read(&read(&manifest)?, compiled)
         .map(Some)
         .map_err(|error| format!("{}: {error}", dir.join(MANIFEST_FILE).display()))
@@ -322,8 +333,8 @@ impl NativeSurface {
 }
 
 /// The package a native app directory publishes: its manifest's id and name, and the
-/// resources of its `surface.toml`. `None` for a directory that is not a native app with a
-/// committed surface.
+/// resources of its surface ([`native_surface`]). `None` for a directory that is not a native
+/// app with a committed surface.
 pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
     let Some(surface) = native_surface(dir)? else {
         return Ok(None);
@@ -331,7 +342,7 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
     surface
         .package()
         .map(Some)
-        .map_err(|error| format!("{}: {error}", dir.join(SURFACE_FILE).display()))
+        .map_err(|error| format!("{}: {error}", dir.display()))
 }
 
 /// The package of the app `app` named `title` whose compiled surface is `text`: a description a

@@ -150,10 +150,20 @@ fn this_machines_libraries_are_named_only_when_the_build_fails() {
     let mut permissions = std::fs::metadata(&cargo).unwrap().permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
     std::fs::set_permissions(&cargo, permissions).unwrap();
+    // On this checkout's toolkit, which a thin build links: an app made where no checkout is
+    // found is on the published SDK, and its Tilo OS package carries the toolkit itself.
+    let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/ui-core");
     let created = tilo_app(
         dir.path(),
         &cargo,
-        &["new", "notes", "--template", "starter"],
+        &[
+            "new",
+            "notes",
+            "--template",
+            "starter",
+            "--ui-path",
+            ui.to_str().expect("a UTF-8 checkout path"),
+        ],
     );
     assert!(
         created.status.success(),

@@ -1225,7 +1225,8 @@ pub fn main(args: Vec<OsString>) -> ExitCode {
 
 /// Help and version stay human text; any other usage error is reported as a
 /// JSON document when `--json` was requested, so a caller never has to parse
-/// clap's prose to learn that its invocation was wrong.
+/// clap's prose to learn that its invocation was wrong. Without `--json` it
+/// ends the run as a command's own refusal does: the error on stderr, exit 1.
 fn report_usage_error(error: &clap::Error) -> ExitCode {
     use clap::error::ErrorKind;
 
@@ -1236,8 +1237,14 @@ fn report_usage_error(error: &clap::Error) -> ExitCode {
             | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
     );
     let wants_json = std::env::args_os().skip(1).any(|arg| arg == "--json");
-    if informational || !wants_json {
+    if informational {
         error.exit();
+    }
+    if !wants_json {
+        if let Err(written) = error.print() {
+            eprintln!("tilolang: {written}");
+        }
+        return ExitCode::FAILURE;
     }
     let document = json!({
         "ok": false,

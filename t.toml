@@ -950,7 +950,7 @@ env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 on = ["dispatch", "idle", "stable"]
 heavy = true
 
-# The shell package against the session's declared actions (apps/tl/session/surface.toml), the
+# The shell package against the session's declared actions (apps/tl/session/surface.json), the
 # compile a session starting it runs: a shell calling an action the session no longer declares
 # fails here by name, at push time, rather than as every session test and walk dying at startup.
 # Its key is the shell's and the session's files, which tilolang-tilo includes in its build.

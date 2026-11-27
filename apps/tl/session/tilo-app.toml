@@ -1,4 +1,4 @@
-# The session, read as a package: what its api publishes, described in surface.toml.
+# The session, read as a package: what its api publishes, described in surface.json.
 [package]
 id = "so.tilo.session"
 name = "Session"
