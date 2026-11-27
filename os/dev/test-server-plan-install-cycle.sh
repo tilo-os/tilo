@@ -36,7 +36,8 @@
 # Evidence: every stage is recorded under OUT/evidence; serials that may hold
 # a secret are never copied. As the run ends, a failure included, each guest's
 # serial and QEMU logs are copied to OUT/<guest>-serial.log and
-# OUT/<guest>-qemu.log, the owner's profile logs to OUT/owner-logs.tar, and
+# OUT/<guest>-qemu.log, the owner's profile logs to OUT/owner-logs.tar, the
+# owner's device daemon's own log to OUT/owner-device-daemon.log, and
 # OUT/evidence/verdict.json names the phase it ended in. Nothing a guest
 # wrote is deleted, so a failure can be read again afterwards.
 set -euo pipefail
@@ -44,8 +45,6 @@ set -euo pipefail
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$dev_dir/../.." && pwd)"
 vm="$dev_dir/vm.sh"
-# shellcheck source=os/dev/action-frame.sh
-source "$dev_dir/action-frame.sh"
 
 die() { printf 'server plan install cycle: %s\n' "$*" >&2; exit 1; }
 note() { printf 'server plan install cycle: %s\n' "$*" >&2; }
@@ -146,9 +145,6 @@ owner() {
 owner_profile() {
   TILO_SSH_BOUND="${TILO_SSH_BOUND:-660}" owner ssh "bash $owner_driver $owner_root $*"
 }
-owner_control() {
-  TILO_SSH_BOUND="${TILO_SSH_BOUND:-120}" owner ssh "bash $owner_driver $owner_root control $(printf '%q ' "$@")"
-}
 owner_cmd() {
   TILO_SSH_BOUND="${TILO_SSH_BOUND:-600}" owner ssh "bash $owner_driver $owner_root cmd $(printf '%q ' "$@")"
 }
@@ -192,7 +188,13 @@ copy_owner_profile() {
   # The profile's logs only: its identity holds the person's private keys.
   owner ssh "cd $owner_root && tar -cf - logs 2>/dev/null" \
     > "$out/owner-logs.tar" 2>/dev/null || true
-  owner_control questions --json > "$out/owner-questions.json" 2>&1 || true
+  # The device daemon's own log, apart from the bundle and without a line that
+  # may hold a secret: what it refused is what explains a run that never got an
+  # answer it waited for.
+  owner ssh "cat $owner_root/logs/device-daemon.log 2>/dev/null" 2>/dev/null \
+    | grep -viE 'recovery[ _-]?key|token' > "$out/owner-device-daemon.log" || true
+  # What still waits for the person on their device when the run ends.
+  owner_cmd tilo read invocations/workspace --json > "$out/owner-asked.json" 2>&1 || true
 }
 cleanup() {
   local rc=$?
@@ -315,15 +317,13 @@ owner_cmd tilo machine add --os server --name "$server_name" \
   }
 plan_id="$(sed -n 's/^plan \([0-9a-f]\{32\}\).*/\1/p' "$evidence/03-plan.txt" | head -n 1)"
 [[ "$plan_id" =~ ^[0-9a-f]{32}$ ]] || die "the plan's id is not in the command's answer: $(cat "$evidence/03-plan.txt")"
-{ owner_control raw "$(action_frame tilo.machines machines machine.show "{\"plan\":\"$plan_id\"}")" \
-    > "$evidence/03-plan-entry.json" \
-    && action_completed "$evidence/03-plan-entry.json"; } \
+owner_cmd tilo --json machine show "$plan_id" > "$evidence/03-plan-entry.json" 2>&1 \
   || { cat "$evidence/03-plan-entry.json" >&2; die 'the plan entry could not be read back'; }
-jq -e '.message.Receipt.status.Completed.output.value.plan as $plan
+jq -e '.result.plan as $plan
   | $plan.plan == $id and ($plan.open | length == 0)' --arg id "$plan_id" \
   "$evidence/03-plan-entry.json" >/dev/null \
   || die 'the plan entry is not the complete plan the machine installs from'
-jq '.message.Receipt.status.Completed.output.value.plan' "$evidence/03-plan-entry.json" > "$storage/plan.json"
+jq '.result.plan' "$evidence/03-plan-entry.json" > "$storage/plan.json"
 owner ssh "cat $owner_root/machine.token" > "$storage/machine.token" \
   || die 'the token could not be taken from the owner device'
 chmod 0600 "$storage/machine.token" "$storage/plan.json"
@@ -572,17 +572,21 @@ for i in $(seq 1 300); do
 done
 note 'the machine boots its installer'
 # The machine's asks reach the owner's devices over the peer network. The
-# install, its join and the unlock keyslot are one pass; each ask is answered
-# where the person's devices answer questions.
-await_owner_question() {
-  local kind=$1 label=$2 listed="$out/owner-question-$2.json" resource=""
-  # Seconds of the clock, not polls: each poll asks the owner over SSH.
+# install, its join and the unlock keyslot are one pass; each ask waits as an
+# asked record, which the person answers with its `resolve`.
+# The machine's boot asks one of the owner's devices to release its unlock half
+# (`tilo.device#releaseHalf`) in an asked record: its invocation and the workspace it waits in,
+# once it waits. The listing is kept as evidence of what asked.
+await_owner_unlock_ask() {
+  local label=$1 listed="$out/owner-unlock-$1.json" found=""
   local deadline=$((SECONDS + ${TILO_SERVER_CYCLE_ASK_SECONDS:-1200}))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    owner_control questions --json > "$listed" 2>&1 || true
-    resource="$(jq -r --arg kind "$kind" \
-      'map(select(.kind == $kind))[0].resource // empty' "$listed" 2>/dev/null || true)"
-    [ -z "$resource" ] || { printf '%s\n' "$resource"; return 0; }
+    owner_cmd tilo read invocations/workspace --json > "$listed" 2>/dev/null || true
+    found="$(jq -r '[.items // [] | .[]
+        | select(.status == "waiting")
+        | select((.asked.action // .action // "") | endswith("#releaseHalf"))][0]
+        | select(.) | "\(.id) \(.asked.workspace)"' "$listed" 2>/dev/null || true)"
+    [ -z "$found" ] || { printf '%s\n' "$found"; return 0; }
     sleep 1
   done
   [ ! -f "$server_dir/serial.log" ] \
@@ -591,7 +595,7 @@ await_owner_question() {
   # never on the serial: the screen is what a person at the machine would see.
   local shot
   shot="$(server_vm shot "unasked-$label" 2>/dev/null)" && cp -f "$shot" "$out/server-screen-$label.png" || true
-  die "the owner's sheet never asked a $kind question ($label)"
+  die "the owner was never asked to release the boot's half ($label)"
 }
 # The machine's daemon has the person's root certify its boot key, so the owner's device asks the
 # person (`devices#certifyKey`) in an asked record: its invocation and the workspace it waits in,
@@ -612,12 +616,13 @@ await_owner_certify_ask() {
     || tr -d '\000' < "$server_dir/serial.log" | grep -viE 'recovery[ _-]?key' | tail -n 60 >&2 || true
   die "the owner was never asked to certify the machine's boot key ($label)"
 }
+# The person answers the asked record `invocation` in `workspace`: their yes approves the call
+# it waits on, anything else declines it, as the device that holds their root does.
 answer_owner() {
-  local verdict=$1 resource=$2 action=answer
-  [ "$verdict" = allow ] || action=cancel
-  { owner_control raw "$(action_frame so.tilo.session "$resource" "$action")" \
-      > "$out/owner-answer-$verdict.txt" 2>&1 \
-      && action_completed "$out/owner-answer-$verdict.txt"; } \
+  local verdict=$1 invocation=$2 workspace=$3 resolution=approve
+  [ "$verdict" = allow ] || resolution=decline
+  owner_cmd tilo do --in-person "invocations/workspace/$invocation#resolve" \
+      "resolution=$resolution" -w "$workspace" > "$out/owner-answer-$verdict.txt" 2>&1 \
     || { cat "$out/owner-answer-$verdict.txt" >&2; die "the owner's sheet could not be answered ($verdict)"; }
 }
 # The machine joins the owner's devices with the ticket the plan staged, which
@@ -633,9 +638,9 @@ owner_cmd tilo do --in-person "invocations/workspace/$certify_invocation#resolve
 mark_step 08-sibling ok
 
 phase=first-boot
-unlock_question="$(await_owner_question network.device-unlock first-boot)"
-note "the owner releases the first boot's half: $unlock_question"
-answer_owner allow "$unlock_question"
+read -r unlock_invocation unlock_workspace <<<"$(await_owner_unlock_ask first-boot)"
+note "the owner releases the first boot's half: $unlock_invocation"
+answer_owner allow "$unlock_invocation" "$unlock_workspace"
 mark_step 09-first-unlock ok
 
 # What the owner's device knows of the machine: its name, its device key and
@@ -674,9 +679,9 @@ owner_cmd tilo server set-default-start "$server_name" \
 owner_cmd tilo server reboot "$server_name" > "$evidence/10-reboot.txt" 2>&1 \
   || { cat "$evidence/10-reboot.txt" >&2; die 'the machine did not take a restart'; }
 phase=restart
-second_question="$(await_owner_question network.device-unlock restart)"
-note "the owner releases the restarted boot's half: $second_question"
-answer_owner allow "$second_question"
+read -r second_invocation second_workspace <<<"$(await_owner_unlock_ask restart)"
+note "the owner releases the restarted boot's half: $second_invocation"
+answer_owner allow "$second_invocation" "$second_workspace"
 await_server_status "$first_opened" 11-status || die 'the machine did not come up unlocked after the restart'
 note 'the restarted machine is up and opened by its owner again'
 mark_step 11-restart ok

@@ -8,15 +8,16 @@
 #   server-plan-owner.sh ROOT wait          wait until the session answers
 #   server-plan-owner.sh ROOT stop          stop the session and its bus
 #   server-plan-owner.sh ROOT cmd CMD...    start a command in the profile
-#   server-plan-owner.sh ROOT control ...   tilo-control against the session
 #
 # ROOT is a private directory on the guest; nothing of the person's real
 # profile is read. `cmd` carries the same XDG and identity environment the
-# session has, so `tilo` and the session are one device.
+# session has, so `tilo` and the session are one device. The profile's device
+# daemon writes its own log to ROOT/logs/device-daemon.log, which the cycle
+# copies as evidence.
 set -euo pipefail
 
-root="${1:?usage: server-plan-owner.sh ROOT start|wait|stop|cmd|control ...}"
-mode="${2:?usage: server-plan-owner.sh ROOT start|wait|stop|cmd|control ...}"
+root="${1:?usage: server-plan-owner.sh ROOT start|wait|stop|cmd ...}"
+mode="${2:?usage: server-plan-owner.sh ROOT start|wait|stop|cmd ...}"
 shift 2
 
 guest_bin() { command -v "$1" 2>/dev/null || printf '/usr/libexec/tilo/%s\n' "$1"; }
@@ -66,13 +67,18 @@ prepare() {
 
 # The profile's device daemon, started once and kept for the profile's life: it
 # makes the person, and the session and every command the cycle runs in the
-# profile are its callers. Bounded: a daemon that never answers answers the
-# cycle's question nowhere.
+# profile are its callers. Its own log is ROOT/logs/device-daemon.log, named
+# apart from the session's, so what it refused is read on its own when a run
+# fails; it says what it decided there at info, below the rest of the profile's
+# warnings. Bounded: a daemon that never answers answers the cycle's question
+# nowhere.
 start_daemon() {
   if [ -s "$root/daemon.pid" ] && kill -0 "$(<"$root/daemon.pid")" 2>/dev/null; then
     return 0
   fi
-  setsid "$(guest_bin tilo-runtime)" >> "$root/logs/daemon.log" 2>&1 < /dev/null &
+  printf -- '--- the device daemon started\n' >> "$root/logs/device-daemon.log"
+  env RUST_LOG="${TILO_SERVER_CYCLE_DAEMON_LOG:-info}" \
+    setsid "$(guest_bin tilo-runtime)" >> "$root/logs/device-daemon.log" 2>&1 < /dev/null &
   printf '%s\n' "$!" > "$root/daemon.pid"
   # The daemon names its endpoint in its profile as a link, whatever directory a socket's path
   # fits in: the profile is where the host that starts it over one finds it, so this asks no
@@ -83,7 +89,7 @@ start_daemon() {
     kill -0 "$(<"$root/daemon.pid")" 2>/dev/null || break
     sleep 0.5
   done
-  tail -n 40 "$root/logs/daemon.log" >&2 || true
+  tail -n 40 "$root/logs/device-daemon.log" >&2 || true
   echo "the owner profile's daemon did not answer" >&2
   return 1
 }
@@ -133,7 +139,7 @@ mint_identity() {
   # on something answers the cycle's question nowhere.
   timeout 180 "$tilo_bin" login --new-identity --name "plan cycle owner" \
     > "$root/logs/identity.log" 2>&1 || {
-    tail -n 40 "$root/logs/identity.log" "$root/logs/daemon.log" >&2 || true
+    tail -n 40 "$root/logs/identity.log" "$root/logs/device-daemon.log" >&2 || true
     return 1
   }
 }
@@ -164,7 +170,7 @@ case "$mode" in
       fi
       sleep 0.5
     done
-    tail -n 80 "$root/logs/session.log" >&2 || true
+    tail -n 80 "$root/logs/session.log" "$root/logs/device-daemon.log" >&2 || true
     echo "the owner session did not answer" >&2
     exit 1
     ;;
@@ -177,10 +183,6 @@ case "$mode" in
       kill -- "-$(cat "$root/daemon.pid")" 2>/dev/null || true
       rm -f "$root/daemon.pid"
     fi
-    ;;
-  control)
-    profile_env
-    exec "$control_bin" --socket "$TILO_TEST_CONTROL" "$@"
     ;;
   cmd)
     profile_env
