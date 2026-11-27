@@ -430,16 +430,10 @@ test('a site that names its host as it was before it was set up again stops the 
     'the entry hears what to set');
 });
 
-test('a host that listens for pages elsewhere, or under a renewed pinned certificate, is not the one the site named', () => {
-  const at = (origin, hash) => {
-    const info = JSON.parse(siteNamed());
-    info.address.web = {origin, certificate_sha256: hash};
-    return info;
-  };
-  const named = at('https://host.example:8443', [1, 2]);
-  assert.equal(staleSiteServer(named, at('https://host.example:8443', [1, 2])), false);
-  assert.equal(staleSiteServer(named, at('https://host.example:9443', [1, 2])), true);
-  assert.equal(staleSiteServer(named, at('https://host.example:8443', [3, 4])), true);
+test('a host that listens for pages elsewhere is not the one the site named', () => {
+  const at = port => ({...JSON.parse(siteNamed()), address: {web: {origin: `https://host.example:${port}`}}});
+  assert.equal(staleSiteServer(at(8443), at(8443)), false);
+  assert.equal(staleSiteServer(at(8443), at(9443)), true);
 });
 
 test('a session that cannot reach the host its site names as it is goes on trying', async t => {

@@ -138,17 +138,16 @@ export function forgetSiteServers() {
 }
 
 /** Who a host is and where it is dialled: its root and device, its endpoint, its packet relay,
- * and its WebTransport listener with the certificate a page pins there. */
+ * and its WebTransport listener. */
 const identity = info => JSON.stringify([
   info?.hostCert?.user_public_key ?? null, info?.hostCert?.device_public_key ?? null,
   info?.address?.endpointAddr?.id ?? null, info?.address?.relayUrl ?? null,
-  info?.address?.web?.origin ?? null, info?.address?.web?.certificate_sha256 ?? null,
+  info?.address?.web?.origin ?? null,
 ]);
 
 /** Whether the host answering at its origin (`answering`, as `hostInfo()` reads it) is
  * another than the one the site named (`info`): set up again since the site's deployment
- * named it, reached through another packet relay, or listening for pages elsewhere or under
- * a renewed pinned certificate. */
+ * named it, reached through another packet relay, or listening for pages elsewhere. */
 export function staleSiteServer(info, answering) {
   return identity(info) !== identity(answering);
 }

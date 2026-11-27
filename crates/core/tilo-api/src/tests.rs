@@ -189,6 +189,11 @@ fn a_host_is_named_by_its_https_origin_not_its_link() {
     info.origin = Some("http://eu1.tilo.sh".into());
     let plain = String::from_utf8(info.web_host_json().unwrap()).unwrap();
     assert!(crate::hosts::read(&plain).is_err());
+    // A link a page pins is renewed while the file stays, so the file names none.
+    let address = info.address.as_mut().unwrap();
+    address.web.as_mut().unwrap().certificate_sha256 = Some([1; 32]);
+    let pinned = info.web_host_json().unwrap();
+    assert!(!String::from_utf8_lossy(&pinned).contains("link-eu1"));
 }
 
 fn server() -> Arc<Server> {

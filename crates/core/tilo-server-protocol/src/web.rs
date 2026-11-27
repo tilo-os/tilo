@@ -216,14 +216,17 @@ impl ServerInfo {
         }
     }
 
-    /// This host's `web-host.json`, as the host writes it in its state: what
-    /// a site hands its page about it and what an API server is configured
-    /// with (`TILO_API_HOST`).
+    /// This host's `web-host.json`, for a site's page and `TILO_API_HOST`,
+    /// without a pinned link: the host renews that while the file stays.
     ///
     /// # Errors
     /// Only as `serde_json` may fail to write a plain struct.
     pub fn web_host_json(&self) -> serde_json::Result<Vec<u8>> {
-        serde_json::to_vec(&self.for_site())
+        let mut host = self.for_site();
+        if let Some(address) = &mut host.address {
+            address.web.take_if(|web| web.certificate_sha256.is_some());
+        }
+        serde_json::to_vec(&host)
     }
 }
 
