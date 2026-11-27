@@ -335,7 +335,8 @@ d-tgafs5zj = Zustand
 d-vvonqua3 = Antwort
     .doc = Die Antwort als JSON-Text, leer solange die Anfrage unterwegs ist.
 
-d-or6k3lr7 = Fehler
+d-2qk3mzjc = Warum
+    .doc = Warum sie keine Antwort bekam, in den Worten der Maschine.
 
 d-q7tlie2e = Beantwortet
     .doc = Was ein Dienst geantwortet hat, wie die Maschine es schreibt.

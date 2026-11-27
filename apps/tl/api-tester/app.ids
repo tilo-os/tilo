@@ -102,8 +102,8 @@ SendAsk.url = xg26wm2t
 SendAsk.vars = 5hvbl66x
 SendState = 77rawkj7
 SendState.answer = vvonqua3
-SendState.error = or6k3lr7
 SendState.state = tgafs5zj
+SendState.why = 2qk3mzjc
 Sent = rghtwwim
 Sent.at = irpsjk53
 Sent.duration_ms = cno6gxwc
@@ -262,6 +262,7 @@ variables_of = due4vxnw
 written = hbov3juh
 
 # retired
+SendState.error = or6k3lr7
 Workspace.draft = lhufde3j
 Workspace.drafts = k7ooui67
 blank = no4urisv

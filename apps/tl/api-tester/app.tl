@@ -592,7 +592,7 @@ action settle_send(w: Workspace, state: Text) -> Text uses time {
                 said.answer
             } else {
                 if said.state == "failed" {
-                    w.failure = if said.error == "" { "The request failed" } else { said.error }
+                    w.failure = if said.why == "" { "The request failed" } else { said.why }
                 } else if said.state == "cancelled" {
                     w.failure = "The request was cancelled."
                 }
@@ -776,7 +776,8 @@ type SendState {
     state: Text = ""
     /// The answer as JSON text, empty while the request is on its way.
     answer: Text = ""
-    error: Text = ""
+    /// Why it got no answer, in the engine's words.
+    why: Text = ""
 }
 
 /// What a service answered, as the engine writes it.

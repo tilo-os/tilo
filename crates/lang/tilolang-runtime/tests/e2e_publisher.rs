@@ -481,7 +481,7 @@ mod cases {
             p.act("apply_for_namespaces");
             assert_eq!(p.text("job"), "apply-1");
             p.engine.set_status(
-                r#"{"state":"failed","summary":"","error":"missing proof at DNS TXT _tilo-publisher.lovelace.dev"}"#,
+                r#"{"state":"failed","summary":"","why":"missing proof at DNS TXT _tilo-publisher.lovelace.dev"}"#,
             );
             p.end();
             assert_eq!(p.text("job"), "");
