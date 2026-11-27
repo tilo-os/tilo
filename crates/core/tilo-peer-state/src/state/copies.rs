@@ -200,7 +200,8 @@ pub enum Shortfall {
         role: CopyRole,
         /// How many the policy wants.
         wanted: u32,
-        /// How many holders of it lack nothing.
+        /// How many holders of it lack nothing: it said so, and no holder
+        /// knows it to lack anything.
         current: u32,
     },
 }
@@ -214,7 +215,16 @@ pub struct HolderCopy {
     /// How it holds the workspace.
     pub role: CopyRole,
     /// Whether it lacks nothing that any holder knows of.
+    ///
+    /// A holder that has not said where its copy stands lacks nothing any
+    /// holder knows of, and counts no more current than one known to be
+    /// short: its copy is not known yet, never known to be whole.
     pub current: bool,
+    /// Whether it said where its copy stands at all.
+    ///
+    /// A holder the workspace names that has not reported yet stands in the
+    /// status unreported and not current, until its own row says otherwise.
+    pub reported: bool,
 }
 
 /// Where a workspace's copies stand.
@@ -322,7 +332,9 @@ impl PeerWorkspace<'_> {
     /// Where the workspace's copies stand, the same on every device that
     /// holds the same state: its servers and every holder that said where its
     /// copy stands, what each lacks, and how far the copies fall short of
-    /// what the workspace wants.
+    /// what the workspace wants. A holder that has not reported yet stands as
+    /// not current, so no copy counts as one the workspace does not know it
+    /// has.
     #[must_use]
     pub fn copies(self) -> CopyStatus {
         let governance = self.peer.governance();
@@ -393,10 +405,17 @@ impl PeerWorkspace<'_> {
             .collect();
         let holders: Vec<HolderCopy> = roles
             .into_iter()
-            .map(|(device, role)| HolderCopy {
-                device,
-                role,
-                current: !short.contains(&device),
+            .map(|(device, role)| {
+                let reported = rows.contains_key(&device);
+                HolderCopy {
+                    device,
+                    role,
+                    // Only a holder's own row says its copy lacks nothing: one that
+                    // never reported has said nothing of being current, and nothing
+                    // in the status may claim it is.
+                    current: reported && !short.contains(&device),
+                    reported,
+                }
             })
             .collect();
         for role in [CopyRole::KeyHolder, CopyRole::Store] {
@@ -536,6 +555,99 @@ mod tests {
         assert!(!status.chosen);
         assert_eq!(status.policy, CopyPolicy::default_for(false));
         assert!(status.satisfied(), "{status:?}");
+    }
+
+    /// A holder the workspace names that has not said where its copy stands
+    /// is not known to be whole: it stands unreported and not current, and
+    /// counts in no current copy until its own row says it lacks nothing.
+    #[test]
+    fn a_holder_that_has_not_reported_is_not_yet_known_current() {
+        let (mut left, left_key, mut right, right_key) = desktops();
+        let (left_cert, right_cert) = (cert_of(&left), cert_of(&right));
+        let (left_device, right_device) =
+            (left_cert.device_public_key, right_cert.device_public_key);
+        for (cert, key, at) in [
+            (&left_cert, &left_key, "left addr"),
+            (&right_cert, &right_key, "right addr"),
+        ] {
+            let hint =
+                tilo_workspace_join::sign_transport_hint("iroh", at, cert.clone(), [1; 32], key)
+                    .unwrap();
+            left.governance_mut()
+                .author_keeping_device(&hint, &left_key, now())
+                .unwrap();
+        }
+        // The address each fixture signs names a store, and the workspace
+        // wants two of those.
+        let wanted = CopyPolicy {
+            key_holders: 0,
+            stores: 2,
+        };
+        assert!(
+            left.governance_mut()
+                .author_copy_policy(Some(wanted), &left_key, now())
+                .unwrap()
+        );
+
+        let status = left.workspace().copies();
+        assert_eq!(status.holders.len(), 2, "{status:?}");
+        assert!(
+            status.holders.iter().all(|held| !held.reported),
+            "neither holder reported: {status:?}"
+        );
+        assert_eq!(
+            status.shortfall,
+            [Shortfall::Copies {
+                role: CopyRole::Store,
+                wanted: 2,
+                current: 0,
+            }],
+            "a copy nobody said is whole counts as none"
+        );
+
+        left.workspace_mut()
+            .report_copy(&left_cert, &HeldCopy::default(), now())
+            .unwrap();
+        let status = left.workspace().copies();
+        assert!(
+            status
+                .holders
+                .iter()
+                .any(|held| held.device == left_device && held.reported && held.current),
+            "{status:?}"
+        );
+        assert!(
+            status
+                .holders
+                .iter()
+                .any(|held| held.device == right_device && !held.reported && !held.current),
+            "one holder's row says nothing of the other's: {status:?}"
+        );
+        assert_eq!(
+            status.shortfall,
+            [Shortfall::Copies {
+                role: CopyRole::Store,
+                wanted: 2,
+                current: 1,
+            }],
+            "{status:?}"
+        );
+
+        sync(&left, &mut right);
+        right
+            .workspace_mut()
+            .report_copy(&right_cert, &HeldCopy::default(), now())
+            .unwrap();
+        sync(&right, &mut left);
+        let status = left.workspace().copies();
+        assert!(status.satisfied(), "{status:?}");
+        assert!(
+            status
+                .holders
+                .iter()
+                .all(|held| held.reported && held.current),
+            "{status:?}"
+        );
     }
 
     /// The owners choose how many copies the workspace wants; a holder that

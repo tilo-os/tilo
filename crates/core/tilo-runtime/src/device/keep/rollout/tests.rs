@@ -296,6 +296,7 @@ fn a_workspace_short_without_this_server_holds_its_restart() {
         device: [device; 32],
         role,
         current: true,
+        reported: true,
     };
     let status = |key_holders, holders: Vec<HolderCopy>, shortfall| CopyStatus {
         policy: CopyPolicy {

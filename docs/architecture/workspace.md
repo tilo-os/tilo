@@ -232,8 +232,11 @@ Every device reads the same rows, so every device names the same
 shortfall: which holder lacks what (history from another holder, or what was
 written since it was last reached) and how many current copies of each kind
 are missing (`tilo_peer_state::CopyStatus`, answered with the holder list). A
-holder that comes back dials the others, takes in what they hold and it
-lacks, and says it is current; the others, reaching it again, say so too.
+holder that has not said where its copy stands yet is not current: a copy
+nobody heard of is not known to be whole, so it counts in no current copy
+until its own row says it lacks nothing. A holder that comes back dials the
+others, takes in what they hold and it lacks, and says it is current; the
+others, reaching it again, say so too.
 A store compacting its history keeps every frame a device that asked it for
 history still lacks, and the newest checkpoint of each document.
 

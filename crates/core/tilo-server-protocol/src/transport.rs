@@ -200,6 +200,9 @@ pub struct HeldCopy {
     pub role: String,
     /// Whether its copy is current.
     pub current: bool,
+    /// Whether it has said where its copy stands at all: one that has not is
+    /// not known to be current.
+    pub reported: bool,
 }
 
 /// The machine a server is.

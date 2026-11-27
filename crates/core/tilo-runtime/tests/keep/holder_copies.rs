@@ -165,8 +165,16 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
         let status = copies_once(
             holder,
             &workspace.workspace,
-            "every copy is current",
-            |status| status.policy == wanted && status.satisfied() && status.holders.len() == 3,
+            "every copy has reported and is current",
+            |status| {
+                status.policy == wanted
+                    && status.satisfied()
+                    && status.holders.len() == 3
+                    && status
+                        .holders
+                        .iter()
+                        .all(|holder| holder.reported && holder.current)
+            },
         )
         .await;
         assert!(status.chosen);
@@ -223,13 +231,17 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
         let status = copies_once(
             holder,
             &workspace.workspace,
-            "the holders say the server is short",
+            "the holders say the server is short and the others are current",
             |status| {
                 status.shortfall.iter().any(|short| {
                     matches!(short, Shortfall::Holder {
                         device,
                         missing: Missing::WritesSince { .. },
                     } if *device == away)
+                }) && status.shortfall.contains(&Shortfall::Copies {
+                    role: CopyRole::KeyHolder,
+                    wanted: 3,
+                    current: 2,
                 })
             },
         )

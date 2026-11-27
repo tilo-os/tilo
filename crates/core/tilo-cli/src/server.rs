@@ -355,12 +355,14 @@ fn print_holds(status: &ServerStatus) {
         );
         for holder in &held.holders {
             let short: String = holder.device.chars().take(12).collect();
-            println!(
-                "      {} {}{}",
-                holder.role,
-                short,
-                if holder.current { "" } else { " (catching up)" }
-            );
+            let stands = if holder.current {
+                ""
+            } else if holder.reported {
+                " (catching up)"
+            } else {
+                " (has not reported yet)"
+            };
+            println!("      {} {short}{stands}", holder.role);
         }
         for short in &held.shortfall {
             println!("      ! {short}");

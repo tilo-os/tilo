@@ -572,6 +572,7 @@ async fn holding(workspaces: Option<&Workspaces>) -> Vec<HeldWorkspace> {
                         tilo_peer_state::CopyRole::Store => "store".into(),
                     },
                     current: holder.current,
+                    reported: holder.reported,
                 })
                 .collect(),
             shortfall: copies
