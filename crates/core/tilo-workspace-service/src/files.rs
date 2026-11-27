@@ -381,7 +381,8 @@ async fn write_as_device(copy: &Copy, chunk: TreeChunk, changes: &[u8]) -> Resul
         .await
         .map_err(|refusal| match refusal {
             WriteRefusal::HistoryFull { .. } => Refusal::HistoryFull,
-            WriteRefusal::ChangeRefused(_) => Refusal::NotPermitted,
+            // Why the workspace refused it, in its own words, a change it refused included: a
+            // folder that waits says which rule or which mismatch took the change.
             refusal => Refusal::Other(refusal.to_string()),
         })
 }
