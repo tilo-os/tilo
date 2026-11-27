@@ -678,6 +678,12 @@ fn credential(value: &serde_json::Value) -> Result<crate::LoginAsk, String> {
             form: field("form"),
             item: field("account"),
         },
+        // A field filled from a login the vault keeps: the request names the field and the
+        // login, never what it keeps.
+        "fill_field" => LoginAsk::FillField {
+            element: element(value, "element")?,
+            item: field("account"),
+        },
         "delete" => LoginAsk::Delete {
             item: field("account"),
         },

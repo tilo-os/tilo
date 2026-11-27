@@ -2530,12 +2530,25 @@ impl Checker<'_> {
             }
             return Ex::error();
         };
-        if args.len() > 1 {
-            self.err(
-                "E022",
-                span,
-                "`page.call` takes one argument, the request as JSON text",
-            );
+        // `outside: true`: what the request does leaves the system (a request the page held, let
+        // go), where no Undo reaches, so the action that asks it is an outside effect: a caller
+        // other than the person is asked first, and the person's own press confirms first.
+        for extra in args.iter().skip(1) {
+            let outside = extra
+                .name
+                .as_ref()
+                .is_some_and(|named| named.name == "outside")
+                && matches!(extra.value.kind, ExprKind::Bool(true));
+            if outside {
+                self.st.facts.outside = true;
+            } else {
+                self.err(
+                    "E022",
+                    extra.value.span,
+                    "`page.call` takes the request as JSON text, and `outside: true` where what \
+                     it does leaves the system",
+                );
+            }
         }
         let request = self.expr_as(&request.value, &Ty::Text);
         self.reads(crate::effects::Effect::Page, span, "`page.call`");

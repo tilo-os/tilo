@@ -960,13 +960,11 @@ d-v33dekps-text = Text
 d-v33dekps-frame = Frame
 
 d-e73dpir4 = Ein Geheimnis eintragen
-    .doc = Schreibe ein Geheimnis in ein Passwort- oder Kartenfeld: es wird nie im Protokoll der Seite behalten.
+    .doc = Fülle ein Passwortfeld mit einer Anmeldung, die der Tresor des Arbeitsbereichs aufbewahrt, benannt durch ihren Verweis (`vault.item:<id>`). Das Fenster fragt den Tresor für die Website, auf der die Seite laut ihrer Engine ist, und die Engine schreibt es nur in die Seite dieser Website: eine Anmeldung für eine andere Website füllt nichts. Das Geheimnis geht vom Tresor direkt ins Feld, nie durch diese Aktion, ihre Antwort oder den Datensatz der Seite; wie das Füllen endete, steht im Anmeldehinweis der Seite.
 
 d-e73dpir4-element = Element
 
-d-e73dpir4-text = Text
-
-d-e73dpir4-frame = Frame
+d-e73dpir4-item = Eintrag
 
 d-mniscmpx = Auf der Seite auswählen
     .doc = Wähle Optionen einer Auswahl.
@@ -1190,7 +1188,7 @@ d-4i65tg5t-id = Id
 d-4i65tg5t-asker = Fragender
 
 d-psytxnym = Senden lassen
-    .doc = Lässt hinaus, was die Seite sendet: ein Formular, eine Navigation oder eine Anfrage, die wartet, bis die Person es sagt.
+    .doc = Lässt hinaus, was die Seite sendet: ein Formular, eine Navigation oder eine Anfrage, die wartet, bis die Person es sagt. Was hinausgeht, lässt sich nicht zurücknehmen, also bestätigt auch der eigene Druck der Person es zuerst.
 d-psytxnym-id = Id
 d-psytxnym-origin = Ursprung
 d-psytxnym-method = Methode

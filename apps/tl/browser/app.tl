@@ -869,17 +869,27 @@ action fill_page(
     ask_page(p, request)
 }
 
-/// Write a secret into a password or card field: it is never kept in the page's record.
-action fill_page_secret(
-    p: Page,
-    element: Text,
-    text: Text,
-    frame: Option<Text> = .none,
-) -> Answer uses page (icon: .key, label: "Fill a secret") {
-    let request = json.encode(
-        Ask(op: "fill", element: .some(element), text: .some(text), secret: true, frame: frame),
+/// Fill a password field from a login the workspace's vault keeps, named by its reference
+/// (`vault.item:<id>`). The window asks the vault for it for the site its engine says the page
+/// is at, and the engine writes it only into that site's own page: a login kept for another
+/// site fills nothing. The secret goes from the vault into the field, never through this
+/// action, its answer or the page's record; how the fill ended is the page's login notice.
+action fill_page_secret(p: Page, element: Text, item: Text) -> Answer uses page (
+    icon: .key,
+    label: "Fill a secret",
+) {
+    ask_page(
+        p,
+        json.encode(
+            Ask(
+                op: "credential",
+                credential: .some("fill_field"),
+                origin: .some(origin_of(p.url)),
+                element: .some(element),
+                account: .some(item),
+            ),
+        ),
     )
-    ask_page(p, request)
 }
 
 /// Choose options of a select.
@@ -2024,7 +2034,8 @@ action cancel_sign_in(p: Page, id: Int, asker: Text) -> Answer uses page (
 
 /// Lets what the page sends leave it: a form, a navigation or a request kept until the person
 /// says so. The window raises it as the Browser's own call, and the person allows it on the
-/// system's card, which says what leaves and where.
+/// system's card, which says what leaves and where. What leaves is not taken back, so the
+/// person's own press confirms it first too.
 destructive action let_leave(
     p: Page,
     id: Int,
@@ -2033,7 +2044,10 @@ destructive action let_leave(
     leaving: Text,
 ) -> Answer uses page (icon: .send, label: "Let it leave", shows: [leaving, origin, method]) {
     page_answered(
-        page.call(json.encode(Ask(op: "answer_held_request", id: .some(id), allow: true))),
+        page.call(
+            json.encode(Ask(op: "answer_held_request", id: .some(id), allow: true)),
+            outside: true,
+        ),
     )
 }
 

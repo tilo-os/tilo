@@ -25,8 +25,8 @@ use std::sync::mpsc;
 use logins::VaultAnswer;
 
 use tilo_webview::{
-    CredentialAction, CredentialRequest, ExtensionSidePanelChange, FileChooser, PageActor,
-    PageFailure, PageReply, PageRequest, SharedEngine, WebViewCommand, WebViewEvent,
+    CredentialAction, CredentialRequest, ExtensionSidePanelChange, FileChooser, FillInto,
+    PageActor, PageFailure, PageReply, PageRequest, SharedEngine, WebViewCommand, WebViewEvent,
 };
 
 /// The most sign-ins loaded out of sight at once: the pages of an extension's sign-in a private
@@ -108,6 +108,9 @@ pub struct PageSession {
     vault_answers: (mpsc::Sender<VaultAnswer>, mpsc::Receiver<VaultAnswer>),
     /// How many vault calls have not answered yet.
     vault_pending: usize,
+    /// The fields the engine was asked to fill with a secret the vault released, by the
+    /// session's number for each ask: how each ended is told the app as a note, never the text.
+    fields_filling: BTreeSet<u32>,
     /// A private page's disposable root, which this session's engine started on and which goes
     /// when the session does: nothing a private window read or signed in to is kept.
     private_root: Option<std::path::PathBuf>,
@@ -146,6 +149,7 @@ impl PageSession {
             vault: None,
             vault_answers: mpsc::channel(),
             vault_pending: 0,
+            fields_filling: BTreeSet::new(),
             private_root: None,
             panel: None,
             quiet_sign_ins: Vec::new(),
@@ -217,6 +221,26 @@ impl PageSession {
                 // there, so the app can offer to float it and the window has it to hand.
                 WebViewEvent::LoadFinished | WebViewEvent::LoadFinishedAt { .. } => loaded = true,
                 WebViewEvent::PageResult { request_id, result } => {
+                    // A field filled from the vault is this session's own ask: the app hears
+                    // how it ended, and nothing of what was written.
+                    if self.fields_filling.remove(request_id) {
+                        self.waiting.remove(request_id);
+                        let (ok, message) = match result {
+                            Ok(_) => (true, "Filled from your vault"),
+                            Err(failure) => (false, failure.message.as_str()),
+                        };
+                        self.notes.push(codec::credential_note(
+                            "fill_field",
+                            ok,
+                            message,
+                            &[],
+                            &[],
+                            None,
+                            None,
+                            false,
+                        ));
+                        continue;
+                    }
                     // An answer to an action cancelled meanwhile is dropped: nobody waits for
                     // it, and the page settled it as asked.
                     if self.waiting.remove(request_id) {
@@ -886,6 +910,21 @@ impl PageSession {
                     }),
                 );
             }
+            LoginAsk::FillField { element, item } => {
+                let site = site.to_owned();
+                self.vault_pending = self.vault_pending.saturating_add(1);
+                vault.fill(
+                    &site.clone(),
+                    &item,
+                    Box::new(move |result| {
+                        let _ = sender.send(VaultAnswer::FieldReleased {
+                            element,
+                            site,
+                            result,
+                        });
+                    }),
+                );
+            }
         }
     }
 
@@ -950,6 +989,28 @@ impl PageSession {
                 }
                 Err(why) => self.notes.push(note("fill", Err(&why), "")),
             },
+            // The engine compares its own document's origin with the site the vault released
+            // the secret for in the step that writes it: a page that moved on meanwhile is
+            // written nothing.
+            VaultAnswer::FieldReleased {
+                element,
+                site,
+                result,
+            } => match result {
+                Ok((_, secret)) => {
+                    let id = self.ask(
+                        None,
+                        PageRequest::FillReleased {
+                            element,
+                            text: secret,
+                            at: site,
+                            into: FillInto::Password,
+                        },
+                    );
+                    self.fields_filling.insert(id);
+                }
+                Err(why) => self.notes.push(note("fill_field", Err(&why), "")),
+            },
         }
     }
 
@@ -979,6 +1040,7 @@ impl PageSession {
             || self.login_waiting.is_some()
             || !self.taking.is_empty()
             || self.vault_pending > 0
+            || !self.fields_filling.is_empty()
             || !self.notes.is_empty()
     }
 }
@@ -1406,6 +1468,77 @@ mod tests {
         assert_eq!(note["did"], "fill");
         assert_eq!(note["success"], false);
         assert_eq!(note["message"], "Browser may not fill this login yet");
+    }
+
+    /// A field filled from a login goes from the vault to the engine alone: the vault is asked
+    /// for the site the engine says the page is at, whatever the app said; the engine is handed
+    /// the secret bound to that site, which it writes only into that site's own page; and the
+    /// app hears how it ended and nothing of the secret. A login the vault does not release
+    /// there (kept for another site, or not this app's to fill) fills nothing and says why.
+    #[test]
+    fn a_secret_field_is_filled_from_the_vault_for_the_pages_own_site_alone() {
+        let (test, mut session, vault) = with_vault(FakeVault::default());
+        session.login(
+            "https://bank.example",
+            LoginAsk::FillField {
+                element: "e7".to_owned(),
+                item: "vault.item:1".to_owned(),
+            },
+        );
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://phish.example",
+            "4",
+        )));
+        session.poll();
+        assert_eq!(
+            *vault.asked.borrow(),
+            ["fill vault.item:1 https://phish.example"],
+            "the vault decides for the engine's site, not the app's word for it"
+        );
+        let released = test.released_fills();
+        assert_eq!(released.len(), 1, "one fill handed to the engine");
+        assert_eq!(released[0].element, "e7");
+        assert_eq!(released[0].at, "https://phish.example");
+        assert_eq!(released[0].into, FillInto::Password);
+        assert_eq!(released[0].text.as_deref(), Some(KEPT));
+        session.poll();
+        let notes = session.notes();
+        assert!(notes.iter().all(|note| !note.contains(KEPT)), "{notes:?}");
+        let said: serde_json::Value = serde_json::from_str(&notes[0]).unwrap();
+        assert_eq!(said["did"], "fill_field");
+        assert_eq!(said["success"], true);
+        assert!(
+            session.answers().is_empty(),
+            "the window's own ask answers nobody"
+        );
+        while session.next_event().is_some() {}
+        assert!(!session.busy(), "nothing waits on the engine or the vault");
+
+        let (test, mut session, _) = with_vault(FakeVault {
+            refuse_fill: Some("This login is kept for another site".to_owned()),
+            ..FakeVault::default()
+        });
+        session.login(
+            "https://bank.example",
+            LoginAsk::FillField {
+                element: "e7".to_owned(),
+                item: "vault.item:1".to_owned(),
+            },
+        );
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://phish.example",
+            "4",
+        )));
+        session.poll();
+        assert!(test.released_fills().is_empty(), "nothing filled");
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
+        assert_eq!(note["did"], "fill_field");
+        assert_eq!(note["success"], false);
+        assert_eq!(note["message"], "This login is kept for another site");
     }
 
     /// A page the engine will not reach (not secure, or moved on) says so in the action's own

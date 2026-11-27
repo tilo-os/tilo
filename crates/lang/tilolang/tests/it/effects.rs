@@ -663,3 +663,41 @@ tilo_test_env::scenario! {
         assert_eq!(class("clear"), EffectClass::Undoable, "no shell, nothing outside");
     }
 }
+
+tilo_test_env::scenario! {
+    /// `page.call(request, outside: true)`: a request the page held, let go, leaves the system
+    /// where no Undo reaches, so the action that lets it go reaches outside: the person's own
+    /// press confirms it first, and another caller's asks them.
+    fn a_page_call_that_lets_something_leave_reaches_outside;
+
+    phase each_page_action_is_classed_by_what_its_call_does;
+    {
+        let src = "type P {\n    said: Text\n}\n\
+            action read(p: P) uses page {\n    p.said = page.call(\"x\")\n}\n\
+            destructive action let_leave(p: P) uses page {\n    p.said = page.call(\"x\", outside: true)\n}\n";
+        assert_eq!(codes(src), Vec::<String>::new());
+        let compiled = crate::common::compile_body(src);
+        let class = |name: &str| {
+            compiled
+                .meta
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("the action {name}"))
+                .class
+        };
+        use tilolang::types::EffectClass;
+        assert_eq!(class("let_leave"), EffectClass::Outside, "what leaves is not taken back");
+        assert_eq!(class("read"), EffectClass::Undoable, "the answer is kept in the record");
+    }
+
+    phase anything_else_beside_the_request_is_refused;
+    {
+        for stray in ["outside: false", "hold: true", "\"y\""] {
+            let src = format!(
+                "type P {{\n    said: Text\n}}\naction read(p: P) uses page {{\n    p.said = page.call(\"x\", {stray})\n}}\n"
+            );
+            assert_eq!(codes(&src), ["E022"], "{stray}");
+        }
+    }
+}

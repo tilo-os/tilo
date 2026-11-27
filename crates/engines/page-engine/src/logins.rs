@@ -23,6 +23,10 @@ pub enum LoginAsk {
     Update { capture: String, item: String },
     /// Fill the form `form` with the login `item` names.
     Fill { form: String, item: String },
+    /// Fill the field `element` with the secret of the login `item` names, straight from the
+    /// vault into the page: the engine writes it only while its own document is at the site the
+    /// vault released it for.
+    FillField { element: String, item: String },
     /// Forget the login `item` names.
     Delete { item: String },
 }
@@ -37,6 +41,7 @@ impl LoginAsk {
             Self::Save { .. } => "save",
             Self::Update { .. } => "update",
             Self::Fill { .. } => "fill",
+            Self::FillField { .. } => "fill_field",
             Self::Delete { .. } => "delete",
         }
     }
@@ -96,6 +101,12 @@ pub(crate) enum VaultAnswer {
         form: String,
         site: String,
         document: String,
+        result: Result<(String, ReleasedText), String>,
+    },
+    /// A login's secret handed over to fill the field `element` of a page at `site`.
+    FieldReleased {
+        element: String,
+        site: String,
         result: Result<(String, ReleasedText), String>,
     },
 }
