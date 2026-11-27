@@ -249,6 +249,12 @@ impl MailConnector {
         self.attach(Session::opened(APP, "ada", Window::in_harness))
     }
 
+    /// Ada at a Mail window the live `App` runs, as a session's window process does: the press
+    /// path a person's control takes there.
+    fn window_live(&self) -> Session {
+        self.attach(Session::opened(APP, "ada", Window::live))
+    }
+
     /// `session`'s origin, reaching this connector.
     fn attach(&self, mut session: Session) -> Session {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -2696,6 +2702,94 @@ fn a_message_written_with_no_account_is_kept_and_sends_once_one_is_added() {
     assert!(
         sent.contains("Subject: Re: Engine notes"),
         "the draft that waited goes as it was written: {sent}"
+    );
+}
+
+// USER REQUIREMENT: with no account yet, the bar's New message opens the composer of the message
+// it made, where the person writes it. A press of the app's primary action opens what it made.
+#[test]
+fn new_message_with_no_account_opens_the_composer_of_the_draft_it_made() {
+    let _settled = ui::motion::testing::settled();
+    let connector = MailConnector::new(Vec::new);
+    let mut session = connector.window_live();
+    session.settle();
+    let root = session.mail_root();
+    assert!(session.accounts().is_empty(), "no account yet");
+
+    // The bar's New message, pressed where the window draws it: the person's own press of the
+    // app's primary action.
+    let identity = session.identity_named("New message");
+    assert!(
+        session
+            .window
+            .app()
+            .press_window_control(&identity, ui::window_targets::TargetAction::Activate),
+        "the window presses the New message it lists"
+    );
+    session.settle();
+
+    assert_eq!(
+        session.refs(&root, "drafts").len(),
+        1,
+        "New message made a draft"
+    );
+    let shown: Vec<String> = session
+        .controls()
+        .into_iter()
+        .map(|control| control.name)
+        .collect();
+    assert!(
+        shown.iter().any(|name| name.starts_with("Subject")),
+        "the composer of the draft it made shows: {shown:?}"
+    );
+}
+
+// USER REQUIREMENT: the bar's New message opens the composer after an agent wrote a draft into
+// the same window's list: what the press runs is the control the person sees, whatever the list
+// held before it.
+#[test]
+fn new_message_opens_the_composer_after_a_draft_arrived_in_the_list() {
+    let _settled = ui::motion::testing::settled();
+    let connector = MailConnector::new(Vec::new);
+    let mut session = connector.window_live();
+    session.settle();
+    let root = session.mail_root();
+    // An agent drafts a message: the window's list takes a row it had not drawn.
+    let drafted = session.made(
+        "draft_message",
+        &root,
+        &json!({
+            "to": "grace@hopper.example",
+            "subject": "A message an agent drafted",
+            "body": "The person reads this and sends it.",
+        }),
+    );
+    let before = session.refs(&root, "drafts");
+    assert!(before.contains(&drafted), "the agent's draft is in Drafts");
+
+    let identity = session.identity_named("New message");
+    assert!(
+        session
+            .window
+            .app()
+            .press_window_control(&identity, ui::window_targets::TargetAction::Activate),
+        "the window presses the New message it lists"
+    );
+    session.settle();
+
+    assert_eq!(
+        session.refs(&root, "drafts").len(),
+        2,
+        "New message made a second draft after the first arrived"
+    );
+    let shown: Vec<String> = session
+        .controls()
+        .into_iter()
+        .map(|control| control.name)
+        .collect();
+    assert!(
+        shown.iter().any(|name| name.starts_with("Subject")),
+        "the composer of the draft it made shows: {shown:?}"
     );
 }
 
