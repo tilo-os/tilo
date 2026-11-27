@@ -150,7 +150,19 @@ impl Admit for Workspaces {
                         ));
                     }
                     if entering.admission.is_empty() {
-                        let through = Through::Invitation { invitation, token };
+                        let presented = Presented {
+                            invitation,
+                            cert: cert.clone(),
+                            request_id: entering.request_id,
+                        };
+                        if let Err(refusal) = self.redeemable(&entering.workspace, &presented).await
+                        {
+                            return Entered::Refused(refused(refusal));
+                        }
+                        let through = Through::Invitation {
+                            invitation: presented.invitation,
+                            token,
+                        };
                         return self.sign_on(&entering.workspace, through).await;
                     }
                     entered(
@@ -206,6 +218,24 @@ impl Workspaces {
             self.admit_entered(cert, workspace, request_id, admission)
                 .await,
         )
+    }
+
+    /// Whether `workspace` lets `presented`'s device redeem its invitation, as
+    /// it stands now: the check the admission the device signs meets when it
+    /// comes back ([`Presented::redeem`]), made before the device signs. An
+    /// invitation another person holds, one spent under another request or
+    /// withdrawn is the workspace's refusal, said once and final, never a
+    /// failure of the device's own signing that it asks again after.
+    async fn redeemable(&self, workspace: &str, presented: &Presented) -> Result<(), String> {
+        let hosted = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let hosted = hosted.lock().await;
+        presented
+            .redeem(&hosted, self.device_cert(), tilo_clock::unix_now_ns())
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
 
     /// What a device that may come into `workspace` is answered before it
