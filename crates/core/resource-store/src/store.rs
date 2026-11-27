@@ -1451,14 +1451,27 @@ impl Store {
         // the resource its id names, a store document by the resources the index places in it.
         let of_kinds = |kind: &str| kinds.is_empty() || kinds.iter().any(|named| named == kind);
         let mut documents: Vec<String> = Vec::new();
+        let mut emptied: Vec<String> = Vec::new();
         for document in self.index.documents() {
             let kept = if let Some((kind, _)) = collab_types::touch::content_resource(document) {
                 of_kinds(&kind)
+            } else if self.index.held(document).next().is_none() {
+                emptied.push(document.to_owned());
+                false
             } else {
                 self.index.held(document).any(|(kind, _)| of_kinds(kind))
             };
             if kept {
                 documents.push(document.to_owned());
+            }
+        }
+        // A document whose records were all removed holds none now, and the kinds it held are
+        // read from its own history: removing the last of them is still a step of their app.
+        for document in emptied {
+            if let Ok(Some(doc)) = self.existing(&document)
+                && kinds_held(doc).iter().any(|kind| of_kinds(kind))
+            {
+                documents.push(document);
             }
         }
         let mut all: Vec<Step> = Vec::new();
@@ -3465,6 +3478,25 @@ fn apps_of_queued_effects(
             }
         })
         .collect()
+}
+
+/// The kinds of the records `doc` held at any of its changes.
+fn kinds_held(doc: &Automerge) -> BTreeSet<String> {
+    let mut kinds = BTreeSet::new();
+    for change in doc.get_changes(&[]) {
+        let heads = [change.hash()];
+        for key in doc.keys_at(&ROOT, &heads) {
+            if key.starts_with(HELD)
+                && let Ok(Some((AmValue::Object(ObjType::Map), held))) =
+                    doc.get_at(&ROOT, key.as_str(), &heads)
+                && let Ok(Some((AmValue::Scalar(kind), _))) = doc.get_at(&held, KIND, &heads)
+                && let ScalarValue::Str(kind) = kind.as_ref()
+            {
+                kinds.insert(kind.to_string());
+            }
+        }
+    }
+    kinds
 }
 
 /// [`read`] as the document stood at `heads`, or as it stands with none.
