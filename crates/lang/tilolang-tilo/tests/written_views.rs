@@ -357,22 +357,25 @@ fn a_sent_view_shows_its_recipient_their_own_mail_and_asks_before_acting() {
 }
 
 /// What a view `writer` wrote does with an action asks `p` first; once they trust the writer,
-/// it does not.
+/// it does not. The action stays in the workspace (muting a conversation): one the mail server
+/// keeps (marking it read) reaches outside, which confirms at every press, trusted or not.
 fn asks_before_acting(p: &Person, writer: &Actor, mail: &ResourceRef) {
-    let acting = "view mark_all(m: mail.Mail) {\n\
+    let acting = "view mute_unread(m: mail.Mail) {\n\
     for a in m.accounts {\n\
-        for t in a.threads.filter(t -> t.unread) {\n\
-            button(\"Read\", on: mail.mark_read(t, false))\n\
+        for t in a.threads.filter(t -> t.unread and not t.muted) {\n\
+            button(\"Mute\", on: mail.mute(t, true))\n\
         }\n\
     }\n\
 }";
-    let unread = || -> usize {
+    let loud = || -> usize {
         p.items(&p.items(mail, "accounts")[0], "threads")
             .iter()
-            .filter(|t| p.read(t, "unread") == Value::Bool(true))
+            .filter(|t| {
+                p.read(t, "unread") == Value::Bool(true) && p.read(t, "muted") == Value::Bool(false)
+            })
             .count()
     };
-    let unread_before = unread();
+    let loud_before = loud();
     let view = p
         .replica
         .host
@@ -393,7 +396,7 @@ fn asks_before_acting(p: &Person, writer: &Actor, mail: &ResourceRef) {
         Some(ModuleHash::written_by(writer)),
         "the dispatch names who wrote the view"
     );
-    assert_eq!(unread(), unread_before, "asking changed nothing");
+    assert_eq!(loud(), loud_before, "asking changed nothing");
     p.replica
         .host
         .authority()
@@ -409,5 +412,5 @@ fn asks_before_acting(p: &Person, writer: &Actor, mail: &ResourceRef) {
         view.press(&button).unwrap(),
         InvokeOutcome::Done(_)
     ));
-    assert_eq!(unread().checked_add(1), Some(unread_before));
+    assert_eq!(loud().checked_add(1), Some(loud_before));
 }

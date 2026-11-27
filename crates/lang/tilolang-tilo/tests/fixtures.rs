@@ -221,16 +221,28 @@ impl Workspace {
         changed
     }
 
-    /// Take in the documents `docs` of `other`, as a share of those records between two
-    /// workspaces does: nothing else of `other`'s travels. Whether anything changed here.
+    /// Take in the store documents of `other` that keep the records `docs` (as a watch names
+    /// them) and what is in them, as a share of those records between two workspaces does:
+    /// nothing else of `other`'s travels. Whether anything changed here.
     pub fn take_in_docs(&self, other: &Self, docs: &std::collections::BTreeSet<String>) -> bool {
+        // A store document is `<readers>/<owner>#<n>`, holding the records in `owner`, or
+        // `<readers>/<kind>/<id>~<n>`, holding the content of the record `id`.
+        let keeps = |doc: &str| {
+            let held = collab_types::touch::content_resource(doc)
+                .map(|(_, id)| id)
+                .or_else(|| {
+                    let (_, placed) = doc.split_once('/')?;
+                    Some(placed.rsplit_once('#')?.0.to_owned())
+                });
+            held.is_some_and(|held| {
+                docs.iter().any(|record| {
+                    held.strip_prefix(record.as_str())
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+                })
+            })
+        };
         let mut changed = false;
-        for doc in other
-            .0
-            .documents()
-            .into_iter()
-            .filter(|doc| docs.contains(doc))
-        {
+        for doc in other.0.documents().into_iter().filter(|doc| keeps(doc)) {
             if let Some(bytes) = other.0.save(&doc) {
                 changed |= self.0.merge(&doc, &bytes).unwrap();
             }
