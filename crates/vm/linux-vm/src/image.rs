@@ -213,7 +213,13 @@ mod tests {
             assert!(valid_pinned_ref(&format!(
                 "registry.tilo.so/tilo/legacy-guest@sha256:{digest}"
             )));
-            assert!(current_ref().is_some_and(|reference| valid_pinned_ref(&reference)));
+            // The guest image is published for x86_64 alone
+            // (`tools/ci/publish/linux-guest.sh`), so the pin this build ships,
+            // whatever machine the tests run on, is that one.
+            assert!(
+                pinned_ref(SNAPSHOT, "x86_64")
+                    .is_some_and(|reference| valid_pinned_ref(&reference))
+            );
         }
         {
             let reference = format!("registry.tilo.so/tilo/linux-guest@sha256:{digest}");
