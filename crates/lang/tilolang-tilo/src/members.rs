@@ -53,6 +53,31 @@ fn person_of<'a>(access: &'a MemberAccess, me: &PersonId, who: &'a PersonId) -> 
 /// (none who are blocked: they hold nothing), then the agents a grant admitted
 /// (`agent-member:…`).
 #[must_use]
+/// The members a members' reading `content` (`{"people": …}`) names, as a host reads them: each
+/// row's actor with what the workspace says of them. A workspace's governance answers each row
+/// with the actor an action names ([`tilo_actions::Actor`]); a store held in this process keeps
+/// the runtime's own encoding of one, which names the same member.
+fn rows_of(content: &serde_json::Value, me: &MemberId) -> Vec<collab_types::Member> {
+    let Some(rows) = content.get("people").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    let rows: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            if row.get("actor").is_some() {
+                return row.clone();
+            }
+            match tilolang_runtime::value::from_json(row) {
+                Ok(tilolang_runtime::Value::Actor(who)) => serde_json::json!({
+                    "actor": serde_json::to_value(who).unwrap_or_default(),
+                }),
+                _ => row.clone(),
+            }
+        })
+        .collect();
+    collab_types::Member::roster_of(&serde_json::json!({ "people": rows }), me)
+}
+
 pub fn members_of(access: &MemberAccess, me: &PersonId) -> Vec<Member> {
     let policy = &access.policy;
     let mut out: Vec<Member> = Vec::new();
@@ -293,6 +318,11 @@ impl Host {
     /// host's. The reading is handed to the runtime as any other, so the same members read
     /// again move nothing. Whether the reading moved.
     pub fn read_workspace_members(&self) -> bool {
+        // A host its embedder publishes the workspace's members to
+        // ([`Self::serve_member_reading`]) has no store of that workspace to read them from.
+        if self.inner.members_elsewhere.get() {
+            return false;
+        }
         let moved = self.inner.members_watch.take();
         let id = tilo_resource_store::WORKSPACE_MEMBERS_ID;
         if moved.everything
@@ -330,6 +360,43 @@ impl Host {
                 return false;
             }
         };
+        self.serve_rows(&rows)
+    }
+
+    /// Whether the workspace's members come to this host as a reading its embedder publishes
+    /// ([`Self::serve_member_reading`]), never read from this host's own store: a window whose
+    /// store is not the workspace whose people it shows, as the shell's is (it keeps its record
+    /// in the person's own workspace). A host that read its own store would name nobody of the
+    /// workspace in front.
+    pub fn let_members_be_read_elsewhere(&self) {
+        self.inner.members_elsewhere.set(true);
+        self.inner.members_known.set(true);
+        self.inner.members_asked.set(true);
+    }
+
+    /// Whether the workspace's members come to this host as a reading its embedder publishes
+    /// ([`Self::let_members_be_read_elsewhere`]), so a reading it publishes serves them.
+    #[must_use]
+    pub fn reads_members_elsewhere(&self) -> bool {
+        self.inner.members_elsewhere.get()
+    }
+
+    /// The workspace's members' resource as its embedder publishes it in the workspace in front,
+    /// `content` (`{"people": …}`): who is in it, with what the workspace says of each, named and
+    /// drawn from here as from a reading of this host's own store. Whether the reading moved.
+    pub fn serve_member_reading(&self, content: &serde_json::Value) -> bool {
+        let me_id = self
+            .viewer()
+            .member_id()
+            .cloned()
+            .unwrap_or_else(|| MemberId::person(""));
+        self.serve_rows(&rows_of(content, &me_id))
+    }
+
+    /// The members `rows` name, as the runtime's members and every view that names a member
+    /// reads them: who is in the workspace, and the reading of them a view reads. Whether the
+    /// reading moved.
+    fn serve_rows(&self, rows: &[collab_types::Member]) -> bool {
         *self.inner.member_rows.borrow_mut() = std::rc::Rc::new(
             rows.iter()
                 .map(|row| (row.id.clone(), row.clone()))
@@ -420,33 +487,7 @@ impl Host {
             .store()
             .workspace_members()
             .map_err(|error| error.to_string())?;
-        let Some(reading) = reading else {
-            return Ok(None);
-        };
-        let Some(rows) = reading.get("people").and_then(serde_json::Value::as_array) else {
-            return Ok(Some(Vec::new()));
-        };
-        // A workspace's governance answers each row with the actor an action names
-        // ([`tilo_actions::Actor`]); a store held in this process keeps the runtime's own
-        // encoding of one, which names the same member.
-        let rows: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|row| {
-                if row.get("actor").is_some() {
-                    return row.clone();
-                }
-                match tilolang_runtime::value::from_json(row) {
-                    Ok(tilolang_runtime::Value::Actor(who)) => serde_json::json!({
-                        "actor": serde_json::to_value(who).unwrap_or_default(),
-                    }),
-                    _ => row.clone(),
-                }
-            })
-            .collect();
-        Ok(Some(collab_types::Member::roster_of(
-            &serde_json::json!({ "people": rows }),
-            me,
-        )))
+        Ok(reading.map(|reading| rows_of(&reading, me)))
     }
 
     /// The members this host last read of the workspace's members' resource, by id, with what

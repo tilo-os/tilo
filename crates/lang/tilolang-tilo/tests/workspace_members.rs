@@ -14,19 +14,19 @@ use tilolang_tilo::resources::ResourceStore;
 
 use crate::fixtures::{Replica, Workspace};
 
-const ROSTER: &str = r#"app so.tilo.lang.roster "Roster"
+const PEOPLE: &str = r#"app so.tilo.lang.people "People"
 
 use tilo.workspace as workspace
 
-type Roster {
+type People {
     title: Text
 }
 
-root Roster
+root People
 
-default view roster for Roster
+default view people for People
 
-view roster(r: Roster) {
+view people(r: People) {
     page {
         text("{workspace.members.people.len()} people")
         for p in workspace.members.people.take(20) {
@@ -35,7 +35,7 @@ view roster(r: Roster) {
     }
 }
 "#;
-const APP: &str = "so.tilo.lang.roster";
+const APP: &str = "so.tilo.lang.people";
 
 fn texts(node: &UiNode) -> Vec<String> {
     crate::fixtures::nodes(node)
@@ -54,7 +54,7 @@ fn shown(view: &tilolang_runtime::ViewInstance) -> Vec<String> {
 
 #[test]
 fn a_view_of_the_workspaces_members_follows_its_member_actions_here_and_on_a_synced_device() {
-    let (ada, _) = Replica::new("ada", Workspace::new(), &[(ROSTER, "")]);
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(PEOPLE, "")]);
     ada.host.root_of(APP).unwrap();
     ada.commit();
     let mut view = ada.view(APP);
@@ -71,7 +71,7 @@ fn a_view_of_the_workspaces_members_follows_its_member_actions_here_and_on_a_syn
 
     // Ben's device takes the workspace in: the members it reads are the ones Ada's actions wrote.
     ada.commit();
-    let ben = ada.fork("ben", &[(ROSTER, "")]);
+    let ben = ada.fork("ben", &[(PEOPLE, "")]);
     let mut his = ben.view(APP);
     assert_eq!(shown(&his), ["2 people", "in ada", "in mia"]);
 
@@ -152,7 +152,7 @@ fn ten_thousand_members_are_read_once_and_a_view_works_only_for_the_page_it_show
     // Staging read whether the workspace had a members' resource yet: what follows is the host's.
     port.members.set(0);
     let host = Host::open(store, me, None, || None).unwrap();
-    host.load_builtin(ROSTER, "").unwrap();
+    host.load_builtin(PEOPLE, "").unwrap();
     host.root_of(APP).unwrap();
     assert_eq!(
         port.members.get(),
@@ -198,4 +198,51 @@ fn ten_thousand_members_are_read_once_and_a_view_works_only_for_the_page_it_show
         texts(view.tree()).first().map(String::as_str),
         Some("10001 people")
     );
+}
+
+/// The shell keeps its record in the person's own workspace, whose members are the person
+/// alone: the workspace in front's people reach it as its embedder's reading of that
+/// workspace's members, and its views name them and wear their colours from it.
+#[test]
+fn a_host_its_embedder_publishes_members_to_names_them_from_the_reading() {
+    let store = ResourceStore::new(Rc::new(tilo_resource_store::LocalPort::in_memory()));
+    let me = actor("ada");
+    let host = Host::open(store, me, None, || None).unwrap();
+    host.load_builtin(PEOPLE, "").unwrap();
+    host.root_of(APP).unwrap();
+    // The host's own store holds no members' record: nothing is read from it, and the people
+    // are the rows the session publishes, each with what the workspace says of them.
+    host.let_members_be_read_elsewhere();
+    assert!(host.reads_members_elsewhere());
+    let rows: Vec<serde_json::Value> = ["ada", "bo"]
+        .iter()
+        .map(|name| {
+            let who =
+                tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(*name));
+            serde_json::json!({
+                "actor": serde_json::to_value(&who).unwrap(),
+                "name": name,
+            })
+        })
+        .collect();
+    assert!(
+        host.serve_member_reading(&serde_json::json!({ "people": rows })),
+        "the workspace's people are read as the session publishes them"
+    );
+    let mut view = host.open_main(APP).unwrap();
+    assert_eq!(shown(&view), ["2 people", "in ada", "in bo"]);
+    assert_eq!(
+        host.member_rows().len(),
+        2,
+        "the rows name every member the reading named"
+    );
+    assert!(
+        host.member_rows().values().any(|row| row.name == "bo"),
+        "a member is named by the name the workspace keeps"
+    );
+    // A host that takes its members as a reading reads no record of them, and a frame with
+    // nothing served runs no view again.
+    assert!(!host.read_workspace_members());
+    view.poll_patches().ok();
+    assert!(!host.follow_members(), "nothing moved since the reading");
 }

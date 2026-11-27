@@ -126,6 +126,9 @@ pub(crate) struct Shell {
     /// The services' revision the platform readings were last read at: they are read again only
     /// when it moved.
     services_seen: Option<u64>,
+    /// The workspace whose members the shell last read, and the view's revision it read them at:
+    /// its bar's faces and names are the workspace in front's people, read again when they move.
+    members_seen: Option<(String, u64)>,
     /// Whether the shell's records are the person's, kept in their own workspace by the device's
     /// daemon: the installed shell, which the daemon runs too, on a session the daemon started.
     /// A change of them is then the person's call of the shell's action on the device's dispatch
@@ -239,6 +242,7 @@ impl Shell {
             bands: std::cell::Cell::new(None),
             wells,
             services_seen: None,
+            members_seen: None,
             kept_elsewhere,
             dispatch_refusals: std::sync::Arc::default(),
             theme,
@@ -554,6 +558,68 @@ impl Shell {
                     .publish_reading(tilolang_tilo::runtime::foreign::LISTING, ty, reading);
             }
         }
+    }
+
+    /// Hand the shell who is in `workspace`, the one in front, as the session's view of it has
+    /// them: its members' resource, the same rows its governance answers a read of that resource
+    /// with, so a view names a person and draws their face from them. The shell keeps its record
+    /// in the person's own workspace, whose members are the person alone, so its host takes these
+    /// rows as a reading ([`tilolang_tilo::host::Host::serve_member_reading`]) rather than
+    /// reading a store of its own.
+    pub(crate) fn publish_members(
+        &mut self,
+        view: Option<&std::sync::Arc<tilo_session_client::workspace_view::WorkspaceView>>,
+        workspace: &str,
+    ) {
+        let Some(view) = view else {
+            return;
+        };
+        if workspace.is_empty() {
+            return;
+        }
+        let revision = view.revision();
+        let seen = self.members_seen.as_ref();
+        if seen.is_some_and(|(held, was)| held == workspace && *was == revision) {
+            return;
+        }
+        let Ok(members) = view.members(workspace) else {
+            return;
+        };
+        self.members_seen = Some((workspace.to_owned(), revision));
+        let people: Vec<Value> = members
+            .members
+            .iter()
+            .filter(|member| !member.removed)
+            .map(|member| {
+                let mut row = serde_json::Map::new();
+                row.insert(
+                    "actor".to_owned(),
+                    serde_json::to_value(tilo_actions::Actor::Member(member.id.clone()))
+                        .unwrap_or_default(),
+                );
+                row.insert("name".to_owned(), serde_json::json!(member.name));
+                row.insert("role".to_owned(), serde_json::json!(member.role));
+                row.insert("joined_at".to_owned(), serde_json::json!(member.joined_at));
+                if let Some(avatar) = &member.avatar
+                    && let Some(photo) = collab_types::photo_url(&avatar.0)
+                {
+                    row.insert("photo".to_owned(), serde_json::json!(photo));
+                }
+                Value::Object(row)
+            })
+            .collect();
+        let roots = tilolang_tilo::platform::platform_roots();
+        let Some((_, ty)) = roots
+            .iter()
+            .find(|(published, _)| *published == tilolang_tilo::platform::WORKSPACE_MEMBERS)
+        else {
+            return;
+        };
+        self.link.publish_reading(
+            tilolang_tilo::platform::WORKSPACE_MEMBERS,
+            ty,
+            serde_json::json!({ "people": people }),
+        );
     }
 
     /// Hand the shell the readings of the platform's resources its views read (the sound, the
@@ -2129,6 +2195,14 @@ impl crate::Session {
         let identify = self.numbers.saying();
         shell.follow_deadline(self.numbers.deadline());
         let layout = self.shared.layout_reading();
+        // Who is in the workspace in front, for the bar's faces and their names: the workspace's
+        // members, as the session's view of the workspace has them.
+        let front = self.shared.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+                .unwrap_or_default()
+        });
+        shell.publish_members(self.shared.view.as_ref(), &front);
         shell.publish_readings(&self.shared.services.borrow());
         shell.follow_places(&layout, &mut self.shared.services.borrow_mut());
         shell.publish_layout(layout);

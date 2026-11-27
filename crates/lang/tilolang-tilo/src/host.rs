@@ -237,6 +237,10 @@ pub(crate) struct HostInner {
     /// Whether this host has asked its store for the workspace's members while no reading had
     /// arrived: it asks once, and then waits for the store's notice that the record moved.
     pub(crate) members_asked: Cell<bool>,
+    /// Whether the workspace's members come to this host as a reading its embedder publishes
+    /// ([`Host::let_members_be_read_elsewhere`](crate::members::Host::let_members_be_read_elsewhere)):
+    /// a window whose store is not the workspace whose people it shows, as the shell's is.
+    pub(crate) members_elsewhere: Cell<bool>,
     /// Where the workspace's content is read from, when its embedder has one
     /// ([`Host::follow_content`](crate::content::Host::follow_content)).
     pub(crate) content_source: RefCell<Option<crate::content::ContentSource>>,
@@ -1420,6 +1424,7 @@ impl Host {
             member_rows: RefCell::new(Rc::new(std::collections::HashMap::new())),
             members_known: Cell::new(false),
             members_asked: Cell::new(false),
+            members_elsewhere: Cell::new(false),
             content_source: RefCell::new(None),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));

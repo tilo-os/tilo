@@ -320,6 +320,18 @@ fn held_here(app: &str) -> bool {
     }
 }
 
+/// Whether `target` is the workspace's members for a host the session publishes them to, which
+/// `reading` then serves: whether the reading moved. None for any other resource, or a host that
+/// reads its own workspace's members.
+fn serves_members(
+    cx: &OriginCx<'_>,
+    target: &ResourceRef,
+    reading: &serde_json::Value,
+) -> Option<bool> {
+    (target.doc == tilolang_tilo::platform::WORKSPACE_MEMBERS && cx.host.reads_members_elsewhere())
+        .then(|| cx.host.serve_member_reading(reading))
+}
+
 impl SessionOrigin {
     /// Hand the runtime the readings the session published since this part last read them: the
     /// views composed over those resources run again. Whether any reading was new.
@@ -363,9 +375,11 @@ impl SessionOrigin {
                 };
                 target
             };
-            // A root the part's host reads in its own workspace (its members) is read there,
-            // never as the session publishes it.
-            if cx.host.reads_in_workspace(&target) {
+            // A root the part's host reads itself — its own workspace's members, or the workspace
+            // in front's the session publishes to it — is never read as the session publishes it.
+            let by_members = serves_members(cx, &target, &reading);
+            if by_members.is_some() || cx.host.reads_in_workspace(&target) {
+                moved |= by_members.unwrap_or(false);
                 seen.insert(id, generation);
                 continue;
             }

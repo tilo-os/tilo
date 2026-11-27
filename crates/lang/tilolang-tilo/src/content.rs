@@ -81,7 +81,9 @@ impl Host {
     pub fn reads_in_workspace(&self, target: &crate::runtime::ResourceRef) -> bool {
         target.item.is_none()
             && match target.doc.as_str() {
-                crate::platform::WORKSPACE_MEMBERS => true,
+                // A host its embedder publishes them to takes the reading it gives it
+                // ([`crate::members::Host::serve_member_reading`]).
+                crate::platform::WORKSPACE_MEMBERS => !self.reads_members_elsewhere(),
                 crate::platform::WORKSPACE_CONTENT => self.inner.content_source.borrow().is_some(),
                 _ => false,
             }

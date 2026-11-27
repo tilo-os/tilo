@@ -941,6 +941,10 @@ impl ShellPart {
         // (one-app-model.md §2). The runtime is up after the first turn, when the host is made.
         if let Some(host) = part.instance.host() {
             host.declare_rust_views();
+            // The shell's record is kept in the person's own workspace, never the one whose
+            // people its bar shows: who is in the workspace in front comes to it as the
+            // session's reading of that workspace's members.
+            host.let_members_be_read_elsewhere();
         }
         // What a composed view opens is a place on the canvas, never a level of the shell's own
         // window.
