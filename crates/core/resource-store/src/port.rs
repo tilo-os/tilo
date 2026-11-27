@@ -322,16 +322,6 @@ impl LocalPort {
         Some(doc)
     }
 
-    /// The stamp the resource `id` of `kind` was first written under, if it holds a change that
-    /// names one.
-    #[must_use]
-    pub fn first_stamp(&self, kind: &str, id: &str) -> Option<crate::Stamp> {
-        self.store
-            .borrow()
-            .version_end(kind, id, false)
-            .and_then(|version| version.stamp)
-    }
-
     fn keep(&self, written: &[crate::Written]) -> Result<(), String> {
         let Some(dir) = &self.dir else {
             return Ok(());

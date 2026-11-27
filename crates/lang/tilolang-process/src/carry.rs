@@ -30,7 +30,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use collab_types::store::Resource;
-use collab_types::store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
+use collab_types::store::wire::{Command, Reply};
 use runtime_portal::process_link::Descriptor;
 use tilo_actions::{Actor, MemberId, PersonId};
 use tilo_resource_store::{LocalPort, Port, Schema, Stamp};
@@ -278,23 +278,9 @@ fn carry_app(
 }
 
 /// Write `changes`, a document's changes concatenated, as the record `record` of the joined
-/// workspace, in runs of at most [`RECORD_PAGE_BYTES`]: the runs before the last are kept until
-/// the last arrives, and the workspace takes them as one write.
+/// workspace: the store's own write of a record, in its runs, which the workspace takes as one.
 fn write_record(port: &impl Port, record: &str, changes: &[u8]) -> Result<(), String> {
-    let runs: Vec<&[u8]> = changes.chunks(RECORD_PAGE_BYTES).collect();
-    for (index, run) in runs.iter().enumerate() {
-        let command = Command::RecordChange {
-            record: Some(record.to_owned()),
-            changes: Bytes(run.to_vec()),
-            more: index < runs.len().saturating_sub(1),
-            commit: None,
-        };
-        match port.command(command)? {
-            Reply::Written => {}
-            other => return Err(format!("the workspace answered the write with {other:?}")),
-        }
-    }
-    Ok(())
+    collaboration::resource::commands::write(&|command| port.command(command), record, changes)
 }
 
 /// The resources in an order a store places them in: each after the resource it is nested in.
@@ -598,9 +584,11 @@ mod tests {
 
     /// A change of a document kept before sign-in reaches the workspace naming the caller the
     /// connection is judged by — the app, whose records the workspace keeps for the person — and
-    /// the person it was for, holding what it held, and carrying the same changes twice.
+    /// the person it was for, holding what it held, and carrying the same changes twice. A
+    /// connection whose writes are the person's names the person, and a change naming someone
+    /// else to act for is refused rather than guessed at.
     #[test]
-    fn a_change_naming_the_person_before_sign_in_is_the_caller_s_now() {
+    fn a_change_of_a_signed_out_window_is_the_person_s_now() {
         let caller = Actor::App(tilo_member_types::AppId::new("so.tilo.notes"));
         let bytes = note(&mine("new_note"));
         let once = restamp(&bytes, &caller, ADA, "a note").expect("the change carries");
@@ -612,8 +600,8 @@ mod tests {
         assert_eq!(changes.len(), 1);
         let stamp = Stamp::of(&changes[0]).expect("the change keeps its stamp");
         assert_eq!(
-            stamp.invoked_by(),
-            Some(caller),
+            stamp.invoked_by().as_ref(),
+            Some(&caller),
             "the change names the caller the workspace judges it by"
         );
         assert_eq!(
@@ -632,33 +620,32 @@ mod tests {
             }
         };
         assert_eq!(title, "a note", "the change holds what it held");
-    }
 
-    /// A connection whose writes are the person's names the person, and a change that names
-    /// someone else to act for is refused rather than guessed at.
-    #[test]
-    fn a_person_s_write_names_the_person_and_a_foreign_one_is_refused() {
         let person = Actor::Member(MemberId::person(ADA));
-        let bytes = note(&mine("type"));
         let carried = restamp(&bytes, &person, ADA, "a note").expect("the change carries");
         let doc = automerge::Automerge::load(&carried).expect("the carried change reads");
-        let stamp = Stamp::of(&doc.get_changes(&[])[0]).expect("the change keeps its stamp");
-        assert_eq!(stamp.invoked_by(), Some(person));
+        assert_eq!(
+            Stamp::of(&doc.get_changes(&[])[0])
+                .expect("the change keeps its stamp")
+                .invoked_by(),
+            Some(person),
+            "a person's own connection names the person"
+        );
 
         let mut foreign = mine("type");
         foreign.acted_for = Some("someone-else".to_owned());
-        let bytes = note(&foreign);
-        let caller = Actor::App(tilo_member_types::AppId::new("so.tilo.notes"));
         assert!(
-            restamp(&bytes, &caller, ADA, "a note").is_err(),
+            restamp(&note(&foreign), &caller, ADA, "a note").is_err(),
             "a change naming someone else to act for is refused"
         );
     }
 
-    /// A reader set names the person a device was before sign-in only as a whole member: `*` and
-    /// other people's keys read as they did, and a shape the carry cannot rename is refused.
+    /// The names a window wrote before sign-in name the person the device is now: a reader set,
+    /// an app's own state kept under `<app>@<person>`, and an id or kind naming them as a whole
+    /// part. `*` and other people's keys read as they did, and a shape the carry cannot rename is
+    /// refused, never guessed at.
     #[test]
-    fn a_reader_set_is_read_by_the_person_the_device_is_now() {
+    fn the_names_a_signed_out_window_wrote_are_the_person_s_now() {
         assert_eq!(readers_as("me", ADA).unwrap(), ADA);
         assert_eq!(readers_as("111,me", ADA).unwrap(), format!("111,{ADA}"));
         assert_eq!(readers_as(collab_types::EVERY_MEMBER, ADA).unwrap(), "*");
@@ -667,12 +654,7 @@ mod tests {
             readers_as("{\"person\":\"me\"}", ADA).is_err(),
             "a reader set naming the person another way is refused, not guessed at"
         );
-    }
 
-    /// A person's own state of an app is kept under `<app>@<person>`: the id is renamed to the
-    /// person the device is now, and an id naming the person another way is refused.
-    #[test]
-    fn a_persons_own_state_is_kept_under_the_person_the_device_is_now() {
         assert_eq!(
             id_as("so.tilo.notes@me", ADA).unwrap(),
             format!("so.tilo.notes@{ADA}")
@@ -682,11 +664,7 @@ mod tests {
             id_as("root/me/note", ADA).is_err(),
             "an id naming the person in a way the carry cannot rename is refused"
         );
-    }
 
-    /// An id or kind names the person the device was before sign-in only as a whole part.
-    #[test]
-    fn an_id_names_the_person_before_sign_in_only_as_a_part() {
         assert!(names_me("me"));
         assert!(names_me("root/mine/me"));
         assert!(names_me("tl:so.tilo.notes:me/x"));
