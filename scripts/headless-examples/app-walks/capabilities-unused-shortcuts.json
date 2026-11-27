@@ -63,6 +63,13 @@
           "wait_for": "Add trigger"
         },
         {
+          "wait_for": {
+            "shown": {
+              "prefix": "What starts it"
+            }
+          }
+        },
+        {
           "press": {
             "prefix": "What starts it"
           }

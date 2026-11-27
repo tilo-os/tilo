@@ -1730,11 +1730,16 @@ class Walk:
         failed — a blank window — and no step waiting on this or that control catches it when
         the step's state is one the app still renders something of. Every step the walk leaves
         a window open in reads this, so a blank window fails wherever it appears, in an app the
-        walk had a step for and in one it did not. `targets` is the step's one listing of the
+        walk had a step for and in one it did not. A window on a strip that is not in front is
+        not one a person reads: it is drawn in that strip's band, and the controls it holds stand
+        where the app laid them out, so nothing of them is read against the band's frame.
+        `targets` is the step's one listing of the
         controls, where it has read one already: a step looks at the surface once and both
         checks read that look."""
         window = self.window_of()
         if window is None or window.get("rect") is None:
+            return
+        if window.get("active") is not True:
             return
         x, y, w, h = window["rect"]
         if targets is None:
