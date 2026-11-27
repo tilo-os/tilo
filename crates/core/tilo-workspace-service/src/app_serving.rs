@@ -1100,7 +1100,26 @@ impl ActionProvider for HostOperations {
         let asking = caller.device_public_key().copied();
         let certificate = match self.certificate(&request) {
             Ok(certificate) => certificate,
-            Err(error) => return Pending::ready(Err(error)),
+            Err(error) => {
+                // A device this host placed for a Browser environment's records asks to enter a
+                // workspace: its certificate reaches no entry, and the entry itself is what
+                // refuses it by name ([`crate::environment::JoinsNothing`]), as it refuses the
+                // same device on the entry a certificate asks with.
+                if matches!(
+                    request.target.address.action.as_str(),
+                    tilo_server_protocol::workspaces::ENTER_WORKSPACE
+                        | tilo_server_protocol::workspaces::ENTER_ENTRY
+                ) && asking.is_some_and(|device| {
+                    self.workspaces.upgrade().is_some_and(|workspaces| {
+                        workspaces.placed_here(&device, tilo_clock::unix_now_ns())
+                    })
+                }) {
+                    return Pending::ready(Err(tilo_actions::remote::ActionCallError::Refused {
+                        reason: crate::environment::JoinsNothing.to_string(),
+                    }));
+                }
+                return Pending::ready(Err(error));
+            }
         };
         // A device of a person the host does not know asks one thing of it: to hold a
         // workspace another host hands it, which the work setting then decides. It is
