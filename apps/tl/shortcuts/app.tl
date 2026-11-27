@@ -3501,9 +3501,8 @@ view window(w: Workbench) {
         overview_count: w.saved.len(),
     ) {
         actions: {
-            ui.Button("New shortcut", icon: .plus, role: .primary) {
-                on press: new_draft(w, "New shortcut").then(set(showing, "draft"))
-            }
+            // New shortcut stands once: the window's own primary action draws it in the bar,
+            // and its draft opens the window because the draft it made is the one it shows.
             ui.Button("Reload shortcuts", icon: .refresh, role: .plain) {
                 on press: refresh(w)
             }
