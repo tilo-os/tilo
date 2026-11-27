@@ -259,7 +259,7 @@ fn listed(session: &mut Session) -> Vec<String> {
 
 /// The row the window lists with `title`, as the list holds it: what it draws, its menu and the
 /// swipe its item offers.
-fn row(session: &mut Session, title: &str) -> UiNode {
+pub(super) fn row(session: &mut Session, title: &str) -> UiNode {
     rows(session)
         .into_iter()
         .find(|row| super::title_of(row) == title)

@@ -1368,6 +1368,9 @@ impl Core {
         let mut node = empty("ui.MenuItem", key);
         node.props
             .insert("label".to_owned(), Value::text(Self::action_name(action)));
+        if is_system_offer(action) {
+            node.props.insert("system".to_owned(), on_off(true));
+        }
         if let Some(icon) = opt_text(action, ICON) {
             node.props.insert("icon".to_owned(), Value::text(icon));
         }
@@ -1433,6 +1436,9 @@ impl Core {
         }
         let mut node = empty("ui.Button", key);
         node.props.insert("label".to_owned(), Value::text(&name));
+        if is_system_offer(action) {
+            node.props.insert("system".to_owned(), on_off(true));
+        }
         if let Some(icon) = &icon {
             node.props.insert("icon".to_owned(), Value::text(icon));
         }

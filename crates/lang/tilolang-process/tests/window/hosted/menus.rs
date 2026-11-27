@@ -257,5 +257,12 @@ fn menu_commands(session: &mut Session) -> Vec<String> {
 pub(super) fn row_menu(session: &mut Session, title: &str) -> Vec<String> {
     session.window.show_context_menu(title);
     session.settle();
-    menu_commands(session)
+    // What the app offers on its row: the system's Export… and Copy link stand on every
+    // resource and are marked as the system's, not the app's commands.
+    let row = super::window::row(session, title);
+    row.of_kind("ui.MenuItem")
+        .into_iter()
+        .filter(|item| !item.props.contains_key("system"))
+        .filter_map(|item| item.props.get("label").map(display))
+        .collect()
 }
