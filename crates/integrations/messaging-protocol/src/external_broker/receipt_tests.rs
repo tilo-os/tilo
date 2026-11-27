@@ -159,7 +159,7 @@ fn engine_state(fixture: &Fixture, client: &tilo_messaging::MessagingClient, wan
         "routes": [fixture.route],
     })
     .to_string();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now().checked_add(std::time::Duration::from_secs(5));
     loop {
         let answer: serde_json::Value =
             serde_json::from_str(&engine.call("state", &ask).unwrap()).unwrap();
@@ -168,7 +168,7 @@ fn engine_state(fixture: &Fixture, client: &tilo_messaging::MessagingClient, wan
             "no state of these admits the route"
         );
         let state = answer["accounts"][0]["state"].as_str().unwrap().to_owned();
-        if state == want || std::time::Instant::now() > deadline {
+        if state == want || deadline.is_none_or(|deadline| std::time::Instant::now() > deadline) {
             return state;
         }
         std::thread::park_timeout(std::time::Duration::from_millis(5));

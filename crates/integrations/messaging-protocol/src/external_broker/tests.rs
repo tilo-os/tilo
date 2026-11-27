@@ -351,16 +351,16 @@ fn messages_send_once_and_keep_text_on_the_device(
     calls: &AtomicUsize,
 ) -> tilo_messaging::engine::Engine {
     let engine = tilo_messaging::engine::Engine::new(Some(broker.client()), None);
-    let send = serde_json::json!({
+    let request = serde_json::json!({
         "route": route(owner.service),
         "operation": "app-operation",
         "text": "private app message",
     })
     .to_string();
     let before = calls.load(Ordering::SeqCst);
-    let sent = engine.run("send", &send).unwrap();
+    let sent = engine.run("send", &request).unwrap();
     assert_eq!(sent["status"], "submitted");
-    assert_eq!(calls.load(Ordering::SeqCst), before + 1);
+    assert_eq!(calls.load(Ordering::SeqCst), before.saturating_add(1));
     let shown: Vec<&str> = sent["page"]["messages"]
         .as_array()
         .unwrap()
@@ -368,8 +368,8 @@ fn messages_send_once_and_keep_text_on_the_device(
         .filter_map(|message| message["text"].as_str())
         .collect();
     assert!(shown.contains(&"private app message"), "{shown:?}");
-    assert_eq!(engine.run("send", &send), Err("reserved".to_owned()));
-    assert_eq!(calls.load(Ordering::SeqCst), before + 1);
+    assert_eq!(engine.run("send", &request), Err("reserved".to_owned()));
+    assert_eq!(calls.load(Ordering::SeqCst), before.saturating_add(1));
     engine
 }
 
