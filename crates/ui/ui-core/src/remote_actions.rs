@@ -2,9 +2,9 @@
 //! action catalogue and invoke published actions through the session broker — the same API the
 //! palette, scripts and agents use.
 
-use crate::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
+use tilo_ui_base::time::{Duration, Instant};
 
 use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
@@ -14,11 +14,11 @@ use tilo_actions::remote::{
     RemoteActionTarget, ResourceReadRequest, UpdateMark, WatchScope, serve,
 };
 
-use crate::arriving::{Arrival, ArrivalWriter, Arriving, Source};
-use crate::collaboration::{CollabEvent, CollabRequest};
-use crate::wake::WakeHandle;
-use crate::widget::Collaborative;
 use tilo_lock::MutexRecover as _;
+use tilo_ui_base::arriving::{Arrival, ArrivalWriter, Arriving, Source};
+use tilo_ui_base::collaboration::{CollabEvent, CollabRequest};
+use tilo_ui_base::wake::WakeHandle;
+use tilo_ui_base::widget::Collaborative;
 
 type Served = (Arc<dyn ActionProvider + Send + Sync>, Caller);
 
@@ -96,10 +96,15 @@ pub type ResourceReadCall = Arriving<serde_json::Value, ActionCallError>;
 /// or why the provider cannot tell when it does.
 pub type ChangedCall = Arriving<(), ActionCallError>;
 
-impl Arrival<InvocationUpdate, ActionCallError> {
+/// Where an invocation's answer stands.
+pub trait InvocationProgress {
     /// Whether the invocation can no longer change: refused, or finished.
     #[must_use]
-    pub fn is_finished(&self) -> bool {
+    fn is_finished(&self) -> bool;
+}
+
+impl InvocationProgress for Arrival<InvocationUpdate, ActionCallError> {
+    fn is_finished(&self) -> bool {
         match self {
             Self::Pending { .. } => false,
             Self::Ready(update) => update.is_terminal(),
@@ -131,7 +136,7 @@ impl Followed {
 
 impl Drop for Followed {
     fn drop(&mut self) {
-        if !self.answer.with(Arrival::is_finished) {
+        if !self.answer.with(InvocationProgress::is_finished) {
             self.remote.forget(self.invocation);
         }
     }
@@ -403,7 +408,7 @@ impl RemoteActions {
     fn ask_catalogue(&self, answer: &CatalogueCall, query: CatalogueQuery) {
         let writer = answer.writer();
         writer.pending(self.source());
-        let background = crate::background::Background::current();
+        let background = tilo_ui_base::background::Background::current();
         let due = background.now() + CATALOGUE_WAIT;
         let message = {
             let mut inner = self.lock();
@@ -595,7 +600,7 @@ impl RemoteActions {
         read.after = None;
         read.wait_ms = None;
         let answer = Arriving::pending(self.source());
-        let now = crate::background::Background::current().now();
+        let now = tilo_ui_base::background::Background::current().now();
         let (follow, first) = {
             let mut inner = self.lock();
             let follow = inner.next_follow;
@@ -708,7 +713,7 @@ impl RemoteActions {
             };
             // Only an invocation can run as the person: what a call names is the press behind it.
             let press = matches!(message, RemoteActionMessage::Invoke(_))
-                .then(crate::press::current)
+                .then(tilo_ui_base::press::current)
                 .flatten();
             if served.is_none() {
                 inner.outbox.push((message, press));
@@ -742,7 +747,7 @@ impl RemoteActions {
 
     /// Ask after invocations a provider that does not wait is still running, once each is due.
     pub fn poll(&self) {
-        let now = crate::background::Background::current().now();
+        let now = tilo_ui_base::background::Background::current().now();
         let (due, reads): (Vec<InvocationId>, Vec<RemoteActionMessage>) = {
             let mut inner = self.lock();
             inner.catalogue.retain(|_, walk| {
@@ -941,7 +946,8 @@ fn next_read(
     read.wait_ms = hold.then_some(FOLLOW_WAIT_MS);
     let on_behalf_of = following.on_behalf_of;
     if again {
-        crate::background::Background::current().wake_after(FOLLOW_INTERVAL, inner.wake.clone());
+        tilo_ui_base::background::Background::current()
+            .wake_after(FOLLOW_INTERVAL, inner.wake.clone());
     }
     inner.reads.insert(correlation, Reading::Followed(follow));
     Some(RemoteActionMessage::ResourceRead {
@@ -959,7 +965,7 @@ fn followed(
     follow: u64,
     result: Result<serde_json::Value, ActionCallError>,
 ) -> Option<RemoteActionMessage> {
-    let background = crate::background::Background::current();
+    let background = tilo_ui_base::background::Background::current();
     let now = background.now();
     let again = |inner: &mut Inner, after: Duration| {
         if let Some(following) = inner.following.get_mut(&follow) {
@@ -1032,7 +1038,7 @@ fn settle(
     }
     let running = inner.invocations.get_mut(&invocation)?;
     let mark = UpdateMark::of(&update);
-    let background = crate::background::Background::current();
+    let background = tilo_ui_base::background::Background::current();
     let now = background.now();
     // A provider that waits answers early only with something new; nothing new,
     // and long before the wait was up, is a provider that does not wait.

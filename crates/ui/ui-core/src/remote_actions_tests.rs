@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
     // A catalogue request nothing answers (no provider in reach of the connection) is refused as unavailable
     // once its wait is up, so the app can say so instead of waiting forever.
     {
-        let clock = crate::background::Pumped::new();
+        let clock = tilo_ui_base::background::Pumped::new();
         let _entered = clock.background().enter();
         let mut actions = RemoteActions::session();
         let answer = actions.catalogue_page(CatalogueQuery::default());
@@ -251,7 +251,7 @@ tilo_test_env::scenario! {
     // Against a provider that answers a waiting observe at once with nothing new (one from before waits), the
     // client falls back to observing on its interval.
     {
-        let clock = crate::background::Pumped::new();
+        let clock = tilo_ui_base::background::Pumped::new();
         let _entered = clock.background().enter();
         let (_host, actions) = client();
         let slow = actions.invoke(target("slow"), InvokeArgument::None, None);
@@ -373,7 +373,7 @@ tilo_test_env::scenario! {
     // A running invocation is followed by one waiting observe at a time, sent the moment the last answer
     // lands — never by a poll on a timer.
     {
-        let clock = crate::background::Pumped::new();
+        let clock = tilo_ui_base::background::Pumped::new();
         let _entered = clock.background().enter();
         let invocation = InvocationId(uuid::Uuid::from_bytes([0x60; 16]));
         let mut actions = RemoteActions::session();
@@ -443,7 +443,7 @@ tilo_test_env::scenario! {
 
     phase a_wait_that_ran_out_is_waited_again;
     {
-        let clock = crate::background::Pumped::new();
+        let clock = tilo_ui_base::background::Pumped::new();
         let _entered = clock.background().enter();
         let invocation = InvocationId(uuid::Uuid::from_bytes([0x61; 16]));
         let mut actions = RemoteActions::session();
@@ -475,7 +475,7 @@ tilo_test_env::scenario! {
     // A provider from before waits answers the waiting observe at once with nothing new; the client then
     // observes it on its interval, as before.
     {
-        let clock = crate::background::Pumped::new();
+        let clock = tilo_ui_base::background::Pumped::new();
         let _entered = clock.background().enter();
         let invocation = InvocationId(uuid::Uuid::from_bytes([0x62; 16]));
         let mut actions = RemoteActions::session();
@@ -917,7 +917,7 @@ tilo_test_env::scenario! {
 
     phase a_host_that_holds_no_read_is_read_again_on_the_interval;
     {
-        let clock = crate::background::Pumped::new();
+        let clock = tilo_ui_base::background::Pumped::new();
         let _entered = clock.background().enter();
         let (records, actions) = reader(false);
         let followed = actions.follow_resource(None, tasks());
@@ -942,7 +942,7 @@ tilo_test_env::scenario! {
 
     phase a_record_its_host_cannot_read_says_why_once_and_is_asked_for_ever_more_rarely;
     {
-        let clock = crate::background::Pumped::new();
+        let clock = tilo_ui_base::background::Pumped::new();
         let _entered = clock.background().enter();
         // A provider that reads no records outside their apps.
         let (_host, actions) = client();
@@ -1037,7 +1037,7 @@ tilo_test_env::scenario! {
     // What a call made while the window handles the person's input travels with is that press's
     // serial, which only the compositor can confirm: the host refuses one it did not issue.
     {
-        crate::press::note(7);
+        tilo_ui_base::press::note(7);
         let mut actions = RemoteActions::session();
         let _running = actions.invoke_with_id(
             InvocationId(uuid::Uuid::from_bytes([0x61; 16])),
@@ -1056,7 +1056,7 @@ tilo_test_env::scenario! {
             ),
             "the invocation names the press it followed: {requests:?}"
         );
-        crate::press::forget();
+        tilo_ui_base::press::forget();
     }
 
     phase a_host_that_cannot_tell_when_the_workspace_changes_says_so;

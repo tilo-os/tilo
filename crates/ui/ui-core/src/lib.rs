@@ -102,6 +102,16 @@
     )
 )]
 
+/// The app's own client for the session's action API, and what it answers.
+#[cfg(feature = "model")]
+pub mod remote_actions;
+#[cfg(feature = "model")]
+pub use {
+    remote_actions::CancellationCall, remote_actions::CatalogueCall, remote_actions::ChangedCall,
+    remote_actions::Followed, remote_actions::FollowedRead, remote_actions::InvocationCall,
+    remote_actions::InvocationProgress, remote_actions::RemoteActions,
+    remote_actions::RemoteActionsGuard, remote_actions::ResourceReadCall,
+};
 pub mod settings_device;
 pub mod surface_services;
 

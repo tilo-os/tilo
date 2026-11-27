@@ -24,11 +24,12 @@ use super::resources::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
 use super::workspace::{Unopened, WorkspaceResource};
 use tilo_resource::{Invoke, Resource};
+use tilo_ui_base::Arrival;
 use tilo_ui_base::LocalState;
-use tilo_ui_base::{Arrival, FollowedRead, InvocationCall, RemoteActions};
 use ui_core::history_mode::HistoryOwner;
 use ui_core::resource::StoredResource;
 use ui_core::resource::workspace::WorkspaceResources;
+use ui_core::{FollowedRead, InvocationCall, RemoteActions};
 
 /// A record the person keeps for themselves, in their own workspace rather than the one the
 /// window shows: the signature they sign with. The same on each of the person's devices, and no

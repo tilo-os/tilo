@@ -436,7 +436,7 @@ impl<R: Resource> ResourceEnv<R> {
     pub fn follow_resource(
         &self,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> tilo_ui_base::ResourceReadCall {
+    ) -> ui_core::ResourceReadCall {
         if !self.run.mode.is_live() {
             return tilo_ui_base::arriving::Arriving::pending(
                 tilo_ui_base::arriving::Source::Local,

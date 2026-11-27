@@ -7,9 +7,9 @@ use crate::activity_wire as wire;
 use crate::tilo_actions::InvocationUpdate;
 use crate::widget::{AuthorRelation, HistoryAuthor, HistoryEntry};
 use crate::{DocumentId, NamedRange};
+use crate::{remote_actions::Followed, remote_actions::RemoteActions};
 use std::collections::HashMap;
 use tilo_ui_base::HistoryEntryId;
-use tilo_ui_base::{remote_actions::Followed, remote_actions::RemoteActions};
 
 /// The workspace's history of the window's resources, kept current while History lists it.
 pub(super) struct WindowFeed {

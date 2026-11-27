@@ -15,8 +15,9 @@ use std::rc::Rc;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{ActionCallError, InvokeArgument};
 use tilo_reference::ResourceRef;
-use tilo_ui_base::{Arrival, InvocationCall, RemoteActions};
+use tilo_ui_base::Arrival;
 use ui_core::widget::ChipLead;
+use ui_core::{InvocationCall, RemoteActions};
 
 /// What `href`, a `tilo://open#…` address, names: the app that keeps the resource, the record of
 /// the app's workspace it lives in (`None` for the app's own record of the workspace), and the
@@ -277,7 +278,7 @@ impl Opener {
         &self,
         parent: Option<tilo_actions::InvocationId>,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> tilo_ui_base::remote_actions::ResourceReadCall {
+    ) -> ui_core::remote_actions::ResourceReadCall {
         self.0
             .borrow_mut()
             .api
@@ -291,7 +292,7 @@ impl Opener {
     pub(crate) fn follow_resource(
         &self,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> tilo_ui_base::FollowedRead {
+    ) -> ui_core::FollowedRead {
         self.0
             .borrow_mut()
             .api
@@ -306,7 +307,7 @@ impl Opener {
         target: tilo_actions::remote::RemoteActionTarget,
         argument: InvokeArgument,
         then: impl FnMut(&Arrival<InvocationUpdate, ActionCallError>) + Send + 'static,
-    ) -> tilo_ui_base::Followed {
+    ) -> ui_core::Followed {
         self.0
             .borrow_mut()
             .api

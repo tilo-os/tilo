@@ -1433,7 +1433,7 @@ impl<R: Resource> Dispatcher<R> {
         &self,
         parent: Option<tilo_actions::InvocationId>,
         call: &super::Call,
-    ) -> Result<tilo_ui_base::InvocationCall, String> {
+    ) -> Result<ui_core::InvocationCall, String> {
         if self.core.past {
             return Err("a past version calls nothing".into());
         }
@@ -1448,7 +1448,7 @@ impl<R: Resource> Dispatcher<R> {
         parent: Option<tilo_actions::InvocationId>,
         address: tilo_actions::ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_ui_base::InvocationCall, String> {
+    ) -> Result<ui_core::InvocationCall, String> {
         if self.core.past {
             return Err("a past version calls nothing".into());
         }
@@ -1461,7 +1461,7 @@ impl<R: Resource> Dispatcher<R> {
         &self,
         parent: Option<tilo_actions::InvocationId>,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> Result<tilo_ui_base::remote_actions::ResourceReadCall, String> {
+    ) -> Result<ui_core::remote_actions::ResourceReadCall, String> {
         if self.core.past {
             return Err("a past version reads nothing".into());
         }

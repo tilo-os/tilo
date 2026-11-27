@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::de::DeserializeOwned;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{ActionCallError, InvokeArgument, RemoteActionTarget};
-use tilo_ui_base::Followed;
 use tilo_ui_base::{arriving::Arrival, arriving::Arriving, arriving::Source};
+use ui_core::Followed;
 
 /// Why a [`Query`] has no answer to show: the caller may not read it, or
 /// the read failed. Either is the read's failure ([`Arrival::Failed`]).

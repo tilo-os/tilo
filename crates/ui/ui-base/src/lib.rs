@@ -205,8 +205,6 @@ pub mod draw_cull;
 pub mod mentions;
 pub mod own_paint;
 pub mod published;
-#[cfg(feature = "model")]
-pub mod remote_actions;
 pub mod reorder;
 pub mod richtext;
 /// Rich text as a component shows it: paragraphs with their marks, and how each reference in them reads
@@ -303,13 +301,6 @@ pub use {
     platform::spell_shortcut_keycaps,
 };
 pub use {portal::FileFilter, portal::PickRequest, portal::PortalChannel, portal::PortalOutcome};
-#[cfg(feature = "model")]
-pub use {
-    remote_actions::CancellationCall, remote_actions::CatalogueCall, remote_actions::ChangedCall,
-    remote_actions::Followed, remote_actions::FollowedRead, remote_actions::InvocationCall,
-    remote_actions::RemoteActions, remote_actions::RemoteActionsGuard,
-    remote_actions::ResourceReadCall,
-};
 pub use {
     reorder::DropCandidate, reorder::DropPlacement, reorder::DropTarget,
     reorder::ReorderController, reorder::ReorderDrop, reorder::ReorderMotion,

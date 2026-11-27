@@ -239,11 +239,11 @@ struct Machine {
     created: Option<machine::Created>,
     /// A plan made here and not yet written into the person's Servers
     /// workspace: the request that writes it, followed until it answers.
-    making: Option<(machine::Created, tilo_ui_base::InvocationCall)>,
+    making: Option<(machine::Created, ui::InvocationCall)>,
     /// Whether the review was waiting for the plan before it could continue.
     plan_continue: bool,
     /// The waiting computers, as the session answered the list.
-    listing: Option<tilo_ui_base::InvocationCall>,
+    listing: Option<ui::InvocationCall>,
     waiting: Vec<machine::Waiting>,
     error: Option<&'static str>,
 }

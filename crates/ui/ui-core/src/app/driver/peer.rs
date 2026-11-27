@@ -494,11 +494,11 @@ pub(super) struct Peer {
     /// How many of the app's requests the peer has answered as its broker.
     served: usize,
     /// The session other providers' requests go to ([`Driver::set_session_api`]).
-    session: Option<tilo_ui_base::RemoteActions>,
+    session: Option<crate::RemoteActions>,
     /// The requests handed to the session whose answer has not come yet.
     forwarded: Vec<(
         tilo_actions::InvocationId,
-        tilo_ui_base::remote_actions::InvocationCall,
+        crate::remote_actions::InvocationCall,
     )>,
     /// The providers the caller serves, and what decides the window's shown actions.
     served_by_caller: super::workspace_side::Served,
@@ -800,11 +800,7 @@ impl Driver {
     ///
     /// # Panics
     /// If `workspace` is not a workspace id.
-    pub fn set_session_api(
-        &mut self,
-        client: tilo_ui_base::RemoteActions,
-        workspace: Option<String>,
-    ) {
+    pub fn set_session_api(&mut self, client: crate::RemoteActions, workspace: Option<String>) {
         if self.peer.is_none() {
             self.connect_peer();
         }

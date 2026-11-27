@@ -65,8 +65,7 @@ fn centre_of(rect: crate::kurbo::Rect) -> tilo_actions::remote::asked::PressPoin
 }
 
 /// Forget the newest input, so a test's press does not outlive it on a reused thread.
-#[cfg(test)]
-pub(crate) fn forget() {
+pub fn forget() {
     NEWEST.with(|newest| newest.set(None));
 }
 

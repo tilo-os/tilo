@@ -17,7 +17,8 @@ use tilo_actions::remote::{
     RESOURCE_READ_REFUSED, RESOURCE_READS_UNAVAILABLE, ResourceAddress, ResourceCopy,
     ResourceReadRequest, WatchScope,
 };
-use tilo_ui_base::{Arrival, RemoteActions};
+use tilo_ui_base::Arrival;
+use ui::RemoteActions;
 use ui::automerge::transaction::Transactable as _;
 use ui::time::Duration;
 
@@ -129,7 +130,7 @@ pub fn record_of(app: &str) -> ResourceReadRequest {
 }
 
 /// The title the readings in `call` show.
-pub fn title(call: &tilo_ui_base::ResourceReadCall) -> Option<String> {
+pub fn title(call: &ui::ResourceReadCall) -> Option<String> {
     call.with(|arrival| {
         arrival
             .ready()
@@ -140,7 +141,7 @@ pub fn title(call: &tilo_ui_base::ResourceReadCall) -> Option<String> {
 }
 
 /// The revision the readings in `call` name.
-pub fn revision(call: &tilo_ui_base::ResourceReadCall) -> Option<String> {
+pub fn revision(call: &ui::ResourceReadCall) -> Option<String> {
     call.with(|arrival| {
         arrival
             .ready()

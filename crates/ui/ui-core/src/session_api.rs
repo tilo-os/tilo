@@ -8,10 +8,10 @@ use tilo_actions::remote::{ActionCallError, InvokeRequest};
 use tilo_actions::{ActionOutput, ApiError, InvocationId, InvocationUpdate};
 
 #[cfg(feature = "model")]
+use crate::{remote_actions::InvocationCall, remote_actions::RemoteActions};
+#[cfg(feature = "model")]
 use tilo_ui_base::arriving::Arrival;
 use tilo_ui_base::widget::ResourceOperationStart;
-#[cfg(feature = "model")]
-use tilo_ui_base::{remote_actions::InvocationCall, remote_actions::RemoteActions};
 
 /// Where a host sends what an action asks of the session beyond its app.
 pub trait SessionApi {

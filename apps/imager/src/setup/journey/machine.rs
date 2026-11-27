@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use install_profile_model::plan::{self, DiskRule, Network, Plan};
 use tilo_action_services::machines;
-use tilo_ui_base::InvocationCall;
+use ui::InvocationCall;
 use ui::tilo_actions::remote::InvokeArgument;
 
 /// The OS the other computer installs. Tilo Server is a destination OS like
@@ -386,7 +386,7 @@ pub(super) fn publish(created: &Created, installer_url: &str) -> InvocationCall 
         created.token_file.display().to_string().into(),
     );
     arguments.insert("installer_url".into(), installer_url.into());
-    tilo_ui_base::RemoteActions::current().invoke(
+    ui::RemoteActions::current().invoke(
         machines::target(machines::PLAN),
         InvokeArgument::Json(arguments),
         None,
@@ -396,7 +396,7 @@ pub(super) fn publish(created: &Created, installer_url: &str) -> InvocationCall 
 /// The computers this person planned and has not installed, asked of the
 /// session that holds their Servers workspace: the request the window follows.
 pub(super) fn waiting() -> InvocationCall {
-    tilo_ui_base::RemoteActions::current().invoke(
+    ui::RemoteActions::current().invoke(
         machines::target(machines::LIST),
         InvokeArgument::None,
         None,
