@@ -113,7 +113,7 @@ pub trait PublishesResources: Widget {
     /// presence's selection into another's tree.
     fn resources_for(
         &self,
-        presence: Option<&tilo_actions::PresenceId>,
+        presence: Option<&tilo_action_types::PresenceId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::ResourceSpec> {
         let _ = presence;
@@ -125,7 +125,7 @@ pub trait PublishesResources: Widget {
     /// once materialised ([`SharedResource::to_resource`]).
     fn shared_resources_for(
         &self,
-        presence: Option<&tilo_actions::PresenceId>,
+        presence: Option<&tilo_action_types::PresenceId>,
         doc: &AutoCommit,
     ) -> Option<Vec<SharedResource>> {
         let _ = (presence, doc);
@@ -135,7 +135,7 @@ pub trait PublishesResources: Widget {
     /// [`Self::resource`] in `presence`'s tree.
     fn resource_for(
         &self,
-        presence: Option<&tilo_actions::PresenceId>,
+        presence: Option<&tilo_action_types::PresenceId>,
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
@@ -160,7 +160,7 @@ pub trait PublishesResources: Widget {
         &self,
         _doc: &AutoCommit,
         _resource_id: &str,
-    ) -> Option<tilo_actions::ActionAddress> {
+    ) -> Option<tilo_action_types::ActionAddress> {
         None
     }
 
@@ -170,7 +170,7 @@ pub trait PublishesResources: Widget {
     fn document_action_result(
         &self,
         _doc: &AutoCommit,
-        _address: &tilo_actions::ActionAddress,
+        _address: &tilo_action_types::ActionAddress,
         _changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
         None
@@ -181,7 +181,7 @@ pub trait PublishesResources: Widget {
 pub fn document_action_result(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    address: &tilo_actions::ActionAddress,
+    address: &tilo_action_types::ActionAddress,
     changes: &[automerge::Patch],
 ) -> Option<serde_json::Value> {
     if let Some(value) = capability::<dyn PublishesResources>(widget)
@@ -351,7 +351,7 @@ pub fn past_page_range(
 /// `widget`'s resources as `presence` sees them.
 pub fn resources_for(
     widget: &(impl Widget + ?Sized),
-    presence: Option<&tilo_actions::PresenceId>,
+    presence: Option<&tilo_action_types::PresenceId>,
     doc: &AutoCommit,
 ) -> Vec<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget)
@@ -361,7 +361,7 @@ pub fn resources_for(
 /// Resolve resource `id` in `presence`'s tree of `widget`.
 pub fn resource_for(
     widget: &(impl Widget + ?Sized),
-    presence: Option<&tilo_actions::PresenceId>,
+    presence: Option<&tilo_action_types::PresenceId>,
     doc: &AutoCommit,
     id: &str,
 ) -> Option<tilo_actions::ResourceSpec> {
@@ -379,6 +379,6 @@ pub fn action_directory_visibility(
     widget: &(impl Widget + ?Sized),
     doc: &AutoCommit,
     resource_id: &str,
-) -> Option<tilo_actions::ActionAddress> {
+) -> Option<tilo_action_types::ActionAddress> {
     capability::<dyn PublishesResources>(widget)?.action_directory_visibility(doc, resource_id)
 }

@@ -147,6 +147,7 @@ workspace-members = [
     "tilo-collab-types",
     "tilo-default-apps",
     "tilo-action-policy",
+    "tilo-action-types",
     "tilo-actions",
     "tilo-automation",
     "tilo-automerge",

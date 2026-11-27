@@ -94,6 +94,7 @@ client_side = [
     "tilo-runtime-portal",
     "rustls-native-certs",     # the system trust store, forked under crates/system
     "tilo-action-policy",      # the policy an answer to a message is held to
+    "tilo-action-types",       # the plain names of an action, an invocation and a presence
     "tilo-actions",
     "tilo-advisory-lock",
     "tilo-app-id",             # the id an app is known by
@@ -134,6 +135,7 @@ toolkit_reaches = [
     "tilo-accesskit-winit",             # vendor/accesskit_winit
     "tilo-action-policy",               # crates/core/action-policy
     "tilo-action-services",             # crates/core/action-services
+    "tilo-action-types",                # crates/platform/action-types
     "tilo-actions",                     # crates/core/actions
     "tilo-advisory-lock",               # crates/platform/advisory-lock
     "tilo-agent-provider-config",       # crates/integrations/provider-config

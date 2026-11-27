@@ -85,7 +85,7 @@ pub enum PendingControlOrigin {
 pub struct ComponentControl {
     pub input: crate::widget::input_provenance::Input,
     pub binding: crate::widget::component_walk::Binding,
-    pub address: tilo_actions::ActionAddress,
+    pub address: tilo_action_types::ActionAddress,
 }
 
 #[derive(Clone)]

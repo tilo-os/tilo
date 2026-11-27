@@ -307,6 +307,7 @@ members = [
     "crates/integrations/tilolang-calendar",
     "crates/platform/tilo-failure",
     "crates/platform/tilo-lock",
+    "crates/platform/action-types",
     "crates/platform/local-identity",
     "crates/platform/tilo-socket",
     "crates/platform/tilo-sort",

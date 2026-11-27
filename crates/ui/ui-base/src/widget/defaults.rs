@@ -107,7 +107,7 @@ pub(super) fn reveal_descendant(
 
 pub(super) fn take_action_palette_request(
     children: ChildrenMut<'_>,
-) -> Option<tilo_actions::ActionAddress> {
+) -> Option<tilo_action_types::ActionAddress> {
     children
         .into_iter()
         .find_map(|child| child.take_action_palette_request())

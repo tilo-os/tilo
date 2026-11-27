@@ -333,6 +333,7 @@ pub use {
 // clashing with `permissions::{Role}` / `permissions::Verb`, which are
 // already re-exported at the crate root.
 pub use a11y::SemanticId;
+pub use tilo_action_types;
 pub use tilo_actions;
 pub use widget::ContentKind;
 pub use widget::HistoryEntryId;

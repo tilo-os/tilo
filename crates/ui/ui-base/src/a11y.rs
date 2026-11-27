@@ -428,7 +428,7 @@ pub struct AccessNode {
     pub item: Option<String>,
     /// What this control does, as a stable identity: the record kind it acts on and the operation
     /// (`so.tilo.notes.Notebook` and `new_note`, a field's `title` for a control that edits one),
-    /// written as [`tilo_actions::ActionAddress`] writes an address.
+    /// written as [`tilo_action_types::ActionAddress`] writes an address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     /// The files of the workspace this control can be dragged out of the window with, by the key
@@ -1195,7 +1195,7 @@ mod tests {
 /// * `"<parent>~<index>"` — a synthetic a11y child (a table row/cell) with no
 ///   widget of it, keyed by its position under its parent.
 /// * `"r:<resource_id>"` — a resource from the app's action model, keyed by its
-///   already-stable [`ResourceId`](tilo_actions::ResourceId).
+///   already-stable [`ResourceId`](tilo_action_types::ResourceId).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SemanticId(pub String);
 

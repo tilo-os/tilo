@@ -98,7 +98,7 @@ pub fn take_attributed_with_origin(
     widget: &mut dyn Widget,
 ) -> Option<(
     tilo_actions::ControlInvocation,
-    Option<tilo_actions::InvocationId>,
+    Option<tilo_action_types::InvocationId>,
     Origin,
 )> {
     let (taken, _, origin) = capture_physical_drain(|| {

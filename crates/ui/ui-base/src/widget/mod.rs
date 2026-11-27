@@ -102,7 +102,7 @@ pub const DISABLED_ALPHA: f32 = 0.45;
 /// Machine-readable classification of a control's activation path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlBindingKind {
-    Action(tilo_actions::ActionAddress),
+    Action(tilo_action_types::ActionAddress),
     CollaborativeDocument(String),
     SemanticAction(String),
 }
@@ -1255,7 +1255,7 @@ impl EventCtx<'_> {
 #[derive(Clone, Debug, PartialEq)]
 #[cfg(feature = "model")]
 pub struct ViewPresence {
-    pub presence: tilo_actions::PresenceId,
+    pub presence: tilo_action_types::PresenceId,
     pub label: Option<String>,
     pub key: PresenceKey,
     pub payload: ::collaboration::PresencePayload,

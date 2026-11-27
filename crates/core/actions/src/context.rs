@@ -1307,67 +1307,7 @@ fn nonempty(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Upper bound on a [`PresenceId`] in bytes. Presences key bounded
-/// per-view maps in app workers; they are never free text.
-pub const MAX_PRESENCE_ID_BYTES: usize = 128;
-
-/// One presence in a shared record: a person's window or a host-minted
-/// execution. Each presence owns its own view state (caret, selection,
-/// Find), and the app builds that presence's resource tree from it
-/// (the toolkit's `PublishesResources::resources_for`).
-///
-/// Opaque, non-empty, ASCII-printable and at most
-/// [`MAX_PRESENCE_ID_BYTES`] bytes. It is a routing key for view state,
-/// never authority: the authenticated actor is [`ActionInvoker::acting`].
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct PresenceId(String);
-
-impl PresenceId {
-    /// Validate and wrap a presence id.
-    pub fn new(id: impl Into<String>) -> Result<Self, String> {
-        let id = id.into();
-        if id.is_empty()
-            || id.len() > MAX_PRESENCE_ID_BYTES
-            || !id.bytes().all(|b| b.is_ascii_graphic())
-        {
-            return Err(format!(
-                "presence id must be 1..={MAX_PRESENCE_ID_BYTES} printable ASCII bytes"
-            ));
-        }
-        Ok(Self(id))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// One host-minted execution's private view. This key is subordinate to the
-    /// admitted actor and confers no authority. Hosts derive it from their
-    /// execution lease, never a client-supplied run label or context.
-    pub fn for_execution(execution: uuid::Uuid) -> Self {
-        Self(format!("execution:{execution}"))
-    }
-}
-
-impl TryFrom<String> for PresenceId {
-    type Error = String;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl From<PresenceId> for String {
-    fn from(value: PresenceId) -> Self {
-        value.0
-    }
-}
-
-impl std::fmt::Display for PresenceId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+pub use tilo_action_types::{MAX_PRESENCE_ID_BYTES, PresenceId};
 
 /// The longest name of a device kept with an invoker, in characters.
 const MAX_DEVICE_NAME_CHARS: usize = 64;

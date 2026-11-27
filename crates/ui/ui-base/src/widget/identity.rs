@@ -623,7 +623,7 @@ decorator_trait! {
         fn handle_event(event: &WindowEvent, ctx: &mut EventCtx<'_>);
         fn children_mut() -> Vec<&mut (dyn Widget + '_)>;
         fn reveal_descendant(target: *const dyn Widget, rect: vello::kurbo::Rect) -> bool;
-        fn take_action_palette_request() -> Option<tilo_actions::ActionAddress>;
+        fn take_action_palette_request() -> Option<::tilo_ui_base::tilo_action_types::ActionAddress>;
         fn take_search_request() -> bool;
         fn set_focus(focused: bool);
         fn set_invalid(invalid: bool);

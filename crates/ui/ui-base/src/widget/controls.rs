@@ -44,7 +44,7 @@ pub fn note_drained_origin(origin: Origin) {
 /// queued it.
 pub type AttributedControlInvocation = (
     tilo_actions::ControlInvocation,
-    Option<tilo_actions::InvocationId>,
+    Option<tilo_action_types::InvocationId>,
 );
 
 pub trait ActionControls: Widget {
@@ -76,7 +76,7 @@ pub trait ActionControls: Widget {
     /// Report the admission result of one queued local control invocation.
     fn on_control_invocation_result(
         &mut self,
-        address: &tilo_actions::ActionAddress,
+        address: &tilo_action_types::ActionAddress,
         result: &ControlResult,
     ) {
         result_to_children(self, address, result);
@@ -106,7 +106,7 @@ pub trait ActionControls: Widget {
     /// this widget's own emitter, then its children.
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
+        allowed: &HashSet<tilo_action_types::ActionAddress>,
     ) {
         for child in self.children_mut() {
             refresh_control_action_availability(child, allowed);
@@ -129,7 +129,7 @@ macro_rules! optional_emitter_controls {
         $crate::optional_emitter_controls!(ownership);
         fn refresh_control_action_availability(
             &mut self,
-            allowed: &std::collections::HashSet<$crate::tilo_actions::ActionAddress>,
+            allowed: &std::collections::HashSet<$crate::tilo_action_types::ActionAddress>,
         ) {
             if let Some(action) = &mut self.action {
                 action.refresh_availability(allowed);
@@ -214,7 +214,7 @@ fn decorated_bindings(widget: &(impl Widget + ?Sized)) -> Option<Vec<ControlBind
 
 fn result_to_children(
     widget: &mut (impl Widget + ?Sized),
-    address: &tilo_actions::ActionAddress,
+    address: &tilo_action_types::ActionAddress,
     result: &ControlResult,
 ) {
     for child in widget.children_mut() {
@@ -279,8 +279,12 @@ pub fn start_pending_control_invocations(
             encoded.type_id.as_str(),
             encoded.payload.as_slice(),
         );
-        let operation =
-            ResourceOperation::local(tilo_actions::InvocationId::new(), kind, type_id, payload);
+        let operation = ResourceOperation::local(
+            tilo_action_types::InvocationId::new(),
+            kind,
+            type_id,
+            payload,
+        );
         if matches!(
             start_operation(&mut *root, &operation, doc, path),
             Ok(Some(_))
@@ -295,11 +299,12 @@ pub fn start_pending_control_invocations(
 pub(crate) fn published_action(
     widget: &dyn Widget,
     doc: &automerge::AutoCommit,
-    address: &tilo_actions::ActionAddress,
+    address: &tilo_action_types::ActionAddress,
 ) -> Option<tilo_actions::ActionSpec> {
     for resource in crate::widget::resources::resources(widget, doc) {
         if let Some(spec) = resource.actions.iter().find(|spec| {
-            address == &tilo_actions::ActionAddress::new(resource.id.as_str(), spec.id.as_str())
+            address
+                == &tilo_action_types::ActionAddress::new(resource.id.as_str(), spec.id.as_str())
         }) {
             return Some(spec.clone());
         }
@@ -325,14 +330,14 @@ pub fn take_attributed_control_invocation(
 }
 
 thread_local! {
-    static RESULT_FOR: std::cell::Cell<Option<tilo_actions::InvocationId>> =
+    static RESULT_FOR: std::cell::Cell<Option<tilo_action_types::InvocationId>> =
         const { std::cell::Cell::new(None) };
 }
 
 /// The operation the result being reported continues, while a host reports one: the invocation of
 /// the effect that submitted the edit, which waits for it to land.
 #[must_use]
-pub fn result_on_behalf_of() -> Option<tilo_actions::InvocationId> {
+pub fn result_on_behalf_of() -> Option<tilo_action_types::InvocationId> {
     RESULT_FOR.with(std::cell::Cell::get)
 }
 
@@ -340,11 +345,11 @@ pub fn result_on_behalf_of() -> Option<tilo_actions::InvocationId> {
 /// which [`result_on_behalf_of`] names meanwhile.
 pub fn on_control_invocation_result_for(
     widget: &mut dyn Widget,
-    address: &tilo_actions::ActionAddress,
+    address: &tilo_action_types::ActionAddress,
     result: &ControlResult,
-    on_behalf_of: Option<tilo_actions::InvocationId>,
+    on_behalf_of: Option<tilo_action_types::InvocationId>,
 ) {
-    struct Restore(Option<tilo_actions::InvocationId>);
+    struct Restore(Option<tilo_action_types::InvocationId>);
     impl Drop for Restore {
         fn drop(&mut self) {
             RESULT_FOR.with(|cell| cell.set(self.0));
@@ -357,7 +362,7 @@ pub fn on_control_invocation_result_for(
 /// Report a control invocation's admission result through `widget`'s subtree.
 pub fn on_control_invocation_result(
     widget: &mut dyn Widget,
-    address: &tilo_actions::ActionAddress,
+    address: &tilo_action_types::ActionAddress,
     result: &ControlResult,
 ) {
     if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
@@ -430,7 +435,7 @@ pub fn children_have_action_control_bindings(widget: &dyn Widget) -> bool {
 )]
 pub fn refresh_control_action_availability(
     widget: &mut dyn Widget,
-    allowed: &HashSet<tilo_actions::ActionAddress>,
+    allowed: &HashSet<tilo_action_types::ActionAddress>,
 ) {
     if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
         controls.refresh_control_action_availability(allowed);

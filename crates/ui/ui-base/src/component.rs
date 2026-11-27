@@ -730,7 +730,7 @@ impl Event {
 
     /// The action the event runs, when it is bound to one.
     #[must_use]
-    pub fn invokes(&self) -> Option<&tilo_actions::ActionAddress> {
+    pub fn invokes(&self) -> Option<&tilo_action_types::ActionAddress> {
         match self {
             Self::None | Self::View(_) => None,
             Self::Action(binding) => Some(binding.address()),

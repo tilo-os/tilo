@@ -14780,6 +14780,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-action-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "uuid",
+]
+
+[[package]]
 name = "tilo-actions"
 version = "0.1.0"
 dependencies = [
@@ -14793,6 +14801,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tilo-action-policy",
+ "tilo-action-types",
  "tilo-actions",
  "tilo-app-id",
  "tilo-automerge",
@@ -21422,6 +21431,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-accesskit-winit",
  "tilo-action-policy",
+ "tilo-action-types",
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-appearance",
@@ -27685,6 +27695,7 @@ dependencies = [
  "tilo-accounts",
  "tilo-action-policy",
  "tilo-action-services",
+ "tilo-action-types",
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-agent-provider-config",

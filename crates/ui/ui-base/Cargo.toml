@@ -263,6 +263,9 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features =
 # Every catalogue and text index is a tantivy index through the shared
 # search layer.
 tilo-search = { version = "0.1.0", path = "../../platform/search" }
+# The plain names a widget carries of an action, an invocation, a presence and a
+# resource.
+tilo-action-types = { version = "0.1.0", path = "../../platform/action-types" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
 # nested Resource tree apps publish. `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the

@@ -67,6 +67,15 @@ impl Clone for ResourceSpec {
 }
 
 impl ResourceSpec {
+    /// The address of `action` as this resource publishes it: what the API
+    /// takes, what a window's control bound to it says it does, and what the
+    /// survey lists — one address, which neither the window's composition
+    /// moving the control nor the person's language renaming it changes.
+    #[must_use]
+    pub fn address_of(&self, action: &ActionSpec) -> ActionAddress {
+        ActionAddress::new(self.id.as_str(), action.id.as_str())
+    }
+
     /// A resource with a stable `id`, a `kind` and a human `label`.
     /// Framework-internal: a declaration builds a resource's tree, never an
     /// app.

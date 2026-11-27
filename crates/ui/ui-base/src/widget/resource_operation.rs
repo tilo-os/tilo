@@ -79,7 +79,7 @@ pub fn laying_out_first<T>(start: impl FnOnce() -> T) -> T {
 /// What a handler matches on.
 #[derive(Clone, Copy, Debug)]
 pub struct OperationRequest<'a> {
-    pub invocation: tilo_actions::InvocationId,
+    pub invocation: tilo_action_types::InvocationId,
     pub kind: tilo_actions::OperationKind,
     pub type_id: &'a str,
     pub payload: &'a [u8],
@@ -96,17 +96,20 @@ pub type ExternalModerationFuture = std::pin::Pin<
 #[derive(Clone, Debug)]
 pub struct OperationTarget {
     route: ::collaboration::RouteSpec,
-    address: tilo_actions::ActionAddress,
+    address: tilo_action_types::ActionAddress,
 }
 #[cfg(feature = "model")]
 impl OperationTarget {
-    pub fn new(route: ::collaboration::RouteSpec, address: tilo_actions::ActionAddress) -> Self {
+    pub fn new(
+        route: ::collaboration::RouteSpec,
+        address: tilo_action_types::ActionAddress,
+    ) -> Self {
         Self { route, address }
     }
     pub fn route(&self) -> &::collaboration::RouteSpec {
         &self.route
     }
-    pub fn address(&self) -> &tilo_actions::ActionAddress {
+    pub fn address(&self) -> &tilo_action_types::ActionAddress {
         &self.address
     }
 
@@ -117,7 +120,7 @@ impl OperationTarget {
     /// Refuses another action, missing record routing or unavailable transport.
     pub fn external_moderation(
         &self,
-        invocation: tilo_actions::InvocationId,
+        invocation: tilo_action_types::InvocationId,
         operation: registry_types::ExternalModerationOperation,
     ) -> Result<ExternalModerationFuture, String> {
         runtime_collab::external_moderation::validate_action_operation(
@@ -173,7 +176,7 @@ impl<'a> ResourceOperation<'a> {
     /// An operation the host admitted: local input, the palette, or a
     /// directed invocation already admitted by the broker.
     pub fn local(
-        invocation: tilo_actions::InvocationId,
+        invocation: tilo_action_types::InvocationId,
         kind: tilo_actions::OperationKind,
         type_id: &'a str,
         payload: &'a [u8],
@@ -215,7 +218,7 @@ impl<'a> ResourceOperation<'a> {
         self.resource
     }
 
-    pub fn invocation(&self) -> tilo_actions::InvocationId {
+    pub fn invocation(&self) -> tilo_action_types::InvocationId {
         self.request.invocation
     }
 
@@ -325,7 +328,7 @@ pub trait ResourceOperations: Widget {
     /// a cooperative signal from the action broker.
     fn poll_resource_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
+        invocation: tilo_action_types::InvocationId,
         cancellation_requested: bool,
         doc: &AutoCommit,
         path: &ObjId,
@@ -381,7 +384,7 @@ pub fn start_operation_refused(
 
 pub fn poll_resource_operation(
     widget: &mut (impl Widget + ?Sized),
-    invocation: tilo_actions::InvocationId,
+    invocation: tilo_action_types::InvocationId,
     cancellation_requested: bool,
     doc: &AutoCommit,
     path: &ObjId,
@@ -429,7 +432,7 @@ pub(crate) fn start_by_default(
 
 pub(crate) fn poll_by_default(
     widget: &mut (impl Widget + ?Sized),
-    invocation: tilo_actions::InvocationId,
+    invocation: tilo_action_types::InvocationId,
     cancellation_requested: bool,
     doc: &AutoCommit,
     path: &ObjId,

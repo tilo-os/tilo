@@ -100,7 +100,7 @@ impl<I> ActionEmitter<I> {
         &self.binding
     }
 
-    pub fn refresh_availability(&mut self, allowed: &HashSet<tilo_actions::ActionAddress>) {
+    pub fn refresh_availability(&mut self, allowed: &HashSet<tilo_action_types::ActionAddress>) {
         let was = std::mem::replace(
             &mut self.available,
             allowed.contains(self.binding.address()),

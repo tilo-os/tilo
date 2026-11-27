@@ -8,7 +8,7 @@ use super::{ResourceOperation, ResourceOperationStart};
 use automerge::{AutoCommit, ChangeHash};
 
 pub struct AppliedDocument<'a> {
-    pub invocation: tilo_actions::InvocationId,
+    pub invocation: tilo_action_types::InvocationId,
     pub before: &'a [ChangeHash],
     pub document: &'a AutoCommit,
     pub output: tilo_actions::ActionOutput,
@@ -16,7 +16,7 @@ pub struct AppliedDocument<'a> {
 
 impl AppliedDocument<'_> {
     /// The local operation whose asynchronous acknowledgement is pending.
-    pub fn invocation(&self) -> tilo_actions::InvocationId {
+    pub fn invocation(&self) -> tilo_action_types::InvocationId {
         self.invocation
     }
     pub fn before(&self) -> &[ChangeHash] {

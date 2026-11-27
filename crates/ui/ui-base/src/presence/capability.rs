@@ -205,7 +205,7 @@ pub fn agent_text_loci(
     theme: &crate::theme::Theme,
     presence: &super::PresenceCtx,
     interactions: &[tilo_actions::SemanticInteraction],
-) -> Vec<(tilo_actions::InvocationId, vello::kurbo::Rect)> {
+) -> Vec<(tilo_action_types::InvocationId, vello::kurbo::Rect)> {
     interactions
         .iter()
         .filter(|interaction| !interaction.actor.is_person())

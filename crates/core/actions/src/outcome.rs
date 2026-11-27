@@ -1,7 +1,6 @@
 //! Typed invocation identity, progress, failure, and successful results.
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// Resource kind for bytes addressed by their content hash.
 ///
@@ -34,39 +33,7 @@ pub fn named_reference(value: &str) -> Option<&str> {
     tilo_content::valid_reference(reference).then_some(reference)
 }
 
-/// Stable key carried from admission through completion and used to
-/// deduplicate retry-safe calls.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct InvocationId(pub Uuid);
-
-impl InvocationId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-/// An invocation id as a caller writes it: the uuid it is, which [`std::str::FromStr`] reads back.
-impl std::fmt::Display for InvocationId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-/// Read an invocation id a caller keeps in its own words (a page's dialog, a script's file) so
-/// its next ask is the same invocation: the server answers it with what the first did.
-impl std::str::FromStr for InvocationId {
-    type Err = uuid::Error;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        Uuid::parse_str(text.trim()).map(Self)
-    }
-}
-
-impl Default for InvocationId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use tilo_action_types::InvocationId;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(remote = "Self")]

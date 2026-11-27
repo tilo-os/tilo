@@ -17,7 +17,8 @@ use crate::permissions::MemberId;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use std::collections::HashMap;
-use tilo_actions::{Acting, InteractionPhase, InvocationId, SemanticInteraction};
+use tilo_action_types::InvocationId;
+use tilo_actions::{Acting, InteractionPhase, SemanticInteraction};
 use tilo_sort::CompactSort as _;
 use vello::{
     kurbo::{Circle, Point, Rect, Stroke},

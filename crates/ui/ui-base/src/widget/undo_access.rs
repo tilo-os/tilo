@@ -87,7 +87,7 @@ pub trait LocalUndo {
     /// protocol to apps. True means queued, never already succeeded.
     fn start_local_undo_operation(
         &mut self,
-        _invocation: tilo_actions::InvocationId,
+        _invocation: tilo_action_types::InvocationId,
         _request: UndoRequest,
     ) -> Result<bool, String> {
         Ok(false)
@@ -97,7 +97,7 @@ pub trait LocalUndo {
     /// must fail explicitly; it must not become document Undo.
     fn poll_local_undo_operation(
         &mut self,
-        _invocation: tilo_actions::InvocationId,
+        _invocation: tilo_action_types::InvocationId,
         _cancellation_requested: bool,
     ) -> Option<tilo_actions::InvocationUpdate> {
         None
@@ -126,7 +126,7 @@ pub(crate) fn start_local_history(
 #[inline(never)]
 fn start_deferred_undo(
     local: &mut dyn LocalUndo,
-    invocation: tilo_actions::InvocationId,
+    invocation: tilo_action_types::InvocationId,
     payload: &[u8],
 ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
     if !local.local_undo_is_deferred() {
@@ -140,7 +140,7 @@ fn start_deferred_undo(
 
 pub(crate) fn poll_local_history(
     widget: &mut (impl crate::widget::Widget + ?Sized),
-    invocation: tilo_actions::InvocationId,
+    invocation: tilo_action_types::InvocationId,
     cancellation_requested: bool,
 ) -> Option<tilo_actions::InvocationUpdate> {
     crate::widget::capability::capability_mut::<dyn LocalUndo>(widget)?

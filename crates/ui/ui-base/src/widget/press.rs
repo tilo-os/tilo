@@ -92,17 +92,17 @@ impl Press {
     /// The action the part runs, when it runs one: what a menu tells its placed commands from
     /// those the system adds by.
     #[must_use]
-    pub fn address(&self) -> Option<tilo_actions::ActionAddress> {
+    pub fn address(&self) -> Option<tilo_action_types::ActionAddress> {
         self.action
             .as_ref()
             .map(|action| action.borrow().binding().address().clone())
     }
 
-    /// What the part does, as a window publishes it ([`tilo_actions::ActionAddress::naming`]): the
+    /// What the part does, as a window publishes it (`ResourceSpec::address_of` in the action model): the
     /// action it runs, naming the one record it acts on. A menu row built for one record's action
     /// says so, whichever record's menu it stands in.
     #[must_use]
-    pub fn identity(&self) -> Option<tilo_actions::ActionAddress> {
+    pub fn identity(&self) -> Option<tilo_action_types::ActionAddress> {
         self.action
             .as_ref()
             .map(|action| action.borrow().binding().identity())
@@ -165,7 +165,10 @@ impl Press {
         }
     }
 
-    pub fn refresh_availability(&self, allowed: &HashSet<tilo_actions::ActionAddress>) -> bool {
+    pub fn refresh_availability(
+        &self,
+        allowed: &HashSet<tilo_action_types::ActionAddress>,
+    ) -> bool {
         let Some(action) = &self.action else {
             return false;
         };

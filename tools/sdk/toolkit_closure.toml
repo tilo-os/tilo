@@ -11,6 +11,7 @@ allowed = [
     "serde_json",
     "tilo-action-policy",
     "tilo-action-services",
+    "tilo-action-types",
     "tilo-actions",
     "tilo-advisory-lock",
     "tilo-app-fleet",

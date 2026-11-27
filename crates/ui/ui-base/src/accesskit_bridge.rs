@@ -801,7 +801,7 @@ fn append_resource_nodes(
             let address = format!(
                 "{}{}{}",
                 resource.id.as_str(),
-                tilo_actions::KEY_SEP,
+                tilo_action_types::KEY_SEP,
                 action.id
             );
             if let Some(existing) = claimed.insert(action_id, address.clone()) {

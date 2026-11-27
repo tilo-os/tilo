@@ -460,7 +460,7 @@ pub struct PresenceCtx {
     /// pointer/caret presence this never pretends an action caller has an
     /// input device: applications may project its stable resource anchor to
     /// native geometry, while the generic painter shows a compact fallback.
-    interactions: HashMap<tilo_actions::InvocationId, interaction::InteractionPresenceEntry>,
+    interactions: HashMap<tilo_action_types::InvocationId, interaction::InteractionPresenceEntry>,
     /// Last marker tip actually painted for each agent. This is local visual
     /// continuity only: it never enters pointer presence or action state.
     interaction_markers: HashMap<tilo_actions::Actor, interaction::AgentMarkerContinuity>,

@@ -223,7 +223,7 @@ impl<I> ActionBinding<I> {
     }
 
     /// What a control bound to it does, as a window publishes it: the address
-    /// the API runs it by ([`ActionAddress::naming`]) — so the row's Complete
+    /// the API runs it by ([`ResourceSpec::address_of`]) — so the row's Complete
     /// names that row, and what a person presses and what a caller names at
     /// the API are one thing.
     #[must_use]
@@ -370,19 +370,7 @@ pub const INVALID_ARGUMENTS_TYPE: &str = "tilo.invalid_arguments";
 /// then does is decided as the control's own action declares it.
 pub const SEMANTIC_OPERATION_TYPE: &str = "tilo.ui.semantic-action";
 
-/// Stable identity of a resource within the publishing app instance
-/// (e.g. `tube.video:dQw4w9WgXcQ`, `ebook.annotation:<uuid>`).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ResourceId(pub String);
-
-impl ResourceId {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+pub use tilo_action_types::ResourceId;
 
 /// What an action's row shows of the state the action acts on, beside its
 /// label: data, never drawing code. Every surface that lists the action (the
@@ -2743,9 +2731,7 @@ fn primary_param(params: &[ActionParam]) -> Option<&ActionParam> {
         .or_else(|| params.first())
 }
 
-/// Field separator inside a flattened composite key — a unit-separator
-/// control char never appears in a resource or action id.
-pub const KEY_SEP: char = '\u{1f}';
+pub use tilo_action_types::KEY_SEP;
 
 /// One (resource, action) pair produced by [`flatten`], addressable by a
 /// composite [`key`](FlatAction::key) the palette uses as its row id.

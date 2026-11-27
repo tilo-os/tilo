@@ -24,8 +24,7 @@ use crate::entry::Described;
 use crate::executor::{ActionTransport, Dispatched, dispatch_by_with_context};
 use crate::registry::ActionRegistry;
 use crate::resource::{
-    ActionInput, ActionSpec, Collects, KEY_SEP, ResourceSpec, ResourceViewMountSpec,
-    ResourceViewRangeSpec,
+    ActionInput, ActionSpec, Collects, ResourceSpec, ResourceViewMountSpec, ResourceViewRangeSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,67 +40,7 @@ pub const NOT_READY: &str = "not_ready";
 pub const NOT_READY_REASON: &str = "what this changes has not arrived from the workspace yet; ask \
      again";
 
-/// The stable address of one exported operation: which resource, which
-/// action. Both halves are the app's own ids — no screen position, no
-/// list index — so the same address names the same operation across
-/// layouts, themes, resolutions, and a caller with no display can work
-/// from ids and labels alone.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct ActionAddress {
-    /// The id the app publishes the one resource the operation acts on under:
-    /// a control that stands for one row among many names its row, so the
-    /// second task's Complete is not the first's.
-    pub resource: String,
-    /// The id the resource publishes the action under. A label, a declared
-    /// id or a kind never stands in for it: the API resolves this pair and
-    /// nothing else.
-    pub action: String,
-}
-
-impl ActionAddress {
-    pub fn new(resource: impl Into<String>, action: impl Into<String>) -> Self {
-        Self {
-            resource: resource.into(),
-            action: action.into(),
-        }
-    }
-
-    /// The address of `action` as `resource` publishes it: what the API
-    /// takes, what a window's control bound to it says it does, and what the
-    /// survey lists — one address, which neither the window's composition
-    /// moving the control nor the person's language renaming it changes.
-    #[must_use]
-    pub fn naming(resource: &ResourceSpec, action: &ActionSpec) -> Self {
-        Self::new(resource.id.as_str(), action.id.as_str())
-    }
-
-    /// The address of `resource` and `action`, or `None` when either half
-    /// cannot survive [`Self::encode`]: an empty id or one containing
-    /// [`KEY_SEP`] would let two different pairs name one string.
-    #[must_use]
-    pub fn checked(resource: impl AsRef<str>, action: impl AsRef<str>) -> Option<Self> {
-        let (resource, action) = (resource.as_ref(), action.as_ref());
-        (!resource.is_empty()
-            && !action.is_empty()
-            && !resource.contains(KEY_SEP)
-            && !action.contains(KEY_SEP))
-        .then(|| Self::new(resource, action))
-    }
-
-    /// The single-string form, for transports that carry one id. [`KEY_SEP`]
-    /// never appears in either half, so [`parse`](Self::parse) is unambiguous.
-    pub fn encode(&self) -> String {
-        format!("{}{KEY_SEP}{}", self.resource, self.action)
-    }
-
-    /// Recover an address from [`encode`](Self::encode). `None` when the string
-    /// is not one, so a caller that made an address up is refused here rather
-    /// than looked up against a half-parsed id.
-    pub fn parse(s: &str) -> Option<Self> {
-        let (resource, action) = s.split_once(KEY_SEP)?;
-        Self::checked(resource, action)
-    }
-}
+pub use tilo_action_types::ActionAddress;
 
 /// What an invocation of one action must carry, advertised on the
 /// descriptor rather than discovered by trying — enumeration is the only
@@ -1258,13 +1197,12 @@ mod tests {
 
         phase surveying_through_the_api_describes_without_acting;
         // A descriptor carries nothing that could act, survey annotates only the declared view-open
-        // action, enumeration leaves the document untouched, and an address survives its string form.
+        // action, and enumeration leaves the document untouched.
         // Runs each phase below in order; every phase builds its own fixture.
         {
             a_descriptor_carries_nothing_that_could_act();
             survey_annotates_only_the_declared_view_open_action();
             enumeration_leaves_the_document_untouched();
-            an_address_survives_its_string_form();
         }
 
         phase a_survey_names_the_row_each_action_stands_in;
@@ -2002,41 +1940,6 @@ mod tests {
         // A declared policy is never weakened by a classifier.
         let declared = spec.clone().destructive();
         assert_eq!(declared.confirmation_for_json(&title("x")), confirm);
-    }
-
-    /// Resource ids carry colons, so the address separator has to be something
-    /// they cannot contain; and a string that is not an address is refused
-    /// rather than half-parsed into a lookup. An address is a resource and an
-    /// action, and nothing else: a third part is no address.
-    fn an_address_survives_its_string_form() {
-        let address = star();
-        assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
-        let one = ActionAddress::new("notes.note:1", "edit");
-        assert_eq!(ActionAddress::parse(&one.encode()), Some(one));
-        assert_eq!(ActionAddress::parse("notes.note:1"), None);
-        assert_eq!(ActionAddress::parse(&format!("{KEY_SEP}star")), None);
-        assert_eq!(
-            ActionAddress::parse(&format!("notes{KEY_SEP}{KEY_SEP}edit")),
-            None
-        );
-        assert_eq!(
-            ActionAddress::parse(&format!("notes.note{KEY_SEP}notes.note:1{KEY_SEP}edit")),
-            None
-        );
-        assert_eq!(
-            ActionAddress::checked("notes.note:1", "edit"),
-            Some(ActionAddress::new("notes.note:1", "edit"))
-        );
-        assert_eq!(ActionAddress::checked("", "edit"), None);
-        assert_eq!(ActionAddress::checked("notes.note:1", ""), None);
-        assert_eq!(
-            ActionAddress::checked(format!("notes{KEY_SEP}note"), "edit"),
-            None
-        );
-        assert_eq!(
-            ActionAddress::checked("notes.note:1", format!("edit{KEY_SEP}title")),
-            None
-        );
     }
 
     const OP: &str = "test.operation";

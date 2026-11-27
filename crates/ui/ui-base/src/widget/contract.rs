@@ -750,7 +750,7 @@ pub trait Widget {
     }
 
     /// One-shot request to open the host's action palette directly at a typed resource action.
-    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
+    fn take_action_palette_request(&mut self) -> Option<tilo_action_types::ActionAddress> {
         defaults::take_action_palette_request(self.children_mut())
     }
 

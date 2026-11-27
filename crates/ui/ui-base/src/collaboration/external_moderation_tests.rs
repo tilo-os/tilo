@@ -34,10 +34,10 @@ async fn external_moderation_bridge_preserves_exact_record_invocation_operation_
     let (first, mut first_receive) = admit_for_test(first_route.channel_id()).unwrap();
     let (_second, mut second_receive) = admit_for_test(second_route.channel_id()).unwrap();
     let operation = operation();
-    let address = tilo_actions::ActionAddress::new("registry", "submit-report");
+    let address = tilo_action_types::ActionAddress::new("registry", "submit-report");
     let target = OperationTarget::new(first_route, address.clone());
     let other = OperationTarget::new(second_route, address);
-    let invocation = tilo_actions::InvocationId::new();
+    let invocation = tilo_action_types::InvocationId::new();
     let future = target
         .external_moderation(invocation, operation.clone())
         .unwrap();
@@ -66,7 +66,7 @@ async fn external_moderation_bridge_preserves_exact_record_invocation_operation_
     };
     reply.send(Ok(case.clone()));
     assert_eq!(future.await.unwrap(), case);
-    let second_id = tilo_actions::InvocationId::new();
+    let second_id = tilo_action_types::InvocationId::new();
     let pending = other
         .external_moderation(second_id, operation.clone())
         .unwrap();
@@ -84,7 +84,7 @@ fn external_moderation_bridge_refuses_wrong_action_foreign_full_invalid_and_reti
     let route = RouteSpec::document("so.tilo.store", uuid::Uuid::new_v4(), "bounded");
     let (endpoint, mut receive) = admit_for_test(route.channel_id()).unwrap();
     assert!(admit_for_test(route.channel_id()).is_err());
-    let invocation = tilo_actions::InvocationId::new();
+    let invocation = tilo_action_types::InvocationId::new();
     let operation = operation();
     for action in [
         "registry.publisher_reply",
@@ -94,7 +94,7 @@ fn external_moderation_bridge_refuses_wrong_action_foreign_full_invalid_and_reti
     ] {
         let wrong = OperationTarget::new(
             route.clone(),
-            tilo_actions::ActionAddress::new("registry", action),
+            tilo_action_types::ActionAddress::new("registry", action),
         );
         assert!(
             wrong
@@ -111,7 +111,7 @@ fn external_moderation_bridge_refuses_wrong_action_foreign_full_invalid_and_reti
     assert!(
         enqueue(
             &route.channel_id(),
-            tilo_actions::InvocationId(uuid::Uuid::nil()),
+            tilo_action_types::InvocationId(uuid::Uuid::nil()),
             operation.clone()
         )
         .is_err()

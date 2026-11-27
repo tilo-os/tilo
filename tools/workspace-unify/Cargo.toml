@@ -1009,6 +1009,7 @@ doc = false
 "tilo-accounts" = { path = "../../crates/integrations/accounts", default-features = false, features = ["person"] }
 "tilo-action-policy" = { path = "../../crates/core/action-policy", default-features = false, features = [] }
 "tilo-action-services" = { path = "../../crates/core/action-services", default-features = false, features = [] }
+"tilo-action-types" = { path = "../../crates/platform/action-types", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["answer-reads", "asks", "document-read", "off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
 "tilo-agent-provider-config" = { path = "../../crates/integrations/provider-config", default-features = false, features = ["model"] }
@@ -2247,6 +2248,7 @@ doc = false
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-action-policy" = { path = "../../crates/core/action-policy", default-features = false, features = [] }
 "tilo-action-services" = { path = "../../crates/core/action-services", default-features = false, features = [] }
+"tilo-action-types" = { path = "../../crates/platform/action-types", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["answer-reads", "asks", "document-read", "off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
 "tilo-app-builder" = { path = "../../crates/lang/tilo-app-builder", default-features = false, features = [] }
@@ -3468,6 +3470,7 @@ doc = false
 "tilo-account-probe" = { path = "../../crates/integrations/account-probe", default-features = false, features = ["test-support"] }
 "tilo-accounts" = { path = "../../crates/integrations/accounts", default-features = false, features = ["person"] }
 "tilo-action-policy" = { path = "../../crates/core/action-policy", default-features = false, features = [] }
+"tilo-action-types" = { path = "../../crates/platform/action-types", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
 "tilo-agent-provider-config" = { path = "../../crates/integrations/provider-config", default-features = false, features = ["model"] }
@@ -4725,6 +4728,7 @@ doc = false
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
 "tilo-accounts" = { path = "../../crates/integrations/accounts", default-features = false, features = ["person"] }
 "tilo-action-policy" = { path = "../../crates/core/action-policy", default-features = false, features = [] }
+"tilo-action-types" = { path = "../../crates/platform/action-types", default-features = false, features = [] }
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
 "tilo-agent-provider-config" = { path = "../../crates/integrations/provider-config", default-features = false, features = ["model"] }

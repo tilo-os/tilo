@@ -186,7 +186,7 @@ impl Published {
     }
 
     /// What a control that runs the action `action` on the resource `resource` does, as the
-    /// address the API runs it by ([`tilo_actions::ActionAddress::naming`]).
+    /// address the API runs it by ([`tilo_actions::ResourceSpec::address_of`]).
     ///
     /// `resource` is the resource the control's event runs the action on, which is the record the
     /// control shows — a row's task, a window's notebook. Where this window publishes no such
@@ -198,7 +198,7 @@ impl Published {
             spec.actions
                 .iter()
                 .find(|offered| offered.id == action)
-                .map(|offered| tilo_actions::ActionAddress::naming(spec, offered))
+                .map(|offered| spec.address_of(offered))
         };
         if let Some(named) = self.holding(resource).and_then(offers) {
             return named.encode();

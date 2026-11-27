@@ -16,13 +16,13 @@ use super::capability::{capability, capability_mut};
 /// selection), published under that presence's identity.
 pub trait Presences {
     /// Start a view for `presence`; `true` when it is new.
-    fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool;
+    fn join_presence(&mut self, presence: &tilo_action_types::PresenceId) -> bool;
 
     /// Drop the presence's view (its run ended). Idempotent.
-    fn leave_presence(&mut self, presence: &tilo_actions::PresenceId);
+    fn leave_presence(&mut self, presence: &tilo_action_types::PresenceId);
 
     /// Name shown beside the presence's caret.
-    fn set_presence_label(&mut self, _presence: &tilo_actions::PresenceId, _label: &str) {}
+    fn set_presence_label(&mut self, _presence: &tilo_action_types::PresenceId, _label: &str) {}
 
     /// Current presence of every presence this widget holds a view for,
     /// derived from that presence's own view exactly as the local window
@@ -57,7 +57,7 @@ pub fn collaboration_children(widget: &mut dyn Widget) -> Vec<&mut (dyn Widget +
 }
 
 /// Start `presence`'s view in every widget under `widget` that keeps one.
-pub fn join_presence(widget: &mut dyn Widget, presence: &tilo_actions::PresenceId) -> bool {
+pub fn join_presence(widget: &mut dyn Widget, presence: &tilo_action_types::PresenceId) -> bool {
     if let Some(presences) = capability_mut::<dyn Presences>(&mut *widget) {
         return presences.join_presence(presence);
     }
@@ -67,7 +67,7 @@ pub fn join_presence(widget: &mut dyn Widget, presence: &tilo_actions::PresenceI
 /// [`join_presence`] for `widget`'s collaboration children only.
 pub fn join_presence_in_children(
     widget: &mut dyn Widget,
-    presence: &tilo_actions::PresenceId,
+    presence: &tilo_action_types::PresenceId,
 ) -> bool {
     let mut joined = false;
     for child in collaboration_children(widget) {
@@ -77,7 +77,7 @@ pub fn join_presence_in_children(
 }
 
 /// Drop `presence`'s view everywhere under `widget`.
-pub fn leave_presence(widget: &mut dyn Widget, presence: &tilo_actions::PresenceId) {
+pub fn leave_presence(widget: &mut dyn Widget, presence: &tilo_action_types::PresenceId) {
     if let Some(presences) = capability_mut::<dyn Presences>(&mut *widget) {
         presences.leave_presence(presence);
         return;
@@ -86,7 +86,10 @@ pub fn leave_presence(widget: &mut dyn Widget, presence: &tilo_actions::Presence
 }
 
 /// [`leave_presence`] for `widget`'s collaboration children only.
-pub fn leave_presence_in_children(widget: &mut dyn Widget, presence: &tilo_actions::PresenceId) {
+pub fn leave_presence_in_children(
+    widget: &mut dyn Widget,
+    presence: &tilo_action_types::PresenceId,
+) {
     for child in collaboration_children(widget) {
         leave_presence(child, presence);
     }
@@ -95,7 +98,7 @@ pub fn leave_presence_in_children(widget: &mut dyn Widget, presence: &tilo_actio
 /// Label `presence`'s caret everywhere under `widget`.
 pub fn set_presence_label(
     widget: &mut dyn Widget,
-    presence: &tilo_actions::PresenceId,
+    presence: &tilo_action_types::PresenceId,
     label: &str,
 ) {
     if let Some(presences) = capability_mut::<dyn Presences>(&mut *widget) {
@@ -108,7 +111,7 @@ pub fn set_presence_label(
 /// [`set_presence_label`] for `widget`'s collaboration children only.
 pub fn set_presence_label_in_children(
     widget: &mut dyn Widget,
-    presence: &tilo_actions::PresenceId,
+    presence: &tilo_action_types::PresenceId,
     label: &str,
 ) {
     for child in collaboration_children(widget) {
