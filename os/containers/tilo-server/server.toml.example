@@ -32,3 +32,13 @@ web_tls = "dev"
 # [[kept]]
 # id = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b"
 # name = "Lounge"
+
+# The key Apple gave whoever publishes the iOS app, for its push service: what tells a
+# person's closed app that something waits for them. Without it a closed app is told
+# nothing. The key file is readable by the server's user alone.
+#
+# [apple_push]
+# key_file = "/var/lib/tilo/apple-push.p8"
+# key_id = "ABC123DEFG"
+# team_id = "TEAM123456"
+# topics = ["so.tilo.phone"]

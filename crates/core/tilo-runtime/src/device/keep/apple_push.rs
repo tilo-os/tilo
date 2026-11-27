@@ -25,7 +25,7 @@
 //! one nothing is sent, and the server says so once.
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,6 +42,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_person_services::person_telling::Told;
 
 use tilo_person_services::push_addresses::{PushAddress, PushEnvironment, PushKind};
+use tilo_server_protocol::config::ApplePushKey;
 use tilo_workspace_service::workspaces::Workspaces;
 
 /// What this sender is called where a telling is written down on the thing
@@ -76,20 +77,6 @@ const MAX_NAME_BYTES: usize = 120;
 const MAX_ANSWER: usize = 4_096;
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const ANSWER_WAIT: Duration = Duration::from_secs(15);
-
-/// What a server is told at its start about Apple's push service.
-#[derive(Clone, Debug)]
-pub struct ApplePushSetup {
-    /// The file the key is in, as Apple hands it out (a `.p8` file). Its
-    /// owner alone may read it.
-    pub key_file: PathBuf,
-    /// The key's id, as Apple's developer account lists it.
-    pub key_id: String,
-    /// The id of the team the key and the apps belong to.
-    pub team_id: String,
-    /// The apps a push is sent for, by their identifiers.
-    pub topics: Vec<String>,
-}
 
 /// One end of Apple's push service.
 #[derive(Clone)]
@@ -334,7 +321,7 @@ impl ApplePush {
     /// was named, and none where the key that was named cannot be used:
     /// the server's log says which, once.
     #[must_use]
-    pub fn open(setup: Option<&ApplePushSetup>, workspaces: Workspaces) -> Option<Self> {
+    pub fn open(setup: Option<&ApplePushKey>, workspaces: Workspaces) -> Option<Self> {
         let Some(setup) = setup else {
             tracing::info!(
                 "no key for Apple's push service was named at the start: an app that is closed is told nothing"
@@ -361,7 +348,7 @@ impl ApplePush {
 
     /// The sender `setup` describes, pushing to `service`.
     fn with(
-        setup: &ApplePushSetup,
+        setup: &ApplePushKey,
         workspaces: Workspaces,
         service: Service,
     ) -> Result<Self, String> {

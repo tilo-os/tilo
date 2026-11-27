@@ -134,6 +134,27 @@ pub struct ServerConfig {
     /// uses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<String>,
+
+    /// The key this server signs in to Apple's push service with, and the apps it pushes for:
+    /// what tells a person's closed apps on Apple's systems that something waits for them.
+    /// `None` tells a closed app nothing, and the server says so once at its start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apple_push: Option<ApplePushKey>,
+}
+
+/// The key Apple gave whoever publishes the app, for its push service.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplePushKey {
+    /// The file the key is in, as Apple hands it out (a `.p8` file). Its owner alone may read
+    /// it: the server reads it and never writes, prints or logs it.
+    pub key_file: PathBuf,
+    /// The key's id, as Apple's developer account lists it.
+    pub key_id: String,
+    /// The id of the team the key and the apps belong to.
+    pub team_id: String,
+    /// The apps a push is sent for, by their bundle identifiers.
+    pub topics: Vec<String>,
 }
 
 /// A workspace a server founds and keeps of its own: the founder's inputs, which
@@ -225,6 +246,7 @@ impl Default for ServerConfig {
             web_tls: WebTls::default(),
             max_workspace_grants: None,
             relay: None,
+            apple_push: None,
         }
     }
 }

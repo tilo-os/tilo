@@ -251,7 +251,7 @@ impl Device {
 
 /// A key as Apple hands one out, made up now, in a file under `folder`
 /// that its owner alone reads; and its public half.
-fn made_up_key(folder: &Path) -> (ApplePushSetup, Vec<u8>) {
+fn made_up_key(folder: &Path) -> (ApplePushKey, Vec<u8>) {
     use ring::signature::KeyPair as _;
     use std::os::unix::fs::PermissionsExt as _;
     let algorithm = &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING;
@@ -272,7 +272,7 @@ fn made_up_key(folder: &Path) -> (ApplePushSetup, Vec<u8>) {
     let key_file = folder.join("AuthKey_MADEUP0001.p8");
     std::fs::write(&key_file, pem).unwrap();
     std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let setup = ApplePushSetup {
+    let setup = ApplePushKey {
         key_file,
         key_id: "MADEUP0001".to_owned(),
         team_id: "MADEUPTEAM".to_owned(),
@@ -284,7 +284,7 @@ fn made_up_key(folder: &Path) -> (ApplePushSetup, Vec<u8>) {
 /// The sender `setup` describes, pushing to the stand-in and trusting the
 /// certificate it made.
 fn for_stand_in(
-    setup: &ApplePushSetup,
+    setup: &ApplePushKey,
     workspaces: Workspaces,
     apple: &StandIn,
 ) -> Result<ApplePush, String> {
@@ -667,7 +667,7 @@ async fn the_sender_is_off_without_a_key_and_takes_no_key_others_can_read() {
 
     let folder = tempfile::tempdir().unwrap();
     let (setup, _) = made_up_key(folder.path());
-    let opened = |setup: &ApplePushSetup| for_stand_in(setup, workspaces.clone(), &served.apple);
+    let opened = |setup: &ApplePushKey| for_stand_in(setup, workspaces.clone(), &served.apple);
     assert!(opened(&setup).is_ok());
 
     // A key others can read is not taken. What the server says of it names
@@ -686,12 +686,12 @@ async fn the_sender_is_off_without_a_key_and_takes_no_key_others_can_read() {
     assert!(opened(&setup).is_ok());
 
     // An id that is none, and no app to push for.
-    let no_id = ApplePushSetup {
+    let no_id = ApplePushKey {
         key_id: " ".to_owned(),
         ..setup.clone()
     };
     assert!(opened(&no_id).is_err());
-    let no_app = ApplePushSetup {
+    let no_app = ApplePushKey {
         topics: Vec::new(),
         ..setup.clone()
     };

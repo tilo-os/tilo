@@ -17,7 +17,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use collab_types::WorkspaceId;
-use tilo_server_protocol::config::WebTls;
+use tilo_server_protocol::config::{ApplePushKey, WebTls};
 use tilo_server_protocol::metrics::WorkspaceEgress;
 use tilo_server_protocol::{
     MetricsSnapshot, ServerConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
@@ -204,6 +204,12 @@ tilo_test_env::scenario! {
             web_tls: WebTls::Dev,
             max_workspace_grants: None,
             relay: None,
+            apple_push: Some(ApplePushKey {
+                key_file: PathBuf::from("/var/lib/tilo/apple-push.p8"),
+                key_id: "ABC123DEFG".to_owned(),
+                team_id: "TEAM123456".to_owned(),
+                topics: vec!["so.tilo.phone".to_owned()],
+            }),
         };
         let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-server"
@@ -235,6 +241,12 @@ inbound_server = true
 remote_control_server = true
 app_serving = false
 compute = false
+
+[apple_push]
+key_file = "/var/lib/tilo/apple-push.p8"
+key_id = "ABC123DEFG"
+team_id = "TEAM123456"
+topics = ["so.tilo.phone"]
 "#;
         assert_eq!(toml::to_string_pretty(&config).unwrap(), encoded);
         assert_eq!(toml::from_str::<ServerConfig>(encoded).unwrap(), config);

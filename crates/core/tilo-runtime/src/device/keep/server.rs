@@ -198,11 +198,10 @@ pub(crate) struct WebContext {
     /// Where pages reach this host over WebTransport, once it serves browsers: what
     /// [`Server::web_link`] answers, and what a test that stands in for a page dials.
     pub(crate) link: Arc<std::sync::OnceLock<tilo_server_protocol::web::WebLink>>,
-    /// What this server was told at its start about Apple's push service,
-    /// once named.
+    /// The key for Apple's push service its configuration names, which its people's closed
+    /// apps are told through.
     #[cfg(feature = "agents")]
-    pub(crate) closed_apps:
-        Arc<std::sync::OnceLock<crate::device::keep::apple_push::ApplePushSetup>>,
+    pub(crate) closed_apps: Option<tilo_server_protocol::config::ApplePushKey>,
 }
 
 impl Server {
@@ -215,17 +214,6 @@ impl Server {
     #[must_use]
     pub fn web_link(&self) -> Option<tilo_server_protocol::web::WebLink> {
         self.web.link.get().cloned()
-    }
-
-    /// Name the key this server signs in to Apple's push service with and
-    /// the apps it pushes for: what its people's closed apps are told
-    /// through. Named once, before browsers are served; a later call keeps
-    /// the first.
-    #[cfg(feature = "agents")]
-    pub fn set_apple_push(&self, setup: crate::device::keep::apple_push::ApplePushSetup) {
-        if self.web.closed_apps.set(setup).is_err() {
-            tracing::warn!("the key for Apple's push service was named twice: the first is kept");
-        }
     }
 }
 
@@ -573,7 +561,7 @@ impl Server {
             server: handler.clone(),
             link: Arc::default(),
             #[cfg(feature = "agents")]
-            closed_apps: Arc::default(),
+            closed_apps: cfg.apple_push.clone(),
         });
         let protocols: Protocols = Vec::new();
         let protocols = {
