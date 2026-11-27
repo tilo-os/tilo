@@ -2780,7 +2780,7 @@ impl TextInput {
             tr.draw_style(
                 scene,
                 &placeholder,
-                theme.tokens.colors.text_tertiary,
+                theme.tokens.colors.secondary_ink(),
                 text_transform,
                 Some(available_width),
                 &self.placeholder_style(size),
@@ -3057,7 +3057,7 @@ impl TextInput {
             tr.draw_style(
                 scene,
                 &placeholder,
-                theme.tokens.colors.text_tertiary,
+                theme.tokens.colors.secondary_ink(),
                 origin,
                 Some(avail_w as f32),
                 &self.placeholder_style(size),
@@ -4672,6 +4672,10 @@ fn paint_field_chrome(
                 tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
             ),
         ))
+    } else if state.focused && !disabled && !theme.colors_are_forced() {
+        // The field the keyboard is in wears the focus ring every focused control wears, so a
+        // person who tabs into a form sees where they are, not only a caret in an empty field.
+        Some((super::button::FOCUS_RING_WIDTH, colors.border_focus))
     } else if theme.colors_are_forced() && !bordered {
         // Accessibility deliberately collapses surface levels. Keep the
         // declared contrast edge instead of deriving a decorative hairline;
@@ -4785,7 +4789,7 @@ impl<'a> FieldFace<'a> {
     ) {
         self.paint_chrome(scene, transform, theme);
         let (shown, ink) = if self.text.is_empty() {
-            (self.placeholder, theme.tokens.colors.text_tertiary)
+            (self.placeholder, theme.tokens.colors.secondary_ink())
         } else if self.state.disabled {
             (self.text, theme.text_dim)
         } else {

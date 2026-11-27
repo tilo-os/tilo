@@ -151,6 +151,8 @@ pub struct Text {
     engine_revision: u64,
     color: Option<vello::peniko::Color>,
     dimmed: bool,
+    /// Read second, in the theme's secondary ink: a count, a placeholder, a line of detail.
+    secondary: bool,
     tone: Option<tilo_ui_base::widget::Tone>,
     access: TextAccess,
     /// Whether assistive technology may move focus to these words: what a
@@ -213,6 +215,7 @@ impl Text {
             engine_revision: 0,
             color: None,
             dimmed: false,
+            secondary: false,
             tone: None,
             access: TextAccess::Text,
             focusable: false,
@@ -788,6 +791,7 @@ impl Text {
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.color = Some(color);
         self.dimmed = false;
+        self.secondary = false;
         self
     }
 
@@ -795,6 +799,19 @@ impl Text {
     pub fn dimmed(mut self) -> Self {
         self.color = None;
         self.dimmed = true;
+        self.secondary = false;
+        self.dirty = true;
+        self
+    }
+
+    /// Read second: the theme's secondary ink, which clears body-text contrast on the grounds
+    /// a quiet label stands on.
+    #[must_use]
+    pub fn secondary(mut self) -> Self {
+        self.color = None;
+        self.dimmed = false;
+        self.tone = None;
+        self.secondary = true;
         self.dirty = true;
         self
     }
@@ -828,6 +845,7 @@ impl Text {
     pub fn tone(mut self, tone: tilo_ui_base::widget::Tone) -> Self {
         self.color = None;
         self.dimmed = false;
+        self.secondary = false;
         self.tone = Some(tone);
         self.dirty = true;
         self
@@ -1064,6 +1082,8 @@ impl Widget for Text {
                     tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST
                 };
                 colors.ink_on_any(&[colors.surfaces.content], tone.colour(theme), floor)
+            } else if self.secondary {
+                colors.secondary_ink()
             } else if self.dimmed {
                 theme.text_dim
             } else {

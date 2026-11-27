@@ -19,6 +19,7 @@ use tilo_ui_base::component::Event;
 use tilo_ui_base::component::Value;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::tokens::Spacing;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::Decorator;
 use tilo_ui_base::widget::Widget;
@@ -29,6 +30,7 @@ use super::Container;
 use super::ControlSize;
 use super::MenuButton;
 use super::MenuItem;
+use super::PanelAlign;
 use super::Row;
 use super::Text;
 use super::TextInput;
@@ -45,6 +47,10 @@ fn tr(key: &str) -> String {
 /// The width a find field reads well at in a bar beside what it found and what steps it: wider
 /// than a query usually is, narrow enough to leave the controls their room.
 const FIELD_WIDTH: f32 = 240.0;
+
+/// The bar's inset from the window's edges, and the gap between its controls: the shared
+/// spacing scale's gutter and rhythm, as every band of chrome takes them.
+const INSET: f32 = Spacing::BASE.s3;
 
 /// The window's find controls: the bar's field, the match it stands on of how many, the find's
 /// options, the replacement where the content allows one, and the steps from this view out to
@@ -88,7 +94,8 @@ pub struct FindControlsProps {
     pub window: Option<String>,
     /// The app's name, for the step that searches all of it ("Search Notes").
     pub app: Option<String>,
-    /// It opened to replace: the replacement takes the keyboard, as Ctrl+H asks.
+    /// It opened to replace: the replacement and the buttons that take it show, and the
+    /// replacement holds the keyboard when a query is already typed, as Ctrl+H asks.
     pub replacing: bool,
     /// The query changed as the person typed: what the app's find runs now.
     #[component(event(value = String))]
@@ -104,6 +111,10 @@ pub struct FindControlsProps {
     /// set the mode.
     #[component(event(value = String))]
     pub option: Event,
+    /// The person asked to replace as well as find: open the replacement, as the bar's own
+    /// Ctrl+H does.
+    #[component(event)]
+    pub replace_open: Event,
     /// The person replaced this match with the text carried.
     #[component(event(value = String))]
     pub replace: Event,
@@ -131,12 +142,14 @@ struct Slots {
     previous: Option<usize>,
     next: Option<usize>,
     options: usize,
+    /// The control that opens the replacement where the content offers it.
+    replace_open: Option<usize>,
+    /// The replacement field and the two buttons that take it, shown while replacing.
     replacement: Option<usize>,
     replace: Option<usize>,
     replace_all: Option<usize>,
-    window: Option<usize>,
-    app: Option<usize>,
-    everywhere: usize,
+    /// The menu of the steps out of this view.
+    widen: Option<usize>,
     close: usize,
 }
 
@@ -225,6 +238,21 @@ impl FindControls {
         items
     }
 
+    /// The steps out of this view, as one menu: what the window shows, everything its app
+    /// holds, and everything.
+    fn widen_items(props: &FindControlsProps) -> Vec<MenuItem> {
+        let widen = |reach: &str, label: String| {
+            let fired = props.widen.clone();
+            let reach = reach.to_owned();
+            MenuItem::action(label, move || fired.fire(Some(Value::Text(reach.clone()))))
+        };
+        vec![
+            widen("window", Self::window_label(props.window.as_deref())),
+            widen("app", Self::app_label(props.app.as_deref())),
+            widen("everywhere", tr("window-search-everywhere")),
+        ]
+    }
+
     fn app_label(app: Option<&str>) -> String {
         match app.filter(|app| !app.trim().is_empty()) {
             Some(app) => tilo_ui_base::i18n::widget_format(
@@ -288,14 +316,32 @@ impl FindControls {
     }
 
     /// Whether the row built stands for what `props` asks of it: the stepper for a document,
-    /// the replacement field for a content that can replace, the app's step unless the app's
-    /// own query does the searching.
+    /// the replacement for a content that can replace and was opened to, the app's step unless
+    /// the app's own query does the searching.
     fn fits(&self, props: &FindControlsProps) -> bool {
         let in_place = Self::target_of(props);
         (in_place == InPlace::Document) == self.slots.previous.is_some()
-            && props.replaces == self.slots.replacement.is_some()
-            && (in_place != InPlace::Query) == self.slots.app.is_some()
-            && (in_place != InPlace::Query) == self.slots.window.is_some()
+            && (props.replaces && props.replacing) == self.slots.replacement.is_some()
+            && (props.replaces && !props.replacing) == self.slots.replace_open.is_some()
+            && (in_place != InPlace::Query) == self.slots.widen.is_some()
+    }
+
+    /// The stepper and the replacement move only where the find found something to move to.
+    fn show_what_can_run(&mut self, props: &FindControlsProps) {
+        let found = Self::count_of(props).is_none_or(|count| count.total > 0);
+        for slot in [
+            self.slots.previous,
+            self.slots.next,
+            self.slots.replace,
+            self.slots.replace_all,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(button) = self.child_mut::<Button>(slot) {
+                button.set_enabled(found);
+            }
+        }
     }
 
     /// Build the row for `props`, wiring every control's event.
@@ -314,18 +360,22 @@ impl FindControls {
         self.replacement.replace(String::new());
 
         let key = self.key.clone();
-        let mut row = Row::new().no_wrap().with_rhythm(Rhythm::Tight);
+        // The row keeps its own inset and rhythm: the band stands clear of the window's edges,
+        // and no control runs into its neighbour.
+        let mut row = Row::new()
+            .no_wrap()
+            .with_rhythm(Rhythm::Tight)
+            .with_padding(INSET, 0.0);
         let mut slots = Slots {
             query: 0,
             previous: None,
             next: None,
             options: 0,
+            replace_open: None,
             replacement: None,
             replace: None,
             replace_all: None,
-            window: None,
-            app: None,
-            everywhere: 0,
+            widen: None,
             close: 0,
         };
         let mut field = TextInput::from_state(&props.query.state).with_id(&format!("{key}.query"));
@@ -357,7 +407,7 @@ impl FindControls {
             move || count.borrow().clone()
         })
         .with_role(TextRole::Caption)
-        .dimmed()
+        .secondary()
         .with_id(format!("{key}.count"));
         row = row.push(Box::new(count_label));
         if in_place == InPlace::Document {
@@ -395,9 +445,10 @@ impl FindControls {
             )
             .control_size(ControlSize::Small)
             .role(ButtonRole::Plain)
-            .with_menu(Self::options_items(abilities, options, &props.option)),
+            .with_menu(Self::options_items(abilities, options, &props.option))
+            .aligned(PanelAlign::Trailing),
         ));
-        if props.replaces {
+        if props.replaces && props.replacing {
             let mut replacement = TextInput::local()
                 .with_id(&format!("{key}.replacement"))
                 .with_placeholder(tr("find-bar-replace-placeholder"));
@@ -418,7 +469,6 @@ impl FindControls {
             row = row.push(Box::new(
                 Button::new(&format!("{key}.replace"), &tr("find-bar-replace"))
                     .control_size(ControlSize::Small)
-                    .role(ButtonRole::Plain)
                     .on_open(move || fired.fire(Some(Value::Text(text.borrow().clone())))),
             ));
             let fired = props.replace_all.clone();
@@ -427,45 +477,36 @@ impl FindControls {
             row = row.push(Box::new(
                 Button::new(&format!("{key}.replace-all"), &tr("find-bar-replace-all"))
                     .control_size(ControlSize::Small)
-                    .role(ButtonRole::Plain)
                     .on_open(move || fired.fire(Some(Value::Text(text.borrow().clone())))),
+            ));
+        } else if props.replaces {
+            let fired = props.replace_open.clone();
+            slots.replace_open = Some(row.children().len());
+            row = row.push(Box::new(
+                Button::icon_only(
+                    &format!("{key}.replace-open"),
+                    Icon::Pencil,
+                    &tr("window-search-replace"),
+                )
+                .control_size(ControlSize::Small)
+                .role(ButtonRole::Plain)
+                .on_open(move || fired.fire(None)),
             ));
         }
         if in_place != InPlace::Query {
-            slots.window = Some(row.children().len());
-            let fired = props.widen.clone();
+            slots.widen = Some(row.children().len());
             row = row.push(Box::new(
-                Button::new(
-                    &format!("{key}.window"),
-                    &Self::window_label(props.window.as_deref()),
+                Button::icon_only(
+                    &format!("{key}.widen"),
+                    Icon::Globe,
+                    &tr("window-search-more"),
                 )
                 .control_size(ControlSize::Small)
                 .role(ButtonRole::Plain)
-                .on_open(move || fired.fire(Some(Value::Text("window".to_owned())))),
-            ));
-            slots.app = Some(row.children().len());
-            let fired = props.widen.clone();
-            row = row.push(Box::new(
-                Button::new(
-                    &format!("{key}.app"),
-                    &Self::app_label(props.app.as_deref()),
-                )
-                .control_size(ControlSize::Small)
-                .role(ButtonRole::Plain)
-                .on_open(move || fired.fire(Some(Value::Text("app".to_owned())))),
+                .with_menu(Self::widen_items(props))
+                .aligned(PanelAlign::Trailing),
             ));
         }
-        slots.everywhere = row.children().len();
-        let fired = props.widen.clone();
-        row = row.push(Box::new(
-            Button::new(
-                &format!("{key}.everywhere"),
-                &tr("window-search-everywhere"),
-            )
-            .control_size(ControlSize::Small)
-            .role(ButtonRole::Plain)
-            .on_open(move || fired.fire(Some(Value::Text("everywhere".to_owned())))),
-        ));
         slots.close = row.children().len();
         let fired = props.close.clone();
         row = row.push(Box::new(
@@ -476,8 +517,10 @@ impl FindControls {
         ));
         self.slots = slots;
         self.row = row;
-        // Opened to replace, the replacement takes the keyboard; otherwise the query does.
-        let focused = if props.replacing {
+        self.show_what_can_run(props);
+        // Opened to replace with a query already found, the replacement takes the keyboard;
+        // otherwise the query does, so a person opening replace first types what to look for.
+        let focused = if props.replacing && !props.query.state.get().is_empty() {
             self.slots.replacement
         } else {
             Some(self.slots.query)
@@ -530,12 +573,11 @@ impl Described for FindControls {
                 previous: None,
                 next: None,
                 options: 0,
+                replace_open: None,
                 replacement: None,
                 replace: None,
                 replace_all: None,
-                window: None,
-                app: None,
-                everywhere: 0,
+                widen: None,
                 close: 0,
             },
             key: key.to_owned(),
@@ -573,17 +615,12 @@ impl Described for FindControls {
         if let Some(menu) = self.child_mut::<MenuButton>(self.slots.options) {
             menu.set_items(Self::options_items(abilities, options, &props.option));
         }
-        let found = count.is_none_or(|count| count.total > 0);
-        if let Some(previous) = self.slots.previous
-            && let Some(button) = self.child_mut::<Button>(previous)
+        if let Some(index) = self.slots.widen
+            && let Some(menu) = self.child_mut::<MenuButton>(index)
         {
-            button.set_enabled(found);
+            menu.set_items(Self::widen_items(&props));
         }
-        if let Some(next) = self.slots.next
-            && let Some(button) = self.child_mut::<Button>(next)
-        {
-            button.set_enabled(found);
-        }
+        self.show_what_can_run(&props);
         true
     }
 }

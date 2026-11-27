@@ -1054,6 +1054,22 @@ impl Colors {
         self.on_surface_at(surface, BODY_MIN_CONTRAST)
     }
 
+    /// The ink secondary text reads in — a count, a placeholder, a line of detail beside what
+    /// it describes: the theme's dim tier, stepped out until it clears body-text contrast on
+    /// the grounds a quiet label may stand on, a field's raised fill, a band's content and the
+    /// window's own level. A theme whose dim ink already reads there keeps it.
+    pub fn secondary_ink(&self) -> Color {
+        let mut ink = self.text_dim;
+        for ground in [
+            self.surfaces.raised,
+            self.surfaces.content,
+            self.surfaces.base,
+        ] {
+            ink = Self::step_out_until_legible(ink, ground, BODY_MIN_CONTRAST);
+        }
+        ink
+    }
+
     /// [`Self::on_surface`] against a caller-chosen floor.
     pub fn on_surface_at(&self, surface: Color, min_ratio: f64) -> OnSurface {
         use crate::a11y::contrast_ratio;
@@ -1328,6 +1344,28 @@ mod tests {
             ("raised", c.surfaces.raised),
             ("overlay", c.surfaces.overlay),
         ]
+    }
+
+    /// The secondary ink a quiet label reads in clears body-text contrast on every ground it
+    /// stands on: a field's raised fill, a band's content and the window's own level.
+    #[test]
+    fn the_secondary_ink_reads_on_every_ground_it_stands_on() {
+        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let colors = &theme.tokens.colors;
+            let ink = colors.secondary_ink();
+            for ground in [
+                colors.surfaces.raised,
+                colors.surfaces.content,
+                colors.surfaces.base,
+            ] {
+                let ratio = contrast_ratio(ink, ground);
+                assert!(
+                    ratio >= 4.5,
+                    "{}: secondary ink reads {ratio:.2}:1 on {ground:?}",
+                    theme.name
+                );
+            }
+        }
     }
 
     /// CIE L* (0..=100) — perceptual lightness, so veneer strength can be compared across

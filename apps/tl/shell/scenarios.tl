@@ -4528,7 +4528,7 @@ scenario "a window found nothing" {
     )
 }
 
-/// A window replacing: the note in front with its find opened to replace, the first of three
+/// A window replacing: the note in front with its find opened to replace, the second of five
 /// matches current, and the replacement field holding the keyboard.
 scenario "a window replacing" {
     let d = root Layout
@@ -4578,8 +4578,8 @@ scenario "a window replacing" {
                     find: .some(
                         device.Find(
                             acts_on: "document",
-                            current: 1,
-                            total: 3,
+                            current: 2,
+                            total: 5,
                             replaces: true,
                             regex: true,
                             hex: false,

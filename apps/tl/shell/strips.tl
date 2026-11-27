@@ -914,6 +914,8 @@ view bar_search(w: device.Window) {
             on submit(text): find_submit(w, text: text)
             on step(forward): session.bar_search_step(tab: w.key, forward: forward)
             on option(chosen): session.bar_search_option(tab: w.key, option: chosen)
+            // The replacement opens where the content allows one, as the bar's own Ctrl+H asks.
+            on replace_open: session.bar_find(tab: w.key, replace: true)
             on replace(text): session.bar_search_replace(tab: w.key, with: text, all: false)
             on replace_all(text): session.bar_search_replace(tab: w.key, with: text, all: true)
             on widen(reach): find_widen(w, reach: reach, text: query)

@@ -23,6 +23,7 @@ fn controls(width: u32, set: impl FnOnce(&mut FindControlsProps)) -> (Driver, In
     props.submit = Event::View(Intent::new(&queue, "find", "submit"));
     props.step = Event::View(Intent::new(&queue, "find", "step"));
     props.option = Event::View(Intent::new(&queue, "find", "option"));
+    props.replace_open = Event::View(Intent::new(&queue, "find", "replace_open"));
     props.replace = Event::View(Intent::new(&queue, "find", "replace"));
     props.replace_all = Event::View(Intent::new(&queue, "find", "replace_all"));
     props.widen = Event::View(Intent::new(&queue, "find", "widen"));
@@ -158,21 +159,132 @@ fn the_options_offer_what_the_content_allows() {
     );
 }
 
+/// The menu row `named`, activated as a screen reader activates it.
+fn choose(harness: &mut Driver, named: &str) {
+    let id = harness
+        .a11y_node_named(named)
+        .unwrap_or_else(|| panic!("the menu offers {named:?}"));
+    harness
+        .perform_a11y_action(id, &tilo_ui_base::a11y::Action::Activate)
+        .unwrap_or_else(|why| panic!("{named:?} is activated: {why}"));
+    harness.relayout();
+}
+
 /// The widening steps hand the query to the app's own search and then to everything, and the
-/// app is named on the first.
+/// app is named on the first: one menu of the steps out of this view.
 #[test]
 fn widening_steps_out_from_the_view() {
-    let (mut harness, queue) = controls(900, |_| {});
+    for (row, reach) in [
+        ("Search Release planning", "window"),
+        ("Search Notes", "app"),
+        ("Search everywhere", "everywhere"),
+    ] {
+        let (mut harness, queue) = controls(900, |_| {});
+        harness.click_named("find.widen").expect("the steps out");
+        harness.relayout();
+        choose(&mut harness, row);
+        assert_eq!(
+            queue.take(),
+            [fired("find", "widen", Some(text(reach)))],
+            "choosing {row:?} widens the search to {reach}"
+        );
+    }
+}
+
+/// The replacement stands only once the find is opened to replace; until then the bar offers
+/// the way to open it.
+#[test]
+fn replace_shows_only_once_opened() {
+    let (mut harness, queue) = controls(1100, |props| props.replaces = true);
+    for part in ["Replace with", "Replace", "Replace all"] {
+        assert!(
+            harness.a11y_node_named(part).is_none(),
+            "a find opened to find alone shows no {part:?}"
+        );
+    }
     harness
-        .click_named("find.window")
-        .expect("what the window shows");
-    assert_eq!(queue.take(), [fired("find", "widen", Some(text("window")))]);
-    harness.click_named("find.app").expect("the app");
-    assert_eq!(queue.take(), [fired("find", "widen", Some(text("app")))]);
-    harness.click_named("find.everywhere").expect("everywhere");
+        .click_named("find.replace-open")
+        .expect("the way to replace");
+    assert_eq!(queue.take(), [fired("find", "replace_open", None)]);
+    let (harness, _) = controls(1100, |props| {
+        props.replaces = true;
+        props.replacing = true;
+    });
+    for part in ["Replace with", "Replace", "Replace all"] {
+        assert!(
+            harness.a11y_node_named(part).is_some(),
+            "opened to replace, the find shows {part:?}"
+        );
+    }
+}
+
+/// The field the find opened for holds the keyboard, so a person types into the query or, opened
+/// to replace, into the replacement without reaching for the pointer.
+#[test]
+fn the_open_field_holds_the_keyboard() {
+    let focused = |harness: &Driver| {
+        harness
+            .focused_access_node()
+            .and_then(|node| node.name.clone())
+    };
+    let (harness, _) = controls(1100, |props| {
+        props.replaces = true;
+        props.placeholder = Some("Search this window".to_owned());
+    });
+    assert_eq!(
+        focused(&harness).as_deref(),
+        Some("Search this window"),
+        "a find opened to find holds the query"
+    );
+    let (harness, _) = controls(1100, |props| {
+        props.replaces = true;
+        props.replacing = true;
+    });
+    assert_eq!(
+        focused(&harness).as_deref(),
+        Some("Replace with"),
+        "opened to replace, the replacement holds it"
+    );
+    let (harness, _) = controls(1100, |props| {
+        props.replaces = true;
+        props.replacing = true;
+        props.placeholder = Some("Search this window".to_owned());
+        props.query.state.set(String::new());
+    });
+    assert_eq!(
+        focused(&harness).as_deref(),
+        Some("Search this window"),
+        "opened to replace with nothing found yet, the query holds it so the person says what to find"
+    );
+}
+
+/// With nothing to step to, the stepper and the replacement do not run; with matches, both do.
+#[test]
+fn nothing_to_step_to_disables_the_stepper() {
+    let (mut harness, queue) = controls(900, |props| {
+        props.replaces = true;
+        props.replacing = true;
+        props.current = Some(0);
+        props.total = Some(0);
+    });
+    // The control stands where it always does, and pressing it runs nothing.
+    harness
+        .click_named("find.next")
+        .expect("the stepper stands");
+    harness
+        .click_named("find.replace")
+        .expect("the replacement stands");
+    assert!(queue.take().is_empty(), "no act reaches the app");
+    let (mut harness, queue) = controls(900, |props| {
+        props.replaces = true;
+        props.replacing = true;
+    });
+    harness
+        .click_named("find.next")
+        .expect("a match to step to");
     assert_eq!(
         queue.take(),
-        [fired("find", "widen", Some(text("everywhere")))]
+        [fired("find", "step", Some(Value::Bool(true)))]
     );
 }
 
