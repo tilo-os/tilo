@@ -613,7 +613,7 @@ async fn flow_five_model_providers_each_answer_a_turn() {
         .await
         .unwrap_or_else(|error| panic!("the OpenAI sign-in begins: {error:?}"));
     let code = started["code"].as_str().unwrap_or_default().to_owned();
-    let sign_in = started["sign_in"].as_str().unwrap_or_default().to_owned();
+    let sign_in = started["signIn"].as_str().unwrap_or_default().to_owned();
     assert!(fake.approve(&code), "the fake accepted the code {code}");
     let waited = tokio::time::timeout(
         std::time::Duration::from_secs(60),
