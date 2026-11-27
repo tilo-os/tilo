@@ -39,6 +39,9 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
                 "if sys.argv[1:2] == ['metadata']:\n"
                 "    example = 'path+' + pathlib.Path('apps/example/Cargo.toml').resolve().as_uri() + '#example'\n"
                 "    print(json.dumps({'packages': [{'id': example, 'name': 'example', 'manifest_path': os.path.abspath('apps/example/Cargo.toml'), 'dependencies': [], 'targets': [{'name': 'example', 'kind': ['bin'], 'src_path': os.path.abspath('apps/example/src/main.rs')}]}], 'workspace_members': [example], 'resolve': {'nodes': [{'id': example, 'deps': []}]}})); sys.exit(0)\n"
+                # The script asks the front end about the wrapper with cargo's help, which builds nothing.
+                "if sys.argv[1:3] == ['build', '--help']:\n"
+                "    print('Usage: cargo build [OPTIONS]'); sys.exit(0)\n"
                 "pathlib.Path('invocation.json').write_text(json.dumps({'compiler': os.environ.get('RUSTC'), 'cargo_compiler': os.environ.get('CARGO_BUILD_RUSTC'), 'wrapper': os.environ.get('RUSTC_WRAPPER'), 'cache': os.environ.get('TILO_THIN_SCCACHE'), 'args': sys.argv[1:]}))\n"
                 "out = pathlib.Path('target/thin-app'); out.mkdir(parents=True)\n"
                 "(out / 'libruntime_dylib.so').touch()\n"
