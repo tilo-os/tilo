@@ -90,13 +90,16 @@ impl Convert<'_> {
             props.insert(CASES.to_owned(), wire::Value::List(cases));
         }
         // A list row's title that shows a field of a resource names that field as a field bound to
-        // it is named: the resource's published id and the field's.
-        if let Some(Value::Tuple(shown)) = node.props.get(EDITS)
-            && let [Value::Ref(of), Value::Text(field)] = shown.as_slice()
-        {
-            match (self.published)(&of.target)
-                .and_then(|(_, id)| tilo_actions::ActionAddress::checked(&id, field))
-            {
+        // it is named: the resource's published id and the field's. A title read from a record
+        // that is no resource (an item of a list a resource holds) names no field anyone edits,
+        // so the row carries none.
+        if let Some(Value::Tuple(shown)) = node.props.get(EDITS) {
+            let address = match shown.as_slice() {
+                [Value::Ref(of), Value::Text(field)] => (self.published)(&of.target)
+                    .and_then(|(_, id)| tilo_actions::ActionAddress::checked(&id, field)),
+                _ => None,
+            };
+            match address {
                 Some(address) => {
                     props.insert(EDITS.to_owned(), wire::Value::Text(address.encode()))
                 }
