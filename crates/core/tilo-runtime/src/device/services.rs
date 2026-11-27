@@ -1803,9 +1803,9 @@ impl Daemon {
     }
 
     /// The tree `workspace` reaches for a program of this device that acts as its person without
-    /// being a connection of theirs (a migration walking what their desktop kept), and the
-    /// caller it is there. Such a program is no connection's own answer to what a workspace asks
-    /// of the person: its calls ask.
+    /// being a connection of theirs (an agent's action frames), and the caller it is there. Such
+    /// a program is no connection's own answer to what a workspace asks of the person: its calls
+    /// ask.
     ///
     /// # Errors
     /// The workspace cannot be admitted to now.
@@ -1814,6 +1814,25 @@ impl Daemon {
         workspace: &str,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
         let caller = Caller::local_person(&self.actor).in_workspace(workspace);
+        self.tree_in(workspace, caller)
+    }
+
+    /// The tree `workspace` reaches for a run the daemon itself makes for its person (a migration
+    /// bringing in what their desktop kept), and the caller it is there: a run of its own,
+    /// certified by this device's key as the person's, so whoever runs its calls checks the key
+    /// rather than taking the program's word. It is no connection of theirs either, so its calls
+    /// ask.
+    ///
+    /// # Errors
+    /// The workspace cannot be admitted to now.
+    pub(crate) fn device_run_in(
+        self: &Arc<Self>,
+        workspace: &str,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let cert = self.workspaces.device_cert();
+        let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(workspace)
+            .in_new_execution();
         self.tree_in(workspace, caller)
     }
 
@@ -3728,9 +3747,7 @@ struct BrokerParts<'a> {
 }
 
 /// What carries a shell's speakers links: the person's speakers, for as long as each link lasts.
-fn speaker_links(
-    speakers: &Arc<super::speakers::Speakers>,
-) -> tilo_app_host::shell::SpeakersLinks {
+fn speaker_links(speakers: &Arc<super::speakers::Speakers>) -> tilo_app_host::shell::SpeakersLinks {
     let speakers = Arc::clone(speakers);
     Arc::new(move |stream| {
         let speakers = Arc::clone(&speakers);

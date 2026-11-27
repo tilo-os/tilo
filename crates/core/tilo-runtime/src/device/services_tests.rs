@@ -2077,6 +2077,47 @@ fn a_confined_daemons_connection_is_no_person() {
     );
 }
 
+const PROGRAM_RUN_TEST: &str =
+    "device::services::tests::a_run_of_the_device_is_certified_as_its_person";
+
+/// A run the daemon makes for its person (a migration bringing in the address book their desktop
+/// kept) opens a session as a run of its own, certified by the device's key as the person's: the
+/// session admits it, and its calls still ask, being no connection of theirs. A caller that only
+/// says it is the person, with no key behind it, is refused a session.
+#[test]
+fn a_run_of_the_device_is_certified_as_its_person() {
+    let Some(root) = isolated_root(PROGRAM_RUN_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let cert = daemon.workspaces.device_cert();
+    let (tree, caller) = daemon.device_run_in(&workspace).unwrap();
+    assert_eq!(
+        caller.acting().person_id(),
+        Some(hex::encode(cert.user_public_key).as_str()),
+        "the program acts as the device's person: {caller:?}"
+    );
+    assert_eq!(caller.user_public_key(), Some(&cert.user_public_key));
+    assert_eq!(caller.device_public_key(), Some(&cert.device_public_key));
+    assert!(caller.execution_is_live(), "a run of its own: {caller:?}");
+    assert!(
+        !caller.is_own_connection(),
+        "a program is no connection of the person's, so its calls ask: {caller:?}"
+    );
+    assert!(
+        tilo_mcp::McpServer::admitted(tree.clone(), caller).is_ok(),
+        "the session admits the certified run"
+    );
+    let claimed = Caller::local_person(hex::encode(cert.user_public_key))
+        .in_workspace(&workspace)
+        .in_new_execution();
+    assert!(
+        tilo_mcp::McpServer::admitted(tree, claimed).is_err(),
+        "a caller with no key behind it is refused a session"
+    );
+}
+
 const AGENT_TICKET_TEST: &str =
     "device::services::tests::an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none";
 

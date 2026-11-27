@@ -271,7 +271,7 @@ impl Host for DaemonHost {
                 let daemon = own
                     .upgrade()
                     .ok_or_else(|| anyhow!("this device's daemon is stopping"))?;
-                let (tree, person) = daemon.program_tree_in(&workspace)?;
+                let (tree, person) = daemon.device_run_in(&workspace)?;
                 Ok(
                     Box::new(InProcess(tilo_mcp::McpServer::admitted(tree, person)?))
                         as Box<dyn Rpc>,
