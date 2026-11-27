@@ -3484,6 +3484,11 @@
           "name": "replacing",
           "doc": "It opened to replace: the replacement and the buttons that take it show, and the replacement holds the keyboard when a query is already typed, as Ctrl+H asks.",
           "type": "bool"
+        },
+        {
+          "name": "in_page",
+          "doc": "It stands on a page among other controls rather than being opened by the person: it leaves the keyboard where it is, so the page opens at its top instead of at the field.",
+          "type": "bool"
         }
       ],
       "events": [

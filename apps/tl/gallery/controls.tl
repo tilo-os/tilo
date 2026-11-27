@@ -145,6 +145,7 @@ view controls(g: Gallery) {
             ui.FindControls(
                 bind: find_query,
                 placeholder: "Find in the note",
+                in_page: true,
                 acts_on: "document",
                 current: if found == 0 { 0 } else { find_at % found + 1 },
                 total: found,

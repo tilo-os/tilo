@@ -939,6 +939,18 @@ impl Widget for Text {
         taffy.widget_leaf(style, node_map, self)
     }
 
+    /// A text that read empty or filled since its node was built (a count that shows once its
+    /// query reads back) is taken out of or put back in the flow before the solve, so the solve
+    /// is not run again for it.
+    fn size_before_solve(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut tilo_ui_base::text_render::TextRenderer,
+    ) {
+        let _ = self.adjust_layout_style(taffy, node, text);
+    }
+
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,

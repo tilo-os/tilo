@@ -97,6 +97,9 @@ pub struct FindControlsProps {
     /// It opened to replace: the replacement and the buttons that take it show, and the
     /// replacement holds the keyboard when a query is already typed, as Ctrl+H asks.
     pub replacing: bool,
+    /// It stands on a page among other controls rather than being opened by the person: it
+    /// leaves the keyboard where it is, so the page opens at its top instead of at the field.
+    pub in_page: bool,
     /// The query changed as the person typed: what the app's find runs now.
     #[component(event(value = String))]
     pub changed: Event,
@@ -525,6 +528,9 @@ impl FindControls {
         } else {
             Some(self.slots.query)
         };
+        if props.in_page {
+            return;
+        }
         if let Some(field) = focused.and_then(|index| self.field_mut(index)) {
             field.request_focus();
         }
