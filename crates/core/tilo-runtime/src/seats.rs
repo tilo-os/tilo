@@ -275,10 +275,11 @@ pub(crate) type AppOf = Arc<dyn Fn(u32) -> Option<(String, String)> + Send + Syn
 pub(crate) type RecordShell =
     Arc<dyn Fn(u32, u64, &str, &str) -> Result<String, String> + Send + Sync>;
 
-/// What makes a connection of an app's shell: the app and the workspace the shell runtime named,
-/// answered the workspace it acts in and the connection's other end, served as that app there.
+/// What makes a connection of an app's shell: the app, the workspace and the launch ticket the
+/// shell runtime named, answered the workspace it acts in and the connection's other end, served
+/// as that app there.
 pub(crate) type ShellLines =
-    Arc<dyn Fn(&str, &str) -> Result<(String, Stream), String> + Send + Sync>;
+    Arc<dyn Fn(&str, &str, Option<u64>) -> Result<(String, Stream), String> + Send + Sync>;
 
 /// An app the daemon started, and the workspace it runs in: what a connection from it is
 /// admitted as.
@@ -824,7 +825,7 @@ impl Seats {
             .lock_recover()
             .clone()
             .ok_or("this computer is not serving its person's workspaces yet")?;
-        let (workspace, line) = lines(&asked.app, &asked.workspace)?;
+        let (workspace, line) = lines(&asked.app, &asked.workspace, asked.ticket)?;
         *handed.lock_recover() = Some(runtime_portal::packet::descriptor_of(line));
         Ok(json!({ "workspace": workspace }))
     }

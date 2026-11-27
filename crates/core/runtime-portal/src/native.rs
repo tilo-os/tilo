@@ -192,6 +192,10 @@ pub struct ShellLine {
     pub app: String,
     /// The workspace it acts in: the runtime's primary one when empty.
     pub workspace: String,
+    /// The ticket of the daemon's launch of the app the shell runs for, when the runtime knows
+    /// it: the connection is made only while that launch of the app runs in the workspace.
+    #[serde(default)]
+    pub ticket: Option<u64>,
 }
 
 impl ShellLine {
@@ -202,6 +206,7 @@ impl ShellLine {
             native: SHELL_LINE.to_owned(),
             app: app.to_owned(),
             workspace: workspace.to_owned(),
+            ticket: None,
         }
     }
 

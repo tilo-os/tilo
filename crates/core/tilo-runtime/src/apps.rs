@@ -100,6 +100,9 @@ struct Runs {
     /// made for it ([`runtime_portal::joined_capture`]).
     #[cfg(target_os = "linux")]
     joined: Option<capture::Joined>,
+    /// The tab the shell holds for the launch's window: the app's window takes it
+    /// (`TILO_CONTINUITY_INSTANCE`), as the session's own launch of it does.
+    window: Option<u64>,
 }
 
 /// A start that has already happened: the answer a call gets when the process that takes it
@@ -562,6 +565,23 @@ impl Apps {
             .find(|app| app.app_id == app_id)
             .map(|app| app.declared_actions())
             .unwrap_or_default()
+    }
+
+    /// Whether the build of `app` installed here declares the session service `service` in its
+    /// sandbox.
+    pub(crate) fn declares_service(&self, app: &str, service: &str) -> bool {
+        self.installed()
+            .into_iter()
+            .find(|installed| installed.app_id == app)
+            .is_some_and(|installed| installed.manifest.sandbox.services.contains_key(service))
+    }
+
+    /// What the launch `ticket` this daemon decided runs as, while it runs.
+    pub(crate) fn admitted_launch(
+        &self,
+        ticket: u64,
+    ) -> Option<tilo_app_host::shell::AdmittedLaunch> {
+        self.tickets.admitted(ticket)
     }
 
     /// Whether the build of `app` installed here declares `capability`.
@@ -1063,6 +1083,7 @@ impl Apps {
             &Runs {
                 args: args.to_vec(),
                 origin,
+                window: None,
                 #[cfg(target_os = "linux")]
                 writes,
                 #[cfg(target_os = "linux")]
@@ -1415,11 +1436,13 @@ impl Apps {
         ticket: u64,
         app: &str,
         workspace: &str,
-        shows: Shows,
-        open: Option<&str>,
+        (shows, open, window): (Shows, Option<&str>, Option<u64>),
     ) -> Result<(), String> {
-        let launch =
-            self.start_showing_ticketed(ticket, app, workspace, shows, open, &Runs::default())?;
+        let runs = Runs {
+            window,
+            ..Runs::default()
+        };
+        let launch = self.start_showing_ticketed(ticket, app, workspace, shows, open, &runs)?;
         self.watch(app, launch, || {})
             .map_err(|error| format!("could not watch the launched app: {error}"))
     }

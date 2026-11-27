@@ -114,6 +114,12 @@ pub(super) fn launch(
             ]
             .map(|(key, value)| (OsString::from(key), OsString::from(value))),
         );
+    } else if let Some(window) = runs.window {
+        // The tab the shell holds for this launch: the app's window takes it.
+        env.push((
+            OsString::from("TILO_CONTINUITY_INSTANCE"),
+            OsString::from(window.to_string()),
+        ));
     }
     if let Some(runtime) = runtime.as_deref() {
         env.extend(gstreamer_env(runtime));

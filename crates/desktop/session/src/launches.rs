@@ -30,6 +30,9 @@ use tilo_lock::MutexRecover as _;
 /// How long a service, an app or an agent waits for the session's loop to answer a launch it asked
 /// for.
 const LAUNCH_ANSWER_WAIT: Duration = Duration::from_secs(10);
+/// How long the session waits before it follows the daemon's launch orders again, once its link
+/// failed: the link is made again meanwhile.
+const ORDERS_AGAIN: Duration = Duration::from_secs(1);
 /// The most launches one pass may find waiting: more than any person's apps ask for at once, and
 /// enough to keep a runaway asker from growing the queue without bound.
 const MAX_WAITING_LAUNCHES: usize = 64;
@@ -122,8 +125,12 @@ pub struct Launches {
     /// The link to the device's daemon, which decides every launch this session starts.
     shell: std::sync::OnceLock<runtime_collab::ShellClient>,
     /// The daemon's ticket of each process this session started for a launch the daemon decided,
-    /// by pid: what a connection from it, or from a process below it, is vouched for with.
+    /// and of each process a window of one came from, by pid: what a connection from it, or from
+    /// a process below it, is vouched for with.
     tickets: Mutex<BTreeMap<u32, u64>>,
+    /// The launches the device's daemon ordered of this session for a caller of its own (an
+    /// app's, an agent's), waiting for the pass that starts them.
+    ordered: Mutex<Vec<runtime_collab::wire::shell::LaunchOrder>>,
 }
 
 /// Run `asked` on the session's runtime and wait for its answer: what the session's loop, which
@@ -160,7 +167,8 @@ impl Launches {
         self.shell.get().is_some()
     }
 
-    /// Ask the device's daemon to decide `ask`: the order this session starts it by.
+    /// Ask the device's daemon to decide `ask`: the order this session starts it by. A launch the
+    /// daemon already ordered of this session for the same app and workspace is that order.
     ///
     /// # Errors
     /// The daemon refused the launch, or did not answer.
@@ -168,6 +176,15 @@ impl Launches {
         &self,
         ask: runtime_collab::wire::shell::LaunchAsk,
     ) -> Result<runtime_collab::wire::shell::LaunchOrder, String> {
+        {
+            let mut ordered = self.ordered.lock_recover();
+            if let Some(at) = ordered
+                .iter()
+                .position(|order| order.app == ask.app && order.workspace == ask.workspace)
+            {
+                return Ok(ordered.remove(at));
+            }
+        }
         let shell = self
             .shell
             .get()
@@ -193,6 +210,227 @@ impl Launches {
             .map_err(|error| error.to_string())?;
         self.tickets.lock_recover().insert(pid, ticket);
         Ok(())
+    }
+
+    /// Start what the device's daemon orders of this session from now on: each order is a launch
+    /// it decided for a caller of its own, which this session's loop starts as it starts the
+    /// person's, in the place the person is looking.
+    pub(crate) fn follow_orders(self: &std::sync::Arc<Self>) {
+        let Some(shell) = self.shell.get().cloned() else {
+            return;
+        };
+        let runtime = match tilo_rt::try_app() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::error!(%error, "the daemon's launch orders are not followed");
+                return;
+            }
+        };
+        let launches = std::sync::Arc::downgrade(self);
+        runtime.spawn(async move {
+            let mut waiting = false;
+            loop {
+                let orders = match shell.orders().await {
+                    Ok(orders) => orders,
+                    Err(runtime_portal::NotAvailable::Refused(why)) => {
+                        // A daemon that launches nothing orders nothing.
+                        tracing::warn!(%why, "the daemon orders this session no launches");
+                        return;
+                    }
+                    Err(error) => {
+                        // The link is being made again: the orders wait on the daemon meanwhile.
+                        if !waiting {
+                            tracing::warn!(%error, "the daemon's launch orders wait for the link");
+                        }
+                        waiting = true;
+                        tokio::time::sleep(ORDERS_AGAIN).await;
+                        continue;
+                    }
+                };
+                waiting = false;
+                let Some(launches) = launches.upgrade() else {
+                    return;
+                };
+                for order in orders {
+                    launches.take_order(order);
+                }
+            }
+        });
+    }
+
+    /// Hand `order` to the session's loop: it starts the launch the daemon decided, and the
+    /// daemon hears of an order it never started.
+    fn take_order(self: &std::sync::Arc<Self>, order: runtime_collab::wire::shell::LaunchOrder) {
+        use runtime_collab::wire::shell::{HostEntry, OrderCommand};
+        let opened = |open: &str| {
+            if std::path::Path::new(open).is_absolute() {
+                tilo_app_launch::Open::File(std::path::PathBuf::from(open))
+            } else {
+                tilo_app_launch::Open::Uri(open.to_owned())
+            }
+        };
+        let launch = match &order.command {
+            OrderCommand::Package(command) => tilo_app_launch::Launch::Package {
+                app: order.app.clone(),
+                open: command.open.as_deref().map(opened),
+            },
+            OrderCommand::Host {
+                entry:
+                    HostEntry::Desktop {
+                        id, files, urls, ..
+                    },
+                ..
+            } => tilo_app_launch::Launch::Host {
+                desktop_id: id.clone(),
+                open: files
+                    .first()
+                    .or_else(|| urls.first())
+                    .map(|open| opened(open)),
+            },
+            OrderCommand::Host {
+                entry: HostEntry::Program { path },
+                ..
+            } => {
+                self.never_started(
+                    order.ticket,
+                    format!("{} is no launch this session starts", path.display()),
+                );
+                return;
+            }
+        };
+        let (ticket, launches) = (order.ticket, std::sync::Arc::downgrade(self));
+        let request = LaunchRequest {
+            launch,
+            workspace: order.workspace.clone(),
+            place: LaunchPlace::Focus,
+            context: None,
+            windowless: order.windowless,
+            reply: Box::new(move |result| {
+                // An order no process took (the app's window already showed, the launch failed) is
+                // over: the daemon forgets it.
+                if let Some(launches) = launches.upgrade()
+                    && launches.left_unstarted(ticket)
+                {
+                    launches.never_started(ticket, result.err().unwrap_or_default());
+                }
+            }),
+        };
+        self.ordered.lock_recover().push(order);
+        if let Err(error) = self.hand_over(request) {
+            self.left_unstarted(ticket);
+            self.never_started(ticket, error);
+        }
+    }
+
+    /// Whether the order `ticket` was never taken by a launch, taking it out.
+    fn left_unstarted(&self, ticket: u64) -> bool {
+        let mut ordered = self.ordered.lock_recover();
+        let before = ordered.len();
+        ordered.retain(|order| order.ticket != ticket);
+        ordered.len() != before
+    }
+
+    /// Tell the device's daemon its order `ticket` started no process, and why.
+    fn never_started(&self, ticket: u64, why: String) {
+        if !why.is_empty() {
+            tracing::warn!(ticket, %why, "a launch the daemon ordered did not start");
+        }
+        self.tell(
+            ticket,
+            runtime_collab::wire::shell::LaunchEvent::Ended(
+                runtime_collab::wire::shell::LaunchEnd {
+                    code: None,
+                    signal: None,
+                    memory: None,
+                    stderr: if why.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![why]
+                    },
+                    asked_to_end: false,
+                },
+            ),
+        );
+    }
+
+    /// Tell the device's daemon what became of the launch `ticket` this session started, without
+    /// waiting for its answer: what it keeps on the launch's record is no step of this session's.
+    /// An end forgets the launch here too.
+    pub(crate) fn tell(&self, ticket: u64, event: runtime_collab::wire::shell::LaunchEvent) {
+        if matches!(event, runtime_collab::wire::shell::LaunchEvent::Ended(_)) {
+            self.tickets
+                .lock_recover()
+                .retain(|_, held| *held != ticket);
+        }
+        let Some(shell) = self.shell.get().cloned() else {
+            return;
+        };
+        let Ok(runtime) = tilo_rt::try_app() else {
+            return;
+        };
+        runtime.spawn(async move {
+            if let Err(error) = shell.launch_event(ticket, event).await {
+                tracing::warn!(ticket, %error, "the daemon did not keep a launch's event");
+            }
+        });
+    }
+
+    /// A window of the launch whose process is `launch` showed, from the process `window`: the
+    /// daemon keeps it on the launch's record, and a connection from that process is vouched for
+    /// as the launch's.
+    pub(crate) fn window_shown(&self, launch: u32, window: u32, after: Duration) {
+        let Some(ticket) = self.ticket_of(launch) else {
+            return;
+        };
+        // The session's own process is no launch's, whatever window it draws: every process it
+        // started descends from it.
+        if window != std::process::id() {
+            self.tickets.lock_recover().insert(window, ticket);
+        }
+        self.tell(
+            ticket,
+            runtime_collab::wire::shell::LaunchEvent::Window { pid: window },
+        );
+        self.tell(
+            ticket,
+            runtime_collab::wire::shell::LaunchEvent::Phase {
+                phase: "window".to_owned(),
+                after_ms: u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
+            },
+        );
+    }
+
+    /// Have the device's daemon decide the launch `adopt` describes, which the process `pid` this
+    /// session holds already runs (a kept app it took back, a window it draws itself), and bind
+    /// the process to it: its ticket, which a connection from the process is vouched for with.
+    pub(crate) fn adopt(
+        &self,
+        mut adopt: runtime_collab::wire::shell::Adopt,
+        pid: u32,
+    ) -> Option<u64> {
+        let shell = self.shell.get().cloned()?;
+        let Some(pinned) = tilo_app_launch::kept::pidfd(pid) else {
+            tracing::warn!(pid, app = %adopt.app, "a process to adopt cannot be pinned");
+            return None;
+        };
+        adopt.pid = pid;
+        let app = adopt.app.clone();
+        let adopted = on_link(async move { shell.adopt(adopt, pinned).await })
+            .and_then(|adopted| adopted.map_err(|error| error.to_string()));
+        match adopted {
+            Ok(ticket) => {
+                // The session's own process is no launch's: every process it started descends
+                // from it.
+                if pid != std::process::id() {
+                    self.tickets.lock_recover().insert(pid, ticket);
+                }
+                Some(ticket)
+            }
+            Err(error) => {
+                tracing::warn!(pid, %app, %error, "the daemon did not adopt a launch");
+                None
+            }
+        }
     }
 
     /// The daemon's ticket of the launch `pid` is, or descends from: the nearest process at or
@@ -565,9 +803,26 @@ impl Launches {
             // The window's launch is over: its windows went with it.
             return None;
         }
+        // A window this session draws itself, with no launch of its own (a tilolang app's), is a
+        // launch the daemon decides now, run by this session's own process.
+        let ticket = match record.launch {
+            Some(launch) => self.ticket_of(launch),
+            None => self.adopt(
+                runtime_collab::wire::shell::Adopt {
+                    app: app.to_owned(),
+                    workspace: workspace.to_owned(),
+                    kind: runtime_collab::wire::shell::LaunchKind::Package,
+                    window: Some(instance),
+                    windowless: record.no_view,
+                    pid,
+                    process: 0,
+                },
+                pid,
+            ),
+        };
         Some(AuthenticatedApplicationLaunch {
             continuation_instance: Some(instance),
-            launch_ticket: record.launch.and_then(|launch| self.ticket_of(launch)),
+            launch_ticket: ticket,
             windowless: record.no_view,
             opened_for: None,
             opened_with: None,

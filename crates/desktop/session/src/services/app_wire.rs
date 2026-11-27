@@ -277,8 +277,10 @@ pub(crate) fn start_app_wire(
     if let Some(actions) = &session_actions {
         actions.serve_on(shell.clone());
     }
-    // The daemon decides every launch this session starts, over the same link.
+    // The daemon decides every launch this session starts, over the same link, and orders it the
+    // ones it decided for callers of its own.
     options.launches.link(shell.clone());
+    options.launches.follow_orders();
     let socket = crate::app_socket::serve(&path, std::sync::Arc::clone(&options.launches), shell)?;
     // No call outlives the daemon that knew it: a lane a session that ended left behind would
     // let the next launch's app send without one.

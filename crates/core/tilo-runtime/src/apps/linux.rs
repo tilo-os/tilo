@@ -76,6 +76,10 @@ fn spawn(
         original,
         runs.writes.as_ref(),
     )?;
+    if let Some(window) = runs.window {
+        // The tab the shell holds for this launch: the app's window takes it.
+        command.env("TILO_CONTINUITY_INSTANCE", window.to_string());
+    }
     // The record the call named, handed to the app as its window's is: it opens it, or founds it
     // when nothing wrote it yet.
     if let Some(uri) = open {

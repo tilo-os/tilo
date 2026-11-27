@@ -1147,23 +1147,24 @@ fn founding_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats:
 /// The account a test's next native connection comes from, as the daemon reads it.
 static PEER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// The process the next connection [`test_peer`] names is from, when it is not this test's own
-/// (which stands in for the person's session): `0` for this test's.
+/// The process the next connection [`test_peer`] names is from, when it is not the one the kernel
+/// names (this test's own, standing in for the person's session, or a process it started): `0` for
+/// the kernel's.
 static PEER_PROCESS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "it stands in for the kernel's answer, which can fail"
-)]
-fn test_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
+/// The connection's peer: the account the test set, and the process the kernel names unless the
+/// test set another. A process this test started (a nested shell) is its own seat, as it is on a
+/// computer.
+fn test_peer(stream: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
     let process = PEER_PROCESS.load(std::sync::atomic::Ordering::SeqCst);
+    let pid = if process == 0 {
+        crate::seats::peer_of(stream)?.pid
+    } else {
+        Some(process)
+    };
     Ok(crate::seats::Peer {
         uid: PEER.load(std::sync::atomic::Ordering::SeqCst),
-        pid: Some(if process == 0 {
-            std::process::id()
-        } else {
-            process
-        }),
+        pid,
     })
 }
 

@@ -234,17 +234,16 @@ impl LaunchAsk {
 }
 
 /// A Tilo package's launch as the daemon built it from the package's signed manifest: what
-/// `tilo-launcher run` is started with. The executor adds only what is its own (the display, its
-/// services, its environment) and the file it writes `grants` to.
+/// `tilo-launcher run` is started with. The shell adds what is the person's own: the display, its
+/// services, its environment, and the grants the person gave the app (the workspace's, the
+/// devices they allowed it, the files they chose for it and, for Files, their home), which it
+/// writes where the launcher reads them, exactly as for a launch it asked for itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageCommand {
     pub manifest: std::path::PathBuf,
     pub payload_root: std::path::PathBuf,
     /// The hash the package was admitted with, which the launcher checks before it runs.
     pub package_hash: String,
-    /// The grants the person gave the app in the workspace (`collab_types::caps::LaunchGrants`
-    /// as JSON), which the launcher reads from its capabilities file.
-    pub grants: String,
     /// The record or link the window opens.
     pub open: Option<String>,
     pub visitor: bool,
@@ -272,6 +271,76 @@ pub struct LaunchOrder {
     pub window: Option<u64>,
     pub windowless: bool,
     pub command: OrderCommand,
+}
+
+/// What became of a launch the daemon decided, as the shell that started its process saw it
+/// ([`ShellCall::LaunchEvent`]): the daemon keeps it on the launch's record, which is what the
+/// device answers about the launch from then on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LaunchEvent {
+    /// A phase of the launch's start was reached (`planned`, `spawned`, `connected`,
+    /// `window`), `after_ms` after it was asked for.
+    Phase { phase: String, after_ms: u64 },
+    /// A window of the launch was shown, its process `pid` as the shell's display names it: the
+    /// process a connection naming the window comes from.
+    Window { pid: u32 },
+    /// The memory tier the launch runs in now.
+    Tier(MemoryTier),
+    /// The launch's process ended.
+    Ended(LaunchEnd),
+}
+
+/// The memory tier a launch's cgroup is in: what it is served and what it gives back first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryTier {
+    /// Still opening: served before everything else.
+    Startup,
+    /// A window of it is shown.
+    Foreground,
+    /// Nothing of it is shown: it gives memory back first.
+    Background,
+}
+
+/// How a launch's process ended ([`LaunchEvent::Ended`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchEnd {
+    /// The exit code, when it exited.
+    pub code: Option<i32>,
+    /// The signal that ended it, when one did.
+    pub signal: Option<i32>,
+    /// Why memory ended it, when memory did.
+    pub memory: Option<MemoryKill>,
+    /// The last lines it wrote to its standard error.
+    pub stderr: Vec<String>,
+    /// The person asked it to end.
+    pub asked_to_end: bool,
+}
+
+/// Why memory ended a launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryKill {
+    /// The kernel's out-of-memory killer.
+    Kernel,
+    /// The session's memory guard, which ends the one app growing out of control.
+    Runaway,
+}
+
+/// A process of the person's that runs a launch the shell did not ask the daemon for in this link
+/// ([`ShellCall::Adopt`]): a kept app it takes back after the desktop restarted in place, or a
+/// window the shell draws itself for an app with no process of its own. The daemon decides it as
+/// any launch, binds `process` to it and answers its ticket; a process it already holds a launch
+/// of for the same app, workspace and window keeps that launch's ticket.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Adopt {
+    pub app: String,
+    pub workspace: String,
+    pub kind: LaunchKind,
+    pub window: Option<u64>,
+    pub windowless: bool,
+    /// The process's id as the shell sees it.
+    pub pid: u32,
+    /// The number of the descriptor pinning it (a pidfd).
+    pub process: u32,
 }
 
 /// The window a press on the system's own surfaces (the shell's palette, menus and shortcuts)
@@ -445,6 +514,11 @@ pub enum ShellCall {
     /// Answered once the daemon bound it to the launch ([`ShellReply::Started`]); only then does
     /// the shell let the process go on.
     Started { ticket: u64, pid: u32, process: u32 },
+    /// What became of the launch `ticket` this shell started ([`ShellReply::Noted`]).
+    LaunchEvent { ticket: u64, event: LaunchEvent },
+    /// Bind a process this shell holds to a launch the daemon decides now
+    /// ([`ShellReply::Adopted`]).
+    Adopt(Adopt),
 }
 
 /// What the shell asks of the key of an agent its person admitted ([`ShellCall::AgentKey`]).
@@ -747,6 +821,10 @@ pub enum ShellReply {
     /// A [`ShellCall::Started`]: the process is the launch's, or why the daemon refused it (the
     /// shell then ends it).
     Started(Result<(), String>),
+    /// A [`ShellCall::LaunchEvent`]: kept, or why the daemon knows no such launch.
+    Noted(Result<(), String>),
+    /// A [`ShellCall::Adopt`]: the launch's ticket, or why the daemon refused it.
+    Adopted(Result<u64, String>),
 }
 
 /// One change of a workspace's members as its governance names it: the change's hash, the

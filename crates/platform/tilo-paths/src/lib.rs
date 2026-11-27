@@ -443,15 +443,27 @@ pub fn data_local_dir() -> Option<PathBuf> {
 /// directory.
 pub const APPS_DATA_DIR_ENV: &str = "TILO_APPS_DATA_DIR";
 
+/// The store of apps of a computer whose daemon is the system's own (Tilo OS): the operating
+/// system makes it, owned by the daemon's account and readable to every person's session
+/// (`os/usr/lib/tmpfiles.d/tilo.conf`).
+pub const COMPUTER_APPS_DIR: &str = "/var/lib/tilo/apps";
+
 /// The device's own store of apps and the runtimes they run on: [`APPS_DATA_DIR_ENV`] when it
-/// names an absolute path, else the platform data directory's `tilo-apps`.
+/// names an absolute path, else the computer's store where its operating system made one
+/// ([`COMPUTER_APPS_DIR`]), else the platform data directory's `tilo-apps`.
 ///
 /// One directory per device, not per person: the daemon that installs an app and launches it
 /// reads the same files as every person's session, so a runtime it starts an app on is never
-/// inside one person's private directories.
+/// inside one person's private directories. On Tilo OS the daemon runs as an account of its own,
+/// whose home no person's session reads: both find the computer's store instead.
 #[must_use]
 pub fn device_data_dir() -> Option<PathBuf> {
-    absolute(var(APPS_DATA_DIR_ENV)).or_else(|| Some(xdg::data_home()?.join("tilo-apps")))
+    absolute(var(APPS_DATA_DIR_ENV))
+        .or_else(|| {
+            let computer = PathBuf::from(COMPUTER_APPS_DIR);
+            computer.is_dir().then_some(computer)
+        })
+        .or_else(|| Some(xdg::data_home()?.join("tilo-apps")))
 }
 
 /// The platform's per-user configuration directory: [`xdg::config_home`] on

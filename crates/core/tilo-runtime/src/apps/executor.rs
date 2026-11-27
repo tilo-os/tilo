@@ -9,14 +9,24 @@
 //! their display or see their processes: there a launch that shows a window is ordered of the
 //! seat's shell ([`SeatOrders`]), which starts it as the person, held, and reports the process
 //! back before letting it go on. A launch that shows nothing needs no display and still runs
-//! here. Either way a connection is admitted from the daemon's record, by its ticket, never from
-//! what the process or the shell says it is.
+//! here. A daemon of the person's own account orders a window of the seat's shell too while one
+//! follows its orders: the shell holds the display and what the person gave the app (the files
+//! they chose for it, the devices they allowed it), so a window gets the same grants whoever
+//! asked for it. Either way a connection is admitted from the daemon's record, by its ticket,
+//! never from what the process or the shell says it is.
+//!
+//! The shell reports what became of each launch it started ([`LaunchEvent`]): the phases of its
+//! start, the processes its windows came from, its memory tier and how it ended. The daemon keeps
+//! them on the launch's record. A process the shell holds that no order of this link started (a
+//! kept app it takes back after the desktop restarted in place, a window it draws itself) is
+//! adopted: decided as any launch, and bound to its ticket.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use runtime_collab::wire::shell::{
-    HostEntry, HostKind, LaunchAsk, LaunchKind, LaunchOrder, OrderCommand,
+    Adopt, HostEntry, HostKind, LaunchAsk, LaunchEnd, LaunchEvent, LaunchKind, LaunchOrder,
+    MemoryTier, OrderCommand,
 };
 use tilo_app_host::shell::AdmittedLaunch;
 use tilo_lock::MutexRecover as _;
@@ -50,6 +60,23 @@ impl Executor {
 pub(crate) struct SeatOrders {
     waiting: Mutex<VecDeque<LaunchOrder>>,
     ordered: tokio::sync::Notify,
+    /// How many shells wait for an order now, and when one last stopped waiting: a shell
+    /// follows the orders while it waits, and in the moment between taking some and asking again.
+    following: Mutex<(usize, Option<std::time::Instant>)>,
+}
+
+/// How long after a shell took its orders it is still taken to follow them, while it asks again.
+const FOLLOWING_BETWEEN_ASKS: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A shell waiting for the seat's orders, for as long as it waits.
+struct Following<'a>(&'a SeatOrders);
+
+impl Drop for Following<'_> {
+    fn drop(&mut self) {
+        let mut following = self.0.following.lock_recover();
+        following.0 = following.0.saturating_sub(1);
+        following.1 = Some(std::time::Instant::now());
+    }
 }
 
 impl SeatOrders {
@@ -59,8 +86,22 @@ impl SeatOrders {
         self.ordered.notify_one();
     }
 
+    /// Whether a seat's shell follows the orders.
+    fn followed(&self) -> bool {
+        let following = self.following.lock_recover();
+        following.0 > 0
+            || following
+                .1
+                .is_some_and(|stopped| stopped.elapsed() < FOLLOWING_BETWEEN_ASKS)
+    }
+
     /// The orders waiting, once there is one.
     pub(crate) async fn take(self: Arc<Self>) -> Vec<LaunchOrder> {
+        {
+            let mut following = self.following.lock_recover();
+            following.0 = following.0.saturating_add(1);
+        }
+        let _following = Following(&self);
         loop {
             let ordered = self.ordered.notified();
             let waiting: Vec<LaunchOrder> = self.waiting.lock_recover().drain(..).collect();
@@ -85,11 +126,12 @@ enum Process {
     Ordered,
     /// Started by this daemon.
     Here,
-    /// Started by the seat's shell, pinned by the pidfd the shell handed over.
-    Seat(
+    /// Started by the seat's shell as the pid it named, pinned by the pidfd it handed over.
+    Seat {
+        pid: u32,
         #[expect(dead_code, reason = "held: it pins the process while the launch runs")]
-        Arc<runtime_portal::descriptors::Owned>,
-    ),
+        pinned: Arc<runtime_portal::descriptors::Owned>,
+    },
 }
 
 /// One launch the daemon decided.
@@ -105,6 +147,19 @@ struct Ticketed {
     )]
     kind: Kind,
     process: Process,
+    /// What the shell that started it said became of it.
+    seen: Seen,
+}
+
+/// What the shell that started a launch reported of it ([`LaunchEvent`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Seen {
+    /// Each phase of its start, with how long after it was asked for it was reached.
+    pub(crate) phases: Vec<(String, u64)>,
+    /// The processes its windows came from.
+    pub(crate) windows: Vec<u32>,
+    /// The memory tier it runs in.
+    pub(crate) tier: Option<MemoryTier>,
 }
 
 /// The launches this daemon decided, by ticket.
@@ -137,9 +192,72 @@ impl Tickets {
                 member,
                 kind,
                 process: Process::Ordered,
+                seen: Seen::default(),
             },
         );
         ticket
+    }
+
+    /// The launch the seat's shell started as `pid` for `app` in `workspace` and `window`, while
+    /// it runs: what a process the shell adopts again keeps.
+    fn seat_launch_of(
+        &self,
+        pid: u32,
+        app: &str,
+        workspace: &str,
+        window: Option<u64>,
+    ) -> Option<u64> {
+        self.decided
+            .lock_recover()
+            .iter()
+            .find(|(_, launch)| {
+                matches!(launch.process, Process::Seat { pid: at, .. } if at == pid)
+                    && launch.app == app
+                    && launch.workspace == workspace
+                    && launch.window == window
+            })
+            .map(|(ticket, _)| *ticket)
+    }
+
+    /// Keep `event` on the launch `ticket` a shell started, and answer how it ended when it did.
+    ///
+    /// # Errors
+    /// No launch with that ticket runs.
+    fn seen(&self, ticket: u64, event: LaunchEvent) -> Result<Option<(String, LaunchEnd)>, String> {
+        let mut decided = self.decided.lock_recover();
+        let launch = decided
+            .get_mut(&ticket)
+            .ok_or_else(|| format!("no launch {ticket} runs"))?;
+        // An order the shell never started ends all the same; nothing else is seen of it.
+        if matches!(launch.process, Process::Ordered) && !matches!(event, LaunchEvent::Ended(_)) {
+            return Err(format!("launch {ticket} has not started"));
+        }
+        match event {
+            LaunchEvent::Phase { phase, after_ms } => launch.seen.phases.push((phase, after_ms)),
+            LaunchEvent::Window { pid } => {
+                if !launch.seen.windows.contains(&pid) {
+                    launch.seen.windows.push(pid);
+                }
+            }
+            LaunchEvent::Tier(tier) => launch.seen.tier = Some(tier),
+            LaunchEvent::Ended(end) => {
+                let app = launch.app.clone();
+                decided.remove(&ticket);
+                drop(decided);
+                return Ok(Some((app, end)));
+            }
+        }
+        drop(decided);
+        Ok(None)
+    }
+
+    /// What the shell reported of the launch `ticket`.
+    #[cfg(test)]
+    pub(crate) fn seen_of(&self, ticket: u64) -> Option<Seen> {
+        self.decided
+            .lock_recover()
+            .get(&ticket)
+            .map(|launch| launch.seen.clone())
     }
 
     /// The launch `ticket` runs here, as the process [`super::Launched`] recorded for it.
@@ -156,6 +274,7 @@ impl Tickets {
     fn seat_started(
         &self,
         ticket: u64,
+        pid: u32,
         pinned: Arc<runtime_portal::descriptors::Owned>,
     ) -> Result<(), String> {
         let mut decided = self.decided.lock_recover();
@@ -165,7 +284,7 @@ impl Tickets {
         if !matches!(launch.process, Process::Ordered) {
             return Err(format!("launch {ticket} has started already"));
         }
-        launch.process = Process::Seat(pinned);
+        launch.process = Process::Seat { pid, pinned };
         drop(decided);
         Ok(())
     }
@@ -260,8 +379,11 @@ impl super::Apps {
     /// The launch is refused, or its process could not be started here.
     pub(crate) fn launch_asked(&self, ask: &LaunchAsk) -> Result<u64, String> {
         let ticket = self.decide(ask)?;
+        // A window is the seat's to start wherever a shell follows the orders: it holds the
+        // display and the grants that are the person's alone. Only a daemon of the person's own
+        // account, with no shell following, starts one itself.
         let ordered = matches!(ask.kind, LaunchKind::Host { .. })
-            || (self.executor == Executor::Seat && !ask.windowless);
+            || (!ask.windowless && (self.executor == Executor::Seat || self.orders.followed()));
         let executed = if ordered {
             self.order(ticket, ask)
                 .map(|order| self.orders.order(order))
@@ -271,7 +393,12 @@ impl super::Apps {
             } else {
                 super::Shows::Window
             };
-            self.start_ticketed(ticket, &ask.app, &ask.workspace, shows, ask.open.as_deref())
+            self.start_ticketed(
+                ticket,
+                &ask.app,
+                &ask.workspace,
+                (shows, ask.open.as_deref(), ask.window),
+            )
         };
         if let Err(error) = executed {
             self.tickets.forget(ticket);
@@ -316,14 +443,11 @@ impl super::Apps {
     ) -> Result<runtime_collab::wire::shell::PackageCommand, String> {
         let app = self.launchable(&ask.app)?;
         let original = self.original_launch(&app)?;
-        let grants = serde_json::to_string(&self.app_grants(&app, &ask.workspace))
-            .map_err(|error| format!("refusing to launch {}: its grants: {error}", ask.app))?;
         self.run_with_signed_surface(&app);
         Ok(runtime_collab::wire::shell::PackageCommand {
             manifest: app.manifest_path,
             payload_root: app.payload_root,
             package_hash: original.package_hash,
-            grants,
             open: ask.open.clone(),
             visitor: ask.visitor,
         })
@@ -353,10 +477,75 @@ impl super::Apps {
         process: runtime_portal::descriptors::Owned,
     ) -> Result<(), String> {
         let pinned = Arc::new(process);
-        self.tickets.seat_started(ticket, Arc::clone(&pinned))?;
+        self.tickets
+            .seat_started(ticket, pid, Arc::clone(&pinned))?;
         tracing::info!(ticket, pid, "the seat's shell started a launch");
         forget_when_ended(Arc::clone(&self.tickets), ticket, pinned);
         Ok(())
+    }
+
+    /// Keep `event`, what the seat's shell saw become of the launch `ticket` it started: an end
+    /// is said as the end of a launch this daemon started is, and forgets the launch.
+    ///
+    /// # Errors
+    /// No launch with that ticket runs.
+    pub(crate) fn launch_event(&self, ticket: u64, event: LaunchEvent) -> Result<(), String> {
+        if let LaunchEvent::Phase { phase, after_ms } = &event {
+            tracing::debug!(ticket, phase, after_ms, "a launch's start went on");
+        }
+        if let Some((app, end)) = self.tickets.seen(ticket, event)? {
+            said_ended(&app, ticket, &end);
+        }
+        Ok(())
+    }
+
+    /// Decide `adopt`, a launch whose process the seat's shell holds already (`pid`, pinned by
+    /// `process`), and bind the process to it: its ticket. A process already bound to a launch of
+    /// the same app, workspace and window keeps that launch.
+    ///
+    /// # Errors
+    /// The launch is refused.
+    pub(crate) fn adopt(
+        &self,
+        adopt: &Adopt,
+        process: runtime_portal::descriptors::Owned,
+    ) -> Result<u64, String> {
+        if let Some(ticket) =
+            self.tickets
+                .seat_launch_of(adopt.pid, &adopt.app, &adopt.workspace, adopt.window)
+        {
+            return Ok(ticket);
+        }
+        let ask = LaunchAsk {
+            app: adopt.app.clone(),
+            workspace: adopt.workspace.clone(),
+            kind: adopt.kind.clone(),
+            open: None,
+            visitor: false,
+            window: adopt.window,
+            windowless: adopt.windowless,
+            member: None,
+        };
+        let ticket = self.decide(&ask)?;
+        if let Err(error) = self.seat_started(ticket, adopt.pid, process) {
+            self.tickets.forget(ticket);
+            return Err(error);
+        }
+        Ok(ticket)
+    }
+}
+
+/// Say how the launch `ticket` of `app` ended, as the shell that started it saw it: an end the
+/// person asked for or a clean exit is news to nobody; any other is what a person asking why the
+/// app stopped reads first.
+fn said_ended(app: &str, ticket: u64, end: &LaunchEnd) {
+    let said = end.stderr.join(" | ");
+    if end.asked_to_end || end.code == Some(0) {
+        tracing::info!(app, ticket, ?end.code, said, "an app ended");
+    } else if let Some(memory) = end.memory {
+        tracing::warn!(app, ticket, ?memory, said, "an app was ended for memory");
+    } else {
+        tracing::error!(app, ticket, ?end.code, ?end.signal, said, "an app ended as it ran");
     }
 }
 
@@ -450,5 +639,17 @@ impl tilo_app_host::shell::ShellLauncher for DeviceLauncher {
 
     fn admitted(&self, ticket: u64) -> Option<AdmittedLaunch> {
         self.0.tickets.admitted(ticket)
+    }
+
+    fn event(&self, ticket: u64, event: LaunchEvent) -> Result<(), String> {
+        self.0.launch_event(ticket, event)
+    }
+
+    fn adopt(
+        &self,
+        adopt: Adopt,
+        process: runtime_portal::descriptors::Owned,
+    ) -> Result<u64, String> {
+        self.0.adopt(&adopt, process)
     }
 }

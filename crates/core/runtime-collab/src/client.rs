@@ -1810,6 +1810,54 @@ impl ShellClient {
         }
     }
 
+    /// Tell the daemon what became of the launch `ticket` this shell started.
+    ///
+    /// # Errors
+    /// The daemon knows no such launch, or the link is down.
+    pub async fn launch_event(
+        &self,
+        ticket: u64,
+        event: crate::wire::shell::LaunchEvent,
+    ) -> Result<(), NotAvailable> {
+        match self
+            .call(crate::wire::shell::ShellCall::LaunchEvent { ticket, event })
+            .await?
+        {
+            crate::wire::shell::ShellReply::Noted(answer) => answer.map_err(NotAvailable::Refused),
+            other => Err(NotAvailable::Refused(format!(
+                "the daemon answered a launch's event with {other:?}"
+            ))),
+        }
+    }
+
+    /// Bind the process `process` pins (a pidfd), which `adopt` describes, to a launch the daemon
+    /// decides now: its ticket.
+    ///
+    /// # Errors
+    /// The daemon refused the launch, or the link is down.
+    pub async fn adopt(
+        &self,
+        mut adopt: crate::wire::shell::Adopt,
+        process: std::os::fd::OwnedFd,
+    ) -> Result<u64, NotAvailable> {
+        let connection_client = self.current();
+        let sender = connection_client.descriptors.as_ref().ok_or_else(|| {
+            NotAvailable::Refused("this shell link carries no descriptors".to_owned())
+        })?;
+        adopt.process = sender.send(process)?;
+        match self
+            .call(crate::wire::shell::ShellCall::Adopt(adopt))
+            .await?
+        {
+            crate::wire::shell::ShellReply::Adopted(answer) => {
+                answer.map_err(NotAvailable::Refused)
+            }
+            other => Err(NotAvailable::Refused(format!(
+                "the daemon answered an adopted launch with {other:?}"
+            ))),
+        }
+    }
+
     /// A packet socket to the device's tilolang processes, for one ask
     /// (`runtime_portal::device_processes`): admitted on the shell's own link, then handed over on
     /// the daemon's native socket with the secret it answered ([`hand_processes`]).

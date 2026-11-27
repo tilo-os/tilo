@@ -173,18 +173,27 @@ fn put_in_tiers(
 /// Put every cgroup a launch of `apps` runs in in its tier: the startup tier
 /// while the launch is opening, then the tier of what the person can see —
 /// and [`Tier::Session`] for `own`, the cgroup this session is in. `kills`
-/// watches each launch's own cgroup from here on.
+/// watches each launch's own cgroup from here on. Each launch whose cgroup
+/// moved, by its id, with the tier it is in now.
 pub(crate) fn tier_by_visibility(
     apps: &Running,
     on_screen: &[u32],
     own: Option<&Path>,
     kills: Option<&KernelKills>,
-) {
+) -> Vec<(u64, Tier)> {
     let visible: Vec<PathBuf> = on_screen
         .iter()
         .filter_map(|pid| launcher::app_cgroup::cgroup_of_pid(*pid))
         .collect();
     let launches = launches_of(apps);
+    let cgroups: Vec<(u64, PathBuf)> = running(apps)
+        .iter()
+        .filter_map(|(id, app)| Some((*id, launcher::app_cgroup::cgroup_of_pid(app.pid)?)))
+        .collect();
+    let before: Vec<Option<Tier>> = cgroups
+        .iter()
+        .map(|(_, dir)| launcher::app_cgroup::tier_of(dir))
+        .collect();
     if let Some(kills) = kills {
         for launch in launches
             .iter()
@@ -193,12 +202,23 @@ pub(crate) fn tier_by_visibility(
             kills.watch(&launch.dir);
         }
     }
-    put_in_tiers(
+    if put_in_tiers(
         &launches,
         &visible,
         own,
         launcher::priority::mem_total_bytes(),
-    );
+    ) == 0
+    {
+        return Vec::new();
+    }
+    cgroups
+        .into_iter()
+        .zip(before)
+        .filter_map(|((id, dir), before)| {
+            let now = launcher::app_cgroup::tier_of(&dir)?;
+            (before != Some(now)).then_some((id, now))
+        })
+        .collect()
 }
 
 /// The kernel's OOM kills in the launches' cgroups, noted in [`Ends`] as the

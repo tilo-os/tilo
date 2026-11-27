@@ -355,6 +355,16 @@ async fn launching(
             })?;
             ShellReply::Started(launcher.started(ticket, pid, process))
         }
+        ShellCall::LaunchEvent { ticket, event } => {
+            ShellReply::Noted(launcher.event(ticket, event))
+        }
+        ShellCall::Adopt(adopt) => {
+            let number = adopt.process;
+            let process = shell.received.take(number).ok_or_else(|| {
+                format!("the shell handed no adopted process as descriptor {number}")
+            })?;
+            ShellReply::Adopted(launcher.adopt(adopt, process))
+        }
         other => return Err(format!("{other:?} is no launch")),
     })
 }
@@ -574,9 +584,11 @@ fn answered(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
             | ShellCall::KeepsReceipts { .. }
             | ShellCall::Authorizes { .. }) => Box::pin(kept(&services.workspaces, call)).await,
             ShellCall::Vouch(vouch) => vouch_for(&shell, vouch)?,
-            call @ (ShellCall::Launch(_) | ShellCall::Orders | ShellCall::Started { .. }) => {
-                launching(&shell, &services, call).await?
-            }
+            call @ (ShellCall::Launch(_)
+            | ShellCall::Orders
+            | ShellCall::Started { .. }
+            | ShellCall::LaunchEvent { .. }
+            | ShellCall::Adopt(_)) => launching(&shell, &services, call).await?,
             ShellCall::Processes => hand_over(&shell)?,
             ShellCall::Action {
                 workspace,

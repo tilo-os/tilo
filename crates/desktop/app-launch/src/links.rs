@@ -762,17 +762,14 @@ fn send_window(
     Ok(())
 }
 
-/// The process `pid` and the ones that started it, up to a few parents: a
-/// window's process is the one the launcher started, or a child of it.
+/// The process `pid` and every one that started it, up to init: a window's process is the one
+/// the launcher started or any process below it, however deep a program nests what it starts
+/// (a shell, a runtime, a sandbox's own init).
 #[must_use]
 pub fn ancestry(pid: u32) -> Vec<u32> {
-    const DEPTH: usize = 8;
     let mut lineage = vec![pid];
     let mut current = pid;
-    for _ in 0..DEPTH {
-        let Some(parent) = parent_of(current) else {
-            break;
-        };
+    while let Some(parent) = parent_of(current) {
         if parent == 0 || lineage.contains(&parent) {
             break;
         }

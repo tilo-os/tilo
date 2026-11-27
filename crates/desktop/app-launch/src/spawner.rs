@@ -424,9 +424,14 @@ impl Spawner {
     /// cgroup this session itself runs in. A launch that is still opening has
     /// the startup tier; an app with no window on screen is in the background
     /// tier and gives memory back first; one whose window the person sees
-    /// again is in the foreground tier. `own` keeps the session's tier.
-    pub fn tier_by_visibility(&self, on_screen: &[u32], own: Option<&Path>) {
-        memory::tier_by_visibility(&self.running, on_screen, own, self.kills.as_ref());
+    /// again is in the foreground tier. `own` keeps the session's tier. Each
+    /// launch that moved, by its id, with the tier it is in now.
+    pub fn tier_by_visibility(
+        &self,
+        on_screen: &[u32],
+        own: Option<&Path>,
+    ) -> Vec<(u64, launcher::priority::Tier)> {
+        memory::tier_by_visibility(&self.running, on_screen, own, self.kills.as_ref())
     }
 
     /// Start `planned` with exactly the environment it planned: nothing the

@@ -125,6 +125,9 @@ impl Apps {
         if let Some(link) = link {
             state.held.insert(started.id, link);
         }
+        if let Some(ticket) = planned.ticket {
+            state.tickets.insert(started.id, ticket);
+        }
         drop(state);
         tracing::info!(
             app = %planned.app,
@@ -157,6 +160,7 @@ impl Apps {
             // The launch is over: its link retires with it, so the app's next window there starts a
             // process again, and its record keeps how far it got, for whoever reads it later.
             self.state.borrow_mut().held.remove(&event.id);
+            self.tell_daemon_ended(&event);
             let launch = self.state.borrow().launched.get(&event.id).cloned();
             // A keeper killed while no desktop was there took its app with it: this session never
             // started the app, and the tab it stood in says it stopped working once the saved
@@ -302,6 +306,7 @@ impl Apps {
             return;
         };
         let placed = desktop.with_policy(tilo_desktop_policy::DesktopPolicy::take_mapped);
+        let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
         for placed in placed {
             // A window of a connection the session made for an app, a spare's, is that app's
@@ -346,6 +351,9 @@ impl Apps {
                 continue;
             };
             launch.window = Some(placed.window);
+            if let (Some(launches), Some(launcher)) = (launches.as_ref(), launch.pid) {
+                launches.window_shown(launcher, pid, launch.started.elapsed());
+            }
             if launch.got == Got::Arriving {
                 launch.got = Got::Landed;
                 tracing::info!(
@@ -365,6 +373,42 @@ impl Apps {
                 launch.tab = Some(tab);
             }
         }
+    }
+
+    /// Tell the device's daemon how the launch `event` is about ended, when the daemon decided it.
+    fn tell_daemon_ended(&self, event: &Event) {
+        use tilo_app_launch::spawner::End;
+        let (ticket, launches) = {
+            let mut state = self.state.borrow_mut();
+            (state.tickets.remove(&event.id), state.launches.clone())
+        };
+        let (Some(ticket), Some(launches)) = (ticket, launches) else {
+            return;
+        };
+        let (code, signal) = match &event.end {
+            End::Exited { code, .. } => (Some(*code), None),
+            End::Signalled { signal, .. } => (None, Some(*signal)),
+            End::Failed(_) | End::KeeperStopped => (None, None),
+        };
+        let mut stderr = event.said.stderr.clone();
+        if let End::Failed(why) = &event.end {
+            stderr.push(why.clone());
+        }
+        launches.tell(
+            ticket,
+            runtime_collab::wire::shell::LaunchEvent::Ended(
+                runtime_collab::wire::shell::LaunchEnd {
+                    code,
+                    signal,
+                    memory: event.end.memory().map(|cause| match cause {
+                        Cause::Kernel => runtime_collab::wire::shell::MemoryKill::Kernel,
+                        Cause::Runaway => runtime_collab::wire::shell::MemoryKill::Runaway,
+                    }),
+                    stderr,
+                    asked_to_end: event.asked_to_end,
+                },
+            ),
+        );
     }
 
     /// Write down that launch `id` ended with `got`: what the launch's window is read as having

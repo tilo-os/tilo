@@ -147,8 +147,11 @@ fn spawn_with(
         "a host launch must never claim confinement"
     );
 
+    // Every unconfined launch runs in a scope of its own, a kept one too: its keeper and app join
+    // it before the keeper starts, so the memory watch, the tiers and a logout reach this launch
+    // alone, never the session's cgroup it would otherwise share. A kept launch's streams carry
+    // its keeper's output alone, so a refused scope is not said there.
     if let Some(busctl) = busctl
-        && !kept
         && let Err(error) = scope::join_with(
             busctl,
             &launch.desktop_id,
@@ -156,6 +159,7 @@ fn spawn_with(
             scope::Oom::OneProcess,
             scope_join_timeout,
         )
+        && !kept
     {
         eprintln!(
             "tilo-launcher: {} runs outside a session scope: {error}",

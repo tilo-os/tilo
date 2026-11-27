@@ -58,6 +58,9 @@ ReadWritePaths=/var/lib/tilo/device
 # when an account's first sign-in founds them. Without it that founding fails
 # on a read-only file system and the first login has no person.
 ReadWritePaths=/var/lib/tilo/user-identity
+# The computer's store of apps, which it installs and every person's session
+# starts apps from (tmpfiles' tilo.conf makes it readable to them).
+ReadWritePaths=/var/lib/tilo/apps
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

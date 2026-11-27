@@ -248,4 +248,132 @@ tilo_test_env::scenario! {
             assert_eq!(launcher.admitted(order.ticket), None);
         }
     }
+
+    // Where the person's shell follows the orders, a window the daemon decides for another caller
+    // is the shell's to start even on a daemon of the person's own account: the shell holds the
+    // display and the person's grants, so the window starts with the same grants either way.
+    phase a_window_goes_to_the_shell_that_follows_the_orders;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
+        let apps = Arc::new(apps(&store, &root, vec![root.join("missing/tilo-launcher")]));
+        let launcher = DeviceLauncher(Arc::clone(&apps));
+        assert!(orders_now(&launcher).is_empty(), "the shell asks, and nothing waits yet");
+        let ticket = apps.launch_asked(&LaunchAsk::package(VIEWER, WORKSPACE)).unwrap();
+        assert!(apps.launched.0.lock().unwrap().is_empty(), "the daemon started nothing");
+        let orders = orders_now(&launcher);
+        assert_eq!(
+            orders.iter().map(|order| order.ticket).collect::<Vec<_>>(),
+            vec![ticket]
+        );
+    }
+
+    // What the shell sees become of a launch it started is kept on the daemon's record of it, and
+    // its end forgets the launch; a process the shell holds already (a kept app it took back, a
+    // window it draws itself) is decided as a launch and bound to it once.
+    phase a_shells_launch_is_followed_to_its_end_and_a_held_process_is_adopted;
+    {
+        use runtime_collab::wire::shell::{Adopt, LaunchEnd, LaunchEvent, LaunchKind, MemoryTier};
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
+        let apps = Arc::new(
+            apps(&store, &root, vec![root.join("missing/tilo-launcher")]).ordering_of_the_seat(),
+        );
+        let launcher = DeviceLauncher(Arc::clone(&apps));
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let adopt = Adopt {
+            app: VIEWER.to_owned(),
+            workspace: WORKSPACE.to_owned(),
+            kind: LaunchKind::Package,
+            window: Some(3),
+            windowless: false,
+            pid: child.id(),
+            process: 0,
+        };
+        let ticket = launcher.adopt(adopt.clone(), pinned(&child)).unwrap();
+        assert_eq!(
+            launcher.admitted(ticket).map(|launch| launch.window),
+            Some(Some(3)),
+            "the adopted process holds its launch"
+        );
+        assert_eq!(
+            launcher.adopt(adopt.clone(), pinned(&child)),
+            Ok(ticket),
+            "a process adopted again keeps its launch"
+        );
+        let mut unknown = adopt;
+        unknown.app = "so.tilo.unknown".to_owned();
+        assert!(launcher.adopt(unknown, pinned(&child)).is_err());
+
+        let before = launcher
+            .event(
+                ticket + 100,
+                LaunchEvent::Phase {
+                    phase: "window".to_owned(),
+                    after_ms: 1,
+                },
+            )
+            .unwrap_err();
+        assert!(before.contains("no launch"), "{before}");
+        for event in [
+            LaunchEvent::Phase {
+                phase: "window".to_owned(),
+                after_ms: 42,
+            },
+            LaunchEvent::Window { pid: 77 },
+            LaunchEvent::Window { pid: 77 },
+            LaunchEvent::Tier(MemoryTier::Background),
+        ] {
+            launcher.event(ticket, event).unwrap();
+        }
+        assert_eq!(
+            apps.tickets.seen_of(ticket),
+            Some(executor::Seen {
+                phases: vec![("window".to_owned(), 42)],
+                windows: vec![77],
+                tier: Some(MemoryTier::Background),
+            })
+        );
+        launcher
+            .event(
+                ticket,
+                LaunchEvent::Ended(LaunchEnd {
+                    code: Some(1),
+                    signal: None,
+                    memory: None,
+                    stderr: vec!["it broke".to_owned()],
+                    asked_to_end: false,
+                }),
+            )
+            .unwrap();
+        assert_eq!(launcher.admitted(ticket), None, "an ended launch is forgotten");
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        // An order the shell never started ends all the same.
+        let mut ask = LaunchAsk::package(VIEWER, WORKSPACE);
+        ask.window = Some(4);
+        let never = apps.launch_asked(&ask).unwrap();
+        assert!(
+            launcher
+                .event(never, LaunchEvent::Window { pid: 1 })
+                .is_err(),
+            "nothing but its end is seen of an order not started"
+        );
+        launcher
+            .event(
+                never,
+                LaunchEvent::Ended(LaunchEnd {
+                    code: None,
+                    signal: None,
+                    memory: None,
+                    stderr: vec!["its window showed already".to_owned()],
+                    asked_to_end: false,
+                }),
+            )
+            .unwrap();
+        assert_eq!(apps.tickets.kind(never), None);
+    }
 }

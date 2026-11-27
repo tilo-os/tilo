@@ -158,8 +158,9 @@ pub struct Planned {
 }
 
 /// A package's launch as the device's daemon ordered it: the daemon decided it and built what it
-/// starts from the package's signed manifest; the session adds only what is its own (the display,
-/// its services, its environment).
+/// starts from the package's signed manifest; the session adds what is the person's own (the
+/// display, its services, its environment and the grants the person gave the app), as for any
+/// launch it plans.
 pub struct OrderedPackage<'a> {
     pub ticket: u64,
     pub app: &'a str,
@@ -168,8 +169,6 @@ pub struct OrderedPackage<'a> {
     pub payload_root: &'a Path,
     /// The hash of the signed package the daemon decided on: the launcher refuses any other.
     pub package_hash: &'a str,
-    /// The grants the daemon read for the app in its workspace.
-    pub grants: &'a collab_types::caps::LaunchGrants,
     pub open: Option<&'a Open>,
     pub visitor: bool,
 }
@@ -253,41 +252,60 @@ struct Package<'a> {
     payload_root: &'a Path,
 }
 
+/// Why `launch` starts no process, before anyone is asked to start one: a window already on its
+/// way, a notice of an app that stopped, content no plan opens here, or a record id that names no
+/// record. `None` for a launch the device's daemon decides.
+#[must_use]
+pub fn starts_nothing(launch: &Launch) -> Option<PlanError> {
+    match launch {
+        Launch::Package { .. } | Launch::Host { .. } => None,
+        Launch::Record { app, record, .. } => {
+            crate::routing::record(record)
+                .is_none()
+                .then(|| PlanError::NotARecord {
+                    app: app.clone(),
+                    record: record.clone(),
+                })
+        }
+        Launch::Content { app, .. } => Some(PlanError::ContentUnavailable { app: app.clone() }),
+        Launch::Window { id } => Some(PlanError::NothingToStart(format!("window {id}"))),
+        Launch::Crashed { app } => Some(PlanError::NothingToStart(app.clone())),
+    }
+}
+
 impl Planned {
-    /// The process `launch` starts, or why it starts none.
+    /// The process `launch` starts in a session no daemon decides its launches for (one that runs
+    /// with no link to it), from the apps installed here, or why it starts none.
     ///
     /// # Errors
-    /// The app is not installed here, its entry refuses to run, its grants
-    /// cannot be written, or the launch is one that starts nothing.
+    /// The app is not installed here, its entry refuses to run, its grants cannot be written, or
+    /// the launch is one that starts nothing ([`starts_nothing`]).
     pub fn of(launch: &Launch, context: &PlanContext<'_>) -> Result<Self, PlanError> {
+        if let Some(refused) = starts_nothing(launch) {
+            return Err(refused);
+        }
         match launch {
             Launch::Package { app, open } => Self::package(app, open.as_ref(), false, context),
-            // The record is opened by the app the launch names: the launch
-            // asks it for that record, and the app opens on it.
+            // The record is opened by the app the launch names: the launch asks it for that
+            // record, and the app opens on it.
             Launch::Record {
                 app,
                 record,
                 visitor,
             } => {
-                let open = crate::routing::record(record).ok_or_else(|| PlanError::NotARecord {
-                    app: app.clone(),
-                    record: record.clone(),
-                })?;
-                Self::package(app, Some(&open), *visitor, context)
+                let open = crate::routing::record(record);
+                Self::package(app, open.as_ref(), *visitor, context)
             }
-            Launch::Content { app, .. } => Err(PlanError::ContentUnavailable { app: app.clone() }),
             Launch::Host { desktop_id, open } => Self::host(desktop_id, open.as_ref(), context),
+            Launch::Content { app, .. } | Launch::Crashed { app } => {
+                Err(PlanError::NothingToStart(app.clone()))
+            }
             Launch::Window { id } => Err(PlanError::NothingToStart(format!("window {id}"))),
-            Launch::Crashed { app } => Err(PlanError::NothingToStart(app.clone())),
         }
     }
 
-    /// The installed Tilo package `app`, starting through the launcher and
-    /// opening `open`.
-    ///
-    /// # Errors
-    /// See [`Self::of`].
-    pub fn package(
+    /// The installed Tilo package `app`, starting through the launcher and opening `open`.
+    fn package(
         app: &str,
         open: Option<&Open>,
         visitor: bool,
@@ -304,12 +322,12 @@ impl Planned {
             manifest: &installed.manifest_path,
             payload_root: &installed.payload_root,
         };
-        Self::planned_package_granted(package, launcher, open, visitor, context)
+        Self::planned_package(package, launcher, open, visitor, context)
     }
 
     /// The process the device's daemon ordered for `ordered`: the launcher's command line for the
-    /// exact package the daemon decided on, with the grants it read, in this session's display and
-    /// environment.
+    /// exact package the daemon decided on, with the grants the person gave it, in this session's
+    /// display and environment.
     ///
     /// # Errors
     /// No launcher is installed, or the grants cannot be written.
@@ -318,28 +336,14 @@ impl Planned {
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
         let launcher = context.launcher.clone().ok_or(PlanError::NoLauncher)?;
-        let capabilities = launcher::capabilities::write_capability_file(
-            &context.workspace.directory,
-            ordered.app,
-            ordered.grants,
-        )
-        .map_err(|source| PlanError::Grants {
-            app: ordered.app.to_owned(),
-            source,
-        })?;
         let package = Package {
             id: ordered.app,
             title: ordered.title,
             manifest: ordered.manifest,
             payload_root: ordered.payload_root,
         };
-        let mut planned = Self::planned_package(
-            package,
-            launcher,
-            (ordered.open, ordered.visitor),
-            capabilities.as_deref(),
-            context,
-        )?;
+        let mut planned =
+            Self::planned_package(package, launcher, ordered.open, ordered.visitor, context)?;
         planned.args.push("--expected-package-hash".to_owned());
         planned.args.push(ordered.package_hash.to_owned());
         planned.ticket = Some(ordered.ticket);
@@ -347,7 +351,7 @@ impl Planned {
     }
 
     /// The launcher's command line and environment for `package`.
-    fn planned_package_granted(
+    fn planned_package(
         package: Package<'_>,
         launcher: PathBuf,
         open: Option<&Open>,
@@ -361,24 +365,6 @@ impl Planned {
                 app: package.id.to_owned(),
                 source,
             })?;
-        Self::planned_package(
-            package,
-            launcher,
-            (open, visitor),
-            capabilities.as_deref(),
-            context,
-        )
-    }
-
-    /// The launcher's command line and environment for `package`, its grants written to
-    /// `capabilities`.
-    fn planned_package(
-        package: Package<'_>,
-        launcher: PathBuf,
-        (open, visitor): (Option<&Open>, bool),
-        capabilities: Option<&Path>,
-        context: &PlanContext<'_>,
-    ) -> Result<Self, PlanError> {
         // What the person gave this app a choice on: bound into its sandbox at each reference,
         // and nothing another app was given.
         let granted = launcher::capabilities::write_granted_file(
@@ -784,7 +770,7 @@ mod tests {
         let context = planning(&environment, &workspace);
 
         // A package launches through the launcher with its workspace and the session's displays.
-        let planned = Planned::planned_package_granted(
+        let planned = Planned::planned_package(
             notes(),
             launcher(),
             Some(&Open::File("/home/you/notes.tilo-note".into())),
@@ -847,8 +833,8 @@ mod tests {
             authority: Some(&authority),
             ..planning(&environment, &authority_workspace)
         };
-        let planned = Planned::planned_package_granted(notes(), launcher(), None, false, &handed)
-            .expect("a plan");
+        let planned =
+            Planned::planned_package(notes(), launcher(), None, false, &handed).expect("a plan");
         let at = planned
             .args
             .iter()
@@ -875,7 +861,7 @@ mod tests {
             ..planning(&environment, &unsupported)
         };
         assert!(
-            !Planned::planned_package_granted(notes(), launcher(), None, false, &blind)
+            !Planned::planned_package(notes(), launcher(), None, false, &blind)
                 .expect("a plan")
                 .args
                 .iter()
@@ -899,7 +885,7 @@ mod tests {
             render_node: Some(PathBuf::from("/dev/dri/renderD128")),
             ..planning(&connector_environment, &workspace)
         };
-        let planned = Planned::planned_package_granted(
+        let planned = Planned::planned_package(
             mail(),
             launcher(),
             // Nothing a connector names to open is handed on either.
@@ -938,20 +924,22 @@ mod tests {
             );
         }
 
-        // A launch without a launcher or an installed package starts nothing, and a window on
-        // its way and a crash notice are not processes.
+        // A package launch is the daemon's to decide, and a window on its way and a crash notice
+        // are not processes.
+        let launched = Launch::parse("so.tilo.notes").expect("a package launch");
+        assert!(starts_nothing(&launched).is_none());
+        // A session no daemon decides for starts it from the apps installed here, or says why not.
         let mut without_launcher = planning(&environment, &workspace);
         without_launcher.launcher = None;
-        let launched = Launch::parse("so.tilo.notes").expect("a package launch");
         assert!(matches!(
             Planned::of(&launched, &without_launcher),
-            Ok(_) | Err(PlanError::NoLauncher | PlanError::NotInstalled(_))
+            Err(PlanError::NoLauncher)
         ));
         for launch in ["window:12", "crashed:so.tilo.canvas"] {
             let launch = Launch::parse(launch).expect("a launch");
             assert!(matches!(
-                Planned::of(&launch, &without_launcher),
-                Err(PlanError::NothingToStart(_))
+                starts_nothing(&launch),
+                Some(PlanError::NothingToStart(_))
             ));
         }
 
@@ -964,9 +952,8 @@ mod tests {
             Launch::Record { record, .. } => crate::routing::record(&record),
             other => panic!("a record launch: {other:?}"),
         };
-        let planned =
-            Planned::planned_package_granted(notes(), launcher(), open.as_ref(), false, &context)
-                .expect("a plan");
+        let planned = Planned::planned_package(notes(), launcher(), open.as_ref(), false, &context)
+            .expect("a plan");
         assert!(
             planned
                 .args
@@ -980,9 +967,8 @@ mod tests {
             "the person's own window browses with their sign-ins: {:?}",
             planned.args
         );
-        let visitor =
-            Planned::planned_package_granted(notes(), launcher(), open.as_ref(), true, &context)
-                .expect("a plan");
+        let visitor = Planned::planned_package(notes(), launcher(), open.as_ref(), true, &context)
+            .expect("a plan");
         assert!(
             visitor.args.iter().any(|arg| arg == "--open-as-visitor"),
             "a window for an agent browses as a visitor: {:?}",
@@ -992,22 +978,18 @@ mod tests {
         // than starting one that would show nothing.
         let launch = Launch::parse("record:so.tilo.notes:not a record").expect("a launch");
         assert!(matches!(
-            Planned::of(&launch, &context),
-            Err(PlanError::NotARecord { .. })
+            starts_nothing(&launch),
+            Some(PlanError::NotARecord { .. })
         ));
-        // A record it names correctly goes on to the app, and stops only where every launch
-        // would: the app is not installed here.
+        // A record it names correctly goes on to the daemon, which decides it.
         let launch =
             Launch::parse(&format!("record:so.tilo.notes:{}", record.as_str())).expect("a launch");
-        assert!(matches!(
-            Planned::of(&launch, &context),
-            Err(PlanError::NoLauncher | PlanError::NotInstalled(_))
-        ));
+        assert!(starts_nothing(&launch).is_none());
         let launch = Launch::parse(&format!("content:so.tilo.notes:{}", "0".repeat(64)))
             .expect("a content launch");
         assert!(matches!(
-            Planned::of(&launch, &context),
-            Err(PlanError::ContentUnavailable { .. })
+            starts_nothing(&launch),
+            Some(PlanError::ContentUnavailable { .. })
         ));
 
         // A host app runs through the launcher with the document it opens, and is told nothing

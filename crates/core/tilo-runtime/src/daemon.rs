@@ -1344,14 +1344,34 @@ fn record_shell(session: &Arc<Daemon>) -> crate::seats::RecordShell {
 /// native endpoint serves a process the daemon started for it ([`Frames::of_an_app`]): whatever
 /// process holds it acts as the app, so a shell's programs reach the daemon as Terminal even where
 /// the daemon cannot see their processes. It stands for no process the daemon started: nothing is
-/// released to it that is kept for one ([`crate::device::vault_release`]).
+/// released to it that is kept for one ([`crate::device::vault_release`]). Only Terminal, which owns
+/// the workspace's shell environments, and an app whose signed manifest declares a shell of its
+/// own (`ush`) are served one, and an ask that names the app's launch only while that launch runs.
 fn shell_lines(session: &Arc<Daemon>) -> crate::seats::ShellLines {
     let session = Arc::downgrade(session);
-    Arc::new(move |app: &str, workspace: &str| {
+    Arc::new(move |app: &str, workspace: &str, ticket: Option<u64>| {
         let session = session
             .upgrade()
             .ok_or_else(|| "this computer's daemon is stopping".to_owned())?;
+        if app != tilo_app_id::apps::TERMINAL
+            && !session.app_declares_service(app, launcher::services::USH_SERVICE)
+        {
+            return Err(format!(
+                "{app} declares no shell of its own, so none is served for it"
+            ));
+        }
         let workspace = session.shell_workspace(workspace)?;
+        if let Some(ticket) = ticket {
+            let launch = session
+                .admitted_launch(ticket)
+                .ok_or_else(|| format!("no launch {ticket} of {app} runs"))?;
+            if launch.app != app || launch.workspace != workspace {
+                return Err(format!(
+                    "launch {ticket} is of {} in {}, not of {app} in {workspace}",
+                    launch.app, launch.workspace
+                ));
+            }
+        }
         let failed = |error: io::Error| format!("no connection was made for the shell: {error}");
         let (ours, theirs) = tilo_socket::pair().map_err(failed)?;
         let at = AppAt {

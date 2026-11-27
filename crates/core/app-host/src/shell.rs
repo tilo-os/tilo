@@ -329,6 +329,27 @@ pub trait ShellLauncher: Send + Sync {
     /// What the launch `ticket` was recorded as, while it runs: what a connection vouched for
     /// with it is admitted as.
     fn admitted(&self, ticket: u64) -> Option<AdmittedLaunch>;
+
+    /// Keep `event`, what became of the launch `ticket` the shell started, on the launch's record.
+    ///
+    /// # Errors
+    /// No launch with that ticket was ordered of the shell.
+    fn event(
+        &self,
+        ticket: u64,
+        event: runtime_collab::wire::shell::LaunchEvent,
+    ) -> Result<(), String>;
+
+    /// Decide the launch `adopt` describes, which the shell's process `process` runs already, and
+    /// bind the process to it: its ticket.
+    ///
+    /// # Errors
+    /// The launch is refused.
+    fn adopt(
+        &self,
+        adopt: runtime_collab::wire::shell::Adopt,
+        process: runtime_portal::descriptors::Owned,
+    ) -> Result<u64, String>;
 }
 
 /// A launch the daemon recorded, as a connection vouched for with its ticket is admitted.

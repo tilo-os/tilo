@@ -236,6 +236,20 @@ impl Daemon {
         self.apps.declares(app, capability)
     }
 
+    /// Whether the app `app` installed here declares the session service `service` in its signed
+    /// manifest's sandbox.
+    pub(crate) fn app_declares_service(&self, app: &str, service: &str) -> bool {
+        self.apps.declares_service(app, service)
+    }
+
+    /// What the launch `ticket` this device decided runs as, while it runs.
+    pub(crate) fn admitted_launch(
+        &self,
+        ticket: u64,
+    ) -> Option<tilo_app_host::shell::AdmittedLaunch> {
+        self.apps.admitted_launch(ticket)
+    }
+
     /// The person's id, hex of their root, as which this device acts.
     pub(crate) fn person_id(&self) -> String {
         hex::encode(self.cert.user_public_key)

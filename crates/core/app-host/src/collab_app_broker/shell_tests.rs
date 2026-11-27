@@ -114,6 +114,22 @@ impl crate::shell::ShellLauncher for Launched {
         Err(format!("no launch {ticket} was ordered of this shell"))
     }
 
+    fn event(
+        &self,
+        ticket: u64,
+        _: runtime_collab::wire::shell::LaunchEvent,
+    ) -> Result<(), String> {
+        Err(format!("no launch {ticket} was ordered of this shell"))
+    }
+
+    fn adopt(
+        &self,
+        adopt: runtime_collab::wire::shell::Adopt,
+        _: runtime_portal::descriptors::Owned,
+    ) -> Result<u64, String> {
+        Err(format!("{} is adopted by no launcher here", adopt.app))
+    }
+
     fn admitted(&self, ticket: u64) -> Option<crate::shell::AdmittedLaunch> {
         let (_, app, workspace, window) = self
             .0

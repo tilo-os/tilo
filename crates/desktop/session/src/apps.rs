@@ -198,6 +198,9 @@ struct State {
     /// The link of each launch still running, by the launch's id: the end of the launch retires it,
     /// so the app's next window there starts a process again.
     held: BTreeMap<u64, HeldLink>,
+    /// The device daemon's ticket of each launch still running that it decided, by the launch's
+    /// id: what the daemon is told of the launch under.
+    tickets: BTreeMap<u64, u64>,
     /// The windows apps asked this session for, by app and in ask order: each starts in the tab the
     /// shell holds for it once the shell asks back ([`Apps::start_asked`]).
     planned: BTreeMap<String, VecDeque<WindowAsk>>,
@@ -420,6 +423,7 @@ impl Apps {
                 links: None,
                 me: Weak::new(),
                 held: BTreeMap::new(),
+                tickets: BTreeMap::new(),
                 planned: BTreeMap::new(),
                 sign_in_tabs: BTreeMap::new(),
                 sign_ins_over: std::collections::BTreeSet::new(),
@@ -960,10 +964,25 @@ impl Apps {
     /// each window the shell shows, `own` the cgroup this session runs in (see
     /// [`tilo_app_launch::Spawner`]).
     pub fn tier_by_visibility(&self, on_screen: &[u32], own: Option<&std::path::Path>) {
-        self.state
-            .borrow()
-            .spawner
-            .tier_by_visibility(on_screen, own);
+        use launcher::priority::Tier;
+        use runtime_collab::wire::shell::{LaunchEvent, MemoryTier};
+        let state = self.state.borrow();
+        let moved = state.spawner.tier_by_visibility(on_screen, own);
+        let Some(launches) = state.launches.as_ref() else {
+            return;
+        };
+        // The device's daemon keeps the tier of each launch it decided.
+        for (id, tier) in moved {
+            let tier = match tier {
+                Tier::Startup => MemoryTier::Startup,
+                Tier::Foreground => MemoryTier::Foreground,
+                Tier::Background => MemoryTier::Background,
+                Tier::Session => continue,
+            };
+            if let Some(ticket) = state.tickets.get(&id) {
+                launches.tell(*ticket, LaunchEvent::Tier(tier));
+            }
+        }
     }
 
     /// The session is ending: every app it started that still runs is asked to end with it, but
@@ -1025,6 +1044,11 @@ impl Apps {
             if !kept.launch.service {
                 if let Some(launches) = &launches {
                     launches.started(kept.pid, &kept.launch.app, &kept.launch.workspace, false);
+                    // A kept app the run before started is a launch the daemon decides again for
+                    // this run: its connections are vouched for by the ticket it answers.
+                    if let Some(ticket) = launches.adopt(adopted_launch(&kept.launch), kept.pid) {
+                        state.tickets.insert(kept.id, ticket);
+                    }
                 }
                 state.launched.insert(
                     kept.id,
@@ -2266,6 +2290,11 @@ impl Apps {
         new_window: bool,
         instance: Option<u64>,
     ) -> Result<Planned, tilo_app_launch::PlanError> {
+        // Nothing the daemon decides: a window already arriving, a notice, content no plan opens
+        // here, a record id that names no record.
+        if let Some(refused) = tilo_app_launch::plan::starts_nothing(launch) {
+            return Err(refused);
+        }
         let decided = self
             .state
             .borrow()
@@ -2273,14 +2302,18 @@ impl Apps {
             .as_ref()
             .filter(|launches| launches.decided_by_the_daemon())
             .cloned();
-        // Nothing the daemon decides (a window already arriving, a notice, content no plan opens
-        // here) is planned here, and the plan says why it starts nothing.
-        let order = match decided.zip(asked_of(launch, workspace, new_window, instance)) {
-            Some((launches, ask)) => Some(
-                launches
-                    .order(ask)
-                    .map_err(tilo_app_launch::PlanError::Refused)?,
-            ),
+        // A session with no link to the device's daemon starts what is installed here.
+        let order = match decided {
+            Some(launches) => {
+                let ask = asked_of(launch, workspace, new_window, instance).ok_or_else(|| {
+                    tilo_app_launch::PlanError::NothingToStart(format!("{launch:?}"))
+                })?;
+                Some(
+                    launches
+                        .order(ask)
+                        .map_err(tilo_app_launch::PlanError::Refused)?,
+                )
+            }
             None => None,
         };
         self.with_plan_context(
@@ -2939,9 +2972,33 @@ fn handed<'a>(
 #[cfg(test)]
 mod tests;
 
+/// The launch the device's daemon is asked to adopt for the kept app `kept` this run took back:
+/// one of the machine's own apps, by the entry it was asked for.
+#[cfg(target_os = "linux")]
+fn adopted_launch(kept: &tilo_app_launch::kept::KeptLaunch) -> runtime_collab::wire::shell::Adopt {
+    use runtime_collab::wire::shell::{Adopt, HostEntry, HostKind, LaunchKind};
+    Adopt {
+        app: kept.app.clone(),
+        workspace: kept.workspace.clone(),
+        kind: LaunchKind::Host {
+            kind: HostKind::System,
+            entry: HostEntry::Desktop {
+                id: kept.app.clone(),
+                files: Vec::new(),
+                urls: Vec::new(),
+                new_window: false,
+            },
+        },
+        window: None,
+        windowless: false,
+        pid: 0,
+        process: 0,
+    }
+}
+
 /// What the device's daemon is asked to decide for `launch` in `workspace`: a package, a record
 /// of one, or one of the machine's own apps, with the tab the shell holds for its window. `None`
-/// for a launch that starts nothing.
+/// for a launch that starts nothing ([`tilo_app_launch::plan::starts_nothing`]).
 fn asked_of(
     launch: &Launch,
     workspace: &Workspace,
@@ -2971,7 +3028,6 @@ fn asked_of(
             record,
             visitor,
         } => {
-            // A record id that names no record is no launch: its plan says so.
             let opens = tilo_app_launch::routing::record(record)?;
             let mut ask = LaunchAsk::package(app.clone(), into);
             ask.open = opened(Some(&opens));
@@ -3027,13 +3083,6 @@ fn ordered(
     use runtime_collab::wire::shell::{HostEntry, OrderCommand};
     let mut planned = match &order.command {
         OrderCommand::Package(command) => {
-            let grants: collab_types::caps::LaunchGrants = serde_json::from_str(&command.grants)
-                .map_err(|error| {
-                    tilo_app_launch::PlanError::Refused(format!(
-                        "the grants the daemon read for {} do not read: {error}",
-                        order.app
-                    ))
-                })?;
             let open = command.open.as_ref().map(|open| {
                 if std::path::Path::new(open).is_absolute() {
                     tilo_app_launch::Open::File(std::path::PathBuf::from(open))
@@ -3049,7 +3098,6 @@ fn ordered(
                     manifest: &command.manifest,
                     payload_root: &command.payload_root,
                     package_hash: &command.package_hash,
-                    grants: &grants,
                     open: open.as_ref(),
                     visitor: command.visitor,
                 },
