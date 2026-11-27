@@ -218,7 +218,7 @@ class Closure(Scratch):
         system = self.tree({"libc.so.6": elf(rela=[(0x2000, R_X86_64_RELATIVE), (0x9000, R_X86_64_GLOB_DAT)]),
                             "libgstreamer-1.0.so.0": elf()})
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
-                                           [runtime / "calculator"], [system])
+                                           [ratchet.App("calculator", runtime / "calculator")], [system])
         self.assertEqual(status, 0, lines)
         self.assertIn("libruntime_dylib.so: 3 objects at exec, relocations write 3 pages across them: "
                       "libruntime_dylib.so libstd-1.so libc.so.6", lines)
@@ -231,7 +231,7 @@ class Closure(Scratch):
                              "libbridge.so": elf(needed=["libgstreamer-1.0.so.0"])})
         system = self.tree({"libc.so.6": elf(), "libgstreamer-1.0.so.0": elf()})
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
-                                           [runtime / "notes"], [system])
+                                           [ratchet.App("notes", runtime / "notes")], [system])
         self.assertEqual(status, 1)
         self.assertIn("error: notes loads libgstreamer-1.0.so.0 at exec (libgstreamer-1.0.so.0 <- "
                       "libbridge.so <- notes); none of libgst, libglib-2.0 may be", lines)
@@ -246,14 +246,14 @@ class Closure(Scratch):
         engine = runtime / "libtilo_typst_engine.so"
         engines = [engine, runtime / "libtilo_timezone_engine.so"]
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
-                                           [runtime / "calculator"], [system], engines)
+                                           [ratchet.App("calculator", runtime / "calculator")], [system], engines)
         self.assertEqual(status, 0, lines)
         self.assertTrue(any(line.startswith("engine libtilo_typst_engine.so x86_64: ") and "1 dynamic relocations"
                             in line for line in lines), lines)
         # An app that plays no media and typesets nothing must not map Typst.
         (runtime / "calculator").write_bytes(elf(needed=["libruntime_dylib.so", "libtilo_typst_engine.so"]))
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64",
-                                           [runtime / "calculator"], [system], engines)
+                                           [ratchet.App("calculator", runtime / "calculator")], [system], engines)
         self.assertEqual(status, 1)
         self.assertIn("error: calculator loads the engine libtilo_typst_engine.so at exec "
                       "(libtilo_typst_engine.so <- calculator); an engine library is loaded only by the app "
@@ -280,13 +280,13 @@ class Closure(Scratch):
         users = budget('apps_without_media = ["clocks"]\n' + TEXT
                        + '[engine_users]\n"libtilo_timezone_engine.so" = ["clocks"]\n')
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", users, "x86_64",
-                                           [runtime / "clocks"], [system], engines)
+                                           [ratchet.App("clocks", runtime / "clocks", ("libtilo_timezone_engine.so",))], [system], engines)
         self.assertEqual(status, 0, lines)
         # Clocks uses the zone database, not Typst: Typst at its start fails.
         (runtime / "clocks").write_bytes(elf(needed=["libruntime_dylib.so", "libtilo_timezone_engine.so",
                                                      "libtilo_typst_engine.so"]))
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", users, "x86_64",
-                                           [runtime / "clocks"], [system], engines)
+                                           [ratchet.App("clocks", runtime / "clocks", ("libtilo_timezone_engine.so",))], [system], engines)
         self.assertEqual(status, 1)
         self.assertIn("error: clocks loads the engine libtilo_typst_engine.so at exec "
                       "(libtilo_typst_engine.so <- clocks); an engine library is loaded only by the app "
@@ -294,9 +294,72 @@ class Closure(Scratch):
         # Unlisted, the zone database fails too.
         status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so",
                                            budget('apps_without_media = ["clocks"]\n' + TEXT), "x86_64",
-                                           [runtime / "clocks"], [system], engines[:1])
+                                           [ratchet.App("clocks", runtime / "clocks")], [system], engines[:1])
         self.assertEqual(status, 1)
         self.assertTrue(any("clocks loads the engine libtilo_timezone_engine.so" in line for line in lines), lines)
+
+    def test_a_tilolang_app_is_checked_through_the_process_it_runs(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
+                             "libtilo_timezone_engine.so": elf(needed=["libruntime_dylib.so", "libc.so.6"]),
+                             "libtilo_typst_engine.so": elf(needed=["libruntime_dylib.so", "libc.so.6"]),
+                             "tilolang-process": elf(needed=["libruntime_dylib.so", "libc.so.6"])})
+        system = self.tree({"libc.so.6": elf()})
+        engines = [runtime / "libtilo_timezone_engine.so", runtime / "libtilo_typst_engine.so"]
+        catalog = {"tl-clocks": {"name": "tl-clocks", "kind": "tilolang", "id": "so.tilo.clocks",
+                                 "binary": "", "dir": "apps/tl/clocks"}}
+        users = budget('apps_without_media = ["clocks"]\n' + TEXT
+                       + '[engine_users]\n"libtilo_timezone_engine.so" = ["clocks"]\n')
+        apps, problems = ratchet.apps_of(catalog, users, runtime)
+        self.assertEqual(problems, [])
+        self.assertEqual(apps, [ratchet.App("clocks", runtime / "tilolang-process",
+                                            ("libtilo_timezone_engine.so",), True)])
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", users, "x86_64", apps, [system], engines)
+        self.assertEqual(status, 0, lines)
+        # The process loads no engine at exec: the app asks for the one it uses later.
+        (runtime / "tilolang-process").write_bytes(elf(needed=["libruntime_dylib.so", "libtilo_typst_engine.so"]))
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", users, "x86_64", apps, [system], engines)
+        self.assertEqual(status, 1)
+        self.assertIn("error: tilolang-process loads the engine libtilo_typst_engine.so at exec "
+                      "(libtilo_typst_engine.so <- tilolang-process); an engine library is loaded only by the "
+                      "app that uses it", lines)
+
+    def test_an_engine_a_tilolang_app_opens_is_checked_for_media(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
+                             "tilolang-process": elf(needed=["libruntime_dylib.so"]),
+                             "libtilo_timezone_engine.so": elf(needed=["libruntime_dylib.so", "libgstvideo-1.0.so.0"]),
+                             "libgstvideo-1.0.so.0": elf(needed=["libc.so.6"])})
+        system = self.tree({"libc.so.6": elf()})
+        users = budget('apps_without_media = ["clocks"]\n' + TEXT
+                       + '[engine_users]\n"libtilo_timezone_engine.so" = ["clocks"]\n')
+        apps = [ratchet.App("clocks", runtime / "tilolang-process", ("libtilo_timezone_engine.so",), True)]
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", users, "x86_64", apps, [system],
+                                           [runtime / "libtilo_timezone_engine.so"])
+        self.assertEqual(status, 1)
+        self.assertIn("error: libtilo_timezone_engine.so loads libgstvideo-1.0.so.0 when the app opens it "
+                      "(libgstvideo-1.0.so.0 <- libtilo_timezone_engine.so); none of libgst, libglib-2.0 may be",
+                      lines)
+
+    def test_an_app_of_apps_without_media_resolves_by_name_id_or_directory(self):
+        catalog = {"file-explorer": {"name": "file-explorer", "kind": "native", "id": "so.tilo.file-explorer",
+                                     "binary": "file-explorer", "manifest": "apps/files/tilo-app.toml"},
+                   "tl-notes": {"name": "tl-notes", "kind": "tilolang", "id": "so.tilo.notes",
+                                "binary": "", "dir": "apps/tl/notes"}}
+        self.assertEqual(ratchet.app_of(catalog, "files")["name"], "file-explorer")
+        self.assertEqual(ratchet.app_of(catalog, "so.tilo.notes")["name"], "tl-notes")
+        self.assertEqual(ratchet.app_of(catalog, "tl-notes")["name"], "tl-notes")
+        self.assertIsNone(ratchet.app_of(catalog, "clocks"))
+
+    def test_an_app_of_apps_without_media_that_was_not_built_fails(self):
+        directory = pathlib.Path("/nonexistent")
+        catalog = {"tl-clocks": {"name": "tl-clocks", "kind": "tilolang", "id": "so.tilo.clocks",
+                                 "binary": "", "dir": "apps/tl/clocks"}}
+        apps, problems = ratchet.apps_of(catalog, budget('apps_without_media = ["clocks"]\n' + TEXT), directory)
+        self.assertEqual(apps, [])
+        self.assertEqual(problems, ["error: clocks: nothing was built for it; "
+                                    "/nonexistent/tilolang-process is missing"])
+        apps, problems = ratchet.apps_of({}, budget('apps_without_media = ["clocks"]\n' + TEXT), directory)
+        self.assertEqual(apps, [])
+        self.assertEqual(problems, ["error: clocks of apps_without_media is no app of the collection"])
 
     def test_engine_users_name_an_engine_and_apps_without_media(self):
         for table in ('[engine_users]\n"libtilo_timezone_engine.so" = ["calendar"]\n',

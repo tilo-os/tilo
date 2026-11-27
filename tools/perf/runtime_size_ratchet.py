@@ -27,8 +27,12 @@ Engines a few apps use live in libraries of their own beside the runtime
 (crates/engines/loadable/). `measure --engine FILE` reports each one's
 numbers, fails when one does not link the runtime, and fails when an app of
 `apps_without_media` loads one at exec: an engine is loaded only by its apps,
-and an app of that list that uses one is named in `[engine_users]`. Each
-engine's file has a budget of its own (`[engines.<arch>]`, by library name),
+and an app of that list that uses one is named in `[engine_users]`. A tilolang
+app (a package under `apps/tl`) has no binary of its own: it runs on
+`tilolang-process`, the one binary every tilolang app executes, so the check
+reads that process's closure, and the engines the app opens are checked in
+their own files for a library of `needed_absent`. Each engine's file has a
+budget of its own (`[engines.<arch>]`, by library name),
 with the same headroom, rounding and raise files: the build check fails when
 one is over its budget or has none.
 
@@ -84,6 +88,10 @@ ROUNDING = {"bytes": 64 * 1024, "relocation_bytes": 64 * 1024, "relocated_bytes"
 SLACK = tapp.SLACK
 MIN_REASON = tapp.MIN_REASON
 PAGE = 4096
+# The binary every tilolang app runs (crates/lang/tilolang-process/tilo-runtime.toml): one process
+# for all of them, so what it loads at exec is each of those apps', and the engines an app opens
+# later are read from their own files.
+TILOLANG_PROCESS = "tilolang-process"
 RUNTIME_PACKAGE = "so.tilo.runtime"
 DYLIB = "lib/libruntime_dylib.so"
 REGISTRY = "https://apps.tilo.so"
@@ -116,6 +124,16 @@ class ElfStats:
 
     def metrics(self) -> dict[str, int]:
         return {name: getattr(self, name) for name in METRICS}
+
+
+@dataclass(frozen=True)
+class App:
+    """An app of `apps_without_media` as the release built it: the binary that runs it, and the
+    engines it may load."""
+    name: str
+    binary: pathlib.Path
+    engines: tuple[str, ...] = ()
+    tilolang: bool = False
 
 
 def _cstring(table: bytes, offset: int) -> str:
@@ -380,8 +398,11 @@ def closure(path: pathlib.Path, stats: ElfStats,
 
 def closure_lines(path: pathlib.Path, stats: ElfStats, budget: Budget,
                   directories: list[pathlib.Path],
-                  engines: frozenset[str] = frozenset()) -> tuple[int, list[str]]:
-    """Fail when any object loaded with `path` is a library of `needed_absent` or of `engines`."""
+                  engines: frozenset[str] = frozenset(),
+                  when: str = "at exec") -> tuple[int, list[str]]:
+    """Fail when any object loaded with `path` is a library of `needed_absent` or of `engines`.
+
+    `when` says what loads it: `path`'s own start, or an app opening an engine library."""
     found, errors = closure(path, stats, [path.parent, *directories])
     for name, (_, parent) in found.items():
         if not media(name, budget) and name not in engines:
@@ -391,15 +412,36 @@ def closure_lines(path: pathlib.Path, stats: ElfStats, budget: Budget,
             chain.append(parent)
             parent = found[parent][1]
         if name in engines:
-            errors.append(f"error: {path.name} loads the engine {name} at exec ({' <- '.join(chain)}); "
+            errors.append(f"error: {path.name} loads the engine {name} {when} ({' <- '.join(chain)}); "
                           "an engine library is loaded only by the app that uses it")
         else:
-            errors.append(f"error: {path.name} loads {name} at exec ({' <- '.join(chain)}); none of "
+            errors.append(f"error: {path.name} loads {name} {when} ({' <- '.join(chain)}); none of "
                           f"{', '.join(budget.needed_absent)} may be")
     pages = sum(entry[0].relocated_bytes for entry in found.values()) // PAGE
-    summary = (f"{path.name}: {len(found)} objects at exec, relocations write {pages} pages "
+    summary = (f"{path.name}: {len(found)} objects {when}, relocations write {pages} pages "
                f"across them: {' '.join(found)}")
     return (1 if errors else 0), [*errors, summary]
+
+
+def binary_lines(binary: pathlib.Path, budget: Budget, directories: list[pathlib.Path],
+                 engines: dict[str, pathlib.Path],
+                 allowed: frozenset[str] = frozenset()) -> tuple[int, list[str]]:
+    """What `binary` loads at exec, failing on a media library or on an engine not `allowed`."""
+    try:
+        stats = read_elf(binary)
+    except (ValueError, struct.error) as error:
+        return 1, [f"error: {binary}: {error}"]
+    return closure_lines(binary, stats, budget, directories, frozenset(engines) - allowed)
+
+
+def engine_closure(engine: pathlib.Path, budget: Budget,
+                   directories: list[pathlib.Path]) -> tuple[int, list[str]]:
+    """What an app loads with the engine it opens: no media library may be among them."""
+    try:
+        stats = read_elf(engine)
+    except (ValueError, struct.error) as error:
+        return 1, [f"error: {engine}: {error}"]
+    return closure_lines(engine, stats, budget, directories, when="when the app opens it")
 
 
 def raise_lines(what: str, table: str, key: str, added: int) -> list[str]:
@@ -449,10 +491,55 @@ def engine_lines(path: pathlib.Path, runtime: ElfStats, runtime_name: str,
     return status, lines
 
 
-def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: list[pathlib.Path] = (),
+def app_of(catalog: dict[str, dict[str, str]], name: str) -> dict[str, str] | None:
+    """The app `name` of a catalog (`tapp.app_release(root).app_catalog(root)`).
+
+    A name matches an app's name, its id, or the directory it is built from: a name in
+    `apps_without_media` is an app, not a build, so it keeps naming it when the app moves from a
+    Rust binary to a tilolang package."""
+    lookups = (lambda app: app.get("name"), lambda app: app.get("id"),
+               lambda app: pathlib.PurePosixPath(
+                   app.get("dir") or pathlib.PurePosixPath(app["manifest"]).parent).name)
+    for lookup in lookups:
+        for app in catalog.values():
+            if lookup(app) == name:
+                return app
+    return None
+
+
+def apps_of(catalog: dict[str, dict[str, str]], budget: Budget,
+            apps_dir: pathlib.Path) -> tuple[list[App], list[str]]:
+    """Each app of `apps_without_media` as `apps_dir` holds it, and a problem for each it does not.
+
+    A native app is its own binary; a tilolang app has none, and runs on the one process every
+    tilolang app of the device runs."""
+    apps: list[App] = []
+    problems: list[str] = []
+    for name in budget.apps_without_media:
+        app = app_of(catalog, name)
+        if app is None:
+            problems.append(f"error: {name} of apps_without_media is no app of the collection")
+            continue
+        tilolang = app.get("kind") == "tilolang"
+        binary = apps_dir / (TILOLANG_PROCESS if tilolang else app["binary"])
+        if not binary.is_file():
+            problems.append(f"error: {name}: nothing was built for it; {binary} is missing")
+            continue
+        engines = tuple(library for library, users in budget.engine_users.items() if name in users)
+        apps.append(App(name, binary, engines, tilolang))
+    return apps, problems
+
+
+def resolved_apps(budget: Budget, apps_dir: pathlib.Path,
+                  root: pathlib.Path = REPO) -> tuple[list[App], list[str]]:
+    """`apps_of` over the apps this checkout holds, as the app release reads them."""
+    return apps_of(tapp.app_release(root).app_catalog(root), budget, apps_dir)
+
+
+def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: list[App] = (),
             directories: list[pathlib.Path] | None = None,
             engines: list[pathlib.Path] = ()) -> tuple[int, list[str], ElfStats]:
-    """The dylib against its budgets; with `directories`, also what it and `apps` load at exec.
+    """The dylib against its budgets; with `directories`, also what it and `apps` load.
 
     Each of `engines` is reported, and must link the runtime and stay out of what `apps` load."""
     stats = read_elf(path)
@@ -479,18 +566,33 @@ def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: l
     lines += more
     if not apps:
         lines.append("no app of apps_without_media was built; checked what every app loads with the runtime")
+    engine_files = {engine.name: engine for engine in engines}
+    process: tuple[int, list[str]] | None = None
+    opened: dict[str, tuple[int, list[str]]] = {}
     for app in apps:
-        try:
-            app_stats = read_elf(app)
-        except (ValueError, struct.error) as error:
-            status = 1
-            lines.append(f"error: {app}: {error}")
+        if not app.tilolang:
+            checked, more = binary_lines(app.binary, budget, [path.parent, *directories],
+                                         engine_files, frozenset(app.engines))
+            status |= checked
+            lines += more
             continue
-        uses = {library for library, users in budget.engine_users.items() if app.name in users}
-        checked, more = closure_lines(app, app_stats, budget, [path.parent, *directories],
-                                      frozenset(engine.name for engine in engines) - uses)
-        status |= checked
-        lines += more
+        # Every tilolang app runs on one process: what it loads at exec belongs to no app, so it
+        # may load no engine.
+        if process is None:
+            process = binary_lines(app.binary, budget, [path.parent, *directories], engine_files)
+        status |= process[0]
+        lines += process[1]
+        # An engine is opened by the app's own code, later: that engine and what it loads are
+        # what the app reaches beyond the process.
+        for name in app.engines:
+            if name not in opened:
+                engine = engine_files.get(name)
+                opened[name] = (
+                    (1, [f"error: {app.name}: opens {name}, which this build did not produce"])
+                    if engine is None
+                    else engine_closure(engine, budget, [path.parent, *directories]))
+            status |= opened[name][0]
+            lines += opened[name][1]
     return status, lines, stats
 
 
@@ -715,8 +817,8 @@ def main(argv: list[str] | None = None) -> int:
     measured.add_argument("--arch")
     measured.add_argument("--summary", type=pathlib.Path)
     measured.add_argument("--apps-dir", type=pathlib.Path,
-                          help="where the built apps are; checks what the runtime and each built app of "
-                               "apps_without_media load at exec")
+                          help="where the built apps are: checks what the runtime and each app of "
+                               "apps_without_media loads, through the binary that runs it")
     measured.add_argument("--library-dir", type=pathlib.Path, action="append", default=[],
                           help="a directory the loader searches (the Rust libstd's); repeatable")
     measured.add_argument("--engine", type=pathlib.Path, action="append", default=[],
@@ -738,13 +840,14 @@ def main(argv: list[str] | None = None) -> int:
         current = load()
         if args.command == "measure":
             directories = None
-            apps: list[pathlib.Path] = []
+            apps: list[App] = []
+            problems: list[str] = []
             if args.apps_dir is not None:
                 directories = [*args.library_dir, *SYSTEM_DIRECTORIES]
-                apps = [args.apps_dir / name for name in current.apps_without_media
-                        if (args.apps_dir / name).is_file()]
+                apps, problems = resolved_apps(current, args.apps_dir)
             status, lines, _ = measure(args.dylib, current, args.arch, apps, directories, args.engine)
-            return emit(status, lines, args.summary)
+            status |= int(bool(problems))
+            return emit(status, [*lines, *problems], args.summary)
         if args.command == "apps-without-media":
             print("\n".join(current.apps_without_media))
             return 0

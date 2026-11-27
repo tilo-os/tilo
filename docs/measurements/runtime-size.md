@@ -21,7 +21,10 @@ runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
 `DT_NEEDED`, in what every app loads with it, or in what a built app of
 `apps_without_media` loads at exec fails the build check; if the runtime starts
 reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
-provide one before the library loads.
+provide one before the library loads. A tilolang app has no binary of its own:
+it runs on `tilolang-process`, the one binary every tilolang app executes, and
+the check reads that process's closure, plus the closure of each engine the
+app's code opens (`[engine_users]`).
 
 - **the app release** (`Shared runtime within its size budget`) measures the
   dylib it has just built, and the closures above. Its next steps report the
@@ -121,7 +124,8 @@ beside the runtime's, holds each engine's file to its budget (`[engines.<arch>]`
 in the budget, by library name, with the runtime's headroom, rounding and
 raise files: a raise adds `"lib<name>.so" = <bytes>` under
 `[engines.<arch>]`, and an engine without a budget fails), fails when an app of `apps_without_media` loads one it
-does not use (`[engine_users]` in the budget names the ones those apps use), renders Typst Editor through its engine, and runs the other engines
+does not use (`[engine_users]` in the budget names the ones those apps use, at
+exec for a native app and on the first ask for a tilolang one), renders Typst Editor through its engine, and runs the other engines
 from each app that loads them (`contacts`), checking each app loads its
 engine itself.
 

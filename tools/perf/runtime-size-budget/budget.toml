@@ -26,6 +26,11 @@ architectures = ["x86_64", "aarch64"]
 # Apps that play no media. the app release fails when a built one, or the
 # runtime itself, loads a library of needed_absent at exec. Only
 # grows.
+# A name is the app's directory (`apps/clocks`, `apps/tl/clocks`), its collection
+# name or its id, so it keeps naming the app when it moves from a Rust binary to
+# a tilolang package. A native app is checked through its own binary; a tilolang
+# app through tilolang-process, the one binary every tilolang app runs, and
+# through the engines its code opens ([engine_users]).
 apps_without_media = ["clocks", "notes", "totp", "weather"]
 
 # What the runtime should cost: at most 150 MB, relocation tables
@@ -108,9 +113,12 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # measures it there.
 
 # The apps of apps_without_media that use an engine library
-# (crates/engines/loadable/), by library: they load it at exec. the app release
-# fails when one of those apps loads any other engine.
+# (crates/engines/loadable/), by library: a native app links it, so the loader
+# loads it at exec; a tilolang app opens it in tilolang-process the first time
+# its code asks. the app release fails when one of those apps loads any other
+# engine, and when a library loaded with that engine is one of needed_absent.
 [engine_users]
+"libtilo_totp_engine.so" = ["totp"]
 
 [runtime.x86_64]
 bytes = 149618688
