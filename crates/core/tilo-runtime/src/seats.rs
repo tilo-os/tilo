@@ -614,7 +614,12 @@ impl Seats {
                     person,
                     device: true,
                 }) => {
-                    admitted = Admitted::Person(person);
+                    // The person's certified key, once it came, is what the account acts as;
+                    // until then the session reaches the person it made through this link.
+                    if !matches!(admitted, Admitted::Key { person: certified, .. } if certified == person)
+                    {
+                        admitted = Admitted::Person(person);
+                    }
                     founding = true;
                 }
                 // Another person's link: its own admission (the key it certified) answers it.
