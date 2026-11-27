@@ -171,10 +171,12 @@ fn run(host: &Host, schedule: &Schedule, now: i64) -> (usize, bool) {
         host.store().drop_run_marks(&run);
         // What the action wrote reached the workspace only if it took it: a run it refused did
         // nothing, as an invocation it refused does
-        // ([`crate::resources::ResourceStore::take_refusal`]).
+        // ([`crate::resources::ResourceStore::take_refusal`]). The refusal is the reason whether
+        // the action went on to fail on it or answered as it ran: nothing it wrote reached the
+        // workspace either way, and its person is told in the workspace's words.
         let outcome = match (outcome, host.store().take_refusal()) {
-            (Ok(InvokeOutcome::Done(_)), Some(refused)) => Err(refused),
-            (outcome, _) => Ok(outcome),
+            (_, Some(refused)) => Err(refused),
+            (outcome, None) => Ok(outcome),
         };
         match outcome {
             Err(refused) => {
