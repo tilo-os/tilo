@@ -582,37 +582,30 @@ fn adding_computer(read: &str) -> Option<(String, String)> {
 }
 
 /// Answer the ask `invocation` in `workspace` as `from`'s person, with the call their card
-/// makes: the asked record's resolve, approving it. The person's own dispatch is the login they
-/// entered at their server, else this computer's daemon, which admits their account as them:
-/// both are the person's own, never an agent's.
+/// makes: the asked record's resolve, approving it, through this computer's daemon, which takes a
+/// call from their own account as their own act, never an agent's.
 fn answer_as_person(
     fleet: &mut dyn Fleet,
     from: Guest,
     invocation: &str,
     workspace: &str,
 ) -> Result<(), String> {
-    let resolve =
-        format!("'invocations/workspace/{invocation}#resolve' resolution=approve -w '{workspace}'");
-    let entered = fleet
-        .ssh(from, &format!("tilo do --in-person {resolve}"))
-        .err();
-    if entered.is_none() {
-        return Ok(());
-    }
-    let session = fleet.ssh(from, &format!("tilo do {resolve}")).err();
-    match session {
-        None => Ok(()),
-        Some(why) => Err(format!(
-            "{} did not answer the ask to add a computer: {}{}",
-            from.name(),
-            entered.unwrap_or_default().trim(),
-            if why.trim().is_empty() {
-                String::new()
-            } else {
-                format!(": {}", why.trim())
-            }
-        )),
-    }
+    fleet
+        .ssh(
+            from,
+            &format!(
+                "tilo do 'invocations/workspace/{invocation}#resolve' resolution=approve -w \
+                 '{workspace}'"
+            ),
+        )
+        .map(drop)
+        .map_err(|why| {
+            format!(
+                "{} did not answer the ask to add a computer: {}",
+                from.name(),
+                why.trim()
+            )
+        })
 }
 
 fn do_action(fleet: &mut dyn Fleet, guest: Guest, action: &str) -> Status {
