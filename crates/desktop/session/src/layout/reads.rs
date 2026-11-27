@@ -4,10 +4,11 @@
 //! A read of a workspace's layout or of a person's view of it opens the resource in the daemon
 //! and merges its history there; on a busy machine that takes seconds, and a loop waiting for it
 //! reads no app's request to the window system meanwhile. Here every read runs on a thread of its
-//! own. The loop asks for a resource whenever a look wants it, and the daemon's notice of each
-//! write it took ([`tilo_session_client::daemon_documents::DaemonWritesFeed`]) asks for the
-//! resource it reached; an answer that differs from the last one wakes the loop, which takes
-//! it on its next pass. Nothing here is the resource: each answer replaces the last, and a look
+//! own. The daemon's notice of each write it took
+//! ([`tilo_session_client::daemon_documents::DaemonWritesFeed`]) asks for the resource it reached,
+//! and a look asks only for what no read answered yet, or what the notices cannot be trusted to
+//! tell of: everything while they are not followed, and a resource that is not readable yet. An
+//! answer that differs from the last one wakes the loop, which takes it on its next pass. Nothing here is the resource: each answer replaces the last, and a look
 //! reads the latest one.
 
 use std::collections::HashMap;
@@ -81,6 +82,9 @@ struct State {
     outstanding: usize,
     /// Whether an answer changed since the loop last looked.
     news: bool,
+    /// Whether the service's notice of its writes is followed: a read that answered is then read
+    /// again when a write reaches it, and a look does not ask for it again.
+    following: bool,
 }
 
 struct Shared {
@@ -108,6 +112,33 @@ impl Shared {
         }
         asked.queued = true;
         state.outstanding = state.outstanding.saturating_add(1);
+    }
+
+    /// A look at `key` asks for it to be read, unless a read already answered what the service
+    /// holds of it and the service's notices say when that changes: a desktop that looks at its
+    /// layouts on every pass reads each once, not on every pass.
+    fn look(&self, asks: &mpsc::Sender<Key>, key: &Key) {
+        let answered = {
+            let state = self.lock();
+            state.following
+                && state.asked.get(key).is_some_and(|asked| {
+                    matches!(asked.answer, Some(Answer::Whole(..) | Answer::Nothing))
+                })
+        };
+        if !answered {
+            self.ask(asks, key);
+        }
+    }
+
+    /// Whether the service's notices are followed. Once they are, every resource followed is read
+    /// again: a write it took before they were is in no notice.
+    fn following(&self, asks: &mpsc::Sender<Key>, following: bool) {
+        self.lock().following = following;
+        if following {
+            for key in self.followed() {
+                self.told(asks, &key);
+            }
+        }
     }
 
     /// The service took a write to `key`'s resource: what was read of it before is no longer
@@ -203,7 +234,7 @@ impl Reads {
         known: Option<[u8; 32]>,
     ) -> Result<Option<(automerge::AutoCommit, [u8; 32])>, NotRead> {
         self.follow_notices();
-        self.shared.ask(&self.asks, key);
+        self.shared.look(&self.asks, key);
         let state = self.shared.lock();
         let answer = match state.asked.get(key).and_then(|asked| asked.answer.as_ref()) {
             None | Some(Answer::Waiting) => Err(NotRead::Waiting),
@@ -222,7 +253,7 @@ impl Reads {
     /// resource that could not be read is one the service holds nothing readable of.
     pub(super) fn holding(&self, key: &Key) -> Option<Holding> {
         self.follow_notices();
-        self.shared.ask(&self.asks, key);
+        self.shared.look(&self.asks, key);
         let state = self.shared.lock();
         let asked = state.asked.get(key)?;
         if asked.answered_after != asked.told {
@@ -288,6 +319,7 @@ impl Reads {
         };
         let shared = Arc::clone(&self.shared);
         let asks = self.asks.clone();
+        shared.following(&asks, true);
         runtime.spawn(async move {
             use tokio::sync::broadcast::error::RecvError;
             loop {
@@ -305,7 +337,9 @@ impl Reads {
                             shared.told(&asks, &key);
                         }
                     }
+                    // No write is told any more: each look asks again, as before they were followed.
                     Err(RecvError::Closed) => {
+                        shared.following(&asks, false);
                         return;
                     }
                 }
@@ -339,5 +373,89 @@ fn read(reads: &dyn DeviceDocuments, (workspace, route): &Key) -> Answer {
         }
         Ok(DocumentRead::Pending) => Answer::Waiting,
         Err(error) => Answer::Failed(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Route, WorkspaceId};
+    use super::*;
+
+    /// A service that holds nothing of any resource, and tells `read` of each read it answers.
+    struct Counted {
+        read: Mutex<mpsc::Sender<()>>,
+    }
+
+    impl DeviceDocuments for Counted {
+        fn read(
+            &self,
+            _workspace: &str,
+            _app: &str,
+            _resource: &str,
+            _since: Option<&[[u8; 32]]>,
+        ) -> Result<DocumentRead, String> {
+            let _ = self
+                .read
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .send(());
+            Ok(DocumentRead::Absent)
+        }
+
+        fn listing(
+            &self,
+            _workspace: &str,
+        ) -> Result<Vec<tilo_actions::remote::ListedResource>, String> {
+            Ok(Vec::new())
+        }
+
+        fn holds(&self, _workspace: &str, _app: &str, _resource: &str) -> bool {
+            false
+        }
+
+        fn workspaces(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn a_layout_looked_at_every_pass_is_read_again_only_when_a_write_reaches_it() {
+        let (read, reads) = mpsc::channel();
+        let (written, _) = broadcast::channel(16);
+        let notices = written.clone();
+        let reading = Reads::start(
+            Arc::new(Counted {
+                read: Mutex::new(read),
+            }),
+            Arc::new(|| {}),
+            Some(Box::new(move || Some(notices.subscribe()))),
+        );
+        let key: Key = (WorkspaceId::new(), Route::layout());
+        let patience = Duration::from_secs(30);
+
+        assert!(matches!(reading.read(&key, None), Err(NotRead::Waiting)));
+        reads.recv_timeout(patience).expect("the first look reads");
+        reading.read_through(patience);
+        while reads.try_recv().is_ok() {}
+
+        // A desktop looks at its layout on every pass: nothing was written, so nothing is read.
+        for _ in 0..100 {
+            assert!(matches!(reading.read(&key, None), Ok(None)));
+            assert!(reading.holding(&key).is_some());
+        }
+        assert_eq!(reading.shared.lock().outstanding, 0);
+        assert!(reads.try_recv().is_err(), "a look read the layout again");
+
+        // A write the service took to the layout is read.
+        written
+            .send(DocumentWritten {
+                workspace: key.0.to_string(),
+                app: key.1.app.to_owned(),
+                record: key.1.document,
+            })
+            .expect("the session follows the writes");
+        reads
+            .recv_timeout(patience)
+            .expect("a write to the layout reads it again");
     }
 }
