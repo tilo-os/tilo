@@ -472,6 +472,15 @@ impl tilo_broker_core::services::WorkspaceAuthority for Workspaces {
         read(held.as_ref());
         Ok(())
     }
+
+    /// Every write the broker's checks read here is announced: a workspace's governance by its
+    /// owner as it publishes it, a member copy's as it is taken in, a workspace let go of as it
+    /// goes, and the device fleet and identity registry by their stores. The broker re-checks on
+    /// those and on the expiries it registers, never on a clock: one that re-checked every second
+    /// told every window open here that its workspace's members moved, and each read them again.
+    fn announces_policy_changes(&self) -> bool {
+        true
+    }
 }
 
 impl Workspaces {
