@@ -69,6 +69,10 @@ const APPS: &[App] = &[
         package: "clocks",
         id: "so.tilo.clocks",
     },
+    App {
+        package: "messages",
+        id: "so.tilo.messages",
+    },
 ];
 
 impl App {
