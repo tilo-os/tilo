@@ -1565,12 +1565,26 @@ impl Workspaces {
             .and_then(|member| member.role)
     }
 
+    /// Whether `workspace`, kept here, holds `device`'s certificate among the devices it lets in
+    /// now: a device the workspace admitted once is in it, whichever way it came in.
+    async fn holds_device(&self, workspace: &str, device: &DeviceCert) -> bool {
+        let Ok(hosted) = self.workspace(workspace).await else {
+            return false;
+        };
+        let hosted = hosted.lock().await;
+        hosted
+            .peer()
+            .permissions(device.device_public_key, tilo_clock::wall())
+            .is_ok()
+    }
+
     /// Answer `summary`, a workspace `device`'s person is in, for `device` to enter: a device of
     /// the person's comes in through the workspace's entry by a row it signs itself
     /// ([`Self::member_device`]), at the place the member list gives its person, so no host
     /// invites a person into what is theirs. A key that is no device of theirs (an agent's, a
     /// program's) comes in by an invitation instead, which records it within its certificate's
-    /// scope: the host invites it as an Editor.
+    /// scope: the host invites it as an Editor. A key the workspace holds already needs no
+    /// invitation: it enters by the row it signed, and the answer names none.
     async fn own_person_enters(
         &self,
         summary: WorkspaceSummary,
@@ -1588,7 +1602,13 @@ impl Workspaces {
         placed: Option<TransportHint>,
     ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
-        let invitation = if crate::workspace_access::person_device(device) {
+        // A device this workspace admitted already is not invited again: it enters by a row it
+        // signs itself, and an invitation issued for it a second time is a change to the
+        // workspace's governance published to everyone here, on every ask a device that holds no
+        // copy yet makes.
+        let invitation = if crate::workspace_access::person_device(device)
+            || self.holds_device(&summary.workspace, device).await
+        {
             None
         } else {
             let terms = IssueInvitationRequest {
