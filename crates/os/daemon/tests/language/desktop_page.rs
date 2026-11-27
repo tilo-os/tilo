@@ -35,6 +35,9 @@ use crate::language::host;
 
 const TASKS: &str = "so.tilo.tasks";
 const SHELL: &str = "so.tilo.shell";
+/// The layout's provider and resource, whose actions place, read and close the windows of a
+/// workspace on this computer.
+const LAYOUT: (&str, &str) = ("so.tilo.layout", "workspace:layout");
 const FRAMES: &str = "so.tilo.shell:frames";
 const STRIPS: &str = "so.tilo.shell:strips";
 
@@ -541,34 +544,49 @@ fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_there() {
     });
 }
 
-/// Someone the workspace lets read and nothing more opens its desktop page and presses a window's
-/// Close: the layout's close runs in their page's run as them, decided on what the workspace
-/// grants them, so the window stays, though the computer serving the page could close it. The
-/// person, whose workspace it is, closes it with the same press.
-#[test]
-fn a_press_on_the_desktop_page_changes_only_what_its_person_may() {
-    host::run_with(&["shell", "tasks"], |host| async move {
-        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
-        let computer = Computer::of(&daemon, &workspace);
-        computer.open_first(host.person(), (TASKS, "Tasks")).await;
+/// Whether `member`'s device places Tasks on the workspace's layout over its link: the layout's
+/// `place`, a host action of this computer's, run in the member's run as them.
+async fn places_tasks(member: &host::Member) -> Result<(), String> {
+    match member
+        .call(
+            LAYOUT.0,
+            tilo_actions::ActionAddress::new(LAYOUT.1, "place"),
+            &json!({ "app": TASKS }),
+        )
+        .await
+    {
+        Ok(tilo_actions::InvocationUpdate::Succeeded { .. }) => Ok(()),
+        other => Err(format!("{other:?}")),
+    }
+}
 
-        let (viewer, _) = host
-            .other_browser(
-                "Bo's browser",
+/// A person the workspace lets read and nothing more asks this computer to place a window on
+/// the layout: the host action runs in their run as them, decided on what the workspace grants
+/// them, so it is refused, though this computer could place it. A person the workspace lets
+/// change it is answered the same call.
+#[test]
+fn a_members_run_changes_only_what_its_person_may() {
+    host::run_with(&["tasks"], |host| async move {
+        let workspace = host.workspace().to_owned();
+        let (viewer, _, _) = host
+            .other_member(
+                "Bo's laptop",
                 &workspace,
                 tilo_peer_state::join::Role::Viewer,
             )
             .await;
-        let theirs = Page::of(&daemon, &workspace, &viewer).await;
-        let close = tasks_close(&theirs).await;
-        presses_close_to_no_avail(
-            &computer,
-            (&theirs, close),
-            "a viewer's press closes nothing",
-        )
-        .await;
-        theirs.close();
-        the_persons_press_closes_it(&host, &computer).await;
+        let refused = places_tasks(&viewer).await;
+        assert!(refused.is_err(), "a viewer places nothing: {refused:?}");
+        let (editor, _, _) = host
+            .other_member(
+                "Cy's laptop",
+                &workspace,
+                tilo_peer_state::join::Role::Editor,
+            )
+            .await;
+        places_tasks(&editor)
+            .await
+            .expect("an editor's run places the window");
     });
 }
 
@@ -677,39 +695,40 @@ fn a_revoked_browser_key_acts_on_no_desktop_page() {
     });
 }
 
-/// The workspace's owner removes a person while their browser has its desktop page open: the
-/// open page changes nothing from then on, and their browser opens no page again.
+/// The workspace's owner removes a person: their device's run, which placed a window a moment
+/// before, places nothing from then on, and their browser opens no desktop page.
 #[test]
-fn a_removed_persons_browser_acts_on_no_desktop_page() {
+fn a_removed_persons_keys_act_on_nothing_here() {
     host::run_with(&["shell", "tasks"], |host| async move {
         let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
-        let computer = Computer::of(&daemon, &workspace);
-        computer.open_first(host.person(), (TASKS, "Tasks")).await;
-        let (editor, _) = host
-            .other_browser(
-                "Bo's browser",
+        let (laptop, cert, root) = host
+            .other_member(
+                "Bo's laptop",
                 &workspace,
                 tilo_peer_state::join::Role::Editor,
             )
             .await;
-        let page = Page::of(&daemon, &workspace, &editor).await;
-        let close = tasks_close(&page).await;
-        host.remove_person(&workspace, editor.1.user_public_key)
-            .await;
-        presses_close_to_no_avail(
-            &computer,
-            (&page, close),
-            "a removed person's press closes nothing",
-        )
-        .await;
-        page.close();
-        let again = open(&daemon, &workspace, &editor).await;
+        places_tasks(&laptop)
+            .await
+            .expect("a member's run places the window");
+        let (_, browser) = host::certified(
+            &root,
+            root.verifying_key().to_bytes(),
+            "Bo's browser",
+            tilo_user_identity::DeviceCapabilities::member(),
+        );
+        host.remove_person(&workspace, cert.user_public_key).await;
+        let refused = places_tasks(&laptop).await;
+        assert!(
+            refused.is_err(),
+            "a removed person places nothing: {refused:?}"
+        );
+        let again = open(&daemon, &workspace, &host::linked(&browser, &workspace)).await;
         assert!(
             again.is_err(),
             "a removed person opens no page: {:?}",
             again.map(|page| page.page)
         );
-        the_persons_press_closes_it(&host, &computer).await;
     });
 }
 
@@ -734,23 +753,21 @@ fn a_certificate_the_persons_root_never_signed_opens_no_desktop_page() {
     });
 }
 
-/// An agent's key of another person of the workspace reaches no host action through a desktop
-/// page: it is no person, so the layout's close it would reach through its run is refused,
-/// though the computer serving the page could close the window.
+/// An agent's key of another person of the workspace reaches no host action here: it acts for
+/// that person on their own devices, so neither its link nor a desktop page runs it here, though
+/// the person's own device places the window.
 #[test]
-fn another_persons_agent_key_reaches_no_host_action_on_a_desktop_page() {
+fn another_persons_agent_key_reaches_no_host_action() {
     host::run_with(&["shell", "tasks"], |host| async move {
         let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
-        let computer = Computer::of(&daemon, &workspace);
-        computer.open_first(host.person(), (TASKS, "Tasks")).await;
-        let (_, root) = host
-            .other_browser(
-                "Bo's browser",
+        let (laptop, _, root) = host
+            .other_member(
+                "Bo's laptop",
                 &workspace,
                 tilo_peer_state::join::Role::Editor,
             )
             .await;
-        let (_, agent) = host::certified(
+        let (key, agent) = host::certified(
             &root,
             root.verifying_key().to_bytes(),
             "Bo's assistant",
@@ -758,23 +775,21 @@ fn another_persons_agent_key_reaches_no_host_action_on_a_desktop_page() {
                 tilo_user_identity::AgentScope::AllWorkspaces,
             ),
         );
-        let reader = host::linked(&agent, &workspace);
-        if let Ok(opened) = open(&daemon, &workspace, &reader).await {
-            let page = Page {
-                daemon: Arc::clone(&daemon),
-                workspace: collab_types::WorkspaceId::parse(&workspace).unwrap(),
-                opened,
-            };
-            let close = tasks_close(&page).await;
-            presses_close_to_no_avail(
-                &computer,
-                (&page, close),
-                "an agent key's press closes nothing",
-            )
-            .await;
-            page.close();
-        }
-        the_persons_press_closes_it(&host, &computer).await;
+        let assistant = host.dial(key, &workspace).await;
+        let refused = places_tasks(&assistant).await;
+        assert!(
+            refused.is_err(),
+            "another person's agent places nothing: {refused:?}"
+        );
+        let opened = open(&daemon, &workspace, &host::linked(&agent, &workspace)).await;
+        assert!(
+            opened.is_err(),
+            "another person's agent opens no page: {:?}",
+            opened.map(|page| page.page)
+        );
+        places_tasks(&laptop)
+            .await
+            .expect("the person's own device places the window");
     });
 }
 

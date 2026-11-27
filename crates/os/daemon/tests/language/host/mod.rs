@@ -918,23 +918,23 @@ impl Host {
     /// shared with other people has among its members. Answered with their person's root, by
     /// which the owner names them.
     pub async fn other_person(&self, label: &str, workspace: &str) -> (Member, [u8; 32]) {
-        let (key, cert, _) = self
-            .other_person_as(label, workspace, tilo_peer_state::join::Role::Editor)
+        let (member, cert, _) = self
+            .other_member(label, workspace, tilo_peer_state::join::Role::Editor)
             .await;
-        (self.dial(key, workspace).await, cert.user_public_key)
+        (member, cert.user_public_key)
     }
 
-    /// The browser of another person than this computer's, `label`, whom the workspace's owner
-    /// added to `workspace` as `role`, as a page's link verified it: the caller the link takes it
-    /// as and the certificate it proved, with the person's root, which certifies their other keys.
-    pub async fn other_browser(
+    /// A device of another person than this computer's, `label`, whom the workspace's owner
+    /// added to `workspace` as `role`, asking the daemon over the device link: the device, its
+    /// certificate, and the person's root, which certifies their other keys.
+    pub async fn other_member(
         &self,
         label: &str,
         workspace: &str,
         role: tilo_peer_state::join::Role,
-    ) -> ((Caller, DeviceCert), SigningKey) {
-        let (_, cert, root) = self.other_person_as(label, workspace, role).await;
-        (linked(&cert, workspace), root)
+    ) -> (Member, DeviceCert, SigningKey) {
+        let (key, cert, root) = self.other_person_as(label, workspace, role).await;
+        (self.dial(key, workspace).await, cert, root)
     }
 
     /// A device of another person than this computer's, `label`, whom the workspace's owner added
