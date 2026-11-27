@@ -282,7 +282,7 @@ tilo_test_env::scenario! {
             .load_foreign_package(&notes.wasm, &notes.meta)
             .unwrap();
         let mut with_notes = platform;
-        with_notes.push(notes.meta.clone());
+        with_notes.push(notes.meta);
         let card = tilolang::compile_package(CARD, &IdsLock::new(), &with_notes)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
         shell.load_compiled(&card).unwrap();
@@ -597,7 +597,7 @@ fn a_read_that_answers_a_list_gives_its_value() {
     assert_eq!(matches.len(), 1, "{found}");
     assert_eq!(
         matches[0].get("words").and_then(Json::as_str),
-        Some("- passport"),
+        Some("passport"),
         "a found paragraph is written by its fields' names: {found}"
     );
 }
