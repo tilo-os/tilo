@@ -707,6 +707,28 @@ impl Core {
         })
     }
 
+    /// The entries a map field of a record value built in the run holds, keyed as the record was
+    /// built: `json.decode` reads an object into one, and a record literal names one.
+    fn record_map_pairs(&self, rh: i32, fh: i32) -> HResult<Vec<(Value, Value)>> {
+        let field = self.text(fh)?;
+        let ty = self.with_val(rh, |v| match v {
+            Value::Rec(rec) => Ok(rec.ty.clone()),
+            other => trap(format!("expected a record, got {}", other.kind_name())),
+        })?;
+        let (_, info) = self.type_of_ref(&ty)?;
+        let f = field_in(&info, &field)?.clone();
+        if f.kind != FieldKind::Map {
+            return trap(format!("field `{}` is not a map", f.name));
+        }
+        match self.record_field(rh, fh)? {
+            Value::Map(entries) => Ok(entries),
+            other => trap(format!(
+                "a map field holds {}, not a map",
+                other.kind_name()
+            )),
+        }
+    }
+
     /// A field read in a journaled run: through its journal, which takes the frames to record
     /// the read, and holds it whole, so a replay reads what the run read, not the store.
     fn journaled_field(&self, rh: i32, fh: i32) -> HResult<Value> {
@@ -2248,51 +2270,60 @@ impl Core {
 
     /// `map_get_h(r, field, key) -> Option<V>` and `map_keys(r, field) -> List<Text>`.
     fn map_read_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let res = self.ref_arg(a.h(0)?)?;
-        let field = self.text(a.h(1)?)?;
-        let (_, info) = self.lookup_field(&res.target, &field)?;
-        if info.kind != FieldKind::Map {
-            return trap(format!("field `{}` is not a map", info.name));
-        }
-        // A map of another app's resource is read from its reading: the view that asked it
-        // is drawn again when a newer reading is set, as one that read any other field of
-        // it is. Marked before the read, so a view that asked before the reading came is
-        // drawn again when it comes.
-        if crate::foreign::is_foreign(&res.target) {
-            self.note_reading(crate::foreign::reading_key(&res.target));
-        }
-        let author = self.module_of_frame()?;
-        let read =
-            self.journaled_read(|| Ok(self.read_value(&res.target, &info, Some(&author))?))?;
-        // A map's entries, whatever shape the read answers: a store answers a map field as the
-        // list of its entries, and a map the record was made without — one a reading leaves out
-        // — reads as the empty map a view is handed ([`whole_map`]). Both name the same entries,
-        // so `keys()` and `get(key)` answer a map field either way.
-        let pairs: Vec<(Value, Value)> = match read {
-            Value::List(entries) => entries
-                .into_iter()
-                .filter_map(|entry| match entry {
-                    Value::Tuple(mut kv) if kv.len() == 2 => {
-                        let val = kv.pop()?;
-                        let name = kv.pop()?;
-                        Some((name, val))
+        let pairs: Vec<(Value, Value)> =
+            if self.with_val(a.h(0)?, |v| Ok(matches!(v, Value::Rec(_))))? {
+                // A record value (one `json.decode` read, or one built with its fields) holds its
+                // fields where it was built: its map is the value it holds, as one of its other
+                // fields read is.
+                self.record_map_pairs(a.h(0)?, a.h(1)?)?
+            } else {
+                let res = self.ref_arg(a.h(0)?)?;
+                let field = self.text(a.h(1)?)?;
+                let (_, info) = self.lookup_field(&res.target, &field)?;
+                if info.kind != FieldKind::Map {
+                    return trap(format!("field `{}` is not a map", info.name));
+                }
+                // A map of another app's resource is read from its reading: the view that asked it
+                // is drawn again when a newer reading is set, as one that read any other field of
+                // it is. Marked before the read, so a view that asked before the reading came is
+                // drawn again when it comes.
+                if crate::foreign::is_foreign(&res.target) {
+                    self.note_reading(crate::foreign::reading_key(&res.target));
+                }
+                let author = self.module_of_frame()?;
+                let read = self
+                    .journaled_read(|| Ok(self.read_value(&res.target, &info, Some(&author))?))?;
+                // A map's entries, whatever shape the read answers: a store answers a map field as
+                // the list of its entries, and a map the record was made without — one a reading
+                // leaves out — reads as the empty map a view is handed ([`whole_map`]). Both name
+                // the same entries, so `keys()` and `get(key)` answer a map field either way.
+                let pairs = match read {
+                    Value::List(entries) => entries
+                        .into_iter()
+                        .filter_map(|entry| match entry {
+                            Value::Tuple(mut kv) if kv.len() == 2 => {
+                                let val = kv.pop()?;
+                                let name = kv.pop()?;
+                                Some((name, val))
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                    Value::Map(entries) => entries,
+                    other => {
+                        return trap(format!(
+                            "`{}` of `{}` reads as {}, not a map",
+                            info.name,
+                            res.target.id_string(),
+                            other.kind_name()
+                        ));
                     }
-                    _ => None,
-                })
-                .collect(),
-            Value::Map(entries) => entries,
-            other => {
-                return trap(format!(
-                    "`{}` of `{}` reads as {}, not a map",
-                    info.name,
-                    res.target.id_string(),
-                    other.kind_name()
-                ));
-            }
-        };
-        if let Some(vs) = self.frames.borrow_mut().view_mut() {
-            vs.reads.push((res.target.id_string(), info.id));
-        }
+                };
+                if let Some(vs) = self.frames.borrow_mut().view_mut() {
+                    vs.reads.push((res.target.id_string(), info.id));
+                }
+                pairs
+            };
         if imp == Imp::MapKeys {
             return self.ret_h(Value::List(pairs.into_iter().map(|(k, _)| k).collect()));
         }

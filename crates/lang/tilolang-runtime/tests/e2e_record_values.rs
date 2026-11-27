@@ -201,6 +201,47 @@ action rename_in(b: Box, text: Text) {
             .collect()
     }
 
+    const MAP_READING: &str = r#"app so.tilo.forms "Forms"
+
+type Letters {
+    forms: Map<List<Text>>
+    label: Text
+    keys: Text
+}
+
+root Letters
+
+default view letters for Letters
+
+view letters(l: Letters) {
+    text(l.label)
+}
+
+/// What each letter's variants are in the map a decoded record holds, and the keys it has.
+action variants(l: Letters, text: Text) {
+    match json.decode<Letters>(text) {
+        .ok(got) => {
+            l.label = ["a", "b", "z"]
+                .map(letter -> (got.forms.get(letter) ?? []).join("|"))
+                .filter(one -> one.contains("|"))
+                .join(";")
+            l.keys = got.forms.keys().join(",")
+        }
+        .err(why) => { l.label = why }
+    }
+}
+
+/// A record value built with its fields reads its map the same way.
+action built(l: Letters) {
+    let forms = Map<List<Text>>()
+    forms.put("x", ["xi"])
+    let got = Letters(forms: forms, label: "", keys: "")
+    l.label = (got.forms.get("x") ?? []).join("|")
+}
+"#;
+
+    const FORMS: &str = r#"{"forms":{"b":["þ","b"],"a":["à","á"]},"label":"","keys":""}"#;
+
     tilo_test_env::scenario! {
         fn e2e_record_values_1;
 
@@ -266,6 +307,50 @@ action rename_in(b: Box, text: Text) {
             .unwrap_or_else(|e| panic!("the value the decoder checked is handed over: {e}"));
             assert_eq!(part_names(&rt, &b), vec!["First", "Second"]);
             assert_eq!(text(&rt, &b, "note"), "read");
+        }
+
+        phase a_decoded_records_map_field_reads_by_key_and_by_keys;
+        {
+            let app = App::compile(MAP_READING, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let l = rt.create("Letters").unwrap();
+            let variants = app.action("variants");
+            rt.invoke_action(
+                &me(),
+                (
+                    variants.as_str(),
+                    vec![Value::resource(&l), Value::Text(FORMS.to_owned())],
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                text(&rt, &l, "label"),
+                "à|á;þ|b",
+                "each letter the decoded record's map holds reads its variants by key, in the \
+                 order the code asked for them, and a key it does not hold reads none"
+            );
+            assert_eq!(
+                text(&rt, &l, "keys"),
+                "b,a",
+                "the keys are the ones the decoded map holds, as the text lists them"
+            );
+        }
+
+        phase a_built_records_map_field_reads_by_key;
+        {
+            let app = App::compile(MAP_READING, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let l = rt.create("Letters").unwrap();
+            let built = app.action("built");
+            rt.invoke_action(&me(), (built.as_str(), vec![Value::resource(&l)]))
+                .unwrap();
+            assert_eq!(
+                text(&rt, &l, "label"),
+                "xi",
+                "a map a record value was built with reads by key"
+            );
         }
 
         phase a_record_value_of_another_type_is_refused_by_its_name;
