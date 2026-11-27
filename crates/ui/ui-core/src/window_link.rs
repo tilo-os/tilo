@@ -89,7 +89,7 @@ pub fn first_instance() -> Option<u64> {
 /// Build the process's first window with `build`: as the window the session bound this process
 /// for ([`adopt`]), with its instance and connections, when it was; else as its launch names it.
 #[cfg(feature = "native")]
-pub(crate) fn build_first<T>(build: impl FnOnce() -> T) -> T {
+pub fn build_first<T>(build: impl FnOnce() -> T) -> T {
     #[cfg(feature = "local-daemons")]
     if let Some(first) = transport::take_first() {
         return transport::building(first, build);
