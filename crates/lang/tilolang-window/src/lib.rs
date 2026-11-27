@@ -103,18 +103,22 @@ impl Window {
     /// or the window refused what the app sent.
     pub fn open(app: &str, packages: &Rc<Packages>, opening: Opening<'_>) -> Result<Self, String> {
         // A window opens on an app's root resource. A package with none publishes views a host
-        // draws itself (a player's card in the shell) and has no window to open.
-        if packages
+        // draws over another app's state, as the session draws the on-screen keyboard over its
+        // `keyboard` resource: the page is that host, and draws the package's first such view
+        // over the same resource, which reads here as its type starts.
+        let part = match packages
             .compiled
             .iter()
             .map(|package| &package.meta)
             .find(|meta| meta.app == app)
-            .is_some_and(|meta| meta.roots.is_empty())
         {
-            return Err(format!(
-                "{app} declares no root, so it opens no window: its views are drawn where a host shows them"
-            ));
-        }
+            Some(meta) if meta.roots.is_empty() => Some(part_of(meta).ok_or_else(|| {
+                format!(
+                    "{app} declares no root, and no view over another app's state a host could draw"
+                )
+            })?),
+            _ => None,
+        };
         let Opening {
             root,
             scenario,
@@ -152,10 +156,19 @@ impl Window {
             names,
             Box::new(app_end),
         );
+        if part.is_some() {
+            instance.without_root();
+        }
         instance.sync();
         // No frame comes to take in the indexes its load builds off the frame, so they are waited
         // for, as a host without frames waits for them.
         instance.settle_pending();
+        if let Some((view, target)) = &part {
+            instance.open_with(&tilolang_tilo::instance::wire::resource(target), view);
+            if instance.detail_target().is_none() {
+                return Err(format!("{app}'s view over `{}` did not run", target.doc));
+            }
+        }
         // A window opens on the app's root view: one that did not run leaves the window empty, so
         // the host that laid it out is told why rather than showing nothing.
         if let Some(why) = instance.take_open_failure() {
@@ -165,7 +178,9 @@ impl Window {
         if costs && let Some(host) = instance.host() {
             host.runtime().record_costs(true);
         }
-        make_roots(&instance, app)?;
+        if part.is_none() {
+            make_roots(&instance, app)?;
+        }
         if seed > 0
             && let Some(host) = instance.host()
         {
@@ -380,4 +395,53 @@ impl tilolang_tilo::runtime::NameHost for Me {
         }
         tilolang_tilo::names::installed(who)
     }
+}
+
+/// The view a host draws of a package with no root, and the resource it draws it over: the first
+/// view the package declares over one resource of another app (`view keyboard(k:
+/// session.Keyboard)`), over the resource that app publishes of that type, as the session
+/// publishes its `keyboard` and its `setup`. The id is the platform root's where the type is one,
+/// else the type's kind, which is the id the session publishes a part's resource under.
+fn part_of(
+    meta: &tilolang_tilo::tilolang::PackageMeta,
+) -> Option<(String, tilolang_tilo::runtime::ResourceRef)> {
+    use tilolang_tilo::runtime::meta::{Ty, parse_ty};
+    meta.views
+        .iter()
+        .filter(|view| view.presents.is_none() && view.row_of.is_none())
+        .find_map(|view| {
+            let [param] = view.params.as_slice() else {
+                return None;
+            };
+            let Ok(Ty::Record(key)) = parse_ty(&param.ty, &meta.app) else {
+                return None;
+            };
+            if key.app == meta.app {
+                return None;
+            }
+            let ty = format!("{}#{}", key.app, key.name);
+            let id = tilolang_tilo::platform::platform_roots()
+                .into_iter()
+                .find(|(_, root)| *root == ty)
+                .map_or_else(|| kind_of(&key.name), |(published, _)| published);
+            let target = tilolang_tilo::runtime::ResourceRef::parse_id(&id, ty)?;
+            Some((view.id.clone(), target))
+        })
+}
+
+/// The kind a published type's name is read from (`Setup` from `setup`, `TapOffset` from
+/// `tap-offset`): [`tilolang_tilo::catalogue::kind_type_name`] the other way.
+fn kind_of(name: &str) -> String {
+    let mut kind = String::new();
+    for (at, c) in name.chars().enumerate() {
+        if c.is_uppercase() {
+            if at > 0 {
+                kind.push('-');
+            }
+            kind.extend(c.to_lowercase());
+        } else {
+            kind.push(c);
+        }
+    }
+    kind
 }

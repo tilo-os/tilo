@@ -14,6 +14,20 @@ use serde_json::Value as Json;
 /// files a package ships under `media/` as base64, since a page's answer is JSON text; and the
 /// manifest and surface of every native app in `apps/` that has both, which `build-page.sh`
 /// hands over too and a package may `use` as metadata.
+/// Whether the page's map (`build-page.sh`) carries the file: a package's sources, catalogues and
+/// ids lock, and a native app's manifest and compiled surface. The test hands the page what the
+/// page is handed, so a file the page leaves out is missing here too.
+fn page_carries(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("tl" | "ftl")
+    ) || matches!(name, "app.ids" | "tilo-app.toml" | "surface.json")
+}
+
 fn app_files() -> BTreeMap<String, String> {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let mut out = BTreeMap::new();
@@ -37,7 +51,9 @@ fn app_files() -> BTreeMap<String, String> {
                     shown,
                     base64::engine::general_purpose::STANDARD.encode(bytes),
                 );
-            } else if let Ok(text) = std::fs::read_to_string(&path) {
+            } else if page_carries(&path)
+                && let Ok(text) = std::fs::read_to_string(&path)
+            {
                 out.insert(shown, text);
             }
         }
@@ -122,6 +138,14 @@ fn every_app_opens_over_its_first_scenario_as_a_page() {
         ("apps/tl/today", None),
         ("apps/tl/views", None),
         ("apps/tl/gallery", None),
+        // Apps that `use` another package of `apps/tl` described by its compiled surface.
+        ("apps/tl/totp", None),
+        ("apps/tl/migrate", None),
+        ("apps/tl/settings", None),
+        // Apps with no root, drawn over the session's resource as the session draws them.
+        ("apps/tl/osk", None),
+        ("apps/tl/onboarding", None),
+        ("apps/tl/terminal", None),
     ];
     let mut failures = Vec::new();
     for (root, shows) in apps {
