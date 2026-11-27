@@ -463,6 +463,26 @@ impl EngineConnector {
             .any(|(asked_of, folder)| asked_of == account && folder == mailbox)
     }
 
+    /// What a fetch brought: its request answered, its messages taken in, and a folder asked for
+    /// while it ran read now, with what it took in, so mail that came meanwhile is news.
+    fn fetched(
+        &mut self,
+        request_id: Request,
+        account: &str,
+        folder: Folder,
+        synced: &mail_engine::sync::Synced,
+        out: &mut Vec<Event>,
+    ) {
+        self.fetches.remove(&request_id);
+        self.took_fetched(account.to_owned(), folder, synced, out);
+        if self
+            .missed
+            .remove(&(account.to_owned(), folder.as_key().to_owned()))
+        {
+            self.changes(account, folder.as_key());
+        }
+    }
+
     fn take_in(&mut self, account: &str, folder: Folder, messages: &[Message]) -> Vec<ImapMessage> {
         // The engine answers in the order it was asked: while a move of the account's is
         // unanswered, a fetch that answers before it read its folder before the move. A message
@@ -832,18 +852,7 @@ impl EngineConnector {
                 folder,
                 synced,
                 ..
-            } => {
-                self.fetches.remove(&request_id);
-                self.took_fetched(account_id.clone(), folder, &synced, out);
-                // A folder asked for while this fetch ran is read now, with what it took in:
-                // mail that came meanwhile is news, not lost to a fetch that never ran.
-                if self
-                    .missed
-                    .remove(&(account_id.clone(), folder.as_key().to_owned()))
-                {
-                    self.changes(&account_id, folder.as_key());
-                }
-            }
+            } => self.fetched(request_id, &account_id, folder, &synced, out),
             EngineEvent::Found {
                 account_id,
                 messages,
