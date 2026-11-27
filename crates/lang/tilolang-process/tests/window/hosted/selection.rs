@@ -130,4 +130,11 @@ fn the_edit_key_and_delete_run_the_actions_the_app_declares_on_the_card() {
         "Shift+Delete ran the destructive action without asking"
     );
     assert!(session.asked().is_empty(), "nothing waits for a yes");
+    // The system's undo, the window's Ctrl+Z, takes the delete Shift skipped the yes for back.
+    session.window.chord(&["ctrl"], "z");
+    settle(&mut session);
+    assert!(
+        says(&mut session, "Deleted Bravo") && !says(&mut session, "Deleted Charlie"),
+        "Ctrl+Z took back the delete made with Shift held"
+    );
 }

@@ -270,6 +270,8 @@ mod cases {
         disk: Disk,
         /// Windows this device opened, so each session root has a document of its own.
         windows: Rc<RefCell<u64>>,
+        /// The system's dispatch, where what a press confirms waits for the person's yes.
+        dispatch: Dispatch,
     }
 
     impl Term {
@@ -281,6 +283,8 @@ mod cases {
             rt.set_engine(engine.clone());
             let disk = Disk::default();
             rt.set_device_files(disk.clone());
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
             // The workspace's policy for this app: what it asks of the device is its own work,
@@ -305,7 +309,21 @@ mod cases {
                 engine,
                 disk,
                 windows: Rc::default(),
+                dispatch,
             }
+        }
+
+        /// The person's yes to restarting the session's shell, which ends what runs in it: the
+        /// dispatch delivers the call again, approved.
+        fn restart_approved(&self) -> InvokeOutcome {
+            self.rt
+                .invoke_approved_through(
+                    &me(),
+                    None,
+                    (self.app.action("restart").as_str(), vec![self.s()]),
+                    None,
+                )
+                .unwrap()
         }
 
         /// A window whose session runs in `target`, its shell open there.
@@ -1883,10 +1901,12 @@ mod cases {
                 .next()
                 .expect("the window says it reconnects");
             assert_eq!(prop(banner, "action").as_deref(), Some("Restart shell"));
+            // What may still run in the lost shell ends with it: the person says yes first.
             assert!(matches!(
                 window.fire(&banner.key, "act").unwrap(),
-                InvokeOutcome::Done(_)
+                InvokeOutcome::Asked(_)
             ));
+            assert!(matches!(t.restart_approved(), InvokeOutcome::Done(_)));
             window.poll_patches().unwrap();
             assert_eq!(
                 t.engine.asks("open").last().unwrap()["attach"],
@@ -1913,10 +1933,22 @@ mod cases {
             assert_eq!(t.engine.asked_of("clear")["shell"], "shell-1");
 
             let restart = node_with(window.tree(), "ui.MenuItem", "label", "Restart shell").key.clone();
-            assert!(matches!(
-                window.fire(&restart, "choose").unwrap(),
-                InvokeOutcome::Done(_)
-            ));
+            // Restarting ends what runs in the shell for good: it asks, Shift held or not, and
+            // nothing is closed before the yes.
+            let closed = t.engine.count("close");
+            for shift in [false, true] {
+                let held = tilolang_runtime::Held {
+                    shift,
+                    ..tilolang_runtime::Held::default()
+                };
+                assert!(matches!(
+                    window.fire_held(&restart, "choose", None, None, held).unwrap(),
+                    InvokeOutcome::Asked(_)
+                ));
+            }
+            assert_eq!(t.dispatch.asked().0, t.app.action("restart"));
+            assert_eq!(t.engine.count("close"), closed, "nothing is closed before the yes");
+            assert!(matches!(t.restart_approved(), InvokeOutcome::Done(_)));
             assert!(
                 t.engine
                     .asks("close")

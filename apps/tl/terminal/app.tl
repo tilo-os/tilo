@@ -438,10 +438,10 @@ destructive action restart(s: Session) (
     open_shell(s)
 }
 
-/// Closes this session's shell on this device.
+/// Closes this session's shell on this device, ending for good what runs in it.
 action close_shell(s: Session) {
     if s.shell != "" and s.device == here.device {
-        let _ = engine.call("close", json.encode(ShellAsk(shell: s.shell)))
+        let _ = engine.call(leaves: true, "close", json.encode(ShellAsk(shell: s.shell)))
     }
     s.shell = ""
 }
@@ -542,9 +542,7 @@ destructive action run(s: Session, command: Text) uses shell (
     require command.trim() != "" and command.len() <= max_command_bytes() "a command line of 1 to 4096 bytes"
     require not command.contains("\n") and not command.contains("\r") "one command line"
     require s.target != "host" or invoker.kind() != .agent "commands are not run in the device's own shell for anyone"
-    if s.shell == "" {
-        open_shell(s)
-    }
+    if s.shell == "" { open_shell(s) }
     run_in_shell(s, command)
 }
 
@@ -579,7 +577,7 @@ action ran(s: Session, j: host.Job) uses time {
 }
 
 /// Runs the command of an earlier run again.
-destructive action rerun(s: Session, prior: Command) (
+action rerun(s: Session, prior: Command) (
     icon: .rotate_cw,
     label: "Run again",
     keywords: ["repeat", "again", "retry"],
@@ -588,7 +586,7 @@ destructive action rerun(s: Session, prior: Command) (
 }
 
 /// Runs one test of an earlier run again, the way its tool runs one test.
-destructive action rerun_test(s: Session, prior: Command, test: Text) (
+action rerun_test(s: Session, prior: Command, test: Text) (
     icon: .rotate_cw,
     label: "Run this test again",
     keywords: ["test", "retry", "failing", "single test"],
@@ -649,7 +647,7 @@ action paste_clipboard(s: Session) uses clipboard {
 }
 
 /// Clears the screen and its scrollback.
-destructive action clear(s: Session) (
+action clear(s: Session) (
     icon: .eraser,
     label: "Clear screen",
     key: "Ctrl+Shift+K",
@@ -1336,7 +1334,7 @@ view session_body(s: Session) {
                 action: "Try again",
                 error: true,
             ) {
-                on act: restart(s)
+                on act: open_shell(s)
             }
         } else if s.state == .opening {
             ui.EmptyState(opening_line(s), icon: .terminal)
@@ -1344,7 +1342,7 @@ view session_body(s: Session) {
             commands_list(s)
         } else if s.state == .ended {
             ui.EmptyState("The shell exited", icon: .terminal, action: "Restart shell") {
-                on act: restart(s)
+                on act: open_shell(s)
             }
         } else if s.shell != "" {
             ui.ContextMenu {
@@ -1391,7 +1389,7 @@ view session_body(s: Session) {
             }
         } else {
             ui.EmptyState("No shell running", icon: .terminal, action: "Restart shell") {
-                on act: restart(s)
+                on act: open_shell(s)
             }
         }
     }

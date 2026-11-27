@@ -915,6 +915,14 @@ impl Confirms {
         }
     }
 
+    /// Whether a call of it that the run of another action the person pressed makes waits for
+    /// their yes: only what leaves the system. Marked destructive, it confirms where the person
+    /// presses it, not where an action they pressed calls it.
+    #[must_use]
+    pub const fn on_step(self) -> bool {
+        matches!(self, Self::Always)
+    }
+
     /// Whether a plain press confirms: what the action's contract and the catalogue publish.
     #[must_use]
     pub const fn by_default(self) -> bool {

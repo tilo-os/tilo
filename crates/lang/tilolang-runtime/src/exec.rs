@@ -529,7 +529,8 @@ impl Core {
         Ok(self.authority.asks_first(invoker, &info))
     }
 
-    /// Whether `admission` answers the ask the authority made of `invoker`'s call `aref`: the
+    /// Whether `admission` answers the ask the authority made of `invoker`'s call `aref`, the
+    /// action pressed itself or, when `step`, one the pressed action's run calls: the
     /// dispatch's always. A person's press answers it unless the action confirms on that press
     /// ([`Self::press_confirms`]); a rule that asks them first waits for their yes too, unless
     /// they held Shift.
@@ -537,13 +538,14 @@ impl Core {
         &self,
         admission: Admission,
         invoker: &Actor,
-        aref: &ActionRef,
+        (aref, step): (&ActionRef, bool),
     ) -> Result<bool, RuntimeError> {
         Ok(match admission {
             Admission::Not => false,
             Admission::Answered | Admission::Approved => true,
             Admission::Pressed { shift } => {
-                !self.press_confirms(aref, shift) && (shift || !self.rule_asks(invoker, aref)?)
+                !self.press_confirms(aref, shift, step)
+                    && (shift || !self.rule_asks(invoker, aref)?)
             }
         })
     }
@@ -555,12 +557,23 @@ impl Core {
     /// is that they mean to. Only a person's press: an agent's or an automation's call is
     /// decided by its grants alone.
     ///
+    /// A `step`, an action the pressed one's run calls, confirms only when it leaves the
+    /// system: the destructive mark is about the control the person pressed, which says what it
+    /// does (Run again runs a command without asking, though running one by its own control
+    /// asks).
+    ///
     /// This is the one place a press's confirmation is decided, for every app alike.
-    fn press_confirms(&self, aref: &ActionRef, shift: bool) -> bool {
+    fn press_confirms(&self, aref: &ActionRef, shift: bool, step: bool) -> bool {
         let pkg = self.registry.borrow().action_package(&aref.action);
         pkg.is_some_and(|pkg| {
-            pkg.action(&aref.action)
-                .is_some_and(|meta| meta.confirms().on_press(shift))
+            pkg.action(&aref.action).is_some_and(|meta| {
+                let confirms = meta.confirms();
+                if step {
+                    confirms.on_step()
+                } else {
+                    confirms.on_press(shift)
+                }
+            })
         })
     }
 
@@ -1168,7 +1181,9 @@ impl Core {
             // The choice is the person's own press, or a call the dispatch admitted for them:
             // that answers what the action asks first, as one action's press does, and the
             // many runs as the one change it is.
-            Decision::Ask if admitted && self.press_answers(admission, invoker, first)? => {
+            Decision::Ask
+                if admitted && self.press_answers(admission, invoker, (first, false))? =>
+            {
                 let ctx = ExecCtx {
                     approved_by: Some(invoker.clone()),
                     ..ctx
@@ -1482,7 +1497,7 @@ impl Core {
             // What confirms on a person's own press does so even where the policy allows it:
             // the policy says they may, the yes says they mean to.
             Decision::Allow
-                if pressed.is_some_and(|press| self.press_confirms(aref, press.shift)) =>
+                if pressed.is_some_and(|press| self.press_confirms(aref, press.shift, false)) =>
             {
                 self.wait_on_person(aref)
             }
@@ -1492,7 +1507,9 @@ impl Core {
             // pressed it, which answers what its code asks but not a rule that asks them first:
             // the yes is for this call, and for what it calls on the way only when the person made
             // the call themselves.
-            Decision::Ask if admitted && self.press_answers(admission, invoker, aref)? => {
+            Decision::Ask
+                if admitted && self.press_answers(admission, invoker, (aref, false))? =>
+            {
                 let ctx = ExecCtx {
                     approved_by: Some(invoker.clone()),
                     ..ctx
@@ -2195,7 +2212,7 @@ impl Core {
                 Some(press) if d == Decision::Ask => !self.press_answers(
                     Admission::Pressed { shift: press.shift },
                     &ctx.invoker,
-                    &aref,
+                    (&aref, true),
                 )?,
                 _ => false,
             };
@@ -2208,12 +2225,12 @@ impl Core {
                         && !ruled
                         && self.asked_about(journal, &ctx.chain, &aref.action)
                 });
-            // A call that confirms, made in a run the person pressed, waits for their yes even
-            // where the policy allows it, as it would pressed alone.
+            // A call that leaves the system, made in a run the person pressed, waits for their
+            // yes even where the policy allows it, as it would pressed alone.
             let confirms = !step.seed
                 && journal
                     .pressed
-                    .is_some_and(|press| self.press_confirms(&aref, press.shift));
+                    .is_some_and(|press| self.press_confirms(&aref, press.shift, true));
             match d {
                 Decision::Ask if allowed.is_some() => {
                     let ctx = ExecCtx {
