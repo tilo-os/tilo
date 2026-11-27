@@ -1136,12 +1136,18 @@ fn a_shared_window_reaches_the_member_showing_it() {
         "the stream says how big the window is: {reading}"
     );
 
-    // The member says it views the window, which is how the bar names it.
+    // The member says it views the window, which is how the bar names it, and the live session
+    // asks this device for the window's track, which is what makes it go out: two messages, so
+    // what is read below is waited for together rather than one and then the other.
     until(&mut host, &mut window, &mut viewer, |host, _, _| {
         rows(&shares(&host.session), "sharing")
             .first()
-            .and_then(|shared| shared["viewers"].as_array())
-            .is_some_and(|viewers| !viewers.is_empty())
+            .is_some_and(|shared| {
+                shared["streaming"] == Value::Bool(true)
+                    && shared["viewers"]
+                        .as_array()
+                        .is_some_and(|viewers| !viewers.is_empty())
+            })
     });
     let reading = shares(&host.session);
     let shared = rows(&reading, "sharing")
