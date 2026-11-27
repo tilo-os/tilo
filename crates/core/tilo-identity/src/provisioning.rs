@@ -1521,7 +1521,7 @@ pub fn verify_collaboration_identity(
     // names the identity, and its certificate binds this device's key to it.
     let joined = persist::joined_device_is_ready(paths, now_ns)
         .map_err(|error| joined_device_unusable(paths, error))?;
-    if joined {
+    let root = if joined {
         let metadata = tilo_identity_client::load_metadata_from_path(&primary_path)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         let root_public = persist::read_public_key(&paths.user_pubkey)
@@ -1532,41 +1532,81 @@ pub fn verify_collaboration_identity(
                 "personal identity and persisted certification root do not match",
             ));
         }
-        return Ok(());
-    }
-    // The record is read for its public fields alone: an account's root is sealed with the device
-    // key, which only the device's daemon opens, so verifying never unlocks it.
-    let metadata = crate::store::load_metadata_from_path(&primary_path)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    let root = metadata.group_public_key;
-    // This identity's certificate for the device. The device owner's is the system-facing one
-    // too, and an owner may hold only that one.
-    let cert = match persist::read_device_cert(&paths.device_cert_for_user(&root)) {
-        Ok(cert) => cert,
-        Err(_) => persist::read_device_cert(&paths.device_cert)
-            .map_err(|e| io::Error::other(e.to_string()))?,
+        root_public
+    } else {
+        // The record is read for its public fields alone: an account's root is sealed with the
+        // device key, which only the device's daemon opens, so verifying never unlocks it.
+        crate::store::load_metadata_from_path(&primary_path)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?
+            .group_public_key
     };
-    tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(|error| {
-        tilo_user_identity::CertificateClockError::of(&cert, now_ns, &error).map_or_else(
-            || io::Error::other(error.to_string()),
-            tilo_user_identity::CertificateClockError::into_io,
-        )
-    })?;
-    if cert.user_public_key != root {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "personal identity and persisted certification root do not match",
-        ));
+    // Every certificate this device holds for the identity must hold: its own, and the
+    // system-facing one too when the identity owns the device, which then holds the same
+    // certificate in both places. One that holds does not stand in for a damaged one beside it.
+    let owns_device = persist::read_public_key(&paths.user_pubkey).is_ok_and(|owner| owner == root);
+    let own = read_certificate_to_verify(&paths.device_cert_for_user(&root))?;
+    let mut certs = Vec::with_capacity(2);
+    certs.extend(own);
+    if owns_device || certs.is_empty() {
+        // An owner may hold only the system-facing certificate.
+        certs.push(
+            read_certificate_to_verify(&paths.device_cert)?.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "this device holds no certificate for the identity",
+                )
+            })?,
+        );
+    }
+    for cert in &certs {
+        tilo_user_identity::verify_device_cert_at(cert, now_ns).map_err(|error| {
+            tilo_user_identity::CertificateClockError::of(cert, now_ns, &error).map_or_else(
+                || {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("this device's certificate did not verify: {error}"),
+                    )
+                },
+                tilo_user_identity::CertificateClockError::into_io,
+            )
+        })?;
+        if cert.user_public_key != root {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "personal identity and persisted certification root do not match",
+            ));
+        }
     }
     // The device's key is its daemon's, which answers which key it is.
     let device = crate::trusted_device::device_public_key(paths)?;
-    if cert.device_public_key != device {
+    if certs.iter().any(|cert| cert.device_public_key != device) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "certified device key does not match the device's key",
         ));
     }
     Ok(())
+}
+
+/// The certificate at `path` for verification, `None` when there is none. One that is there and
+/// cannot be read is never a reason to look elsewhere: one that does not decode is a damaged chain,
+/// and a store that cannot be read proves nothing about it either way.
+fn read_certificate_to_verify(path: &Path) -> io::Result<Option<DeviceCert>> {
+    match persist::read_device_cert(path) {
+        Ok(cert) => Ok(Some(cert)),
+        Err(persist::PersistError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(persist::PersistError::Io(error)) => Err(error),
+        Err(error @ persist::PersistError::Canonical(_)) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("this device's certificate does not decode: {error}"),
+        )),
+        Err(error) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("this device's certificate cannot be read: {error}"),
+        )),
+    }
 }
 
 /// Where this device's key and certificates live, for every program of this
@@ -2218,6 +2258,17 @@ mod tests {
                 ProvisionOutcome::Existing
             );
 
+            // The certificate others are shown for the identity must hold as well as the
+            // system-facing one: a damaged copy is not passed over for the one beside it.
+            let own = paths.device_cert_for_user(&cert.user_public_key);
+            let mut damaged = cert.clone();
+            damaged.signature[0] ^= 0xff;
+            persist::write_device_cert(&own, &damaged).unwrap();
+            let error = verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            persist::write_device_cert(&own, &cert).unwrap();
+            verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap();
+
             // A record naming another identity is not this device's.
             write_record([7; 32]);
             let error = verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap_err();
@@ -2618,6 +2669,38 @@ mod tests {
             let error = verify_collaboration_identity(&personal, &paths, u64::MAX)
                 .expect_err("a different personal root must not pass login");
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+
+        phase collaboration_verifier_rejects_every_damaged_certificate_of_the_identity;
+        {
+            // The identity owns the device and holds the same certificate in both places: a
+            // damaged one fails login even while the other still holds.
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let personal = tmp.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            let _taken = device_key_taken_as_daemon(&paths).unwrap();
+            ensure_collaboration_identity(&personal, &paths).unwrap();
+            let certificates = device_certificates(&paths, &personal);
+            let now_ns = certificates[0].1.issued_at_ns;
+            verify_collaboration_identity(&personal, &paths, now_ns).expect("the intact chain");
+            for (path, cert) in &certificates {
+                let mut damaged = cert.clone();
+                damaged.signature[0] ^= 0xff;
+                persist::write_device_cert(path, &damaged).unwrap();
+                let error = verify_collaboration_identity(&personal, &paths, now_ns)
+                    .expect_err("a certificate whose signature does not hold must not pass login");
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{}", path.display());
+
+                std::fs::write(path, b"not a certificate").unwrap();
+                let error = verify_collaboration_identity(&personal, &paths, now_ns)
+                    .expect_err("a certificate that does not decode must not pass login");
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{}", path.display());
+                persist::write_device_cert(path, cert).unwrap();
+            }
+            // The owner may hold only the system-facing certificate, which must then hold.
+            std::fs::remove_file(&certificates[1].0).unwrap();
+            verify_collaboration_identity(&personal, &paths, now_ns)
+                .expect("the system-facing certificate alone");
         }
 
         phase collaboration_setup_repairs_the_active_import_without_minting_primary;
