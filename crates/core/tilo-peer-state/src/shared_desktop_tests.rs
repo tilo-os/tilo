@@ -150,10 +150,7 @@ fn write_of(
     ));
     let heads = doc.get_heads();
     change(&mut doc);
-    doc.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(shared_resource::change_message(person)),
-    );
+    shared_resource::commit_change(&mut doc, person, 0, None);
     let mutation = if held.is_some() {
         collab_types::DocumentMutation::Incremental(doc.save_after(&heads))
     } else {
@@ -235,7 +232,8 @@ tilo_test_env::scenario! {
         renames.tree.workspaces[0].strips[0].name = "Mine".into();
         let renames = write(&peer, &key, &person, 2, &renames);
         let refused = receive(&mut peer, &guest, renames).unwrap_err();
-        assert!(refused.contains("may not rename 10"), "{refused}");
+        // The rename is moderation, which the change claims and the editor's role denies.
+        assert!(refused.contains("item:10/field:moderation"), "{refused}");
         assert_eq!(strip_names(&peer), ["Workspace"], "refused, the desktop is as it was");
 
         let closes_own = write(&peer, &key, &person, 3, &desktop(&[(1, &owner)]));

@@ -1272,11 +1272,81 @@ pub fn commit_change(
     let message = action
         .and_then(tilo_actions::ActionContext::change_message)
         .unwrap_or_else(|| change_message(author));
+    let message = claiming_renames(doc, &doc.base_heads(), message);
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(message)
             .with_time(time),
     );
+}
+
+/// The strips whose name what `doc` holds now gives another than it had at `before`: renamed, not
+/// made. A strip `before` lacks is named as it is made, which is no rename.
+#[must_use]
+pub fn renamed_strips(doc: &AutoCommit, before: &[ChangeHash]) -> Vec<u64> {
+    let names = |heads: Option<&[ChangeHash]>| -> HashMap<u64, String> {
+        read_as_kept(doc, heads)
+            .map(|desktop| {
+                desktop
+                    .tree
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .map(|strip| (strip.id.0, strip.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (was, is) = (names(Some(before)), names(None));
+    let mut renamed: Vec<u64> = is
+        .iter()
+        .filter(|(id, name)| was.get(*id).is_some_and(|old| old != *name))
+        .map(|(id, _)| *id)
+        .collect();
+    renamed.sort_unstable();
+    renamed
+}
+
+/// `message`, the history entry the change `doc` holds uncommitted beyond `before` is to be
+/// committed with, naming each strip the change renames as the moderation it is
+/// ([`crate::ownership::rename_path`]): whoever decides the change decides those claims against
+/// its writer's grants, without reading what it wrote. A message that is no entry, or a change
+/// that renames nothing, stays as it is.
+#[must_use]
+pub fn claiming_renames(doc: &AutoCommit, before: &[ChangeHash], message: String) -> String {
+    let renamed = renamed_strips(doc, before);
+    if renamed.is_empty() {
+        return message;
+    }
+    let Some(mut context) = tilo_actions::ActionContext::from_change_message(&message) else {
+        return message;
+    };
+    if context.resource.is_none() {
+        context.resource = Some(tilo_actions::ActionResource {
+            id: crate::ownership::DESKTOP_DOCUMENT.into(),
+            kind: crate::ownership::DESKTOP_KIND.into(),
+            label: "Desktop".into(),
+        });
+    }
+    let mut members: Vec<tilo_actions::Did> = match context.what.take() {
+        Some(tilo_actions::Did::Group(group)) if group.distinct.is_empty() => group.members,
+        Some(tilo_actions::Did::Group(group)) => group.distinct,
+        Some(what) => vec![what],
+        None => Vec::new(),
+    };
+    members.extend(renamed.into_iter().map(|strip| {
+        tilo_actions::Did::Edit(tilo_actions::FieldEdit {
+            ty: crate::ownership::DESKTOP_KIND.into(),
+            field: NAME.into(),
+            path: crate::ownership::rename_path(strip),
+            op: tilo_actions::EditOp::Set,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        })
+    }));
+    context.what = Some(tilo_actions::Did::group(members));
+    context.change_message().unwrap_or(message)
 }
 
 pub mod device;

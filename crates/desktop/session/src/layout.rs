@@ -617,6 +617,8 @@ fn write_change(
         (None, true) => step.to_owned(),
         (None, false) => shared_resource::housekeeping_message(person),
     };
+    // A strip renamed is moderation, which the change says so whoever holds it decides it.
+    let message = shared_resource::claiming_renames(candidate, &from, message);
     candidate.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(message)

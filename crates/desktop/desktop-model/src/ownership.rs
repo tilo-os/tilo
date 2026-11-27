@@ -128,6 +128,20 @@ pub fn act_node(workspace: &str, touched: &Touched) -> TreePath {
         .action(touched.act.verb())
 }
 
+/// Where a change claims to rename the strip `strip`: under the strip's moderation field, which
+/// the Moderator and Owner roles allow and an Editor's denies. A strip is the workspace's, so
+/// naming it again is moderation whoever made it; the change says so in its history entry, and
+/// whoever decides it, a host that holds it sealed or a device that opens it, decides that claim
+/// against the writer's grants (`collab_types::receipt::moderated_nodes`).
+#[must_use]
+pub fn rename_path(strip: u64) -> Vec<tilo_actions::PathStep> {
+    vec![
+        tilo_actions::PathStep::Item(strip.to_string()),
+        tilo_actions::PathStep::Field(MODERATION_FIELD.to_owned()),
+        tilo_actions::PathStep::Field(Act::Rename.verb().to_owned()),
+    ]
+}
+
 /// Every strip's and window's moderation on `workspace`'s shared desktop: what a
 /// desktop asks the workspace whether its person may do before it offers to
 /// close or move what others made. A grant on one window alone does not

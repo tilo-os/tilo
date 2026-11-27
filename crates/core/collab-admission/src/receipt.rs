@@ -7,7 +7,7 @@ use collab_types::claim::{ChangeClaim, ClaimedAction, FrameworkChange, Invoker};
 use collab_types::receipt::{
     Allows, Receipt, ReceiptRefusal, SurfaceFor, Surfaces, WrittenDocument, WrittenUnits, by_kind,
     check_claimed_changes, check_claims, check_claims_by_kind, check_continuations,
-    check_store_kinds, label, unread_claims, written_node,
+    check_store_kinds, label, moderated_nodes, unread_claims, written_node,
 };
 use collab_types::{DocumentMutation, OpKind, SignedOp};
 use tilo_action_policy::{Acting, ActionKind, TreePath};
@@ -501,9 +501,12 @@ fn decide_as_document_edit(
     match changes {
         Some(changes) => {
             for change in changes {
-                let verb = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
+                let action = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
                     .ok()
-                    .and_then(|claim| claim.action.store_verb().map(str::to_owned));
+                    .map(|claim| claim.action);
+                let verb = action
+                    .as_ref()
+                    .and_then(|action| action.store_verb().map(str::to_owned));
                 let invoker = match (crate::claim::maker_of(change), imported) {
                     (crate::claim::Maker::Named, _) => collab_types::claim::invoker_of(change),
                     (crate::claim::Maker::Derived, _) => None,
@@ -511,6 +514,12 @@ fn decide_as_document_edit(
                     (crate::claim::Maker::Nobody, Some(person)) => Some(person.clone()),
                     (crate::claim::Maker::Nobody, None) => return Err(ReceiptRefusal::NoInvoker),
                 };
+                for node in action
+                    .iter()
+                    .flat_map(|action| moderated_nodes(&record, action))
+                {
+                    invokers.push((invoker.clone(), node));
+                }
                 invokers.push((invoker, at_verb(verb.as_deref())));
             }
         }
@@ -518,7 +527,11 @@ fn decide_as_document_edit(
         None => {
             for claim in claims {
                 let node = at_verb(claim.action.store_verb());
-                invokers.push((sealed_invoker(claim, (imported, signer))?, node));
+                let invoker = sealed_invoker(claim, (imported, signer))?;
+                for moderated in moderated_nodes(&record, &claim.action) {
+                    invokers.push((invoker.clone(), moderated));
+                }
+                invokers.push((invoker, node));
             }
         }
     }

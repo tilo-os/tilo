@@ -1,6 +1,8 @@
-//! The check of each write to a workspace's shared desktop: nobody closes, moves
-//! or renames a strip or window someone else made unless the workspace lets them
-//! moderate it ([`crate::ownership`]).
+//! The check of each write to a workspace's shared desktop: nobody closes or moves
+//! a strip or window someone else made unless the workspace lets them moderate it
+//! ([`crate::ownership`]), and a change that renames a strip says so. A rename is
+//! moderation whoever made the strip, decided from what the change claims where it is
+//! admitted, so a holder of the record sealed decides it as one that reads it does.
 //!
 //! The desktop record keeps every workspace, strip, group and window as an
 //! entry of its own ([`super`]), so each change writes only the entries its
@@ -78,6 +80,11 @@ pub enum DesktopRefusal {
         "{writer} may not change the state of window {window}: it is its person's, set by the device that opened it"
     )]
     WindowState { writer: String, window: TabId },
+    /// It renames a strip without saying so in its history entry: a rename is moderation, which
+    /// the change claims so whoever holds it sealed decides it by its writer's grants
+    /// ([`crate::ownership::rename_path`]).
+    #[error("{writer} renames strip {strip} without claiming the rename")]
+    UnclaimedRename { writer: String, strip: u64 },
     /// It is not a desktop, or not one that can be read.
     #[error("not a shared desktop: {0}")]
     Unreadable(String),
@@ -145,8 +152,22 @@ pub fn judge(
                 window: *window,
             });
         }
+        // A rename is decided as the moderation its change claims, by the writer's grants, where
+        // the change is admitted ([`crate::ownership::rename_path`]), whether or not this holder
+        // reads it: here it is only held to say every rename it makes.
+        let named = renames_named(change.message());
+        if let Some(strip) = renamed(&seen, &left)
+            .into_iter()
+            .find(|strip| !named.contains(strip))
+        {
+            return Err(DesktopRefusal::UnclaimedRename {
+                writer: writer.person.to_owned(),
+                strip,
+            });
+        }
         if let Some(act) = foreign_acts(&seen, &left, writer.person, writer.members)
             .into_iter()
+            .filter(|act| act.act != crate::ownership::Act::Rename)
             .chain(claimed(&seen, &left, writer.person))
             .find(|act| !(writer.allows)(act))
         {
@@ -157,6 +178,58 @@ pub fn judge(
         }
     }
     Ok(())
+}
+
+/// The strips `after` names otherwise than `before` did: renamed, not made.
+fn renamed(
+    before: &crate::ownership::SharedDesktop,
+    after: &crate::ownership::SharedDesktop,
+) -> Vec<u64> {
+    let names = |desktop: &crate::ownership::SharedDesktop| {
+        desktop
+            .tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .map(|strip| (strip.id.0, strip.name.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let was = names(before);
+    names(after)
+        .into_iter()
+        .filter(|(id, name)| was.get(id).is_some_and(|old| old != name))
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The strips the history entry `message` claims to rename ([`crate::ownership::rename_path`]).
+fn renames_named(message: Option<&str>) -> BTreeSet<u64> {
+    fn walk(did: &tilo_actions::Did, named: &mut BTreeSet<u64>) {
+        match did {
+            tilo_actions::Did::Edit(edit) => {
+                if let [tilo_actions::PathStep::Item(id), ..] = edit.path.as_slice()
+                    && let Ok(id) = id.parse::<u64>()
+                    && edit.path == crate::ownership::rename_path(id)
+                {
+                    named.insert(id);
+                }
+            }
+            tilo_actions::Did::Group(group) => {
+                for member in group.members.iter().chain(&group.distinct) {
+                    walk(member, named);
+                }
+            }
+            tilo_actions::Did::Verb(_) | tilo_actions::Did::History(_) => {}
+        }
+    }
+    let mut named = BTreeSet::new();
+    if let Some(what) = message
+        .and_then(tilo_actions::ActionContext::from_change_message)
+        .and_then(|context| context.what)
+    {
+        walk(&what, &mut named);
+    }
+    named
 }
 
 /// Take `mutation`, a write by `writer`, into `doc` when [`judge`] admits

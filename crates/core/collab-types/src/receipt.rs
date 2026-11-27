@@ -643,6 +643,32 @@ pub fn written_node(document: &WrittenDocument<'_>) -> TreePath {
     .resource(resource)
 }
 
+/// The moderation nodes `action`, a change's claim on the record at `record` ([`written_node`]),
+/// edits: one for each field edit of it whose path runs through a
+/// [`tilo_action_policy::roles::MODERATION_FIELD`] (renaming a strip of a shared desktop someone
+/// else made, say). Acting on what others made is moderation wherever an app keeps it, so such an
+/// edit is decided there as well as at the record, which the Moderator and Owner roles allow
+/// and an Editor's denies, from the claim alone: a host that cannot read the change decides it
+/// as every device that opens it does.
+#[must_use]
+pub fn moderated_nodes(record: &TreePath, action: &ClaimedAction) -> Vec<TreePath> {
+    let moderated = |path: &[PathStep]| {
+        path.iter().any(|step| {
+            matches!(step, PathStep::Field(field) if field == tilo_action_policy::roles::MODERATION_FIELD)
+        })
+    };
+    match action {
+        ClaimedAction::Edit { path, .. } if moderated(path) => {
+            vec![edit_node(record.clone(), path)]
+        }
+        ClaimedAction::Group(members) => members
+            .iter()
+            .flat_map(|member| moderated_nodes(record, member))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Refuse changes whose invoker shows an appearance unless they come from
 /// the one bot actor their author device may show other names as
 /// (`persona_author`, the bot of a bot device whose installation allows `Personas`), and the appearance is valid as written.
