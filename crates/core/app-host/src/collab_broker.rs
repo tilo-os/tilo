@@ -775,6 +775,21 @@ impl AppActionBroker {
             .admit_app_open(caller_app, workspace, parent, target)
     }
 
+    /// Who the running invocation `running` of application `app` in `workspace` was asked by
+    /// ([`AppBrokerState::running_caller`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`AppBrokerState::running_caller`].
+    pub fn running_caller(
+        &self,
+        app: &str,
+        workspace: &str,
+        running: tilo_actions::InvocationId,
+    ) -> Result<tilo_actions::remote::Caller, String> {
+        self.state.running_caller(app, workspace, running)
+    }
+
     /// Read what each application declared on the action api from
     /// `resolver` from now on.
     pub fn set_app_action_access(&self, resolver: crate::app_actions::AppActionAccessResolver) {

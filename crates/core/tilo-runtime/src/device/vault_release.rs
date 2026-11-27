@@ -118,6 +118,15 @@ impl ActionProvider for OwnProcess {
         let workspaces = daemon.workspaces().clone();
         let (app, workspace) = (self.app.clone(), self.workspace.clone());
         let asked = workspace_vault::asked_by_app(&request.target);
+        // Whoever made the running call of the app's action a page's login step continues: the
+        // fill is decided as them as well as the app.
+        let asked_by = request.on_behalf_of.and_then(|running| {
+            daemon
+                .app_broker()?
+                .running_caller(&self.app, &self.workspace, running)
+                .inspect_err(|why| tracing::info!(app = %self.app, %why, "a page login step continues no running call"))
+                .ok()
+        });
         let (completer, answer) = pending();
         tilo_rt::app().spawn(async move {
             let invocation = request.invocation;
@@ -125,7 +134,9 @@ impl ActionProvider for OwnProcess {
             let services = PersonServices::of(&workspaces);
             let answered = match asked {
                 Some(action) if workspace_vault::PAGE_LOGIN_ACTIONS.contains(&action) => {
-                    services.page_login(at, &process, &request).await
+                    services
+                        .page_login(at, &process, &request, asked_by.as_ref())
+                        .await
                 }
                 Some(workspace_vault::FIND) => {
                     answer_of(services.find_tagged(at, &process, &request).await)

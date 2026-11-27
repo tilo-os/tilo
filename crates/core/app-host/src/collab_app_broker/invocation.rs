@@ -82,6 +82,51 @@ impl AppBrokerState {
         }))
     }
 
+    /// Who the invocation `running`, which this broker delivered to a connection of application
+    /// `app` in `workspace` and that still runs, was asked by: the caller a step the app takes
+    /// for it outside its own connection (a field of its page filled from the vault) is decided
+    /// as. An invocation the app made of itself, with no person's press behind it, was asked by
+    /// the app alone.
+    ///
+    /// # Errors
+    ///
+    /// No such invocation runs, two share its id, it is another app's or another workspace's,
+    /// or its caller no longer stands.
+    pub(crate) fn running_caller(
+        &self,
+        app: &str,
+        workspace: &str,
+        running: tilo_actions::InvocationId,
+    ) -> Result<tilo_actions::remote::Caller, String> {
+        let matches = self
+            .pending_invocations
+            .lock()
+            .map_err(|_| "invocation registry unavailable")?
+            .values()
+            .filter(|entry| entry.update.invocation() == running)
+            .take(2)
+            .map(|entry| {
+                let runs_here = entry.cluster_id == workspace
+                    && !entry.update.is_terminal()
+                    && entry.cancellation_requested_at.is_none();
+                (runs_here, entry.peer_id, entry.original.clone())
+            })
+            .collect::<Vec<_>>();
+        let found = match matches.as_slice() {
+            [(true, peer_id, Some(original))] => Some((*peer_id, std::sync::Arc::clone(original))),
+            _ => None,
+        };
+        let (peer_id, original) = found.ok_or("no call of the app's that runs asked for this")?;
+        if !original.delivered_to(app, workspace) {
+            return Err("the call this names is another app's".into());
+        }
+        if original.through_app_api() {
+            return Ok(tilo_actions::remote::Caller::local_app(app).in_workspace(workspace));
+        }
+        self.continuing_caller(peer_id, running)
+            .ok_or_else(|| "whoever asked for this call is no longer admitted".into())
+    }
+
     /// The caller of the invocation `running` that this broker delivered to
     /// the connection `peer_id` and that still runs. `None` when the
     /// connection runs no such invocation, two callers share its id, or its

@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tilo_action_line::LineClient;
+use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, ItemRef, ReceiptStatus,
     RemoteActionTarget, VAULT_FORGET_PAGE_LOGIN, VAULT_KEEP_PAGE_LOGIN, VAULT_PAGE_FILL,
@@ -44,24 +45,26 @@ impl NativeVault {
     }
 
     /// Call `target` with `argument`, answering what it said through `done`, then waking the
-    /// window.
+    /// window. `on_behalf_of` is the running call of the app's action the call continues: the
+    /// daemon decides it as whoever made that call too.
     fn call(
         &self,
-        target: RemoteActionTarget,
-        argument: Value,
+        (target, argument): (RemoteActionTarget, Value),
+        on_behalf_of: Option<InvocationId>,
         done: impl FnOnce(Result<Value, String>) + Send + 'static,
     ) {
         let Some((line, workspace)) = line() else {
             done(Err(NO_DAEMON.to_owned()));
             return;
         };
-        let request = InvokeRequest::plain(
+        let mut request = InvokeRequest::plain(
             target,
             match argument {
                 Value::Object(fields) => fields,
                 _ => serde_json::Map::new(),
             },
         );
+        request.on_behalf_of = on_behalf_of;
         // The daemon decides who calls by the connection: the call names nobody.
         let caller = Caller::local_person("").in_workspace(&workspace);
         let wake = self.wake.clone();
@@ -121,8 +124,8 @@ fn item_of(item: &str) -> Result<ItemRef, String> {
 impl LoginVault for NativeVault {
     fn logins(&self, site: &str, done: Answered<Vec<VaultLogin>>) {
         self.call(
-            vault_target(VAULT_PAGE_LOGINS),
-            json!({"site": site}),
+            (vault_target(VAULT_PAGE_LOGINS), json!({"site": site})),
+            None,
             move |value| done(listed(value)),
         );
     }
@@ -149,8 +152,8 @@ impl LoginVault for NativeVault {
             "replacing": replacing,
         });
         self.call(
-            vault_target(VAULT_KEEP_PAGE_LOGIN),
-            argument,
+            (vault_target(VAULT_KEEP_PAGE_LOGIN), argument),
+            None,
             move |value| done(value.map(drop)),
         );
     }
@@ -161,20 +164,36 @@ impl LoginVault for NativeVault {
             Err(why) => return done(Err(why)),
         };
         self.call(
-            vault_target(VAULT_FORGET_PAGE_LOGIN),
-            json!({"site": site, "item": item}),
+            (
+                vault_target(VAULT_FORGET_PAGE_LOGIN),
+                json!({"site": site, "item": item}),
+            ),
+            None,
             move |value| done(listed(value)),
         );
     }
 
-    fn fill(&self, site: &str, item: &str, done: Answered<(String, ReleasedText)>) {
+    fn fill(
+        &self,
+        (site, item): (&str, &str),
+        asked_by: Option<&str>,
+        done: Answered<(String, ReleasedText)>,
+    ) {
         let item = match item_of(item) {
             Ok(item) => item,
             Err(why) => return done(Err(why)),
         };
+        // The running call the app's runtime named; the vault refuses a fill that names none.
+        let asked_by = match asked_by.map(|named| serde_json::from_value(json!(named))) {
+            None => None,
+            Some(Ok(running)) => Some(running),
+            Some(Err(_)) => {
+                return done(Err("The page named no call that asked for it".to_owned()));
+            }
+        };
         self.call(
-            item.target(VAULT_PAGE_FILL),
-            json!({"site": site}),
+            (item.target(VAULT_PAGE_FILL), json!({"site": site})),
+            asked_by,
             move |value| {
                 done(value.and_then(|value| {
                     #[derive(serde::Deserialize)]

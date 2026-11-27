@@ -649,6 +649,11 @@ fn extension_id(value: &serde_json::Value) -> Result<String, String> {
     Ok(id)
 }
 
+/// The field of a login request that names the running call of the app's action that asked for
+/// it. The app's runtime writes it, in place of anything the app's own code wrote there, so the
+/// vault decides a fill as whoever made that call.
+pub const ASKED_BY: &str = "on_behalf_of";
+
 /// The login action a request names, with the fields it takes. A password is never part of one:
 /// the engine captures and fills it, and the vault keeps it.
 fn credential(value: &serde_json::Value) -> Result<crate::LoginAsk, String> {
@@ -677,12 +682,14 @@ fn credential(value: &serde_json::Value) -> Result<crate::LoginAsk, String> {
         "fill" => LoginAsk::Fill {
             form: field("form"),
             item: field("account"),
+            asked_by: text(value, ASKED_BY),
         },
         // A field filled from a login the vault keeps: the request names the field and the
         // login, never what it keeps.
         "fill_field" => LoginAsk::FillField {
             element: element(value, "element")?,
             item: field("account"),
+            asked_by: text(value, ASKED_BY),
         },
         "delete" => LoginAsk::Delete {
             item: field("account"),

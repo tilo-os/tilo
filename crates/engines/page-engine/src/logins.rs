@@ -21,12 +21,21 @@ pub enum LoginAsk {
     Save { capture: String },
     /// Keep it in place of the login `item` names.
     Update { capture: String, item: String },
-    /// Fill the form `form` with the login `item` names.
-    Fill { form: String, item: String },
+    /// Fill the form `form` with the login `item` names, for the running call `asked_by` names.
+    Fill {
+        form: String,
+        item: String,
+        asked_by: Option<String>,
+    },
     /// Fill the field `element` with the secret of the login `item` names, straight from the
     /// vault into the page: the engine writes it only while its own document is at the site the
-    /// vault released it for.
-    FillField { element: String, item: String },
+    /// vault released it for. `asked_by` is the running call of the app's action that asked for
+    /// it, as the app's runtime named it: the vault decides the fill as whoever made that call.
+    FillField {
+        element: String,
+        item: String,
+        asked_by: Option<String>,
+    },
     /// Forget the login `item` names.
     Delete { item: String },
 }
@@ -78,8 +87,14 @@ pub trait LoginVault {
     );
     /// Forget the login `item` names, answering the logins that remain for `site`.
     fn forget(&self, site: &str, item: &str, done: Answered<Vec<VaultLogin>>);
-    /// The name and password of the login `item` names, for a page at `site`.
-    fn fill(&self, site: &str, item: &str, done: Answered<(String, ReleasedText)>);
+    /// The name and password of the login `item` names, for a page at `site`, decided as
+    /// whoever made the running call `asked_by` names as well as the app.
+    fn fill(
+        &self,
+        site_and_item: (&str, &str),
+        asked_by: Option<&str>,
+        done: Answered<(String, ReleasedText)>,
+    );
 }
 
 /// What a vault call answered, for the session to carry on with on the window's thread.

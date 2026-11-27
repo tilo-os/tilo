@@ -43,6 +43,20 @@ pub const NOT_A_WINDOW: &str = "A page's logins are answered only to the window 
 /// What is written into an item each time a window is handed it to fill a page.
 const PAGE_FILL_USE: &str = "tilo.vault/page-fill";
 
+/// What a fill no running call of the app's asked for is refused with.
+pub const ASKED_BY_NOBODY: &str = "A login fills a page only for a call of the app's action that \
+                                   still runs, decided as whoever made that call; this fill names \
+                                   none.";
+
+/// What a fill asked by someone the workspace grants nothing of the login is refused with.
+#[must_use]
+pub fn not_granted(who: &str) -> String {
+    format!(
+        "{who} holds no grant for this login, so it fills no page with it. Its person grants it \
+         this login in Passwords."
+    )
+}
+
 /// What a page login action asked from a tilolang process is refused with.
 #[must_use]
 pub fn from_a_tilolang_process(app: &str) -> String {
@@ -148,6 +162,55 @@ impl crate::PersonServices {
         decision.answer == Answer::Allow && decision.grant().is_some()
     }
 
+    /// Refuse a fill of `item` that `asked_by`, whoever made the call of `app`'s action that
+    /// asked for it, holds no grant for in `workspace`'s policy: an agent needs a grant of its
+    /// person's naming it for that login, a person needs the login to be theirs to use, and the
+    /// app's own call is held to the app's grant, decided after this. Anyone else fills nothing.
+    async fn asker_may_fill(
+        &self,
+        workspace: &str,
+        app: &str,
+        asked_by: &Caller,
+        item: &ItemRef,
+    ) -> Result<(), ActionCallError> {
+        let acting = asked_by.acting();
+        if matches!(&acting.by, tilo_action_policy::Actor::App(by) if by.as_str() == app) {
+            return Ok(());
+        }
+        let who = acting
+            .agent_id()
+            .or_else(|| acting.person_id())
+            .unwrap_or("Whoever asked")
+            .to_owned();
+        let Some(policy) = self.policy_of(workspace).await else {
+            return Err(refused(not_granted(&who)));
+        };
+        let node = fill_node(workspace, item);
+        let cx = Context::at(tilo_clock::unix_now_ms());
+        let granted = if let Some((agent, person)) =
+            tilo_workspace_service::workspaces::workspace_stores::agent_of(asked_by)
+        {
+            let decision =
+                policy
+                    .party_of_agent(agent, person)
+                    .decide(&node, ActionKind::Read, &cx);
+            decision.answer == Answer::Allow && decision.grant().is_some()
+        } else if let Some(person) = acting.person_id() {
+            policy
+                .party(person)
+                .decide(&node, ActionKind::Read, &cx)
+                .answer
+                == Answer::Allow
+        } else {
+            false
+        };
+        if granted {
+            Ok(())
+        } else {
+            Err(refused(not_granted(&who)))
+        }
+    }
+
     /// Whether `app` may use the login `facts` describe: it kept it itself, or a grant lets it
     /// fill pages from it.
     async fn may_use(&self, workspace: &str, app: &str, facts: &ItemFacts) -> bool {
@@ -162,18 +225,22 @@ impl crate::PersonServices {
 
     /// Answer `request`, one of the page login actions ([`workspace_vault::PAGE_LOGIN_ACTIONS`]), for
     /// `process`, a process of `app`'s own in `workspace` as the daemon that started it vouches
-    /// for it, on its connection alone.
+    /// for it, on its connection alone. A fill is decided as `asked_by` too: whoever made the
+    /// call of the app's action that asked for it, which still runs (`None` where the fill names
+    /// no such call).
     ///
     /// # Errors
     /// Refused, in words a person reads, for a tilolang process, a device that may not read the
     /// vault for the app, a site that is no web origin, a login that belongs elsewhere or that the
-    /// vault does not keep, and a login the app neither kept nor may fill (whose fill asks its
-    /// person first).
+    /// vault does not keep, a fill no running call asked for or whose caller holds no grant for
+    /// the login, and a login the app neither kept nor may fill (whose fill asks its person
+    /// first).
     pub async fn page_login(
         &self,
         (app, workspace): (&str, &str),
         process: &AppProcess,
         request: &InvokeRequest,
+        asked_by: Option<&Caller>,
     ) -> Result<Value, ActionCallError> {
         if matches!(process, AppProcess::Tilolang | AppProcess::OwnTilolang) {
             return Err(refused(from_a_tilolang_process(app)));
@@ -239,6 +306,8 @@ impl crate::PersonServices {
                                 .to_owned(),
                     })?;
                 let place = site(&at)?;
+                let asked_by = asked_by.ok_or_else(|| refused(ASKED_BY_NOBODY))?;
+                self.asker_may_fill(workspace, app, asked_by, &item).await?;
                 let login = self.kept_login(workspace, &item, &place).await?;
                 let facts = &login.facts;
                 let own = kept_by(facts, app);

@@ -299,24 +299,43 @@ pub fn with_typed<R>(take: impl FnOnce(&[&str]) -> R) -> R {
     })
 }
 
-/// `request` with what the person typed filled in, where it asks for it (`"typed": true`): the
-/// first take is the user name, the second the password. Without an approve that typed both, it
-/// names no credentials, which turns the sign-in down.
-fn filled(request: &str) -> std::borrow::Cow<'_, str> {
+/// The field of a login request naming the running call that asked for it
+/// (`tilo_page_engine::codec::ASKED_BY`).
+const ASKED_BY: &str = "on_behalf_of";
+
+/// `request` as the window is asked it.
+///
+/// - What the person typed is filled in where it asks for it (`"typed": true`): the first take
+///   is the user name, the second the password. Without an approve that typed both, it names no
+///   credentials, which turns the sign-in down.
+/// - A login request names `serving`, the invocation this thread serves, as the call that asked
+///   for it, in place of anything the app's code wrote there: the vault decides a fill as
+///   whoever made that call, so an app's code never names who asked.
+fn stamped(request: &str, serving: Option<String>) -> std::borrow::Cow<'_, str> {
     let Ok(serde_json::Value::Object(mut fields)) = serde_json::from_str(request) else {
         return request.into();
     };
-    if fields.remove("typed") != Some(serde_json::Value::Bool(true)) {
+    let typed = fields.remove("typed") == Some(serde_json::Value::Bool(true));
+    let login = fields.get("op").and_then(serde_json::Value::as_str) == Some("credential");
+    if !typed && !login {
         return request.into();
     }
-    APPROVED.with(|slot| {
-        if let Some(approval) = slot.borrow().as_ref()
-            && let [user, password, ..] = approval.typed.as_slice()
-        {
-            fields.insert("username".to_owned(), user.as_str().into());
-            fields.insert("password".to_owned(), password.as_str().into());
+    if typed {
+        APPROVED.with(|slot| {
+            if let Some(approval) = slot.borrow().as_ref()
+                && let [user, password, ..] = approval.typed.as_slice()
+            {
+                fields.insert("username".to_owned(), user.as_str().into());
+                fields.insert("password".to_owned(), password.as_str().into());
+            }
+        });
+    }
+    if login {
+        fields.remove(ASKED_BY);
+        if let Some(serving) = serving {
+            fields.insert(ASKED_BY.to_owned(), serving.into());
         }
-    });
+    }
     serde_json::Value::Object(fields).to_string().into()
 }
 
@@ -327,15 +346,24 @@ pub struct PageStation {
     waiting: RefCell<VecDeque<ToApp>>,
     /// The id of the last call this station asked about.
     next: Cell<u32>,
+    /// The invocation the code that calls now serves, if any: the call a login request is
+    /// asked for.
+    serving: Box<dyn Fn() -> Option<String>>,
 }
 
 impl PageStation {
+    /// The page behind `transport`, asked for whatever invocation `serving` says the code that
+    /// calls serves at the time.
     #[must_use]
-    pub fn new(transport: Rc<RefCell<Box<dyn Transport>>>) -> Self {
+    pub fn new(
+        transport: Rc<RefCell<Box<dyn Transport>>>,
+        serving: impl Fn() -> Option<String> + 'static,
+    ) -> Self {
         Self {
             transport,
             waiting: RefCell::new(VecDeque::new()),
             next: Cell::new(0),
+            serving: Box::new(serving),
         }
     }
 
@@ -355,7 +383,9 @@ impl tilolang_runtime::page::PageHost for SharedPage {
         self.0.next.set(request_id);
         let batch = ui::encode_batch(&[ToUi::Page {
             request_id,
-            request: filled(request).into_owned().into_bytes(),
+            request: stamped(request, (self.0.serving)())
+                .into_owned()
+                .into_bytes(),
         }])
         .map_err(|error| format!("the page request did not encode: {error}"))?;
         self.0
@@ -433,10 +463,19 @@ mod tests {
     }
 
     fn page() -> (SharedPage, Rc<RefCell<Vec<Vec<u8>>>>) {
+        serving_page(Rc::default())
+    }
+
+    /// A page whose calls are made for the invocation `serving` holds at the time.
+    fn serving_page(
+        serving: Rc<RefCell<Option<String>>>,
+    ) -> (SharedPage, Rc<RefCell<Vec<Vec<u8>>>>) {
         let window = Window::default();
         let asked = Rc::clone(&window.asked);
         let transport: Box<dyn Transport> = Box::new(window);
-        let station = PageStation::new(Rc::new(RefCell::new(transport)));
+        let station = PageStation::new(Rc::new(RefCell::new(transport)), move || {
+            serving.borrow().clone()
+        });
         (SharedPage(Rc::new(station)), asked)
     }
 
@@ -611,5 +650,35 @@ mod tests {
             !SIGN_IN.contains(PASSWORD),
             "the action's own call never names the password"
         );
+    }
+
+    /// A login request names the invocation its code serves as the call that asked for it,
+    /// whatever the app's code wrote there: one outside any invocation names none, and a
+    /// request that is no login is sent as the app wrote it.
+    #[test]
+    fn a_login_request_names_the_call_it_serves_and_the_app_cannot_name_another() {
+        const FILL: &str = r#"{"op":"credential","credential":"fill_field","element":"e7","account":"vault.item:1","on_behalf_of":"made-up-by-the-app"}"#;
+        const READ: &str = r#"{"op":"outline","on_behalf_of":"made-up-by-the-app"}"#;
+        let serving = Rc::new(RefCell::new(Some("call-of-the-agent".to_owned())));
+        let (page, asked) = serving_page(Rc::clone(&serving));
+        page.call(FILL).unwrap();
+        page.call(READ).unwrap();
+        serving.borrow_mut().take();
+        page.call(FILL).unwrap();
+        let asked: Vec<serde_json::Value> = asked
+            .borrow()
+            .iter()
+            .map(|request| serde_json::from_slice(request).unwrap())
+            .collect();
+        let [served, read, outside] = asked.as_slice() else {
+            panic!("three calls: {asked:?}");
+        };
+        assert_eq!(served["on_behalf_of"], "call-of-the-agent");
+        assert_eq!(served["account"], "vault.item:1");
+        assert_eq!(
+            *read,
+            serde_json::from_str::<serde_json::Value>(READ).unwrap()
+        );
+        assert!(outside.get("on_behalf_of").is_none(), "{outside}");
     }
 }

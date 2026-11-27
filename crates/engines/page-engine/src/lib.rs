@@ -894,12 +894,16 @@ impl PageSession {
                 let id = self.send_credential(engine(CredentialAction::Take { capture }));
                 self.taking.insert(id, ("update", Some(item)));
             }
-            LoginAsk::Fill { form, item } => {
+            LoginAsk::Fill {
+                form,
+                item,
+                asked_by,
+            } => {
                 let (site, document) = (site.to_owned(), document.to_owned());
                 self.vault_pending = self.vault_pending.saturating_add(1);
                 vault.fill(
-                    &site.clone(),
-                    &item,
+                    (&site.clone(), &item),
+                    asked_by.as_deref(),
                     Box::new(move |result| {
                         let _ = sender.send(VaultAnswer::Filled {
                             form,
@@ -910,12 +914,16 @@ impl PageSession {
                     }),
                 );
             }
-            LoginAsk::FillField { element, item } => {
+            LoginAsk::FillField {
+                element,
+                item,
+                asked_by,
+            } => {
                 let site = site.to_owned();
                 self.vault_pending = self.vault_pending.saturating_add(1);
                 vault.fill(
-                    &site.clone(),
-                    &item,
+                    (&site.clone(), &item),
+                    asked_by.as_deref(),
                     Box::new(move |result| {
                         let _ = sender.send(VaultAnswer::FieldReleased {
                             element,
@@ -1246,11 +1254,14 @@ mod tests {
         }
         fn fill(
             &self,
-            site: &str,
-            item: &str,
+            (site, item): (&str, &str),
+            asked_by: Option<&str>,
             done: Answered<(String, tilo_webview::ReleasedText)>,
         ) {
-            self.asked.borrow_mut().push(format!("fill {item} {site}"));
+            let by = asked_by.unwrap_or("nobody");
+            self.asked
+                .borrow_mut()
+                .push(format!("fill {item} {site} for {by}"));
             done(match &self.refuse_fill {
                 Some(why) => Err(why.clone()),
                 None => Ok((
@@ -1411,6 +1422,7 @@ mod tests {
             LoginAsk::Fill {
                 form: "2".to_owned(),
                 item: "vault.item:1".to_owned(),
+                asked_by: Some("call-1".to_owned()),
             },
         );
         test.push_event(WebViewEvent::CredentialResult(reply(
@@ -1422,7 +1434,7 @@ mod tests {
         session.poll();
         assert_eq!(
             *vault.asked.borrow(),
-            ["fill vault.item:1 https://example.org"]
+            ["fill vault.item:1 https://example.org for call-1"]
         );
         let fill = last_credential(&test);
         assert_eq!(
@@ -1451,6 +1463,7 @@ mod tests {
             LoginAsk::Fill {
                 form: "2".to_owned(),
                 item: "vault.item:9".to_owned(),
+                asked_by: Some("call-1".to_owned()),
             },
         );
         test.push_event(WebViewEvent::CredentialResult(reply(
@@ -1483,6 +1496,7 @@ mod tests {
             LoginAsk::FillField {
                 element: "e7".to_owned(),
                 item: "vault.item:1".to_owned(),
+                asked_by: Some("call-1".to_owned()),
             },
         );
         test.push_event(WebViewEvent::CredentialResult(reply(
@@ -1494,7 +1508,7 @@ mod tests {
         session.poll();
         assert_eq!(
             *vault.asked.borrow(),
-            ["fill vault.item:1 https://phish.example"],
+            ["fill vault.item:1 https://phish.example for call-1"],
             "the vault decides for the engine's site, not the app's word for it"
         );
         let released = test.released_fills();
@@ -1525,6 +1539,7 @@ mod tests {
             LoginAsk::FillField {
                 element: "e7".to_owned(),
                 item: "vault.item:1".to_owned(),
+                asked_by: Some("call-1".to_owned()),
             },
         );
         test.push_event(WebViewEvent::CredentialResult(reply(

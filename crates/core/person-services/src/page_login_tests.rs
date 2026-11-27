@@ -83,11 +83,13 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     .expect("the person keeps a login");
     let theirs = ItemRef::parse(added["reference"].as_str().unwrap()).unwrap();
     let window = AppProcess::Unplaced;
+    // Each step is asked by the person's own call of the Browser's action.
+    let person = caller(&owner).in_workspace(&workspace);
     let page = |request: InvokeRequest| {
-        let (workspace, window) = (&workspace, &window);
+        let (workspace, window, person) = (&workspace, &window, &person);
         async move {
             workspaces
-                .page_login((BROWSER, workspace), window, &request)
+                .page_login((BROWSER, workspace), window, &request, Some(person))
                 .await
         }
     };
@@ -181,7 +183,6 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
         .await,
     );
     assert_eq!(forget_theirs, page_logins::not_its_own(BROWSER));
-    let person = caller(&owner).in_workspace(&workspace);
     crate::fixtures::settled(
         workspaces.resolve_asked(&person, &approve_and_grant(&waiting[0].asked.record)),
     )
@@ -204,6 +205,56 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     assert_eq!(uses[0].by, BROWSER);
     assert_eq!(uses[0].using, "tilo.vault/page-fill");
 
+    // A fill is decided as whoever made the call that asked for it, too. One no running call
+    // asked for fills nothing, and an agent fills only a login its person granted it, even the
+    // Browser's own.
+    let asked_by = |by: Option<&tilo_actions::remote::Caller>, item: &ItemRef| {
+        let request = fill(item, SHOP);
+        let (workspace, window) = (&workspace, &window);
+        let by = by.cloned();
+        async move {
+            workspaces
+                .page_login((BROWSER, workspace), window, &request, by.as_ref())
+                .await
+        }
+    };
+    let nobody = refusal(asked_by(None, &kept.reference).await);
+    assert_eq!(nobody, page_logins::ASKED_BY_NOBODY);
+    let scout = person.clone().delegated_to("scout");
+    let ungranted = refusal(asked_by(Some(&scout), &kept.reference).await);
+    assert_eq!(ungranted, page_logins::not_granted("scout"));
+    assert!(!ungranted.contains(TYPED));
+    let person_id = hex::encode(owner.user_public_key);
+    workspaces
+        .put_workspace_grants(
+            &workspace,
+            &owner,
+            [63; 32],
+            vec![tilo_action_policy::Grant::new(
+                "test:scout-fills-the-browsers-login",
+                tilo_action_policy::Grantee::agent("scout", person_id.clone()),
+                super::fill_node(&workspace, &kept.reference),
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Grantee::person(person_id),
+            )],
+        )
+        .await
+        .unwrap();
+    let filled: PageFilled = serde_json::from_value(
+        asked_by(Some(&scout), &kept.reference)
+            .await
+            .expect("the granted agent's call fills the login"),
+    )
+    .unwrap();
+    assert_eq!(filled.username, "ada.work");
+    let other_login = refusal(asked_by(Some(&scout), &theirs).await);
+    assert_eq!(
+        other_login,
+        page_logins::not_granted("scout"),
+        "a grant names one login"
+    );
+
     // A tilolang process and a person's own call are answered nothing.
     let shared = refusal(
         workspaces
@@ -211,6 +262,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
                 (BROWSER, &workspace),
                 &AppProcess::Tilolang,
                 &fill(&kept.reference, SHOP),
+                Some(&person),
             )
             .await,
     );

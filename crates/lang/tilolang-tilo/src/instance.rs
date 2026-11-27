@@ -1230,6 +1230,16 @@ impl Instance {
 
     // ----- the host ------------------------------------------------------------------------
 
+    /// The page this window shows: a `page.call` is one message to it and one answer back,
+    /// asked for the invocation the store says the calling code serves.
+    fn page_station(&self) -> Rc<crate::page::PageStation> {
+        let serving = self.store.clone();
+        Rc::new(crate::page::PageStation::new(
+            Rc::clone(&self.transport),
+            move || serving.serving(),
+        ))
+    }
+
     /// The host over the store, built with the package the first time.
     fn host_for(&mut self) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
@@ -1286,8 +1296,7 @@ impl Instance {
             .set_blobs(PlatformBlobs(Rc::clone(&self.platform)));
         host.runtime()
             .set_clipboard(PlatformClipboard(Rc::clone(&self.platform)));
-        // The page this window shows: a `page.call` is one message to it and one answer back.
-        let page = Rc::new(crate::page::PageStation::new(Rc::clone(&self.transport)));
+        let page = self.page_station();
         host.runtime()
             .set_page(crate::page::SharedPage(Rc::clone(&page)));
         self.page = Some(page);
