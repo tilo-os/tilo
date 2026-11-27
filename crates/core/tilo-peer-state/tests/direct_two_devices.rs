@@ -508,12 +508,12 @@ async fn a_device_that_links_again_is_sent_only_what_it_lacks() {
     // One change, made while the link was down, and the device links again.
     let person = hosted.a.read(StatePeer::owner);
     seed(&hosted.a, keys, &hosted.a_key, &person, "after the break");
-    let held = heads(&hosted.a, keys);
+    let expected = heads(&hosted.a, keys);
     let before = b.traffic();
     let reader = b.reader();
     let again = hosted.again(b);
     until(b, "B holds the new change", |b| {
-        opened_heads(b, keys, (APP, RECORD)) == held
+        opened_heads(b, keys, (APP, RECORD)) == expected
     })
     .await;
     let taken = taken_in(reader, Duration::from_millis(500)).await;
@@ -522,7 +522,7 @@ async fn a_device_that_links_again_is_sent_only_what_it_lacks() {
     hosted.stop().await;
 
     // The one change crosses, and nothing else of the records: not the eight
-    // changes the device already held, and no checkpoint of them.
+    // changes the device already has, and no checkpoint of them.
     assert_eq!(
         taken.get("AppDocument").copied().unwrap_or_default().0,
         1,
@@ -543,7 +543,7 @@ async fn a_device_that_holds_nothing_is_sent_everything() {
     let hosted = Box::pin(Hosted::start()).await;
     let keys = &hosted.keys;
     hosted.link.abort();
-    let held = heads(&hosted.a, keys);
+    let expected = heads(&hosted.a, keys);
 
     // A second device of the same person joins holding nothing, and links.
     let joined = StatePeer::from_join(
@@ -559,7 +559,7 @@ async fn a_device_that_holds_nothing_is_sent_everything() {
     let reader = fresh.reader();
     let again = hosted.again(&fresh);
     until(&fresh, "the fresh device holds what A wrote", |fresh| {
-        opened_heads(fresh, keys, (APP, RECORD)) == held
+        opened_heads(fresh, keys, (APP, RECORD)) == expected
     })
     .await;
     let taken = taken_in(reader, Duration::from_millis(500)).await;
@@ -609,11 +609,11 @@ async fn a_device_behind_a_compacted_history_converges() {
         "the device's history is compacted past what the link last sent"
     );
     seed(&hosted.a, keys, &hosted.a_key, &person, "after compaction");
-    let held = heads(&hosted.a, keys);
+    let expected = heads(&hosted.a, keys);
     let reader = b.reader();
     let again = hosted.again(b);
     until(b, "B holds the change after the compaction", |b| {
-        opened_heads(b, keys, (APP, RECORD)) == held
+        opened_heads(b, keys, (APP, RECORD)) == expected
     })
     .await;
     let taken = taken_in(reader, Duration::from_millis(500)).await;

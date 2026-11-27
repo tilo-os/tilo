@@ -3901,7 +3901,7 @@ impl DirectSync {
     /// This device is not in the workspace's roster.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the replica is read once for the certificate and the revocations it carries, and the guard is gone before the hello is built"
+        reason = "the device's state is read once for the certificate and the revocations it carries, and the guard is gone before the hello is built"
     )]
     fn hello(&self) -> Result<Authored, String> {
         let device = self.device();
