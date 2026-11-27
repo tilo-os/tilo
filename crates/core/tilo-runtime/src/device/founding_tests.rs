@@ -922,10 +922,8 @@ fn person_server() -> PersonServer {
     let state = tempfile::tempdir().unwrap();
     let server = serving
         .block_on(crate::device::keep::server::KeptServer::start(
-            test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig {
-                state_root: state.path().join("server"),
-                ..Default::default()
-            }),
+            test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::default()),
+            state.path().join("server"),
             crate::device::keep::server::ServerIdentity {
                 user_public_key: root.group_public_key(),
                 device_signing_key: server_key,
@@ -1607,10 +1605,8 @@ fn the_persons_server(
     let state = tempfile::tempdir().unwrap();
     let server = serving
         .block_on(crate::device::keep::server::KeptServer::start(
-            test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig {
-                state_root: state.path().join("server"),
-                ..Default::default()
-            }),
+            test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::default()),
+            state.path().join("server"),
             crate::device::keep::server::ServerIdentity {
                 user_public_key: root.group_public_key(),
                 device_signing_key: server_key,

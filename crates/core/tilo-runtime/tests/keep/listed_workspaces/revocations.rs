@@ -594,10 +594,10 @@ async fn every_revocation_is_refused_after_a_restart() {
     }
     let server = crate::keep::common::start_server(
         ServerConfig {
-            state_root: state.path().to_path_buf(),
             iroh_listen: "127.0.0.1:0".parse().unwrap(),
             ..ServerConfig::default()
         },
+        state.path().to_path_buf(),
         identity,
     )
     .await

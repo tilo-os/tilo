@@ -88,8 +88,9 @@ impl Admitted {
         let server = KeptServer::start(
             ServerConfig {
                 packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-                ..ServerConfig::loopback(state.path().to_path_buf())
+                ..ServerConfig::loopback()
             },
+            state.path().to_path_buf(),
             tilo_runtime::device::keep::server::ServerIdentity {
                 user_public_key: alice.verifying_key().to_bytes(),
                 device_signing_key: host_key.clone(),

@@ -116,8 +116,9 @@ async fn site_server(site: &str) -> (Site, TestDevice) {
     let server = start_server(
         ServerConfig {
             work: WorkSetting::own_person(),
-            ..ServerConfig::loopback(state.path().to_path_buf())
+            ..ServerConfig::loopback()
         },
+        state.path().to_path_buf(),
         ServerIdentity {
             user_public_key: root.user_pk,
             device_signing_key: device.sk.clone(),

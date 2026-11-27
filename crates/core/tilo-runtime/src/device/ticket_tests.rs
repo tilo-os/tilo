@@ -244,9 +244,8 @@ pub(super) async fn studio(root: &SigningKey, state: &std::path::Path) -> Studio
     let (server_key, server_cert) = enrol(root, "home-server", DeviceCapabilities::member());
     let (laptop_key, laptop_cert) = enrol(root, "laptop", DeviceCapabilities::primary());
     let server = crate::device::keep::server::KeptServer::start(
-        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
-            state.join("server"),
-        )),
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback()),
+        state.join("server"),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key.clone(),
@@ -1467,10 +1466,8 @@ async fn servers_host(root: &SigningKey) -> ServersHost {
     let (issuer_key, issuer_cert) = enrol(root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let server = crate::device::keep::server::KeptServer::start(
-        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig {
-            state_root: state.path().join("server"),
-            ..Default::default()
-        }),
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::default()),
+        state.path().join("server"),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
@@ -2212,9 +2209,8 @@ async fn a_root_holders_login_at_a_server_names_it_among_the_persons_hosts() {
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let server = crate::device::keep::server::KeptServer::start(
-        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
-            state.path().join("server"),
-        )),
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback()),
+        state.path().join("server"),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,

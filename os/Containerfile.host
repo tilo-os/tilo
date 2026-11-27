@@ -297,7 +297,7 @@ RUN install -d -m 0755 /usr/lib/tilo && echo server > /usr/lib/tilo/image-flavou
 # listener, and the relay it shows its code at, so a data-centre server behind
 # a network address translation is reached. Its state is the device daemon's
 # own, the same root every device keeps. A deployment replaces it with its own.
-RUN printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo/state"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\nrelay = "https://use1-1.relay.n0.iroh.link."\n' \
+RUN printf 'iroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\nrelay = "https://use1-1.relay.n0.iroh.link."\n' \
         > /etc/tilo/server.toml
 
 # Enable services. The update timer keeps its Tilo drop-ins: it stages a verified

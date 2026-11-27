@@ -30,8 +30,6 @@ async fn certified_devices_use_only_the_injected_packet_relay() {
     let workspace_id =
         tilo_server_protocol::WorkspaceId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let config = ServerConfig {
-        state_root: tmp.path().to_owned(),
-        identity_root: tmp.path().join("identity"),
         trust_policy: tilo_server_protocol::policy::TrustPolicy::AllowList {
             users: vec![hex::encode(user.user_pk)],
         },
@@ -47,7 +45,9 @@ async fn certified_devices_use_only_the_injected_packet_relay() {
         device_cert: host.cert.clone(),
         revocations: RevocationList::new(),
     };
-    let server = KeptServer::start(config, identity).await.unwrap();
+    let server = KeptServer::start(config, tmp.path().to_owned(), identity)
+        .await
+        .unwrap();
     // The host answers through its own packet relay from the start: what
     // `Relay::start` waits for before it serves anything.
     let url = server

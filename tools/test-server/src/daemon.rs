@@ -77,12 +77,10 @@ impl ServerDaemon {
         std::fs::write(
             &config,
             format!(
-                "identity_root = \"{}\"\n\
-                 iroh_listen = \"127.0.0.1:0\"\n\
+                "iroh_listen = \"127.0.0.1:0\"\n\
                  packet_relay_url = \"{}\"\n\
                  web_listen = \"{web}\"\n\
                  app_serving = true\n",
-                root.join("identity").display(),
                 super::loopback_url(),
             ),
         )

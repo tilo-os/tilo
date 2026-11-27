@@ -144,8 +144,11 @@ pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 /// What a device's daemon keeps more on: its workspace service, opened with
 /// [`Server::keeping`], and what that service runs with.
 pub struct OnDevice {
-    /// What the device keeps, and where.
+    /// What the device keeps, and how it serves it.
     pub cfg: ServerConfig,
+    /// The device's own directory, where what it keeps has its state: the device's place, as
+    /// the daemon's start hands it.
+    pub state_root: PathBuf,
     /// The device: its key and the certificate its person gave it.
     pub identity: ServerIdentity,
     /// The device's one workspace service.
@@ -261,14 +264,20 @@ impl std::ops::DerefMut for KeptServer {
 #[cfg(any(test, feature = "test-support"))]
 impl KeptServer {
     /// The host `cfg` configures, started as a device's daemon starts one: the endpoint the
-    /// configuration places, the device's workspace service opened in `cfg.state_root`, and
+    /// configuration places, the device's workspace service opened in `state_root` (the
+    /// device's own directory, as its daemon keeps it), and
     /// [`Server::on_device`] on both.
     ///
     /// # Errors
     /// What [`Server::on_device`] refuses, and an identity or endpoint the daemon would refuse.
-    pub async fn start(cfg: ServerConfig, identity: ServerIdentity) -> Result<Self, ServerError> {
+    pub async fn start(
+        cfg: ServerConfig,
+        state_root: PathBuf,
+        identity: ServerIdentity,
+    ) -> Result<Self, ServerError> {
         Box::pin(Self::compose(
             cfg,
+            state_root,
             identity,
             None,
             Vec::new(),
@@ -285,11 +294,13 @@ impl KeptServer {
     /// As [`Self::start`].
     pub async fn start_founding(
         cfg: ServerConfig,
+        state_root: PathBuf,
         identity: ServerIdentity,
         registries: tilo_workspace_service::service::RegistriesFile,
     ) -> Result<Self, ServerError> {
         Box::pin(Self::compose(
             cfg,
+            state_root,
             identity,
             None,
             Vec::new(),
@@ -305,11 +316,13 @@ impl KeptServer {
     /// As [`Self::start`].
     pub async fn serving_apps(
         cfg: ServerConfig,
+        state_root: PathBuf,
         identity: ServerIdentity,
         app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
     ) -> Result<Self, ServerError> {
         Box::pin(Self::compose(
             cfg,
+            state_root,
             identity,
             None,
             Vec::new(),
@@ -326,6 +339,7 @@ impl KeptServer {
     /// As [`Self::start`].
     pub async fn on_endpoint(
         cfg: ServerConfig,
+        state_root: PathBuf,
         identity: ServerIdentity,
         endpoint: Endpoint,
         reaching: Reaching,
@@ -333,6 +347,7 @@ impl KeptServer {
     ) -> Result<Self, ServerError> {
         Box::pin(Self::compose(
             cfg,
+            state_root,
             identity,
             Some((endpoint, reaching)),
             extra,
@@ -365,6 +380,7 @@ impl KeptServer {
 
     async fn compose(
         cfg: ServerConfig,
+        state_root: PathBuf,
         identity: ServerIdentity,
         endpoint: Option<(Endpoint, Reaching)>,
         extra: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
@@ -372,8 +388,8 @@ impl KeptServer {
         founding_registries: Option<tilo_workspace_service::service::RegistriesFile>,
     ) -> Result<Self, ServerError> {
         validate_server_identity(&identity)?;
-        std::fs::create_dir_all(&cfg.state_root)?;
-        let identity = kept_revocations(identity, &cfg.state_root)?;
+        std::fs::create_dir_all(&state_root)?;
+        let identity = kept_revocations(identity, &state_root)?;
         // Bound as the daemon binds its endpoint: on the relay its configuration names.
         let (endpoint, relay, reaching) = if let Some((endpoint, reaching)) = endpoint {
             (endpoint, PacketRelay::start(&cfg, true).await?, reaching)
@@ -391,7 +407,7 @@ impl KeptServer {
         let apps = app_serving.clone();
         let workspaces = crate::device::workspaces::ServiceWorkspaces::open(
             crate::device::workspaces::Opening {
-                dir: &cfg.state_root,
+                dir: &state_root,
                 key: &identity.device_signing_key,
                 identity: device,
                 endpoint: endpoint.clone(),
@@ -419,10 +435,13 @@ impl KeptServer {
             ServerError::Identity(format!("this device's workspace service: {error}"))
         })?;
         let service = Arc::clone(workspaces.service());
-        let joined = crate::device::keep::servers::first_install::joined(&cfg.identity_root);
+        // A fixture's host has its person's root: it was not installed from a ticket, so it
+        // installs nothing from a plan.
+        let joined = false;
         let (server, protocols) = Server::on_device(OnDevice {
-            machine: cfg.state_root.clone(),
+            machine: state_root.clone(),
             cfg,
+            state_root,
             identity,
             service: Arc::clone(&service),
             keys: workspaces.keys(),
@@ -498,6 +517,7 @@ impl Server {
     pub async fn on_device(parts: OnDevice) -> Result<(Self, Protocols), ServerError> {
         let OnDevice {
             cfg,
+            state_root,
             identity,
             service,
             keys,
@@ -512,8 +532,7 @@ impl Server {
                 "a device that takes no work serves no workspace".into(),
             ));
         }
-        let content =
-            crate::device::keep::content::of_device(&cfg.state_root, app_serving.as_ref());
+        let content = crate::device::keep::content::of_device(&state_root, app_serving.as_ref());
         // App serving needs an app action server an embedding process supplies, and the operator's
         // consent to answer its workspaces' apps on this machine.
         let app_serving = app_serving.filter(|_| cfg.app_serving);
@@ -1263,10 +1282,8 @@ mod tests {
             .await
             .expect("a loopback endpoint binds");
         let refused = KeptServer::on_endpoint(
-            ServerConfig {
-                identity_root: state.path().join("identity"),
-                ..ServerConfig::loopback(state.path().to_path_buf())
-            },
+            ServerConfig::loopback(),
+            state.path().to_path_buf(),
             identity(DeviceCapabilities::member()),
             endpoint.clone(),
             Reaching::OnItsOwn,
@@ -1386,7 +1403,6 @@ mod tests {
             let given = WorkspaceId::from_u128(7);
             let server = KeptServer::start(
                 ServerConfig {
-                    state_root: temp.path().join("server"),
                     trust_policy: TrustPolicy::AllowMatchingUser,
                     // The relay runs its own packet relay on this machine's loopback, as the
                     // tests' hosts do: nothing here reaches number 0.
@@ -1394,6 +1410,7 @@ mod tests {
                     ..ServerConfig::default()
                 }
                 .on_loopback(),
+                temp.path().join("server"),
                 ServerIdentity {
                     user_public_key: user.public_key,
                     device_signing_key: host_key,
@@ -1410,11 +1427,11 @@ mod tests {
             let primary_state = tempfile::tempdir().unwrap();
             let primary = KeptServer::start(
                 ServerConfig {
-                    state_root: primary_state.path().to_path_buf(),
                     app_serving: true,
                     ..ServerConfig::default()
                 }
                 .on_loopback(),
+                primary_state.path().to_path_buf(),
                 ServerIdentity {
                     user_public_key: user.public_key,
                     device_signing_key: admin_key,
@@ -1541,11 +1558,11 @@ mod tests {
         let primary_state = tempfile::tempdir().unwrap();
         let primary = KeptServer::start(
             ServerConfig {
-                state_root: primary_state.path().to_path_buf(),
                 app_serving: true,
                 ..ServerConfig::default()
             }
             .on_loopback(),
+            primary_state.path().to_path_buf(),
             ServerIdentity {
                 user_public_key: user.public_key,
                 device_signing_key: admin_key,
@@ -1561,8 +1578,8 @@ mod tests {
             .unwrap();
         // The server runs the packet relay this machine's loopback is reached through:
         // nothing here asks number 0 for one.
+        let state_root = temp.path().join("server");
         let config = ServerConfig {
-            state_root: temp.path().join("server"),
             trust_policy: TrustPolicy::AllowMatchingUser,
             packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
             ..ServerConfig::default()
@@ -1574,7 +1591,7 @@ mod tests {
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
         };
-        let server = KeptServer::start(config.clone(), identity.clone())
+        let server = KeptServer::start(config.clone(), state_root.clone(), identity.clone())
             .await
             .unwrap();
         let relay = server
@@ -1623,7 +1640,9 @@ mod tests {
         // Started again, it keeps the workspace from its own state and writes its entry
         // from where it is reached: its address, and the relay beside it.
         server.shutdown().await;
-        let restarted = KeptServer::start(config, identity).await.unwrap();
+        let restarted = KeptServer::start(config, state_root, identity)
+            .await
+            .unwrap();
         let hosted = restarted.workspaces().expect("the server holds workspaces");
         let endpoint = serde_json::to_string(&restarted.node_addr()).unwrap();
         let named = tilo_test_env::within("the entry to name the relay", async {
@@ -1690,13 +1709,13 @@ mod tests {
         let server_state = tempfile::tempdir().unwrap();
         let server = KeptServer::start(
             ServerConfig {
-                state_root: server_state.path().to_path_buf(),
                 trust_policy: TrustPolicy::AllowMatchingUser,
                 app_serving: true,
                 packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                 ..ServerConfig::default()
             }
             .on_loopback(),
+            server_state.path().to_path_buf(),
             server_identity,
         )
         .await
@@ -1704,11 +1723,11 @@ mod tests {
         let desk_state = tempfile::tempdir().unwrap();
         let desk = KeptServer::start(
             ServerConfig {
-                state_root: desk_state.path().to_path_buf(),
                 app_serving: true,
                 ..ServerConfig::default()
             }
             .on_loopback(),
+            desk_state.path().to_path_buf(),
             desk_identity,
         )
         .await

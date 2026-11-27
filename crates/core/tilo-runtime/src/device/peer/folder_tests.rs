@@ -366,9 +366,8 @@ async fn a_mounted_folder_follows_the_server_both_ways_across_a_restart() {
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let server = crate::device::keep::server::KeptServer::start(
-        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
-            state.path().join("server"),
-        )),
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback()),
+        state.path().join("server"),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,
@@ -562,9 +561,8 @@ async fn a_workspace_made_elsewhere_gets_a_folder_that_syncs() {
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let server = crate::device::keep::server::KeptServer::start(
-        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback(
-            state.path().join("server"),
-        )),
+        test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig::loopback()),
+        state.path().join("server"),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,

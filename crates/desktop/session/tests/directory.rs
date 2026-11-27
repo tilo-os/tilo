@@ -860,8 +860,9 @@ impl LoungeHost {
             block_on_within(runtime, "the lounge's host to start", async {
                 let server = tilo_runtime::device::keep::server::KeptServer::start(
                     test_server::on_loopback_relay(
-                        tilo_server_protocol::config::ServerConfig::loopback(state.join("host")),
+                        tilo_server_protocol::config::ServerConfig::loopback(),
                     ),
+                    state.join("host"),
                     tilo_runtime::device::keep::server::ServerIdentity {
                         user_public_key: owner_key.verifying_key().to_bytes(),
                         device_signing_key: host_key.clone(),

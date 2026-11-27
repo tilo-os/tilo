@@ -255,7 +255,8 @@ impl TwoTenants {
         let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
         let server = crate::keep::common::start_server(
-            ServerConfig::loopback(state.path().to_path_buf()),
+            ServerConfig::loopback(),
+            state.path().to_path_buf(),
             tilo_runtime::device::keep::server::ServerIdentity {
                 user_public_key: provider.user_pk,
                 device_signing_key: host.sk.clone(),

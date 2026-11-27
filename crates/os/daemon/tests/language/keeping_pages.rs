@@ -109,15 +109,10 @@ fn own_process(test: &str, apps: &[&str]) {
 /// The configuration of a machine that keeps its person's workspaces, with a loopback endpoint
 /// and a browser listener on a port the machine picks.
 fn keep_config(root: &Path) -> PathBuf {
-    let state = root.join("server");
-    std::fs::create_dir_all(&state).unwrap();
     let config = root.join("server.toml");
     std::fs::write(
         &config,
-        format!(
-            "state_root = {:?}\niroh_listen = \"127.0.0.1:0\"\nweb_listen = \"127.0.0.1:0\"\n",
-            state.display().to_string()
-        ),
+        "iroh_listen = \"127.0.0.1:0\"\nweb_listen = \"127.0.0.1:0\"\n",
     )
     .unwrap();
     config

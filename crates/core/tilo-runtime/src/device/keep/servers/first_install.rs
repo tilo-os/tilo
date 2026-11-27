@@ -15,7 +15,6 @@
 //! (`tilo-server-device-config`) and says it finished. Nothing is guessed: an
 //! unanswered choice is waited for, never filled in here.
 
-use std::path::Path;
 use std::time::Duration;
 
 use install_profile_model::plan::Drive;
@@ -30,17 +29,6 @@ use tilo_workspace_service::workspaces::servers::{SERVERS, apply, read};
 /// configuration: longer than the helper's own window for a network it must
 /// confirm, so a slow helper is not taken for a refusal.
 const APPLY_WAIT: Duration = Duration::from_secs(150);
-
-/// Whether a ticket joined this machine to a person: the certificate its login
-/// filed beside the identity root's device key. A machine that founded its own
-/// workspace has none, and installs no plan.
-#[must_use]
-pub fn joined(identity_root: &Path) -> bool {
-    let paths = tilo_device_identity::IdentityPaths::under(identity_root);
-    tilo_device_identity::login::served_device_key(&paths)
-        .and_then(|device| tilo_device_identity::login::ticket_cert(&paths, &device))
-        .is_some()
-}
 
 /// The drives this machine really has, as a plan's machine reports them.
 #[must_use]

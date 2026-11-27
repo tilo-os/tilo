@@ -277,16 +277,19 @@ impl Keeping {
     /// devices in the same install, and the person's user key is written into its identity
     /// tree.
     ///
+    /// The device's `place` is where its key, its certificates and its state are: the same
+    /// ones its daemon reads once it serves.
+    ///
     /// # Errors
     /// The token or a setting cannot be read, or the listener fails.
-    pub(crate) fn enroll(&self) -> io::Result<()> {
+    pub(crate) fn enroll(&self, place: &tilo_device_identity::login::Place) -> io::Result<()> {
         let Some(token_file) = std::env::var_os(INSTALL_TOKEN_ENV) else {
             return Ok(());
         };
         let Some(listen) = self.cfg.web_listen else {
             return Ok(());
         };
-        let paths = tilo_device_identity::IdentityPaths::under(&self.cfg.identity_root);
+        let paths = place.keys().clone();
         if paths
             .owner_cert()
             .map_err(|error| io::Error::other(error.to_string()))?
@@ -315,7 +318,7 @@ impl Keeping {
             Ok(key) => Some(beside_session(&key)?),
             Err(_) => None,
         };
-        let config = web_config(&self.cfg, listen);
+        let config = web_config(&self.cfg, listen, place.dir());
         self.runtime
             .block_on(crate::device::keep::web::install::await_certificate(
                 &config, paths, &token, session,
@@ -333,7 +336,7 @@ impl Keeping {
     /// # Errors
     /// What it keeps does not start, or its web UI does not.
     pub(crate) fn keep(self, on: On<'_>) -> io::Result<(Kept, Protocols)> {
-        let Self { mut cfg, runtime } = self;
+        let Self { cfg, runtime } = self;
         let On {
             dir,
             machine,
@@ -354,7 +357,6 @@ impl Keeping {
             .reached(&endpoint)
             .map_err(|error| io::Error::other(format!("this server's endpoint: {error}")))?;
         let state_root = dir.to_path_buf();
-        state_root.clone_into(&mut cfg.state_root);
         #[cfg_attr(
             not(feature = "agents"),
             allow(
@@ -365,6 +367,7 @@ impl Keeping {
         let (mut server, protocols) = runtime
             .block_on(Server::on_device(OnDevice {
                 cfg: cfg.clone(),
+                state_root: state_root.clone(),
                 identity,
                 service,
                 keys,
@@ -386,7 +389,7 @@ impl Keeping {
         // person turned it off: that choice is its entry's, which the follow applies.
         let web = match cfg.web_listen {
             Some(listen) => runtime
-                .block_on(server.serve_web_if_wanted(web_config(&cfg, listen)))
+                .block_on(server.serve_web_if_wanted(web_config(&cfg, listen, &state_root)))
                 .map_err(|error| io::Error::other(format!("this server's web UI: {error}")))?,
             None => None,
         };
@@ -461,13 +464,17 @@ fn beside_session(key: &str) -> io::Result<crate::device::keep::web::install::Se
 }
 
 /// The browser listener a server serves its own web UI at `listen` with: the certificate
-/// its configuration names, or one its person's local CA issues, kept below its state.
-fn web_config(cfg: &ServerConfig, listen: SocketAddr) -> crate::device::keep::web::WebConfig {
+/// its configuration names, or one its person's local CA issues, kept below `state_root`.
+fn web_config(
+    cfg: &ServerConfig,
+    listen: SocketAddr,
+    state_root: &Path,
+) -> crate::device::keep::web::WebConfig {
     use crate::device::keep::web::{TlsSource, WebConfig};
     let tls = match &cfg.web_tls {
         WebTls::Local => TlsSource::Local {
             hosts: local_hosts(listen),
-            store: Some(cfg.state_root.join("web-certificate")),
+            store: Some(state_root.join("web-certificate")),
         },
         WebTls::Files { chain, key, host } => TlsSource::Files {
             certificate_chain: chain.clone(),
@@ -641,7 +648,11 @@ mod tests {
             web_entry: Some("http://tilo.localhost:23420/".into()),
             ..ServerConfig::default()
         };
-        let web = web_config(&cfg, "127.0.0.1:0".parse().unwrap());
+        let web = web_config(
+            &cfg,
+            "127.0.0.1:0".parse().unwrap(),
+            std::path::Path::new("/state"),
+        );
         assert!(
             web.allowed_origins
                 .iter()
@@ -791,10 +802,8 @@ mod tests {
     /// socket, so a server nobody configured one for would serve its web UI to nobody.
     #[test]
     fn a_server_runs_its_packet_relay_by_default() {
-        let state = tempfile::tempdir().unwrap();
         let mut keeping = Keeping {
             cfg: ServerConfig {
-                state_root: state.path().to_path_buf(),
                 iroh_listen: "127.0.0.1:0".parse().unwrap(),
                 ..ServerConfig::default()
             },

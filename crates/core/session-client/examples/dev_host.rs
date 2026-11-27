@@ -68,12 +68,10 @@ async fn main() {
     let user = root.verifying_key().to_bytes();
     let (host_key, server_cert) = enrol(&root, "dev host", DeviceCapabilities::member());
 
-    let cfg = tilo_server_protocol::config::ServerConfig {
-        state_root: state.path().to_path_buf(),
-        ..Default::default()
-    };
+    let cfg = tilo_server_protocol::config::ServerConfig::default();
     let server = KeptServer::start_founding(
         cfg,
+        state.path().to_path_buf(),
         ServerIdentity {
             user_public_key: user,
             device_signing_key: host_key,

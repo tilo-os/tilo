@@ -195,10 +195,10 @@ impl Site {
             // The site relays through this machine's loopback relay, as its people's devices do:
             // neither side reaches number 0.
             let server = tilo_runtime::device::keep::server::KeptServer::start(
-                test_server::on_loopback_relay(tilo_server_protocol::config::ServerConfig {
-                    state_root: state.path().join("host"),
-                    ..tilo_server_protocol::config::ServerConfig::default()
-                }),
+                test_server::on_loopback_relay(
+                    tilo_server_protocol::config::ServerConfig::default(),
+                ),
+                state.path().join("host"),
                 tilo_runtime::device::keep::server::ServerIdentity {
                     user_public_key: owner.public,
                     device_signing_key: host_key.clone(),

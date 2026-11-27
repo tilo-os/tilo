@@ -102,11 +102,8 @@ async fn server(state: &Path, operator: &SigningKey) -> crate::device::keep::ser
     // naming nowhere holds for the whole wait.
     let endpoint = test_server::endpoint(iroh::SecretKey::from_bytes(&key.to_bytes())).await;
     crate::device::keep::server::KeptServer::on_endpoint(
-        tilo_server_protocol::config::ServerConfig {
-            state_root: state.join("state"),
-            identity_root: state.join("identity"),
-            ..Default::default()
-        },
+        tilo_server_protocol::config::ServerConfig::default(),
+        state.join("state"),
         crate::device::keep::server::ServerIdentity {
             user_public_key: operator.verifying_key().to_bytes(),
             device_signing_key: key,

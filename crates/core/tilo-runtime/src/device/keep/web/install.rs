@@ -644,12 +644,8 @@ mod tests {
         );
 
         crate::device::keep::server::KeptServer::start(
-            tilo_server_protocol::config::ServerConfig {
-                state_root: dir.path().join("state"),
-                identity_root: dir.path().join("identity"),
-                ..Default::default()
-            }
-            .on_loopback(),
+            tilo_server_protocol::config::ServerConfig::default().on_loopback(),
+            dir.path().join("state"),
             crate::device::keep::server::ServerIdentity {
                 user_public_key: tilo_device_identity::persist::read_public_key(&paths.user_pubkey)
                     .unwrap(),

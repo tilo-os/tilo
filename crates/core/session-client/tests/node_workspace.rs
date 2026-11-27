@@ -256,7 +256,8 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
     // identity it was installed with.
     let cert = persist::read_owner_cert(&paths).unwrap().unwrap();
     let server = KeptServer::start(
-        ServerConfig::loopback(state.clone()),
+        ServerConfig::loopback(),
+        state.clone(),
         ServerIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: persist::read_device_key(&paths.device_privkey).unwrap(),

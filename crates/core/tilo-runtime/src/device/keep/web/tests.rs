@@ -72,13 +72,8 @@ async fn server_at(
     config: ServerConfig,
 ) -> KeptServer {
     KeptServer::start(
-        test_server::on_loopback_relay(
-            ServerConfig {
-                state_root: state.path().into(),
-                ..config
-            }
-            .on_loopback(),
-        ),
+        test_server::on_loopback_relay(config.on_loopback()),
+        state.path().into(),
         identity,
     )
     .await

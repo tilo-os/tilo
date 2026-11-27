@@ -190,8 +190,11 @@ grep -qx 'Environment=TILO_SERVER_CONFIG=/etc/tilo/server.toml' \
 grep -qx 'StandardError=journal+console' \
   "$root/usr/lib/systemd/system/tilo-runtime.service.d/50-server.conf" \
   || die 'a server that has no person yet says nothing on its console'
-grep -q '^state_root = "/var/lib/tilo/state"$' "$root/etc/tilo/server.toml" \
-  || die "the server's state is not the device daemon's root"
+# The daemon's state and identity are its own device place, which the image sets up; its
+# configuration names neither a second state root nor a second identity root.
+if grep -qE '^(state_root|identity_root) = ' "$root/etc/tilo/server.toml"; then
+  die "the server's configuration names a state of its own"
+fi
 grep -qx 'd /var/lib/tilo/device-private   0700 tilo tilo         -' \
   "$root/usr/lib/tmpfiles.d/tilo-runtime-state.conf" \
   || die 'the device key directory is not the daemon account'"'"'s'

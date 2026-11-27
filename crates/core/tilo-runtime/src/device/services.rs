@@ -435,14 +435,12 @@ struct Identity {
 }
 
 impl Identity {
-    /// The device this computer's identity is.
+    /// The device this computer's identity is, as `place` keeps it.
     ///
     /// # Errors
     /// This computer has no identity its person's services can start as ([`SET_UP_FIRST`]).
-    fn here(profile: &Path) -> io::Result<Self> {
-        let keys = tilo_api::calls::device_keys();
-        let place =
-            tilo_device_identity::login::Place::here(keys.clone()).map_err(io::Error::other)?;
+    fn here(profile: &Path, place: tilo_device_identity::login::Place) -> io::Result<Self> {
+        let keys = place.keys().clone();
         // The one check the daemon's device-only state asks too: the account's identity names a
         // person this device holds a certificate for. This daemon lists its own device with the
         // person's once it holds their record, so it starts from its certificate before any host
@@ -2374,12 +2372,17 @@ impl Daemon {
         } else {
             None
         };
+        // This computer's device place: its key and certificates, and the state its daemon
+        // keeps. Every reader here takes it from the same place, so a node's installation and
+        // the daemon that starts on it agree on where its identity is.
+        let device_place = tilo_device_identity::login::Place::here(tilo_api::calls::device_keys())
+            .map_err(io::Error::other)?;
         // A server keeps the workspaces placed on it: it takes no other server's work. A node
         // whose unit points at an install token waits for its page to install its certificate
         // before anything else is read: until then, this machine is nobody's device.
         let mut keeping = super::keep::Keeping::configured()?;
         if let Some(keeping) = keeping.as_ref() {
-            keeping.enroll()?;
+            keeping.enroll(&device_place)?;
         }
         // The owner's root a deployment hands this daemon is kept here before the identity is
         // read, so this computer is the person's own device and founds its workspaces under it.
@@ -2391,7 +2394,7 @@ impl Daemon {
         let founding_registries =
             app_cli::config::registries_file_at(&root.join(FOUNDING_REGISTRIES))
                 .map_err(io::Error::other)?;
-        let identity = Identity::here(root)?;
+        let identity = Identity::here(root, device_place)?;
         tilo_files::native::private::directory(identity.place.dir())?;
         if locked.is_some_and(|device| device != identity.key.verifying_key().to_bytes()) {
             return Err(io::Error::other(

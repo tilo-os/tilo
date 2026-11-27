@@ -57,10 +57,10 @@ async fn start_at(
     }
     crate::keep::common::start_server(
         ServerConfig {
-            state_root: state.to_path_buf(),
             iroh_listen,
             ..ServerConfig::default()
         },
+        state.to_path_buf(),
         tilo_runtime::device::keep::server::ServerIdentity {
             user_public_key: alice.user_pk,
             device_signing_key: host.sk.clone(),

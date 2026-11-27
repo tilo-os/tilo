@@ -132,9 +132,6 @@ pub struct ServerSettings {
     pub configured: bool,
     /// Why the configuration could not be read or saved, when it could not.
     pub problem: Option<String>,
-    /// Where this device's server keeps its state: the heartbeat Settings
-    /// reads to say whether the server is running.
-    pub state_root: String,
     /// The web page it serves browsers, as its configuration places it.
     pub web: Web,
     pub work: Work,

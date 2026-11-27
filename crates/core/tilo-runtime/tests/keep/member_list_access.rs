@@ -69,7 +69,8 @@ async fn member_list_access_removes_a_live_person_without_widening_other_workspa
     let server_cert = server_dev.cert.clone();
     let server_key = server_dev.sk.clone();
     let server = crate::keep::common::start_server(
-        ServerConfig::loopback(state.path().to_path_buf()),
+        ServerConfig::loopback(),
+        state.path().to_path_buf(),
         tilo_runtime::device::keep::server::ServerIdentity {
             user_public_key: provider.user_pk,
             device_signing_key: server_key.clone(),
@@ -239,7 +240,8 @@ async fn member_list_access_removes_a_live_person_without_widening_other_workspa
     server.shutdown().await;
 
     let restarted = crate::keep::common::start_server(
-        ServerConfig::loopback(state.path().to_path_buf()),
+        ServerConfig::loopback(),
+        state.path().to_path_buf(),
         tilo_runtime::device::keep::server::ServerIdentity {
             user_public_key: provider.user_pk,
             device_signing_key: server_key,

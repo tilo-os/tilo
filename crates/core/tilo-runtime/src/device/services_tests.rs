@@ -1075,13 +1075,13 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
         ))
     });
 
-    let identity = Identity::here(&dir).unwrap();
+    let identity = Identity::here(&dir, place.clone()).unwrap();
     assert_eq!(identity.cert, cert);
     let (signer, signed_for) = tilo_identity::trusted_device::current("").unwrap();
     assert_eq!(signed_for, cert, "apps sign as the login's device");
     assert_eq!(signer.verifying_key(), key.verifying_key());
     // A second start finds it enrolled and changes nothing.
-    assert_eq!(Identity::here(&dir).unwrap().cert, cert);
+    assert_eq!(Identity::here(&dir, place).unwrap().cert, cert);
 }
 
 /// A device reached through a forward to a fixed UDP port (a local VM's host forward) binds the
@@ -2922,15 +2922,10 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspaces_entry_once() {
     std::fs::write(
         &config,
         format!(
-            "web_entry = \"https://127.0.0.1:1/\"\nweb_listen = \"127.0.0.1:0\"\n\
-             identity_root = \"{}\"\nstate_root = \"{}\"\n\n\
+            "web_entry = \"https://127.0.0.1:1/\"\nweb_listen = \"127.0.0.1:0\"\n\n\
              [[kept]]\nid = \"{KEPT_WORKSPACE}\"\nname = \"Lounge\"\nentry = \"invite\"\n\
              default_role = \"commenter\"\ndescription = \"Coffee and tea\"\n\
-             wait_list_max = 4\ncontact = \"{}\"\nmail_from = \"{}\"\n",
-            deployment.join("server-identity").display(),
-            deployment.join("server-state").display(),
-            CONTACT,
-            MAIL_FROM
+             wait_list_max = 4\ncontact = \"{CONTACT}\"\nmail_from = \"{MAIL_FROM}\"\n",
         ),
     )
     .unwrap();
@@ -3119,11 +3114,8 @@ fn a_hosting_daemon_answers_its_environments_media_key_ask() {
     std::fs::write(
         &config,
         format!(
-            "web_entry = \"https://127.0.0.1:1/\"\nweb_listen = \"127.0.0.1:0\"\n\
-             identity_root = \"{}\"\nstate_root = \"{}\"\n\n\
+            "web_entry = \"https://127.0.0.1:1/\"\nweb_listen = \"127.0.0.1:0\"\n\n\
              [[kept]]\nid = \"{KEPT_WORKSPACE}\"\nname = \"Lounge\"\n",
-            deployment.join("server-identity").display(),
-            deployment.join("server-state").display(),
         ),
     )
     .unwrap();

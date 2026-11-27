@@ -12,13 +12,6 @@
 //! ```toml
 //! # /etc/tilo/server.toml
 //!
-//! # Where the user root public key + this device's keypair + cert live.
-//! # Matches `tilo_device_identity::IdentityPaths::default_system()`.
-//! identity_root = "/var/lib/tilo"
-//!
-//! # Where server state (workspace pins, pending deltas) lives.
-//! state_root = "/var/lib/tilo-server"
-//!
 //! # Iroh endpoint bind hint. `"0.0.0.0:0"` lets iroh pick a port
 //! # (default) — a fixed port makes firewall rules easier.
 //! iroh_listen = "0.0.0.0:0"
@@ -40,18 +33,6 @@ use crate::work::WorkSetting;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    /// Root under which the user + device identity files live.
-    /// Passed straight into
-    /// [`tilo_device_identity::IdentityPaths::under`].
-    #[serde(default = "default_identity_root")]
-    pub identity_root: PathBuf,
-
-    /// Root under which the daemon persists workspace state (pinned
-    /// automerge documents, per-peer pending-delta queues, metrics
-    /// snapshots).
-    #[serde(default = "default_state_root")]
-    pub state_root: PathBuf,
-
     /// Iroh endpoint bind hint. `0.0.0.0:0` = OS-chosen port.
     #[serde(default = "default_iroh_listen")]
     pub iroh_listen: SocketAddr,
@@ -209,14 +190,6 @@ fn default_web_listen() -> Option<SocketAddr> {
     Some(SocketAddr::from(([0, 0, 0, 0], 8443)))
 }
 
-fn default_identity_root() -> PathBuf {
-    PathBuf::from("/var/lib/tilo")
-}
-
-fn default_state_root() -> PathBuf {
-    PathBuf::from("/var/lib/tilo-server")
-}
-
 fn default_iroh_listen() -> SocketAddr {
     // Constructed directly rather than parsed — `0.0.0.0:0` is
     // infallible either way, but this has no panic path to document.
@@ -226,8 +199,6 @@ fn default_iroh_listen() -> SocketAddr {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            identity_root: default_identity_root(),
-            state_root: default_state_root(),
             iroh_listen: default_iroh_listen(),
             packet_relay: None,
             packet_relay_url: None,
@@ -289,7 +260,15 @@ pub enum ConfigError {
 
 /// Settings an older server read, each with why it is gone: a file naming one fails to load and
 /// says so.
-const RETIRED: [(&str, &str); 3] = [
+const RETIRED: [(&str, &str); 5] = [
+    (
+        "identity_root",
+        "this device's key and certificates are read from its login, not from the server file",
+    ),
+    (
+        "state_root",
+        "this server keeps its state in its device's own directory, not where the file says",
+    ),
     (
         "full_replica_status",
         "this server keeps no full copy of a workspace's files, which sync through the workspace",
@@ -305,13 +284,10 @@ const RETIRED: [(&str, &str); 3] = [
 ];
 
 impl ServerConfig {
-    /// A host keeping its state at `state_root`, on its computer's loopback: what a test starts.
-    pub fn loopback(state_root: PathBuf) -> Self {
-        Self {
-            state_root,
-            ..Self::default()
-        }
-        .on_loopback()
+    /// A host on its computer's loopback: what a test starts.
+    #[must_use]
+    pub fn loopback() -> Self {
+        Self::default().on_loopback()
     }
 
     /// This host on its computer's loopback, at the port it asked for: what a test starts.
@@ -372,29 +348,25 @@ impl ServerConfig {
 mod tests {
     use super::*;
 
-    /// The two paths every hand-written config starts with.
-    const PRELUDE: &str =
-        "identity_root = \"/var/lib/tilo\"\nstate_root = \"/var/lib/tilo-server\"\n";
-
+    // A file that names no setting reads as the defaults, and one naming a setting this
+    // server does not have is refused.
     tilo_test_env::scenario! {
         fn server_config_defaults_decodes_and_persists;
 
         phase server_config_defaults_and_toml_decoding;
         {
             let cfg = ServerConfig::default();
-            assert_eq!(cfg.identity_root, PathBuf::from("/var/lib/tilo"));
-            assert_eq!(cfg.state_root, PathBuf::from("/var/lib/tilo-server"));
             assert_eq!(cfg.iroh_listen.port(), 0);
             assert!(cfg.asks_router_for_port());
             assert!(!cfg.clone().on_loopback().asks_router_for_port());
             assert_eq!(cfg.work, WorkSetting::own_person());
             assert!(!cfg.app_serving);
 
-            // A minimal file names only the two roots.
-            let _: ServerConfig = toml::from_str(PRELUDE).unwrap();
+            // A file naming nothing is the defaults.
+            assert_eq!(toml::from_str::<ServerConfig>("").unwrap(), cfg);
 
             // An unknown field is rejected rather than ignored.
-            assert!(toml::from_str::<ServerConfig>(&format!("{PRELUDE}surprise = 3\n")).is_err());
+            assert!(toml::from_str::<ServerConfig>("surprise = 3\n").is_err());
         }
 
         phase server_config_edits_are_idempotent_and_persist;
@@ -407,6 +379,8 @@ mod tests {
 
             // A file naming a setting an older server had fails to load, and names it.
             for (retired, line) in [
+                ("identity_root", "identity_root = \"/var/lib/tilo\"\n"),
+                ("state_root", "state_root = \"/var/lib/tilo-server\"\n"),
                 ("full_replica_status", "full_replica_status = \"/var/lib/tilo/full-replica/status.json\"\n"),
                 ("home_peer_bundle", "home_peer_bundle = \"/etc/tilo/home-peer.toml\"\n"),
             ] {

@@ -47,10 +47,10 @@ async fn a_server() -> (
     let listen = free_address();
     let server = start_server(
         ServerConfig {
-            state_root: state.path().to_path_buf(),
             iroh_listen: listen,
             ..ServerConfig::default()
         },
+        state.path().to_path_buf(),
         ServerIdentity {
             user_public_key: user.user_pk,
             device_signing_key: host.sk.clone(),

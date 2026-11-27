@@ -248,10 +248,7 @@ pub async fn start_host_serving(
         fetch_proxy,
     } = settings;
     let user = root.verifying_key().to_bytes();
-    let mut cfg = tilo_server_protocol::config::ServerConfig {
-        state_root: state.to_path_buf(),
-        ..Default::default()
-    };
+    let mut cfg = tilo_server_protocol::config::ServerConfig::default();
     if !guests.is_empty() {
         cfg.trust_policy = tilo_server_protocol::policy::TrustPolicy::AllowList {
             users: guests.iter().map(hex::encode).collect(),
@@ -266,9 +263,13 @@ pub async fn start_host_serving(
         device_cert: host.cert.clone(),
         revocations: RevocationList::new(),
     };
-    let server = KeptServer::start(test_server::on_loopback_relay(cfg), identity)
-        .await
-        .unwrap();
+    let server = KeptServer::start(
+        test_server::on_loopback_relay(cfg),
+        state.to_path_buf(),
+        identity,
+    )
+    .await
+    .unwrap();
     let web = server
         .serve_web(WebConfig {
             listen: web_listen,
@@ -404,7 +405,6 @@ pub async fn start_workspace_host_relaying(
     packet_relay: bool,
 ) -> TestHost {
     let config = tilo_server_protocol::config::ServerConfig {
-        state_root: state.to_path_buf(),
         packet_relay: packet_relay.then(|| (std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
@@ -419,9 +419,14 @@ pub async fn start_workspace_host_relaying(
     // invitation names what a stranger can dial of its host, which would
     // otherwise be a relay out on the internet.
     let server = if packet_relay {
-        KeptServer::start(config.on_loopback(), identity).await
+        KeptServer::start(config.on_loopback(), state.to_path_buf(), identity).await
     } else {
-        KeptServer::start(test_server::on_loopback_relay(config), identity).await
+        KeptServer::start(
+            test_server::on_loopback_relay(config),
+            state.to_path_buf(),
+            identity,
+        )
+        .await
     }
     .unwrap();
     let web = server

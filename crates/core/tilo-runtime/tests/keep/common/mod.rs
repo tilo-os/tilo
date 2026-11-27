@@ -265,7 +265,7 @@ async fn spawn_server_with(
             )
             .try_init();
     }
-    let mut cfg = ServerConfig::loopback(state_root.to_path_buf());
+    let mut cfg = ServerConfig::loopback();
     let identity = ServerIdentity {
         user_public_key: user.user_pk,
         device_signing_key: server_dev.sk.clone(),
@@ -273,7 +273,9 @@ async fn spawn_server_with(
         revocations: RevocationList::new(),
     };
     cfg.app_serving = server.is_some();
-    let server = start_server_serving(cfg, identity, server).await.unwrap();
+    let server = start_server_serving(cfg, state_root.to_path_buf(), identity, server)
+        .await
+        .unwrap();
     for id in workspaces {
         hold_workspace(&server, *id, members).await;
     }
@@ -291,6 +293,7 @@ async fn spawn_server_with(
 /// As [`KeptServer::start`].
 pub fn start_server(
     cfg: ServerConfig,
+    state_root: std::path::PathBuf,
     identity: ServerIdentity,
 ) -> std::pin::Pin<
     Box<
@@ -299,7 +302,7 @@ pub fn start_server(
             > + Send,
     >,
 > {
-    start_server_serving(cfg, identity, None)
+    start_server_serving(cfg, state_root, identity, None)
 }
 
 /// [`start_server`], with the app action server `server` when a test hosts apps.
@@ -309,6 +312,7 @@ pub fn start_server(
 /// As [`KeptServer::start`].
 pub fn start_server_serving(
     cfg: ServerConfig,
+    state_root: std::path::PathBuf,
     identity: ServerIdentity,
     server: Option<std::sync::Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
 ) -> std::pin::Pin<
@@ -319,7 +323,13 @@ pub fn start_server_serving(
     >,
 > {
     Box::pin(async move {
-        KeptServer::serving_apps(test_server::on_loopback_relay(cfg), identity, server).await
+        KeptServer::serving_apps(
+            test_server::on_loopback_relay(cfg),
+            state_root,
+            identity,
+            server,
+        )
+        .await
     })
 }
 
@@ -395,7 +405,6 @@ pub async fn spawn_server_admitting_with(
     let mut users = vec![hex::encode(user.user_pk)];
     users.extend(others.iter().map(|other| hex::encode(other.user_pk)));
     let cfg = ServerConfig {
-        state_root: state_root.clone(),
         trust_policy: TrustPolicy::AllowList { users },
         ..Default::default()
     };
@@ -405,7 +414,9 @@ pub async fn spawn_server_admitting_with(
         device_cert: server_dev.cert.clone(),
         revocations: RevocationList::new(),
     };
-    let server = start_server_serving(cfg, identity, server).await.unwrap();
+    let server = start_server_serving(cfg, state_root.clone(), identity, server)
+        .await
+        .unwrap();
     for id in workspaces {
         hold_workspace(&server, *id, members).await;
     }

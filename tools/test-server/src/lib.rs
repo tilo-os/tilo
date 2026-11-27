@@ -170,12 +170,11 @@ impl Running {
                     runtime.block_on(async move {
                         let server = tilo_runtime::device::keep::server::KeptServer::start(
                             tilo_server_protocol::config::ServerConfig {
-                                state_root: host_root.join("host"),
-                                identity_root: host_root.join("identity"),
                                 packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                                 ..tilo_server_protocol::config::ServerConfig::default()
                             }
                             .on_loopback(),
+                            host_root.join("host"),
                             tilo_runtime::device::keep::server::ServerIdentity {
                                 user_public_key,
                                 device_signing_key: host_key.clone(),

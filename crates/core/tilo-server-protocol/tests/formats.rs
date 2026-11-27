@@ -153,8 +153,6 @@ tilo_test_env::scenario! {
     phase toml_encodings_are_pinned;
     {
         let config = ServerConfig {
-            identity_root: PathBuf::from("/var/lib/tilo"),
-            state_root: PathBuf::from("/var/lib/tilo-server"),
             iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
             packet_relay: None,
             packet_relay_url: None,
@@ -177,9 +175,7 @@ tilo_test_env::scenario! {
                 topics: vec!["so.tilo.phone".to_owned()],
             }),
         };
-        let encoded = r#"identity_root = "/var/lib/tilo"
-state_root = "/var/lib/tilo-server"
-iroh_listen = "0.0.0.0:4919"
+        let encoded = r#"iroh_listen = "0.0.0.0:4919"
 web_listen = "0.0.0.0:8443"
 web_tls = "local"
 

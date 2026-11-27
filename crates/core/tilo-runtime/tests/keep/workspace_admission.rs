@@ -44,10 +44,10 @@ async fn home_host() -> HomeHost {
     let state = tempfile::tempdir().unwrap();
     let server = crate::keep::common::start_server(
         ServerConfig {
-            state_root: state.path().to_path_buf(),
             trust_policy: TrustPolicy::AllowMatchingUser,
             ..ServerConfig::default()
         },
+        state.path().to_path_buf(),
         tilo_runtime::device::keep::server::ServerIdentity {
             user_public_key: owner.user_pk,
             device_signing_key: server_dev.sk.clone(),

@@ -733,7 +733,8 @@ async fn tilo_device_add_signs_a_browser_in_at_a_server_serving_a_workspace() {
     let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
     let reached = endpoint(&server_key).await;
     let server = crate::device::keep::server::KeptServer::on_endpoint(
-        tilo_server_protocol::config::ServerConfig::loopback(state.path().join("server")),
+        tilo_server_protocol::config::ServerConfig::loopback(),
+        state.path().join("server"),
         crate::device::keep::server::ServerIdentity {
             user_public_key: root.verifying_key().to_bytes(),
             device_signing_key: server_key,

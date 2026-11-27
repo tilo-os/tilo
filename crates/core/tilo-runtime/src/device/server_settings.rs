@@ -181,7 +181,6 @@ impl Served {
             }
         }
         current.configured = true;
-        current.state_root = config.state_root.display().to_string();
         current.problem = None;
         config.save(&self.path).map_err(|error| {
             tracing::warn!(
@@ -210,7 +209,6 @@ fn settings_of(
     ServerSettings {
         configured,
         problem,
-        state_root: config.state_root.display().to_string(),
         web: Web {
             domain: domain_of(&config.web_tls),
         },

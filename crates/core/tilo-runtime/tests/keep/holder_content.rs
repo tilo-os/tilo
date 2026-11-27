@@ -51,10 +51,10 @@ async fn server(
     }
     start_server(
         ServerConfig {
-            state_root: state.to_path_buf(),
             iroh_listen,
             ..ServerConfig::default()
         },
+        state.to_path_buf(),
         identity(user, device),
     )
     .await
