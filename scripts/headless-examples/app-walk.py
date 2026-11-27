@@ -675,9 +675,11 @@ class MachineDaemon:
                                       "--profile", str(self.PROFILE)],
                                      stdout=self.log, stderr=subprocess.STDOUT,
                                      env=env, start_new_session=True,
-                                     # The person's store is the daemon's group's to write: what
-                                     # the daemon installs there, the session can replace.
-                                     umask=0o007)
+                                     # What the daemon writes in the person's store (the
+                                     # registry above all) is root's, and every account reads
+                                     # it, as it reads a package's files: the session replaces
+                                     # it by renaming over it in its own directory.
+                                     umask=0o022)
         until("the machine's device daemon",
               lambda: self.NATIVE.exists()
               or (self.proc.poll() is not None and self._died()), self.START_WITHIN, 0.1)
@@ -694,8 +696,8 @@ class MachineDaemon:
         account reads them. The session prepared them in the person's state, which is the
         person's alone (0700); a device's login and daemon share the user store, so what the
         session installs is what the daemon publishes (`$TILO_APPS_DATA_DIR`). The store's
-        directories are the daemon's group's to write, and the daemon runs with the umask that
-        makes what it writes there the session's to replace. Answers the system store, the
+        directories are the person's, and the daemon runs with the umask that leaves what it
+        writes there readable to them. Answers the system store, the
         publishers file and the user store."""
         # Everything the session will run installed first, as its own start installs it, so the
         # copy below holds every app the person has, not only those an earlier step prepared.
