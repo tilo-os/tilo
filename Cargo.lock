@@ -14548,6 +14548,7 @@ dependencies = [
  "tilo-runtime",
  "tilo-server-protocol",
  "tilo-settings-store",
+ "tilo-socket",
  "tilo-test-env",
  "tilo-user-identity",
  "tilo-workspace-join",

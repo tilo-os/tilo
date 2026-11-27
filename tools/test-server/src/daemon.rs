@@ -8,7 +8,6 @@
 //! the `lounge-siblings` setup of `.config/nextest.toml`.
 
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -109,7 +108,7 @@ impl ServerDaemon {
         // A machine nobody signed in to answers its device actions on its native endpoint, and
         // its login among them, before it keeps anything.
         until(&mut child, root, "answer on its native endpoint", || {
-            UnixStream::connect(&native).ok().map(drop)
+            tilo_socket::connect(&native).ok().map(drop)
         });
         log_in(&native, ticket, label, root);
         let addr = until(&mut child, root, "keep, once signed in", || {
@@ -224,7 +223,7 @@ fn log_in(native: &Path, ticket: &str, label: &str, root: &Path) {
         appearance: None,
         signed: None,
     });
-    let stream = UnixStream::connect(native).expect("the daemon answers");
+    let stream = tilo_socket::connect(native).expect("the daemon answers");
     stream
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .expect("a read bound");

@@ -23,13 +23,13 @@ use tilo_actions::ApiError;
 use tilo_actions::remote::{RemoteActionTarget, application_action_target};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
+use tilo_session::daemon_fixture::TestDaemon;
 use tilo_session::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, RowPart, SOUND_KEY};
 use tilo_session::platform::fabric::{
     DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, MediaSourceLocator,
     PersonalFabricAction, PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS,
     REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ,
 };
-use tilo_session::daemon_fixture::TestDaemon;
 use tilo_session::surfaces::Surface;
 use tilo_session::{AppActions, AppLists, Lists, Options, Session};
 
@@ -532,10 +532,7 @@ fn pressing_another_device_sends_it_what_plays_here() {
 fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let host = Rc::new(Host::default());
-    let mut harness = session(
-        &[("laptop", "Laptop", true, false)],
-        Rc::clone(&host),
-    );
+    let mut harness = session(&[("laptop", "Laptop", true, false)], Rc::clone(&host));
     for _ in 0..4 {
         harness.step();
     }
@@ -564,8 +561,12 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
     // With media continuity turned off, what plays here stays here: the press opens the device's
     // settings instead.
     let host = Rc::new(Host::default());
-    let mut harness =
-        session_with(&[("laptop", "Laptop", true, false)], Rc::clone(&host), false, &[]);
+    let mut harness = session_with(
+        &[("laptop", "Laptop", true, false)],
+        Rc::clone(&host),
+        false,
+        &[],
+    );
     harness.playing();
     for _ in 0..4 {
         harness.step();
@@ -597,12 +598,9 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
         "open_pane",
     );
     assert!(
-        host.invoked
-            .borrow()
-            .iter()
-            .any(|(target, arguments)| {
-                *target == displays && arguments.get("pane") == Some(&serde_json::json!("displays"))
-            }),
+        host.invoked.borrow().iter().any(|(target, arguments)| {
+            *target == displays && arguments.get("pane") == Some(&serde_json::json!("displays"))
+        }),
         "a device that shows opens the displays page, through the page's own row: {:?}",
         host.invoked.borrow()
     );
@@ -655,7 +653,11 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     );
     for _ in 0..40 {
         harness.step();
-        if harness.rows().iter().any(|row| row.key == key_of("session")) {
+        if harness
+            .rows()
+            .iter()
+            .any(|row| row.key == key_of("session"))
+        {
             break;
         }
     }

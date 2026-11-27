@@ -52,10 +52,12 @@ impl tilo_app_host::certificate_authority::CertificateAuthority for ThisDevice {
 
 /// Read `record` until it holds what `done` asks for, and fail saying so when it does not, so a
 /// test that waits on the daemon fails fast instead of hanging.
-fn settle<F>(record: &crate::followed_resource::FollowedResource<
-    tilo_workspace_service::workspaces::person_workspace::devices::Devices,
->, done: F)
-where
+fn settle<F>(
+    record: &crate::followed_resource::FollowedResource<
+        tilo_workspace_service::workspaces::person_workspace::devices::Devices,
+    >,
+    done: F,
+) where
     F: Fn(&tilo_workspace_service::workspaces::person_workspace::devices::Devices) -> bool,
 {
     let deadline = std::time::Instant::now()
@@ -88,7 +90,9 @@ pub struct SpeakersSaid {
     attached: std::sync::atomic::AtomicBool,
     /// The link a session holds, while it holds one: where what its person's other devices said
     /// here is written.
-    hearing: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<tilo_session_client::speakers::Frame>>>,
+    hearing: std::sync::Mutex<
+        Option<tokio::sync::mpsc::UnboundedSender<tilo_session_client::speakers::Frame>>,
+    >,
 }
 
 impl SpeakersSaid {
@@ -111,12 +115,7 @@ impl SpeakersSaid {
 
     /// Write `frame` to the session's link, as another of the person's devices said it here.
     pub fn hearing(&self, frame: tilo_session_client::speakers::Frame) {
-        if let Some(link) = self
-            .hearing
-            .lock()
-            .expect("the speakers link")
-            .as_ref()
-        {
+        if let Some(link) = self.hearing.lock().expect("the speakers link").as_ref() {
             let _ = link.send(frame);
         }
     }
@@ -301,12 +300,10 @@ impl TestDaemon {
         let actions = Arc::new(Governance {
             workspaces: workspaces.clone(),
         });
-        let online = Online::new(
-            tilo_workspace_service::workspaces::person_workspace::devices::ONLINE,
-        );
-        let nearby = Online::new(
-            tilo_workspace_service::workspaces::person_workspace::devices::NEARBY,
-        );
+        let online =
+            Online::new(tilo_workspace_service::workspaces::person_workspace::devices::ONLINE);
+        let nearby =
+            Online::new(tilo_workspace_service::workspaces::person_workspace::devices::NEARBY);
         let speakers = Arc::new(SpeakersSaid::default());
         let services = ProcessServices {
             shell: Some(Arc::new(ShellServices {
@@ -545,11 +542,18 @@ impl TestDaemon {
         // record until it holds what this daemon keeps, so what a test published is what its
         // fabric reads, and fail the test rather than wait forever when it never does.
         settle(&record, |record| !record.devices.is_empty());
-        let online =
-            crate::person_store::DaemonReading::follow(&self.shell(), &workspace, ONLINE, wake.clone());
-        let nearby = crate::person_store::DaemonReading::follow(&self.shell(), &workspace, NEARBY, wake);
-        let local =
-            crate::platform::fabric::DeviceId::new(hex::encode(self.cert.device_public_key)).ok();
+        let online = crate::person_store::DaemonReading::follow(
+            &self.shell(),
+            &workspace,
+            ONLINE,
+            wake.clone(),
+        );
+        let nearby =
+            crate::person_store::DaemonReading::follow(&self.shell(), &workspace, NEARBY, wake);
+        let local = Some(
+            crate::platform::fabric::DeviceId::new(hex::encode(self.cert.device_public_key))
+                .expect("the daemon's device key names its device"),
+        );
         // Continuity as this device has it: a switch nobody turned off is on.
         let continuity = crate::platform::fabric::Continuity::default();
         continuity.read(&serde_json::Map::new());
@@ -818,7 +822,7 @@ impl TestDaemon {
     /// workspace resources, people and settings are then the session's own.
     pub fn shell_link(&self) -> std::os::fd::OwnedFd {
         use std::io::Write as _;
-        let mut link = std::os::unix::net::UnixStream::connect(&self.socket)
+        let mut link = tilo_files::native::socket::connect(&self.socket)
             .expect("the daemon answers on its socket");
         let secret = self.links.make(ShellCaller {
             person: self.cert.user_public_key,
@@ -842,7 +846,7 @@ fn link(
     });
     tilo_rt::app()
         .block_on(async {
-            let mut link = tokio::net::UnixStream::connect(socket)
+            let mut link = tilo_files::native::socket::tokio::connect(socket)
                 .await
                 .expect("the daemon answers on its socket");
             let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
@@ -979,20 +983,32 @@ impl tilo_actions::remote::ActionProvider for GovernanceCall {
             // A change to the workspace's people and settings is the device's own, signed with
             // its key, as the daemon's shell answers it.
             if request.target.address.action == tilo_peer_state::workspace_view::MEMBERSHIP {
-                let command = match &request.argument {
+                let command: Result<
+                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+                    String,
+                > = match &request.argument {
                     tilo_actions::remote::InvokeArgument::Json(arguments) => arguments
                         .get("command")
                         .cloned()
-                        .and_then(|command| serde_json::from_value(command).ok()),
-                    _ => None,
+                        .ok_or_else(|| {
+                            "a change to a workspace's people names its `command`".to_owned()
+                        })
+                        .and_then(|command| {
+                            serde_json::from_value(command).map_err(|error| {
+                                format!("the `command` a workspace's people change names does not read: {error}")
+                            })
+                        }),
+                    _ => Err(
+                        "a change to a workspace's people names its `command`".to_owned(),
+                    ),
                 };
-                let Some(command) = command else {
-                    return tilo_actions::remote::Pending::ready(Err(
-                        tilo_actions::remote::ActionCallError::InvalidRequest {
-                            reason: "a change to a workspace's people names its `command`"
-                                .to_owned(),
-                        },
-                    ));
+                let command = match command {
+                    Ok(command) => command,
+                    Err(reason) => {
+                        return tilo_actions::remote::Pending::ready(Err(
+                            tilo_actions::remote::ActionCallError::InvalidRequest { reason },
+                        ));
+                    }
                 };
                 let (answer, pending) = tilo_actions::remote::pending();
                 let workspaces = self.workspaces.clone();

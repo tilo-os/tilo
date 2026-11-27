@@ -13,11 +13,9 @@ use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::fabric::DeviceId;
-use tilo_network_actor::fabric::{
-    PersonalFabricAction, PersonalFabricActionEnvelope, nonzero,
-};
-use tilo_session_client::speakers::{self, Frame};
+use tilo_network_actor::fabric::{PersonalFabricAction, PersonalFabricActionEnvelope, nonzero};
 use tilo_resource::Invoke;
+use tilo_session_client::speakers::{self, Frame};
 use tilo_speaker_service::devices::{
     Listing, PersonalFabricSendError, Record, Speakers, known_from,
 };
@@ -58,11 +56,20 @@ impl SpeakersLink {
         let flag = Arc::clone(&attached);
         let inbound = Arc::clone(&heard);
         daemon.runtime().clone().spawn(async move {
+            // What the link last failed at, told once: a daemon not up yet is asked again every
+            // second, and the journal hears where the link stands rather than once a second.
+            let mut told: Option<&'static str> = None;
             loop {
                 let shell = match daemon.link() {
                     Ok(shell) => shell,
                     Err(error) => {
-                        tracing::debug!(%error, "the daemon's link is not up yet for the speakers");
+                        if told != Some("link") {
+                            tracing::warn!(
+                                %error,
+                                "the daemon's link is not up yet for the speakers; asking again"
+                            );
+                            told = Some("link");
+                        }
                         tokio::time::sleep(ASK_AGAIN).await;
                         continue;
                     }
@@ -70,11 +77,18 @@ impl SpeakersLink {
                 let stream = match shell.speakers().await {
                     Ok(stream) => stream,
                     Err(error) => {
-                        tracing::debug!(%error, "the daemon serves no speakers link");
+                        if told != Some("speakers") {
+                            tracing::warn!(
+                                %error,
+                                "the daemon serves no speakers link; asking again"
+                            );
+                            told = Some("speakers");
+                        }
                         tokio::time::sleep(ASK_AGAIN).await;
                         continue;
                     }
                 };
+                told = None;
                 flag.store(true, Ordering::Relaxed);
                 serve(stream, &mut queue, &inbound, local.clone()).await;
                 flag.store(false, Ordering::Relaxed);
@@ -152,7 +166,8 @@ async fn serve(
     let (mut reader, mut writer) = tokio::io::split(stream);
     let sending = async {
         while let Some(frame) = queue.recv().await {
-            if speakers::write(&mut writer, &frame).await.is_err() {
+            if let Err(error) = speakers::write(&mut writer, &frame).await {
+                tracing::warn!(%error, "the session's speakers link ended while sending");
                 return;
             }
         }
@@ -174,7 +189,10 @@ async fn serve(
                     heard.lock_recover().push((source, envelope, received_us));
                 }
                 Ok(Frame::Send { .. }) => {}
-                Err(_) => return,
+                Err(error) => {
+                    tracing::warn!(%error, "the session's speakers link ended while hearing");
+                    return;
+                }
             }
         }
     };

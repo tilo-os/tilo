@@ -189,7 +189,6 @@ impl Listing {
     pub fn contains(&self, device: &DeviceId) -> bool {
         self.devices.contains_key(device)
     }
-
 }
 
 /// The devices `record` lists for `person`, `local` this one and `online` those on a session with

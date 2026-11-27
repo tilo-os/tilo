@@ -155,19 +155,15 @@ impl Fleet for Lan {
     fn admits(&self, cert: &DeviceCert) -> bool {
         cert.user_public_key == self.cert.user_public_key
             && tilo_user_identity::verify_device_cert(cert).is_ok()
-            && self
-                .record
-                .lock_recover()
-                .as_ref()
-                .is_some_and(|record| {
-                    record
-                        .listed(&self.cert.user_public_key)
-                        .into_iter()
-                        .any(|listed| {
-                            listed.cert.device_public_key == cert.device_public_key
-                                && !listed.device.revoked(&listed.cert)
-                        })
-                })
+            && self.record.lock_recover().as_ref().is_some_and(|record| {
+                record
+                    .listed(&self.cert.user_public_key)
+                    .into_iter()
+                    .any(|listed| {
+                        listed.cert.device_public_key == cert.device_public_key
+                            && !listed.device.revoked(&listed.cert)
+                    })
+            })
     }
 }
 
@@ -201,8 +197,7 @@ mod tests {
 
     /// The person's record of their devices, certifying each of `certs`.
     fn record(certs: &[DeviceCert]) -> Devices {
-        let mut devices =
-            tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
+        let mut devices = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
         for cert in certs {
             devices
                 .apply(Devices::keeping(cert).expect("the device certificate encodes"))
@@ -286,7 +281,10 @@ mod tests {
         // The stranger's own discovery: it asks, and the person's devices answer it nothing.
         let c = Lan::on(stranger_cert, [Ipv4Addr::LOCALHOST]);
         c.keeping(Some(Devices::default()));
-        assert!(a.admits(&other_cert), "the person's record admits the phone");
+        assert!(
+            a.admits(&other_cert),
+            "the person's record admits the phone"
+        );
         assert!(b.admits(&my_cert), "and the laptop");
         tilo_rt::app()
             .block_on(async {
@@ -301,17 +299,32 @@ mod tests {
                     answering(answered);
                 }
                 assert!(
-                    reaches(&endpoint_a, endpoint_b.id(), std::time::Duration::from_secs(30)).await,
+                    reaches(
+                        &endpoint_a,
+                        endpoint_b.id(),
+                        std::time::Duration::from_secs(30)
+                    )
+                    .await,
                     "the laptop finds the phone on the local network: heard {:?}",
                     a.heard()
                 );
                 assert!(
-                    reaches(&endpoint_b, endpoint_a.id(), std::time::Duration::from_secs(30)).await,
+                    reaches(
+                        &endpoint_b,
+                        endpoint_a.id(),
+                        std::time::Duration::from_secs(30)
+                    )
+                    .await,
                     "and the phone finds the laptop: heard {:?}",
                     b.heard()
                 );
                 assert!(
-                    !reaches(&endpoint_c, endpoint_a.id(), std::time::Duration::from_secs(6)).await,
+                    !reaches(
+                        &endpoint_c,
+                        endpoint_a.id(),
+                        std::time::Duration::from_secs(6)
+                    )
+                    .await,
                     "a device the record does not certify is answered by nobody"
                 );
                 assert!(

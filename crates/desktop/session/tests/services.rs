@@ -311,7 +311,8 @@ impl Fabric {
     fn snapshot(&self) -> runtime_collab::SpeakerSnapshot {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            let reply = tilo_speaker_service::settings::handle(&self.link(), SpeakerCommand::Snapshot);
+            let reply =
+                tilo_speaker_service::settings::handle(&self.link(), SpeakerCommand::Snapshot);
             let SpeakerReply::Snapshot { snapshot } = reply else {
                 panic!("Settings asks for a snapshot: {reply:?}");
             };

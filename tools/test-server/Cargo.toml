@@ -29,6 +29,8 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-device-identity = { path = "../../crates/core/tilo-device-identity" }
 # The daemon binary the run built, and its start under the environment lock.
 tilo-test-env = { path = "../test-env" }
+# The daemon's own socket, reached at whatever path its profile lies at.
+tilo-socket = { version = "0.1.0", path = "../../crates/platform/tilo-socket" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tempfile.workspace = true

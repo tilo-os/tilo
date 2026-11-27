@@ -889,13 +889,14 @@ impl Session {
             let media_enabled = fabric.require_media().is_ok();
             // What the person's other devices sent this one since the last pass: the clocks that
             // keep their audio in time, and the routes, consents and calibrations they are for.
-            let send = |peer: &crate::platform::fabric::DeviceId,
-                        action: tilo_network_actor::fabric::PersonalFabricAction| {
-                fabric
-                    .try_send_personal_fabric_action(peer, action)
-                    .map(|_| ())
-                    .map_err(|_| ())
-            };
+            let send =
+                |peer: &crate::platform::fabric::DeviceId,
+                 action: tilo_network_actor::fabric::PersonalFabricAction| {
+                    fabric
+                        .try_send_personal_fabric_action(peer, action)
+                        .map(|_| ())
+                        .map_err(|_| ())
+                };
             for (peer, envelope, received_us) in fabric.take_heard() {
                 if tilo_network_actor::fabric::clock::arrived_at(
                     &peer,
@@ -919,7 +920,10 @@ impl Session {
             // same link.
             tilo_network_actor::fabric::clock::pump(
                 media_enabled,
-                fabric.local_device_fabric_identity().map(|(device, _)| device).as_ref(),
+                fabric
+                    .local_device_fabric_identity()
+                    .map(|(device, _)| device)
+                    .as_ref(),
                 &fabric.online_device_ids(),
                 &send,
             );

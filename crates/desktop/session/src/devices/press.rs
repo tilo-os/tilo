@@ -166,7 +166,11 @@ fn send(
         })
         .unwrap_or_default();
     if workspace_id.is_empty() {
-        *shared.devices.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        *shared
+            .devices
+            .refused
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
             crate::i18n::t("devices-refused-no-workspace");
         return;
     }
@@ -193,11 +197,12 @@ fn send(
         }
         Err(error) => {
             tracing::warn!(%error, device = row, "what plays here did not reach the device");
-            *shared.devices.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                crate::i18n::t_args(
-                    "devices-refused-send",
-                    &[("device", device.label.into())],
-                );
+            *shared
+                .devices
+                .refused
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                crate::i18n::t_args("devices-refused-send", &[("device", device.label.into())]);
         }
     }
 }

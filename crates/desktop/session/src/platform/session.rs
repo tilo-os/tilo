@@ -810,13 +810,18 @@ impl Session {
         // them hold a session with it now, and which it hears on this machine's network.
         let fabric: Option<crate::platform::fabric::SharedLink> = (|| {
             let identity = crate::sync::device_identity()?;
-            let local = tilo_failure::ignored!(
-                "a key that names no device id leaves this session with no device of its own",
-                crate::platform::fabric::DeviceId::new(hex::encode(
-                    identity.device_cert.device_public_key,
-                ))
-                .ok()
-            );
+            let local = match crate::platform::fabric::DeviceId::new(hex::encode(
+                identity.device_cert.device_public_key,
+            )) {
+                Ok(device) => Some(device),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "this device's key does not name it; the speakers link keeps no local device"
+                    );
+                    None
+                }
+            };
             let (record, _) = owner_devices.as_ref()?.record();
             Some(std::sync::Arc::new(crate::person_store::DaemonFabric::new(
                 record.shared(),

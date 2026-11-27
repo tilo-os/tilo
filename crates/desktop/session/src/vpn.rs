@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::platform::fabric::{Speakers, SharedLink};
+use crate::platform::fabric::{SharedLink, Speakers};
 use device_vpn::controller::{self, AfterEnd, Want};
 use device_vpn::link::{self, Control, Frame};
 use device_vpn::net::{CLIENT_INTERFACE, MAX_MTU};

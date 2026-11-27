@@ -127,9 +127,15 @@ impl Speakers {
         let target = peer;
         let peer = self.peer(peer).await?;
         let mut send = peer.send.lock().await;
-        speakers::write(&mut *send, &Frame::Send { peer: target, envelope })
-            .await
-            .map_err(|error| error.to_string())
+        speakers::write(
+            &mut *send,
+            &Frame::Send {
+                peer: target,
+                envelope,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())
     }
 
     /// `envelope`, read and checked to be this device's to `target`: what is written, so a shell

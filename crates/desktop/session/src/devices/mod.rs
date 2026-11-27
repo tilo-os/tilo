@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use crate::followed_resource::FollowedResource;
 use crate::hosted::{DevicesReading, MediaOffer, PersonalDevice};
 use crate::platform::fabric::DeviceId;
-use crate::platform::fabric::{Speakers, SharedLink};
+use crate::platform::fabric::{SharedLink, Speakers};
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;

@@ -14,12 +14,10 @@ use std::time::{Duration, Instant};
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, RelayMode};
 use serde_json::Value;
-use tilo_actions::remote::ReceiptStatus;
 use tilo_actions::ActionAddress;
+use tilo_actions::remote::ReceiptStatus;
 use tilo_network_actor::fabric::clock::{self, ClockSyncState, hold_fabric_clock_sync};
-use tilo_network_actor::fabric::{
-    DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope,
-};
+use tilo_network_actor::fabric::{DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope};
 use tilo_session_client::speakers::{self, Frame};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use tilo_workspace_service::workspaces::person_workspace::devices::{self, Devices};
@@ -305,7 +303,9 @@ impl Carriage {
 }
 
 /// What a session on the other device answers a clock probe with: its own clock.
-fn clock_answer(peer: &DeviceCert) -> Arc<dyn Fn(&PersonalFabricActionEnvelope) -> Option<Frame> + Send + Sync> {
+fn clock_answer(
+    peer: &DeviceCert,
+) -> Arc<dyn Fn(&PersonalFabricActionEnvelope) -> Option<Frame> + Send + Sync> {
     let device_public_key = peer.device_public_key;
     Arc::new(move |envelope: &PersonalFabricActionEnvelope| {
         let PersonalFabricAction::FabricClockProbe { nonce, sent_us } = envelope.action else {
@@ -348,9 +348,8 @@ fn a_remote_audio_route_gets_the_clock_it_plays_the_other_device_by() {
         let peer_id = peer.id();
         let clock = hold_fabric_clock_sync(peer_id.clone());
         let online = BTreeSet::from([peer_id]);
-        let send = |peer: &DeviceId, action: PersonalFabricAction| {
-            carriage.tell(&envelope(peer, action))
-        };
+        let send =
+            |peer: &DeviceId, action: PersonalFabricAction| carriage.tell(&envelope(peer, action));
         // A pass with Media continuity on starts the clock; nothing is known of the other
         // device's clock yet.
         clock::pump(true, Some(&daemon_id), &online, &send);
@@ -407,10 +406,7 @@ fn the_persons_devices_on_one_network_reach_each_other_without_a_relay() {
             .expect("the link takes the action");
         let deadline = tilo_test_env::hang_deadline();
         while peer.heard().is_empty() {
-            assert!(
-                Instant::now() < deadline,
-                "the other device heard nothing"
-            );
+            assert!(Instant::now() < deadline, "the other device heard nothing");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let heard = peer.heard();
