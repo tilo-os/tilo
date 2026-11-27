@@ -216,6 +216,18 @@ impl Fixture {
     }
 }
 
+/// The change `step` names in `doc`: a row's id is the first 16 bytes of the change, resolved as
+/// the record's own history resolves a version when the store takes the step back.
+fn change_in(doc: &AutoCommit, step: &str) -> automerge::ChangeHash {
+    match ui::history_source::steps::resolve(doc, step) {
+        Ok(hashes) => match hashes.as_slice() {
+            [only] => *only,
+            named => panic!("{step} does not name one change: {named:?}"),
+        },
+        Err(error) => panic!("the step names a change: {error}"),
+    }
+}
+
 tilo_test_env::scenario! {
     fn agent_and_connection_runs_are_listed_and_undone_from_the_activity;
 
@@ -791,7 +803,7 @@ impl Connection {
             .find(|(_, checkout, _)| checkout.id.as_str() == record)
             .map(|(_, _, doc)| doc)
             .expect("the record is open");
-        let hash = step.parse::<automerge::ChangeHash>().expect("a change id");
+        let hash = change_in(doc, step);
         let scope = ui::history_source::steps::Scope::Session(GROUP.to_owned());
         ui::history_source::steps::undo_step(
             doc,
@@ -819,16 +831,12 @@ impl Connection {
                 };
                 let scope = ui::history_source::steps::Scope::Session(undo.task_id.clone());
                 let words = ui::history_source::ThreadWords;
-                match undo
-                    .step
-                    .as_deref()
-                    .map(str::parse::<automerge::ChangeHash>)
-                {
-                    Some(Ok(hash)) => {
+                match undo.step.as_deref() {
+                    Some(step) => {
+                        let hash = change_in(doc, step);
                         ui::history_source::steps::undo_step(doc, &scope, &hash, plain, &words)
                             .expect("the change is taken back");
                     }
-                    Some(Err(error)) => panic!("the step is a change id: {error}"),
                     None => {
                         ui::history_source::steps::undo(doc, &scope, 1, plain, &words)
                             .expect("the run is taken back");
