@@ -195,6 +195,12 @@ impl Widget for Stack {
         self.rect
     }
 
+    /// A child that latches a drag keeps the pointer wherever it goes, as a container's children
+    /// do: a window's edge being carried follows the pointer past the window's own bounds.
+    fn wants_pointer_capture(&self) -> bool {
+        self.children.iter().any(|c| c.wants_pointer_capture())
+    }
+
     /// A child that offers the scroll around this stack detents (a window's edge) offers them
     /// from the stack's own leading edge, so the view settles a whole window at a time wherever
     /// the stack is panned to.
