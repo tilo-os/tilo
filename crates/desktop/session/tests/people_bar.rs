@@ -127,12 +127,24 @@ fn settings_home() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
 /// A shell taking part in the workspace through `sync`, drawing what the session publishes of who
 /// is here. The person's own settings are beside it, so a run may choose the light theme.
 fn session_over(sync: &Rc<Client>) -> Session {
-    let mut session = crate::common::headless(Options {
-        person: "Quinten".to_owned(),
-        sync: Some(Rc::clone(sync)),
-        services: vec![Box::new(settings_sections::service::SettingsService::new())],
-        ..Options::default()
-    });
+    session_on(sync, 1280, 800)
+}
+
+/// [`session_over`] on a display `width` by `height` : a phone's, where the bar is compact.
+fn session_on(sync: &Rc<Client>, width: i32, height: i32) -> Session {
+    let mut session = crate::common::headless_on(
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            width,
+            height,
+        )],
+        Options {
+            person: "Quinten".to_owned(),
+            sync: Some(Rc::clone(sync)),
+            services: vec![Box::new(settings_sections::service::SettingsService::new())],
+            ..Options::default()
+        },
+    );
     session.handle().replace_tree(shell());
     crate::common::until(&mut session, "the shell to show the workspace", |session| {
         session.shell_control("Top bar").is_some()
@@ -330,5 +342,36 @@ fn the_bar_says_who_arrived_who_waved_and_who_follows_this_person() {
     );
     crate::common::until(&mut session, "Ada to stop following", |session| {
         !bar_says(session, "Ada Lovelace, follows you")
+    });
+}
+
+/// A phone's bar has room for one thing where the clock stands: someone arrives and the bar says
+/// who, taking the time's place, and gives it back when the notice's moment is over.
+#[test]
+fn the_bar_on_a_phone_says_who_arrived_in_the_clock_s_place() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (_home, _settings) = settings_home();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(publisher(0xf0), own));
+    let mut session = session_on(&sync, 480, 900);
+    // The time stands where the bar's glance is while nobody has come.
+    assert!(
+        session.shell_says(":"),
+        "the bar shows the time: {:?}",
+        session.accessible_labels()
+    );
+
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada Lovelace");
+    crate::common::until(&mut session, "Ada's arrival on a phone", |session| {
+        session.shell_control("Ada is here").is_some()
+    });
+    // The news takes the time's place, and gives it back when its moment is over.
+    bar_gone(&mut session, "Ada is here", Duration::from_secs(8));
+    crate::common::until(&mut session, "the time back", |session| {
+        session.shell_says(":")
     });
 }
