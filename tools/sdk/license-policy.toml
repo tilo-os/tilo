@@ -181,7 +181,6 @@ toolkit_reaches = [
     "tilo-highlight",                   # crates/ui/highlight
     "tilo-highlight-grammars",          # crates/ui/highlight-grammars
     "tilo-history",                     # crates/sdk/tilo-history
-    "tilo-host-search",                 # crates/integrations/tilo-host-search
     "tilo-identity-client",             # crates/core/tilo-identity-client
     "tilo-image-codec",                 # crates/platform/image-codec
     "tilo-image-info",                  # crates/platform/image-info
