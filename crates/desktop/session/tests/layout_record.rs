@@ -505,10 +505,13 @@ fn the_layout_is_the_shells_own_and_no_record_beside_it() {
         Some(second),
         "the layout holds the move"
     );
-    let records = here
+    // A session keeps the layout as it ends, and its link to the daemon ends with it: the records
+    // are read through the session that follows.
+    drop(here);
+    let after = session_in(Some(state.path().to_path_buf()));
+    let records = after
         .device_records()
         .expect("the session keeps the device's records");
-    drop(here);
 
     // The workspace's layout record keeps the layout; what this device keeps is what it
     // shows, and no record of the layout's own is written beside either.
@@ -574,8 +577,11 @@ fn a_places_view_and_pin_are_kept_with_the_shell_across_a_restart() {
     };
 
     let mut next = session_in(Some(state.path().to_path_buf()));
-    step(&mut next);
-    let back = place_of(&next, place).expect("the place came back");
+    // The layout is the workspace's, read off the loop once the daemon answers: the place comes
+    // back when the session that follows has read what the one before left there.
+    let back = crate::common::wait_for(&mut next, "the place to come back", |session| {
+        place_of(session, place)
+    });
     assert_eq!(back.shown_as, "editor", "the view the place shows");
     assert!(back.pinned, "the place is still pinned");
 }
