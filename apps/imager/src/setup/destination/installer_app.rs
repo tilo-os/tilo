@@ -26,8 +26,8 @@ use tilo_ui_base::tokens::Rhythm;
 use tilo_ui_base::tokens::typography::TextRole;
 use tilo_ui_base::{widget::DrawChild as _, widget::Spacer, widget::Widget};
 use ui::{
-    widget::Dropdown, widget::ListRow, widget::Property, widget::PropertyList, widget::Row,
-    widget::Spinner, widget::Stepper, widget::Text, widget::TextInput,
+    widget::Dropdown, widget::GuidedPage, widget::ListRow, widget::Property, widget::PropertyList,
+    widget::Row, widget::Spinner, widget::Stepper, widget::Text, widget::TextInput,
 };
 
 use install_profile_model::{
@@ -1903,7 +1903,7 @@ impl InstallerApp {
             ));
         }
 
-        let mut body = crate::page::stack()
+        let mut body = crate::layout::stack()
             .with_id("installer.content")
             .with_rhythm(Rhythm::Related);
         for child in children {
@@ -1912,11 +1912,11 @@ impl InstallerApp {
         let stepper = Stepper::new(step_captions())
             .with_id("installer.stepper")
             .current(Some(step_index(self.step)));
-        let mut frame = crate::page::Frame::new(body)
-            .stepper_widget(stepper)
+        let mut frame = GuidedPage::new(body)
+            .stepper(stepper)
             .offset(Rc::clone(&self.viewport_offset));
         if !actions.is_empty() {
-            let mut footer = crate::page::stack()
+            let mut footer = crate::layout::stack()
                 .with_id("installer.actions")
                 .with_rhythm(Rhythm::Related);
             for action in actions {

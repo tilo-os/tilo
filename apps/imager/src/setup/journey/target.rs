@@ -16,7 +16,7 @@ use ui::{
 };
 
 use super::{Commands, InstallerPreviewEffect};
-use crate::page;
+use crate::layout;
 use crate::setup::strings::{t, t_args};
 
 const FIELD_IDS: [(&str, &str); 5] = [
@@ -435,7 +435,7 @@ impl Target {
     }
 
     pub(super) fn page(&self, commands: &Commands) -> Column {
-        let mut body = page::stack().with_rhythm(Rhythm::Sibling);
+        let mut body = layout::stack().with_rhythm(Rhythm::Sibling);
         if self.report.is_none() {
             body = body.push(Box::new(self.identity_section(commands)));
         }

@@ -24,18 +24,18 @@ use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::{widget::Spacer, widget::Tone, widget::Widget};
 use ui::{
     widget::Banner, widget::Button, widget::ButtonRole, widget::Column, widget::ControlSize,
-    widget::DropZone, widget::EmptyState, widget::ListRow, widget::ProgressRing,
-    widget::ProgressRingSize, widget::Property, widget::PropertyList, widget::Row, widget::Section,
-    widget::Text,
+    widget::DropZone, widget::EmptyState, widget::GuidedPage, widget::ListRow,
+    widget::ProgressRing, widget::ProgressRingSize, widget::Property, widget::PropertyList,
+    widget::Row, widget::Section, widget::Text,
 };
 
 use crate::export_dialog::ExportDialog;
 use crate::hosting::{EffectAnswer, EffectCx, Effected, JobProgress, Opened, Port, Reply, Store};
+use crate::layout;
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive,
     TargetDriveIcon, TargetName, TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
-use crate::page::{self, Frame};
 use crate::resource::CATALOG;
 use crate::resource::{ImageWrite, Imager, ImagerEffect, InstallerDownload};
 use crate::write::{JobControl, WriteRequest, spawn_job};
@@ -579,10 +579,10 @@ impl ImagerApp {
                 sink.borrow_mut().push(Command::Station(index));
             });
         }
-        Frame::new(body)
-            .stepper_widget(stepper)
+        GuidedPage::new(body)
+            .stepper(stepper)
             .offset(Rc::clone(&self.scroll))
-            .notice(notice)
+            .maybe_notice(notice)
             .actions(self.footer())
             .build()
     }
@@ -721,7 +721,7 @@ impl ImagerApp {
     fn source_body(&self) -> Column {
         let sink = Rc::clone(&self.commands);
         let mut body =
-            page::body(&crate::setup::strings::t("imager-page-choose-image")).push(Box::new(
+            layout::body(&crate::setup::strings::t("imager-page-choose-image")).push(Box::new(
                 DropZone::new("imager.drop", crate::setup::strings::t("imager-drop-title"))
                     .message(crate::setup::strings::t("imager-drop-message"))
                     .icon(Icon::Download)
@@ -878,7 +878,7 @@ impl ImagerApp {
     }
 
     fn drive_body(&self) -> Column {
-        let body = page::body(&crate::setup::strings::t("imager-page-choose-drive")).push(
+        let body = layout::body(&crate::setup::strings::t("imager-page-choose-drive")).push(
             Box::new(Text::new(&self.required_capacity().map_or_else(
                 || crate::setup::strings::t("installer-media-capacity-checking"),
                 |required| {
@@ -932,7 +932,7 @@ impl ImagerApp {
     }
 
     fn customize_body(&self) -> Column {
-        let mut body = page::body(&crate::setup::strings::t("imager-page-prepare-setup"));
+        let mut body = layout::body(&crate::setup::strings::t("imager-page-prepare-setup"));
         if let Some(source) = &self.source {
             body = body.push(Box::new(
                 Text::new(&CATALOG.t_args(
@@ -954,7 +954,7 @@ impl ImagerApp {
                 Text::new(&crate::setup::strings::t("imager-plain-body")).dimmed(),
             ));
         }
-        body.push(page::form_block(crate::customize::form(
+        body.push(layout::form_block(crate::customize::form(
             &self.profile,
             Some(self.port.store()),
             self.shot_timezone_open,
@@ -1052,9 +1052,9 @@ impl ImagerApp {
             .into_iter()
             .map(|(label, value)| Property::new(label, value))
             .collect();
-        let mut body = page::body(&title).push(Box::new(PropertyList::new(review)));
+        let mut body = layout::body(&title).push(Box::new(PropertyList::new(review)));
         if self.offers_write_setup() {
-            body = body.push(page::form_block(crate::write_setup::form(
+            body = body.push(layout::form_block(crate::write_setup::form(
                 &self.profile,
                 &self.wifi_psk,
                 &self.ssh_public_key,
@@ -1071,7 +1071,7 @@ impl ImagerApp {
             crate::setup::strings::t("imager-writer-unavailable")
         };
         body.push(Box::new(
-            page::related().push(Box::new(
+            layout::related().push(Box::new(
                 Banner::error(warning)
                     .with_message(consequence)
                     .arrives_in_place(),
@@ -1141,14 +1141,14 @@ impl ImagerApp {
         } else {
             "imager-writing-verify-next"
         });
-        let mut lines = page::related();
+        let mut lines = layout::related();
         if !meta.is_empty() {
             lines = lines.push(Box::new(
                 Self::centred(&meta.join(", "), TextRole::Body).numeric(),
             ));
         }
         lines = lines.push(Box::new(Self::centred(&next, TextRole::Body).dimmed()));
-        let mut body = page::stack()
+        let mut body = layout::stack()
             .with_rhythm(tilo_ui_base::tokens::Rhythm::Group)
             .push(Box::new(Self::ring_row(ring)))
             .push(Box::new(lines));
@@ -1238,11 +1238,11 @@ impl ImagerApp {
                     .unwrap_or_else(|| crate::setup::strings::t("imager-done-incomplete")),
             )
         };
-        page::stack()
+        layout::stack()
             .with_rhythm(tilo_ui_base::tokens::Rhythm::Group)
             .push(Box::new(Self::ring_row(ring)))
             .push(Box::new(
-                page::related()
+                layout::related()
                     .push(Box::new(
                         Self::centred(&headline, TextRole::Title).with_heading_level(1),
                     ))
@@ -2494,11 +2494,11 @@ impl Widget for ImagerApp {
         let focused = self
             .composed
             .element()
-            .and_then(page::focused_id)
+            .and_then(layout::focused_id)
             .or_else(|| self.shot_focus.take().map(str::to_string));
         let mut composed = self.build_composition();
         if let Some(id) = focused {
-            page::refocus(composed.as_mut(), &id);
+            layout::refocus(composed.as_mut(), &id);
         }
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed.replace(composed);

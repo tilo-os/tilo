@@ -53,15 +53,15 @@ use tilo_ui_base::{
 };
 use ui::{
     widget::Button, widget::ButtonRole, widget::Card, widget::Container, widget::Field,
-    widget::IconWidget, widget::ListRow, widget::NumberInput, widget::Row, widget::Text,
-    widget::TextInput, widget::TextInputKind,
+    widget::GuidedPage, widget::IconWidget, widget::ListRow, widget::NumberInput, widget::Row,
+    widget::Text, widget::TextInput, widget::TextInputKind,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::strings::{t, t_args};
-use crate::page;
+use crate::layout;
 use crate::resource::Imager;
 use model::{Destination, Journey, Page};
 
@@ -365,7 +365,7 @@ impl InstallerPreview {
     }
 
     fn storage_content(&self) -> ui::widget::Column {
-        let mut content = page::stack();
+        let mut content = layout::stack();
         if !self.direct_route_enabled() {
             return content;
         }
@@ -1232,7 +1232,7 @@ impl InstallerPreview {
             "desktop" => Icon::MonitorSmartphone,
             _ => Icon::Shield,
         };
-        let copy = page::related()
+        let copy = layout::related()
             .push(Box::new(Text::new(&title).with_role(TextRole::Title)))
             .push(Box::new(Text::new(&description)));
         let contents = Row::new()
@@ -1271,7 +1271,7 @@ impl InstallerPreview {
         let focused = self
             .composed
             .as_ref()
-            .and_then(|root| page::focused_id(root.as_ref()));
+            .and_then(|root| layout::focused_id(root.as_ref()));
         if focused == self.password_focused {
             return false;
         }
@@ -1739,7 +1739,7 @@ impl Widget for InstallerPreview {
             let focus = moved.clone().or_else(|| {
                 self.composed
                     .as_ref()
-                    .and_then(|root| page::focused_id(root.as_ref()))
+                    .and_then(|root| layout::focused_id(root.as_ref()))
             });
             let password_state = if self.journey.page == Page::Password {
                 self.composed
@@ -1754,7 +1754,7 @@ impl Widget for InstallerPreview {
                 Self::restore_password_input_state(root.as_mut(), &password_state);
             }
             if let (Some(focus), Some(root)) = (focus, &mut self.composed) {
-                page::refocus(root.as_mut(), &focus);
+                layout::refocus(root.as_mut(), &focus);
             }
             if moved.is_some() {
                 self.focus_request = moved;

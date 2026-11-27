@@ -1010,7 +1010,7 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
                 .with_widget::<InstallerPreview, _>(|preview| {
                     (
                         control(preview, other).unwrap().get_rect(),
-                        page::focused_id(preview),
+                        layout::focused_id(preview),
                     )
                 })
                 .unwrap();

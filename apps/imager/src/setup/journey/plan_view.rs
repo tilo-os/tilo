@@ -48,7 +48,7 @@ impl InstallerPreview {
     pub(super) fn plan_review_rows(&self) -> ui::widget::Column {
         use machine::{Disks, Hosting, Unlock, Updates};
         let plan = &self.journey.plan;
-        let mut rows = page::related();
+        let mut rows = layout::related();
         let os = plan.os();
         rows = rows.push(Box::new(
             self.plan_review_row(
@@ -165,7 +165,7 @@ impl InstallerPreview {
             .collect();
         strip.set_presses(presses);
         let chosen = options.get(selected).map_or("", |(key, _)| *key);
-        page::related().push(Box::new(strip)).push(Box::new(
+        layout::related().push(Box::new(strip)).push(Box::new(
             Text::new(&t(&format!("installer-preview-{chosen}-body")))
                 .with_id(format!("{id}.body")),
         ))

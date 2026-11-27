@@ -38,14 +38,14 @@ impl InstallerPreview {
             .with_role(heading_role)
             .with_balanced_wrap()
             .with_heading_level(1);
-        let mut title = page::stack().push(Box::new(heading));
+        let mut title = layout::stack().push(Box::new(heading));
         if !matches!(j.page, Page::Migrate | Page::Password | Page::Devices)
             && self.rect.width() < self.profile_breakpoint
         {
             title =
                 title.with_horizontal_padding(0.0, theme.tokens.spacing.rhythm.get(Rhythm::Group));
         }
-        let mut header = page::stack()
+        let mut header = layout::stack()
             .with_rhythm(Rhythm::Related)
             .push(Box::new(title));
         if !intro.is_empty() {
@@ -55,7 +55,7 @@ impl InstallerPreview {
                 .with_role(TextRole::Body);
             header = header.push(Box::new(intro));
         }
-        let mut body = page::stack()
+        let mut body = layout::stack()
             .with_rhythm(Rhythm::Sibling)
             .push(Box::new(header));
         match j.page {
@@ -222,7 +222,7 @@ impl InstallerPreview {
                 let destination = j.destination.unwrap_or(Destination::Computer);
                 let plan_server =
                     destination == Destination::Another && j.plan.os() == machine::Os::TiloServer;
-                let mut setup = page::related().push(Box::new(
+                let mut setup = layout::related().push(Box::new(
                     Text::new(&t("installer-review-setup"))
                         .with_role(TextRole::Subheading)
                         .with_heading_level(2),
@@ -298,7 +298,7 @@ impl InstallerPreview {
                 if self.journey.destination == Some(Destination::Another)
                     && let Some(created) = &self.machine.created
                 {
-                    let mut plan = page::related().push(Box::new(
+                    let mut plan = layout::related().push(Box::new(
                         Text::new(&t("installer-plan-heading"))
                             .with_role(TextRole::Subheading)
                             .with_heading_level(2)
@@ -404,7 +404,7 @@ impl InstallerPreview {
     /// The other computer's name: the name the plan carries, and the way to
     /// leave it for the computer to answer when it installs.
     fn plan_name_field(&self) -> ui::widget::Column {
-        let mut section = page::related().push(Box::new(self.field(
+        let mut section = layout::related().push(Box::new(self.field(
             "device-name",
             &self.journey.device_name,
             TextInputKind::Name,
@@ -421,7 +421,7 @@ impl InstallerPreview {
     /// The computers this person planned and has not installed, each with what
     /// it still asks answered against the hardware it reported.
     fn waiting_machines(&self) -> ui::widget::Column {
-        let mut section = page::related().push(Box::new(
+        let mut section = layout::related().push(Box::new(
             Text::new(&t("installer-plan-waiting-heading"))
                 .with_role(TextRole::Subheading)
                 .with_heading_level(2)
@@ -429,7 +429,7 @@ impl InstallerPreview {
         ));
         section = section.push(Box::new(Text::new(&t("installer-plan-waiting-intro"))));
         for (index, waiting) in self.machine.waiting.iter().enumerate() {
-            let mut machine = page::related().push(Box::new(
+            let mut machine = layout::related().push(Box::new(
                 Text::new(&waiting.title())
                     .with_role(TextRole::Title)
                     .with_id(format!("installer.waiting.{index}")),
@@ -590,7 +590,7 @@ impl InstallerPreview {
                     .role(ButtonRole::Primary),
             ));
         }
-        let mut content = page::stack()
+        let mut content = layout::stack()
             .with_rhythm(Rhythm::Group)
             .push(Box::new(self.body(theme)));
         if let Some(error) = self.error
@@ -604,14 +604,14 @@ impl InstallerPreview {
             self.journey.page,
             Page::Migrate | Page::Password | Page::Devices
         ) {
-            content = page::stack().push(Box::new(
+            content = layout::stack().push(Box::new(
                 Container::new()
                     .with_no_padding()
                     .with_centered_max_width(theme.tokens.metrics.content_min_width)
                     .with_child(Box::new(content)),
             ));
         }
-        let frame = page::Frame::new(content).with_cursor(self.cursor);
+        let frame = GuidedPage::new(content).cursor(self.cursor);
         let frame = if matches!(self.journey.page, Page::Devices | Page::Review) {
             // A review is a page of many rows: it starts at the top like every
             // page with content to read, never floated to the middle of a tall
@@ -627,7 +627,7 @@ impl InstallerPreview {
         .then(|| self.direct_blocker())
         .flatten();
         let notice = if self.demo || review_blocker.is_some() {
-            let mut notice = page::related();
+            let mut notice = layout::related();
             if self.demo {
                 notice = notice.push(Box::new(
                     ui::widget::Banner::info(t("installer-demo-notice-title"))
@@ -644,7 +644,7 @@ impl InstallerPreview {
         } else {
             None
         };
-        let frame = frame.notice(notice);
+        let frame = frame.maybe_notice(notice);
         if self.journey.page != Page::Destination || self.journey.cancels_edit() {
             frame.actions(actions).build()
         } else {

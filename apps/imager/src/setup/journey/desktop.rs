@@ -71,7 +71,7 @@ impl InstallerPreview {
     }
 
     pub(super) fn full_os_host_view(&self) -> Box<dyn Widget> {
-        let mut content = page::stack()
+        let mut content = layout::stack()
             .push(Box::new(
                 Text::new(&t("installer-preview-destination-heading")).with_role(TextRole::Heading),
             ))
@@ -94,7 +94,7 @@ impl InstallerPreview {
             )
             .with_enabled(self.journey.destination.is_some()),
         ));
-        page::Frame::new(content).with_cursor(self.cursor).build()
+        GuidedPage::new(content).cursor(self.cursor).build()
     }
 
     pub(super) fn show_desktop(
@@ -112,7 +112,7 @@ impl InstallerPreview {
             .role(ButtonRole::Plain)
             .enabled_from(&navigation);
         self.composed = Some(Box::new(
-            crate::page::stack()
+            crate::layout::stack()
                 .push(child)
                 .push(Box::new(Row::new().push(Box::new(back)))),
         ));

@@ -3,7 +3,7 @@ use super::*;
 
 impl InstallerPreview {
     pub(super) fn device_name_form(&self) -> ui::widget::Column {
-        page::related().push(Box::new(self.field(
+        layout::related().push(Box::new(self.field(
             "device-name",
             &self.journey.device_name,
             TextInputKind::Name,

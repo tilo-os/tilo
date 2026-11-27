@@ -15,8 +15,9 @@ use tilo_ui_base::tokens::typography::TextRole;
 use tilo_ui_base::{widget::Spacer, widget::Widget};
 use ui::widget::NumberInput;
 use ui::{
-    widget::Button, widget::ButtonRole, widget::Column, widget::Container, widget::ControlSize,
-    widget::Row, widget::Section, widget::SectionHeader, widget::Text,
+    widget::Banner, widget::Button, widget::ButtonRole, widget::Column, widget::Container,
+    widget::ControlSize, widget::GuidedPage, widget::Row, widget::Section, widget::SectionHeader,
+    widget::Text,
 };
 
 use super::actions::{HardwareProjection, SETUP_ROW_ID, SetupEffect};
@@ -29,7 +30,7 @@ use super::internal_install_flow::{
 };
 use super::model::{Capabilities, Experience, HostOs};
 use super::staging::helper::Action as HelperAction;
-use crate::page::{self, Frame, stack};
+use crate::layout::{self, stack};
 use crate::resource::CATALOG;
 
 use crate::hosting::{EffectAnswer, EffectCx, Effected, Hosted, Port};
@@ -877,7 +878,7 @@ impl SetupApp {
             })
         };
         Section::new(vec![Box::new(
-            page::related()
+            layout::related()
                 .push(Box::new(
                     Text::new(&detail)
                         .with_id("setup.desktop.status")
@@ -889,7 +890,7 @@ impl SetupApp {
     }
 
     fn internal_download_card(&self) -> Section {
-        let mut content = page::related();
+        let mut content = layout::related();
         if let Some(flow) = &self.internal_download_flow {
             let presentation = flow.presentation();
             let summary = if presentation.phase.is_none()
@@ -1005,7 +1006,7 @@ impl SetupApp {
         let experience = self.reviewed();
         let internal_offered =
             experience == Experience::FullOs && self.internal_install.offers_full_os();
-        let mut body = page::stack();
+        let mut body = layout::stack();
         if experience == Experience::Desktop {
             body = body.push(Box::new(self.desktop_install_card()));
         }
@@ -1104,9 +1105,10 @@ impl SetupApp {
             }
         }
 
-        let frame = Frame::new(body);
-        frame
-            .notice(page::notice(&self.status, self.status_is_error))
+        let notice = (self.status_is_error && !self.status.is_empty())
+            .then(|| Box::new(Banner::error(self.status.clone())) as Box<dyn Widget>);
+        GuidedPage::new(body)
+            .maybe_notice(notice)
             .actions(nav)
             .build()
     }

@@ -144,7 +144,7 @@ impl InstallerPreview {
     /// The ticket field, the sign-in and the way to the migration app.
     pub(super) fn migrate_content(&self) -> ui::widget::Column {
         let busy = self.sign_in.busy();
-        let mut content = page::related().push(Box::new(self.field(
+        let mut content = layout::related().push(Box::new(self.field(
             "ticket",
             &self.sign_in.ticket,
             TextInputKind::Code,

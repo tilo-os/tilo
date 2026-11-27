@@ -186,7 +186,7 @@ impl InstallerPreview {
             .role(ButtonRole::Plain)
             .enabled_from(&navigation);
         self.composed = Some(Box::new(
-            crate::page::stack()
+            crate::layout::stack()
                 .push(child)
                 .push(Box::new(Row::new().push(Box::new(back)))),
         ));

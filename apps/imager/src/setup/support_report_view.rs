@@ -19,7 +19,7 @@
     )
 )]
 
-use crate::page;
+use crate::layout;
 use crate::setup::hardware_text::{
     component_icon, component_title, evidence_text, reason_text, remedy_text, state_label,
 };
@@ -348,7 +348,7 @@ fn attention_row(component: &ComponentSupport) -> Column {
         SupportState::Unverified => row.idle(),
         SupportState::Supported => row,
     };
-    let mut content = page::related().push(Box::new(row));
+    let mut content = layout::related().push(Box::new(row));
     if !component.evidence.is_empty() {
         for (index, evidence) in component.evidence.iter().enumerate() {
             content = content.push(Box::new(
