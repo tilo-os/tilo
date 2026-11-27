@@ -110,10 +110,17 @@ fn a_members_first_write_founds_a_chain_the_workspace_keeps_no_part_of() {
         let workspace = host.workspace().to_owned();
         let owner_device = host.member("its owner's computer", &workspace).await;
         let editor = guest(&host, &owner_device, "editor", "Grace").await;
+        installs(&owner_device, &workspace, "so.tilo.tasks").await;
+        let tasks = workspace_record("so.tilo.tasks");
+        let listed = editor.listed(&tasks).await;
+        let new_task = listed
+            .iter()
+            .find(|action| action.address.action == "new_task")
+            .unwrap_or_else(|| panic!("Tasks offers an editor new_task: {listed:?}"));
         let then = editor
             .call(
-                &record("so.tilo.tasks"),
-                tilo_actions::ActionAddress::new("tasks.issues", "create"),
+                &tasks,
+                new_task.address.clone(),
                 &json!({"title": "The first issue"}),
             )
             .await
