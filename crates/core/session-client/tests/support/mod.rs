@@ -623,16 +623,35 @@ pub async fn ready(peers: &[&Link]) {
 /// [`ready`] too, so a page that is about to act in one waits on that one
 /// rather than on the session: an action sent before the host subscribed the
 /// page is refused by the server and never answered.
+///
+/// A session the host never admits fails here naming the workspace, where its link stands and
+/// what the host last refused or answered.
 pub async fn admitted_to(peer: &Link, workspace: tilo_server_protocol::WorkspaceId) {
-    wait_for("the session admitted to its workspace", || {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
         let status = peer.status();
-        async move {
-            (status.phase == TransportPhase::Connected
-                && status.workspaces.get(&workspace) == Some(&true))
-            .then_some(())
+        let ready = status.workspaces.get(&workspace);
+        if status.phase == TransportPhase::Connected && ready == Some(&true) {
+            return;
         }
-    })
-    .await;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the session admitted to workspace {workspace}: the session is \
+             {:?} after {} connections; the workspace joined: {}, Ready: {}, unlinked: {}, \
+             admitting this device: {}; the host's last answer for it: {:?}; the entry's: {:?}; \
+             failures: {:?}",
+            status.phase,
+            status.connections,
+            ready.is_some(),
+            ready == Some(&true),
+            status.unlinked.contains(&workspace),
+            status.serving.contains(&workspace),
+            status.refused.get(&workspace),
+            status.entry,
+            status.failures,
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Wait until a member of the workspace admitted `peer` to the note's channel.

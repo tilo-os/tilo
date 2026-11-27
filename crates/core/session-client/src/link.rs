@@ -119,6 +119,10 @@ pub struct PeerStatus {
     /// a connection ([`crate::WorkspaceState::Connecting`]) whatever the session's other links
     /// do.
     pub unlinked: BTreeSet<WorkspaceId>,
+    /// Why the host has not let each joined workspace in yet: what it last answered this
+    /// session's placement of it or its link's dial, one entry per workspace, replaced by each
+    /// answer and gone once the link is up or the workspace is left.
+    pub refused: BTreeMap<WorkspaceId, String>,
     /// Each record's local store state, as reported with [`Link::set_local_state`].
     pub local: BTreeMap<DocumentRoute, LocalState>,
     /// Current failures, newest last.
@@ -169,6 +173,7 @@ impl PeerStatus {
             workspaces: BTreeMap::new(),
             serving: BTreeSet::new(),
             unlinked: BTreeSet::new(),
+            refused: BTreeMap::new(),
             local: BTreeMap::new(),
             failures: Vec::new(),
             outgoing_pending: 0,

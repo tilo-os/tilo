@@ -184,8 +184,8 @@ enum Command {
     /// `workspace_id`'s link ended, with why the host gave.
     LinkEnded(WorkspaceId, Option<tilo_server_protocol::refusal::Refusal>),
     /// The host answered the placement of `workspace_id` ([`Cmd::JoinPlaced`]): joined now,
-    /// whatever the host answered.
-    Placed(WorkspaceId),
+    /// whatever the host answered, and why it refused, if it did.
+    Placed(WorkspaceId, Option<String>),
     /// A record this page asked its workspace for was answered: all the host
     /// keeps of it is here, or it had none.
     RecordOpened(WorkspaceId, [u8; 32], bool),
@@ -1112,7 +1112,16 @@ impl Task {
 
     /// Dial `workspace_id`'s link and start what reads it, unless it runs already.
     async fn dial_link(&mut self, workspace_id: WorkspaceId) -> Result<(), LinkError> {
-        if self.links.contains_key(&workspace_id) || !self.dialing.insert(workspace_id) {
+        // A link that came up before this session joined its workspace (the person's own one,
+        // read beside the joined ones before a page joins it) is the joined workspace's link
+        // now: it begins as a link dialled for the join does.
+        if self.links.contains_key(&workspace_id) {
+            if self.joined(workspace_id) && !self.begun.contains(&workspace_id) {
+                self.link_up(workspace_id);
+            }
+            return Ok(());
+        }
+        if !self.dialing.insert(workspace_id) {
             return Ok(());
         }
         // A lent session dials no link of its own: it reads the member copy the device service
@@ -1133,6 +1142,9 @@ impl Task {
         self.waiting.remove(&workspace_id);
         match dialed {
             Ok(()) => {
+                self.reports.change(|status| {
+                    status.refused.remove(&workspace_id);
+                });
                 self.link_up(workspace_id);
                 self.request_fetch_grant();
                 Ok(())
@@ -1144,6 +1156,7 @@ impl Task {
                 if self.joined(workspace_id) {
                     self.reports.change(|status| {
                         status.workspaces.entry(workspace_id).or_insert(false);
+                        status.refused.insert(workspace_id, error.to_string());
                     });
                 }
                 Err(error)
@@ -1871,8 +1884,20 @@ impl Task {
                 }
                 true
             }
-            Command::Placed(workspace_id) => {
-                if self.placing.remove(&workspace_id).is_some() && self.join(workspace_id) {
+            Command::Placed(workspace_id, refused) => {
+                // An answer for a workspace no longer being placed is no one's to read.
+                if self.placing.remove(&workspace_id).is_none() {
+                    return true;
+                }
+                if let Some(refused) = refused {
+                    self.reports.change(|status| {
+                        status.refused.insert(
+                            workspace_id,
+                            format!("the host did not place the workspace: {refused}"),
+                        );
+                    });
+                }
+                if self.join(workspace_id) {
                     self.dial_joined(workspace_id).await;
                 }
                 true
@@ -2082,6 +2107,7 @@ impl Task {
             status.workspaces.remove(&workspace_id);
             status.serving.remove(&workspace_id);
             status.unlinked.remove(&workspace_id);
+            status.refused.remove(&workspace_id);
             if nothing_left {
                 status.phase = TransportPhase::Failed;
             }
@@ -2142,9 +2168,13 @@ impl Task {
         let commands = self.commands.clone();
         let (placed, answer) = crate::answer();
         n0_future::task::spawn(async move {
-            let _ = answer.await;
+            let refused = match answer.await {
+                Ok(Ok(_)) => None,
+                Ok(Err(refused)) => Some(refused),
+                Err(_) => Some("the session ended before the host answered".to_owned()),
+            };
             if let Some(commands) = commands.upgrade() {
-                let _ = commands.send(Command::Placed(workspace_id));
+                let _ = commands.send(Command::Placed(workspace_id, refused));
             }
         });
         self.administer(
