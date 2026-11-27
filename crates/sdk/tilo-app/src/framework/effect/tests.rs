@@ -56,6 +56,7 @@ fn runner_on(dispatch: Dispatcher<Probe>) -> EffectRunner<Probe, (), Work> {
         shows: None,
         opens: &[],
         scope: None,
+        settling: Rc::default(),
     })
 }
 

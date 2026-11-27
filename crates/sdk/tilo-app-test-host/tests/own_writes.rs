@@ -36,7 +36,7 @@ pub enum LedgerEffect {
 }
 
 /// The view every app below shows: it answers `connect` by binding the record as the app.
-fn view(cx: &mut ViewCx<Ledger>) -> Element {
+fn view(cx: &ViewCx<Ledger>) -> Element {
     cx.effects(|effect: LedgerEffect, cx| match effect {
         LedgerEffect::Connect { to } => {
             cx.apply_own(Ledger::BIND.with(to))?;
