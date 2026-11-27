@@ -1088,6 +1088,127 @@ async fn a_signed_agents_invocation_asks_before_deleting_a_workspace() {
     server.shutdown().await;
 }
 
+/// A key the person made for their programs is no device that holds their identity: signed to the
+/// host itself, its approve of what an agent of theirs asked is refused, and the call waits on.
+/// One reaching a single workspace, asked of the host for none, is refused the same.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the agent's ask, then each key's approve refused and the question still waiting"
+)]
+async fn a_server_key_answers_no_question_its_persons_agent_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let home = open(workspaces).await;
+    let host = super::super::tests::host_dispatch(workspaces);
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+    let own_signing = SigningKey::from_bytes(&rand::random());
+    let own_key = certified(&root, &own_signing, DeviceCapabilities::server_key_grant());
+    let created = create_own(&host, &own_key, json!({})).await.unwrap();
+    let workspace = created.workspace.workspace.clone();
+    join(workspaces, &created, (&own_signing, &own_key)).await;
+    let agent_signing = SigningKey::from_bytes(&rand::random());
+    let agent = certified(
+        &root,
+        &agent_signing,
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let operations = crate::app_serving::HostOperations::new(
+        std::sync::Arc::new(super::super::HostActionServer {
+            governance: host,
+            apps: None,
+        }),
+        std::sync::Arc::new(std::sync::RwLock::new(RevocationList::new())),
+        workspaces.downgrade(),
+    );
+    let signed = |mut request: InvokeRequest, cert: &DeviceCert, signing: &SigningKey| {
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                "",
+                &request,
+                cert,
+                signing,
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("the key signs its call"),
+        ));
+        request
+    };
+    let waits = settled(operations.invoke(
+        &caller(&agent),
+        signed(delete_request(&workspace), &agent, &agent_signing),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        !matches!(waits.status, ReceiptStatus::Completed { .. }),
+        "deleting waits for its person: {waits:?}"
+    );
+    let records = workspaces.asked_records().unwrap();
+    let asked = tilo_actions::remote::asked::AskedRecords::asked_of(&*records, &person)
+        .into_iter()
+        .find(|asked| asked.workspace == workspace)
+        .expect("the question waits for the person");
+    let approve = |invocation| {
+        let mut request = super::super::tests::request(
+            "",
+            tilo_actions::remote::asked::RESOLVE,
+            serde_json::to_value(tilo_actions::remote::asked::Resolve {
+                resolution: tilo_actions::remote::asked::Offer::Approve,
+                ..tilo_actions::remote::asked::Resolve::default()
+            })
+            .unwrap(),
+        );
+        request.invocation = invocation;
+        request.target = tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                &asked.record.record,
+                tilo_actions::remote::asked::RESOLVE,
+            ),
+        };
+        request
+    };
+    let one_signing = SigningKey::from_bytes(&rand::random());
+    let one_workspace = certified(
+        &root,
+        &one_signing,
+        DeviceCapabilities::own_key_grant(AgentScope::Workspace([7; 16])),
+    );
+    for (cert, signing) in [(&one_workspace, &one_signing), (&own_key, &own_signing)] {
+        let answer = settled(operations.invoke(
+            &caller(cert),
+            signed(approve(tilo_actions::InvocationId::new()), cert, signing),
+        ))
+        .await;
+        assert!(
+            !matches!(
+                answer,
+                Ok(tilo_actions::remote::InvocationReceipt {
+                    status: ReceiptStatus::Completed { .. },
+                    ..
+                })
+            ),
+            "a server key approves nothing: {answer:?}"
+        );
+        assert!(
+            workspaces.owns(&person, &workspace),
+            "nothing is deleted on a server key's yes"
+        );
+    }
+    assert!(
+        tilo_actions::remote::asked::AskedRecords::asked_of(&*records, &person)
+            .iter()
+            .any(|still| still.record == asked.record),
+        "the question still waits for the person"
+    );
+    server.shutdown().await;
+}
+
 /// An agent changing a member's role through the host's administration asks its person first,
 /// as every change of theirs does: the role stands until they answer, a no leaves it, and a yes
 /// changes it. In a workspace the person does not administer, their own check refuses the
