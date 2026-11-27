@@ -492,7 +492,7 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
                                     icon: w.icon,
                                     attention: w.attention,
                                     modified: w.modified,
-                                    busy: w.busy,
+                                    busy: starting(w, p),
                                 ) {
                                     // Who else is at the window now: their faces, in their
                                     // presence colour, on its tab.
@@ -687,7 +687,7 @@ view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
                     bar_search(w)
                 } else {
                     this_window_menu(w, shown, listed)
-                    window_bar_actions(w)
+                    window_bar_actions(w, starting(w, p))
                 }
             }
         }
@@ -1027,19 +1027,27 @@ view share_control(shown: Option<LayoutPlace>) {
     }
 }
 
+/// Whether the place `p` waits for its window `w` to show: its app is starting and the place shows
+/// the well its window comes in. A place that draws its resource's view itself has nothing to
+/// wait for, whether or not an app window for it ever comes.
+fn starting(w: device.Window, p: LayoutPlace) -> Bool {
+    w.busy and not composed(p)
+}
+
 /// What a window's bar carries beside its tab, as the desktop's window bar does: another tab of
 /// the same app, the window's own search, and the way back and forward through what it showed.
 /// Each is one session action, so a press, a key and an agent move the window the same way.
-view window_bar_actions(w: device.Window) {
+/// `waits` is whether the place waits for its window to show ([`starting`]).
+view window_bar_actions(w: device.Window, waits: Bool) {
     // Where the window is, when its app names a place where that is not already its title: a
     // folder's path, the note it shows. The old bar read it beside the window's name, and a
     // person sees where they are without opening the field that edits it.
     if w.bar_location != "" and w.bar_location != w.title {
         ui.Text(w.bar_location, role: .caption, secondary: true, lines: 1, truncate)
     }
-    // What its app is doing: a turning mark while its window has not shown yet, a dot while it
-    // waits for the person, and the mark of changes it has not saved.
-    if w.busy {
+    // What its app is doing: a turning mark while the window the place shows has not shown yet,
+    // a dot while it waits for the person, and the mark of changes it has not saved.
+    if waits {
         ui.Spinner("Starting {w.title}", beside: .caption)
     }
     if w.attention {
