@@ -4,13 +4,20 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tilolang_runtime::Actor;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::value::same_value;
 use tilolang_tilo::runtime::Value;
 
 use crate::fixtures::Sent;
 use crate::fixtures::{control_under, labelled, set_reading};
+use crate::invoker::Answered as _;
 use crate::settings_panes::{invoke, open_window, settings};
+
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
 
 /// One app's own rules: the pane shows which kinds of notification it arrives as, and a press
 /// sets that one kind through the section's verb while the kinds it left unset stay unset.
@@ -39,12 +46,20 @@ fn the_notifications_pane_sets_which_kinds_one_app_arrives_as() {
 
     // The app's own rules show once its row is the one being edited, in place of every app's at
     // once.
-    view.press(&labelled(view.tree(), "ui.Button", "Its rules"))
-        .expect("the app's rules show");
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.Button", "Its rules"),
+    )
+    .expect("the app's rules show");
     view.poll_patches().expect("the rules draw");
 
-    view.press(&control_under(view.tree(), "Show banners", "ui.Button"))
-        .expect("the app's banners are turned on");
+    view.press_answering(
+        &host,
+        &me(),
+        &control_under(view.tree(), "Show banners", "ui.Button"),
+    )
+    .expect("the app's banners are turned on");
     let sent = sent.borrow();
     let [
         Invocation::Action {

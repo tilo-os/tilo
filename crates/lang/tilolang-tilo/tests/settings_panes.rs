@@ -13,12 +13,18 @@ use std::path::Path;
 use std::rc::Rc;
 
 use crate::fixtures::{Sent, labelled};
+use crate::invoker::Answered as _;
 use tilo_action_policy::MemberAccess;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 
 const APP: &str = "so.tilo.settings";
+
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
 
 /// The app as it ships: its source, its ids and the platform's packages it reads through.
 pub(crate) fn settings() -> (Host, tilolang::Compiled) {
@@ -281,7 +287,7 @@ fn an_owner_sets_the_limits_the_pane_shows() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    view.press(&labelled(view.tree(), "ui.Button", "Change"))
+    view.press_answering(&host, &me(), &labelled(view.tree(), "ui.Button", "Change"))
         .expect("the owner opens the limits");
     view.poll_patches().expect("the fields draw");
     assert!(
@@ -289,8 +295,12 @@ fn an_owner_sets_the_limits_the_pane_shows() {
         "{:?}",
         texts(&view)
     );
-    view.press(&labelled(view.tree(), "ui.Button", "Save limits"))
-        .expect("the owner saves them");
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.Button", "Save limits"),
+    )
+    .expect("the owner saves them");
     let sent = sent.borrow();
     let [
         Invocation::Action {
@@ -366,10 +376,14 @@ fn the_spelling_pane_keeps_words_in_the_personal_dictionary() {
         .clone();
     view.edit(&word_field, &Value::text("Kiitos"))
         .expect("the word typed");
-    view.press(&labelled(view.tree(), "ui.Button", "Add the word"))
-        .expect("the word is added");
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.Button", "Add the word"),
+    )
+    .expect("the word is added");
     // A word kept is removed by the one written for it, in the language it was kept in.
-    view.press(&labelled(view.tree(), "ui.Button", "Remove"))
+    view.press_answering(&host, &me(), &labelled(view.tree(), "ui.Button", "Remove"))
         .expect("the first word is removed");
 
     let sent = sent.borrow();
@@ -454,7 +468,8 @@ fn the_region_pane_offers_the_languages_the_desktop_speaks() {
         .map(|node| node.key.clone())
         .collect();
     assert_eq!(use_it.len(), 2, "one for each language: {shown:?}");
-    view.press(&use_it[1]).expect("German is chosen");
+    view.press_answering(&host, &me(), &use_it[1])
+        .expect("German is chosen");
 
     let sent = sent.borrow();
     let [
@@ -495,7 +510,7 @@ fn the_about_pane_offers_to_back_up_this_identity() {
 
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.press(&labelled(view.tree(), "ui.Button", "Back up"))
+    view.press_answering(&host, &me(), &labelled(view.tree(), "ui.Button", "Back up"))
         .expect("the backup is asked for");
 
     let sent = sent.borrow();
@@ -657,7 +672,8 @@ fn the_wallpapers_the_image_ships_are_offered_and_chosen_through_the_setting() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
     let key = tile(&view, "Andromeda Galaxy").key.clone();
-    view.fire(&key, "activate").expect("the tile is chosen");
+    view.fire_answering(&host, &me(), &key, "activate")
+        .expect("the tile is chosen");
     let sent = sent.borrow();
     let [
         Invocation::Action {

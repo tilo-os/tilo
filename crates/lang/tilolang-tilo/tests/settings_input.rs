@@ -13,6 +13,7 @@
 )]
 
 use crate::fixtures::Sent;
+use crate::invoker::Answered as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -24,6 +25,11 @@ use tilolang_tilo::platform::platform_roots;
 use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 
 const APP: &str = "so.tilo.settings";
+
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
 
 fn settings() -> Host {
     crate::fixtures::settings_host().0
@@ -377,10 +383,11 @@ fn a_keyboard_is_given_a_layout_of_its_own() {
     view.edit(&dropdown, &Value::text("English (US)"))
         .expect("the laptop's keyboard is given a layout");
     view.poll_patches().expect("the choice draws");
-    view.press(&button(
-        view.tree(),
-        "Give The laptop's keyboard the chosen layout",
-    ))
+    view.press_answering(
+        &host,
+        &me(),
+        &button(view.tree(), "Give The laptop's keyboard the chosen layout"),
+    )
     .expect("the laptop's keyboard is given the chosen layout");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-keyboard-sources");
@@ -410,10 +417,14 @@ fn a_keyboard_goes_back_to_the_shared_layouts() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    view.press(&button(
-        view.tree(),
-        "Type the shared layouts again for The desk's keyboard",
-    ))
+    view.press_answering(
+        &host,
+        &me(),
+        &button(
+            view.tree(),
+            "Type the shared layouts again for The desk's keyboard",
+        ),
+    )
     .expect("the desk's keyboard goes back to the shared layouts");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "use-shared-layouts");
@@ -430,10 +441,11 @@ fn a_layout_is_taken_out_of_a_keyboards_own_list() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    view.press(&button(
-        view.tree(),
-        "Remove French from The desk's keyboard",
-    ))
+    view.press_answering(
+        &host,
+        &me(),
+        &button(view.tree(), "Remove French from The desk's keyboard"),
+    )
     .expect("French is taken out of the desk's keyboard");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-keyboard-sources");
@@ -463,10 +475,11 @@ fn a_layout_joins_the_shared_list_without_changing_what_is_typed() {
     view.edit(&dropdown, &Value::text("French"))
         .expect("French is chosen");
     view.poll_patches().expect("the choice draws");
-    view.press(&button(
-        view.tree(),
-        "Add the chosen layout to the shared layouts",
-    ))
+    view.press_answering(
+        &host,
+        &me(),
+        &button(view.tree(), "Add the chosen layout to the shared layouts"),
+    )
     .expect("French joins the shared list");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-layouts");
@@ -495,10 +508,11 @@ fn a_layout_leaves_the_shared_list() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    view.press(&button(
-        view.tree(),
-        "Remove English (US) from the shared layouts",
-    ))
+    view.press_answering(
+        &host,
+        &me(),
+        &button(view.tree(), "Remove English (US) from the shared layouts"),
+    )
     .expect("English (US) leaves the shared list");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-layouts");
@@ -550,8 +564,12 @@ fn a_pressed_key_is_inspected_and_the_level_is_chosen() {
     assert_eq!(received(argument(&args, "level")), json!(0));
 
     sent.borrow_mut().clear();
-    view.press(&control(view.tree(), "ui.Segment", "label", "Shift"))
-        .expect("the Shift level is chosen");
+    view.press_answering(
+        &host,
+        &me(),
+        &control(view.tree(), "ui.Segment", "label", "Shift"),
+    )
+    .expect("the Shift level is chosen");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "inspect-keyboard");
     assert_eq!(received(argument(&args, "level")), json!(1));
@@ -575,8 +593,12 @@ fn another_layout_is_drawn_and_the_keyboards_own_comes_back() {
     view.edit(&dropdown, &Value::text("English (US)"))
         .expect("another layout is chosen");
     view.poll_patches().expect("the choice draws");
-    view.press(&control(view.tree(), "ui.Button", "label", "Draw it"))
-        .expect("another layout is drawn");
+    view.press_answering(
+        &host,
+        &me(),
+        &control(view.tree(), "ui.Button", "label", "Draw it"),
+    )
+    .expect("another layout is drawn");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "show-keyboard-layout");
     assert_eq!(
@@ -594,15 +616,23 @@ fn caps_lock_and_the_compose_key_are_set() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    view.press(&control(view.tree(), "ui.Segment", "label", "Escape"))
-        .expect("Caps Lock is made Escape");
+    view.press_answering(
+        &host,
+        &me(),
+        &control(view.tree(), "ui.Segment", "label", "Escape"),
+    )
+    .expect("Caps Lock is made Escape");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-caps-lock");
     assert_eq!(argument(&args, "behaviour"), &Value::text("escape"));
 
     sent.borrow_mut().clear();
-    view.press(&control(view.tree(), "ui.Segment", "label", "Right Alt"))
-        .expect("Right Alt is made the compose key");
+    view.press_answering(
+        &host,
+        &me(),
+        &control(view.tree(), "ui.Segment", "label", "Right Alt"),
+    )
+    .expect("Right Alt is made the compose key");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-compose-key");
     assert_eq!(argument(&args, "key"), &Value::text("ralt"));
@@ -622,16 +652,24 @@ fn an_apps_paste_shortcut_is_chosen_and_given_back() {
         texts(&view)
     );
 
-    view.press(&control(view.tree(), "ui.Segment", "label", "Ctrl+Shift+V"))
-        .expect("the Terminal is given Ctrl+Shift+V");
+    view.press_answering(
+        &host,
+        &me(),
+        &control(view.tree(), "ui.Segment", "label", "Ctrl+Shift+V"),
+    )
+    .expect("the Terminal is given Ctrl+Shift+V");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-paste-shortcut");
     assert_eq!(argument(&args, "app"), &Value::text("org.example.Term"));
     assert_eq!(argument(&args, "shortcut"), &Value::text("ctrl_shift_v"));
 
     sent.borrow_mut().clear();
-    view.press(&button(view.tree(), "Use Terminal's own shortcut"))
-        .expect("the Terminal goes back to its own shortcut");
+    view.press_answering(
+        &host,
+        &me(),
+        &button(view.tree(), "Use Terminal's own shortcut"),
+    )
+    .expect("the Terminal goes back to its own shortcut");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-paste-shortcut");
     assert_eq!(argument(&args, "app"), &Value::text("org.example.Term"));
@@ -655,8 +693,12 @@ fn another_app_joins_with_a_chosen_shortcut() {
     view.edit(&apps, &Value::text("Writer"))
         .expect("Writer is chosen");
     view.poll_patches().expect("the choice draws");
-    view.press(&control(view.tree(), "ui.Button", "label", "Set it"))
-        .expect("Writer is given the chosen shortcut");
+    view.press_answering(
+        &host,
+        &me(),
+        &control(view.tree(), "ui.Button", "label", "Set it"),
+    )
+    .expect("Writer is given the chosen shortcut");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-paste-shortcut");
     assert_eq!(
@@ -676,10 +718,14 @@ fn a_layout_moves_along_the_shared_order() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    view.press(&button(
-        view.tree(),
-        "Move English (US) earlier in the shared layouts",
-    ))
+    view.press_answering(
+        &host,
+        &me(),
+        &button(
+            view.tree(),
+            "Move English (US) earlier in the shared layouts",
+        ),
+    )
     .expect("English (US) moves before German");
     let (name, args) = sent_invocation(&sent);
     assert_eq!(name, "set-layouts");

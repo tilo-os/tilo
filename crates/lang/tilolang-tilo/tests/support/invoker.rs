@@ -130,15 +130,6 @@ impl Sent {
             .unwrap_or_else(|| panic!("the app asks `{name}`: {:?}", self.0.borrow()))
     }
 
-    /// The value of `wanted` in the last `name` asked.
-    pub fn last_argument(&self, name: &str, wanted: &str) -> Value {
-        self.last_args(name)
-            .into_iter()
-            .find(|(named, _)| named == wanted)
-            .unwrap_or_else(|| panic!("{name} is given `{wanted}`"))
-            .1
-    }
-
     /// The arguments of the last `name` asked on `target`, by name: the call names the resource
     /// it acts on, and it is `target`.
     pub fn last_args_acting_on(
@@ -500,23 +491,6 @@ pub fn press_confirmed(
     label: &str,
 ) {
     let outcome = try_press_confirmed(host, window, person, kind, label)
-        .unwrap_or_else(|why| panic!("{label}: {why}"));
-    assert!(
-        matches!(outcome, InvokeOutcome::Done(_)),
-        "{label}: {outcome:?}"
-    );
-}
-
-/// [`press_confirmed`] of a control named by its `key` and the `event` its press fires.
-pub fn press_key_confirmed(
-    host: &Host,
-    window: &ViewInstance,
-    person: &Actor,
-    key: &str,
-    event: &str,
-    label: &str,
-) {
-    let outcome = try_press_confirmed_key(host, window, person, key, event, label)
         .unwrap_or_else(|why| panic!("{label}: {why}"));
     assert!(
         matches!(outcome, InvokeOutcome::Done(_)),

@@ -10,6 +10,7 @@
 )]
 
 use crate::fixtures::Sent;
+use crate::invoker::Answered as _;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -21,6 +22,11 @@ use tilolang_tilo::runtime::{Actor, Value, ViewInstance};
 const APP: &str = "so.tilo.settings";
 
 /// The app as it ships, its ids and the platform's packages it reads through.
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
+
 fn settings() -> Host {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
     let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
@@ -378,8 +384,12 @@ fn the_pane_takes_back_an_answer_on_its_own_resource() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
 
-    view.press(&labelled(view.tree(), "ui.Button", "Take back"))
-        .expect("the answer is taken back");
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.Button", "Take back"),
+    )
+    .expect("the answer is taken back");
 
     let sent = sent.borrow();
     let [
@@ -447,7 +457,7 @@ fn the_pane_lists_and_changes_the_saved_secrets() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
     // The first application may use the store: the pane offers stopping it, and forgetting it.
-    view.press(&labelled(view.tree(), "ui.Button", "Stop"))
+    view.press_answering(&host, &me(), &labelled(view.tree(), "ui.Button", "Stop"))
         .expect("the application is stopped");
     let sent = sent.borrow();
     let [
@@ -472,7 +482,7 @@ fn the_pane_lists_and_changes_the_saved_secrets() {
 
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.press(&labelled(view.tree(), "ui.Button", "Forget"))
+    view.press_answering(&host, &me(), &labelled(view.tree(), "ui.Button", "Forget"))
         .expect("the application is forgotten");
     let sent = sent.borrow();
     let [
@@ -629,7 +639,7 @@ fn the_apps_pane_lists_each_declared_capability_and_turns_one_off() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
     let email = labelled(view.tree(), "ui.Toggle", "Allowed");
-    view.fire_with(&email, "check", Some(&Value::Bool(false)))
+    view.fire_with_answering(&host, &me(), &email, "check", Some(&Value::Bool(false)))
         .expect("the switch turns the capability off");
     let sent = sent.borrow();
     let [

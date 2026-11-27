@@ -4,12 +4,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tilolang_runtime::Actor;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::runtime::Value;
 
 use crate::fixtures::Sent;
 use crate::fixtures::{control_under, labelled, set_reading};
+use crate::invoker::Answered as _;
 use crate::settings_panes::{invoke, open_window, settings};
+
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
 
 /// The Accessibility pane's hints and copies: "Teach me again" forgets the hints through the
 /// section's own verb, the hints switch edits the person's setting where it is kept, and the
@@ -72,8 +79,12 @@ fn the_accessibility_pane_teaches_hints_again_and_stops_keeping_copies() {
 
     // Teaching again is the section's verb, over the whole set of hints.
     sent.borrow_mut().clear();
-    view.press(&labelled(view.tree(), "ui.Button", "Teach me again"))
-        .expect("the hints are taught again");
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.Button", "Teach me again"),
+    )
+    .expect("the hints are taught again");
     let sent_verbs = sent.borrow().clone();
     let [Invocation::Action { app, name, .. }] = sent_verbs.as_slice() else {
         panic!("one verb: {sent_verbs:?}");
@@ -85,8 +96,12 @@ fn the_accessibility_pane_teaches_hints_again_and_stops_keeping_copies() {
 
     // What the device keeps of the person's copies is the clipboard's own action.
     sent.borrow_mut().clear();
-    view.press(&control_under(view.tree(), "Keep what I copy", "ui.Button"))
-        .expect("keeping is turned off");
+    view.press_answering(
+        &host,
+        &me(),
+        &control_under(view.tree(), "Keep what I copy", "ui.Button"),
+    )
+    .expect("keeping is turned off");
     let sent_clip = sent.borrow().clone();
     let [
         Invocation::Action {

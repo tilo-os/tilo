@@ -261,10 +261,7 @@ impl Installed {
             .iter()
             .find(|(asked, _)| asked == name)
             .map_or_else(|| panic!("no action {name}"), |(_, id)| id.clone());
-        match self
-            .host
-            .runtime()
-            .invoke_action(&me(), (id.as_str(), args))
+        match crate::invoker::invoke_confirmed(&self.host, &me(), (id.as_str(), args))
             .unwrap_or_else(|why| panic!("{name} runs: {why}"))
         {
             tilolang_runtime::InvokeOutcome::Done(value) => value,
@@ -281,12 +278,7 @@ impl Installed {
                 || Err(format!("no action {name}")),
                 |(_, id)| Ok(id.clone()),
             )?;
-        match self
-            .host
-            .runtime()
-            .invoke_action(&me(), (id.as_str(), args))
-            .map_err(|why| why.to_string())?
-        {
+        match crate::invoker::invoke_confirmed(&self.host, &me(), (id.as_str(), args))? {
             tilolang_runtime::InvokeOutcome::Done(value) => Ok(value),
             other => Err(format!("{name} answers {other:?}")),
         }
@@ -321,10 +313,7 @@ impl Installed {
             .runtime()
             .job_call(&kept, record)
             .expect("the handler's call");
-        self.host
-            .runtime()
-            .invoke_action(&me(), call)
-            .expect("the handler runs");
+        crate::invoker::invoke_confirmed(&self.host, &me(), call).expect("the handler runs");
     }
 }
 

@@ -10,6 +10,7 @@
 )]
 
 use crate::fixtures::Sent;
+use crate::invoker::Answered as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -21,6 +22,11 @@ use tilolang_tilo::runtime::{Actor, ResourceRef, Value, ViewInstance};
 const PAD: &str = "056a:0374:Wacom Intuos Pro M Pad";
 
 use crate::fixtures::settings_host as settings;
+
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
 
 /// The reading a resource of the platform is served as, by what its id names: the pad with three
 /// buttons and one ring of three modes, the desktop's shortcut table, and the choices the settings
@@ -176,7 +182,9 @@ fn a_pad_button_is_given_any_of_the_desktops_shortcuts() {
 
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.fire_with(
+    view.fire_with_answering(
+        &host,
+        &me(),
         &key,
         "change",
         Some(&Value::text("shortcut:focus-previous-window")),
@@ -226,8 +234,14 @@ fn a_ring_is_set_in_every_mode_the_pad_reports() {
 
     let sent = Rc::new(RefCell::new(Vec::new()));
     host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.fire_with(&second, "change", Some(&Value::text("volume")))
-        .expect("the choice is taken");
+    view.fire_with_answering(
+        &host,
+        &me(),
+        &second,
+        "change",
+        Some(&Value::text("volume")),
+    )
+    .expect("the choice is taken");
     let (name, args) = sent_once(&sent);
     assert_eq!(name, "set-pad-dial");
     assert_eq!(argument(&args, "device"), Value::text(PAD));

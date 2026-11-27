@@ -10,6 +10,7 @@
 )]
 
 use crate::fixtures::Sent;
+use crate::invoker::Answered as _;
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -17,6 +18,11 @@ use std::rc::Rc;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
+
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
 
 const APP: &str = "so.tilo.settings";
 
@@ -346,7 +352,7 @@ fn removing_a_key_asks_the_devices_resource_with_its_reason() {
         "Remove Ada's desktop — it was lost",
     );
     pane.view
-        .fire(&lost, "choose")
+        .fire_answering(&pane.host, &me(), &lost, "choose")
         .expect("the reason is chosen");
     let args = asked(&seen, "so.tilo.device", "revoke");
     let arg = |wanted: &str| {
@@ -404,7 +410,7 @@ fn the_persons_card_opens_the_pane_that_takes_a_key_back() {
         "Remove Ada's desktop — it was stolen",
     );
     pane.view
-        .fire(&stolen, "choose")
+        .fire_answering(&pane.host, &me(), &stolen, "choose")
         .expect("the reason is chosen");
     let args = asked(&seen, "so.tilo.device", "revoke");
     assert!(
@@ -422,7 +428,7 @@ fn naming_a_key_hands_its_name_to_the_devices_resource() {
     let name_it = labelled(window.view.tree(), "ui.MenuItem", "Name Ada's desktop…");
     window
         .view
-        .fire(&name_it, "choose")
+        .fire_answering(&window.host, &me(), &name_it, "choose")
         .expect("the field opens");
     window.view.poll_patches().expect("the field draws");
     let field = field(window.view.tree(), "The name Ada's desktop should read by");
@@ -432,7 +438,10 @@ fn naming_a_key_hands_its_name_to_the_devices_resource() {
         .expect("the name is typed");
     let seen = watching(&window);
     let save = labelled(window.view.tree(), "ui.Button", "Save name");
-    window.view.press(&save).expect("the name is saved");
+    window
+        .view
+        .press_answering(&window.host, &me(), &save)
+        .expect("the name is saved");
     let args = asked(&seen, "so.tilo.device", "rename");
     let arg = |wanted: &str| {
         args.iter()
@@ -450,7 +459,9 @@ fn stopping_an_agent_asks_the_server_by_its_grant_and_session() {
     let pane = pane();
     let seen = watching(&pane);
     let stop = labelled(pane.view.tree(), "ui.Button", "Stop Claude Code #1");
-    pane.view.press(&stop).expect("the agent is stopped");
+    pane.view
+        .press_answering(&pane.host, &me(), &stop)
+        .expect("the agent is stopped");
     let args = asked(&seen, "tilo.mcp-server", "stop");
     let reference = args
         .iter()
@@ -471,7 +482,9 @@ fn adding_a_device_asks_for_the_code_a_new_computer_joins_with() {
     let pane = pane();
     let seen = watching(&pane);
     let add = labelled(pane.view.tree(), "ui.Button", "Add a device");
-    pane.view.press(&add).expect("the code is asked for");
+    pane.view
+        .press_answering(&pane.host, &me(), &add)
+        .expect("the code is asked for");
     asked(&seen, "so.tilo.device", "issue-device-ticket");
 }
 

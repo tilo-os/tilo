@@ -4,12 +4,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tilolang_runtime::Actor;
 use tilolang_runtime::delegate::Invocation;
 use tilolang_tilo::runtime::Value;
 
 use crate::fixtures::Sent;
 use crate::fixtures::{drawn, set_reading};
+use crate::invoker::Answered as _;
 use crate::settings_panes::{invoke, open_window, settings};
+
+/// The person at the settings window.
+fn me() -> Actor {
+    Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
+}
 
 /// The picture of a PNG pixel: what the person chose, as the reading carries it.
 const PICTURE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
@@ -90,7 +97,8 @@ fn the_users_pane_shows_the_persons_picture_and_takes_it_away() {
         .expect("a button to remove the picture")
         .key
         .clone();
-    view.press(&remove).expect("the picture is taken away");
+    view.press_answering(&host, &me(), &remove)
+        .expect("the picture is taken away");
     let sent = sent.borrow();
     let [
         Invocation::Action {
