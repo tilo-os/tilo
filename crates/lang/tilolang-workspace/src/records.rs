@@ -614,18 +614,6 @@ impl Opened {
         }
     }
 
-    /// Every resource of the record as the action API publishes it, its app's own actions
-    /// beside them, each planned by `planner`.
-    fn published(&self, planner: &Arc<dyn Planner>) -> Vec<ResourceSpec> {
-        let mut out: Vec<ResourceSpec> = Publications::new(&self.host)
-            .everything(&self.host, planner)
-            .into_iter()
-            .map(std::rc::Rc::unwrap_or_clone)
-            .collect();
-        out.extend(self.own(planner));
-        out
-    }
-
     /// The resources of the app's own packages, published after the record's documents: what
     /// carries the actions that take no resource.
     fn own(&self, planner: &Arc<dyn Planner>) -> Vec<ResourceSpec> {
@@ -761,7 +749,15 @@ impl Opened {
         invoker: &ActionInvoker,
         context: &ActionContext,
     ) -> Result<ActionOutput, ApiError> {
-        let resources = self.published(&self.planner(Some(invoker)));
+        // The resource the call names, published down from its document, and the app's own
+        // packages: never the rest of the record, which a call would otherwise read whole.
+        let planner = self.planner(Some(invoker));
+        let mut resources: Vec<ResourceSpec> = Publications::new(&self.host)
+            .addressed(&self.host, &planner, &address.resource)
+            .map(std::rc::Rc::unwrap_or_clone)
+            .into_iter()
+            .collect();
+        resources.extend(self.own(&planner));
         let store = self.host.store();
         let run = context.group.as_ref().map(|group| Run {
             id: group.id.clone(),
