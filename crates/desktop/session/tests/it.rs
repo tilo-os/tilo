@@ -79,6 +79,8 @@ mod closed_tasks;
 mod collab;
 #[path = "confirm.rs"]
 mod confirm;
+#[path = "continuity_chip.rs"]
+mod continuity_chip;
 #[path = "controllers.rs"]
 mod controllers;
 #[path = "daemon_relink.rs"]
