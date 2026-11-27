@@ -201,15 +201,23 @@ impl Roots {
         }
     }
 
-    /// Follow `target`, the resource the session publishes under its id.
+    /// Follow `target`, the resource the session publishes: a listing is published by the app
+    /// that answers it, under that app's own id, never under the `*` its records are named by in
+    /// the runtime ([`crate::runtime::foreign::LISTING`]).
     fn follow(&mut self, target: &crate::runtime::ResourceRef, wake: tilo_rt::wake::WakeHandle) {
         let Some(source) = published() else {
             return;
         };
-        match source.follow(&target.id_string(), wake) {
+        let address = if crate::runtime::foreign::is_listing(target) {
+            crate::platform::listing_of(&target.ty)
+                .map_or_else(|| target.id_string(), |(app, _)| app.to_owned())
+        } else {
+            target.id_string()
+        };
+        match source.follow(&address, wake) {
             Ok(reading) => self.followed.push((target.clone(), reading)),
             Err(why) => tracing::debug!(
-                resource = %target.id_string(),
+                resource = %address,
                 %why,
                 "a platform root is not read here"
             ),

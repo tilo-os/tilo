@@ -2278,7 +2278,7 @@ impl Core {
         }
         let key = crate::foreign::reading_key(at);
         self.note_reading(key);
-        let why = self.foreign.borrow_mut().unreadable(at)?;
+        let why = self.foreign.borrow_mut().unreadable(at);
         Ok(match why {
             Some(why) => Value::some(Value::Text(why)),
             None => Value::none(),

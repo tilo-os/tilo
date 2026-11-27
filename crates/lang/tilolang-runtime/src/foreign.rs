@@ -415,29 +415,30 @@ impl Foreign {
     /// arrived as the type starts before its app published anything. A resource nothing of
     /// which ever arrived is unknown too: its app is not on this device, or the workspace's
     /// service is not connected, and a view says that rather than reading every field as the
-    /// empty value its type starts with.
-    ///
-    /// # Errors
-    ///
-    /// A message when the host was asked and could not answer.
-    pub(crate) fn unreadable(&mut self, target: &ResourceRef) -> Result<Option<String>, String> {
+    /// empty value its type starts with. A host asked for the reading and unable to give one
+    /// says that in its own words: its refusal is the reason it is not read.
+    pub(crate) fn unreadable(&mut self, target: &ResourceRef) -> Option<String> {
         let at = Self::key(target);
-        if !self.arrive(target)? {
+        let arrived = match self.arrive(target) {
+            Ok(arrived) => arrived,
+            // The host was asked and could not read it: that is the reason it is not read.
+            Err(why) => return Some(why),
+        };
+        if !arrived {
             // A resource no host here publishes has no value to be unknown: a view over it
             // reads as its type starts, as its fields do, and draws its empty state.
             if self.publishes_nothing(target) {
-                return Ok(None);
+                return None;
             }
             // Nothing of it came: the host is asked for it once, and the view told it is
             // unknown until a reading answers.
             self.want(at, target);
-            return Ok(Some(Self::NOTHING_PUBLISHED.to_owned()));
+            return Some(Self::NOTHING_PUBLISHED.to_owned());
         }
-        Ok(self
-            .source(&at)
+        self.source(&at)
             .and_then(|(json, _)| json.get(crate::store::UNREADABLE))
             .and_then(Json::as_str)
-            .map(str::to_owned))
+            .map(str::to_owned)
     }
 
     /// The resources a view read before their readings came in, each its id and type, since
@@ -715,27 +716,39 @@ impl Foreign {
     /// The records of another app's type `key` as that app lists them: the reading of its listing
     /// ([`listing_of`]), each item a record of the type, named by its own `id`. A listing that has
     /// not come in yet is asked of the host, and lists nothing until it does; the view that asked
-    /// runs again then, as one reading any field of it does.
+    /// runs again then, as one reading any field of it does. A listing whose reading says it could
+    /// not be read is [`Listed::Unreadable`], never a listing that holds no items.
     ///
     /// # Errors
     ///
-    /// Why the host could not read it, or an item that is not a record of the type.
+    /// Why a reading that is not a listing parsed as one, or an item that is not a record of the
+    /// type.
     pub(crate) fn listed(
         &mut self,
         key: &TypeKey,
         author: Option<&ModuleHash>,
         registry: &Registry,
         blobs: Option<&dyn crate::blob::BlobHost>,
-    ) -> Result<Vec<Value>, String> {
+    ) -> Result<Listed, String> {
         let target = listing_of(&format!("{}#{}", key.app, key.name));
         let at = Self::key(&target);
-        if !self.arrive(&target)? {
+        let arrived = match self.arrive(&target) {
+            Ok(arrived) => arrived,
+            // The host was asked and could not read it: the listing is unreadable, in its words.
+            Err(why) => return Ok(Listed::Unreadable(why)),
+        };
+        if !arrived {
             self.want(at, &target);
-            return Ok(Vec::new());
+            return Ok(Listed::Items(Vec::new()));
         }
         let Some((json, _)) = self.source(&at) else {
-            return Ok(Vec::new());
+            return Ok(Listed::Items(Vec::new()));
         };
+        // A reading that says why it could not be read is no listing of anything: its app is not
+        // on this device, or the service that announces it is not connected.
+        if let Some(why) = json.get(crate::store::UNREADABLE).and_then(Json::as_str) {
+            return Ok(Listed::Unreadable(why.to_owned()));
+        }
         let Some(items) = json.get(LISTED) else {
             return Err(format!(
                 "the listing of `{}#{}` holds no `{LISTED}`",
@@ -760,7 +773,7 @@ impl Foreign {
             self.place(&record, steps, at.clone());
         }
         match value {
-            Value::List(items) => Ok(items),
+            Value::List(items) => Ok(Listed::Items(items)),
             other => Err(format!(
                 "the listing of `{}` read as {}",
                 key.name,
@@ -768,6 +781,17 @@ impl Foreign {
             )),
         }
     }
+}
+
+/// What another app's listing of its records answered ([`Foreign::listed`]).
+pub(crate) enum Listed {
+    /// The records the app lists, each a record of the type.
+    Items(Vec<Value>),
+    /// The listing could not be read, with the words of whatever asked: no service publishes it
+    /// here, or its app is not on this device. A view that lists the records draws what it draws
+    /// for a list of none, and asks `unreadable(query(T))` for why; it is never a fault, and a
+    /// reading that answers replaces it.
+    Unreadable(String),
 }
 
 /// What the listing of another app's records is named by in place of a record's id: a query
@@ -1566,9 +1590,7 @@ mod tests {
         let privacy = ResourceRef::parse_id("session:privacy", "so.tilo.device#Privacy".to_owned())
             .expect("a resource id");
         assert_eq!(
-            foreign
-                .unreadable(&privacy)
-                .expect("nothing published is answered"),
+            foreign.unreadable(&privacy),
             Some("Nothing publishes it here".to_owned()),
             "a root nothing published says so"
         );
@@ -1577,7 +1599,7 @@ mod tests {
             .expect("a resource id");
         foreign.absent(&printers);
         assert_eq!(
-            foreign.unreadable(&printers).expect("answered"),
+            foreign.unreadable(&printers),
             None,
             "a host that publishes nothing of it reads as its type starts"
         );

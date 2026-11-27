@@ -199,10 +199,17 @@ impl TaskApi for Api {
             .ty
             .split_once('#')
             .ok_or_else(|| format!("`{}` is no app's resource", target.ty))?;
+        // A listing is published by its app under the app's own id, never under the `*` its
+        // records are named by in the runtime.
+        let resource = if tilolang_tilo::runtime::foreign::is_listing(target) {
+            app.to_owned()
+        } else {
+            target.id_string()
+        };
         let reply = self.line.ask(&json!({
             "reading": {
                 "app": app,
-                "resource": target.id_string(),
+                "resource": resource,
                 "type": ty,
             },
         }))?;

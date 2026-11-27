@@ -3506,7 +3506,7 @@ view panel(p: Panel) {
 /// changes it was asked for.
 #[derive(Default)]
 struct Published {
-    queued: std::sync::Mutex<BTreeMap<String, std::collections::VecDeque<String>>>,
+    queued: std::sync::Mutex<BTreeMap<String, std::collections::VecDeque<Result<String, String>>>>,
     wakes: std::sync::Mutex<BTreeMap<String, tilo_wake::WakeHandle>>,
     invoked: std::sync::Mutex<Vec<(String, String)>>,
 }
@@ -3528,15 +3528,31 @@ impl Published {
 
     /// The session publishes `reading` of `resource`, waking the views that read it.
     fn publish(&self, resource: &str, reading: &str) {
+        self.deliver(resource, Ok(reading.to_owned()));
+    }
+
+    /// The session cannot read `resource`, and says why: what the watch of a service that does
+    /// not publish it answers.
+    fn fail(&self, resource: &str, why: &str) {
+        self.deliver(resource, Err(why.to_owned()));
+    }
+
+    fn deliver(&self, resource: &str, reading: Result<String, String>) {
         self.queued
             .lock()
             .unwrap()
             .entry(resource.to_owned())
             .or_default()
-            .push_back(reading.to_owned());
+            .push_back(reading);
         if let Some(wake) = self.wakes.lock().unwrap().get(resource) {
             wake.wake();
         }
+    }
+
+    /// The resources the app's views asked the session to follow, by the address it was asked
+    /// with.
+    fn followed(&self) -> Vec<String> {
+        self.wakes.lock().unwrap().keys().cloned().collect()
     }
 
     /// The changes asked of the session, as `(resource, action)`.
@@ -3594,7 +3610,6 @@ impl tilolang_tilo::platform_apps::Reading for Followed {
             .unwrap()
             .get_mut(&self.resource)?
             .pop_front()
-            .map(Ok)
     }
 }
 
@@ -3790,4 +3805,112 @@ fn the_activity_app_marks_what_it_showed_as_seen() {
             .invoked()
             .contains(&("workspace.activity".to_owned(), "mark-viewed".to_owned()))
     });
+}
+
+const INVOKED: &str = "so.tilo.lang.invoked";
+
+/// A package that lists a workspace's invocations with a query: the app that answers them
+/// publishes the listing, and this window follows it from the session.
+const INVOKED_SOURCE: &str = r#"app so.tilo.lang.invoked "Invoked" (icon: .hash, category: .utility)
+
+use tilo.invocations as invocations
+
+type Panel {
+    /// How many times the person asked for the list again.
+    presses: Int merge counter
+}
+
+root Panel
+
+default view panel for Panel
+
+view panel(p: Panel) {
+    std.page(p) {
+        if let why = unreadable(query(invocations.Invocation)) {
+            std.unreadable_row("The invocations could not be read", why)
+        } else {
+            for call in query(invocations.Invocation) {
+                ui.Text(call.title ?? "Untitled")
+            }
+        }
+    }
+}
+"#;
+
+/// The reading of the invocations listing, holding one invocation titled `title`.
+fn invocation(title: &str) -> String {
+    serde_json::json!({
+        "items": [{
+            "id": "i-1",
+            "calls": ["c-1"],
+            "title": title,
+            "status": "ended",
+            "started_ms": 1_700_000_000_000_i64,
+            "changes": 1,
+            "undone": 0,
+            "records": [],
+            "undoable": true,
+            "recorded": true,
+            "remembered": true,
+            "by": {"name": "Ada", "kind": "person", "id": null},
+        }]
+    })
+    .to_string()
+}
+
+/// Another app's published listing is followed where that app publishes it, and its records reach
+/// the view that queries them: the watch names the app, never the `*` its records are named by.
+#[test]
+fn another_apps_published_listing_reaches_the_view_that_queries_it() {
+    let published = Published::install();
+    let platform = tilolang_tilo::platform::platform_packages().unwrap();
+    let compiled = compile(INVOKED_SOURCE, &tilolang::IdsLock::new(), &platform)
+        .unwrap_or_else(|diagnostics| panic!("the invocations reader compiles: {diagnostics:#?}"));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_app("ada", INVOKED, Bundle::new(&compiled, []));
+    settle(&mut host, &mut window);
+    assert_eq!(
+        published.followed(),
+        vec!["tilo.invocations".to_owned()],
+        "the listing is followed at the app that publishes it"
+    );
+    published.publish("tilo.invocations", &invocation("Tidy the inbox"));
+    settle(&mut host, &mut window);
+    assert!(
+        shown(&window).contains("Tidy the inbox"),
+        "the listing's records render: {}",
+        shown(&window)
+    );
+}
+
+/// An app the session cannot reach publishes no listing: the view says why where its records would
+/// stand, and the window that showed it is not a window that failed to open.
+#[test]
+fn a_listing_no_service_publishes_reads_unreadable_in_the_view_and_opens() {
+    let published = Published::install();
+    let platform = tilolang_tilo::platform::platform_packages().unwrap();
+    let compiled = compile(INVOKED_SOURCE, &tilolang::IdsLock::new(), &platform)
+        .unwrap_or_else(|diagnostics| panic!("the invocations reader compiles: {diagnostics:#?}"));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_app("ada", INVOKED, Bundle::new(&compiled, []));
+    published.fail("tilo.invocations", "No service publishes tilo.invocations.");
+    settle(&mut host, &mut window);
+    let rendered = shown(&window);
+    assert!(
+        rendered.contains("The invocations could not be read"),
+        "the view says what could not be read: {rendered}"
+    );
+    assert!(
+        rendered.contains("No service publishes tilo.invocations."),
+        "the view says why: {rendered}"
+    );
+    assert!(
+        host.instances()
+            .next()
+            .expect("the app runs")
+            .instance()
+            .open_failed()
+            .is_none(),
+        "an unreadable listing is no app that failed to open"
+    );
 }

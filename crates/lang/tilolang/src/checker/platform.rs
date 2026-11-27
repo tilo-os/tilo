@@ -331,12 +331,93 @@ impl Checker<'_> {
 
     /// `unreadable(r)`: why the reading of `r` says it could not be read, in words, or nothing
     /// when it answers: what a pane shows in place of values a failed read would leave as the
-    /// empty ones their type starts with.
+    /// empty ones their type starts with. `unreadable(query(T))` asks the same of another app's
+    /// listing of `T`: an app this device cannot reach gives no records, and the reason it gave
+    /// stands where the list's rows would.
     pub(super) fn builtin_unreadable(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let Some(r) = self.resource_arg("unreadable", args, span) else {
+        let [a] = args else {
+            self.err(
+                "E022",
+                span,
+                "`unreadable` takes one resource: `unreadable(r)`",
+            );
             return Ex::error();
         };
-        Ex::host(Imp::Unreadable, vec![r], Ty::Option(Box::new(Ty::Text)))
+        if a.name.is_some() {
+            self.err(
+                "E022",
+                a.value.span,
+                "`unreadable` takes the resource by position: `unreadable(r)`",
+            );
+        }
+        let r = self.expr(&a.value, None);
+        // A query over another app's records names that app's listing of them, which no id of
+        // the app's own does: it is asked where the app publishes it.
+        if let Some(key) = self.listing_query(&a.value, &r.ty) {
+            let target = Ex::host(
+                Imp::RefLit,
+                vec![
+                    Ex::str(&key.app),
+                    Ex::str(&format!("{}#{}", key.app, key.name)),
+                    Ex::str(crate::host::LISTING),
+                ],
+                Ty::Record(key),
+            );
+            return Ex::host(
+                Imp::Unreadable,
+                vec![target],
+                Ty::Option(Box::new(Ty::Text)),
+            );
+        }
+        match &r.ty {
+            // A union of record types is a resource too: whichever record it holds.
+            Ty::Record(_) | Ty::Union(_) => {
+                Ex::host(Imp::Unreadable, vec![r], Ty::Option(Box::new(Ty::Text)))
+            }
+            Ty::Error => Ex::error(),
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    a.value.span,
+                    format!(
+                        "`unreadable` takes a resource, a value of a record type, or a query of \
+                         another app's records; this is {t}"
+                    ),
+                );
+                Ex::error()
+            }
+        }
+    }
+
+    /// The type of another app's records that `expr` is a query of, when it is one: `query(T)` or
+    /// `query(T, …)` with no `in:` (a query inside a resource is that resource's list, not the
+    /// app's listing).
+    fn listing_query(&self, expr: &ast::Expr, ty: &Ty) -> Option<TypeKey> {
+        let ExprKind::Call {
+            callee,
+            types,
+            args,
+        } = &expr.kind
+        else {
+            return None;
+        };
+        if !types.is_empty() || super::expr::dotted(callee)? != ["query"] {
+            return None;
+        }
+        if args
+            .iter()
+            .any(|arg| arg.name.as_ref().is_some_and(|name| name.name == "in"))
+        {
+            return None;
+        }
+        let Ty::List(item) = ty else {
+            return None;
+        };
+        let Ty::Record(key) = &**item else {
+            return None;
+        };
+        (key.app != self.env.app).then(|| key.clone())
     }
 
     pub(super) fn builtin_changes(&mut self, args: &[ast::Arg], span: Span) -> Ex {

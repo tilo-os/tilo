@@ -180,7 +180,7 @@ impl Core {
                     .ok_or_else(|| format!("query: `{ty}` names no app's type"))?;
                 let listing = crate::foreign::listing_of(ty);
                 self.note_reading(crate::foreign::reading_key(&listing));
-                let items = {
+                let listed = {
                     let author = self.frames.borrow().top()?.module.clone();
                     let registry = self.registry.borrow();
                     let blobs = self.blobs.borrow();
@@ -190,6 +190,16 @@ impl Core {
                         &registry,
                         blobs.as_deref(),
                     )?
+                };
+                let items = match listed {
+                    crate::foreign::Listed::Items(items) => items,
+                    // The listing could not be read: it holds nothing now, and a view that shows
+                    // why asks `unreadable(query(T))` for the reason. An app this device cannot
+                    // reach is no fault in the view's code, so it is never a trap.
+                    crate::foreign::Listed::Unreadable(why) => {
+                        tracing::debug!(ty, %why, "a listing a view queried could not be read");
+                        return Ok(Value::List(Vec::new()));
+                    }
                 };
                 self.query_foreign(items, &pred, order.as_ref())
             }
