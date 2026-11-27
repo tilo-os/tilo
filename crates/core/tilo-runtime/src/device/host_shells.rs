@@ -1,7 +1,7 @@
 //! Where the shells an app's connection carries come from on this device
 //! ([`tilo_action_services::line::shells`]): Linux's shell runtime, which runs the workspace's
 //! environments and this computer's own shell alike; elsewhere this computer's own login shell
-//! on a pty (ConPTY on Windows), the one target a computer without that runtime has.
+//! on a pty (`ConPTY` on Windows), the one target a computer without that runtime has.
 
 use std::sync::Arc;
 
