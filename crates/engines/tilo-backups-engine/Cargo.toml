@@ -10,7 +10,7 @@ description = "Keeps the snapshots a Backups app asks for: a checksummed copy of
 
 [dependencies]
 # The device's own file system: paths, modes and symbolic links.
-host-fs = { path = "../../core/host-fs" }
+host-fs = { version = "0.1.0", path = "../../core/host-fs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

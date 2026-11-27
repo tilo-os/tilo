@@ -23,3 +23,6 @@ plugin that loops.
 
 Remove this patch once upstream runs plugins on a host whose calls are bounded, or takes the
 runtime it executes them on as a parameter.
+
+The manifest is marked `publish = false`: this fork carries `tilo-wasm-host` as a path
+dependency, and only the tree builds it.

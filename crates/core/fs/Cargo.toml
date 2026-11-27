@@ -124,7 +124,7 @@ tilo-action-policy = { version = "0.1.0", path = "../action-policy", optional = 
 tilo-actions = { version = "0.1.0", path = "../actions", optional = true }
 # The calls a mount makes of the workspace's accounts, bound at build time to the surface their
 # service publishes.
-tilo-resource-macros = { path = "../tilo-resource-macros", optional = true }
+tilo-resource-macros = { version = "0.1.0", path = "../tilo-resource-macros", optional = true }
 fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../fs-protocol", optional = true }
 # What the workspace's host answered about a record it was opened on.
 tilo-server-protocol = { version = "0.1.0", path = "../tilo-server-protocol", optional = true }
@@ -195,9 +195,9 @@ fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../fs-p
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
 # The idle endpoint tests' relay is a loopback one no test shares.
-tilo-test-env = { path = "../../../tools/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
 # A loopback relay for the endpoints these tests start.
-tilo-test-relay = { path = "../../../tools/test-relay" }
+tilo-test-relay = { version = "0.1.0", path = "../../../tools/test-relay" }
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
 cloud-source-dav = { package = "tilo-cloud-source-dav", version = "0.1.0", path = "../../integrations/cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { package = "tilo-cloud-source-gdrive", version = "0.1.0", path = "../../integrations/cloud-source-gdrive", features = ["fake-server"] }

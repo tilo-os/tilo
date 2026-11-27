@@ -22,7 +22,7 @@ unicode-width = { version = "0.2.2" }
 # Where a session can run, and the environment records it can run in.
 tilo-environment = { version = "0.1.0", path = "../../vm/environment" }
 # The registry an app reaches its device's engines through (`engine.call`, `engine.start`).
-tilolang-engine = { path = "../../lang/tilolang-engine" }
+tilolang-engine = { version = "0.1.0", path = "../../lang/tilolang-engine" }
 
 # A session's process only exists where one can run: a page has no shell of its own.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -45,7 +45,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # A test reads what a session prints from a real pty.
 tempfile.workspace = true
-tilo-test-env = { path = "../../../tools/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
 
 [lints]
 workspace = true

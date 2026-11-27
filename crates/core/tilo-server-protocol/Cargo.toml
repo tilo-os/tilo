@@ -45,7 +45,7 @@ postcard = { workspace = true, features = ["alloc"] }
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 # The invocation a caller signs, beside the request it covers.
 tilo-actions = { version = "0.1.0", path = "../actions" }
-tilo-workspace-records = { path = "../workspace-records" }
+tilo-workspace-records = { version = "0.1.0", path = "../workspace-records" }
 # The work a member's delegation lets a server take, as the grants it names.
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # The peer protocol version the handshake carries and checks.
@@ -67,7 +67,7 @@ tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
-tilo-test-env = { path = "../../../tools/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
 tempfile.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 
