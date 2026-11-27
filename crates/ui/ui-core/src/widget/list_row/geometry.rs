@@ -736,13 +736,6 @@ impl ListRowFace<'_> {
             .trailing
     }
 
-    /// Where the row's text starts in `rect`: the column its title, its lines and its facts keep,
-    /// whatever it leads with. A block that belongs under the row's title — a question its own
-    /// control asks — starts here too.
-    pub fn text_column(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        self.text_x(rect, &self.metrics(theme), text, theme)
-    }
-
     /// The leading column's rect in `rect`: the checkbox's hit target, or
     /// the badge a tooltip explains.
     pub fn leading_rect(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Rect {

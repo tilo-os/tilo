@@ -847,14 +847,6 @@ pub trait ShellSurface {
     /// window, the shell, another surface): an open popover closes.
     fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {}
 
-    /// What the surface's owner closes when the pointer is pressed somewhere other than this
-    /// surface. The handle the session shares with the shell runs it before
-    /// [`ShellSurface::pressed_elsewhere`], and before holding the surface, since closing may ask the
-    /// surface to draw again.
-    fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
-        None
-    }
-
     /// The pointer button that press came from is up again, at this logical point: the press is
     /// over, and so is everything it was still doing.
     fn press_ended(&mut self, _x: f64, _y: f64) {}
@@ -1010,8 +1002,7 @@ macro_rules! forwards {
 }
 
 /// A surface the session hands to the shell while keeping a handle of its own: the shell drives the
-/// same instance the role reads, and the owner closes what it has open before the surface hears the
-/// press.
+/// same instance the role reads.
 impl<T: ShellSurface + ?Sized> ShellSurface for Rc<RefCell<T>> {
     forwards! {
         read:
@@ -1029,7 +1020,6 @@ impl<T: ShellSurface + ?Sized> ShellSurface for Rc<RefCell<T>> {
         backdrops() -> Vec<BackdropRequest>;
         next_deadline() -> Option<std::time::Instant>;
         cursor() -> CursorIcon;
-        press_elsewhere_closes() -> Option<Rc<dyn Fn()>>;
     }
     forwards! {
         write:
@@ -1052,16 +1042,7 @@ impl<T: ShellSurface + ?Sized> ShellSurface for Rc<RefCell<T>> {
         drop_data(mime: &str, data: Vec<u8>);
         take_drag() -> Option<SurfaceDrag>;
         drag_ended(dropped: bool);
-    }
-
-    /// Before the surface hears the press, and with the surface let go of: what its owner closes
-    /// may ask it to draw again.
-    fn pressed_elsewhere(&mut self, x: f64, y: f64) {
-        let closes = self.borrow().press_elsewhere_closes();
-        if let Some(closes) = closes {
-            closes();
-        }
-        self.borrow_mut().pressed_elsewhere(x, y);
+        pressed_elsewhere(x: f64, y: f64);
     }
 }
 
@@ -1284,62 +1265,6 @@ mod tests {
             &[Region::new(8, 16, 1, 1)],
         );
         assert_eq!(frame.alpha(8, 16), Some(255));
-    }
-
-    /// A surface that records what it heard.
-    struct Pressed {
-        heard: Rc<RefCell<Vec<&'static str>>>,
-        closes: Option<Rc<dyn Fn()>>,
-    }
-
-    impl ShellSurface for Pressed {
-        fn layers(&self) -> Vec<SurfaceLayer> {
-            Vec::new()
-        }
-
-        fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
-            false
-        }
-
-        fn pointer_motion(&mut self, _x: f64, _y: f64) {}
-
-        fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
-
-        fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
-            self.heard.borrow_mut().push("press");
-        }
-
-        fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
-            self.closes.clone()
-        }
-    }
-
-    #[test]
-    fn a_shared_surface_closes_what_its_owner_has_open_before_it_hears_the_press() {
-        let heard: Rc<RefCell<Vec<&'static str>>> = Rc::default();
-        // What the owner closes reaches back into the surface it stands on, as drawing that surface
-        // again does: it must not find the surface held by whoever is delivering the press.
-        let mut shared: Rc<RefCell<Pressed>> =
-            Rc::new_cyclic(|placed: &std::rc::Weak<RefCell<Pressed>>| {
-                let placed = placed.clone();
-                let recorded = Rc::clone(&heard);
-                RefCell::new(Pressed {
-                    heard: Rc::clone(&heard),
-                    closes: Some(Rc::new(move || {
-                        placed
-                            .upgrade()
-                            .expect("the surface it was placed on")
-                            .borrow_mut();
-                        recorded.borrow_mut().push("closed");
-                    })),
-                })
-            });
-        ShellSurface::pressed_elsewhere(&mut shared, 10.0, 20.0);
-        assert_eq!(
-            *heard.borrow(),
-            ["closed", "press"],
-            "what it has open closes before the press reaches it"
-        );
     }
 
     /// Three buffers, as a surface that draws on the GPU delivers its frames in: their memory is

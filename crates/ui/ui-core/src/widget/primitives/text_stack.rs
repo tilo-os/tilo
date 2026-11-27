@@ -109,51 +109,6 @@ impl<'a> TextLineFace<'a> {
     }
 }
 
-/// A block of wrapped text in one style, starting at its rect's leading top corner and wrapping
-/// to the rect's width: a reader's body, a page's paragraph, a note's prose.
-#[derive(Clone, Copy, Debug)]
-pub struct TextBlockFace<'a> {
-    text: &'a str,
-    style: &'a TextStyle,
-}
-
-impl<'a> TextBlockFace<'a> {
-    /// `text` in `style` (which carries its role's size, family and leading).
-    #[must_use]
-    pub fn new(text: &'a str, style: &'a TextStyle) -> Self {
-        Self { text, style }
-    }
-
-    #[must_use]
-    pub fn height(&self, text: &mut TextRenderer, width: f64) -> f64 {
-        if self.text.is_empty() {
-            return 0.0;
-        }
-        f64::from(
-            text.measure_style(
-                self.text,
-                Some(tilo_ui_base::num::f32_of_f64(width.max(0.0))),
-                self.style,
-            )
-            .1,
-        )
-    }
-
-    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, ink: vello::peniko::Color) {
-        if self.text.is_empty() || rect.width() <= 0.0 {
-            return;
-        }
-        ctx.text.draw_style(
-            ctx.scene,
-            self.text,
-            ink,
-            ctx.transform.pre_translate((rect.x0, rect.y0).into()),
-            Some(tilo_ui_base::num::f32_of_f64(rect.width())),
-            self.style,
-        );
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StackSize {
     /// A row's title: `Body` medium.

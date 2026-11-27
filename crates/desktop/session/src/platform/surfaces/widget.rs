@@ -223,10 +223,6 @@ pub struct WidgetSurface {
     /// The display's grid: what the tree moves through is drawn once per
     /// display frame, so the screens show as many frames as they run at.
     cadence: Cadence,
-    /// What the role that placed the tree closes when the pointer is pressed
-    /// elsewhere: the shared handle runs it before the tree is borrowed, so
-    /// the role may ask the layer it holds to draw again.
-    dismissed: Option<Rc<dyn Fn()>>,
     /// A finger on the tree reaches it as a finger, not as the pointer ([`Self::with_fingers`]).
     fingers: bool,
 }
@@ -284,7 +280,6 @@ impl WidgetSurface {
             asked: std::sync::Arc::default(),
             drag_seen: ui::widget::drag_bus::revision(),
             cadence: Cadence::new(),
-            dismissed: None,
             fingers: false,
         }
     }
@@ -389,13 +384,6 @@ impl WidgetSurface {
     #[must_use]
     pub fn with_fingers(mut self) -> Self {
         self.fingers = true;
-        self
-    }
-
-    /// Close what the role has open when the pointer is pressed elsewhere.
-    #[must_use]
-    pub fn with_dismissal(mut self, dismissed: Rc<dyn Fn()>) -> Self {
-        self.dismissed = Some(dismissed);
         self
     }
 
@@ -990,10 +978,6 @@ impl ShellSurface for WidgetSurface {
         let _placed = self.placed();
         self.host.send_touch(u64::from(slot), phase, lx, ly);
         self.owe();
-    }
-
-    fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
-        self.dismissed.clone()
     }
 
     fn pointer_modifiers(&mut self, held: tilo_session_core::surface::KeyModifiers) {

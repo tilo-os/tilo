@@ -48,5 +48,5 @@ pub use surface::{
     paint_see_through, paint_surface, paint_window_card,
 };
 pub use text_stack::{
-    StackSize, TextBlockFace, TextLineAlign, TextLineFace, TextStack, TextStackFace, TextStackProps,
+    StackSize, TextLineAlign, TextLineFace, TextStack, TextStackFace, TextStackProps,
 };

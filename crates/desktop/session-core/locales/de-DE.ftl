@@ -712,20 +712,6 @@ workspace-settings-role-name = Rollenname
 workspace-settings-save-role = Rolle speichern
 
 # People popover
-a11y-shell-people = Personen
-a11y-shell-people-description = Wer hier ist, wo und woran gerade gearbeitet wird
-a11y-shell-people-here-now = Jetzt anwesend
-a11y-shell-people-agent = Agent
-a11y-shell-people-now = Jetzt: { $activity }
-a11y-shell-people-recent-toggle = Was { $name } zuletzt gemacht hat
-a11y-shell-people-recent-toggle-description = Ihre letzten Änderungen ein- oder ausblenden
-a11y-shell-sharing-change = Ändern, was du teilst
-a11y-shell-follow = { $name } folgen
-a11y-shell-follow-description = Die Live-Ansicht dieser Person im Arbeitsbereich spiegeln
-a11y-shell-stop-following = { $name } nicht mehr folgen
-a11y-shell-invite = Personen einladen
-a11y-shell-invite-description = Eine authentifizierte Einladung in den Arbeitsbereich erstellen
-a11y-shell-join = Arbeitsbereich beitreten
 
 # Empty-workspace launchpad
 launchpad-title = Etwas anfangen
@@ -754,38 +740,10 @@ launchpad-invite-detail-private = Gemeinsam mit jemandem daran arbeiten
 launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt alle Apps
 
 # Moved from the shell catalogue with the code that uses them
-people-panel-agent-tag = Agent
 people-panel-viewing = Sieht sich { $title } an
 people-panel-in-app = In { $app }
 # Jemand ohne Namen: die eine Angabe, die sie von jeder anderen namenlosen Person unterscheidet.
 people-panel-joined = Beigetreten um { $time }
-people-panel-here-count = { $count ->
-    [0] Nur du
-    [one] Du und 1 weitere Person
-   *[other] Du und { $count } weitere
-}
-people-panel-section-people = Personen
-people-panel-section-agents = Agenten
-people-panel-section-devices = Deine Geräte
-people-panel-wave = Winken
-people-panel-waved = Gewunken
-people-panel-in-call = Im Kanal { $channel }
-people-panel-in-a-call = Im Anruf
-people-panel-focusing = Konzentriert
-people-panel-away = Abwesend
-people-panel-idle = Inaktiv
-people-panel-empty = Gerade ist niemand sonst hier
-people-panel-changes = Ihre Änderungen
-people-panel-invite-people = Personen einladen
-people-panel-invite-withheld = Du kannst niemanden in diesen Arbeitsbereich einladen. Wer dazukommt, entscheidet seine Inhaberin oder sein Inhaber.
-a11y-shell-wave = { $name } zuwinken
-a11y-shell-waved = Du hast { $name } zugewunken
-a11y-shell-wave-description = Ihr Gesicht zeigt, dass du gewunken hast
-a11y-shell-people-changes = Was { $name } geändert hat
-a11y-shell-people-changes-description = Den Verlauf bei ihren Änderungen öffnen
-a11y-shell-people-change-description = Den Verlauf bei dieser Änderung öffnen
-people-panel-follow = Folgen
-people-panel-stop-following = Beenden
 
 a11y-people-overlay = Wer hier ist
 a11y-people-follow = { $name } folgen
@@ -969,10 +927,6 @@ follow-label = Du folgst { $person }
 follow-stopped = Folgen beendet
 follow-stop = Beenden
 
-people-follows = Folgt { $person }
-people-follows-you = Folgt dir
-people-follows-where = { $place }, folgt { $person }
-people-follows-you-where = { $place }, folgt dir
 
 ## The desktop's published actions
 desktop-actions-chrome = Desktop

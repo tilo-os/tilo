@@ -678,20 +678,6 @@ workspace-settings-role-name = Role name
 workspace-settings-save-role = Save role
 
 # People popover
-a11y-shell-people = People
-a11y-shell-people-description = Who is here, where they are and what they are doing
-a11y-shell-people-here-now = People here now
-a11y-shell-people-agent = Agent
-a11y-shell-people-now = Now: { $activity }
-a11y-shell-people-recent-toggle = What { $name } did recently
-a11y-shell-people-recent-toggle-description = Show or hide what they changed recently
-a11y-shell-sharing-change = Change what you share
-a11y-shell-follow = Follow { $name }
-a11y-shell-follow-description = Mirror this member's live workspace view
-a11y-shell-stop-following = Stop following { $name }
-a11y-shell-invite = Invite people
-a11y-shell-invite-description = Create an authenticated workspace invitation
-a11y-shell-join = Join workspace
 
 # Empty-workspace launchpad
 launchpad-title = Start something
@@ -720,38 +706,10 @@ launchpad-invite-detail-private = Work on this with someone
 launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
 
 # Moved from the shell catalogue with the code that uses them
-people-panel-agent-tag = Agent
 people-panel-viewing = Viewing { $title }
 people-panel-in-app = In { $app }
 # Someone nobody named: the one fact that tells them apart from every other unnamed person here.
 people-panel-joined = Joined { $time }
-people-panel-here-count = { $count ->
-    [0] Just you
-    [one] You and 1 other
-   *[other] You and { $count } others
-}
-people-panel-section-people = People
-people-panel-section-agents = Agents
-people-panel-section-devices = Your devices
-people-panel-wave = Wave
-people-panel-waved = Waved
-people-panel-in-call = In { $channel }
-people-panel-in-a-call = In a call
-people-panel-focusing = Focusing
-people-panel-away = Away
-people-panel-idle = Idle
-people-panel-empty = Nobody else is here right now
-people-panel-changes = Their changes
-people-panel-invite-people = Invite people
-people-panel-invite-withheld = You can't invite people to this workspace. Its owner decides who joins.
-a11y-shell-wave = Wave at { $name }
-a11y-shell-waved = You waved at { $name }
-a11y-shell-wave-description = Their face shows you waved
-a11y-shell-people-changes = What { $name } changed
-a11y-shell-people-changes-description = Open History at their changes
-a11y-shell-people-change-description = Open History at this change
-people-panel-follow = Follow
-people-panel-stop-following = Stop
 
 a11y-people-overlay = Who is here
 a11y-people-follow = Follow { $name }
@@ -934,10 +892,6 @@ follow-label = Following { $person }
 follow-stopped = Stopped following
 follow-stop = Stop
 
-people-follows = Following { $person }
-people-follows-you = Following you
-people-follows-where = { $place }, following { $person }
-people-follows-you-where = { $place }, following you
 
 ## The desktop's published actions
 desktop-actions-chrome = Desktop

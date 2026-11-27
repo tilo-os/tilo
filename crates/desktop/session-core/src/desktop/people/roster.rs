@@ -221,31 +221,3 @@ fn tab_title_in(workspace: &Workspace, tab_id: u64) -> Option<String> {
     let name = crate::desktop::state::window_title(tab);
     (!name.trim().is_empty()).then_some(name)
 }
-
-/// What a screen reader says about a present row beyond its name: an agent, what they are on now,
-/// what they are doing.
-#[must_use]
-pub fn spoken_details(row: &RosterRow) -> String {
-    let mut details = Vec::new();
-    if row.is_agent() {
-        details.push(crate::desktop::i18n::t("a11y-shell-people-agent"));
-    }
-    if let Some(activity) = &row.activity {
-        details.push(t_args(
-            "a11y-shell-people-now",
-            &[("activity", activity.into())],
-        ));
-    }
-    if let Some(doing) = super::doing_line(row) {
-        details.push(doing);
-    }
-    // Someone nobody named is told apart by when they joined, and a reader is told it too.
-    if let Some(joined) = super::joined_line(row) {
-        details.push(joined);
-    }
-    // Where software works: the line under its row says it on screen, and a reader is told it too.
-    if let Some((_, record)) = &row.working_in {
-        details.push(in_app(record));
-    }
-    details.join("; ")
-}

@@ -343,12 +343,12 @@ pub use {
     primitives::NotificationListView, primitives::NotificationRowControls,
     primitives::PopoverProps, primitives::StatusCluster, primitives::StatusClusterFace,
     primitives::StatusClusterLayout, primitives::StatusPart, primitives::Surface,
-    primitives::SurfaceLevel, primitives::TextBlockFace, primitives::TextLineAlign,
-    primitives::TextLineFace, primitives::TextStack, primitives::TextStackFace,
-    primitives::TextStackProps, primitives::badge_label, primitives::badge_size,
-    primitives::control_fill, primitives::control_radius, primitives::paint_control_row,
-    primitives::paint_see_through, primitives::paint_severity_rail, primitives::paint_surface,
-    primitives::paint_unread_badge, primitives::paint_window_card,
+    primitives::SurfaceLevel, primitives::TextLineAlign, primitives::TextLineFace,
+    primitives::TextStack, primitives::TextStackFace, primitives::TextStackProps,
+    primitives::badge_label, primitives::badge_size, primitives::control_fill,
+    primitives::control_radius, primitives::paint_control_row, primitives::paint_see_through,
+    primitives::paint_severity_rail, primitives::paint_surface, primitives::paint_unread_badge,
+    primitives::paint_window_card,
 };
 pub mod context_menu_area;
 pub use {context_menu_area::ContextMenuArea, context_menu_area::MenuEntry};
@@ -726,10 +726,7 @@ mod activation;
 mod dismissal;
 #[cfg(feature = "model")]
 pub(crate) use activation::take_presses;
-pub use {
-    activation::Interaction, activation::PaintedTargets, activation::paint_disabled,
-    activation::paint_focus_ring,
-};
+pub use {activation::Interaction, activation::paint_disabled, activation::paint_focus_ring};
 pub mod media_card;
 mod media_grid_component;
 pub use {

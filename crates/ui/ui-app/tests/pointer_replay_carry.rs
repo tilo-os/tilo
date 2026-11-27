@@ -14,7 +14,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use tilo_ui::headless::Driver;
 use tilo_ui_base::icons::Icon;
 
-use tilo_ui::widget::PaintedTargets;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt as _, widget::Widget};
 
@@ -451,65 +450,6 @@ fn a_secret_fields_reveal_toggle_carries_its_press_across_a_rebuild() {
     let mut scene = Stage::new(build);
     scene.point_at(point);
     assert!(!revealed(scene, 3.0), "a moved toggle does not run");
-}
-
-struct Keypad {
-    targets: PaintedTargets,
-    clicks: Clicks,
-    generation: &'static str,
-    rect: Rect,
-}
-
-impl Widget for Keypad {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = taffy::Style {
-            size: taffy::Size::from_lengths(120.0, 80.0),
-            ..taffy::Style::default()
-        };
-        taffy.widget_node(style, &[], node_map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
-        self.targets.begin_frame();
-        self.targets.target("seven", self.rect, "7");
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        self.targets.handle_event(event, ctx);
-        for _ in self.targets.take_activated() {
-            self.clicks.borrow_mut().push(self.generation);
-        }
-    }
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.targets
-            .hit(point)
-            .map(|_| winit::window::CursorIcon::Pointer)
-    }
-    fn name(&self) -> &'static str {
-        "Keypad"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
-#[test]
-fn a_painted_target_carries_its_press_across_a_rebuild() {
-    assert_press_carries(
-        |clicks, generation| {
-            Box::new(Keypad {
-                targets: PaintedTargets::new(),
-                clicks: Rc::clone(clicks),
-                generation,
-                rect: Rect::ZERO,
-            })
-        },
-        |h| pressable_centre(h),
-    );
 }
 
 #[test]
