@@ -133,6 +133,7 @@ impl Surfaces {
 
     /// Show `surface` (`show-surface`): the one up closes, and any other opens.
     pub(crate) fn toggle(&self, surface: &str) {
+        let was = self.overlays.here();
         self.caught_up();
         if surface == Self::STRIPS {
             if self.overlays.is_open(Part::Strips) {
@@ -186,7 +187,7 @@ impl Surfaces {
                     return;
                 }
                 self.panel_closes();
-                self.overlays.show(surface);
+                self.reveal(was, surface);
             }
         } else {
             self.panel_closes();
@@ -197,6 +198,7 @@ impl Surfaces {
 
     /// Show the surface `name` names (`show-surface`), whether or not it is up.
     pub(crate) fn open(&self, name: &str) {
+        let was = self.overlays.here();
         self.caught_up();
         if name == Self::STRIPS {
             self.close_views();
@@ -238,12 +240,22 @@ impl Surfaces {
                 return;
             }
             self.panel_closes();
-            self.overlays.show(surface);
+            self.reveal(was, surface);
         } else {
             self.panel_closes();
         }
         self.clear_beside();
         self.settled();
+    }
+
+    /// Show the shell's surface `surface`, with what it carries of the person's search: the
+    /// overview keeps the query only when they reached it from the launcher, so a search the
+    /// launcher holds for its own next open never filters the windows the overview shows.
+    fn reveal(&self, was: Overlay, surface: Overlay) {
+        if surface == Overlay::Overview && was != Overlay::Overview && was != Overlay::Launcher {
+            self.overlays.forget_spotlight();
+        }
+        self.overlays.show(surface);
     }
 
     /// Show the history on what the person opened lately of `app` or of `kind` (both empty for

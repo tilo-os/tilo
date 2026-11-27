@@ -86,7 +86,12 @@
         {
           "must": [
             "New workspace",
-            "chat",
+            {
+              "rust": "chat",
+              "tl": {
+                "prefix": "Channels"
+              }
+            },
             {
               "rust": "Windows in this workspace",
               "tl": "Overview"

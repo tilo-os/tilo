@@ -30,6 +30,7 @@ use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{Options, Service as _, Session};
 use tilo_session_core::desktop::state::{DesktopNotifications, HostAction, HostActionSource};
+use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 use tilo_session_core::shell::{LayoutPersonReading, LayoutWorkspaceReading};
 
 const WIDTH: i32 = 1280;
@@ -877,6 +878,95 @@ fn the_bars_overview_shows_every_window_and_picking_one_brings_it_front() {
                 })
         })
     });
+}
+
+/// A search the launcher holds for its own next open does not filter the overview the person
+/// reaches from anywhere else: the windows stand there as they are, and the query the launcher
+/// kept shows nothing of its own.
+#[test]
+fn the_overview_does_not_carry_a_search_the_launcher_left_behind() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    open_window(&mut session, "so.tilo.notes");
+    open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 2
+    });
+    let titles: Vec<String> = crate::common::windows(&session)
+        .into_iter()
+        .map(|window| window.title)
+        .collect();
+    // The launcher searches for something no window holds, and goes as choosing an app closes it.
+    session
+        .invoke(
+            SHELL_RESOURCE,
+            "search",
+            &serde_json::Map::from_iter([(
+                "query".to_owned(),
+                serde_json::json!("nothing like a window"),
+            )]),
+        )
+        .expect("the search runs");
+    until(&mut session, |session| here(session) == "launcher");
+    show(&mut session, "none");
+    show(&mut session, "overview");
+    // Every window is drawn, and the search's own answer is not what the person sees.
+    until(&mut session, |session| {
+        titles
+            .iter()
+            .all(|title| session.shell_control(title).is_some())
+    });
+    assert!(
+        !session.shell_says("Nothing matches"),
+        "the search the launcher kept is no filter over the overview: {:?}",
+        session.accessible_labels()
+    );
+}
+
+/// The overview reached from the launcher while a search stands carries that search: it shows
+/// what the search found across the windows, as the launcher's query does.
+#[test]
+fn the_overview_reached_from_the_launcher_shows_what_the_search_found() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    open_window(&mut session, "so.tilo.notes");
+    open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| {
+        crate::common::windows(session).len() == 2
+    });
+    let titled = |session: &Session, app: &str| -> String {
+        crate::common::windows(session)
+            .into_iter()
+            .find(|window| window.app_key == app)
+            .map(|window| window.title)
+            .expect("the window is open on the shell")
+    };
+    let notes = titled(&session, "so.tilo.notes");
+    let mail = titled(&session, "so.tilo.mail");
+    session
+        .invoke(
+            SHELL_RESOURCE,
+            "search",
+            &serde_json::Map::from_iter([("query".to_owned(), serde_json::json!("notes"))]),
+        )
+        .expect("the search runs");
+    until(&mut session, |session| here(session) == "launcher");
+    // Reached from the launcher, the overview shows the windows the search found.
+    show(&mut session, "overview");
+    until(&mut session, |session| {
+        session.shell_control(OVERVIEW_SEARCH).is_some()
+    });
+    let row = |title: &str, app: &str| format!("{title}, {app}");
+    until(&mut session, |session| {
+        session.shell_control(&row(&notes, "Notes")).is_some()
+    });
+    assert!(
+        session.shell_control(&row(&mail, "Mail")).is_none(),
+        "the mail window is not what the search found: {:?}",
+        session.accessible_labels()
+    );
 }
 
 /// The shell's reading holds every workspace's windows, not only the workspace in front's: a

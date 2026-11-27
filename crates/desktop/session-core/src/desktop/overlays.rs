@@ -694,6 +694,18 @@ impl Overlays {
         self.0.borrow_mut().moved();
     }
 
+    /// Forget what the person typed in the shell's search: the launcher keeps it for its own
+    /// next open, but a surface that shows the windows is not filtered by a search that has
+    /// done its work somewhere else.
+    pub fn forget_spotlight(&self) {
+        let mut stack = self.0.borrow_mut();
+        if stack.spotlight.is_empty() {
+            return;
+        }
+        stack.spotlight.clear();
+        stack.moved();
+    }
+
     /// Open the history on what the person opened lately of `app` (its canonical id) or of `kind`
     /// (a type as its app publishes it); both empty shows everything.
     pub fn history(&self, app: &str, kind: &str) {
@@ -1627,6 +1639,13 @@ mod tests {
         overlays.search("quotes");
         assert_eq!(overlays.here(), Overlay::Launcher);
         assert_eq!(overlays.spotlight(), "quotes");
+        overlays.forget_spotlight();
+        assert_eq!(overlays.spotlight(), "");
+        assert_eq!(
+            overlays.here(),
+            Overlay::Launcher,
+            "forgetting the query leaves the launcher where it stands"
+        );
         for name in [
             "none",
             "shell",
