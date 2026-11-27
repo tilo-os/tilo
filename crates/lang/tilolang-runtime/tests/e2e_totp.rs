@@ -165,6 +165,24 @@ mod cases {
         }
     }
 
+    /// What the runtime sends an invocation to: the vault's calls of itself, and an own action
+    /// that waits for the person kept as an ask, never run before their yes.
+    #[derive(Clone)]
+    struct Router {
+        vault: Vault,
+        dispatch: Dispatch,
+    }
+
+    impl Invoker for Router {
+        fn invoke(&self, invocation: &Invocation) -> Invoked {
+            if invocation.app() == "so.tilo.vault" {
+                self.vault.invoke(invocation)
+            } else {
+                self.dispatch.invoke(invocation)
+            }
+        }
+    }
+
     impl VaultHost for Vault {
         fn code(&self, reference: &str) -> Option<VaultCode> {
             let kept = self.kept.borrow();
@@ -221,7 +239,12 @@ mod cases {
                 &device,
             ));
             let vault = Vault::new();
-            rt.set_foreign_invoker(vault.clone());
+            // The vault answers the app's calls of it; an action of the app's own that waits for
+            // the person is kept as the ask the dispatch would hold, as a host's does.
+            rt.set_foreign_invoker(Router {
+                vault: vault.clone(),
+                dispatch: Dispatch::new(),
+            });
             rt.set_vault(vault.clone());
             let package = tilolang_tilo::catalogue::described("so.tilo.vault", "Vault", VAULT)
                 .expect("the vault's package reads");
@@ -1093,9 +1116,25 @@ mod cases {
             assert_eq!(state_text(&window, "issuer"), "GitHub", "for the account it was on");
             press(&s, "Back");
             let window = s.window();
-            let deleted = window.fire_with(&grid_key(&s), "delete", Some(&Value::resource(&a)));
-            assert!(matches!(deleted, Ok(InvokeOutcome::Done(_))), "{deleted:?}");
-            assert!(s.accounts().is_empty(), "the delete key deletes the account it was on");
+            // Deleting an account reaches the vault that holds its key, which no undo takes
+            // back: the press asks the person first, and acts on their yes.
+            let asked = window.fire_with(&grid_key(&s), "delete", Some(&Value::resource(&a)));
+            assert!(matches!(asked, Ok(InvokeOutcome::Asked(_))), "{asked:?}");
+            assert!(!s.accounts().is_empty(), "nothing is deleted before the person's yes");
+            let deleted = s
+                .rt
+                .invoke_approved_through(
+                    &me(),
+                    None,
+                    (
+                        s.app.action("delete_account").as_str(),
+                        vec![Value::resource(&s.root), Value::resource(&a)],
+                    ),
+                    None,
+                )
+                .unwrap();
+            assert!(matches!(deleted, InvokeOutcome::Done(_)), "{deleted:?}");
+            assert!(s.accounts().is_empty(), "the delete deletes the account it was on");
             assert!(s.vault.kept().is_empty(), "and the key the vault kept for it");
         }
 

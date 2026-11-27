@@ -18,7 +18,8 @@ mod cases {
 
     impl Mail {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            let authority = TestAuthority::new();
+            let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let device = Files::default();
             rt.set_blobs(device.clone());
             rt.set_clock(|| "2026-06-30T09:00:00Z".to_owned());
@@ -27,7 +28,12 @@ mod cases {
             for used in &packages {
                 used.load(&rt);
             }
-            app.load(&rt);
+            authority.trust(&app.load(&rt));
+            // Taking a message in or opening a file leaves the system for the record an outside
+            // service keeps: the person's press of it confirms, and the test answers that here.
+            for action in ["deliver_message", "open_message_file"] {
+                authority.grant_outside(&app.action(action));
+            }
             let root = rt.create_root("Mail").unwrap();
             Self {
                 rt,

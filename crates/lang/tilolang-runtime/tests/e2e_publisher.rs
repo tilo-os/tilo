@@ -150,8 +150,14 @@ mod cases {
             let device = Files::default();
             rt.set_blobs(device.clone());
             authority.trust(&app.load(&rt));
-            // A copy reaches outside Tilo, which the policy allows for the app it is written in.
-            for action in ["copy_proof", "copy_secret", "export_key"] {
+            // A copy, or applying a namespace at the registry, reaches outside Tilo, which the
+            // policy allows for the app it is written in: the person's press of it.
+            for action in [
+                "copy_proof",
+                "copy_secret",
+                "export_key",
+                "apply_for_namespaces",
+            ] {
                 authority.grant_outside(&app.action(action));
             }
             let root = rt.create_root("Publisher").unwrap();

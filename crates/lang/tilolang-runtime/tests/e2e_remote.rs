@@ -1,7 +1,7 @@
 //! Remote Desktop (`apps/tl/remote/app.tl`) end to end: the saved connections a workspace shares,
 //! the form's refusals, the passwords kept in the workspace's vault, and the sessions it opens. An SSH
-//! session's terminal, and a VNC desktop's or a Tilo device's screen, as each stream says it moves,
-//! from connecting to closed. A machine's key is trusted only as it was shown.
+//! session's terminal, and a VNC desktop's screen, as each stream says it moves, from connecting to
+//! closed. A machine's key is trusted only as it was shown.
 //!
 //! The device's engine is the test's. It answers the ops the Remote engine answers
 //! (`crates/engines/loadable/remote` over `crates/engines/tilo-remote`, whose own tests reach real
@@ -27,9 +27,6 @@ mod cases {
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/remote/app.tl");
-
-    /// A Tilo device's endpoint id, as the person's devices name it.
-    const DEVICE: &str = "6f1c2d3e4a5b69788796a5b4c3d2e1f00112233445566778899aabbccddeeff0";
 
     /// What the device's engine was asked, and the streams it runs.
     #[derive(Clone, Default)]
@@ -197,22 +194,6 @@ mod cases {
                     &here_ty,
                 )
                 .expect("the device's sessions");
-            // The person's devices, as the session publishes them: a Tilo connection picks one.
-            let devices = ResourceRef::parse_id("session:devices", "so.tilo.device#Devices")
-                .expect("the devices' address");
-            rt.set_reading(
-                &devices,
-                &json!({"devices": [
-                    {"id": "aa".repeat(32), "label": "This laptop", "online": true, "nearby": true,
-                     "local": true, "display": true, "wakeable": true, "audio_output": true,
-                     "seen_ms": 0, "storage": []},
-                    {"id": DEVICE, "label": "The studio", "online": true, "nearby": false,
-                     "local": false, "display": true, "wakeable": false, "audio_output": false,
-                     "seen_ms": 0, "storage": []}
-                ]})
-                .to_string(),
-            )
-            .expect("the person's devices read");
             for action in app.meta().actions.iter().map(|a| a.name.clone()) {
                 authority.grant_outside(&app.action(&action));
             }
@@ -419,11 +400,6 @@ mod cases {
                 ("auth", Value::some(desk.case("AuthMethod", "public_key"))),
             ]);
             assert!(why.contains("VNC signs in with a password"), "{why}");
-            let why = desk.refused("add_connection", &[
-                ("r", r), ("name", Value::text("Studio")), ("host", Value::text("studio.local")),
-                ("kind", desk.case("ConnectionKind", "tilo")),
-            ]);
-            assert!(why.contains("exact endpoint id"), "{why}");
             assert!(desk.items(&desk.root, "connections").is_empty());
         }
 
@@ -436,14 +412,12 @@ mod cases {
                 ("port", Value::some(Value::Int(2222))), ("user", Value::some(Value::text("root")))]);
             desk.add(&[("name", Value::text("Kiosk")), ("host", Value::text("kiosk.lan")),
                 ("kind", desk.case("ConnectionKind", "vnc"))]);
-            desk.add(&[("name", Value::text("Studio")), ("host", Value::text(DEVICE)),
-                ("kind", desk.case("ConnectionKind", "tilo"))]);
             desk.add(&[("name", Value::text("Office PC")), ("host", Value::text("office.lan")),
                 ("kind", desk.case("ConnectionKind", "rdp"))]);
             assert_eq!(desk.field(&ssh, "port"), Value::Int(22), "SSH's own port is kept");
             let window = desk.window();
             let said = words(window.tree());
-            for address in ["ada@build.lan", "root@10.0.0.2:2222", "kiosk.lan", "6f1c2d3e4a5b…", "office.lan"] {
+            for address in ["ada@build.lan", "root@10.0.0.2:2222", "kiosk.lan", "office.lan"] {
                 assert!(said.iter().any(|w| w == address), "{address} in {said:?}");
             }
             assert!(said.iter().any(|w| w == "RDP isn't supported"), "an RDP row says so: {said:?}");
@@ -675,7 +649,7 @@ mod cases {
             assert!(shows(&failed, "Try again"));
         }
 
-        phase rdp_and_tilo_devices_are_kept_and_say_why_no_session_opens;
+        phase rdp_devices_are_kept_and_say_why_no_session_opens;
         {
             let desk = Desk::new();
             let rdp = desk.add(&[("name", Value::text("Office PC")), ("host", Value::text("office.lan")),
@@ -686,14 +660,6 @@ mod cases {
             let shown = page(&desk, &rdp);
             assert!(shows(&shown, "Remote can't open RDP connections"), "{}", dump(shown.tree()));
             assert!(shows(&shown, "Choose SSH or VNC"));
-            let c = desk.add(&[("name", Value::text("Studio")), ("host", Value::text(DEVICE)),
-                ("kind", desk.case("ConnectionKind", "tilo"))]);
-            assert_eq!(desk.field(&c, "port"), Value::Int(0));
-            assert_eq!(desk.field(&c, "auth"), desk.case("AuthMethod", "device_identity"));
-            desk.connect(&c);
-            assert!(desk.device.streams.borrow().is_empty());
-            let shown = page(&desk, &c);
-            assert!(shows(&shown, "another Tilo device's screen"), "{}", dump(shown.tree()));
         }
 
         phase deleting_a_connection_ends_its_session;

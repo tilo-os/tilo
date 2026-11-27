@@ -320,6 +320,23 @@ mod cases {
             .clone()
     }
 
+    /// The button `label` pressed with Shift held: what a destructive action Undo takes back
+    /// asks before it runs, and Shift is the person's yes to it.
+    fn press_destructive(view: &ViewInstance, label: &str) {
+        let key = button_key(view, label);
+        view.fire_held(
+            &key,
+            "press",
+            None,
+            None,
+            tilolang_runtime::Held {
+                shift: true,
+                ..tilolang_runtime::Held::default()
+            },
+        )
+        .unwrap();
+    }
+
     /// The key of the window's own plain control named `label`, not the action of the same name
     /// the app publishes into its window's action menu: a view's control says it is plain.
     fn plain_button(view: &ViewInstance, label: &str) -> Option<String> {
@@ -467,7 +484,7 @@ mod cases {
             "the person is told the login waits for them"
         );
 
-        view.fire(&button_key(&view, "Delete"), "press").unwrap();
+        press_destructive(&view, "Delete");
         assert_eq!(b.page.last()["credential"].as_str(), Some("delete"));
         assert_eq!(b.page.last()["account"].as_str(), Some("vault.item:a"));
     }
@@ -1675,7 +1692,7 @@ mod cases {
             assert_eq!(row_secondary(&b.page_view(), "Reader"), "Off (1.2.3)");
 
             let view = b.page_view();
-            view.fire(&button_key(&view, "Remove"), "press").unwrap();
+            press_destructive(&view, "Remove");
             assert_eq!(
                 b.page.ops().into_iter().skip(4).collect::<Vec<_>>(),
                 ["extension_remove", "extension_list"]

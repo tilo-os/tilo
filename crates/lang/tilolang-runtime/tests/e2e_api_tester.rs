@@ -256,9 +256,15 @@ mod cases {
             let selection = Clipboard::default();
             rt.set_clipboard(selection.clone());
             authority.trust(&app.load(&rt));
-            // A copy reaches outside Tilo, which the policy allows for the app it is written
-            // in: the person's press of its copy button.
-            for action in ["copy_body", "copy_headers", "copy_request"] {
+            // A copy or a send reaches outside Tilo, which the policy allows for the app it is
+            // written in: the person's press of its copy button or of Send.
+            for action in [
+                "copy_body",
+                "copy_headers",
+                "copy_request",
+                "send",
+                "start_send",
+            ] {
                 authority.grant_outside(&app.action(action));
             }
             let root = rt.create_root("Workspace").unwrap();
