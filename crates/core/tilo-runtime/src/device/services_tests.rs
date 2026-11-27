@@ -4006,3 +4006,98 @@ fn an_agent_the_shell_names_asks_no_host_operation() {
         "the person's own call on the same link lists the host's workspaces: {own:?}"
     );
 }
+
+/// Every file under `root` with its length and when it was last changed: what a step wrote is
+/// what differs after it.
+fn files_under(root: &Path) -> std::collections::BTreeMap<PathBuf, (u64, std::time::SystemTime)> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut open = vec![root.to_path_buf()];
+    while let Some(dir) = open.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let metadata = entry.metadata().unwrap();
+            if metadata.is_dir() {
+                open.push(entry.path());
+            }
+            files.insert(entry.path(), (metadata.len(), metadata.modified().unwrap()));
+        }
+    }
+    files
+}
+
+/// Founding a person on an installed computer writes only where the device daemon's system unit
+/// lets it. The shipped unit keeps the system read-only but for its `ReadWritePaths`, so a file
+/// founding writes anywhere else fails a person's first sign-in on a read-only file system, and
+/// the computer comes up with no person. The founding runs here on the computer's own layout,
+/// under a scratch root, as the unit's account; every file it wrote must fall under a path the
+/// shipped unit names.
+#[test]
+fn founding_writes_only_where_the_daemons_system_unit_lets_it() {
+    let scratch = tempfile::tempdir().unwrap();
+    let on_the_computer = |path: &str| scratch.path().join(path.trim_start_matches('/'));
+    let unit_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").join(
+        tilo_machine::DAEMON_SYSTEM_UNIT
+            .trim_start_matches('/')
+            .replacen("usr/", "os/usr/", 1),
+    );
+    let unit = std::fs::read_to_string(&unit_path)
+        .unwrap_or_else(|error| panic!("the shipped unit {}: {error}", unit_path.display()));
+    assert!(
+        unit.lines()
+            .any(|line| line.trim() == "ProtectSystem=strict"),
+        "the unit this test reads is the one that keeps the system read-only"
+    );
+    let writable: Vec<PathBuf> = unit
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("ReadWritePaths="))
+        .flat_map(str::split_whitespace)
+        .map(|path| PathBuf::from(path.trim_start_matches(['-', '+'])))
+        .collect();
+
+    // The computer as the daemon finds it at its first start: the device key its key-init unit
+    // made, and the daemon's home in its state directory. The profile the unit names is the
+    // computer's own, which names nothing apart, so the account's store is under that home.
+    let home = on_the_computer(tilo_machine::DAEMON_SYSTEM_PROFILE);
+    std::fs::create_dir_all(&home).unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", &home)
+        .set(
+            "TILO_IDENTITY_ROOT",
+            on_the_computer(tilo_device_identity::persist::SYSTEM_IDENTITY_ROOT),
+        )
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .remove("XDG_CONFIG_HOME")
+        .remove("XDG_DATA_HOME")
+        .remove("XDG_STATE_HOME")
+        .remove(tilo_machine::DAEMON_PROFILE_VAR);
+    // The computer's identity root, as the daemon finds it, under the scratch root.
+    let keys = tilo_identity::provisioning::collaboration_identity_paths();
+    let taken = tilo_identity::provisioning::device_key_taken_as_daemon(&keys).unwrap();
+
+    let before = files_under(scratch.path());
+    super::found_account_person(&keys, "Ada", 1000).expect("the person is made");
+    drop(taken);
+    let after = files_under(scratch.path());
+
+    let written: Vec<PathBuf> = after
+        .iter()
+        .filter(|(path, stamp)| before.get(*path) != Some(stamp))
+        .map(|(path, _)| Path::new("/").join(path.strip_prefix(scratch.path()).unwrap()))
+        .collect();
+    assert!(
+        written
+            .iter()
+            .any(|path| path.starts_with(tilo_machine::DAEMON_SYSTEM_PROFILE)),
+        "founding keeps the person's root in the daemon's state: {written:?}"
+    );
+    let refused: Vec<&PathBuf> = written
+        .iter()
+        .filter(|path| !writable.iter().any(|allowed| path.starts_with(allowed)))
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "founding writes {refused:?}, which {} keeps read-only (it lets the daemon write \
+         {writable:?})",
+        unit_path.display()
+    );
+}
