@@ -532,6 +532,24 @@ impl StatePeer {
         entries.sort_by_key(|entry| entry.revoked_device_public_key);
         entries
     }
+    /// The last sequence number `author`'s writes of `record` of `app` took in this replica: a
+    /// write of them takes the next, past it. `None` where this replica holds no such record or no
+    /// write of that author in it.
+    #[must_use]
+    pub fn document_floor(&self, app: &str, record: &str, author: [u8; 32]) -> Option<u64> {
+        self.core
+            .documents
+            .iter()
+            .find(|(route, _)| route.app == app && route.record == record)
+            .and_then(|(_, document)| {
+                document
+                    .channel
+                    .last_seq_per_author
+                    .get(&collab_types::Ed25519PublicKey::from_bytes(author))
+                    .copied()
+            })
+    }
+
     /// Where this replica stands on each writer's line of each record: what a device replaying
     /// its history sends after. A record whose stored history was set aside stands nowhere, as one
     /// this replica lacks does, so its whole history is sent again ([`Self::quarantined`]).
