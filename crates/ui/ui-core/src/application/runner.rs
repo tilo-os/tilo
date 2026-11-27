@@ -103,14 +103,12 @@ impl NativeProcess {
         }
         // The window's records are the workspace's: read over the connection the window joins,
         // and what it changes published on the records' routes. Without one nothing it does
-        // would be kept, which the person is told rather than finding out later. The session's
-        // lock screen is the one window that keeps nothing and cannot wait: it draws in memory
-        // and follows the session when the person's services answer.
+        // would be kept, which the person is told rather than finding out later.
         let documents = match resolved.documents {
             Some(documents) => Some(documents),
             None => match connected_documents() {
                 Ok(documents) => Some((documents, false)),
-                Err(error) if lock_surface() => None,
+                Err(_) if lock_surface() => None,
                 Err(error) => return Err(error),
             },
         };

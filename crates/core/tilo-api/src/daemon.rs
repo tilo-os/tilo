@@ -71,15 +71,10 @@ pub fn this_computer() -> Result<DaemonPlace, String> {
 /// socket's path in it is too long for a socket's address.
 pub fn serving_profile(profile: &Path) -> Result<DaemonPlace, String> {
     let sockets = profile_sockets(profile)?;
-    // The lock's directory is the profile's own, made here as the login's is
-    // ([`tilo_device_identity::login::Place::here`]), by whoever names the place.
     let device = tilo_device_identity::login::daemon::profile_device_dir(profile);
-    tilo_files::native::private::directory(&device).map_err(|error| {
-        format!(
-            "this profile's device directory {}: {error}",
-            device.display()
-        )
-    })?;
+    // Made here, by whoever names the place, as the login's own is.
+    tilo_files::native::private::directory(&device)
+        .map_err(|error| format!("{} is not private: {error}", device.display()))?;
     let place = DaemonPlace::at(&sockets, &device);
     socket_fits(&place.native)?;
     Ok(DaemonPlace {

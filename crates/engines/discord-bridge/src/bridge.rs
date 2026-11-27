@@ -36,8 +36,7 @@ pub const EMOJI_KIND: &str = "tilo.workspace.emoji";
 /// The workspace's own governance resource kind, whose role changes the
 /// bridge mirrors.
 pub const WORKSPACE_KIND: &str = "tilo.workspace";
-/// The Discord app's own record, as the Rust app publishes it: the record the
-/// bridge binds and mirrors, whose changes it plans from.
+/// The guild record the Discord app publishes, as its changes name it.
 pub const APP_RECORD_KIND: &str = "discord.guild";
 
 /// Every list the program loops over, by the verb each runs.
@@ -196,8 +195,7 @@ fn fired(event: &Value) -> Fired<'_> {
         },
         Some(WORKSPACE_KIND) => Fired::Workspace { verbs, event },
         Some(EMOJI_KIND) => Fired::Emoji,
-        // The app's record, whichever app publishes it: the Rust app's own kind, and the
-        // tilolang package's.
+        // The app's record, whichever app publishes it: the crate's kind and the package's.
         Some(crate::KIND | APP_RECORD_KIND) => Fired::Guild { verbs, event },
         _ => Fired::Other,
     }
