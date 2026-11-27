@@ -153,7 +153,8 @@ const MIGRATE_TEST: &str =
 /// `tilo migrate` invokes the device's migrations as any caller does: a step it sends on the
 /// daemon's native endpoint, as the person whose account connects, reaches the provider the
 /// daemon registered on `devices/<this device>/migrate`, and its answer comes back on that
-/// invocation.
+/// invocation. No Migrations app is installed here: listing the sources is the engine's own
+/// action, so it works on a device without the app.
 #[test]
 fn a_commands_migration_steps_reach_the_devices_own_migrations() {
     let Some(root) = isolated_root(MIGRATE_TEST) else {
@@ -208,7 +209,11 @@ fn a_commands_migration_steps_reach_the_devices_own_migrations() {
             .receipt()
             .status;
     };
-    let sources: Vec<&str> = answer["sources"]
+    // What the engine answers is the JSON text the app that lists the sources decodes.
+    let listed: serde_json::Value =
+        serde_json::from_str(answer.as_str().expect("the sources are JSON text"))
+            .expect("the sources are JSON");
+    let sources: Vec<&str> = listed["sources"]
         .as_array()
         .expect("every source")
         .iter()

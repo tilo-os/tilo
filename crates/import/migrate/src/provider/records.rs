@@ -235,17 +235,14 @@ impl<'a> Records<'a> {
     }
 }
 
-/// The sources `sources` (what the engine's `sources` answers) are offered on `device`: each is
-/// a migration the Migrations app lists for a person to pick, made the first time, saying why the
-/// device cannot read one and what connecting one asks for.
+/// What the engine's `sources` answers, each source as the Migrations app offers it: its key and
+/// title, why the device cannot read it, whether it is an account to connect, and what connecting
+/// asks for. The device answers them; the app, which calls this action, puts them in its own
+/// records, so a person on a device with no app reads the same list from `tilo migrate sources`.
 ///
 /// # Errors
-/// The app refused, or could not be reached.
-pub fn offered(
-    open: &dyn Fn() -> Result<Box<dyn Workspace>>,
-    device: &str,
-    sources: &Value,
-) -> Result<()> {
+/// A source the engine lists and has no row for.
+pub fn offered(device: &str, sources: &Value) -> Result<Value> {
     let listed = sources
         .get("sources")
         .and_then(Value::as_array)
@@ -261,18 +258,18 @@ pub fn offered(
             "source": row.key,
             "title": row.title,
             "unavailable": one.get("unavailable").and_then(Value::as_str).unwrap_or_default(),
+            "here": one.get("here").cloned().unwrap_or(Value::Null),
+            "next": one.get("next").cloned().unwrap_or(Value::Null),
             "connects": row.connect.is_some(),
             "asks_url": example_of(asks, "--url"),
             "asks_login": example_of(asks, "--login"),
         }));
     }
-    open()?
-        .ask(
-            &format!("{APP}#offer"),
-            json!({"device": device, "sources": offered}),
-        )
-        .context("the Migrations app did not take the sources")
-        .map(drop)
+    Ok(json!({
+        "device": device,
+        "sources": offered,
+        "reviewed": sources.get("reviewed").cloned().unwrap_or_else(|| json!([])),
+    }))
 }
 
 /// The example a source's connect arguments give for `flag` (`--url https://cloud.example.com`

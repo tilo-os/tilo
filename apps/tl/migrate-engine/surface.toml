@@ -1,5 +1,5 @@
 # The actions of a device's migration engine, read as the package `so.tilo.migrate.engine`.
-# What `so.tilo.migrate` publishes on `devices/<device>/migrate`; a test holds it to that.
+# What `so.tilo.migrate.engine` publishes on `devices/<device>/migrate`; a test holds it to that.
 
 [[resources]]
 kind = "devices.migrate"
@@ -10,7 +10,7 @@ fields = []
 [[resources.verbs]]
 id = "sources"
 kind = "outside"
-returns = { schema = {} }
+returns = { schema = { type = "string" }, type = "text" }
 params = []
 
 [[resources.verbs]]

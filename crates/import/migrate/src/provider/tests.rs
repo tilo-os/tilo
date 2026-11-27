@@ -792,8 +792,8 @@ fn the_committed_package_is_what_the_engine_registers() {
         "../../../../../apps/tl/migrate-engine/tilo-app.toml"
     ))
     .expect("the manifest reads");
-    assert_eq!(manifest["package"]["id"].as_str(), Some(super::PACKAGE));
-    assert_eq!(registered.app, super::PACKAGE);
+    assert_eq!(manifest["package"]["id"].as_str(), Some(super::PROVIDER));
+    assert_eq!(registered.app, super::PROVIDER);
     assert_eq!(
         manifest["package"]["name"].as_str(),
         Some(registered.title.as_str())

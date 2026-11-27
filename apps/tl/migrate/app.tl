@@ -162,9 +162,19 @@ type Offered {
     asks_login: Text = ""
 }
 
+/// What the engine's `sources` answers: the device that read them, and each source as the list
+/// shows it.
+type OfferedSources {
+    /// The key of the device that holds the data.
+    device: Text = ""
+    /// Each source the device reads, as the list offers it.
+    sources: List<Offered>
+}
+
 /// The device `device` offers the sources `sources`: each is a migration the list shows for a
 /// person to pick, made the first time, saying why the device cannot read it and what connecting
-/// it asks for.
+/// it asks for. The app writes this of the engine's answer, so the list is the app's own records
+/// and a device without the app still lists the same sources to `tilo migrate sources`.
 action offer(m: Migrations, device: Text, sources: List<Offered>) (
     icon: .circle_plus,
     did: "found sources",
@@ -373,13 +383,21 @@ action refused(g: Migration, why: Text) {
 }
 
 /// Lists every source this device can bring things in from, each as a migration nobody looked at
-/// yet: what a person picks from to start one.
+/// yet: what a person picks from to start one. The device's engine lists them, and the app puts
+/// what it answered in its own records.
 primary action find_sources(m: Migrations) (
     icon: .plus,
     label: "Bring something in",
     did: "looked for sources",
 ) {
-    engine.sources()
+    match json.decode<OfferedSources>(engine.sources()) {
+        .ok(found) => {
+            offer(m, found.device, found.sources)
+        }
+        // The engine answers these itself, in the shape this app reads: an answer that is not
+        // one leaves the list as it is rather than showing rows of nothing.
+        .err(_) => {}
+    }
 }
 
 /// Read `g`'s source again: what it holds now is what there is to choose from.

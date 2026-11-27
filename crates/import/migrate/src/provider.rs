@@ -1,7 +1,9 @@
 //! The migration engine as a device's actions: `sources`, `connect`, `review`, `choose`, `start`,
-//! `stop`, `status` and `undo` of provider `so.tilo.migrate` on the resource of the device that
-//! holds the data (`devices/<device>/migrate`). People, agents, the CLI and a migration's view call
-//! the same actions: the view by the package the resource is published as ([`PACKAGE`]).
+//! `stop`, `status` and `undo` of provider `so.tilo.migrate.engine` on the resource of the device
+//! that holds the data (`devices/<device>/migrate`). People, agents, the CLI and a migration's view
+//! call the same actions: the engine keeps its own name, which the Migrations app calls as the
+//! package `so.tilo.migrate.engine` (`use so.tilo.migrate.engine as engine`), so its actions are
+//! the app's and list without it.
 //!
 //! A run is one invocation of `start`: what it brings is said as that invocation's progress, and
 //! cancelling it stops the run after the item it is on, which a later `start` resumes. `stop`
@@ -23,7 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Result, anyhow};
 use serde_json::{Map, Value};
 use tilo_action_calls::{InvocationLog, Reservation};
 use tilo_actions::remote::{
@@ -41,13 +43,11 @@ mod records;
 
 use records::Records;
 
-/// The provider a device's migrations are published under.
-pub const PROVIDER: &str = "so.tilo.migrate";
-
-/// The package the migrations resource is published as, which code calls its actions by
-/// (`use so.tilo.migrate.engine as engine`): apart from the Migrations app, whose records the
-/// engine writes and whose view calls these actions.
-pub const PACKAGE: &str = "so.tilo.migrate.engine";
+/// The provider a device's migrations are published under, and the package code calls its actions
+/// by (`use so.tilo.migrate.engine as engine`). It is the engine's own name, apart from the
+/// Migrations app ([`records::APP`]), whose records the engine writes and whose view calls these
+/// actions.
+pub const PROVIDER: &str = "so.tilo.migrate.engine";
 
 /// What a step fails with when it asks for a key or password its caller did not give: its
 /// failure's details say what it asks for (`{"asks": "Linear API key (it is not shown): "}`), so
@@ -197,13 +197,28 @@ impl Moved {
 #[row(kind = "devices.migrate", label = "Migrations")]
 struct MigrationsRow;
 
+/// The kind `sources` answers as, as the surface types it: the sources the device reads, and the
+/// key of the device, written as the JSON text `{"device": …, "sources": […]}`. The app that lists
+/// them reads it with `json.decode`, as it reads any JSON a device answers.
+struct SourcesAnswer;
+
+impl tilo_resource::JsonSchema for SourcesAnswer {
+    fn json_schema() -> Value {
+        serde_json::json!({"type": "string"})
+    }
+
+    fn field_type(_: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {
+        tilo_resource::FieldType::Text
+    }
+}
+
 /// What a caller does with the migrations of the device that holds the data. Each step lands in
 /// its `workspace`: one this device is a member of, by its id, or the device's own when not given.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "so.tilo.migrate")]
 pub enum MigrateAction {
     /// Every source, what it holds on this device, and how to connect the ones that need it.
-    #[effect(kind = "outside", returns)]
+    #[effect(kind = "outside", returns = SourcesAnswer)]
     Sources,
     /// Connect a source that needs signing in. Its key or password goes into this device's vault.
     #[effect(kind = "outside", job, returns)]
@@ -333,7 +348,7 @@ fn resources(resource: &str) -> Vec<ResourceSpec> {
     let mut spec = tilo_resource::offer::<MigrateAction>(tilo_resource::typed_resource::<
         MigrationsRow,
     >(resource, "Migrations"));
-    spec.app_id = Some(PACKAGE.to_owned());
+    spec.app_id = Some(PROVIDER.to_owned());
     vec![spec]
 }
 
@@ -578,13 +593,13 @@ impl Running {
 
     /// What the step `action` answers.
     fn answer(&self, action: &str, arguments: &Map<String, Value>) -> Result<Value> {
-        // The sources this device reads are offered in the Migrations app, for a person to pick.
+        // The sources this device reads, each as the Migrations app offers it: the device lists
+        // them, and the app, which calls this action, puts them in its own records. Nothing here
+        // writes another app's records, so `tilo migrate sources` works without the app.
         if action == "sources" {
             let listed = self.stepped(action, arguments)?;
-            let open = || self.open_state();
-            records::offered(&open, &self.device, &listed)
-                .context("the sources were not offered in Migrations")?;
-            return Ok(listed);
+            let offered = records::offered(&self.device, &listed)?;
+            return Ok(Value::String(serde_json::to_string(&offered)?));
         }
         // A source connected is read at once, so the person picks what to bring in next; what
         // connecting refused is said on the source. Connecting answers what it answers alone.

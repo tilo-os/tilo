@@ -3,8 +3,9 @@ use {
     tilo_actions::remote::{CatalogueQuery, CatalogueRow, RemoteActionTarget},
 };
 
-/// The provider that answers a device's migrations.
-pub const PROVIDER: &str = "so.tilo.migrate";
+/// The provider that answers a device's migrations: the engine's own name, which the Migrations
+/// app calls its actions by.
+pub const PROVIDER: &str = "so.tilo.migrate.engine";
 /// The kind of a device's migrations resource.
 pub const RESOURCE_KIND: &str = "devices.migrate";
 /// What a source holds; a cloud drive a folder and a page at a time.

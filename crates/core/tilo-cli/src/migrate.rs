@@ -144,7 +144,7 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
         step(&runtime, &device, action, args, json, asks)?.map_err(failed)
     };
     let answer = match cmd {
-        MigrateCmd::Sources => call("sources", Map::new(), Asks::Leave)?,
+        MigrateCmd::Sources => listed_sources(call("sources", Map::new(), Asks::Leave)?)?,
         MigrateCmd::Connect {
             service,
             url,
@@ -233,6 +233,19 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// The sources the device answers, as the list a terminal prints: the action answers them as the
+/// JSON text the app that lists them decodes.
+///
+/// # Errors
+/// The device answered no JSON where it answers its sources.
+fn listed_sources(answered: Value) -> Result<Value> {
+    match answered.as_str() {
+        Some(text) => serde_json::from_str(text)
+            .with_context(|| format!("the device's sources are no JSON: {text}")),
+        None => Ok(answered),
+    }
 }
 
 /// The arguments naming `source`.

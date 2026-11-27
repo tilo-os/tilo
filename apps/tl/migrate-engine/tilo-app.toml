@@ -1,4 +1,4 @@
-# A device's migration engine, read as a package: the actions of `so.tilo.migrate` on
+# A device's migration engine, read as a package: the actions of `so.tilo.migrate.engine` on
 # `devices/<device>/migrate`, described in surface.toml. The device registers them with its
 # provider; a test holds this description to what it registers.
 [package]

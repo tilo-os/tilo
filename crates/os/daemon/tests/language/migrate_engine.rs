@@ -29,10 +29,9 @@ use crate::language::migrate_window::approve_waiting;
 
 /// The Migrations app.
 const MIGRATE: &str = "so.tilo.migrate";
-/// The provider a device's migrations are published under.
-const PROVIDER: &str = "so.tilo.migrate";
-/// The package the engine's resource is published as.
-const PACKAGE: &str = "so.tilo.migrate.engine";
+/// The provider a device's migrations are published under, which is the package the engine's
+/// resource is published as: its own name, apart from the Migrations app.
+const PROVIDER: &str = "so.tilo.migrate.engine";
 /// The device that holds the data.
 const DEVICE: &str = "5b0e9c41d2a7f3e85b0e9c41d2a7f3e85b0e9c41d2a7f3e85b0e9c41d2a7f3e8";
 
@@ -73,7 +72,7 @@ impl Engine {
             action
         };
         let mut spec = ResourceSpec::new(address(), "devices.migrate", "Migrations");
-        spec.app_id = Some(PACKAGE.to_owned());
+        spec.app_id = Some(PROVIDER.to_owned());
         spec.actions = vec![
             step(
                 "start",

@@ -41,6 +41,9 @@ Offered.connects = 7fkckwdj
 Offered.source = 3ltncvkq
 Offered.title = 42gztby5
 Offered.unavailable = vjwhzdbo
+OfferedSources = t4fgrtbj
+OfferedSources.device = 7s5jgygk
+OfferedSources.sources = r4262ghz
 Run = p7c5y2uc
 Run.id = wphp5gxk
 Run.keys = ifezl4lz
@@ -91,4 +94,7 @@ undo@Migration = x6sqvfbn
 unreadable@Migration = 54ygmmcv
 
 # retired
+SourcesAnswer = 4drqbquz
+SourcesAnswer.device = bd75wb73
+SourcesAnswer.sources = txizng2c
 choose@Migration~present = tjc4gwos

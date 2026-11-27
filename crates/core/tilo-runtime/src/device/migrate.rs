@@ -1,5 +1,6 @@
 //! This device's migrations: the one migration engine served as the device's own actions,
-//! provider `so.tilo.migrate` on `devices/<this device>/migrate` ([`tilo_migrate::provider`]).
+//! provider `so.tilo.migrate.engine` on `devices/<this device>/migrate`
+//! ([`tilo_migrate::provider`]).
 //!
 //! A migration runs where the data it reads is: this device's folders, browsers and Thunderbird,
 //! and the services it connects to. People, their agents, `tilo migrate` and a migration's view

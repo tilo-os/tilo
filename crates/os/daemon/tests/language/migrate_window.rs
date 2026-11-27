@@ -565,6 +565,31 @@ fn a_person_picks_a_source_from_the_list_and_brings_it_in() {
         let body = list.shows("Thunderbird on this computer").await;
         assert!(body.contains("A mail account on its server"), "{body}");
 
+        // The list is the engine's answer, read through the app's own action, not one the app
+        // keeps beside it: the same sources the device names, each a migration of its own.
+        let agent = host.agent();
+        let listed = agent_does_approved(
+            host.as_ref(),
+            &agent,
+            &engine(host.as_ref()),
+            "sources",
+            &json!({}),
+        )
+        .await
+        .expect("the device lists its sources");
+        // The device answers the sources as JSON text, which the app decodes.
+        let listed: Value = serde_json::from_str(
+            listed.as_str().expect("the sources are JSON text"),
+        )
+        .expect("the sources are JSON");
+        let sources = listed["sources"].as_array().cloned().unwrap_or_default();
+        assert!(!sources.is_empty(), "the device names its sources: {listed:#}");
+        for source in &sources {
+            let title = source["title"].as_str().unwrap_or_default();
+            assert!(!title.is_empty(), "{listed:#}");
+            offered(host.as_ref(), title).await;
+        }
+
         // The mail account asks what connecting needs, and says what is missing on its page.
         let mail = Window {
             migration: Some(offered(host.as_ref(), "A mail account").await),
