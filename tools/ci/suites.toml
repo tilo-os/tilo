@@ -1700,20 +1700,18 @@ inputs = [
   "apps/tl/contacts/",
   "apps/tl/tasks/",
 ]
-readers = ["crates/lang/tilolang-workspace/src/records.rs"]
+readers = ["crates/lang/tilolang-workspace/build.rs"]
 
 [[cargo]]
 package = "tilo-daemon"
-# The agents', triggers' and wakeups' tests run Chat, Tasks, Mail and Clocks from their sources, through the
+# The agents' and triggers' tests run Chat, Tasks, Mail and Clocks from their sources, through the
 # language runtime the daemon links and mounts; the host tests also install the Rust apps and hold the
 # tilo.sh book to the pages it lists.
 inputs = ["apps/", "dist/macos/collection_local_runtime.py", "docs/tilo-sh/pages.toml"]
 readers = [
   "crates/os/daemon/tests/language/host/apps.rs",
   "crates/os/daemon/tests/language/customer_workspaces.rs",
-  "crates/os/daemon/tests/language/task_work_tests.rs",
   "crates/os/daemon/tests/language/triggers_tests.rs",
-  "crates/os/daemon/tests/language/wakeups_tests.rs",
 ]
 
 [[cargo]]
@@ -1785,7 +1783,6 @@ inputs = [
   "crates/ui/themes/bauhaus/theme.json",
 ]
 readers = [
-  "crates/desktop/session/examples/session_perf.rs",
   "crates/desktop/session/tests/no_locale_leaks.rs",
   "crates/desktop/session/tests/own_api.rs",
   "crates/desktop/session/src/page_track.rs",
@@ -2023,6 +2020,11 @@ check = "windows/x86_64-platform"
 [[unrequired]]
 suite = "os/dev/test-installed-desktop.sh"
 reason = "boots the guarded dev disk in a VM and signs in at its greeter"
+check = "os-acceptance-{arch}"
+
+[[unrequired]]
+suite = "os/dev/test-joined-device-startup.sh"
+reason = "boots two overlays of the guarded dev disk in VMs: one founds the person and issues a ticket, the other spends it and signs in at its greeter"
 check = "os-acceptance-{arch}"
 
 [[unrequired]]
