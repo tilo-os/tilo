@@ -880,19 +880,25 @@ mod device_person_tests {
             .current_native_person(&fixture.workspace, &own)
             .expect("the person stands under this device's own certificate");
 
-        // A key their root never signed is nobody's standing, whichever key it claims to be.
+        // A second person's certificate for this same device key, signed by their own root and
+        // valid as a certificate, in a workspace that admits only the first person: the workspace
+        // refuses it, so it stands for no one.
         let stranger = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let mut theirs = tilo_user_identity::DeviceCert {
             user_public_key: stranger.verifying_key().to_bytes(),
             ..own.clone()
         };
         tilo_user_identity::sign_device_cert(&mut theirs, &stranger).unwrap();
-        assert!(
+        tilo_user_identity::verify_device_cert(&theirs)
+            .expect("the second person's certificate is a valid one of their own");
+        assert_eq!(theirs.device_public_key, own.device_public_key);
+        assert_ne!(theirs.user_public_key, own.user_public_key);
+        assert_eq!(
             fixture
                 .state
-                .current_native_person(&fixture.workspace, &theirs)
-                .is_err(),
-            "a stranger's certificate for this device's key stands for no one"
+                .current_native_person(&fixture.workspace, &theirs),
+            Err("device is no longer enrolled".to_owned()),
+            "the workspace that admits only the first person refuses the second's certificate"
         );
 
         // The same certificate on a host that is another computer: that device's grant is not
