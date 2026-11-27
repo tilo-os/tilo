@@ -663,11 +663,16 @@ pub(crate) fn peek(
 /// Whether the other end of `stream` is still connected: a peek at the pipe fails once it is
 /// gone, and answers either way while an end is held.
 pub(crate) fn connected(stream: &Stream) -> bool {
+    pipe_connected(stream.pipe.as_raw_handle())
+}
+
+/// [`connected`] of the pipe end `pipe`, a live handle the caller holds for the call.
+pub(crate) fn pipe_connected(pipe: RawHandle) -> bool {
     // SAFETY: a live pipe handle; only the count of bytes waiting is asked for, which is not
     // consumed.
     let peeked = unsafe {
         PeekNamedPipe(
-            stream.pipe.as_raw_handle(),
+            pipe,
             std::ptr::null_mut(),
             0,
             std::ptr::null_mut(),

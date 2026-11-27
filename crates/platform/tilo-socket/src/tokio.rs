@@ -375,6 +375,14 @@ mod pipe {
             }
         }
 
+        /// The pipe end's handle, and whether it is the server's end.
+        pub(crate) fn raw_end(&self) -> (std::os::windows::io::RawHandle, bool) {
+            match &self.end {
+                End::Server(pipe) => (pipe.as_raw_handle(), true),
+                End::Client(pipe) => (pipe.as_raw_handle(), false),
+            }
+        }
+
         /// Whether this is the server's end, the one the pipe's maker accepted on.
         #[must_use]
         pub const fn is_server_end(&self) -> bool {

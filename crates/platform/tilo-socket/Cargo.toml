@@ -26,6 +26,8 @@ tokio = ["dep:tokio"]
 # A stream's first bytes, peeked without consuming them (`MSG_PEEK`, `PeekNamedPipe`).
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+# The peer's pinned process: its pidfd, pid or credentials, and a kqueue watching its exit.
+nix = { version = "0.31.3", default-features = false, features = ["event", "poll", "socket"] }
 
 # Named pipes, their DACL and the account a peer's token names.
 [target.'cfg(windows)'.dependencies]

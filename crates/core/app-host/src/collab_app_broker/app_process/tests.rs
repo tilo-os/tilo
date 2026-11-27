@@ -4,6 +4,17 @@ use std::sync::atomic::AtomicUsize;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// What the broker's monitor runs for a connection: `stop` once `process` has exited.
+fn watch_death(
+    process: PeerProcess,
+    stop: impl FnOnce() + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        process.exited().await;
+        stop();
+    })
+}
+
 #[tokio::test]
 async fn kernel_peer_death_fences_even_while_descendant_retains_socket() {
     let directory = tempfile::tempdir().unwrap();
@@ -44,13 +55,9 @@ os._exit(0)
     assert!(process.alive());
     let stopped = Arc::new(AtomicUsize::new(0));
     let observed = stopped.clone();
-    let watcher = watch_death(
-        process.clone(),
-        Arc::new(move || {
-            observed.fetch_add(1, Ordering::SeqCst);
-        }),
-    )
-    .unwrap();
+    let watcher = watch_death(process.clone(), move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+    });
     stream.write_all(b"G").await.unwrap();
     tilo_test_env::within("`watcher`", watcher).await.unwrap();
     assert_eq!(stopped.load(Ordering::SeqCst), 1);
@@ -118,13 +125,9 @@ os._exit(0)
         .expect("two exact live process handles");
     let stopped = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&stopped);
-    let watcher = watch_death(
-        process.clone(),
-        Arc::new(move || {
-            observed.fetch_add(1, Ordering::SeqCst);
-        }),
-    )
-    .expect("bounded death watcher");
+    let watcher = watch_death(process.clone(), move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+    });
     stream.write_all(b"X").await.expect("child exit go");
     tilo_test_env::within("exact executing death watcher", watcher)
         .await

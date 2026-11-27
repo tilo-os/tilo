@@ -6,8 +6,6 @@
 //! namespace-local pid. The media context re-checks that the same process is still the app's
 //! before every command it forwards.
 
-#[cfg(target_os = "linux")]
-use super::AsRawFd;
 use super::media::MediaRequestContext;
 use super::{AppBrokerState, Arc, AtomicBool, JoinedChannel, Ordering};
 use crate::BrokerError;
@@ -43,46 +41,24 @@ use tilo_app_id::apps::FILE_EXPLORER as FILES;
 /// named: two whole captures, each its sources and one destination.
 const MAX_HANDED_DESCRIPTORS: usize = 2 * (runtime_collab::file_clipboard::MAX_ENTRIES + 1);
 
-#[cfg(target_os = "linux")]
+/// The app's process, pinned by the system (`tilo_socket::peer`), beneath the launcher that
+/// handed it over when one did.
 #[derive(Clone)]
 pub(super) struct PeerProcess {
-    task: Arc<std::os::fd::OwnedFd>,
-    launcher: Option<Arc<std::os::fd::OwnedFd>>,
+    task: tilo_socket::peer::Pinned,
+    launcher: Option<tilo_socket::peer::Pinned>,
 }
-/// The broker's own process. A kernel that pins no process for a socket's peer still names the
-/// peer's pid, and the one process that pid pins exactly is the one asking: the broker's own, as
-/// the connections of the windows its daemon runs in its own process are (a phone's app is one
-/// process, its device and its windows alike).
-#[cfg(not(target_os = "linux"))]
-pub(super) struct PeerProcess;
 
 impl PeerProcess {
-    #[cfg(target_os = "linux")]
-    pub(super) fn from_socket(stream: &tokio::net::UnixStream) -> Option<Self> {
-        use std::os::fd::FromRawFd;
-        let mut fd: libc::c_int = -1;
-        let mut len = libc::socklen_t::try_from(std::mem::size_of_val(&fd)).ok()?;
-        // SAFETY: live connected socket; writable correctly sized output. The
-        // kernel returns a new owned pidfd for the socket's actual peer task.
-        let result = unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERPIDFD,
-                (&raw mut fd).cast(),
-                &raw mut len,
-            )
-        };
-        if result != 0 || fd < 0 {
-            return None;
-        }
-        // SAFETY: successful SO_PEERPIDFD transfers this fresh descriptor.
-        let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        if len as usize != std::mem::size_of::<libc::c_int>() {
-            return None;
-        }
+    /// The process at the other end of `stream`, while it runs.
+    pub(super) fn from_socket(stream: &tilo_socket::tokio::Stream) -> Option<Self> {
+        let task = tilo_failure::ignored!(
+            "a peer the system pins no process for is admitted as no app, which refuses its \
+             records",
+            tilo_socket::peer::Pinned::of_tokio(stream).ok()
+        )?;
         let process = Self {
-            task: Arc::new(owned),
+            task,
             launcher: None,
         };
         process.alive().then_some(process)
@@ -94,11 +70,28 @@ impl PeerProcess {
         task: std::os::fd::OwnedFd,
         launcher: Option<std::os::fd::OwnedFd>,
     ) -> Option<Self> {
+        let pin = |pidfd| {
+            tilo_failure::ignored!(
+                "a handed process that has ended is refused as ended",
+                tilo_socket::peer::Pinned::from_pidfd(pidfd).ok()
+            )
+        };
         let process = Self {
-            task: Arc::new(task),
-            launcher: launcher.map(Arc::new),
+            task: pin(task)?,
+            launcher: match launcher {
+                Some(launcher) => Some(pin(launcher)?),
+                None => None,
+            },
         };
         process.alive().then_some(process)
+    }
+    /// Only Linux's shells hand the daemon an app's pinned process.
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn handed(
+        _: runtime_portal::descriptors::Owned,
+        _: Option<runtime_portal::descriptors::Owned>,
+    ) -> Option<Self> {
+        None
     }
     /// Copies of the pidfds pinning this process and its launcher: what a shell hands the
     /// daemon with the app's connection.
@@ -107,10 +100,10 @@ impl PeerProcess {
         &self,
     ) -> std::io::Result<(std::os::fd::OwnedFd, Option<std::os::fd::OwnedFd>)> {
         Ok((
-            self.task.try_clone()?,
+            self.task.pidfd().try_clone_to_owned()?,
             self.launcher
                 .as_ref()
-                .map(|launcher| launcher.try_clone())
+                .map(|launcher| launcher.pidfd().try_clone_to_owned())
                 .transpose()?,
         ))
     }
@@ -121,97 +114,32 @@ impl PeerProcess {
     ) -> Option<Self> {
         let task = peer.pidfd().try_clone_to_owned().ok()?;
         let process = Self {
-            task: Arc::new(task),
+            task: tilo_failure::ignored!(
+                "an executing task that has ended is refused as ended",
+                tilo_socket::peer::Pinned::from_pidfd(task).ok()
+            )?,
             launcher: Some(self.task),
         };
         process.alive().then_some(process)
     }
-    /// Resolves when this task, or the launch it runs beneath, has exited.
-    /// Pidfd readiness is the notification; it never resolves otherwise, and
-    /// is pending forever if the descriptor cannot be watched.
-    #[cfg(target_os = "linux")]
+    /// Resolves when this task, or the launch it runs beneath, has exited, or when either
+    /// cannot be watched.
     pub(super) async fn exited(&self) {
-        let watch = |task: &Arc<std::os::fd::OwnedFd>| {
-            task.try_clone().ok().and_then(|task| {
-                // SAFETY: `task` is a fresh duplicate of the pidfd, moved into
-                // the AsyncFd and held nowhere else, so it stays open until
-                // the AsyncFd deregisters it on drop.
-                unsafe {
-                    tokio::io::unix::AsyncFd::register_with_interest(
-                        task,
-                        tokio::io::Interest::READABLE,
-                    )
-                }
-                .ok()
-            })
-        };
-        let task = watch(&self.task);
-        let launcher = self.launcher.as_ref().and_then(watch);
-        tokio::select! {
-            () = async {
-                match &task {
-                    Some(task) => { let _ = task.readable().await; }
-                    None => std::future::pending::<()>().await,
-                }
-            } => {},
-            () = async {
-                match &launcher {
-                    Some(launcher) => { let _ = launcher.readable().await; }
-                    None => std::future::pending::<()>().await,
-                }
-            } => {},
+        match &self.launcher {
+            Some(launcher) => tokio::select! {
+                () = self.task.exited() => {},
+                () = launcher.exited() => {},
+            },
+            None => self.task.exited().await,
         }
     }
-    /// The peer on `stream`, where it is this process: any other is pinned by nothing here.
-    #[cfg(not(target_os = "linux"))]
-    pub(super) fn from_socket(stream: &tilo_socket::tokio::Stream) -> Option<Self> {
-        tilo_socket::tokio::peer_pid(stream)
-            .ok()
-            .filter(|pid| *pid == std::process::id())
-            .map(|_| Self)
-    }
-    #[cfg(not(target_os = "linux"))]
-    pub(super) fn handed(
-        _: runtime_portal::descriptors::Owned,
-        _: Option<runtime_portal::descriptors::Owned>,
-    ) -> Option<Self> {
-        None
-    }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn alive(&self) -> bool {
-        let mut poll = libc::pollfd {
-            fd: self.task.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: one initialized pollfd, owned pidfd, nonblocking query.
-        (unsafe { libc::poll(&raw mut poll, 1, 0) == 0 })
-            && self.launcher.as_ref().is_none_or(|launcher| {
-                let mut poll = libc::pollfd {
-                    fd: launcher.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // SAFETY: another owned launch pidfd and nonblocking query.
-                unsafe { libc::poll(&raw mut poll, 1, 0) == 0 }
-            })
-    }
-    /// This process runs while it asks.
-    #[cfg(not(target_os = "linux"))]
-    #[expect(
-        clippy::unused_self,
-        reason = "mirrors the Linux pidfd check, which reads this process handle"
-    )]
-    fn alive(&self) -> bool {
-        true
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl AsRawFd for PeerProcess {
-    fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        self.task.as_raw_fd()
+        self.task.alive()
+            && self
+                .launcher
+                .as_ref()
+                .is_none_or(tilo_socket::peer::Pinned::alive)
     }
 }
 
@@ -291,42 +219,10 @@ impl LocalAppConnection {
     pub(super) fn current(&self) -> bool {
         self.connected.load(Ordering::Acquire) && self.process.alive()
     }
-    /// Match the task pinned by the kernel pidfd, never a namespace-local app PID.
-    #[cfg(target_os = "linux")]
+    /// Whether the process another part of the system names by `pid` and `start` is the one
+    /// this connection pinned, still running: never a pid alone, which another process may take.
     pub(super) fn matches_process(&self, pid: u32, start: u64) -> bool {
-        if !self.current() {
-            return false;
-        }
-        let info = std::fs::read_to_string(format!(
-            "/proc/self/fdinfo/{}",
-            self.process.task.as_raw_fd()
-        ));
-        let pinned = info.ok().and_then(|info| {
-            info.lines().find_map(|line| {
-                line.strip_prefix("Pid:")
-                    .and_then(|value| {
-                        tilo_failure::ignored!(
-                            "a probe of /proc: an unreadable field is not the pinned process, which refuses",
-                            value.trim().parse::<u32>().ok()
-                        )
-                    })
-            })
-        });
-        let current_start = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|stat| stat.rsplit_once(") ").map(|(_, fields)| fields.to_owned()))
-            .and_then(|fields| {
-                tilo_failure::ignored!(
-                    "a probe of /proc: an unreadable start time is not the pinned process, which refuses",
-                    fields.split_whitespace().nth(19)?.parse::<u64>().ok()
-                )
-            });
-        pinned == Some(pid) && current_start == Some(start) && self.current()
-    }
-    #[cfg(not(target_os = "linux"))]
-    pub(super) fn matches_process(&self, _: u32, _: u64) -> bool {
-        let _ = self;
-        false
+        self.current() && self.process.task.is(pid, start)
     }
     pub(super) fn stop(&self) {
         self.connected.store(false, Ordering::Release);
@@ -345,12 +241,7 @@ impl ProcessMonitor {
         state: &Arc<AppBrokerState>,
         peer: u64,
     ) -> Self {
-        #[cfg_attr(
-            not(target_os = "linux"),
-            expect(unused_mut, reason = "only Linux monitors a local process")
-        )]
         let mut task = None;
-        #[cfg(target_os = "linux")]
         if let Some(connection) = local.as_ref() {
             let checked = Arc::clone(connection);
             let state = Arc::downgrade(state);
@@ -371,51 +262,17 @@ impl ProcessMonitor {
                     }
                 }
             });
-            match watch_death(connection.process.clone(), stop) {
-                Ok(watcher) => task = Some(watcher),
-                Err(_) => connection.stop(),
-            }
+            let process = connection.process.clone();
+            // Death, and a process whose end cannot be watched, both revoke before the callback
+            // returns.
+            task = Some(tokio::spawn(async move {
+                process.exited().await;
+                stop();
+            }));
         }
-        #[cfg(not(target_os = "linux"))]
-        let _ = (state, peer);
         Self { local, task }
     }
 }
-#[cfg(target_os = "linux")]
-fn watch_death(
-    process: PeerProcess,
-    stop: Arc<dyn Fn() + Send + Sync>,
-) -> std::io::Result<tokio::task::JoinHandle<()>> {
-    let launcher = process
-        .launcher
-        .as_ref()
-        .map(|task| {
-            let watched = PeerProcess {
-                task: Arc::clone(task),
-                launcher: None,
-            };
-            // SAFETY: `watched.task` is an `Arc<OwnedFd>`, and `as_raw_fd`
-            // returns that pidfd. The AsyncFd owns `watched` and so one strong
-            // reference, which keeps the pidfd open until it deregisters.
-            unsafe { tokio::io::unix::AsyncFd::register(watched) }.map_err(std::io::Error::from)
-        })
-        .transpose()?;
-    // SAFETY: as above. `process.task` is the `Arc<OwnedFd>` that
-    // `as_raw_fd` reports, kept open by the reference the AsyncFd owns.
-    let process = unsafe { tokio::io::unix::AsyncFd::register(process) }?;
-    Ok(tokio::spawn(async move {
-        // Death and monitor failure both revoke before the callback returns.
-        tokio::select! {
-            _ = process.readable() => {},
-            () = async {
-                if let Some(launcher) = launcher { let _ = launcher.readable().await; }
-                else { std::future::pending::<()>().await; }
-            } => {},
-        }
-        stop();
-    }))
-}
-
 impl Drop for ProcessMonitor {
     fn drop(&mut self) {
         if let Some(local) = &self.local {

@@ -4266,7 +4266,7 @@ name = "build/macos-sdk-aarch64"
 # and no Mac is a build node to keep it so. Zig and the Rust target come from the same pinned
 # setup as cli-macos-cross-aarch64's.
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/macos-check.sh aarch64-apple-darwin -p tilo-app"
+run = "bash tools/ci/macos-check.sh aarch64-apple-darwin -p tilo-app -p tilo-app-host && bash tools/ci/macos-check.sh aarch64-apple-darwin --tests -p tilo-socket --all-features"
 setup = { run = "bash tools/ci/install-cli-toolchain.sh aarch64-apple-darwin", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
 requires = ["arch=x86_64"]
 

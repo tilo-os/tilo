@@ -30,6 +30,13 @@ pub use descriptor::Descriptor;
 pub mod account;
 pub mod datagram;
 pub mod descriptor;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    windows
+))]
+pub mod peer;
 #[cfg(feature = "tokio")]
 pub mod tokio;
 #[cfg(windows)]
