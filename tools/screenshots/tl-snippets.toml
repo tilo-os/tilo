@@ -1,5 +1,5 @@
-# Snippets: a library from the app's own scenario, the window's search narrowing
-# it, and an empty library.
+# Snippets: a library from the app's own scenario, its Favorites place, and an
+# empty library.
 
 [[situation]]
 name = "library"
@@ -7,17 +7,12 @@ title = "A library of everyday snippets"
 scenario = "a small library"
 
 [[situation]]
-name = "search"
-title = "Searching the snippets"
+name = "favorites"
+title = "The snippets kept as favorites"
 scenario = "a small library"
 
-# The window's search is the system's, scoped to the app: it opens in the bar
-# and what is typed reaches the list.
 [[situation.steps]]
-perform = { target = "window-search-open", action = "activate" }
-
-[[situation.steps]]
-perform = { target = "window-search-query", action = "set_value", value = "sql" }
+perform = { target = "key:item:favorites", action = "activate" }
 
 [[situation]]
 name = "empty"

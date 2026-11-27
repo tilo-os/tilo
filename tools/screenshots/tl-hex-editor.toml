@@ -1,5 +1,6 @@
-# Hex editor: file headers seeded into the profile and read through the
-# document's actions, and a text file with a few bytes changed.
+# Hex editor: files seeded into the profile and opened through the app's action.
+# The bytes are a document view of their own, which a capture cannot press a row
+# to open; the library lists what was opened.
 
 [[file]]
 path = "sunset.png"
@@ -14,34 +15,17 @@ path = "notes.txt"
 text = "Shopping: oat milk, bread, lemons\nCall the dentist on Monday\nWater the plants\n"
 
 [[situation]]
-name = "png-header"
-title = "The start of a PNG file"
+name = "open-files"
+title = "A PNG, an ELF executable and a text file opened"
 
 [[situation.steps]]
 invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/sunset.png" } }
 
 [[situation.steps]]
-perform = { target = "sunset.png", action = "activate" }
-
-[[situation]]
-name = "elf-header"
-title = "An ELF executable's header"
-
-[[situation.steps]]
 invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/hello" } }
 
 [[situation.steps]]
-perform = { target = "hello", action = "activate" }
-
-[[situation]]
-name = "edited-text-file"
-title = "A text file with a few bytes changed"
-
-[[situation.steps]]
 invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/notes.txt" }, bind = "document" }
-
-[[situation.steps]]
-perform = { target = "notes.txt", action = "activate" }
 
 [[situation.steps]]
 invoke = { resource = "{{document.resources.0}}", action = "overwrite_bytes", args = { offset = 10, bytes = "4f 41 54" } }
