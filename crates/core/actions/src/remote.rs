@@ -30,11 +30,7 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-pub use window_actions::{
-    APPLICATION_OUTLINE_ACTION, APPLICATION_OUTLINE_TYPE, OUTLINE_ANCHOR_PARAM,
-    OUTLINE_PICTURE_UNAVAILABLE, activation_requested, link_scheme, outline_anchor, outline_asked,
-    outline_spec,
-};
+pub use window_actions::{activation_requested, link_scheme, render_anchor};
 
 pub mod admitted;
 pub use admitted::{Admits, Admitted, LiveRead, LiveView, Outcome, ReportsProgress, Serving};

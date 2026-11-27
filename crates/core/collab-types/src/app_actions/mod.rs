@@ -59,6 +59,45 @@ pub enum AppLink {
     },
 }
 
+/// Reading what an app's window shows, as the lines an agent reads.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "tilo.app.outline")]
+pub enum AppOutline {
+    /// Read what the app's window shows as lines: every label, value and control in reading
+    /// order, and the action each control runs, which is called by the address the line
+    /// names. With `picture`, also the view as a picture; with an `anchor`, shows that item
+    /// first.
+    #[effect(view, audience = "agents", label = "app-outline", returns)]
+    Outline {
+        #[param(
+            "An item of the app's to show first: the anchor of a search hit, or an item \
+             resource's id"
+        )]
+        anchor: Option<String>,
+        #[param("Also answer the view as a picture of it, where its window can draw one")]
+        picture: Option<bool>,
+        #[param("Pixels per point of the picture, 0.5 to 2 (default 1)")]
+        scale: Option<f64>,
+    },
+}
+
+impl AppOutline {
+    /// The arguments an `outline` invocation travels with, for a caller building one.
+    #[must_use]
+    pub fn outline_arguments(
+        anchor: Option<&str>,
+        picture: Option<bool>,
+        scale: Option<f64>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        Self::Outline {
+            anchor: anchor.map(str::to_owned),
+            picture,
+            scale,
+        }
+        .arguments()
+    }
+}
+
 /// The workspace's `open` of an installed app: what it opens, and the name of the file its
 /// content is.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
@@ -82,11 +121,23 @@ pub enum ApplicationOpen {
 pub const ACTIVATE_WINDOW: &str = WindowAction::ACTIVATE_WINDOW.id();
 pub const OPEN: &str = AppOpen::OPEN.id();
 pub const OPEN_LINK: &str = AppLink::OPEN_LINK.id();
+pub const OUTLINE: &str = AppOutline::OUTLINE.id();
 pub const OPEN_APP: &str = ApplicationOpen::OPEN.id();
 pub const ACTIVATE_OPERATION: &str = <WindowAction as tilo_resource::Effect>::OPERATION;
 pub const OPEN_OPERATION: &str = <AppOpen as tilo_resource::Effect>::OPERATION;
 pub const OPEN_LINK_OPERATION: &str = <AppLink as tilo_resource::Effect>::OPERATION;
+pub const OUTLINE_OPERATION: &str = <AppOutline as tilo_resource::Effect>::OPERATION;
 pub const OPEN_APP_OPERATION: &str = <ApplicationOpen as tilo_resource::Effect>::OPERATION;
+
+/// The `outline` parameter naming an item to show before reading; the `render` operation
+/// names the same anchor.
+pub const OUTLINE_ANCHOR: &str = "anchor";
+/// The `outline` parameter asking for the view as a picture.
+pub const OUTLINE_PICTURE: &str = "picture";
+
+/// The key of an [`AppOutline::Outline`] answer saying why it has no picture where one was
+/// asked for.
+pub const OUTLINE_PICTURE_UNAVAILABLE: &str = "picture_unavailable";
 
 /// The spec each window action is published as. The declaration is the error, so these cannot
 /// fail; a rename that broke them fails the build.
@@ -111,6 +162,11 @@ pub fn open_spec() -> tilo_actions::ActionSpec {
 #[must_use]
 pub fn open_link_spec() -> tilo_actions::ActionSpec {
     spec_of::<AppLink>(OPEN_LINK)
+}
+
+#[must_use]
+pub fn outline_spec() -> tilo_actions::ActionSpec {
+    spec_of::<AppOutline>(OUTLINE)
 }
 
 /// What an `open` invocation's [`InvokeArgument`] names: the content hash it
@@ -346,7 +402,7 @@ impl ApplicationLaunch {
 }
 
 /// The actions an app's window publishes, as a view of another language reads
-/// them: `activate-window`, `open` and `open-link` on an app's row.
+/// them: `activate-window`, `open`, `open-link` and `outline` on an app's row.
 #[must_use]
 pub fn surface() -> tilo_actions::surface::Surface {
     let mut surface = tilo_resource::surface::reading_surface::<App, WindowAction>(
@@ -359,6 +415,10 @@ pub fn surface() -> tilo_actions::surface::Surface {
             "Application",
         ),
         tilo_resource::surface::reading_surface::<App, AppLink>(
+            tilo_actions::remote::APPLICATION_RESOURCE_KIND,
+            "Application",
+        ),
+        tilo_resource::surface::reading_surface::<App, AppOutline>(
             tilo_actions::remote::APPLICATION_RESOURCE_KIND,
             "Application",
         ),
@@ -481,13 +541,18 @@ mod tests {
     fn every_window_action_is_declared_once() {
         let surface = surface();
         let ids: Vec<&str> = surface.verbs.iter().map(|verb| verb.id.as_str()).collect();
-        assert_eq!(ids, ["activate-window", "open", "open-link"]);
+        assert_eq!(ids, ["activate-window", "open", "open-link", "outline"]);
         assert_eq!(
             surface.verbs[1].kind,
             tilo_actions::ActionKind::Read,
             "opening a hit's item reads"
         );
         assert_eq!(AppLink::OPEN_LINK.params(), ["link"]);
+        assert_eq!(
+            AppOutline::OUTLINE.params(),
+            [OUTLINE_ANCHOR, OUTLINE_PICTURE, "scale"],
+            "the render operation names the same anchor"
+        );
     }
 
     /// The file a tilolang view compiles the app's window actions against, and a crate that

@@ -1642,7 +1642,7 @@ impl ResourceRoot {
             request.type_id,
             crate::runner::RENDER_TYPE | crate::runner::OUTLINE_TYPE
         ) && !request.payload.is_empty()
-            && let Some(anchor) = crate::runner::rendered_anchor(request.payload)
+            && let Some(anchor) = Self::asked_first(request.type_id, request.payload)
             && self.shown_first.take().as_deref() != Some(anchor.as_str())
         {
             self.stages
@@ -1666,6 +1666,18 @@ impl ResourceRoot {
         })
         .map_err(tilo_resource::Refusal::new)?
         .map(ResourceOperationStart::Completed))
+    }
+
+    /// The item a `render` or `outline` request asks to be shown first, when it asks for one.
+    fn asked_first(type_id: &str, payload: &[u8]) -> Option<String> {
+        use tilo_resource::Effect as _;
+
+        if type_id != crate::runner::OUTLINE_TYPE {
+            return crate::runner::rendered_anchor(payload);
+        }
+        let collab_types::app_actions::AppOutline::Outline { anchor, .. } =
+            collab_types::app_actions::AppOutline::from_payload(payload).ok()?;
+        anchor.filter(|anchor| !anchor.is_empty())
     }
 
     /// What reads the data this window keeps, its chain of parts or what the

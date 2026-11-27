@@ -15,7 +15,7 @@
 //!   ([`PublishedDirectory`]): what makes the instance one the API and agents can browse.
 //! - **What every app publishes:** on its app's resource the instance publishes the history
 //!   verbs (Undo, Redo, History, ...: `collab_types::history::verbs`), `read`
-//!   (`tilo_resource::read`), `outline` (`tilo_actions::remote::outline_spec`) and, where it
+//!   (`tilo_resource::read`), `outline` (`collab_types::app_actions::AppOutline`) and, where it
 //!   shows a window, "Show this window" (`collab_types::app_actions::WindowAction`), and answers them
 //!   as a framework app does: undo and redo through the store, `read` through the runtime,
 //!   `outline` as the lines of its views (`crate::outline`), and "Show this window" by asking its
@@ -33,6 +33,7 @@ use std::sync::Arc;
 
 use crate::connection::Connection;
 use crate::personal::PersonalDocument;
+use collab_types::app_actions::{AppOutline, OUTLINE_PICTURE_UNAVAILABLE};
 use collab_types::history::verbs::{EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::action_directory::PublishedDirectory;
 use collaboration::{
@@ -1484,7 +1485,7 @@ impl Platform for HostPlatform {
         if self.shows == Shows::View {
             window.push(collab_types::app_actions::activate_spec());
         }
-        window.push(tilo_actions::remote::outline_spec());
+        window.push(collab_types::app_actions::outline_spec());
         // A call that shows nothing has no view to bound what it holds: it publishes the app's
         // resources, which is what a caller names when it calls.
         let everything = self.shows == Shows::Nothing;
@@ -4411,26 +4412,28 @@ impl Hosted {
             self.instance.activate_window();
             return Ok(Ran::Done(tilo_actions::remote::activation_requested()));
         }
-        if encoded.type_id == tilo_actions::remote::APPLICATION_OUTLINE_TYPE {
+        if encoded.type_id == collab_types::app_actions::OUTLINE_OPERATION {
+            let AppOutline::Outline {
+                anchor, picture, ..
+            } = AppOutline::from_payload(&encoded.payload)
+                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             // The window is read as it stands: what it shows is the person's to open.
-            if tilo_actions::remote::outline_anchor(&encoded.payload).is_some() {
+            if anchor.is_some_and(|anchor| !anchor.is_empty()) {
                 return Err(Refused::new(
                     "action_invalid_arguments",
                     "a tilolang window is read as it stands; open the item first",
                 ));
             }
-            let (picture, _) = tilo_actions::remote::outline_asked(&encoded.payload)
-                .map_err(|why| Refused::new("action_invalid_arguments", why))?;
             self.instance.open_to_read();
             let mut read = crate::outline::read(&self.instance);
-            if picture
+            if picture.unwrap_or(false)
                 && let Some(fields) = read
                     .value
                     .as_mut()
                     .and_then(serde_json::Value::as_object_mut)
             {
                 fields.insert(
-                    tilo_actions::remote::OUTLINE_PICTURE_UNAVAILABLE.into(),
+                    OUTLINE_PICTURE_UNAVAILABLE.into(),
                     "a tilolang window is read as text: its lines are exactly what it shows, \
                      with the address of each control's action"
                         .into(),
@@ -4717,7 +4720,7 @@ impl Hosted {
             // app's own `open_link` ([`Self::open_link_from_action`]).
             collab_types::app_actions::OPEN_LINK_OPERATION.to_owned(),
             // What the window shows, read as lines (`crate::outline`).
-            tilo_actions::remote::APPLICATION_OUTLINE_TYPE.to_owned(),
+            collab_types::app_actions::OUTLINE_OPERATION.to_owned(),
         ]);
         // What a provider's own actions encode as is the provider's to answer: this host hands
         // them on, so it declares the handlers they name.

@@ -23,8 +23,10 @@ pub(super) struct ViewArgs {
     scale: Option<f64>,
 }
 
-/// The app's action that reads its window as lines.
-const OUTLINE: &str = "outline";
+/// The app's action that reads its window as lines, as the shared declaration names it.
+use collab_types::app_actions::{
+    OUTLINE, OUTLINE_ANCHOR, OUTLINE_PICTURE, OUTLINE_PICTURE_UNAVAILABLE,
+};
 /// How long a view read waits for its answer. The view is the answer: a read that gave up
 /// sooner told the agent nothing of what the window shows, only that it was still being
 /// read. A window read for the first time on the workspace's server is opened and drawn
@@ -84,16 +86,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // The item resource the path names, which the app shows when asked: the view is
         // then of that resource, not of whatever the window happened to show.
         let anchor = resolved.node.as_ref().map(|node| node.id.clone());
-        let mut arguments = serde_json::Map::new();
-        if let Some(anchor) = &anchor {
-            arguments.insert("anchor".into(), json!(anchor));
-        }
-        if args.picture {
-            arguments.insert("picture".into(), json!(true));
-        }
-        if let Some(scale) = args.scale {
-            arguments.insert("scale".into(), json!(scale));
-        }
+        let mut arguments = collab_types::app_actions::AppOutline::outline_arguments(
+            anchor.as_deref(),
+            args.picture.then_some(true),
+            args.scale,
+        );
         let path = format!("{}#{OUTLINE}", app_of(&parsed));
         // The whole read's bound, app start included: a view still loading past it is
         // answered with what it has.
@@ -112,7 +109,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // that is gone) still has a window: read that, and say which view the lines are.
                 Err(why) if anchor.is_some() => {
                     refused_anchor = Some(why.to_string());
-                    arguments.remove("anchor");
+                    arguments.remove(OUTLINE_ANCHOR);
                     answer_value(
                         Box::pin(self.do_one_value(
                             &path,
@@ -132,7 +129,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if refused_anchor.is_none() {
                 refused_anchor = Some(outcome(&value).text.trim().to_owned());
             }
-            arguments.remove("anchor");
+            arguments.remove(OUTLINE_ANCHOR);
             value = answer_value(
                 Box::pin(self.do_one_value(&path, arguments.clone(), None, Some(VIEW_WAIT_MS)))
                     .await?,
@@ -169,7 +166,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         settle_by: Option<tokio::time::Instant>,
         wanted_picture: bool,
     ) -> Value {
-        let wanted_picture = wanted_picture && arguments.remove("picture").is_some();
+        let wanted_picture = wanted_picture && arguments.remove(OUTLINE_PICTURE).is_some();
         while let Some(left) = settle_by
             .and_then(|settle_by| settle_by.checked_duration_since(tokio::time::Instant::now()))
         {
@@ -197,7 +194,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
         }
         if wanted_picture {
-            arguments.insert("picture".into(), json!(true));
+            arguments.insert(OUTLINE_PICTURE.into(), json!(true));
             if let Ok(again) =
                 Box::pin(self.do_one_value(path, arguments.clone(), None, Some(VIEW_WAIT_MS))).await
             {
@@ -243,7 +240,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         text.push_str(lines.trim_end());
         // A host that could not draw the picture it was asked for says why, in its own
         // words: the lines are still the view it shows.
-        if let Some(why) = output.get("picture_unavailable").and_then(Value::as_str) {
+        if let Some(why) = output
+            .get(OUTLINE_PICTURE_UNAVAILABLE)
+            .and_then(Value::as_str)
+        {
             let _ = write!(text, "\n(no picture: {why})");
         }
         // A picture this host cannot hand over as image content is named by where the

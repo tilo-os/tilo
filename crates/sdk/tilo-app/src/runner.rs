@@ -47,7 +47,7 @@ pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
 /// The `outline` operation: the app's answer to "what does this window
 /// show", the view's semantic tree as lines an agent reads, and, asked for,
 /// the same view as a picture.
-pub(crate) use tilo_actions::remote::APPLICATION_OUTLINE_TYPE as OUTLINE_TYPE;
+pub(crate) use collab_types::app_actions::OUTLINE_OPERATION as OUTLINE_TYPE;
 
 mod outline;
 
@@ -56,7 +56,7 @@ mod outline;
 pub(crate) fn with_view_operations(
     mut resource: tilo_actions::ResourceSpec,
 ) -> tilo_actions::ResourceSpec {
-    let spec = tilo_actions::remote::outline_spec();
+    let spec = collab_types::app_actions::outline_spec();
     if !resource
         .actions
         .iter()
@@ -71,14 +71,15 @@ mod presentation;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use presentation::{DrawPast, Presentation, operation_types, with_native_presentations};
 
-/// The item a payload of [`OUTLINE_TYPE`] or [`RENDER_TYPE`] asks to be shown first, when
-/// it asks for one: the app stages that item before it reads its view.
-pub(crate) use tilo_actions::remote::outline_anchor as rendered_anchor;
+/// The item a payload of [`RENDER_TYPE`] asks to be shown first, when it asks for one: the
+/// app stages that item before it reads its view. An `outline` asks through its declaration
+/// ([`collab_types::app_actions::AppOutline`]).
+pub(crate) use tilo_actions::remote::render_anchor as rendered_anchor;
 
 /// The value's key explaining that this host cannot picture the view it just described: a
 /// page draws none for a caller, so it says so rather than answering nothing.
 #[cfg(target_family = "wasm")]
-use tilo_actions::remote::OUTLINE_PICTURE_UNAVAILABLE as PICTURE_UNAVAILABLE;
+use collab_types::app_actions::OUTLINE_PICTURE_UNAVAILABLE as PICTURE_UNAVAILABLE;
 
 #[cfg(target_family = "wasm")]
 #[derive(Default)]
@@ -116,14 +117,18 @@ impl Presentation {
         doc: &ui_core::automerge::AutoCommit,
         content: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        use collab_types::app_actions::AppOutline;
+        use tilo_resource::Effect as _;
+
         let request = op.request();
         if request.type_id != OUTLINE_TYPE {
             return Ok(None);
         }
-        let (picture, _) = tilo_actions::remote::outline_asked(request.payload)?;
+        let AppOutline::Outline { picture, .. } =
+            AppOutline::from_payload(request.payload).map_err(|error| error.to_string())?;
         let theme = self.theme.clone().unwrap_or_else(tilo_ui_base::Theme::dark);
         let mut output = outline::answer(&*content, doc, &theme);
-        if picture
+        if picture.unwrap_or(false)
             && let Some(fields) = output
                 .value
                 .as_mut()

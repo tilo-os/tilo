@@ -2,7 +2,7 @@
 
 use super::RENDER_TYPE;
 use crate::framework::ViewCx;
-use collab_types::app_actions::ACTIVATE_OPERATION;
+use collab_types::app_actions::{ACTIVATE_OPERATION, AppOutline};
 use std::cell::Cell;
 use tilo_resource::Resource;
 use tilo_ui_base::presence::PresenceCtx;
@@ -85,11 +85,24 @@ impl Presentation {
                 self.activation_requested.set(true);
                 Ok(Some(tilo_actions::remote::activation_requested()))
             }
-            RENDER_TYPE => self.render(request.payload, doc, content).map(Some),
+            RENDER_TYPE => {
+                let args: serde_json::Value =
+                    serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
+                let scale = args
+                    .get("scale")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(1.0);
+                let version = args.get("version").and_then(serde_json::Value::as_str);
+                self.render(scale, version, doc, content).map(Some)
+            }
             super::OUTLINE_TYPE => {
+                use tilo_resource::Effect as _;
+
+                let AppOutline::Outline { picture, scale, .. } =
+                    AppOutline::from_payload(request.payload).map_err(|error| error.to_string())?;
                 let theme = self.drawn_theme.clone().unwrap_or_else(Theme::dark);
                 let output = super::outline::answer(&*content, doc, &theme);
-                self.outline_picture(request.payload, doc, content, output)
+                self.outline_picture(picture.unwrap_or(false), scale, doc, content, output)
                     .map(Some)
             }
             _ => Ok(None),
@@ -97,19 +110,19 @@ impl Presentation {
     }
 
     /// The outline `output` as the operation answers it, with the view as a picture when
-    /// `payload` asks for one (as `render` draws it).
+    /// `picture` was asked for (as `render` draws it), at `scale` pixels per point.
     fn outline_picture(
         &mut self,
-        payload: &[u8],
+        picture: bool,
+        scale: Option<f64>,
         doc: &AutoCommit,
         content: &mut dyn tilo_ui_base::widget::Widget,
         mut output: tilo_actions::ActionOutput,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let (picture, _) = tilo_actions::remote::outline_asked(payload)?;
         if !picture {
             return Ok(output);
         }
-        let drawn = self.render(payload, doc, content)?;
+        let drawn = self.render(scale.unwrap_or(1.0), None, doc, content)?;
         output.resources = drawn.resources;
         if let (Some(fields), Some(serde_json::Value::Object(made))) = (
             output
@@ -123,22 +136,17 @@ impl Presentation {
         Ok(output)
     }
 
+    /// The view at `scale` pixels per point, of the document's `version` where one is named.
     fn render(
         &mut self,
-        payload: &[u8],
+        scale: f64,
+        version: Option<&str>,
         doc: &AutoCommit,
         content: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let args: serde_json::Value =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let scale = args
-            .get("scale")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(1.0);
         if !(0.5..=2.0).contains(&scale) {
             return Err("scale must be within 0.5..=2".into());
         }
-        let version = args.get("version").and_then(serde_json::Value::as_str);
         let rect = content.get_rect();
         let side = |points: f64| {
             #[allow(
@@ -312,4 +320,4 @@ fn render_spec() -> tilo_actions::ActionSpec {
 }
 
 /// The `anchor` parameter, which the shared outline names for both actions.
-use tilo_actions::remote::OUTLINE_ANCHOR_PARAM as ANCHOR_PARAM;
+use collab_types::app_actions::OUTLINE_ANCHOR as ANCHOR_PARAM;

@@ -18,3 +18,4 @@ tilo-app-part-history-edit-checkpoint = Checkpoint
 app-activate-window = Dieses Fenster anzeigen
 app-open = Öffnen
 app-open-link = Link öffnen
+app-outline = Ansicht lesen
