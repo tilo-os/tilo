@@ -581,18 +581,24 @@ use tilo_migrate::engine::size;
 /// What `tilo status` prints of the peer's answer to its status request.
 pub(crate) fn describe(status: &serde_json::Value) -> String {
     use std::fmt::Write as _;
-    let text = |key: &str| {
-        status
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("?")
-    };
-    let mut said = format!(
-        "This computer is \"{}\" in Tilo, one of the person's computers, through {}.\n",
-        text("device"),
-        text("host"),
-    );
-    if let Some(why) = status.get("not_in").and_then(serde_json::Value::as_str) {
+    let text = |key: &str| status.get(key).and_then(serde_json::Value::as_str);
+    // A computer that is no device of the person's yet says only why: it has no name in Tilo
+    // and no server it reaches the person's workspaces through.
+    let mut said = String::new();
+    if let Some(device) = text("device") {
+        let _ = match text("host") {
+            Some(host) => writeln!(
+                said,
+                "This computer is \"{device}\" in Tilo, one of the person's computers, through \
+                 {host}."
+            ),
+            None => writeln!(
+                said,
+                "This computer is \"{device}\" in Tilo, one of the person's computers."
+            ),
+        };
+    }
+    if let Some(why) = text("not_in") {
         let _ = writeln!(said, "{why}");
     }
     let mounted = status
@@ -728,6 +734,41 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `tilo status` on a computer that is no device of the person's says why, and names no
+    /// device or server it does not have; one that is says which it is and what it goes through.
+    #[test]
+    fn status_names_only_the_device_and_server_it_has() {
+        let not_in = serde_json::json!({
+            "device": null,
+            "host": null,
+            "not_in": "This computer is not logged in to Tilo.",
+            "mounted": [],
+        });
+        let said = describe(&not_in);
+        assert!(!said.contains('?'), "{said}");
+        assert!(
+            said.starts_with("This computer is not logged in to Tilo.\n"),
+            "{said}"
+        );
+        let device = serde_json::json!({"device": "laptop", "host": "tilo.sh", "mounted": []});
+        assert!(
+            describe(&device).starts_with(
+                "This computer is \"laptop\" in Tilo, one of the person's computers, through \
+                 tilo.sh.\n"
+            ),
+            "{}",
+            describe(&device)
+        );
+        let no_host = serde_json::json!({"device": "laptop", "mounted": []});
+        assert!(
+            describe(&no_host).starts_with(
+                "This computer is \"laptop\" in Tilo, one of the person's computers.\n"
+            ),
+            "{}",
+            describe(&no_host)
+        );
+    }
 
     /// What `tilo folders` says of a folder whose sync stands as `status`, on a computer that
     /// reaches the workspace or not.
