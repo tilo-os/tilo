@@ -1561,6 +1561,7 @@ impl Workspaces {
             Arc::clone(&workspaces),
             Arc::clone(&host.surfaces),
             signer,
+            host.cert.user_public_key,
         );
         action_service.answer_under(answering);
         // The apps this host serves answer on the same action service its workspaces' devices

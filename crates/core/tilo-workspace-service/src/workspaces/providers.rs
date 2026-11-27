@@ -178,13 +178,6 @@ pub trait WorkspaceAnswers: Send + Sync {
         self.answer(call, request)
     }
 
-    /// Whether another device of a workspace's roster asks the action `target` names of it,
-    /// through the workspace's governance. One no turn takes and no roster device asks is known
-    /// only to an app's own connection here.
-    fn roster_asks(&self, _target: &RemoteActionTarget) -> bool {
-        true
-    }
-
     /// What `call`'s caller is offered of `query`, by the publisher and workspace each row is
     /// offered on.
     fn offer<'a>(

@@ -163,3 +163,77 @@ fn a_program_in_the_workspaces_machine_works_there_as_its_own_agent_once_allowed
         .await;
     });
 }
+
+/// A member of somebody else's, entered in the workspace as an editor, asks this person's vault
+/// over the device link: the daemon refuses them, saying what is not theirs, rather than
+/// pretending the vault is not there for anyone.
+#[test]
+fn another_members_device_is_refused_this_persons_vault() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let (theirs, _) = host.other_person("Grace's laptop", &workspace).await;
+        let refused = theirs
+            .call(
+                tilo_workspace_records::vault::PROVIDER,
+                tilo_actions::ActionAddress::new(
+                    tilo_workspace_records::vault::RESOURCE,
+                    tilo_workspace_records::vault::ADD,
+                ),
+                &json!({"kind": "key", "belongsTo": ["https://api.anthropic.com"], "secret": TOKEN}),
+            )
+            .await
+            .expect_err("another person's device reaches no item of this person's vault");
+        assert!(
+            !matches!(
+                refused,
+                tilo_actions::remote::ActionCallError::UnknownAction
+            ),
+            "the refusal says what is theirs to ask, not that the vault is not there: {refused:?}"
+        );
+    });
+}
+
+/// An agent this person's own root certified asks their vault over the device link: the vault
+/// holds the agent to its own rules, which grant an agent nothing by itself.
+#[test]
+fn an_agent_on_the_persons_device_is_held_to_the_vaults_own_rules() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let agent = agent_member(host.as_ref(), &workspace, "Ada's agent").await;
+        let refused = agent
+            .call(
+                tilo_workspace_records::vault::PROVIDER,
+                tilo_actions::ActionAddress::new(
+                    tilo_workspace_records::vault::RESOURCE,
+                    tilo_workspace_records::vault::ADD,
+                ),
+                &json!({"kind": "key", "belongsTo": ["https://api.anthropic.com"], "secret": TOKEN}),
+            )
+            .await
+            .expect_err("an agent's grant covers no vault item of its own");
+        assert!(
+            !matches!(
+                refused,
+                tilo_actions::remote::ActionCallError::UnknownAction
+            ),
+            "the vault decides the agent's call, rather than knowing nothing of it: {refused:?}"
+        );
+    });
+}
+
+/// An agent's key of this person's, entered in `workspace` and asking the daemon over the device
+/// link as one of their devices does: an agent of theirs on a device of theirs, never a device.
+async fn agent_member(host: &host::Host, workspace: &str, label: &str) -> host::Member {
+    let (key, cert) = host.certify(
+        label,
+        tilo_user_identity::DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::AllWorkspaces,
+        ),
+    );
+    host.daemon()
+        .workspaces()
+        .enter(workspace, (&cert, &key))
+        .await
+        .expect("the person's agent is entered in their workspace");
+    host.dial(key, workspace).await
+}

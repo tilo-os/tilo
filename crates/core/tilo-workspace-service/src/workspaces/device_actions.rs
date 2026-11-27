@@ -92,6 +92,9 @@ pub(crate) struct DeviceWork {
     governance: std::sync::OnceLock<std::sync::Weak<super::actions::Shared>>,
     /// The providers registered on this device: what another device's call naming one reaches.
     pub(super) providers: super::providers::Providers,
+    /// The person this device belongs to: whose services the providers registered on it keep, so
+    /// that their own devices, and the agents their keys certified, reach them here.
+    person: [u8; 32],
     runtime: tokio::runtime::Handle,
 }
 
@@ -113,8 +116,9 @@ impl DeviceWork {
         Some(super::ServiceWorkspaceActions { shared })
     }
 
-    /// `request`, an invocation of a workspace's governance or of its models by a device of its
-    /// roster, decided as the workspace's governance decides it for that device's certificate.
+    /// `request`, an invocation of a workspace's governance or of a provider this device keeps
+    /// for its person (their vault, accounts, models), decided as the workspace's governance
+    /// decides it for that device's certificate.
     fn govern(
         self: &Arc<Self>,
         caller: &Caller,
@@ -286,7 +290,8 @@ impl DeviceWork {
         self.content.read_recover().clone()
     }
 
-    /// The device action service's work for the workspaces in `workspaces`.
+    /// The device action service's work for the workspaces in `workspaces`, on the device of
+    /// `person`.
     ///
     /// # Panics
     ///
@@ -294,6 +299,7 @@ impl DeviceWork {
     fn new(
         workspaces: Arc<WorkspacesMap>,
         surfaces: Arc<collab_types::app_surface::Surfaces>,
+        person: [u8; 32],
     ) -> Arc<Self> {
         Arc::new(Self {
             content: std::sync::RwLock::default(),
@@ -310,8 +316,14 @@ impl DeviceWork {
             log: std::sync::Mutex::default(),
             governance: std::sync::OnceLock::new(),
             providers: super::providers::Providers::default(),
+            person,
             runtime: tokio::runtime::Handle::current(),
         })
+    }
+
+    /// The person this device belongs to: whose providers registered here answer.
+    fn person(&self) -> &[u8; 32] {
+        &self.person
     }
 
     /// Answer `request`, what an agent's turn asks of `answers`, a provider registered to answer
@@ -755,8 +767,9 @@ pub(crate) fn action_service(
     workspaces: Arc<WorkspacesMap>,
     surfaces: Arc<collab_types::app_surface::Surfaces>,
     device: Arc<dyn collab_types::signer::DeviceSigner>,
+    person: [u8; 32],
 ) -> (ActionService, Arc<DeviceWork>, Arc<Answers>) {
-    let work = DeviceWork::new(Arc::clone(&workspaces), surfaces);
+    let work = DeviceWork::new(Arc::clone(&workspaces), surfaces, person);
     let answers = Answers::over(Arc::clone(&work));
     let action_service = ActionService::over(
         device,
@@ -1414,9 +1427,10 @@ impl Answers {
         }
         // What a provider registered to answer in the workspaces this device holds answers
         // (a person's accounts, vault, models): an agent's turn asks what it takes of turns as
-        // that provider decides for the turn, an app this device launched asks it as the app
-        // through the apps it serves, and a device of the workspace's roster asks what the
-        // provider lets it as the workspace's governance decides it. Nobody else knows the call.
+        // that provider decides for the turn, and an app this device launched asks it as the app
+        // through the apps it serves. A device of this person's, or an agent their key certified,
+        // reaches them as any of their devices does, decided by the workspace's governance; a
+        // member's device of somebody else's is refused them.
         if let Some(answers) = self.work.providers.in_workspace(&request.target) {
             #[cfg(not(target_arch = "wasm32"))]
             if caller.acting().is_agent()
@@ -1430,10 +1444,10 @@ impl Answers {
             {
                 return served.invoke(caller, request);
             }
-            if answers.roster_asks(&request.target) {
+            if caller.user_public_key() == Some(self.work.person()) {
                 return self.work.govern(caller, request);
             }
-            return Pending::ready(Err(ActionCallError::UnknownAction));
+            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         if hosted(&request.target.provider)
             || tilo_actions::remote::asked::is_resolve(&request.target)

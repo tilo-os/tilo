@@ -127,13 +127,6 @@ impl WorkspaceAnswers for Provided {
         crate::hosted_use::takes(target)
     }
 
-    /// Another device of the person's asks their models; their accounts, vault, rule, the
-    /// services they connected and what was learned about them are asked where they are kept,
-    /// by a turn or an app's own connection.
-    fn roster_asks(&self, _target: &RemoteActionTarget) -> bool {
-        self.provider == model_providers::PROVIDER
-    }
-
     fn tree_rows<'a>(
         &'a self,
         call: WorkspaceCall<'a>,
