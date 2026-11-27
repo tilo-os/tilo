@@ -130,12 +130,14 @@ impl ActionProvider for OwnProcess {
                 .inspect_err(|why| tracing::info!(app = %self.app, %why, "a page login step continues no running call"))
                 .ok()
         });
-        // A workspace VM keeps no vault of its own: its Browser's page is filled from the host
-        // that placed it, which releases only for a fill it handed this machine.
+        // A fill the host that placed this workspace VM handed its Browser for a turn it carries
+        // out is lent by that host, which keeps what decides it; every other fill, the person's
+        // own, is decided by the vault here.
         if asked == Some(workspace_vault::PAGE_FILL)
             && let Some(host) = daemon.host_asks()
+            && lent_by_host(asked_by.as_ref(), daemon.placing_host())
         {
-            return from_the_host(host, &self.workspace, &request, asked_by.is_some());
+            return from_the_host(host, &self.workspace, &request);
         }
         let (completer, answer) = pending();
         tilo_rt::app().spawn(async move {
@@ -194,16 +196,15 @@ impl ActionProvider for OwnProcess {
 }
 
 /// A page fill (`request`) a workspace VM's Browser asks for in `workspace`, asked of the host
-/// that placed the VM ([`HostAsks::lend`]): for the running call it continues (`continues`), the
-/// item it names and the site its engine says the page is at. The host decides whether it hands
-/// the text; this machine only opens what the host sealed to it for that one fill and site.
+/// that placed the VM ([`HostAsks::lend`]): for the running call it continues, the item it names
+/// and the site its engine says the page is at. The host decides whether it hands the text; this
+/// machine only opens what the host sealed to it for that one fill and site.
 fn from_the_host(
     host: &HostAsks,
     workspace: &str,
     request: &InvokeRequest,
-    continues: bool,
 ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-    let (Some(running), true) = (request.on_behalf_of, continues) else {
+    let Some(running) = request.on_behalf_of else {
         return Pending::ready(Err(ActionCallError::refused(
             tilo_person_services::page_logins::ASKED_BY_NOBODY,
         )));
@@ -246,6 +247,17 @@ fn from_the_host(
     })
 }
 
+/// Whether a page fill asked for the running call whose caller is `asked_by` is lent by the host
+/// that placed this machine (`placing`): a call that host made itself, for a turn it carries out.
+/// A call any other device made, the person's own, is not, and neither is one on a machine no
+/// host placed.
+fn lent_by_host(asked_by: Option<&Caller>, placing: Option<[u8; 32]>) -> bool {
+    asked_by
+        .and_then(Caller::device_public_key)
+        .zip(placing)
+        .is_some_and(|(device, host)| *device == host)
+}
+
 /// Whether `frame` is a release, a find, a web call, a keep or a device key this connection's own
 /// process asks for, the ways an app's held connection reaches its vault items, one of the page
 /// login actions a window of the app's own asks for its page
@@ -262,4 +274,22 @@ pub(crate) fn is_answered_for_this_process(
         tilo_actions::remote::RemoteActionMessage::Invoke(request)
             if workspace_vault::asked_by_app(&request.target).is_some()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only the call the placing host made itself is lent by it: the person's own call on their
+    /// device is decided by the vault on this machine, and a machine no host placed asks no host.
+    #[test]
+    fn a_fill_is_lent_by_the_host_only_for_a_call_the_host_made() {
+        let (host, persons_device, person) = ([1; 32], [2; 32], [3; 32]);
+        let by_host = Caller::authenticated(person, host);
+        let by_person = Caller::authenticated(person, persons_device);
+        assert!(lent_by_host(Some(&by_host), Some(host)));
+        assert!(!lent_by_host(Some(&by_person), Some(host)));
+        assert!(!lent_by_host(Some(&by_host), None));
+        assert!(!lent_by_host(None, Some(host)));
+    }
 }

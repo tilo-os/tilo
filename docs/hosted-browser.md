@@ -178,9 +178,11 @@ command.
   server carries out for a person's own agent may have a field of the page filled from an item
   of that person's vault, by reference. The server hands the window Browser's own
   `fill_page_secret` of its page record; the Browser's page engine asks the VM's daemon for
-  the login for the site it committed, naming the running call, and the daemon asks the server
-  for the item's text (`tilo_action_services::environment_device`, `use-item`) in place of
-  any vault of its own; and the server
+  the login for the site it committed, naming the running call; for a call the server made
+  itself the daemon asks the server for the item's text
+  (`tilo_action_services::environment_device`, `use-item`), while a fill the person asked for
+  on their own device is decided by the vault's own rule for them, as on any device; and the
+  server
   answers only the Browser's own device, only for a fill it handed that device, naming that
   item, and once, after the vault's own rule (the item belongs to exactly that origin) and the
   person's leave, which the first fill at a site asks for in the conversation. The text is

@@ -202,6 +202,11 @@ impl Daemon {
         self.host_asks.get()
     }
 
+    /// The device key of the host that placed this daemon's machine, where a host did.
+    pub(crate) fn placing_host(&self) -> Option<[u8; 32]> {
+        self.workspaces.confined_host().map(|host| host.device)
+    }
+
     /// This daemon is a workspace VM's, and asks the host that placed it through `asks`.
     pub(crate) fn asks_its_host(&self, asks: super::vm_environment::HostAsks) {
         let _ = self.host_asks.set(asks);
