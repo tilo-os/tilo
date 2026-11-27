@@ -165,9 +165,10 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
     })
     .await;
     // A person this host admits no workspace of asks for a token in the
-    // workspace the page above is in: its roster gives the outsider no place,
-    // so the ask is refused and the outsider's page has nothing to send the
-    // proxy.
+    // workspace the page above is in: the workspace does not hold the
+    // outsider's device's certificate, so the host gives it no link and the
+    // ask is refused there, never carried, and the outsider's page has nothing
+    // to send the proxy.
     let (outsider_root, _) = UserIdentity::generate("Mallory", 2);
     let outsider_device = enrol(&outsider_root, "browser", DeviceCapabilities::member());
     let outsider = tilo_session_client::device::Device::of(
@@ -198,12 +199,11 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
             ),
         )
         .await
-        .expect("the host answers the outsider")
-        .expect("the ask is carried");
+        .expect("the host answers the outsider");
     assert!(
         matches!(
-            asked.status,
-            tilo_actions::remote::ReceiptStatus::Rejected { .. }
+            asked,
+            Err(tilo_actions::remote::ActionCallError::NotPermitted)
         ),
         "{asked:?}"
     );
