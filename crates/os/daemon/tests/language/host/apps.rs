@@ -30,7 +30,7 @@ fn packages() -> PathBuf {
 pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, OsString)> {
     let store = root.join("apps");
     #[cfg(target_os = "linux")]
-    let mut env = runtime_bundles(root, data);
+    let mut env = runtime_bundles(root, &store);
     #[cfg(target_os = "macos")]
     let mut env = {
         let _ = data;
@@ -136,10 +136,10 @@ fn install_tapp(store: &Path, tapp: &Path) {
         .unwrap_or_else(|error| panic!("{} installs: {error}", tapp.display()));
 }
 
-/// The runtime bundles the apps name, under `data`'s runtimes, signed by a publisher of `root`'s:
+/// The runtime bundles the apps name, under the device store's runtimes, signed by a publisher of `root`'s:
 /// answers the environment that names the launcher and that publisher.
 #[cfg(target_os = "linux")]
-fn runtime_bundles(root: &Path, data: &Path) -> Vec<(&'static str, OsString)> {
+fn runtime_bundles(root: &Path, store: &Path) -> Vec<(&'static str, OsString)> {
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     let host = tilo_test_env::sibling_binary("tilolang-process", "tilolang-process");
 
@@ -152,7 +152,7 @@ fn runtime_bundles(root: &Path, data: &Path) -> Vec<(&'static str, OsString)> {
     let tilolang = package::default_tilolang_runtime();
     let std = package::write_std(root).unwrap();
     bundle(
-        data,
+        store,
         tilolang.split_once('/').unwrap().1,
         &signer,
         std::slice::from_ref(&std),
@@ -166,7 +166,7 @@ fn runtime_bundles(root: &Path, data: &Path) -> Vec<(&'static str, OsString)> {
         libs.push(fonts);
     }
     bundle(
-        data,
+        store,
         version(package::DEFAULT_TILO_RUNTIME),
         &signer,
         &libs,
@@ -294,11 +294,11 @@ fn files_under(dir: &Path, files: &mut Vec<PathBuf>) {
 }
 
 #[cfg(target_os = "linux")]
-/// A runtime bundle `version` in `data`'s device store, of this machine's loader, the libraries
+/// A runtime bundle `version` in the device store `store`, of this machine's loader, the libraries
 /// `libs` and the programs `bins`, signed by the publisher at `signer`.
-fn bundle(data: &Path, version: &str, signer: &Path, libs: &[PathBuf], bins: &[PathBuf]) {
+fn bundle(store: &Path, version: &str, signer: &Path, libs: &[PathBuf], bins: &[PathBuf]) {
     runtime_bundle::build_bundle_with(
-        &data.join("tilo-apps/runtimes").join(version),
+        &store.join("runtimes").join(version),
         version,
         &runtime_bundle::BuildOptions {
             from: None,
