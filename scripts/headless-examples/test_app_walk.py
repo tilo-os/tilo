@@ -158,18 +158,25 @@ class TheStepFiles(unittest.TestCase):
 
 class ThePackagesAWalkInstalls(unittest.TestCase):
     """Every tilolang package a walk installs is in the tree, and the walk looks for the file
-    `tilolang build` names it after: its app id's last part, not its directory."""
+    `tilolang build` names it after: its app id's last part, not its directory. A walk that
+    names `*` installs every tilolang app (`packages_of` says which), so that is what is held
+    here, the marker itself never being a package."""
 
     def test_every_package_a_walk_names_is_built_under_its_app_id(self):
+        every_tl_app = {name for name, _ident in walk.tl_apps()}
         for path, spec in steps():
-            packages = list(spec.get("packages") or [])
             for variant in named_variants(spec):
-                v = spec[variant]
-                packages += v.get("packages") or ([v["package"]] if v.get("package") else [])
-            for package in packages:
-                with self.subTest(walk=path.stem, package=package):
-                    self.assertTrue((HERE.parents[1] / "apps/tl" / package / "app.tl").is_file())
-                    self.assertTrue(walk.tapp_name(package))
+                packages = walk.packages_of(spec, variant)
+                named = (spec.get("packages") or []) + (spec[variant].get("packages") or [])
+                if walk.EVERY_TL_APP in named:
+                    with self.subTest(walk=path.stem, variant=variant):
+                        self.assertEqual(set(packages), every_tl_app,
+                                         f"{walk.EVERY_TL_APP} installs every tilolang app")
+                for package in packages:
+                    with self.subTest(walk=path.stem, variant=variant, package=package):
+                        self.assertTrue(
+                            (HERE.parents[1] / "apps/tl" / package / "app.tl").is_file())
+                        self.assertTrue(walk.tapp_name(package))
         self.assertEqual(walk.tapp_name("files"), "file-explorer")
 
 
@@ -710,7 +717,10 @@ class AWindowThatShowsNothing(unittest.TestCase):
 
     def walked(self, targets):
         session = self.Session(
-            [{"app_id": "so.tilo.weather", "rect": [0, 64, 640, 500], "frames": 3}],
+            [{"app_id": "so.tilo.weather", "rect": [0, 64, 640, 500], "frames": 3,
+              # The window the walk reads is the one in front: a window on a strip behind it
+              # is drawn in that strip's band and is not read at all.
+              "active": True}],
             targets)
         return walk.Walk({"tl": {"id": "so.tilo.weather"}, "steps": []}, "tl",
                          Path("/nonexistent"), Path("/nonexistent"), session=session)
