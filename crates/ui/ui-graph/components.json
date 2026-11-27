@@ -3395,24 +3395,6 @@
       }
     },
     {
-      "name": "FollowFrame",
-      "doc": "The frame round the work while following someone.",
-      "props": [
-        {
-          "name": "colour",
-          "doc": "The followed person's colour, `rrggbb`; empty while the person follows nobody, and the frame leaves.",
-          "type": "text",
-          "required": true,
-          "positional": true,
-          "data": true
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "not_in_gallery": "it frames the windows a shell lays out, which a gallery has none of"
-      }
-    },
-    {
       "name": "FindControls",
       "doc": "The window's find controls: the bar's field, the match it stands on of how many, the find's options, the replacement where the content allows one, and the steps from this view out to everything.",
       "props": [
@@ -3543,6 +3525,24 @@
       ],
       "semantics": {
         "role": "Toolbar"
+      }
+    },
+    {
+      "name": "FollowFrame",
+      "doc": "The frame round the work while following someone.",
+      "props": [
+        {
+          "name": "colour",
+          "doc": "The followed person's colour, `rrggbb`; empty while the person follows nobody, and the frame leaves.",
+          "type": "text",
+          "required": true,
+          "positional": true,
+          "data": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "not_in_gallery": "it frames the windows a shell lays out, which a gallery has none of"
       }
     },
     {
